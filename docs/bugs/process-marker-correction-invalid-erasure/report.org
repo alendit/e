@@ -1,0 +1,28 @@
+#+title: Process Marker Correction Triggers Invalid Context Erasure
+
+* Report
+
+The user told the Grimoire agent that it was calling
+=process-reporting/mark= too often and that markers should describe coarse,
+complex flows rather than run before nearly every turn call.
+
+The agent responded by calling =process_marker= to record that correction.  It
+then failed before showing an assistant answer:
+
+#+begin_example
+Turn failed: Invalid context lifetime record: curation-erasure,
+:non-tool-source, 1
+#+end_example
+
+The visible turn summary reported 15 seconds, one tool call, and one capability
+action.
+
+* Expected behavior
+
+- Process reporting should not create a self-referential marker merely because
+  the user asked for less process reporting.  Its invocation policy should
+  match the intended coarse-flow scope.
+- A model-generated context disposition must not terminate an otherwise
+  successful turn because the model selected an ineligible source for
+  =erase=.  The carrier should make eligibility unambiguous, and invalid
+  dispositions should be contained before they discard the assistant answer.

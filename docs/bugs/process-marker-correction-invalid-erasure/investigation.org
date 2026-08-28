@@ -1,0 +1,119 @@
+#+title: Process Marker Correction Invalid Erasure Investigation
+
+* Finding
+
+The screenshot captures two independent defects in one turn.
+
+First, the process-reporting guidance currently requires the overly granular
+behavior the user objected to.  It tells the agent that every correction
+qualifies, that it should not judge importance, and that it must scan for a
+marker before finalizing any turn.  The model therefore called
+=process_marker= solely to record the user's request to stop making such
+self-referential calls.  This was not a spontaneous misuse of a coarse marker
+contract; the active guidance encodes the wrong granularity for the user's
+intended policy.
+
+Second, the marker action completed successfully.  The fatal error happened
+after the following provider request completed, while the harness prepared a
+=context-curate= disposition.  The disposition selected source label 1 for
+explicit erasure, but label 1 was not an ordinary tool-result source.  Core's
+strict erasure builder rejected it with =:non-tool-source= and the error escaped
+as a non-retryable turn failure.
+
+The model-facing curation contract contributes directly to that failure.  Its
+tool description says that =erase= is only for ordinary tool results, but the
+source presentation deliberately omits the trusted =:kind= and
+=:tool-call-id= fields.  The model receives only =:label=, =:value=, an
+estimated size, and a marker string.  It therefore cannot determine erasure
+eligibility from the declared source metadata.  The core can determine it, but
+only after the provider response, when it currently aborts the turn.
+
+* Live evidence
+
+The first sandboxed =scripts/e-live-probe chat= attempt could not access the
+local Emacs server socket.  The same bounded, read-only probe was then run with
+local socket access.  It returned:
+
+#+begin_example
+:session-id "20260828T135644-1a158aa37422" :status "error"
+#+end_example
+
+The active journal at
+=~/.config/emacs/.local/cache/e/sessions/sessions/20260828T135644-1a158aa37422.jsonl=
+contains the exact sequence for turn =01M14R5TJH33AVQF885G6P0GXT=:
+
+1. The assistant emitted a =process_marker= tool call whose stated purpose was
+   to record the correction to marker granularity.
+2. =process-reporting/mark= started and appended marker
+   =01M14R62S06SYHBF4ANBS4J5F3=.  Its note says future markers should be tied
+   to substantive process events.
+3. The action and model-facing tool result both completed with =status: ok=.
+4. Provider request 1 finished, the original frame was consumed, and provider
+   request 2 started because of the =process_marker= result.
+5. Provider request 2 finished successfully after 7.829 seconds.
+6. The next durable event was =turn-failed= with
+   =Invalid context lifetime record: curation-erasure, :non-tool-source, 1=.
+   No final assistant message was appended.
+
+The provider's exact reserved =context-curate= response is not persisted when
+pure preflight fails.  The selected =erase= label is nevertheless determined
+by the core error path: that error is emitted only while resolving labels in
+the normalized =:erase= list and finding a source whose trusted kind is not
+=tool-result= (or whose tool call identity is absent).
+
+The user's running Emacs was inspected read-only and left unchanged.
+
+* Source evidence
+
+- =e-process-reporting-instructions= in
+  =lisp/layers/harness/e-process-reporting.el= says corrections always qualify,
+  agents must not weigh importance, and they must scan before finalizing any
+  turn.  It even says that having no marker should be rare.
+- =e-openai-codex--context-curation-tool-definition= in
+  =lisp/adapters/openai/e-openai.el= tells the model that =erase= applies to
+  ordinary tool results.
+- =e-context-lifetime-curation-source-presentation= in
+  =lisp/core/e-context-lifetime.el= strips each trusted descriptor down to
+  =:label=, =:value=, =:estimated-tokens=, and =:marker=.  Eligibility metadata
+  is not present on the wire.
+- =e-context-lifetime--curation-erasure-record= in the same core module rejects
+  an erased source unless its trusted kind is =tool-result= and it has a tool
+  call identity.  It signals the exact =curation-erasure :non-tool-source=
+  error seen in the journal.
+- =e-harness--lifetime-preflight-response= calls the strict preparation before
+  the assistant append/commit boundary.  The unhandled validation error becomes
+  a failed turn even though the provider request completed normally.
+- The existing
+  =e-context-lifetime-test-curation-erasure-requires-tool-source= regression
+  proves strict rejection, but no test proves that the model can identify
+  eligible erase labels or that an invalid autonomous disposition preserves a
+  valid assistant answer.
+
+* Root causes
+
+1. *Policy mismatch:* process-reporting instructions implement ubiquitous
+   event logging, not coarse complex-flow marking.
+2. *Consumer contract mismatch:* the curation carrier asks the model to choose
+   ordinary-tool-only erase labels while hiding the source kind needed to make
+   that choice reliably.
+3. *Failure containment gap:* an invalid optional curation effect is allowed to
+   fail the whole response after provider success.
+
+* Next steps
+
+Treat the two owning domains separately during remediation:
+
+1. Rewrite the process-reporting invocation policy around the intended coarse
+   process boundary and add a regression that a routine correction does not
+   require a self-referential marker.
+2. Make erase eligibility explicit in the model-facing source presentation or
+   make the wire schema consumer-shaped so ineligible labels cannot be chosen.
+3. Define and test the response policy for an invalid optional curation effect.
+   At minimum, it must not silently lose a valid assistant answer; whether to
+   reject only the curation, retry a corrected reserved effect, or surface a
+   non-fatal diagnostic needs an explicit owner decision.
+4. Add a composed continuation regression with an inherited non-tool source
+   followed by an ordinary tool result, because that is the source mixture in
+   which this incident occurred.
+
+No implementation change was made during this investigation.

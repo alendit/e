@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| New    | process-marker-correction-invalid-erasure/ | Process marker correction triggers invalid context erasure |
 | Closed | chat-resume-lists-private-board-participants/ | Chat resume lists private board participants |
 | Closed | session-persistence-valid-manifest-node-budget/ | Valid session checkpoint exceeds structural command budget |
 | Closed | current-config-graphical-contract-drift/ | Current config graphical contract drift |
