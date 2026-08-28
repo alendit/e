@@ -1,0 +1,254 @@
+#+title: Implementation Review: Feature 88 Addendum 6
+#+date: 2026-08-28
+#+startup: overview
+
+* Status and fixed-point decision
+
+In-review.  This independent implementation Tick reviewed exact candidate
+revision =e5da1fb9a1d2639fe395763af347035074e658b9= against the accepted
+Addendum 6 contract at =51a29483a6f0dac4421fda60c79ef8c45e6f48d3=.
+The implementation range begins at =cab12162f540557c087885ed0acf715e765e5d62=;
+the final implementation/evidence owner revision is
+=01a8466a026de44f0aac04dfb061c0b2000dcdd8=, and =e5da1fb9= changes only
+documentation after that owner revision.
+
+The repository has not reached a complete fixed point because one P3
+documentation finding remains open.  The implementation itself has zero P0,
+P1, P2, or P3 findings, and every repository-controlled semantic, durability,
+architecture, performance, and evidence-runner cell is clear.
+
+- P0: none.
+- P1: none.
+- P2: none.
+- P3: one open documentation finding, =F88A6.I1=.
+
+The fresh 2026-08-28 configured =eng-ai-gateway-gpt= Responses HTTP records at
+=01a8466a= remain current at this candidate: the complete adoption dependency
+cone is byte-identical through =e5da1fb9=, its recomputed identity is
+=65d6c882ad25513c5c74f50f3dadb1a20d95c659a3a4275d7630b61290c50394=,
+and the seven-day freshness window is open.  This confirms only the recorded
+Responses HTTP, =:json-false=, =gpt-5.6-sol= identity.  Exact built-in
+ChatGPT/WebSocket remains separately =capability-unconfirmed=, so Feature 88
+correctly remains =In-review= and is not =Done= regardless of the P3 wording
+fix.
+
+* Scope and authority
+
+The review inspected the full =51a29483..e5da1fb9= package: production code,
+owner tests, E2E evidence code, Addenda 3--6, Feature 88 plan and limitations,
+=docs/architecture.md=, =docs/feats/index.org=, =e2e/README.org=, and the
+relevant prior reviews.  Addendum 6 is authoritative for mandatory Responses
+reasoning summaries and exhaustive dispositions.  Addendum 5 remains inherited
+for source affordance and naturalistic adoption except where Addendum 6 replaces
+omission semantics.  Addendum 4 remains authoritative for curation durability,
+and Addendum 3 remains authoritative for canonical reconstruction, immediate
+tool continuation/retry, cache evidence, cleanup, and compatibility.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  Core owns the
+provider-neutral frame/disposition policy; the harness owns turn orchestration
+and commit; the session owns durable records; the OpenAI backend adapter owns
+Responses request/response translation; and E2E owns external evidence.  The
+reserved =context-curate= carrier is not an ordinary model-facing tool.
+
+The reviewer made no provider request, did not contact or reload the user's
+running Emacs, and preserved the unrelated dirty Feature 87 plan.
+
+* Contract and evidence disposition
+
+| Contract or evidence cell | Observed implementation and evidence | Disposition |
+|---------------------------+--------------------------------------+-------------|
+| =F88A6-REASONING-SUMMARY= effective request | =e-openai--effective-reasoning= validates non-disableable =auto=/=detailed= summary, composes explicit =:reasoning= without dropping other fields, and emits effort plus summary in every ordinary Responses body (=lisp/adapters/openai/e-openai.el:197-269,1678-1717=).  Profile/request precedence and invalid values are owner-tested (=test/e-openai-test.el:228-330=). | clear |
+| HTTP/WebSocket identity and carriers | Request metadata records the effective pair, provider anchors require it, and WebSocket continuation properties include the complete invariant body (=lisp/adapters/openai/e-openai.el:838-842,1428-1446,1750-1795,2423-2432,2534-2582=).  Both native starters capture the same strict carrier and reasoning request shape. | clear |
+| Reasoning replay | The final adapter input boundary detaches and normalizes nil, vector, object, and list summary forms to arrays without mutating stored replay data (=lisp/adapters/openai/e-openai.el:1171-1211=).  Successive tool continuations and continuation fencing are covered at =test/e-openai-test.el:1200-1402=. | clear |
+| Carrier-local lifecycle affordance | =context-curate-v4= exposes one precise later-turn lifecycle sentence plus the strict exhaustive schema only (=lisp/core/e-context-lifetime.el:76-81=; =lisp/adapters/openai/e-openai.el:1631-1668=).  No stable instruction, source marker, or scenario prompt gained generic curation narration. | clear; prior focused affordance defect closed by =c6755665= |
+| =F88A6-DISPOSITION= | Core requires exact =keep=/=summaries=/=drop= keys, unique positive labels, full live-frame coverage, at most 16 retained labels, and an 8,192-byte prepared semantic record (=lisp/core/e-context-lifetime.el:843-972=).  Dropped labels are checked linearly with a hash table and are never copied into the record.  Exact, mixed, 16/17, byte-bound, and invalid partitions are covered at =test/e-context-lifetime-test.el:531-782=. | clear |
+| =F88A6-DROP= durability | Pure harness preflight precedes mutation.  Valid drop-only appends one audit control, appends no promotion, consumes the producer frame, and uses the existing bounded activity tail (=lisp/core/e-harness.el:3201-3312=).  Reopen, eviction, raw-residue exclusion, descendant safety, and invalid no-mutation paths are owner-tested (=test/e-harness-test.el:6745-6868=). | clear |
+| Positive adoption | The runner localizes the unique source-bearing ordinary-tool continuation, verifies exact carrier plus =summary:auto=, requires one preserving v3 effect and exact audit link, and proves durable next-turn projection without raw marker, tool, call/output, or replay leakage (=e2e/e-live-e2e-test.el:4435-4536=). | clear; fresh configured result =pass= with exact disposition |
+| Negative adoption | The naturalistic current-answer prompt contains no reserved vocabulary.  The runner requires exact transformed use, one exhaustive drop-only effect, exact response/control/consumption linkage, reopen, bounded-tail eviction, and zero promotion/residue (=e2e/e-live-e2e-test.el:4776-4956=).  Unrelated consumption events are ignored only when response and turn do not match; duplicates fail. | clear; fresh configured result =pass= with drop disposition |
+| Evidence identity, finalization, and content bounds | Capability/adoption records derive effective endpoint, transport, store, requester, model, request hashes, revisions, and dependency identity from captured requests; classifiers preserve configuration, unsupported, provider, timeout, identity, semantic, adoption, composition, and cache outcomes exactly once.  Returned summary presence is bounded diagnostic state and raw prompt/answer/summary/auth content is excluded (=e2e/e-live-e2e-test.el:450-715,1280-1701,1830-2107=). | clear |
+| Affected =F88A3-CACHE= | Material body/tool/layout hashes include the reasoning and v4 carrier changes.  The fresh configured warm-prefix record reports 3 requests, 6,184 input and 4,077 cached tokens; tool-heavy reports 5 requests, 14,726 input and 11,467 cached tokens.  Both report semantic =pass=, cache =warm=, and result =pass=. | clear for recorded Responses HTTP identity; exact ChatGPT/WebSocket external unknown remains separate |
+| Status and operator documentation | Addenda 3--6, plan, limitations, architecture, and feature index consistently retain =In-review=/not =Done= and distinguish current configured Responses HTTP from unconfirmed exact ChatGPT/WebSocket.  One README phrase misclassifies the credentialed adoption selector. | open: =F88A6.I1= |
+
+No required repository-controlled cell is unknown.  The only unknown is the
+explicit external exact ChatGPT/WebSocket scope, which is neither inferred from
+the HTTP evidence nor converted into a repository finding.
+
+* Prior focused finding disposition
+
+The focused audit at =4001735e= found that the strict Addendum 6 schema had
+removed the carrier-local later-turn lifecycle affordance and that the external
+carrier gate could therefore misclassify a repository presentation defect as
+model non-adoption.
+
+=c6755665= closes that defect.  The adapter now states when the reserved effect
+is useful without adding generic narration, advances the material schema
+revision to =context-curate-v4=, and makes the E2E gate compare the exact
+description and schema on the causal source-bearing request.  The current fresh
+positive and negative configured runs both crossed that gate successfully.
+
+=01a8466a= also closes the live-found drop-audit ambiguity: the runner selects
+only the consumed event with the control's response entry and turn, requires a
+nil curation list, and rejects duplicates while ignoring unrelated older frame
+consumption (=e2e/e-live-e2e-test.el:1952-2012,2700-2740=).
+
+* Findings
+
+** TODO Low P3 =F88A6.I1=: the E2E guide calls external adoption deterministic
+
+Expected behavior: Addendum 6 classifies
+=responses-autonomous-curation-adoption= as external compatibility evidence;
+only its credential-free runner classifiers and structural gates are
+deterministic (=addendum6.org:250-261=).  Operator documentation must preserve
+that evidence topology so a configured model/provider observation is not
+mistaken for a repository test.
+
+Observed fact: =e2e/README.org:200-201= calls it “The deterministic
+naturalistic adoption selector.”  The same section then says the selector is
+intentionally not run by repository-side tests and that its current pass
+confirms only the captured Responses HTTP profile
+(=e2e/README.org:210-218=).
+
+Consequence: the guide gives one credentialed external selector two conflicting
+evidence classes.  This does not affect runtime behavior or the truth of the
+fresh record, but it can cause an operator to treat provider/model adoption as
+deterministic repository acceptance.
+
+Minimal correction: replace the sentence at =e2e/README.org:200-201= with:
+
+#+begin_quote
+The naturalistic adoption selector is external compatibility evidence and is
+separate from those cache measurements:
+#+end_quote
+
+Keep the following profile-scoped current/unconfirmed text unchanged.  Do not
+weaken or rename the deterministic classifier and request-shape tests.
+
+Acceptance evidence: parse the updated Org file, run =git diff --check=, and
+contradiction-scan the README with Addendum 6's scenario portfolio.  The phrase
+=deterministic naturalistic adoption selector= must be absent, while the guide
+must still state that the selector is not repository-side, the configured HTTP
+record is current for its captured identity, and exact ChatGPT/WebSocket is
+unconfirmed.
+
+* Verification
+
+Repository-side validation was performed at exact =e5da1fb9= outside the
+user's running Emacs.
+
+#+begin_src sh
+eldev test -f test/e-context-lifetime-test.el \
+  -f test/e-harness-test.el -f test/e-openai-test.el
+#+end_src
+
+The managed sandbox produced 353 expected results and two local-server socket
+denials.  Re-running only those two tests with loopback socket permission
+produced 2/2 expected passes, matching the supplied authoritative 355/355
+focused result.
+
+#+begin_src sh
+eldev test -f test/e-openai-test.el \
+  e-openai-test-backend-cancel-deletes-url-network-process \
+  e-openai-test-http-idle-timeout-rearms-on-real-url-chunks
+#+end_src
+
+#+begin_example
+Ran 2 tests, 2 results as expected, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+E_E2E=1 eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
+#+begin_example
+Ran 68 tests, 46 results as expected, 0 unexpected, 22 skipped.
+#+end_example
+
+The skips are the expected credential/live-provider selectors.  The run emitted
+one content-free =configuration-unavailable= reasoning-capability record with
+zero requests under the unconfigured review environment.
+
+Additional checks passed:
+
+- =git diff --check 51a29483..e5da1fb9=;
+- exact owner-cone equality from =01a8466a..e5da1fb9=;
+- recomputation of the recorded adoption dependency identity;
+- source/test searches for obsolete omission/no-call semantics, a second
+  carrier, generic stable narration, dropped-label persistence, and summary
+  content in evidence; and
+- independent review of the supplied fresh identity-complete configured HTTP
+  records: capability 1 request/31 input, positive adoption 6/2,246, negative
+  drop 3/1,149, warm-prefix 3/6,184, and tool-heavy 5/14,726, all with the
+  documented pass classifications and cache counts.
+
+No graphical or live-Emacs playthrough was required: Addendum 6 changes backend
+request shape, provider-neutral semantic validation, and external evidence, not
+presentation focus, window layout, rendering, or key interaction.  The user's
+running Emacs was left unchanged; using the core/adapter changes immediately
+would require a normal full Emacs restart, not =e-dev-reload=.
+
+* Architecture review
+
+The implementation is =local-and-contained=.  Provider request variability,
+reasoning identity, replay normalization, and wire schema remain in the OpenAI
+adapter.  Exhaustive source disposition and bounds remain in provider-neutral
+core.  Atomic side effects remain in the harness/session boundary, and external
+classification remains in E2E.  No stable policy depends on the adapter, no
+provider-specific branch enters core, and no UI, transport, or tool handler
+acquires business policy.
+
+State lifetime is minimal: disposition normalization is pure; frames remain
+request-local; retained exact/summary items use the existing v3 record; drop
+adds no semantic record or negative ledger; reasoning summaries add no new
+semantic state; WebSocket availability remains connection-local; and evidence
+records retain hashes/classifications rather than raw content.  V2 remains
+read-only compatible, unrelated transports are unchanged, and obsolete
+omission semantics have no runtime compatibility shim.
+
+Performance is proportional to the material input: label validation is one
+hash-table pass, dropped sources are not copied into the durable record,
+retained work is capped at 16 labels and 8,192 bytes, and replay normalization
+copies only provider replay items at the adapter boundary.  No extra ordinary
+provider request is introduced; only explicit external evidence scenarios add
+test traffic.  No performance finding or follow-up is justified.
+
+The sole open issue is documentation-local and requires no architecture change.
+
+* Design self-check
+
+1. The implementation is already a useful stopping point; only evidence-class
+   wording prevents the repository package from reaching review fixed point.
+2. It moves toward explicit model-directed context lifetime with diagnosable
+   considered-and-rejected dispositions.
+3. Diagnostic summary mode and scenario wording remain local and reversible;
+   stable partition, bounds, and durability contracts are direct.
+4. Core, harness/session, adapter, and E2E each retain one cohesive owner.
+5. Coupling is not increased; the carrier, effective reasoning option, and pure
+   preparation interfaces are narrow and consumer-shaped.
+6. No dependency points from stable core policy toward the provider adapter,
+   transport, presentation, or persistence implementation.
+7. Provider I/O and durable appends remain outside pure validation.
+8. No new long-lived runtime state exists; frame, replay, connection, durable
+   curation, and evidence lifetimes match their meanings.
+9. Linear validation and bounded retention add no unjustified regression.
+10. The carrier and effective reasoning mapping are real contracts; no
+    speculative abstraction or unsupported-operation interface was added.
+11. V2 read compatibility, v3 writes, reopen/fork/compaction, Chat Completions,
+    and unrelated transports remain explicit and tested.
+12. Omission-as-drop exposure and obsolete Addendum 5 no-call witnesses are
+    removed; no additional legacy runtime path is now removable.
+13. Expected external outcomes finalize once; unexpected conditions are
+    recorded and re-signalled, and cleanup cancels the active request.
+14. Core semantics have narrow owner tests; composed E2E tests change only with
+    the request/evidence contract they verify.
+
+* Unresolved and next Tick
+
+Only =F88A6.I1= remains.  Apply the one-sentence README correction, validate Org
+and whitespace, and run a narrow independent documentation Tick.  No production
+or test change and no provider rerun are required.  The current configured HTTP
+evidence remains reusable because that wording file is outside the named
+capability/adoption owner cone; exact ChatGPT/WebSocket remains a separate
+external gate after repository fixed point.
+
+The final clear-technical-writing pass used the selected runtime glossary and
+changed no finding, severity, evidence classification, or contract decision.
