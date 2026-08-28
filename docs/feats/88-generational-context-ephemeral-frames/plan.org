@@ -26,9 +26,12 @@ includes the Addendum 6 reasoning, exhaustive-disposition, replay, affordance,
 and audit-linkage corrections through =01a8466a=.
 
 Updated main also introduces a separate planned explicit tool-output erasure
-extension.  Because this branch already owns Addenda 5 and 6, that document is
-reconciled as Addendum 7 after the rebase; it is not part of the accepted
-implementation described below.
+extension, [[file:addendum7.org][Addendum 7]].  It extends and supersedes Addendum 6
+only for the fourth =erase= disposition and its derived-projection suppression;
+it does not reopen Addendum 4's accepted presentation, provenance, atomicity,
+or durable-record foundations.  Addendum 7 is planned and is not part of the
+accepted implementation described below; its Feature 90 receipt-consumer proof
+is explicitly deferred until that planned consumer exists.
 
 The 2026-08-28 configured run used provider/profile =eng-ai-gateway-gpt=,
 profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL

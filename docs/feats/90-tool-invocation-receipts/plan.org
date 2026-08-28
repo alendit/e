@@ -21,7 +21,7 @@ later model context without deleting transcript or resource history.
 This is a separate feature from [[file:../88-generational-context-ephemeral-frames/plan.org][Feature 88]].  Feature 88 decides which semantic
 observations and derived marks remain in later context.  This feature records
 that an invocation happened when its exact ephemeral tool bundle is no longer
-present, unless [[file:../88-generational-context-ephemeral-frames/addendum5.org][Addendum 5]] explicitly erases its context projection.
+present, unless [[file:../88-generational-context-ephemeral-frames/addendum7.org][Addendum 7]] explicitly erases its context projection.
 
 * User story
 
@@ -224,9 +224,9 @@ A harness-owned context provider projects a bounded recent receipt list into
 ordinary model context.  This projection is separate from transcript messages
 and from Feature 88's exact or summarized curation items.
 
-The projection includes receipts when Feature 88 keeps, summarizes, or merely
-omits the matching exact tool source.  Ordinary omission therefore drops the
-exact bundle but leaves its compact mark.  Feature 88 Addendum 5's explicit
+The projection includes receipts when Feature 88 keeps, summarizes, or
+explicitly drops the matching exact tool source.  An explicit =drop= therefore
+removes the exact bundle but leaves its compact mark.  Feature 88 Addendum 7's explicit
 =erase= disposition suppresses the matching receipt completely.  Feature 90
 does not define, infer, or persist that decision; it consumes the canonical
 erased-tool-call set produced by Feature 88.
@@ -322,9 +322,9 @@ links.
 ** Slice 5: lifetime integration and system proof
 
 Exercise one complete Feature 88 turn where an ordinary tool bundle is consumed
-and omitted by curation.  Prove that later context lacks the arguments and
+and explicitly dropped by curation.  Prove that later context lacks the arguments and
 result, retains the compact receipt, and can read the complete details while the
-tmp resource is live.  Exercise a second turn with Addendum 5 explicit erasure
+tmp resource is live.  Exercise a second turn with Addendum 7 explicit erasure
 and prove later context contains no result, receipt, purpose, URI, or aggregate
 mark while transcript and stored details remain intact.  Then clean a live
 resource and prove an unerased receipt remains truthful without claiming
@@ -348,7 +348,7 @@ readable details.
 - Tool-output truncation reuses the invocation-details resource and does not
   write a second full session result.
 - Later ordinary context retains a bounded receipt after ordinary Feature 88
-  omission removes the matching exact tool bundle.
+  =drop= removes the matching exact tool bundle.
 - Feature 88 explicit erasure suppresses the matching receipt and every
   receipt-derived aggregate without deleting transcript, activity, or temporary
   details.
@@ -372,7 +372,7 @@ readable details.
   provider-owned built-in tools, or host-authored nested tool calls.
 - Recording provider raw JSON, replay envelopes, or transport objects.
 - Changing Feature 88 curation choices, provider continuation, or prompt-cache
-  policy.  Explicit erasure is defined and persisted by Feature 88 Addendum 5;
+  policy.  Explicit erasure is defined and persisted by Feature 88 Addendum 7;
   this feature only honors its canonical result.
 - Adding a new resource scheme, blob store, or tool-specific descriptor API.
 - Building a new detailed invocation UI beyond existing resource links.

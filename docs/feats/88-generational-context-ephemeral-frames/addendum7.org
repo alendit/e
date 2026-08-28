@@ -1,0 +1,353 @@
+#+title: Addendum 7: Explicit Tool-Output Context Erasure
+#+date: 2026-08-28
+#+startup: overview
+
+* Status
+
+Planned.
+
+This post-rebase addendum extends Feature 88's accepted Addendum 6 contract.
+Feature 88 remains =In-review= with configured Responses HTTP evidence
+capability-confirmed for Addendum 6, while exact built-in ChatGPT/WebSocket
+capability remains unconfirmed.  Addendum 7 is a specification only; it does
+not claim implementation or Feature 90 projection evidence.
+
+* Decision
+
+Add an explicit =erase= disposition to Feature 88 context curation for an
+ephemeral tool-result source that must leave no source-derived value in later
+automatically assembled model context.
+
+Addendum 6 already requires the reserved carrier to contain exhaustive
+=:keep=, =:summaries=, and =:drop= arrays.  This addendum extends and
+supersedes Addendum 6 only where needed to add =:erase= as a fourth required
+disposition.  Every presented label is assigned exactly once across the four
+arrays.  Addendum 4's provider-neutral presentation, provenance, atomicity,
+durable version-3 promotion record, and compatibility foundations remain
+authoritative; this addendum does not reopen or replace them.
+
+Erasure is a model-context decision, not deletion.  Transcript entries,
+durable activity history, session-scoped temporary details, and provider audit
+state remain unchanged.  A later explicit read of that stored history is a new
+observation; it does not make the erased source part of ordinary context again.
+
+Feature 90 owns invocation receipts and temporary details.  Feature 88 owns
+the erasure authority and a narrow query for erased tool-call identities.
+Feature 90 may consume that query when its planned receipt projection exists,
+but no Feature 90 projection proof is claimed by this addendum.
+
+* Why drop is no longer sufficient
+
+Addendum 6's =drop= disposition removes the exact ephemeral source while
+permitting a separately owned derived projection, such as a Feature 90
+invocation receipt.  That behavior is useful by default, but =drop= cannot
+express "leave no source-derived mark in later model context."
+
+=erase= restores that explicit choice.  It suppresses the derived context
+projections whose evidence is the erased tool source while leaving transcript,
+audit, and temporary-resource storage intact.  There is no omission or
+implicit-disposition semantics in the current carrier: all four disposition
+keys are required, although any individual array may be empty.
+
+* Model-facing contract
+
+The reserved =context-curate= effect accepts exactly the required keys =keep=,
+=summaries=, =drop=, and =erase=.  All four values are arrays and may be empty.
+Unknown or omitted keys remain invalid.  This is the only model-facing shape
+change from Addendum 6.
+
+#+begin_src json
+{
+  "keep": [1],
+  "summaries": [
+    {"sources": [2], "text": "The retained semantic conclusion."}
+  ],
+  "drop": [],
+  "erase": [3]
+}
+#+end_src
+
+=erase= is an ordered array of positive integer frame-local source labels.
+Every erased label must identify an ordinary tool-result source in the active
+consumer-bound frame.  Erasing a non-tool source is invalid because its exact
+value is already removed by =drop= without a tool-derived receipt projection.
+The model submits only frame labels; core derives the tool-call identity and all
+durable provenance.
+
+A source has at most one disposition:
+
+- =keep= retains its exact bounded model-visible value;
+- a =summaries= entry retains submitted replacement text;
+- =drop= removes the exact source but permits a separately owned derived
+  projection;
+- =erase= removes the exact source and suppresses source-derived automatic
+  projections.
+
+The four arrays must form one non-empty, duplicate-free, complete partition of
+the labels presented by the live frame.  Labels may not overlap across =keep=,
+any summary's =sources=, =drop=, and =erase=.  Unknown, repeated, missing,
+overlapping, or non-tool erase labels reject the entire curation before durable
+or frame mutation.
+
+At most 16 labels may be retained across =keep= and
+=summaries[*].sources=.  =drop= and =erase= have no independent retained-label
+ceiling; each is bounded by the number of labels in the live frame.  An
+erase-containing curation additionally has an explicit erasure-package bound:
+the complete canonical UTF-8 encoding of its version-1 =context-erasure=
+record, including all identity and provenance fields, must be at most 8,192
+bytes.  This bound is independent of the retained-label ceiling and never
+copies dropped or erased source bodies.  The existing version-3 promotion
+record retains its separate 8,192-byte bound over its exact values and summary
+text.
+
+The carrier-local guidance remains concise and schema-directed.  After using
+presented ephemeral context sources, the model calls the carrier once to
+partition every presented label exactly once: =keep= retains an exact value,
+=summaries= writes a compact durable replacement, =drop= removes the source
+while allowing a separately owned derived projection, and =erase= removes an
+ordinary tool-result source with no source-derived automatic projection.  Stable
+instructions, source markers, and generic narration do not change.
+
+* Erasure semantics
+
+For each successfully erased tool source, every later ordinary model-context
+projection excludes:
+
+- the tool call and its arguments;
+- the tool result and result metadata;
+- any Feature 90 invocation receipt;
+- the stated purpose;
+- the temporary details URI; and
+- any count, summary, latest-item marker, or other aggregate whose only evidence
+  is the erased source.
+
+A source assigned to =drop= has the same exact-source exclusion but may retain
+a separately owned receipt or other derived projection.  The distinction is
+the semantic purpose of =erase=.
+
+The source remains available during the provider invocation that consumed it.
+Erasure cannot retroactively alter an already-sent request or the immediate
+tool-result continuation that made the decision possible.
+
+Erasure does not delete or rewrite:
+
+- transcript tool-call or tool-result entries;
+- durable tool activity records;
+- temporary invocation-details resources;
+- provider audit or replay metadata retained under its independent transport
+  lifetime; or
+- user-visible shell history.
+
+Consequently, "completely" means complete absence from automatically assembled
+future model context.  It does not mean storage destruction or audit erasure.
+
+An explicit later transcript, activity, session-resource, or =tmp://= read may
+surface the stored details again.  The read result is a new ephemeral
+observation with its own Feature 88 lifetime and does not revoke the original
+erasure record.
+
+* Durable erasure authority
+
+Core prepares one durable version-1 =context-erasure= record for a successful
+curation that contains erased sources:
+
+#+begin_src emacs-lisp
+(:record-version 1
+ :type context-erasure
+ :id ERASURE-ID
+ :frame-id FRAME-ID
+ :generation-id GENERATION-ID
+ :consumer-request-id CONSUMER-ID
+ :response-entry-id RESPONSE-ID
+ :sources
+ ((:source-observation-id OBSERVATION-ID
+   :source-ref SOURCE-REF
+   :source-fingerprint SOURCE-FINGERPRINT
+   :tool-call-id TOOL-CALL-ID)))
+#+end_src
+
+The record contains no source value, arguments, result, purpose, receipt,
+temporary URI, provider item, replay envelope, or backing object.  Core derives
+every identity from the matching live frame; the model cannot submit durable
+identifiers.  The complete canonical version-1 record/package is subject to the
+8,192-byte erasure bound above.
+
+=context-erasure= is semantic suppression authority, not transcript content or
+an activity event.  It has no direct model-visible projection.  Feature 88
+context providers query the canonical session projection for erased tool-call
+identities and exclude matching derived values.
+
+The record survives reopen, branch selection, checkpointing, and compaction for
+as long as a matching derived projection could otherwise reappear.
+Implementations may prune an erasure only after proving that no eligible
+context projection can reference its subject.  They must not infer safety
+merely from temporary-resource expiry.
+
+When one curation contains exact, summary, drop, and erase dispositions,
+preparation validates all of them before mutation.  Harness/session append the
+version-3 =context-promotion= record when exact or summary items exist and the
+version-1 =context-erasure= record when erase items exist, then consume the
+frame.  A failure in either append follows the existing curation failure
+boundary; no partial curation becomes visible.  A drop-only effect appends no
+promotion or erasure semantic record, consistent with Addendum 6, while its
+existing audit/control behavior remains intact.
+
+* Receipt integration boundary
+
+Feature 88 can implement the version-1 erasure authority and its narrow
+canonical erased-tool-call query without importing Feature 90 or generating
+receipts.  Feature 90's planned receipt provider is the only consumer that may
+turn that query into receipt filtering.
+
+When that consumer exists, it must filter erased identities before ordering,
+counting, byte budgeting, omitted-count calculation, latest-item selection, or
+any other aggregate.  An erased receipt therefore leaves no indirect mark.
+Feature 90 does not parse =context-curate=, derive erasure identities, write
+=context-erasure= records, or decide whether erasure is allowed.
+
+The Feature 90 projection proof is explicitly deferred until its planned
+consumer is implemented and connected.  Slice 1--3 below are useful and
+independently reviewable Feature 88 stopping points; Slice 4 cannot be accepted
+from a speculative interface or a Feature 88-only fixture.
+
+* Provider, reasoning, and cache identity
+
+Adding =erase= changes the reserved =context-curate= schema.  The material
+schema revision therefore advances from =context-curate-v3= to
+=context-curate-v4=.  Existing anchors and cache evidence recorded against the
+Addendum 6 shape are not valid evidence for this shape.  The durable
+=context-promotion= record remains version 3, and the new
+=context-erasure= record is version 1.
+
+Every OpenAI Responses request still carries its effective reasoning effort and
+=:summary= value, =auto= or =detailed=, as required by Addendum 6.  Returned
+reasoning summaries remain diagnostic only and never authorize or prove an
+erase decision.  The material prompt/layout, tool-schema, continuation, and
+captured-request identities include the new schema revision; per-frame labels,
+values, erase contents, and internal IDs do not enter those stable identities.
+
+The current configured Responses HTTP reasoning-summary, positive exact/drop,
+and cache records are valid for the Addendum 6 identity only.  They are not
+evidence that the configured provider supports =erase= until the Addendum 7
+schema is implemented and the scenarios are refreshed.  The exact built-in
+ChatGPT/WebSocket carrier, continuation, and retained/replaced-socket scope
+remain capability-unconfirmed and unexercised.
+
+* Implementation slices
+
+** Slice 1: pure erase preparation
+
+Extend the core curation normalizer and preparation logic with the required
+=erase= array.  Validate all four keys, the complete live-frame partition,
+tool-source eligibility, exclusivity, the 16-label retained bound, and the
+8,192-byte erasure-package bound without mutating frame or session state.
+Keep core-derived provenance detached and do not copy dropped or erased bodies.
+
+** Slice 2: durable erasure record
+
+Add the version-1 =context-erasure= codec, session append/replay, branch,
+checkpoint, compaction, and retention behavior.  Expose only the narrow
+canonical erased-tool-call query needed by a future receipt provider; do not
+implement Feature 90's receipt projection or add a speculative shared
+interface.  Existing version-3 promotion records and their readers remain
+unchanged.
+
+** Slice 3: atomic curation application
+
+Join promotion, drop, and erasure preparation at the existing
+provider-completion boundary.  Prove keep-only, summary-only, drop-only,
+erase-only, mixed valid, mixed invalid, append failure, and duplicate-effect
+behavior.  A successful mixed effect commits all applicable semantic records
+before frame consumption and later provider dispatch.
+
+** Slice 4: planned Feature 90 receipt integration
+
+Only after Feature 90 supplies its planned receipt consumer, make that consumer
+query the canonical erased-tool-call set and filter before every bound and
+aggregate.  Preserve transcript, activity, temporary details, and ordinary
+drop receipts exactly.  Feature 88 alone cannot claim this projection proof.
+
+** Slice 5: end-to-end and cache evidence
+
+After deterministic implementation and the Feature 90 dependency are ready, run
+one isolated ordinary-drop turn and one explicit-erase turn.  Refresh the
+=context-curate-v4= material identity and configured cache evidence.  Keep
+Addendum 6 records as historical baseline and report exact ChatGPT/WebSocket
+capability separately.
+
+* Acceptance criteria
+
+- =context-curate= requires =keep=, =summaries=, =drop=, and =erase=; each
+  array may be empty, but their union is one non-empty complete partition of
+  active frame labels.
+- Keep, summary, drop, and erase dispositions are mutually exclusive per source.
+  Erase labels are ordinary tool-result labels only.
+- At most 16 labels are retained across keep and summaries.  Drop and erase are
+  bounded by the live frame; erase additionally satisfies the complete
+  version-1 erasure-package limit of 8,192 canonical UTF-8 bytes.
+- =drop= removes the exact source while allowing a separately owned derived
+  projection; =erase= suppresses every automatic source-derived projection.
+- Later context after erase contains no tool call, arguments, result, receipt,
+  purpose, URI, or aggregate mark derived solely from that source.
+- Transcript, durable activity, shell history, provider audit, and temporary
+  details remain unchanged and inspectable.
+- A later explicit read creates a new ephemeral observation rather than
+  silently restoring the erased source.
+- The version-1 erasure record contains only core-derived identity and
+  provenance, never source content or provider artifacts; version-3 promotion
+  records remain unchanged.
+- Erasure survives reopen, branch selection, checkpointing, and compaction while
+  any matching derived projection remains eligible.
+- Mixed curation appends promotion and erasure authority atomically before frame
+  consumption.
+- Feature 90 receipt filtering is not accepted until its planned consumer exists
+  and the query is exercised before all bounds and aggregates.
+- Provider continuation and anchor cleanliness remain conservative; erasing a
+  later projection does not make a tool-contaminated response a clean anchor.
+- The =context-curate-v4= schema identity invalidates Addendum 6-era anchors and
+  cache evidence; fresh deterministic and configured evidence is required.
+
+* Non-goals
+
+- Deleting transcript, activity, temporary resources, or provider audit state.
+- Providing a model-controlled privacy or audit-erasure operation.
+- Changing exact keep, summary, or exhaustive drop semantics.
+- Treating a missing disposition as drop or erase.
+- Making erased tool descendants eligible as clean provider anchors.
+- Adding an erasure option to ordinary tools or Feature 90's invocation
+  envelope.
+- Implementing Feature 90's receipt provider in this addendum.
+- Adding a second model-facing tool, durable promotion shape, or automatic
+  retention/drop policy.
+
+* Design self-check
+
+1. This addendum preserves useful default receipts while restoring a precise
+   way to leave no source-derived mark in later model context.
+2. It moves toward explicit, provenance-backed context lifetime without
+   conflating context projection with transcript storage.
+3. Erasure semantics and provenance are stable.  Retention pruning remains
+   local and conservative until a real safe condition is proven.
+4. Feature 88 owns the decision because it owns semantic context lifetime;
+   Feature 90 only consumes the result after its planned consumer exists.
+5. The interface is one additional curation disposition and one narrow erased
+   identity query, not a tool-specific callback or speculative cross-feature
+   interface.
+6. Core policy does not depend on a provider adapter, receipt renderer, shell,
+   transcript store, or temporary-resource implementation.
+7. Transcript and resource side effects stay with their existing owners; pure
+   curation preparation remains side-effect free.
+8. Erasure adds only bounded suppression provenance.  Full details stay at
+   their existing transcript and temporary lifetimes.
+9. Receipt filtering adds bounded identity lookup per candidate only after the
+   Feature 90 consumer exists; cache evidence is refreshed because schema shape
+   changes, not because wire size is an objective.
+10. =erase= has one substitutable meaning: no source-derived automatic future
+    model context.
+11. Existing version-2 and version-3 promotion records remain readable.  New
+    erasure records are additive and do not reinterpret stored history.
+12. No existing transcript or temporary-detail path is removed.
+13. Invalid erasure fails through the existing curation boundary; unexpected
+    append, replay, or projection errors surface visibly.
+14. Pure preparation, session codec, atomic harness, deferred receipt
+    integration, and E2E tests isolate the changed contracts.
