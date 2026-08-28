@@ -16,6 +16,7 @@
 (require 'e)
 (require 'e-dev-profile)
 (require 'e-session)
+(require 'e-session-persistence)
 (require 'e-context-lifetime)
 (require 'e-board)
 
@@ -55,6 +56,24 @@ stand in for the pure curation preparation path."
                       :source-ref (format "external:tool:%s" suffix)
                       :source-fingerprint (format "fingerprint-%s" suffix)
                       :tool-call-id (format "tool-call-%s" suffix))))))
+
+(ert-deftest e-session-test-standalone-context-erasure-replay-is-rejected ()
+  "Version-1 erasure is valid only inside the atomic curation package."
+  (let* ((store (e-session-store-create))
+         (session-id "standalone-erasure-rejected")
+         (session (e-session-create store :id session-id))
+         (record
+          (list :type "context-erasure"
+                :session-id session-id
+                :id "outer-erasure"
+                :parent-id (plist-get session :root-event-id)
+                :timestamp "2026-08-28T00:00:00Z"
+                :context-record
+                (e-session-test--literal-v1-erasure-record "outer"))))
+    (should-error (e-session--replay-record store record)
+                  :type 'e-session-error)
+    (should-not (e-session-context-erasures store session-id))
+    (should-not (e-session-erased-tool-call-ids store session-id))))
 
 (ert-deftest e-session-test-create-and-read ()
   "Sessions can be created and read by id."
@@ -195,7 +214,8 @@ stand in for the pure curation preparation path."
                              :root-event-id))))
           (e-session-test--append-literal-v2-record
            store session-id v2-record)
-          (e-session-append-context-curation store session-id v3-record)
+          (e-session-append-context-curation-package
+           store session-id (list :promotion v3-record :erasure nil))
           (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
                  (records (mapcar #'e-session--context-record
@@ -338,6 +358,15 @@ stand in for the pure curation preparation path."
             (should (equal (plist-get control :event-type)
                            'context-curation-response))
             (should (equal (plist-get assistant :role) 'assistant))
+            ;; The audit/control and assistant entries advance the selected
+            ;; head after the package write.  Retrying the exact package must
+            ;; still be idempotent rather than comparing its old parent.
+            (let ((retry
+                   (e-session-append-context-curation-package
+                    store session-id
+                    (list :promotion v3-record :erasure erasure-record))))
+              (should (plist-get retry :already-present))
+              (should (equal (plist-get retry :id) package-id)))
             (should (= (length
                         (seq-filter
                          (lambda (entry)
@@ -366,6 +395,16 @@ stand in for the pure curation preparation path."
                    (e-session-context-lifetime-projection
                     reopened fork-id))))
             (should package-entry)
+            ;; The same package remains an exact retry after persistent
+            ;; reopen, even though the current head is still the assistant
+            ;; descendant rather than the package itself.
+            (let ((retry
+                   (e-session-append-context-curation-package
+                    reopened session-id
+                    (list :promotion v3-record :erasure erasure-record))))
+              (should (plist-get retry :already-present))
+              (should (equal (plist-get retry :id)
+                             (plist-get package-entry :id))))
             (should (equal (plist-get package-entry :promotion)
                            v3-record))
             (should (equal (plist-get package-entry :erasure)
@@ -431,6 +470,106 @@ stand in for the pure curation preparation path."
     (should-error
      (e-session--context-current-path store session-id message-id)
      :type 'e-session-error)))
+
+(ert-deftest e-session-test-context-curation-package-retry-survives-audit-and-backends ()
+  "Exact package retries survive audit failure, queueing, and controller writes."
+  (let* ((v3-record
+          '(:record-version 3
+            :type context-promotion
+            :id "retry-curation"
+            :frame-id "retry-frame"
+            :generation-id "retry-generation"
+            :consumer-request-id "retry-consumer"
+            :response-entry-id "retry-response"
+            :items ((:kind exact :value "retry semantic"
+                     :source-observation-ids ("retry-observation")
+                     :source-refs ("retry-source")
+                     :source-fingerprints ("retry-fingerprint")))))
+         (package (list :promotion v3-record :erasure nil))
+         (install
+          (lambda (store session-id)
+            (let* ((session (e-session-create store :id session-id))
+                   (root-id (plist-get session :root-event-id)))
+              (e-session-append-context-generation
+               store session-id
+               (e-context-lifetime-generation-create
+                :id "retry-generation"
+                :checkpoint '((:role system :content "retry context"))
+                :covered-session-boundary root-id))
+              (e-session-append-context-curation-package
+               store session-id package))))
+         (direct-directory (make-temp-file "e-session-retry-direct-" t))
+         (queued-directory (make-temp-file "e-session-retry-queued-" t))
+         (controller-directory (make-temp-file "e-session-retry-controller-" t)))
+    (unwind-protect
+        (progn
+          (let* ((store (e-session-persistent-store-create direct-directory))
+                 (session-id "retry-direct")
+                 (_first (funcall install store session-id)))
+            ;; The semantic package can be durable while its separate audit
+            ;; append fails.  A retry must find the selected-path package after
+            ;; that failure and after another descendant advances the head.
+            (cl-letf (((symbol-function
+                        'e-session-append-context-curation-response)
+                       (lambda (&rest _)
+                         (signal 'e-session-error (list "audit failure")))))
+              (should-error
+               (e-session-append-context-curation-response
+                store session-id "retry-turn" "retry-response")
+               :type 'e-session-error))
+            (e-session-append-message
+             store session-id
+             '(:role assistant :content "head advanced"))
+            (should (plist-get
+                     (e-session-append-context-curation-package
+                      store session-id package)
+                     :already-present))
+            (e-session-flush-write-queue store)
+            (let ((reopened (e-session-persistent-store-create direct-directory)))
+              (should (plist-get
+                       (e-session-append-context-curation-package
+                        reopened session-id package)
+                       :already-present))))
+          (let* ((store (e-session-persistent-index-store-create
+                         queued-directory :write-mode 'queued))
+                 (session-id "retry-queued"))
+            (funcall install store session-id)
+            (should (plist-get
+                     (e-session-append-context-curation-package
+                      store session-id package)
+                     :already-present))
+            (e-session-flush-write-queue store)
+            (let ((reopened (e-session-persistent-store-create queued-directory)))
+              (should (plist-get
+                       (e-session-append-context-curation-package
+                        reopened session-id package)
+                       :already-present))))
+          (let* ((store (e-session-persistent-store-create controller-directory))
+                 (session-id "retry-controller")
+                 (submitted nil)
+                 (controller
+                  (e-session-persistence--create
+                   :store store :instance-id "test-controller")))
+            (setf (e-session-store-persistence-controller store)
+                  controller)
+            (cl-letf (((symbol-function 'e-session-persistence-submit-record)
+                       (lambda (_controller _session-id record &optional _done _error)
+                         (push record submitted))))
+              (funcall install store session-id)
+              (should (plist-get
+                       (e-session-append-context-curation-package
+                        store session-id package)
+                       :already-present))
+              (should (= (length
+                          (seq-filter
+                           (lambda (record)
+                             (equal (plist-get record :type)
+                                    "context-curation-package"))
+                           submitted))
+                         1)))))
+      (delete-directory direct-directory t)
+      (delete-directory queued-directory t)
+      (delete-directory controller-directory t))))
 
 (ert-deftest e-session-test-context-erasure-query-is-path-scoped-and-not-forked ()
   "Erasure identities follow a selected path but are not copied to a clean fork."
@@ -534,6 +673,13 @@ stand in for the pure curation preparation path."
               ;; remains free of it even after receiving a new descendant.
               (should-not (e-session-erased-tool-call-ids
                            reopened session-id sibling-head-id))
+              ;; An exact package identity on an inactive sibling is not a
+              ;; retry for the selected path and must not be silently reused.
+              (should-error
+               (e-session-append-context-curation-package
+                reopened session-id
+                (plist-get curation-package :package))
+               :type 'e-session-error)
               (should-not
                (seq-find (lambda (entry)
                            (memq (plist-get entry :type)
@@ -983,8 +1129,9 @@ stand in for the pure curation preparation path."
          store "append-context" generation-record)
         (dolist (bad (variants promotion-record))
           (should-error
-           (e-session-append-context-curation
-            store "append-context" bad)
+           (e-session-append-context-curation-package
+            store "append-context"
+            (list :promotion bad :erasure nil))
            :type 'e-session-error))
         (should (= (length (e-session-context-generations
                             store "append-context"))
@@ -2208,8 +2355,8 @@ stand in for the pure curation preparation path."
               :covered-session-boundary root-id)))
           (e-session-append-activity-event
            store session-id "turn-old" 'tool-progress '(:which old))
-          (e-session-append-context-curation
-           store session-id curation-record)
+          (e-session-append-context-curation-package
+           store session-id (list :promotion curation-record :erasure nil))
           (let ((control
                  (e-session-append-context-curation-response
                   store session-id "turn-curation" response-entry-id)))

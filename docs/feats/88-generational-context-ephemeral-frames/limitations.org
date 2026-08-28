@@ -4,18 +4,19 @@
 
 * Status
 
-In-review (repository-controlled deterministic fixed point; configured Responses HTTP reasoning-summary, autonomous-adoption, and cache capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).  This document
-records the remaining external limitation after Addenda 3--6.  The
-repository-controlled implementation is at deterministic fixed point at
-=01a8466a=.
+In-review (repository-controlled Addendum 7 remediation; configured Responses
+HTTP v5 evidence pending; exact ChatGPT/WebSocket capability-unconfirmed).
+This document records the remaining external limitation after Addenda 3--7.
+The current authority is the origin/main Addendum 5 contract as reconciled by
+Addendum 7: the v5 carrier is optional =keep=/=summaries=/=erase=, with
+omission preserving separately owned receipts and explicit =erase= suppressing
+source-derived projections.  No current v5 configured HTTP result is claimed.
 Independent Tick 6 at exact candidate =835ba655= (implementation =f991f895=)
 closed =F88A4.I5= with zero P0-P3 repository findings and zero deterministic
 unknowns; I6 remains closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.
-Because the current correction is an E2E audit-linkage owner change, the
-configured Responses HTTP evidence below is recorded at this revision.  A
-compatible configured Responses HTTP profile has current reasoning-summary,
-adoption, and cache evidence; the exact built-in ChatGPT Codex WebSocket scope
-is not confirmed, so this is not a Done decision.
+The configured evidence below predates this authority rebase and is retained
+as historical v4/explicit-drop evidence only.  The exact built-in ChatGPT
+Codex WebSocket scope is not confirmed, so this is not a Done decision.
 
 * Purpose
 
@@ -24,9 +25,11 @@ Addendum 3 uses canonical later-request reconstruction and immediate causal
 tool continuation; Addendum 4 adds provider-neutral source presentation,
 model-directed =context-curate=, and version-3 durable curation records while
 retaining read-only version-2 records.  Addendum 6 adds mandatory Responses
-reasoning summaries and explicit exhaustive =keep=/=summaries=/=drop=
-dispositions; returned summary text remains diagnostic only.  The historical
-live experiments below
+reasoning summaries, which remain diagnostic only.  Addendum 7 adopts the
+origin-authoritative v5 carrier: =keep=, =summaries=, and explicit tool-only
+=erase= are optional; an omitted label loses exact source content while a
+separately owned receipt may remain, and =erase= suppresses source-derived
+projections.  The historical live experiments below
 remain useful background, but their old optimization mechanisms are not current
 acceptance requirements.  The remaining external limitation is the
 profile-specific built-in ChatGPT Codex WebSocket behavior:
@@ -62,13 +65,15 @@ response retention
   whether a response ID remains resolvable after connection loss
 #+end_example
 
-* Current implementation and external evidence
+* Historical pre-rebase implementation and external evidence
 
-The repository-controlled Addendum 3--6 implementation is at deterministic
-fixed point at =01a8466a=.  Independent Tick 6 at exact candidate =835ba655=
-(implementation =f991f895=) closed =F88A4.I5= with zero P0-P3 repository
-findings and zero deterministic unknowns.  I6 remains closed at
-=031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency order is:
+The repository-controlled Addendum 7 package is being remediated from
+=f59e91cf= under the origin/main Addendum 5 authority.  Independent Tick 6 at
+exact candidate =835ba655= (implementation =f991f895=) closed =F88A4.I5= with
+zero P0-P3 repository findings and zero deterministic unknowns.  I6 remains
+closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency order
+below is retained as historical provenance; the v4/explicit-drop entries do
+not establish the current v5 contract:
 
 | Commit | Boundary |
 |--------+----------|
@@ -108,20 +113,26 @@ exact base URL
 Responses HTTP transport, =:json-false= store mode, native requester
 =e-openai-codex--http-request-start=, and model =gpt-5.6-sol=.  The captured
 endpoint adds =/responses= and all material requests agreed on the effective
-identity.  The identity-complete records at revision =01a8466a= report:
+identity.  The historical identity-complete records at revision =01a8466a=
+report:
 
 | Scenario | Requests | Total input | Cached input | Adoption/disposition | Composition | Semantic | Cache | Result |
 |----------+----------+-------------+--------------+---------------------+-------------+----------+-------+--------|
 | =responses-reasoning-summary-capability= | 1 | 31 | 0 | n/a | n/a | pass | n/a | pass |
 | =responses-autonomous-curation-adoption= | 6 | 2,246 | 0 (observational) | exact | pass | pass | product-contract-failure (observational) | pass |
-| =responses-autonomous-curation-drop= | 3 | 1,149 | 0 (observational) | drop | pass | pass | n/a | pass |
+| =responses-autonomous-curation-drop= | 3 | 1,149 | 0 (observational) | drop (historical) | pass | pass | n/a | pass |
 | =responses-canonical-warm-prefix= | 3 | 6,184 | 4,077 | n/a | n/a | pass | warm | pass |
 | =responses-canonical-tool-heavy= | 5 | 14,726 | 11,467 | n/a | n/a | pass | warm | pass |
+
+These records exercised the pre-rebase =context-curate-v4= carrier and its
+explicit =drop= evidence lane.  They are historical compatibility evidence,
+not a current v5 HTTP result; the v5 configured run remains pending.
 
 The positive adoption record reported identity, scenario, semantic, adoption,
 composition, and result =pass=, with =failure-stage none= and disposition
 =exact=.  The negative record reported =failure-stage none=, disposition
-=drop=, and result =pass=.  Their prompt identities are
+=drop=, and result =pass=; that disposition is historical.  Their prompt
+identities are
 =060813089ddb687bb81272c21985545c7fc9b6a4bf0a4a94cf811d528d06fd40= and
 =b8ab122c8a149d90cc58e45114d1e0e6ec3f849f21fb33fd4801ce1d5248789c=;
 both use dependency identity
@@ -131,12 +142,11 @@ authentication content.  Adoption cache usage was zero; its raw
 =product-contract-failure= classification is observational and does not gate
 adoption.
 
-This is current external compatibility evidence for the configured Responses
-HTTP profile.  It does not exercise the exact built-in ChatGPT Codex
-WebSocket retained/replaced-socket or response-continuation claims; those
-remain separately unconfirmed and not exercised.  Deterministic semantics,
-the cache specification, and the runners are accepted independently of that
-remaining transport-specific scope.
+This is historical external compatibility evidence for the configured
+Responses HTTP profile.  It does not establish the current v5 contract and it
+does not exercise the exact built-in ChatGPT Codex WebSocket
+retained/replaced-socket or response-continuation claims; those remain
+separately unconfirmed and not exercised.  The current v5 HTTP run is pending.
 
 * Systems and sessions inspected
 
@@ -633,21 +643,19 @@ canonical OpenAI profiles.
 
 * Current external acceptance limitation
 
-Repository-side semantics, compatibility, cleanup, and bounded evidence
-runners are accepted through =01a8466a=; the I5 checkpoint-retention
-remediation at =f991f895= was closed by independent Tick 6 candidate
-=835ba655= with zero P0-P3 repository findings and zero deterministic
-unknowns.  The configured compatible Responses HTTP profile now has current
-reasoning-summary, autonomous-adoption, and cache evidence; cache results
-remain separate from semantic results.
+The repository-controlled Addendum 7 package is in fixed-point remediation
+after Review 02 at =f59e91cf=.  Its optional v5 carrier, atomic nested erasure,
+receipt integration, and deterministic model-to-context path must be accepted
+at one exact revision before configured evidence is refreshed.  No current v5
+Responses HTTP capability result is claimed yet.
 
-The 2026-08-27 records at =317be237= are historical and superseded by the
-2026-08-28 records at =01a8466a= after the mandatory reasoning summary,
-exhaustive disposition, replay, and audit-linkage corrections.  The current
-profile, endpoint, transport, identity, and scenario metrics are tabulated
-above.  The adoption records prove exact retention and explicit drop for this
-configured Responses HTTP identity; their zero cached-input observations do
-not gate those semantic or composition results.
+The configured records at =317be237= and =01a8466a= are historical.  They
+exercise pre-rebase =context-curate-v4=, including its exhaustive disposition
+and explicit =drop= lane; they do not establish v5 keep/summary/erase adoption
+or composition.  Fresh v5 Responses HTTP reasoning-summary, autonomous
+retention, autonomous erasure, warm-prefix, and tool-heavy records remain
+pending.  Cache accounting will remain observational and separate from
+semantic and composition results.
 
 The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
 response-continuation claims were not exercised and remain

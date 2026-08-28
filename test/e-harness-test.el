@@ -5252,14 +5252,17 @@ Return request options, persisted anchors, and the final context."
                "external:portable-summary"
                "portable-summary-fingerprint"))
              (curation
-              (e-context-lifetime-prepare-curation
-               frame
-               '(:keep nil
-                 :summaries ((:sources (1)
-                              :text "selected durable fact")))
-               "response-portable-summary"
-               1.0)))
-        (e-session-append-context-curation store "session-1" curation))
+              (plist-get
+               (e-context-lifetime-prepare-curation-disposition
+                frame
+                '(:keep nil
+                  :summaries ((:sources (1)
+                               :text "selected durable fact")))
+                "response-portable-summary"
+                1.0)
+               :record)))
+        (e-session-append-context-curation-package
+         store "session-1" (list :promotion curation :erasure nil)))
       (e-harness-compact-session-batch harness "session-1"
                                        :keep-recent-tokens 1)
       (let* ((prompt (prin1-to-string captured-messages))
@@ -5303,15 +5306,18 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
            (format "external:compaction-%s" suffix)
            (format "compaction-fingerprint-%s" suffix)))
          (curation
-          (e-context-lifetime-prepare-curation
-           frame
-           (list :keep nil
-                 :summaries
-                 (list (list :sources '(1)
-                             :text (format "selected-%s" suffix))))
-           response-id
-           1.0)))
-    (e-session-append-context-curation store session-id curation)))
+          (plist-get
+           (e-context-lifetime-prepare-curation-disposition
+            frame
+            (list :keep nil
+                  :summaries
+                  (list (list :sources '(1)
+                              :text (format "selected-%s" suffix))))
+            response-id
+            1.0)
+           :record)))
+    (e-session-append-context-curation-package
+     store session-id (list :promotion curation :erasure nil))))
 
 (ert-deftest e-harness-test-enabled-async-compaction-absorbs-curation-and-filters-provider-state ()
   "Async enabled compaction absorbs facts and excludes runtime/provider state."

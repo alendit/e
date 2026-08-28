@@ -453,6 +453,9 @@ Keyword plists become JSON objects; ordinary lists remain JSON arrays."
     "lisp/core/e-harness.el"
     "lisp/core/e-loop.el"
     "lisp/core/e-session.el"
+    "lisp/layers/harness/e-harness-base.el"
+    "lisp/layers/harness/e-tool-invocation-details.el"
+    "lisp/layers/harness/e-session-tmp-resources.el"
     "lisp/adapters/openai/e-openai.el"
     "e2e/e-live-e2e-test.el")
   "Source owners whose changes invalidate adoption evidence reuse.")
@@ -462,17 +465,19 @@ Keyword plists become JSON objects; ordinary lists remain JSON arrays."
     "e2e/e-live-e2e-test.el")
   "Source owners whose changes invalidate reasoning-summary probe evidence.")
 
-(defun e-live-e2e--dependency-identity (files)
+(defun e-live-e2e--dependency-identity (files &optional explicit-root)
   "Return a content-free digest of dependency-cone FILES.
 The digest is evidence identity, not a replacement for repository provenance;
 missing owner files remain explicit in the digest rather than silently falling
-back to the repository revision."
+back to the repository revision.  EXPLICIT-ROOT is a test seam for exercising
+the material file set without changing the checkout."
   (let* ((source-file (or load-file-name
                           buffer-file-name
                           (locate-library "e-live-e2e-test")
                           (expand-file-name "e2e/e-live-e2e-test.el"
                                             default-directory)))
-         (root (expand-file-name ".." (file-name-directory source-file))))
+         (root (or explicit-root
+                   (expand-file-name ".." (file-name-directory source-file)))))
     (secure-hash
      'sha256
      (mapconcat
@@ -1833,6 +1838,14 @@ carrier, curation, source-label, reasoning, schema, or argument vocabulary."
    "Call the %s lookup tool exactly once. The returned value is useful only for the current answer. Reverse every character of its returned sentinel exactly and reply with only that transformed value and no extra text."
    (or tool-name "e2e_deterministic")))
 
+(defun e-live-e2e--reopened-receipt-equal-p (original-event reopened-event)
+  "Return non-nil when REOPENED-EVENT preserves ORIGINAL-EVENT's receipt.
+Both arguments are durable `tool-finished' activity events; compare their
+payload receipts directly rather than treating a receipt field as another
+wrapper around the receipt value."
+  (equal (plist-get (plist-get reopened-event :payload) :receipt)
+         (plist-get (plist-get original-event :payload) :receipt)))
+
 (cl-defun e-live-e2e--classify-autonomous-erase
     (&key identity-result ordinary-tool-p prompt-control-p carrier-p
           current-answer-p effect-present-p explicit-erasure-p
@@ -2366,10 +2379,45 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                       "prompt-2")
       "2026-08-30T00:00:00Z"))
     (should-not
-      (e-live-e2e--adoption-evidence-reusable-p
-       base (plist-put (copy-sequence current) :material-request-shape
-                       '((:body-sha256 "body-2")))
+     (e-live-e2e--adoption-evidence-reusable-p
+      base (plist-put (copy-sequence current) :material-request-shape
+                      '((:body-sha256 "body-2")))
       "2026-08-30T00:00:00Z"))))
+
+(ert-deftest e-live-e2e-test-adoption-dependency-cone-covers-evidence-owners ()
+  "Adoption reuse is fenced by every owner that can change its evidence."
+  (let* ((owners
+          '("lisp/layers/harness/e-harness-base.el"
+            "lisp/layers/harness/e-tool-invocation-details.el"
+            "lisp/layers/harness/e-session-tmp-resources.el"))
+         (root (make-temp-file "e-live-dependency-cone-" t)))
+    (unwind-protect
+        (progn
+          (dolist (relative e-live-e2e--adoption-dependency-cone-files)
+            (let ((path (expand-file-name relative root)))
+              (make-directory (file-name-directory path) t)
+              (with-temp-file path
+                (insert "baseline:" relative))))
+          (let ((baseline
+                 (e-live-e2e--dependency-identity
+                  e-live-e2e--adoption-dependency-cone-files root)))
+            (should (equal
+                     baseline
+                     (e-live-e2e--dependency-identity
+                      e-live-e2e--adoption-dependency-cone-files root)))
+            (dolist (owner owners)
+              (should (member owner e-live-e2e--adoption-dependency-cone-files))
+              (let ((path (expand-file-name owner root)))
+                (with-temp-file path
+                  (insert "changed:" owner))
+                (should-not
+                 (equal
+                  baseline
+                  (e-live-e2e--dependency-identity
+                   e-live-e2e--adoption-dependency-cone-files root)))
+                (with-temp-file path
+                  (insert "baseline:" owner))))))
+      (delete-directory root t))))
 
 (ert-deftest e-live-e2e-test-autonomous-erase-evidence-freshness-and-reuse ()
   "Erase evidence reuses only within seven days and equal material identity."
@@ -4993,15 +5041,8 @@ and provider arguments stay local to the scenario gates."
                              (null (e-session-context-promotions
                                     reopened session-id))
                              reopened-receipt-event
-                             (equal
-                              (plist-get
-                               (plist-get
-                                (plist-get reopened-receipt-event :payload)
-                                :receipt)
-                               :receipt)
-                              (plist-get (plist-get tool-finished-before
-                                                    :payload)
-                                         :receipt))
+                             (e-live-e2e--reopened-receipt-equal-p
+                              tool-finished-before reopened-receipt-event)
                              (e-session-tmp-reference-available-p
                               harness session-id details-uri))
                         "reopen"
@@ -5017,6 +5058,18 @@ and provider arguments stay local to the scenario gates."
 (ert-deftest e-live-e2e-test-responses-autonomous-curation-erase ()
   "A configured Responses model autonomously erases a current-turn source."
   (e-live-e2e--run-autonomous-curation-erase))
+
+(ert-deftest e-live-e2e-test-reopened-receipt-equality-is-direct ()
+  "A reopened tool receipt compares the durable payload values directly."
+  (let* ((receipt '(:tool-call-id "call-1" :tool-name "tool-1"
+                    :details-uri "tmp://tool-invocations/s/c.json"))
+         (original (list :event-type 'tool-finished
+                         :payload (list :receipt receipt)))
+         (reopened (copy-tree original)))
+    (should (e-live-e2e--reopened-receipt-equal-p original reopened))
+    (should-not
+     (equal (plist-get (plist-get reopened :payload) :receipt)
+            (plist-get receipt :receipt)))))
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-runner-keeps-cleanup-outside-call ()
   "The adoption runner passes only its declared keywords before cleanup."

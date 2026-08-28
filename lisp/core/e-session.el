@@ -152,7 +152,7 @@ activity cannot evict the semantic state needed by board reducers."
 (defconst e-session--replay-list-fields
   '(:session-events :messages :activity-events :branch-summaries
     :compactions :provider-anchors :process-reports
-    :context-generations :context-promotions :context-erasures
+    :context-generations :context-promotions
     :context-curation-packages)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
@@ -165,12 +165,11 @@ activity cannot evict the semantic state needed by board reducers."
     (:process-reports . :process-reports-tail)
     (:context-generations . :context-generations-tail)
     (:context-promotions . :context-promotions-tail)
-    (:context-erasures . :context-erasures-tail)
     (:context-curation-packages . :context-curation-packages-tail))
   "Internal append-only list fields and their cached tail cells.")
 
 (defconst e-session--context-lifetime-entry-types
-  '(context-generation context-promotion context-erasure)
+  '(context-generation context-promotion)
   "Durable entry types owned by the generational context lifetime model.")
 
 (defconst e-session-metadata-schema
@@ -712,7 +711,6 @@ arrays and sometimes inverted key/value pairs."
     "process-report"
     "context-generation"
     "context-promotion"
-    "context-erasure"
     "context-curation-package"
     "current-branch"
     "messages-cleared")
@@ -1163,7 +1161,6 @@ and RECORD supplies persisted identity fields during replay."
             (plist-get session :process-reports)
             (plist-get session :context-generations)
             (plist-get session :context-promotions)
-            (plist-get session :context-erasures)
             (plist-get session :context-curation-packages))))
 
 (defun e-session-entry-by-id (store session-id entry-id)
@@ -1639,7 +1636,7 @@ disappear while an automatic projection could still reference its subject."
          (list :type "process-report" :session-id session-id
                :id id :parent-id parent-id :timestamp timestamp
                :report report)))
-      ((or 'context-generation 'context-promotion 'context-erasure)
+      ((or 'context-generation 'context-promotion)
        (list :type (symbol-name (plist-get entry :type))
              :session-id session-id
              :id id
@@ -2146,7 +2143,6 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                             :process-reports nil
                             :context-generations nil
                             :context-promotions nil
-                            :context-erasures nil
                             :context-curation-packages nil
                             :created-at (or (plist-get record :created-at)
                                             timestamp)
@@ -2341,6 +2337,9 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
       ;; runtime frame or recovery state.
       ((or "context-frame" "context-frame-settlement")
        nil)
+      ("context-erasure"
+       (signal 'e-session-error
+               (list "Standalone context erasure records are unsupported")))
       ("context-curation-package"
        (when session
          (e-session--replay-context-curation-package
@@ -2382,29 +2381,6 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                     record)))
              (e-session--prepend-replayed-item session field entry)
              (e-session--touch store session timestamp)))))
-      ("context-erasure"
-       (when session
-         (let* ((raw-context-record (plist-get record :context-record))
-                (_duplicate
-                 (when (e-session--context-record-has-duplicate-key-p
-                        raw-context-record)
-                   (signal 'e-session-error
-                           (list "Context erasure replay has duplicate fields"))))
-                (context-record
-                 (e-context-lifetime-curation-erasure-from-record
-                  (e-session--normalize-context-record-for-replay
-                   'context-erasure raw-context-record)))
-                (_ownership
-                 (e-session--validate-context-entry-ownership
-                  store session-id 'context-erasure context-record))
-                (entry
-                 (e-session--normalize-entry-from-record
-                  session 'context-erasure
-                  (list :context-record context-record)
-                  timestamp record)))
-           (e-session--prepend-replayed-item
-            session :context-erasures entry)
-           (e-session--touch store session timestamp))))
       ("current-branch"
        (when session
          (plist-put session :current-branch
@@ -2591,7 +2567,6 @@ This explicit operation is the only checkpoint-less full-journal replay path."
                    :process-reports nil
                    :context-generations nil
                    :context-promotions nil
-                   :context-erasures nil
                    :context-curation-packages nil
                    :turn-options nil
                    :created-at (plist-get entry :created-at)
@@ -2991,7 +2966,6 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                         :process-reports nil
                         :context-generations nil
                         :context-promotions nil
-                        :context-erasures nil
                         :context-curation-packages nil
                         :turn-options nil
                         :created-at timestamp
@@ -4002,9 +3976,6 @@ The current curation package is one indexed session entry whose optional
     ('context-promotion
      (list (cons 'context-promotion
                  (e-session--context-record entry))))
-    ('context-erasure
-     (list (cons 'context-erasure
-                 (e-session--context-record entry))))
     ('context-curation-package
      (delq nil
            (list (and (plist-get entry :promotion)
@@ -4055,7 +4026,11 @@ appends dispatch only to the version-3 curation codec.  READ-LEGACY-P permits
 the version-2 promotion decoder for replay and projection only; it never
 re-encodes or appends the decoded value.  EXPECTED-RECORD-VERSION, when
 non-nil, fences an append boundary to one context-promotion version."
-  (unless (memq type e-session--context-lifetime-entry-types)
+  ;; `context-erasure' is a package component, not a standalone session
+  ;; entry.  Keep its codec available to package normalization while the
+  ;; public append-entry path remains limited to generation/promotion.
+  (unless (or (memq type e-session--context-lifetime-entry-types)
+              (eq type 'context-erasure))
     (signal 'e-session-error (list "Unknown context lifetime entry" type)))
   (when (e-session--context-record-has-duplicate-key-p record)
     (signal 'e-session-error
@@ -4120,7 +4095,6 @@ non-nil, fences an append boundary to one context-promotion version."
                                (plist-get session :process-reports)
                                (plist-get session :context-generations)
                                (plist-get session :context-promotions)
-                               (plist-get session :context-erasures)
                                (plist-get session :context-curation-packages))))
          (by-id (make-hash-table :test #'equal))
          (visited (make-hash-table :test #'equal))
@@ -4268,7 +4242,10 @@ erasure components are never represented as independently persisted entries."
          (record (e-session--context-curation-package-record
                   session-id package package-id base-parent timestamp))
          (entry
-          (e-session--normalize-entry-from-record
+          ;; Preparation must not move the live head.  The normalized entry
+          ;; receives the current parent, then the commit path advances the
+          ;; head only after the durable package record is accepted.
+          (e-session--entry-with-identity
            session 'context-curation-package
            (list :promotion (plist-get package :promotion)
                  :erasure (plist-get package :erasure))
@@ -4281,14 +4258,27 @@ erasure components are never represented as independently persisted entries."
 
 (defun e-session--context-curation-package-existing-state
     (store session-id prepared)
-  "Return an exact existing package for PREPARED, or signal a conflict."
-  (let ((existing (e-session-entry-by-id
-                   store session-id (plist-get prepared :package-id))))
+  "Return an exact selected-path package for PREPARED, or signal a conflict.
+
+An exact retry may run after the package advanced the session head (for
+example, when its separate audit append failed), so the proposed parent is
+not part of the idempotency comparison.  A package on an inactive sibling is
+not a retry for the selected path and remains a conflict."
+  (let* ((package-id (plist-get prepared :package-id))
+         (existing (gethash package-id
+                            (e-session--entry-index store session-id)))
+         (selected-path
+          (and existing (e-session-current-path store session-id)))
+         (selected-p
+          (and existing
+               (seq-some
+                (lambda (entry)
+                  (equal (plist-get entry :id) package-id))
+                selected-path))))
     (cond
      ((null existing) nil)
-     ((and (eq (plist-get existing :type) 'context-curation-package)
-           (equal (plist-get existing :parent-id)
-                  (plist-get (plist-get prepared :entry) :parent-id))
+     ((and selected-p
+           (eq (plist-get existing :type) 'context-curation-package)
            (equal (plist-get existing :promotion)
                   (plist-get (plist-get prepared :package) :promotion))
            (equal (plist-get existing :erasure)
@@ -4297,7 +4287,7 @@ erasure components are never represented as independently persisted entries."
      (t
       (signal 'e-session-error
               (list "Context curation package identity conflict"
-                    (plist-get prepared :package-id)))))))
+                    package-id))))))
 
 (defun e-session--replay-context-curation-package
     (store session-id record)
@@ -4422,18 +4412,6 @@ with the same identity but different canonical components is rejected."
        (e-context-lifetime-generation-record generation)
      generation)
    :write-index write-index))
-
-(cl-defun e-session-append-context-curation
-    (store session-id record &key (write-index t))
-  "Append prepared version-3 curation RECORD and return its session entry.
-
-RECORD must be the pure prepared value returned by
-`e-context-lifetime-prepare-curation'.  The session boundary accepts no v2
-alias and validates the record through the same codec used during replay."
-  (e-session--append-context-entry
-   store session-id 'context-promotion :context-promotions record
-   :write-index write-index
-   :expected-record-version e-context-lifetime-curation-record-version))
 
 (cl-defun e-session-append-context-curation-package
     (store session-id package &key (write-index t))

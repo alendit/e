@@ -298,7 +298,8 @@ later assistant/tool-call message instead of signalling no-boundary."
                                     '(:role assistant :content "boundary"))
           (e-compaction-test--append-literal-v2-record
            store session-id v2-record)
-          (e-session-append-context-curation store session-id v3-record)
+          (e-session-append-context-curation-package
+           store session-id (list :promotion v3-record :erasure nil))
           (let* ((before (e-session-context-lifetime-projection
                           store session-id))
                  (before-v3
@@ -427,10 +428,12 @@ later assistant/tool-call message instead of signalling no-boundary."
              store session-id '(:role assistant :content "boundary"))
             ;; The durable records deliberately interleave v3, v2, and v3;
             ;; the first v3 record also contains two equal-valued items.
-            (e-session-append-context-curation store session-id v3-first)
+            (e-session-append-context-curation-package
+             store session-id (list :promotion v3-first :erasure nil))
             (e-compaction-test--append-literal-v2-record
              store session-id v2)
-            (e-session-append-context-curation store session-id v3-second)
+            (e-session-append-context-curation-package
+             store session-id (list :promotion v3-second :erasure nil))
             (let* ((projection
                     (e-session-context-lifetime-projection store session-id))
                    (entries (plist-get projection :promotion-message-entries))
@@ -500,7 +503,8 @@ later assistant/tool-call message instead of signalling no-boundary."
                                  :covered-session-boundary)))
                 (should (equal covered-boundary
                                (plist-get before-entry :id)))
-                (e-session-append-context-curation store session-id v3-post)
+                (e-session-append-context-curation-package
+                 store session-id (list :promotion v3-post :erasure nil))
                 (let* ((context-messages
                         (e-compaction-portable-context-messages
                          store session-id checkpoint covered-boundary)))

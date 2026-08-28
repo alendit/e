@@ -31,8 +31,9 @@ activity, audit, and temporary details.  Responses reasoning summaries remain
 The behaviorally coherent implementation now spans core preparation, atomic
 session persistence, harness commit, the actual carrier, Feature 90 receipt
 filtering, and credential-free end-to-end composition.  Repository validation
-passes 2,453 tests with 2,451 expected passes, zero unexpected results, and two
-expected graphical skips; warnings-as-errors compilation also passes.  The
+passes 2,456 tests with 2,454 expected passes, zero unexpected results, and two
+expected graphical skips; changed-owner warnings-as-errors compilation also
+passes.  The
 remaining boundary is one independent fixed-point review followed by refreshed
 configured evidence.  A7.1/A7.2 are internal implementation history, not
 delivery or fixed-point boundaries.

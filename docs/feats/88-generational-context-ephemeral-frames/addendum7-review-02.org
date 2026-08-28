@@ -1,0 +1,184 @@
+#+title: Review 02: Addendum 7 Integrated Tool-Output Context Erasure
+#+date: 2026-08-28
+#+startup: overview
+
+* Status and decision
+
+In-review.  Deterministic fixed point is not reached at exact revision
+=f59e91cfe16d6dba086bd4b9d3cfa7218923c8f7=, reviewed against parent
+=c0db43b771dfc9a8e47abe77157925506f910567= and the supreme product authority
+from =origin/main= revision
+=5298c067d690a8d97e2c4c55a5775858a2609001=.
+
+The review found two P1 and four P2 findings:
+
+- P0: none.
+- P1: =F88A7.I1= and =F88A7.I2=.
+- P2: =F88A7.I3= through =F88A7.I6=.
+- P3: none.
+
+Repository-controlled acceptance remains open.  Fresh Addendum 7 configured
+Responses HTTP evidence is pending under =context-curate-v5=.  Exact built-in
+ChatGPT/WebSocket behavior remains =capability-unconfirmed= and separate from
+the repository findings.
+
+* Scope and authority
+
+The review covered the complete =c0db43b7..f59e91cf= diff across the Addendum 7
+and Feature 90 ledgers, core preparation and codecs, session persistence and
+path projection, harness commit ordering, OpenAI carrier shape, receipt and
+temporary-detail owners, deterministic/configured E2E owners, and current
+external-evidence documentation.
+
+Origin Addendum 5 is the settled authority.  Review 01's four-way exhaustive
+=drop=/=erase= matrix is historical.  This review requires exactly optional
+=keep=/=summaries=/=erase=, ordinary omission that can preserve a separately
+owned receipt, explicit source-derived context erasure, one atomic semantic
+package, =context-curate-v5=, and Responses reasoning summary =auto=.
+
+The reviewer did not contact the running Emacs or an external provider.  The
+unrelated dirty Feature 87 plan was preserved.
+
+* What is clear
+
+Core exposes the authoritative optional carrier, derives trusted tool-call
+identities without model-facing leakage, rejects overlap and ineligible
+erasure, and enforces the complete 16-label and 8,192-byte package bounds.
+The OpenAI HTTP and WebSocket paths share that carrier and request reasoning
+summary =auto= or the diagnostic =detailed= override.
+
+Harness preparation is pure before mutation and appends the semantic package
+before audit and frame consumption.  The nested version-1 erasure component is
+content-free.  The credential-free real-adapter scenarios prove the intended
+omission-versus-erasure distinction, and the package path otherwise preserves
+selected-branch, fork, checkpoint, compaction, and generation ownership.
+
+* Findings
+
+** TODO High P1 =F88A7.I1=: exact package retry conflicts after first append
+
+Contract cell: =F88A7-ATOMICITY=.
+
+Package identity hashes the session and semantic components, while duplicate
+validation also compares the newly prepared parent with the historical parent
+(=lisp/core/e-session.el:4221-4300=).  The first append advances the head to the
+package (=lisp/core/e-session.el:4472-4478=), so an exact immediate retry has the
+same ID but a different proposed parent and signals a conflict.
+
+This breaks recovery when package append succeeds but the later audit append
+fails.  Accept an exact existing package only when its type/components match
+and it is on the selected path; keep rejecting off-path and conflicting
+identities.  Cover immediate, descendant-head, audit-failure, reopen,
+queued/controller, and sibling-conflict retries.
+
+** TODO High P1 =F88A7.I2=: configured erase reopen gate cannot pass
+
+Contract cells: =F88A7-PRESERVATION= and =F88A7-ADOPTION=.
+
+The runner correctly locates the reopened event through
+=:payload :receipt :tool-call-id=, then compares =:payload :receipt :receipt=
+against the original receipt (=e2e/e-live-e2e-test.el:4968-5004=).  Production
+has one receipt directly below payload, so a correct record yields nil on the
+left.  Compare the direct receipt and add a credential-free regression for the
+exact reopen predicate before running configured evidence.
+
+** TODO Medium P2 =F88A7.I3=: obsolete APIs bypass the package authority
+
+Contract cells: =F88A7-ATOMICITY= and compatibility/removal.
+
+The promotion-only preparation wrapper silently discards current erasure
+semantics (=lisp/core/e-context-lifetime.el:1348-1361=).  A public standalone
+version-3 writer remains (=lisp/core/e-session.el:4426-4436=), and session plus
+the controller writer accept a never-committed outer =context-erasure= entry
+outside the package (=lisp/core/e-session.el:152-174,2385-2407,3994-4008=;
+=lisp/core/e-session-writer.mjs:101-106=).
+
+Remove the promotion-only wrapper and standalone production writer, migrating
+current callers to the package.  Preserve read/replay compatibility for
+committed standalone version-2/version-3 promotion records.  Remove the outer
+erasure list/replay/checkpoint/writer path; keep version-1 erasure only as a
+codec and nested package component.  An outer erasure must be rejected.
+
+** TODO Medium P2 =F88A7.I4=: evidence identity omits material owners
+
+Contract cell: =F88A7-ADOPTION=.
+
+The adoption dependency cone omits
+=lisp/layers/harness/e-harness-base.el=,
+=lisp/layers/harness/e-tool-invocation-details.el=, and
+=lisp/layers/harness/e-session-tmp-resources.el= even though the erase scenario
+claims receipt suppression and detail preservation through those owners
+(=e2e/e-live-e2e-test.el:451-458,4900-5006=).  Add all three so any material
+owner change invalidates reusable evidence, with deterministic identity tests.
+
+** TODO Medium P2 =F88A7.I5=: receipt filtering is quadratic
+
+Contract cell: =F88A7-RECEIPTS=.
+
+=e-harness-base--receipt-events= performs linear =member= lookup across all
+erasures for every historical receipt (=lisp/layers/harness/e-harness-base.el:49-69=).
+Neither input has a turn-independent history bound.  Build one equal-tested
+erased-ID hash and use constant-time membership before ordering, counts, and
+byte limits.  Add a synthetic operation-count regression rather than a timing
+threshold.
+
+** TODO Medium P2 =F88A7.I6=: limitations reports superseded evidence as current
+
+Contract cell: documentation and external status.
+
+=limitations.org= still calls Addendum 6's exhaustive
+=keep=/=summaries=/=drop= implementation and configured records current
+(=limitations.org:5-32,113-128,634-655=).  Rebase the current status, purpose,
+table, and final limitation on Addendum 7.  Keep v4/drop results explicitly
+historical, v5 configured HTTP evidence pending until rerun, and exact
+ChatGPT/WebSocket =capability-unconfirmed=.
+
+* Contract disposition
+
+| Contract | Disposition |
+|----------+-------------|
+| =F88A7-CARRIER= | Repository carrier and reasoning shape clear; fresh v5 evidence pending. |
+| =F88A7-OMISSION= | Credential-free adapter path clear. |
+| =F88A7-ERASURE= | Package semantics clear; bypass path and external runner open under =I3=/=I2=. |
+| =F88A7-PRESERVATION= | Repository behavior clear; external reopen gate open under =I2=. |
+| =F88A7-DURABILITY= | Package path clear across branch/reopen/checkpoint/compaction. |
+| =F88A7-ATOMICITY= | Open under =I1= and =I3=. |
+| =F88A7-RECEIPTS= | Functional order clear; performance open under =I5=. |
+| =F88A7-ADOPTION= | Fresh v5 HTTP pending; runner/evidence identity open under =I2=/=I4=. |
+
+* Verification performed
+
+- Exact revision: =f59e91cfe16d6dba086bd4b9d3cfa7218923c8f7=.
+- =git diff --check c0db43b7 f59e91cf=: passed.
+- Core/session/harness-base/OpenAI owner lane: 314 tests; 312 passed in the
+  restricted environment and the two loopback-blocked cases passed 2/2 with
+  permitted loopback access.
+- =test/e-harness-test.el=: 175/175 passed.
+- Credential-free context-lifetime E2E: 5/5 passed.
+- Exact duplicate-package reproducer: failed with
+  =Context curation package identity conflict=.
+- Changed Org files parsed successfully.
+- No provider call, graphical test, live reload, or live Emacs probe was used.
+
+* Architecture and design disposition
+
+The main dependency direction is correct: Feature 88 core owns lifetime
+semantics, session owns selected-path durability, harness owns orchestration,
+the OpenAI adapter owns wire shape, and Feature 90 consumes the narrow erased
+identity projection.  =I3= is the exception because obsolete paths create
+alternate write authorities; =I5= is the performance exception because the
+consumer turns a narrow interface into multiplicative history work.
+
+Stopping here would not be a useful accepted package because exact retry and
+required configured evidence are broken.  Product choices are settled; the
+six corrections are local.  No new abstraction, compatibility layer, generic
+narration, or persistence family is required.
+
+* Unresolved
+
+- =F88A7.I1= through =F88A7.I6=.
+- Fresh identity-complete Addendum 7 configured Responses HTTP records after
+  repository remediation.
+- Exact built-in ChatGPT/WebSocket remains =capability-unconfirmed=.
+
+The feature remains =In-review=.  The running Emacs was left unchanged.

@@ -10,6 +10,16 @@
 (require 'e)
 (require 'e-context-lifetime)
 
+(defun e-context-lifetime-test--prepared-curation-record
+    (frame arguments response-entry-id &optional bytes-per-token)
+  "Return the promotion component from a prepared disposition.
+Tests use the public disposition preparation API directly; this helper keeps
+the record-focused assertions concise without restoring the retired wrapper."
+  (plist-get
+   (e-context-lifetime-prepare-curation-disposition
+    frame arguments response-entry-id bytes-per-token)
+   :record))
+
 (defun e-context-lifetime-test--generation ()
   "Return a small portable generation fixture."
   (e-context-lifetime-generation-create
@@ -397,7 +407,7 @@
          (presentation
           (e-context-lifetime-frame-curation-presentation frame 1.0))
          (record
-          (e-context-lifetime-prepare-curation
+          (e-context-lifetime-test--prepared-curation-record
            frame '(:keep (1))
            "response-curation" 1.0)))
     (should (= (length observation-ids)
@@ -473,7 +483,7 @@
      (e-context-lifetime-frame-curation-sources frame)
      :type 'e-context-lifetime-invalid-record)
     (should-error
-     (e-context-lifetime-prepare-curation
+     (e-context-lifetime-test--prepared-curation-record
       frame '(:keep (1)) "response-1")
      :type 'e-context-lifetime-invalid-record)))
 
@@ -612,7 +622,7 @@
                                              mutable
                                            (format "exact-%d" index))))))))
          (record
-          (e-context-lifetime-prepare-curation
+          (e-context-lifetime-test--prepared-curation-record
            frame
            '(:keep (1)
              :summaries ((:sources (2 3) :text "durable replacement")))
@@ -647,14 +657,14 @@
   "Prepared curation cannot use consumed frames or labels outside the frame."
   (let ((frame (e-context-lifetime-test--frame)))
     (should-error
-     (e-context-lifetime-prepare-curation
+     (e-context-lifetime-test--prepared-curation-record
       frame '(:keep (2)) "response-1")
      :type 'e-context-lifetime-invalid-record)
     (let ((consumed
            (e-context-lifetime-frame-complete-for-consumer
             frame "consumer-1" "response-1")))
       (should-error
-       (e-context-lifetime-prepare-curation
+       (e-context-lifetime-test--prepared-curation-record
         consumed '(:keep (1)) "response-2")
        :type 'e-context-lifetime-invalid-record))))
 
@@ -663,7 +673,7 @@
   (let ((sixteen (e-context-lifetime-test--multi-source-frame 16))
         (seventeen (e-context-lifetime-test--multi-source-frame 17)))
     (should (= (length (plist-get
-                        (e-context-lifetime-prepare-curation
+                        (e-context-lifetime-test--prepared-curation-record
                          sixteen
                          (list :keep (number-sequence 1 16)
                          :summaries nil)
@@ -671,7 +681,7 @@
                         :items))
                16))
     (should-error
-     (e-context-lifetime-prepare-curation
+     (e-context-lifetime-test--prepared-curation-record
       seventeen (list :keep (number-sequence 1 17)
                       :summaries nil)
       "response-17")
@@ -707,7 +717,7 @@
                    :package))
                  8192))
       (should-error
-       (e-context-lifetime-prepare-curation
+       (e-context-lifetime-test--prepared-curation-record
         frame too-large "response-bytes" 1.0)
        :type 'e-context-lifetime-invalid-record))))
 

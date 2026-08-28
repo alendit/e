@@ -1345,21 +1345,6 @@ replaying an erasure."
            (e-context-lifetime-curation-erasure-from-record record)
            :sources)))
 
-(defun e-context-lifetime-prepare-curation
-    (frame arguments response-entry-id &optional bytes-per-token)
-  "Prepare a curation RECORD against live FRAME.
-
-RESPONSE-ENTRY-ID is the runtime response binding.  ARGUMENTS must contain the
-optional `:keep', `:summaries', and `:erase' keys; omitted labels are ordinary
-source omission and at least one explicit disposition is required.  No
-frame/session mutation occurs here; exact values and provenance are detached
-before the complete optional promotion/erasure package is measured against
-the shared byte bound."
-  (plist-get
-   (e-context-lifetime-prepare-curation-disposition
-    frame arguments response-entry-id bytes-per-token)
-   :record))
-
 (defun e-context-lifetime--frame-retain-provenance
     (frame response-entry-id promotion-ids)
   "Copy trusted retained provenance from FRAME after its body is consumed.

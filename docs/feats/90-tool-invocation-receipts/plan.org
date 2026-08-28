@@ -68,7 +68,7 @@ tail, selected-path sibling and checkpoint/reopen behavior,
 snapshots/stable-prefix exclusion, unavailable details, and erasure filtering.
 The composed Addendum 7 credential-free path proves both omission-preserved
 receipts and explicit-erasure suppression while durable activity and temporary
-details remain available.  The integrated repository gate passes 2,453 tests
+details remain available.  The integrated repository gate passes 2,456 tests
 with zero unexpected results.
 
 * Goal

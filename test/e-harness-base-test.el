@@ -202,6 +202,35 @@
                                   (e-harness-base-test--receipt-content
                                    projection))))))
 
+(ert-deftest e-harness-base-test-receipt-erasure-membership-is-linear ()
+  "Receipt filtering performs one equal-set membership operation per receipt."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-harness-base-context-capability-create))))
+         (session-id "receipt-erasure-linear")
+         (count 64)
+         (lookups 0)
+         (original (symbol-function 'e-harness-base--receipt-erased-p)))
+    (e-harness-create-session harness :id session-id)
+    (dotimes (index count)
+      (e-harness-base-test--emit-receipt
+       harness session-id (format "turn-%d" index)
+       (format "call-%d" index) "probe"
+       (format "tmp://details/%d.json" index)))
+    (cl-letf (((symbol-function 'e-harness-base--receipt-erased-p)
+               (lambda (erased-set id)
+                 (setq lookups (1+ lookups))
+                 (funcall original erased-set id))))
+      (e-harness-base-receipt-projection
+       harness session-id
+       :erased-tool-call-ids
+       (mapcar (lambda (index) (format "call-%d" index))
+               (number-sequence 0 (1- count)))
+       :max-entries count
+       :max-bytes 100000))
+    (should (= lookups count))))
+
 (ert-deftest e-harness-base-test-receipt-provider-reads-session-erasure-authority ()
   "The dynamic provider reads erased ids from the active session path."
   (let* ((harness (e-harness-create

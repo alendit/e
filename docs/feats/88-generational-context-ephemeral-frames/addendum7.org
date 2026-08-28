@@ -24,9 +24,10 @@ atomic durable application, receipt integration, and credential-free
 model-to-context coverage together.
 
 The integrated implementation is ready for independent fixed-point review.
-Repository validation passes 2,453 tests with 2,451 expected passes, zero
-unexpected results, and two expected graphical skips.  Warnings-as-errors
-compilation, Org parsing, and whitespace validation also pass.  Configured
+Repository validation passes 2,456 tests with 2,454 expected passes, zero
+unexpected results, and two expected graphical skips.  Changed-owner
+warnings-as-errors compilation, Org parsing, and whitespace validation also
+pass.  Configured
 Responses evidence is deliberately deferred until the exact revision has been
 accepted by the independent reviewer.
 

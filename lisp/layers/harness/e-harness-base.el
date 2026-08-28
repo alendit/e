@@ -46,13 +46,23 @@ content."
   :type 'integer
   :group 'e)
 
+(defun e-harness-base--erased-tool-call-id-set (ids)
+  "Return one equal-tested hash set containing string IDs in IDS."
+  (let ((set (make-hash-table :test #'equal)))
+    (dolist (id ids set)
+      (when (stringp id)
+        (puthash id t set)))))
+
+(defun e-harness-base--receipt-erased-p (erased-set id)
+  "Return non-nil when ID occurs in the equal-tested ERASED-SET."
+  (gethash id erased-set))
+
 (defun e-harness-base--receipt-events
     (harness session-id erased-tool-call-ids)
   "Return current-path receipt events excluding erased call identities.
 Filtering is performed before any ordering, bounds, or count is derived."
-  (let ((erased (delete-dups
-                 (cl-remove-if-not #'stringp
-                                   (copy-sequence erased-tool-call-ids)))))
+  (let ((erased (e-harness-base--erased-tool-call-id-set
+                 erased-tool-call-ids)))
     (cl-loop for entry in
              (e-session-current-path
               (e-harness-sessions harness) session-id)
@@ -61,11 +71,11 @@ Filtering is performed before any ordering, bounds, or count is derived."
                                 (eq (plist-get entry :event-type)
                                     'tool-finished)
                                 (plist-get payload :receipt))
-             for id = (and (listp receipt)
+            for id = (and (listp receipt)
                            (plist-get receipt :tool-call-id))
-             when (and (listp receipt)
+            when (and (listp receipt)
                        (stringp id)
-                       (not (member id erased)))
+                       (not (e-harness-base--receipt-erased-p erased id)))
              collect (copy-tree receipt))))
 
 (defun e-harness-base--receipt-view (harness session-id receipt)
