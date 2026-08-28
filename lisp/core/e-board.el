@@ -1654,7 +1654,8 @@ making `e-work' depend on board state or making the board retain loop closures."
     subscription))
 
 (cl-defun e-board-add-participant
-    (board &key id (state 'active) create-pickup-subscription-id)
+    (board &key id (state 'active) create-pickup-subscription-id
+           (publish-event t))
   "Add participant ID to BOARD and install its built-in exact pickup route.
 The identity subscription is membership-owned: ordinary subscriptions cannot
 replace it, and exact input ignores descriptive tags and other subscriptions."
@@ -1686,10 +1687,32 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
         :effect 'create-pickup
         :state 'active :delivery 'normal :self-delivery t
         :built-in-p t))
-      (e-board--append-event board 'participant-added
-                             (list :participant-id id
-                                   :subscription-id subscription-id))
+      (when publish-event
+        (e-board--append-event board 'participant-added
+                               (list :participant-id id
+                                     :subscription-id subscription-id)))
       participant)))
+
+(defun e-board--rollback-participant-admission (board participant-id)
+  "Remove an unpublished PARTICIPANT-ID admission from BOARD.
+This narrow internal inverse is used only when the registry/runtime attachment
+transaction fails before the participant has been exposed to board traffic; it
+does not append a participant-removed event.  Callers must use the deferred
+participant admission path when the participant-added event must not be
+published until a surrounding durable declaration succeeds."
+  (let ((participant (e-board-participant board participant-id)))
+    (when participant
+      (remhash participant-id (e-board-participants board))
+      (when-let ((subscription
+                  (e-board-find-subscription
+                   board
+                   (e-board-participant-create-pickup-subscription-id
+                    participant))))
+        (setf (e-board-subscription-state subscription) 'cancelled)
+        (remhash (e-board-subscription-id subscription)
+                 (e-board-subscription-id-table board)))
+      (setf (e-board-participant-state participant) 'removed))
+    participant))
 
 (defun e-board--valid-continuation-readiness-p (readiness)
   "Return non-nil when READINESS is a closed continuation accumulator policy."
@@ -1867,19 +1890,121 @@ subscription IDs, so replay does not depend on traversal or input order."
     (and (cl-every (lambda (tag) (member tag tags)) all)
          (or (null any) (cl-some (lambda (tag) (member tag tags)) any)))))
 
+(defun e-board--proper-list-p (value)
+  "Return non-nil when VALUE is a finite proper list.
+The ordinary `proper-list-p' helper is not suitable at this trust boundary:
+callers may hand us a cyclic value and the board must reject it without
+walking forever.  Keep this small cycle-aware walker local to the board
+grammar so session admission can consume one authoritative predicate."
+  (let ((tail value)
+        (seen (make-hash-table :test 'eq))
+        valid)
+    (setq valid t)
+    (while (and valid (consp tail))
+      (if (gethash tail seen)
+          (setq valid nil)
+        (puthash tail t seen)
+        (setq tail (cdr tail))))
+    (and valid (null tail))))
+
+(defun e-board--selector-attribute-value-valid-p (value)
+  "Return non-nil when nested attribute VALUE is reversible data.
+Attribute values are declarative data, not predicates.  Symbols remain data
+even when their names are callable; actual function objects and lambda forms
+are rejected.  The walk is iterative and cycle-aware because the session
+codec preserves vectors, lists, plists, and dotted conses reversibly."
+  (let ((pending (list (list :value value)))
+        (visiting (make-hash-table :test 'eq))
+        (leave-marker (make-symbol "board-attribute-leave"))
+        (valid t))
+    (while (and valid pending)
+      (let ((task (pop pending)))
+        (if (eq (car task) leave-marker)
+            (remhash (cdr task) visiting)
+          (let ((current (cadr task)))
+            (cond
+             ((or (null current) (eq current t) (numberp current)
+                  (stringp current) (symbolp current)) nil)
+             ((functionp current)
+              (setq valid nil))
+             ((and (consp current)
+                   (memq (car current) '(lambda function)))
+              (setq valid nil))
+             ((or (vectorp current) (consp current))
+              (if (gethash current visiting)
+                  (setq valid nil)
+                (puthash current t visiting)
+                (push (cons leave-marker current) pending)
+                (if (vectorp current)
+                    (let ((index (1- (length current))))
+                      (while (>= index 0)
+                        (push (list :value (aref current index)) pending)
+                        (setq index (1- index))))
+                  (push (list :value (cdr current)) pending)
+                  (push (list :value (car current)) pending))))
+             (t
+              (setq valid nil)))))))
+    valid))
+
+(defun e-board-selector-attributes-valid-p (attributes)
+  "Return non-nil when ATTRIBUTES has the board matcher grammar.
+The top level is nil, an even keyword plist, or a proper alist of keyword
+key/value conses.  Values may contain the reversible declarative data forms
+accepted by the session codec.  This function is pure and intentionally does
+not normalize or retain caller-owned objects."
+  (cond
+   ((null attributes) t)
+   ((not (e-board--proper-list-p attributes)) nil)
+   ((keywordp (car attributes))
+    (let ((tail attributes)
+          seen
+          (valid t))
+      (while (and valid tail)
+        (if (not (consp (cdr tail)))
+            (setq valid nil)
+          (let ((key (pop tail))
+                (value (pop tail)))
+            (setq valid
+                  (and (keywordp key)
+                       (not (memq key seen))
+                       (e-board--selector-attribute-value-valid-p value)))
+            (push key seen))))
+      valid))
+   (t
+    (cl-every
+     (lambda (pair)
+       (and (consp pair)
+            (keywordp (car pair))
+            ;; An alist entry is a keyword-to-value cons.  Its complete CDR
+            ;; is the value, so nested list values remain unambiguous.
+            (e-board--selector-attribute-value-valid-p (cdr pair))))
+     attributes))))
+
+(defun e-board--selector-attribute-clauses (attributes)
+  "Return ATTRIBUTES as canonical key/value conses after validation."
+  (unless (e-board-selector-attributes-valid-p attributes)
+    (signal 'wrong-type-argument (list 'board-selector-attributes attributes)))
+  (cond
+   ((null attributes) nil)
+   ((keywordp (car attributes))
+    (let (clauses)
+      (while attributes
+        (let ((key (pop attributes))
+              (value (pop attributes)))
+          (push (cons key value) clauses)))
+      (nreverse clauses)))
+   (t
+    (mapcar (lambda (pair)
+              (cons (car pair) (cdr pair)))
+            attributes))))
+
 (defun e-board--selector-attributes-match-p (selector message)
   "Return non-nil when SELECTOR's bounded attribute clauses match MESSAGE."
   (cl-every (lambda (pair)
               (equal (plist-get (e-board-message-attributes message) (car pair))
                      (cdr pair)))
-            (let ((attributes (plist-get selector :attributes)))
-              (cond ((null attributes) nil)
-                    ((and (listp attributes) (keywordp (car attributes)))
-                     (cl-loop for (key value) on attributes by #'cddr
-                              collect (cons key value)))
-                    ((listp attributes) attributes)
-                    (t (signal 'wrong-type-argument
-                               (list 'listp attributes)))))))
+            (e-board--selector-attribute-clauses
+             (plist-get selector :attributes))))
 
 (defun e-board--fault-subscription (board subscription err)
   "Record trusted predicate ERR without reviving a changed subscription view."

@@ -1276,3 +1276,19 @@ derived-index obligation, dirty state, and unsettled count.
 Focused implementation evidence is recorded in the bug investigation.  The
 current candidate remains pending independent review; historical board-cutover
 claims above must not be read as acceptance of F001-F007.
+
+** Integrated admission/settlement candidate note (2026-08-28)
+
+The candidate now preflights the complete restored routing policy and the exact
+next controller command shape before exposing a participant binding.  Direct,
+queued, and controller admission uses one prepared session admission pair;
+expected failure removes only unpublished state and retained,
+unacknowledged work owned by that attempt, while acknowledged controller work
+is not described as retractable.  The selected settlement fact remains
+derived by the service from the binding and event subject, so sibling terminal
+rows are observable without settling selected progress or composer state.
+
+This is a current implementation note, not a new completion decision.  The
+bug index remains =New= and the candidate remains =In-review= pending an
+independent acceptance of the exact revision.  The historical review and its
+completion record above are unchanged in meaning.

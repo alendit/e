@@ -1786,3 +1786,21 @@ The following are explicitly deferred and do not block this plan:
 14. *Tests?*  Board core/registry use synthetic work/events plus fake ids, clocks, controlled futures, budgeted schedulers, call-stack sentinels, and ports; selectors/readiness/effects are pure where possible; delivery uses fake harness receipts; structural tests forbid standalone/multi-board session, callback-graph, direct chat-to-harness/session-presentation, interactive await, synchronous post-and-deliver, drain-to-empty, unclassified interactive carrier hooks/live callback consequences outside the dedicated bounded activity mailbox observer, and asynchronous board-originated buffer mutation outside =e-ui-work= paths.
     Chat tests reuse today's activity/navigation assertions behind fake board observation subscriptions, including composer draft/editability, scrollback/window focus and no-recenter behavior, block-view/tool-list selection, redraw coalescing/stale generations, and durable insertion above a stale visible block after its progress owner clears; they add board authorization, default =main=/subagent filter widening, snapshot/high-watermark/live handoff, client/source-generation fencing, coalescing/overflow resnapshot, independent streams, causal no-output anchoring, arrival-order, non-consuming observation, and no-duplicate-input/output cases.
     End-to-end board/chat/transcript tests prove =main= dispatch/observation, exact invocation/address routing, generic fan-out, causal inspection, tagged board activity/summary plus output reconciliation, and cross-session isolation.
+
+* Restored participant-routing candidate (2026-08-28)
+
+The current repository candidate restores a complete board-session routing
+policy before participant attachment and derives selected settlement from the
+attached participant plus each event subject.  It keeps sibling output,
+failure, cancellation, and empty-output rows renderable without allowing them
+to settle selected progress, status, composer, or submit/steer state.  Direct,
+queued, and controller admission paths preflight the policy and final command
+shape before publication; a private cleanup path removes only retained,
+unacknowledged work owned by a failed admission and does not pretend to retract
+acknowledged controller commands.
+
+The fresh/restart routing and selected-settlement composition, policy codec,
+Node checkpoint/index path, and focused owner regressions are implementation
+evidence for this candidate.  The restored-routing bug remains =New= and the
+candidate remains =In-review= pending independent acceptance; this note does
+not change the historical board-cutover completion records above.

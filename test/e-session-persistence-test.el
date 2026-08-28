@@ -115,6 +115,27 @@ against real board messages instead of comparing only persisted plists."
        :type 'e-session-persistence-error)
       (should-not encoded))))
 
+(ert-deftest e-session-persistence-test-admission-preflight-uses-final-id-shape ()
+  "Admission preflight measures the command id that submission will use."
+  (let* ((directory (make-temp-file "e-session-persistence-admission-id-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store)))
+    (unwind-protect
+        (progn
+          (setf (e-session-persistence-instance-id controller)
+                "controller-instance-with-a-long-but-valid-id"
+                (e-session-persistence-next-sequence controller) 9)
+          (let ((command
+                 (e-session-persistence-validate-admission
+                  controller "admission-session"
+                  (list '(:type "session")))))
+            (should
+             (equal
+              (plist-get (e-session-persistence-command-request command) :id)
+              "controller-instance-with-a-long-but-valid-id:10")))
+          (should (= (e-session-persistence-next-sequence controller) 9)))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-persistence-test-default-node-budget-accepts-bounded-checkpoint ()
   "The structural guard accommodates a valid bounded checkpoint manifest."
   (let* ((store (e-session-store-create))

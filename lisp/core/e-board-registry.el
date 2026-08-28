@@ -132,7 +132,8 @@
 (cl-defstruct (e-board-registry-participant
                 (:constructor e-board-registry-participant--create)
                 (:conc-name e-board-registry-participant-))
-  id board-id author principal controller role access-grants private-grants source-participant)
+  id board-id author principal controller role access-grants private-grants
+  source-participant publication-pending)
 
 (defconst e-board-registry-participant-private-rights
   '(inspect-transcript control-session)
@@ -779,7 +780,8 @@ attached client from muting, resuming, or closing another client's cursor."
      (e-board-registry-board-source-board board) observer-id receipt)))
 
 (cl-defun e-board-registry-add-participant
-    (board-or-id &key id author principal controller (state 'active))
+    (board-or-id &key id author principal controller (state 'active)
+                 (publish-event t))
   "Add a board-local participant to active BOARD-OR-ID.
 The participant's built-in exact address subscription is created by the source
 board, with its identity supplied by this registry's id generator."
@@ -799,14 +801,15 @@ board, with its identity supplied by this registry's id generator."
              :id id
              :state state
              :create-pickup-subscription-id
-             (e-board-registry--next-id id-function 'subscription)))
+             (e-board-registry--next-id id-function 'subscription)
+             :publish-event publish-event))
            (participant
             (e-board-registry-participant--create
              :id id :board-id (e-board-registry-board-id board)
              :author author :principal principal
              :controller (or controller principal) :role role
              :access-grants (make-hash-table :test 'equal)
-             :private-grants
+            :private-grants
              (let ((grants (make-hash-table :test 'equal)))
                (when-let ((controller (or controller principal)))
                  (puthash controller
@@ -814,7 +817,8 @@ board, with its identity supplied by this registry's id generator."
                            e-board-registry-participant-private-rights)
                           grants))
                grants)
-             :source-participant source-participant)))
+             :source-participant source-participant
+             :publication-pending (not publish-event))))
       (puthash id participant participants)
       (let ((cell (list id)))
         (if-let ((tail (e-board-registry-board-participant-ids-tail board)))
@@ -822,6 +826,56 @@ board, with its identity supplied by this registry's id generator."
           (setf (e-board-registry-board-participant-ids board) cell))
         (setf (e-board-registry-board-participant-ids-tail board) cell))
       participant)))
+
+(defun e-board-registry-publish-participant-admission
+    (board-or-id participant)
+  "Publish the deferred participant-added event for PARTICIPANT.
+The registry participant and its source-board pickup route already exist, but
+their durable board event remains unpublished until the owning admission
+transaction has committed its session declaration.  This operation is
+idempotent for an already-published participant and rejects foreign records."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (current (e-board-registry--participant board participant))
+         (source-board (e-board-registry-board-source-board board))
+         (source-participant
+          (e-board-registry-participant-source-participant current)))
+    (when (e-board-registry-participant-publication-pending current)
+      (unless (e-board-participant source-board
+                                   (e-board-participant-id source-participant))
+        (signal 'e-board-registry-participant-missing
+                (list (e-board-registry-participant-id current))))
+      (e-board--append-event
+       source-board 'participant-added
+       (list :participant-id
+             (e-board-participant-id source-participant)
+             :subscription-id
+             (e-board-participant-create-pickup-subscription-id
+              source-participant)))
+      (setf (e-board-registry-participant-publication-pending current) nil))
+    current))
+
+(defun e-board-registry-abort-participant-admission (board-or-id participant)
+  "Rollback unpublished PARTICIPANT admission without a board event.
+This is the registry/runtime transaction cleanup path and must only be used
+before the participant has been exposed to board traffic."
+  (let* ((board (e-board-registry--resolve board-or-id))
+         (participant-id (if (e-board-registry-participant-p participant)
+                            (e-board-registry-participant-id participant)
+                          participant))
+         (current (and participant-id
+                       (gethash participant-id
+                                (e-board-registry-board-participants board))))
+         (source-board (e-board-registry-board-source-board board)))
+    (when (and current (or (eq current participant)
+                           (not (e-board-registry-participant-p participant))))
+      (remhash participant-id (e-board-registry-board-participants board))
+      (setf (e-board-registry-board-participant-ids board)
+            (delete participant-id
+                    (e-board-registry-board-participant-ids board))
+            (e-board-registry-board-participant-ids-tail board)
+            (last (e-board-registry-board-participant-ids board)))
+      (e-board--rollback-participant-admission source-board participant-id))
+    current))
 
 (defun e-board-registry-grant-participant-access
     (board-or-id requester participant-or-id principal rights)

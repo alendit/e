@@ -10,16 +10,21 @@ import { compactRecords } from "../lisp/core/e-session-writer.mjs";
 
 const writerPath = fileURLToPath(new URL("../lisp/core/e-session-writer.mjs", import.meta.url));
 
-async function appendThroughWriter(directory, id) {
+async function writerRequests(requests) {
   const writer = spawn(process.execPath, [writerPath]);
   const output = [];
   writer.stdout.on("data", (chunk) => output.push(chunk));
-  writer.stdin.end(JSON.stringify({
+  writer.stdin.end(requests.map((request) => JSON.stringify(request)).join("\n") + "\n");
+  const [exitCode, signal] = await once(writer, "exit");
+  assert.equal(exitCode, 0, signal ? `writer exited with ${signal}` : "writer exited unsuccessfully");
+  return Buffer.concat(output).toString("utf8").trim().split("\n").map(JSON.parse);
+}
+
+async function appendThroughWriter(directory, id) {
+  return (await writerRequests([{
     directory, op: "append", "session-id": "session-1", id,
     record: { type: "message", id: "message-1" },
-  }) + "\n");
-  await once(writer, "exit");
-  return JSON.parse(Buffer.concat(output).toString("utf8"));
+  }]))[0];
 }
 
 async function successfulAppend(directory, id) {
@@ -31,6 +36,104 @@ async function writeJournal(directory, content) {
   await fs.mkdir(sessions, { recursive: true });
   await fs.writeFile(path.join(sessions, "session-1.jsonl"), content, "utf8");
 }
+
+test("writer appends and reopens one atomic board admission batch", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "e-session-writer-batch-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const batch = {
+    directory,
+    op: "append-batch",
+    "session-id": "session-batch",
+    id: "admission:1",
+    records: [
+      {
+        type: "session",
+        "session-id": "session-batch",
+        id: "root-batch",
+        timestamp: "fixed",
+        "created-at": "fixed",
+        "updated-at": "fixed",
+        metadata: null,
+        name: null,
+        "turn-options": null,
+        "current-branch": null,
+      },
+      {
+        type: "board-session-state",
+        "session-id": "session-batch",
+        timestamp: "fixed",
+        "board-id": "board-batch",
+        principal: "principal-batch",
+        "board-state": {
+          "board-id": "board-batch",
+          principal: "principal-batch",
+          "association-role": "owner",
+          "routing-policy": {
+            "participant-id": "participant-batch",
+            "pickup-selector": null,
+            "observer-selector": null,
+            "default-tags": ["main"],
+            "default-to": "participant-batch",
+          },
+        },
+      },
+    ],
+  };
+  const firstResponses = await writerRequests([batch, { ...batch, records: batch.records.map((record) => ({ ...record })) }]);
+  assert.deepEqual(firstResponses.map((response) => ({ id: response.id, ok: response.ok })), [
+    { id: "admission:1", ok: true },
+    { id: "admission:1", ok: true },
+  ]);
+  const journalPath = path.join(directory, "sessions", "session-batch.jsonl");
+  const journalRecords = (await fs.readFile(journalPath, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(journalRecords.length, 2);
+  assert.deepEqual(journalRecords.map((record) => record.type), ["session", "board-session-state"]);
+  assert.deepEqual(journalRecords.map((record) => record["writer-command-id"]), ["admission:1", "admission:1"]);
+
+  const checkpointRequest = {
+    directory,
+    op: "checkpoint",
+    id: "checkpoint:1",
+    sessions: [{
+      "session-id": "session-batch",
+      root: { id: "root-batch", "created-at": "fixed", "updated-at": "fixed" },
+      "board-state": batch.records[1]["board-state"],
+      "board-message-identities": [],
+      "entry-ids": [],
+    }],
+  };
+  const checkpointResponses = await writerRequests([checkpointRequest]);
+  assert.deepEqual(checkpointResponses[0], { id: "checkpoint:1", ok: true });
+  const checkpoint = JSON.parse(await fs.readFile(
+    path.join(directory, "sessions", "session-batch.checkpoint.json"), "utf8"));
+  assert.deepEqual(checkpoint.records.map((record) => record.type), ["session", "board-session-state"]);
+  assert.deepEqual(checkpoint.records[1]["board-state"], batch.records[1]["board-state"]);
+
+  const indexResponses = await writerRequests([{ directory, op: "reindex", id: "reindex:1" }]);
+  assert.deepEqual(indexResponses[0], { id: "reindex:1", ok: true });
+  const index = JSON.parse(await fs.readFile(path.join(directory, "index.json"), "utf8"));
+  assert.equal(index.length, 1);
+  assert.equal(index[0].id, "session-batch");
+  assert.equal(index[0]["board-id"], "board-batch");
+  assert.equal(index[0].principal, "principal-batch");
+});
+
+test("writer rejects an empty admission batch without creating a journal", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "e-session-writer-batch-invalid-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const responses = await writerRequests([{
+    directory,
+    op: "append-batch",
+    "session-id": "session-invalid",
+    id: "admission:invalid",
+    records: [],
+  }]);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].ok, false);
+  assert.equal(responses[0].retryable, false);
+  assert.match(responses[0].error, /needs session-id and records/);
+  assert.equal(await fs.stat(path.join(directory, "sessions", "session-invalid.jsonl")).then(() => true, () => false), false);
+});
 
 const manifest = {
   "session-id": "session-1",

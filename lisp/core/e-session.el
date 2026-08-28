@@ -15,12 +15,20 @@
 (require 'json)
 (require 'e-request)
 (require 'e-context-lifetime)
+(require 'e-board)
 (require 'seq)
 (require 'subr-x)
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
 (declare-function e-session-persistence-submit-record "e-session-persistence")
+(declare-function e-session-persistence-validate-record "e-session-persistence")
+(declare-function e-session-persistence-submit-admission
+                  "e-session-persistence")
+(declare-function e-session-persistence-validate-admission
+                  "e-session-persistence")
+(declare-function e-session-persistence--discard-retained-admission-commands
+                  "e-session-persistence")
 (declare-function e-session-persistence-request-checkpoint "e-session-persistence")
 (declare-function e-session-persistence-finalize "e-session-persistence")
 
@@ -523,6 +531,11 @@ arrays and sometimes inverted key/value pairs."
          (suffix (substring (secure-hash 'sha1 seed) 0 12)))
     (format "%s-%s" (e-session--id-timestamp) suffix)))
 
+(defun e-session-generate-id ()
+  "Return a fresh persistent session id without publishing it.
+Application services use this for admission preflight before session creation."
+  (e-session--generate-id))
+
 (defun e-session--ulid-encode (number length)
   "Encode NUMBER as a Crockford Base32 string with LENGTH characters."
   (let ((chars (make-string length ?0))
@@ -743,6 +756,18 @@ arrays and sometimes inverted key/value pairs."
         :criticality (e-session--queued-record-criticality record)
         :dependencies (e-session--queued-record-dependencies session-id record)))
 
+(defun e-session--queued-admission-entry (store session-id records)
+  "Return one queued transaction entry for admission RECORDS.
+The records stay together until the direct writer has published their complete
+batch, so a queue flush cannot expose a root without its board association."
+  (list :session-id session-id
+        :records records
+        :generation (e-session-store-write-queue-generation store)
+        :sequence (cl-incf (e-session-store-write-queue-sequence store))
+        :criticality (e-session--queued-record-criticality (car records))
+        :dependencies (e-session--queued-record-dependencies
+                       session-id (car records))))
+
 (defun e-session--queued-index-entry (store)
   "Return a metadata-bearing queued derived-index write entry."
   (list :generation (e-session-store-write-queue-generation store)
@@ -764,6 +789,14 @@ arrays and sometimes inverted key/value pairs."
            (plist-member entry :record))
       (plist-get entry :record)
     (cdr entry)))
+
+(defun e-session--queued-entry-records (entry)
+  "Return the persistent records represented by queued ENTRY."
+  (if (and (consp entry)
+           (keywordp (car entry))
+           (plist-member entry :records))
+      (plist-get entry :records)
+    (list (e-session--queued-entry-record entry))))
 
 (defun e-session--queued-entry-current-p (store entry)
   "Return non-nil when queued ENTRY belongs to STORE's current generation."
@@ -825,11 +858,15 @@ Ordering remains stable within each criticality class."
   "Append queued ENTRIES, acknowledging each durable record write."
   (dolist (entry entries)
     (let ((session-id (e-session--queued-entry-session-id entry))
-          (record (e-session--queued-entry-record entry)))
+          (records (e-session--queued-entry-records entry)))
       (condition-case error
-          (e-session--append-record-now store session-id record)
+          (if (cdr records)
+              (e-session--append-admission-records-now store session-id records)
+            (e-session--append-record-now store session-id (car records)))
         (error
-         (unless (e-session--record-already-appended-p store session-id record)
+         (unless (and (= (length records) 1)
+                      (e-session--record-already-appended-p
+                       store session-id (car records)))
            (signal (car error) (cdr error)))))
       (e-session--drop-queued-write-entry store entry))))
 
@@ -905,7 +942,19 @@ Return STORE."
                (push (e-session--queued-write-entry store session-id record)
                      (e-session-store-write-queue store))
                (e-session--adjust-unsettled-writes store 1))
-             (e-session--append-record-now store session-id record))))))))
+           (e-session--append-record-now store session-id record))))))))
+
+(defun e-session--preflight-record (store session-id record)
+  "Validate durable RECORD before any STORE state is published.
+Persistent controller commands are prepared on a detached request so command
+shape, JSON encodability, and byte limits fail before the owning session or
+association is made visible.  Direct and queued stores still use their normal
+write paths after this pure preflight."
+  (let ((record (e-session--record-for-json record)))
+    (json-encode record)
+    (when-let ((controller (e-session--persistence-controller store)))
+      (e-session-persistence-validate-record controller session-id record))
+    record))
 
 
 (defun e-session--entry-index (store session-id)
@@ -1906,7 +1955,13 @@ board policies are far below this ceiling.")
 The value follows the existing board metadata/attribute scale while keeping
 the session admission boundary independent of the board implementation.")
 
-(defun e-session--board-routing-value-budget-valid-p (value)
+(defvar e-session--board-routing-budget-visit-count 0
+  "Number of nodes visited by the most recent routing-policy budget walk.
+This is an internal diagnostic hook used by bounded-admission tests; callers
+must not use it as policy state.")
+
+(defun e-session--board-routing-value-budget-valid-p
+    (value &optional preserve-counter)
   "Return non-nil when VALUE fits the routing-policy admission budget.
 
 Account iteratively so hostile deep or cyclic values are rejected before
@@ -1914,6 +1969,8 @@ Account iteratively so hostile deep or cyclic values are rejected before
 symbol names, numeric spellings, and a small canonical structural overhead.
 This is a preflight estimate; the encoded policy receives an exact canonical
 UTF-8 byte check after its reversible attribute encoding."
+  (unless preserve-counter
+    (setq e-session--board-routing-budget-visit-count 0))
   (let ((pending (list (list :value value)))
         (visiting (make-hash-table :test 'eq))
         (nodes 0)
@@ -1925,6 +1982,7 @@ UTF-8 byte check after its reversible attribute encoding."
             (remhash (cdr task) visiting)
           (let ((current (cadr task)))
             (setq nodes (1+ nodes))
+            (cl-incf e-session--board-routing-budget-visit-count)
             (when (> nodes e-session--board-routing-policy-node-budget)
               (setq valid nil))
             (cond
@@ -1952,10 +2010,20 @@ UTF-8 byte check after its reversible attribute encoding."
                 ;; through the node count and the final exact check.
                 (setq bytes (+ bytes 2))
                 (if (vectorp current)
-                    (let ((index (1- (length current))))
-                      (while (>= index 0)
-                        (push (list :value (aref current index)) pending)
-                        (setq index (1- index))))
+                    (let* ((count (length current))
+                           (remaining
+                            (- e-session--board-routing-policy-node-budget
+                               nodes
+                               (length pending))))
+                      ;; Do not enqueue a caller-controlled vector wider than
+                      ;; the remaining structural allowance.  Reject before
+                      ;; allocating a task per element.
+                      (if (> count remaining)
+                          (setq valid nil)
+                        (let ((index (1- count)))
+                          (while (>= index 0)
+                            (push (list :value (aref current index)) pending)
+                            (setq index (1- index))))))
                   (push (list :value (cdr current)) pending)
                   (push (list :value (car current)) pending))))
              (t
@@ -2073,9 +2141,10 @@ signal `e-session-board-routing-invalid'."
                       (list "Unsupported routing value" current))))))))
     bytes))
 
-(defun e-session--board-routing-json-value-valid-p (value)
+(defun e-session--board-routing-json-value-valid-p (value &optional budgeted-p)
   "Return non-nil when VALUE is finite and encodable as JSON."
-  (and (e-session--board-routing-value-budget-valid-p value)
+  (and (or budgeted-p
+           (e-session--board-routing-value-budget-valid-p value))
        (e-session--board-routing-json-value-p value)
        (condition-case nil
            (progn
@@ -2095,9 +2164,12 @@ signal `e-session-board-routing-invalid'."
                (not (and (symbolp tag) (keywordp tag)))))
         value)))
 
-(defun e-session--board-routing-selector-valid-p (selector)
+(defun e-session--board-routing-selector-valid-p
+    (selector &optional budgeted-p)
   "Return non-nil when SELECTOR is declarative and JSON-shaped."
-  (and (e-session--keyword-plist-shape-p selector)
+  (and (or budgeted-p
+           (e-session--board-routing-value-budget-valid-p selector))
+       (e-session--keyword-plist-shape-p selector)
        (let ((tail selector)
              seen
              (valid t))
@@ -2115,14 +2187,20 @@ signal `e-session-board-routing-invalid'."
                          ((memq key '(:to :author :subject-participant-id))
                           (stringp value))
                          ((eq key :attributes)
-                          (e-session--board-routing-json-value-valid-p value))
+                          (and (e-board-selector-attributes-valid-p value)
+                               (e-session--board-routing-json-value-valid-p
+                                value t)))
                          (t nil))))
              (push key seen)))
          valid)))
 
 (defun e-session--board-routing-policy-valid-p (policy)
   "Return non-nil when POLICY has exactly the complete durable shape."
-  (and (e-session--keyword-plist-shape-p policy)
+  ;; Budget the complete caller value before any plist, selector, tag, or
+  ;; attribute grammar walk.  This is the admission cutoff for rejected input
+  ;; as well as accepted policy.
+  (and (e-session--board-routing-value-budget-valid-p policy)
+       (e-session--keyword-plist-shape-p policy)
        (let ((tail policy)
              seen
              (valid t))
@@ -2137,7 +2215,8 @@ signal `e-session-board-routing-invalid'."
                           (and (stringp value)
                                (not (string-empty-p value))))
                          ((memq key '(:pickup-selector :observer-selector))
-                          (e-session--board-routing-selector-valid-p value))
+                          (e-session--board-routing-selector-valid-p
+                           value t))
                          ((eq key :default-tags)
                           (e-session--board-routing-tag-list-valid-p value))
                          ((eq key :default-to)
@@ -2146,7 +2225,7 @@ signal `e-session-board-routing-invalid'."
              (push key seen)))
          (and valid
               (= (length seen) (length e-session--board-routing-policy-keys))
-              (e-session--board-routing-json-value-valid-p policy)
+              (e-session--board-routing-json-value-p policy)
               ;; Attribute selectors are tagged reversibly for persistence;
               ;; enforce the byte ceiling on that actual canonical form too.
               (condition-case nil
@@ -3636,8 +3715,12 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
     (e-session-load store)
     store))
 
-(cl-defun e-session-create (store &key id metadata)
-  "Create a session in STORE with ID and METADATA."
+(cl-defun e-session-create (store &key id metadata defer-persistence)
+  "Create a session in STORE with ID and METADATA.
+When DEFER-PERSISTENCE is non-nil, reserve the live session for an owning
+admission transaction without publishing its root record or index yet.  The
+session remains private to that transaction until
+`e-session-commit-board-admission' completes."
   (setq id (or id (e-session--generate-id)))
   (when (gethash id (e-session-store-sessions store))
     (signal 'e-session-duplicate (list id)))
@@ -3671,21 +3754,176 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                  timestamp
                  (list :metadata metadata))))
       (plist-put session :root-event-id (plist-get root :id)))
-    (e-session--touch store session timestamp)
-    (e-session--refresh-derived-fields store session)
-    (puthash id session (e-session-store-sessions store))
-    (e-session--index-session-entries store session)
-    (e-session--append-record
-     store id
-     (list :type "session"
-           :session-id id
-           :id (e-session--root-event-id session)
-           :timestamp timestamp
-           :created-at timestamp
-           :updated-at timestamp
-           :metadata metadata))
-    (e-session--write-index store)
-    session))
+    (let ((root-record
+           (list :type "session"
+                 :session-id id
+                 :id (e-session--root-event-id session)
+                 :timestamp timestamp
+                 :created-at timestamp
+                 :updated-at timestamp
+                 :metadata metadata)))
+      ;; Prepare all fallible controller/JSON work before publishing this new
+      ;; root in the live session catalog.
+      (if defer-persistence
+          (progn
+            (plist-put session :admission-pending t)
+            (plist-put session :admission-records (list root-record))
+            (e-session--touch store session timestamp)
+            (e-session--refresh-derived-fields store session)
+            (puthash id session (e-session-store-sessions store))
+            (e-session--index-session-entries store session)
+            session)
+        (e-session--preflight-record store id root-record)
+        (condition-case error
+            (progn
+              (e-session--touch store session timestamp)
+              (e-session--refresh-derived-fields store session)
+              (puthash id session (e-session-store-sessions store))
+              (e-session--index-session-entries store session)
+              (e-session--append-record store id root-record)
+              (e-session--write-index store)
+              session)
+          (error
+           ;; This operation owns the only newly published session.  Remove its
+           ;; in-memory/index/file/queued state while leaving unrelated store work
+           ;; untouched; controller cleanup drops only retained commands for ID.
+           (ignore-errors (e-session-abort-created store id))
+           (signal (car error) (cdr error))))))))
+
+(cl-defun e-session-create-board-admission
+    (store &key id metadata principal board-id association-role routing-policy)
+  "Reserve one board participant session before durable publication.
+Validate the complete board association and all durable records before placing
+the private reservation in STORE.  The owner must call
+`e-session-commit-board-admission' after runtime attachment succeeds, or
+`e-session-abort-created' on failure.  No journal, queue, controller outbox,
+or index entry is published by this function."
+  (let ((session
+         (e-session-create store :id id :metadata metadata
+                           :defer-persistence t)))
+    (condition-case error
+        (progn
+          (unless (and (stringp board-id) (not (string-empty-p board-id))
+                       (stringp principal) (not (string-empty-p principal)))
+            (signal 'e-session-error
+                    (list "Invalid board admission identity"
+                          board-id principal)))
+          (when (and association-role
+                     (not (member association-role '("owner" "participant"
+                                                     owner participant))))
+            (signal 'e-session-error
+                    (list "Invalid board association role" association-role)))
+          (when (and routing-policy
+                     (not (e-session--board-routing-policy-valid-p
+                           routing-policy)))
+            (signal 'e-session-board-routing-invalid
+                    (list "Invalid board routing policy" routing-policy)))
+          (let ((board-state (list :board-id (copy-sequence board-id)
+                                   :principal (copy-sequence principal))))
+            (when association-role
+              (plist-put board-state :association-role
+                         (if (symbolp association-role)
+                             (symbol-name association-role)
+                           association-role)))
+            (when routing-policy
+              (plist-put
+               board-state :routing-policy
+               (e-session--normalize-board-routing-policy routing-policy)))
+            (plist-put session :board-session-state board-state)
+            (let* ((session-id (plist-get session :id))
+                   (root-record (car (plist-get session :admission-records)))
+                   (state-record
+                    (list :type "board-session-state"
+                          :session-id session-id
+                          :board-state board-state
+                          :board-id board-id
+                          :principal principal
+                          :board-output-sequence
+                          (or (plist-get session :board-output-sequence) 0)
+                          :board-activity-sequence
+                          (or (plist-get session :board-activity-sequence) 0)))
+                   (records (list root-record state-record))
+                   (prepared (mapcar #'e-session--record-for-json records)))
+              ;; Validate the complete pair before the reservation can be
+              ;; attached.  Controller stores additionally prepare one batch
+              ;; command, keeping the two durable records under one retry id.
+              (if-let ((controller (e-session--persistence-controller store)))
+                  (e-session-persistence-validate-admission
+                   controller session-id prepared)
+                (dolist (record prepared)
+                  (json-encode record)))
+              (plist-put session :admission-records prepared)
+              (e-session--index-session-entries store session)
+              session)))
+      (error
+       (ignore-errors
+         (e-session-abort-created store (plist-get session :id)))
+       (signal (car error) (cdr error))))))
+
+(defun e-session--append-admission-records-now (store session-id records)
+  "Publish prepared admission RECORDS as one direct journal transaction.
+The replacement file is renamed only after every record has been encoded and
+written, so a direct-store failure cannot publish a partial admission pair."
+  (unless records
+    (signal 'e-session-error (list "Invalid admission journal batch" session-id)))
+  (when (e-session--persistent-p store)
+    (e-session--ensure-directories store)
+    (let* ((file (e-session--session-file store session-id))
+           (temporary (make-temp-name (concat file ".admission-"))))
+      (unwind-protect
+          (with-temp-buffer
+            (when (file-readable-p file)
+              (insert-file-contents file))
+            (goto-char (point-max))
+            (dolist (record records)
+              (insert (json-encode record) "\n"))
+            (write-region (point-min) (point-max) temporary nil 'silent)
+            (rename-file temporary file t))
+        (when (file-exists-p temporary)
+          (delete-file temporary))))))
+
+(defun e-session-commit-board-admission (store session-id)
+  "Publish one previously reserved board admission atomically.
+The session root and board-state records are already validated and detached.
+Direct stores append the pair in one journal write, queued stores enqueue both
+only after preparation, and controller stores submit one batch command.  Any
+failure removes the private reservation and its owned pending work."
+  (let* ((session (e-session--get-live store session-id))
+         (records (and (plist-get session :admission-pending)
+                       (plist-get session :admission-records))))
+    (unless (and (plist-get session :admission-pending)
+                 (listp records) (= (length records) 2))
+      (signal 'e-session-error
+              (list "Session has no pending board admission" session-id)))
+    (condition-case error
+        (progn
+          (cond
+           ((e-session--persistence-controller store)
+            (e-session-persistence-submit-admission
+             (e-session--persistence-controller store) session-id records)
+            ;; The batch writer owns journal atomicity; the normal checkpoint
+            ;; request publishes the derived index only after that batch has
+            ;; reached the writer's serial queue.
+            (e-session--mark-checkpoint-dirty store session-id)
+            (e-session--write-index store))
+           ((e-session--queued-writes-p store)
+            (e-session--mark-checkpoint-dirty store session-id)
+            (e-session--schedule-write-queue store)
+            (push (e-session--queued-admission-entry store session-id records)
+                  (e-session-store-write-queue store))
+            (e-session--adjust-unsettled-writes store 1)
+            (e-session--write-index store))
+           (t
+            (e-session--append-admission-records-now store session-id records)
+            (e-session--mark-checkpoint-dirty store session-id)
+            (e-session--write-index store)))
+          (cl-remf session :admission-pending)
+          (cl-remf session :admission-records)
+          (e-session--index-session-entries store session)
+          session)
+      (error
+       (ignore-errors (e-session-abort-created store session-id))
+       (signal (car error) (cdr error))))))
 
 (defun e-session-abort-created (store session-id)
   "Remove a newly created SESSION-ID after an owning service failure.
@@ -3709,10 +3947,14 @@ any queued direct-store writes, rather than appending a user-visible tombstone
                           (e-session--checkpoint-file store session-id)))
         (when (file-exists-p file)
           (delete-file file)))
-      ;; Keep the derived catalog truthful for direct and queued stores.  A
-      ;; controller's already-submitted outbox is outside this rollback API;
-      ;; its caller must fail before submission when durable atomicity is
-      ;; required.
+      ;; Remove retained controller appends owned by this admission.  Commands
+      ;; already acknowledged by the writer cannot be retracted here; their
+      ;; session files are removed above and an unexpected late acknowledgement
+      ;; remains visible to the persistence owner rather than being swallowed.
+      (when-let ((controller (e-session--persistence-controller store)))
+        (e-session-persistence--discard-retained-admission-commands
+         controller session-id))
+      ;; Keep the derived catalog truthful for direct and queued stores.
       (unless (or (e-session--persistence-controller store)
                   (e-session-store-index-write-pending store))
         ;; Go through the ordinary path: queued stores retain their shared
@@ -3868,6 +4110,8 @@ persisted."
              (not (e-session--board-routing-policy-valid-p routing-policy)))
     (error "Invalid board routing policy: %S" routing-policy))
   (let* ((session (e-session--get-live store session-id))
+         (had-state (plist-member session :board-session-state))
+         (old-state (plist-get session :board-session-state))
          (board-state (list :board-id (copy-sequence board-id)
                             :principal (copy-sequence principal))))
     (when association-role
@@ -3878,17 +4122,30 @@ persisted."
             (plist-put
              board-state :routing-policy
              (e-session--normalize-board-routing-policy routing-policy))))
-    (plist-put session :board-session-state (copy-tree board-state))
-    (e-session--append-record
-     store session-id
-     (list :type "board-session-state" :session-id session-id
-           :board-state board-state :board-id board-id :principal principal
-           :board-output-sequence
-           (or (plist-get session :board-output-sequence) 0)
-           :board-activity-sequence
-           (or (plist-get session :board-activity-sequence) 0)))
-    (e-session--write-index store)
-    (copy-tree board-state)))
+    (let ((record
+           (list :type "board-session-state" :session-id session-id
+                 :board-state board-state :board-id board-id
+                 :principal principal
+                 :board-output-sequence
+                 (or (plist-get session :board-output-sequence) 0)
+                 :board-activity-sequence
+                 (or (plist-get session :board-activity-sequence) 0))))
+      ;; Validate/encode the complete record while the previous association is
+      ;; still authoritative.  A controller command preparation error therefore
+      ;; cannot leave a partially upgraded association behind.
+      (e-session--preflight-record store session-id record)
+      (condition-case error
+          (progn
+            (plist-put session :board-session-state (copy-tree board-state))
+            (e-session--append-record store session-id record)
+            (e-session--write-index store)
+            (copy-tree board-state))
+        (error
+         (if had-state
+             (plist-put session :board-session-state old-state)
+           (setq session (e-session--plist-remove
+                          session :board-session-state)))
+         (signal (car error) (cdr error)))))))
 
 (defun e-session--fork-message-seed (message)
   "Return MESSAGE stripped of source-session identity for fork replay.

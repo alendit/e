@@ -802,6 +802,52 @@ retain the returned admission token and reopen it explicitly when appropriate."
                       e-board-runtime--endpoint-attachments)
              attachment))))
 
+(defun e-board-runtime-abort-new-attachment (attachment)
+  "Discard unpublished ATTACHMENT after an admission failure.
+Remove only exact runtime ownership, activity sink, and registry membership;
+this path is not a general participant removal operation and emits no durable
+board event."
+  (when (e-board-runtime-attachment-p attachment)
+    (let* ((board (e-board-runtime-attachment-board attachment))
+           (participant (e-board-runtime-attachment-participant attachment))
+           (harness (e-board-runtime-attachment-harness attachment))
+           (session-id (e-board-runtime-attachment-session-id attachment)))
+      (when (e-board-runtime-attachment-subscription attachment)
+        (e-harness--remove-activity-sink
+         harness (e-board-runtime-attachment-subscription attachment)))
+      (dolist (table/key
+               (list (cons e-board-runtime--attachments
+                           (and participant
+                                (e-board-runtime--attachment-key
+                                 board participant)))
+                     (cons e-board-runtime--session-attachments
+                           (e-board-runtime--attachment-session-key attachment))
+                     (cons e-board-runtime--endpoint-attachments
+                           (e-board-runtime--session-key harness session-id))))
+        (when (eq (gethash (cdr table/key) (car table/key)) attachment)
+          (remhash (cdr table/key) (car table/key))))
+      (when participant
+        ;; The chat service may have installed the participant's ordinary
+        ;; pickup subscription before a later admission step failed.  This
+        ;; attachment is still unpublished and owns every subscription for
+        ;; its participant; remove those live routes before dropping the
+        ;; participant so failed admission cannot leave an active ghost.
+        (let* ((source-board
+                (e-board-registry-board-source-board board))
+               (participant-id
+                (e-board-registry-participant-id participant)))
+          (dolist (subscription (copy-sequence
+                                 (e-board-subscriptions source-board)))
+            (when (equal (e-board-subscription-participant-id subscription)
+                         participant-id)
+              (setf (e-board-subscription-state subscription) 'cancelled)
+              (remhash (e-board-subscription-id subscription)
+                       (e-board-subscription-id-table source-board)))))
+        (e-board-registry-abort-participant-admission board participant))
+      (setf (e-board-runtime-attachment-state attachment) 'dormant
+            (e-board-runtime-attachment-subscription attachment) nil)
+      t)))
+
 (defun e-board-runtime--register-invocation
     (attachment turn-id tool-call-id callback)
   "Capture CALLBACK behind one exact invocation target before work starts.
@@ -1500,6 +1546,48 @@ only the generic status fields presentation consumers need."
       (e-session-get (e-harness-sessions harness) session-id)
     (error (signal 'e-board-runtime-session-missing (list session-id)))))
 
+(cl-defun e-board-runtime-admission-available-p
+    (board-or-id harness session-id participant-id
+                 &key principal (require-session t))
+  "Return non-nil when one BOARD runtime admission is currently available.
+The query owns the process-local conflicts checked by attachment: active board
+admission, participant identity, principal authorization, and one concrete
+HARNESS SESSION-ID endpoint.  When REQUIRE-SESSION is nil the session may be a
+newly predicted id; this is the preflight used before participant creation.
+The function only reads registry/runtime/session state and never allocates or
+publishes an attachment."
+  (e-board-runtime--require-admission)
+  (unless (e-harness-p harness)
+    (signal 'wrong-type-argument (list 'e-harness-p harness)))
+  (unless (and (stringp session-id) (not (string-empty-p session-id)))
+    (signal 'e-board-runtime-error
+            (list "Admission requires a non-empty session id" session-id)))
+  (unless (and (stringp participant-id) (not (string-empty-p participant-id)))
+    (signal 'e-board-registry-error
+            (list "Admission requires a non-empty participant id"
+                  participant-id)))
+  (let* ((board (e-board-runtime--active-board board-or-id))
+         (store (e-harness-sessions harness))
+         (session-key (e-board-runtime--session-key harness session-id))
+         (participants (e-board-registry-board-participants board)))
+    (when require-session
+      (e-board-runtime--require-live-session harness session-id))
+    (when (and principal
+               (not (e-board-registry-principal-role board principal)))
+      (signal 'e-board-registry-authorization-denied
+              (list (e-board-registry-board-id board) principal 'participant)))
+    (when (gethash participant-id participants)
+      (signal 'e-board-registry-id-conflict (list participant-id)))
+    (when (or (gethash session-key e-board-runtime--session-attachments)
+              (gethash session-key e-board-runtime--endpoint-attachments))
+      (signal 'e-board-runtime-session-busy (list session-key)))
+    ;; For a predicted id, keep the query useful even before the runtime
+    ;; session exists: an explicit duplicate is still an admission conflict.
+    (when (and (not require-session)
+               (gethash session-id (e-session-store-sessions store)))
+      (signal 'e-session-duplicate (list session-id)))
+    t))
+
 (defun e-board-runtime--delivery-metadata (pickup)
   "Return harness metadata that identifies the frozen PICKUP."
   (let ((attempt (or (e-board-pickup-attempt pickup)
@@ -1599,7 +1687,8 @@ steering lane while queue-mode enters the later-turn inbox."
 
 (cl-defun e-board-runtime-attach
     (board-or-id harness session-id
-                 &key participant-id author principal controller delivery-function)
+                 &key participant-id author principal controller delivery-function
+                 defer-participant-publication)
   "Attach existing live HARNESS SESSION-ID to BOARD-OR-ID as one participant.
 
 DELIVERY-FUNCTION is called as (FUNCTION ATTACHMENT PICKUP MESSAGE) for each
@@ -1615,13 +1704,15 @@ When omitted, the conservative idle-only harness delivery port is used."
    board-or-id harness session-id
    :participant-id participant-id :author author :principal principal
    :controller controller
-   :delivery-function delivery-function))
+   :delivery-function delivery-function
+   :defer-participant-publication defer-participant-publication))
 
 (cl-defun e-board-runtime--attach-resolved
     (board-or-id harness session-id
                  &key participant-id author principal controller delivery-function
                  instance-id instance-catalog-generation harness-id
-                 harness-object-generation endpoint-token)
+                 harness-object-generation endpoint-token
+                 defer-participant-publication)
   "Attach one already-resolved endpoint with optional qualified metadata."
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
@@ -1634,35 +1725,52 @@ When omitted, the conservative idle-only harness delivery port is used."
               (gethash endpoint-key e-board-runtime--endpoint-attachments))
       (signal 'e-board-runtime-session-busy (list session-key))))
   (let* ((board (e-board-runtime--active-board board-or-id))
-         (participant (e-board-registry-add-participant
-                       board :id participant-id :author author :principal principal
-                       :controller controller))
-         (key (e-board-runtime--attachment-key board participant)))
-    (when (gethash key e-board-runtime--attachments)
-      (signal 'e-board-runtime-attachment-exists (list key)))
-    (e-board-runtime--activate-attachment
-     (e-board-runtime--make-attachment
-      board participant harness session-id delivery-function 1
-      :instance-id instance-id
-      :instance-catalog-generation instance-catalog-generation
-      :harness-id harness-id
-      :harness-object-generation harness-object-generation
-      :endpoint-token endpoint-token))))
+         participant attachment)
+    (condition-case error
+        (progn
+          (setq participant
+                (e-board-registry-add-participant
+                 board :id participant-id :author author :principal principal
+                 :controller controller
+                 :publish-event (not defer-participant-publication)))
+          (let ((key (e-board-runtime--attachment-key board participant)))
+            (when (gethash key e-board-runtime--attachments)
+              (signal 'e-board-runtime-attachment-exists (list key))))
+          (setq attachment
+                (e-board-runtime--make-attachment
+                 board participant harness session-id delivery-function 1
+                 :instance-id instance-id
+                 :instance-catalog-generation instance-catalog-generation
+                 :harness-id harness-id
+                 :harness-object-generation harness-object-generation
+                 :endpoint-token endpoint-token))
+          (e-board-runtime--activate-attachment attachment))
+      (error
+       (when attachment
+         (e-board-runtime-abort-new-attachment attachment))
+       (when (and participant
+                  (gethash (e-board-registry-participant-id participant)
+                           (e-board-registry-board-participants board)))
+         (e-board-registry-abort-participant-admission board participant))
+       (signal (car error) (cdr error))))))
 
 (cl-defun e-board-runtime-attach-instance
     (board-or-id instance-id session-id
-                 &key participant-id author principal controller delivery-function)
+                 &key participant-id author principal controller delivery-function
+                 defer-participant-publication)
   "Attach an existing live SESSION-ID through configured INSTANCE-ID.
 This operation never invokes an instance factory or loads dormant history."
   (e-board-runtime--require-admission)
   (e-board-runtime--attach-instance-resolved
    board-or-id instance-id session-id
    :participant-id participant-id :author author :principal principal
-   :controller controller :delivery-function delivery-function))
+   :controller controller :delivery-function delivery-function
+   :defer-participant-publication defer-participant-publication))
 
 (cl-defun e-board-runtime--attach-instance-resolved
     (board-or-id instance-id session-id
-                 &key participant-id author principal controller delivery-function)
+                 &key participant-id author principal controller delivery-function
+                 defer-participant-publication)
   "Attach one admitted live SESSION-ID through INSTANCE-ID to BOARD-OR-ID."
   (let* ((instance-generation (e-harness-instance-generation))
          (instance (or (e-harness-instance-get instance-id)
@@ -1683,6 +1791,7 @@ This operation never invokes an instance factory or loads dormant history."
        :participant-id participant-id :author author :principal principal
        :controller controller
        :delivery-function delivery-function
+       :defer-participant-publication defer-participant-publication
        :instance-id instance-id
        :instance-catalog-generation instance-generation
        :harness-id harness-id

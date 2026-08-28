@@ -6686,6 +6686,200 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
         (kill-buffer root-buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-board-input-keeps-one-selected-key-through-reopen ()
+  "A board input has one selected presentation key live and after replay.
+
+The input is deliberately observed through the real service subscription.  A
+same-causal sibling output/failure/cancellation is then projected through that
+subscription as well, so the input identity assertion also guards the
+selected/sibling isolation boundary."
+  (let ((directory (make-temp-file "e-chat-input-identity-" t))
+        (e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        live-buffer replay-buffer)
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (harness (e-harness-create
+                         :sessions store :enabled-layer-ids nil))
+               (session (e-chat-service-create-session
+                         :harness harness :id "input-identity"))
+               (session-id (plist-get session :id))
+               (binding (e-chat-service-binding harness session-id))
+               (board (e-chat-service-binding-board binding))
+               (source (e-board-registry-board-source-board board))
+               (participant-id
+                (e-board-registry-participant-id
+                 (e-board-runtime-attachment-participant
+                  (e-chat-service-binding-attachment binding))))
+               (sibling-id "sibling-participant")
+               (input-id nil)
+               (live-input-keys nil)
+               (live-selected-record nil))
+          (e-board-registry-add-participant
+           board :id sibling-id :author (format "participant:%s" sibling-id)
+           :principal (e-board-registry-board-principal board)
+           :publish-event nil)
+          (setq live-buffer
+                (e-chat-open :harness harness :session-id session-id))
+          (with-current-buffer live-buffer
+            (setq e-chat--assume-redraw-visible t))
+          (setq input-id
+                (e-chat-service-submit-session
+                 harness session-id "ordinary input"))
+          (with-current-buffer live-buffer
+            (e-chat-service--drain-subscription e-chat--event-subscription)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer live-buffer))
+            (setq live-input-keys
+                  (cl-remove-if-not
+                   (lambda (key) (equal key input-id))
+                   (hash-table-keys e-chat--turn-registry)))
+            (setq live-selected-record
+                  (e-chat--existing-turn-record input-id)))
+          (should (equal live-input-keys (list input-id)))
+          (should live-selected-record)
+          (should-not
+           (seq-some
+            (lambda (key)
+              (and (stringp key)
+                   (string-match-p ":observed:" key)))
+            (hash-table-keys
+             (with-current-buffer live-buffer e-chat--turn-registry))))
+          ;; These rows all causally answer the ordinary input, but belong to
+          ;; another participant.  They must stay renderable without mutating
+          ;; the selected input record.
+          (dolist (_message
+                   (list
+                    (e-board-publication-message
+                     (e-board-post-output
+                      source :id "sibling-output"
+                      :author (format "participant:%s" sibling-id)
+                      :subject-participant-id sibling-id
+                      :source-turn-id "sibling-turn" :tags '(main)
+                      :content "Sibling output"
+                      :reply-to-message-ids (list input-id)
+                      :source-output-key '(f009-output 1 1)))
+                    (e-board-publication-message
+                     (e-board-post-activity
+                      source :id "sibling-failure"
+                      :author (format "participant:%s" sibling-id)
+                      :subject-participant-id sibling-id
+                      :source-turn-id "sibling-turn"
+                      :activity-kind 'turn-summary :tags '(main)
+                      :attributes '(:status failed :error "sibling failure")
+                      :reply-to-message-ids (list input-id)
+                      :source-activity-key '(f009-failure 1 1)))
+                    (e-board-publication-message
+                     (e-board-post-activity
+                      source :id "sibling-cancellation"
+                      :author (format "participant:%s" sibling-id)
+                      :subject-participant-id sibling-id
+                      :source-turn-id "sibling-cancel"
+                      :activity-kind 'turn-summary :tags '(main)
+                      :attributes '(:status cancelled)
+                      :reply-to-message-ids (list input-id)
+                      :source-activity-key '(f009-cancel 1 1)))))
+            (ignore _message))
+          (with-current-buffer live-buffer
+            (e-chat-service--drain-subscription e-chat--event-subscription)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer live-buffer))
+            ;; Sibling rendering may complete bookkeeping timestamps on the
+            ;; already-existing selected record, but it must not replace that
+            ;; record or create a second record for the input key.
+            (should (eq (e-chat--existing-turn-record input-id)
+                        live-selected-record))
+            (should
+             (cl-some
+              (lambda (key)
+                (and (consp key)
+                     (eq (car key) :observed-board-turn)))
+              (hash-table-keys e-chat--turn-registry))))
+          (e-session-flush-write-queue store)
+          (kill-buffer live-buffer)
+          (setq live-buffer nil)
+          ;; Rebuild the board/service process state, then let the normal chat
+          ;; open path render the persisted observer snapshot.
+          (setq e-board--registry (make-hash-table :test 'equal)
+                e-board--id-sequence 0
+                e-board-registry--boards (make-hash-table :test 'equal)
+                e-board-registry--id-sequence 0
+                e-board-registry--unsettled-pickup-count 0
+                e-board-registry--unsettled-effect-count 0
+                e-board-registry--unsettled-routing-count 0
+                e-board-registry--unsettled-generation 0
+                e-board-runtime--attachments (make-hash-table :test 'equal)
+                e-board-runtime--session-attachments (make-hash-table :test 'equal)
+                e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)
+                e-board-runtime--invocations (make-hash-table :test 'equal)
+                e-board-runtime--pending-pickup-head nil
+                e-board-runtime--pending-pickup-tail nil
+                e-board-runtime--pending-pickup-set (make-hash-table :test 'equal)
+                e-board-runtime--pickup-drain-scheduled nil
+                e-chat-service--bindings
+                (make-hash-table :test 'eq :weakness 'key)
+                e-chat-service--board-bindings (make-hash-table :test 'equal)
+                e-chat-service--board-log-owners (make-hash-table :test 'equal))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (restarted (e-harness-create
+                             :sessions loaded :enabled-layer-ids nil))
+                 (restored-binding
+                  (e-chat-service-ensure-binding restarted session-id))
+                 (restored-board
+                  (e-chat-service-binding-board restored-binding))
+                 (restored-source
+                  (e-board-registry-board-source-board restored-board)))
+            (should (equal (e-board-registry-board-id restored-board)
+                           (e-board-registry-board-id board)))
+            (should (equal (e-board-message-count restored-source)
+                           (e-board-message-count source)))
+            (setq replay-buffer
+                  (e-chat-open :harness restarted :session-id session-id))
+            (with-current-buffer replay-buffer
+              (setq e-chat--assume-redraw-visible t)
+              (let ((replay-input-keys
+                     (cl-remove-if-not
+                      (lambda (key) (equal key input-id))
+                      (hash-table-keys e-chat--turn-registry))))
+                (should (equal replay-input-keys (list input-id)))
+                (should (e-chat--existing-turn-record input-id))
+                (should-not
+                 (seq-some
+                  (lambda (key)
+                    (and (stringp key)
+                         (string-match-p ":observed:" key)))
+                  (hash-table-keys e-chat--turn-registry)))
+                (should (= (length
+                            (cl-remove-if-not
+                             (lambda (key)
+                               (and (consp key)
+                                    (eq (car key) :observed-board-turn)))
+                             (hash-table-keys e-chat--turn-registry)))
+                           2))))))
+      (when (buffer-live-p live-buffer)
+        (kill-buffer live-buffer))
+      (when (buffer-live-p replay-buffer)
+        (kill-buffer replay-buffer))
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-final-message-preserves-follow-up-draft ()
   "Assistant final output keeps already typed follow-up composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-final-preserve-draft")))

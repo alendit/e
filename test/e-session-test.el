@@ -186,6 +186,61 @@ stand in for the pure curation preparation path."
         (should-not
          (e-session-board-routing-policy-valid-p function-form-policy)))))
 
+(ert-deftest e-session-test-board-routing-policy-attributes-reject-before-mutation ()
+  "Invalid attribute clauses fail before queue, JSON, or association changes."
+  (let* ((directory (make-temp-file "e-session-routing-attributes-" t))
+         (store (e-session-persistent-index-store-create
+                 directory :write-mode 'queued))
+         (session-id "routing-attributes")
+         (base-policy (e-session-test--routing-policy "attribute-participant"))
+         (invalid-attributes
+          (list [car "car"]
+                '(car "car")
+                '(:kind "ordinary" :odd)
+                '((:kind . "ordinary") ("kind" . "bad"))))
+         persisted)
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (e-session-declare-board-state
+           store session-id "chat:routing-attributes"
+           "attribute-board" "participant" base-policy)
+          (let ((association-before
+                 (copy-tree
+                  (e-session-board-association
+                   (e-session-get store session-id))))
+                (queue-before
+                 (copy-tree (e-session-store-write-queue store))))
+            (dolist (attributes invalid-attributes)
+              (let ((policy (copy-tree base-policy)))
+                (plist-put
+                 (plist-get policy :pickup-selector)
+                 :attributes attributes)
+                (should-not (e-board-selector-attributes-valid-p attributes))
+                (let ((json-called nil))
+                  (cl-letf (((symbol-function 'json-encode)
+                             (lambda (&rest _)
+                               (setq json-called t)
+                               (error "unexpected JSON encoding")))
+                            ((symbol-function 'e-session--append-record)
+                             (lambda (&rest _)
+                               (setq persisted t)
+                               (error "unexpected persistence"))))
+                    (should-error
+                     (e-session-declare-board-state
+                      store session-id "chat:routing-attributes"
+                      "attribute-board" "participant" policy)))
+                  (should-not json-called))
+              (should (equal
+                       (e-session-board-association
+                        (e-session-get store session-id))
+                       association-before))
+              (should (equal (e-session-store-write-queue store)
+                             queue-before)))
+            (should-not persisted)))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t)))))
+
 (ert-deftest e-session-test-board-routing-policy-budget-is-pre-encoding-and-bounded ()
   "Routing admission rejects exact overages before encoding or mutation."
   (let* ((store (e-session-store-create))
@@ -232,6 +287,42 @@ stand in for the pure curation preparation path."
         (setq deep (list :nested deep)))
       (let ((e-session--board-routing-policy-node-budget 32))
         (should-not (e-session--board-routing-value-budget-valid-p deep))))))
+
+(ert-deftest e-session-test-board-routing-policy-public-budget-bounds-collections ()
+  "Public policy validation bounds hostile tags and vectors before field scans."
+  (let* ((node-limit e-session--board-routing-policy-node-budget)
+         (huge-tags (make-list (* 4 node-limit) "tag"))
+         (huge-vector (make-vector (* 4 node-limit) nil))
+         (base
+          '(:participant-id "p"
+            :pickup-selector (:tags (private))
+            :observer-selector (:tags (private))
+            :default-tags (private)
+            :default-to nil))
+         (policies
+          (list
+           (let ((policy (copy-tree base)))
+             (plist-put (plist-get policy :pickup-selector)
+                        :tags huge-tags)
+             policy)
+           (let ((policy (copy-tree base)))
+             (plist-put (plist-get policy :pickup-selector)
+                        :attributes huge-vector)
+             policy))))
+    (dolist (policy policies)
+      (let ((json-called nil)
+            (e-session--board-routing-budget-visit-count 0))
+        (cl-letf (((symbol-function 'json-encode)
+                   (lambda (&rest _)
+                     (setq json-called t)
+                     (error "unexpected JSON encoding"))))
+          (should-not (e-session-board-routing-policy-valid-p policy)))
+        ;; The budget walker may inspect the rejecting node itself, but never
+        ;; performs work proportional to the oversized collection's full
+        ;; width.  In particular, vector children are not all enqueued.
+        (should (<= e-session--board-routing-budget-visit-count
+                    (1+ node-limit)))
+        (should-not json-called)))))
 
 (ert-deftest e-session-test-board-routing-policy-encoded-budget-covers-scalars-and-depth ()
   "The full reversible policy has an exact encoded boundary and safe depth."

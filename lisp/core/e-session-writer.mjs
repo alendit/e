@@ -85,6 +85,12 @@ async function writeAtomicJson(target, value) {
   await fs.rename(temporary, target);
 }
 
+async function writeAtomicText(target, value) {
+  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(temporary, value, "utf8");
+  await fs.rename(temporary, target);
+}
+
 async function knownCommandIds(directory, sessionId) {
   let ids = new Set();
   const dir = await sessionsDirectory(directory);
@@ -332,6 +338,31 @@ async function handle(request) {
       const record = { ...request.record, "writer-command-id": request.id };
       await fs.appendFile(path.join(dir, `${sessionId}.jsonl`), JSON.stringify(record) + "\n", "utf8");
       if (record.type === "session") await ensureInitialCheckpoint(directory, sessionId, record);
+    }
+  } else if (request.op === "append-batch") {
+    const sessionId = request["session-id"];
+    if (typeof sessionId !== "string" || !sessionId ||
+        !Array.isArray(request.records) || request.records.length === 0) {
+      throw new WriterRequestError("Append batch needs session-id and records");
+    }
+    const knownIds = await knownCommandIds(directory, sessionId);
+    if (!knownIds.has(request.id)) {
+      const dir = await sessionsDirectory(directory);
+      const journal = path.join(dir, `${sessionId}.jsonl`);
+      let existing = "";
+      try { existing = await fs.readFile(journal, "utf8"); }
+      catch (error) { if (error?.code !== "ENOENT") throw error; }
+      const additions = request.records.map((record) =>
+        JSON.stringify({ ...record, "writer-command-id": request.id }) + "\n");
+      // The admission pair is one journal transaction: construct the complete
+      // next file and publish it with one rename, so a controller retry cannot
+      // expose a root without its board association.
+      await writeAtomicText(journal, existing + additions.join(""));
+      if (request.records[0]?.type === "session") {
+        await ensureInitialCheckpoint(directory, sessionId, {
+          ...request.records[0], "writer-command-id": request.id,
+        });
+      }
     }
   } else if (request.op === "checkpoint") {
     if (!Array.isArray(request.sessions) || request.sessions.length !== 1) {

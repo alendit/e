@@ -139,6 +139,57 @@
         (should (equal (e-board-pickup-subscription-ids pickup)
                        '("one-address")))))))
 
+(ert-deftest e-board-test-attribute-grammar-routes-valid-plist-and-alist ()
+  "The board-owned attribute grammar routes both supported top-level forms."
+  (e-board-test--with-empty-registry
+    (dolist (case
+             (list
+              (list "nil" nil)
+              (list "plist"
+                    '(:kind "ordinary"
+                      :nested (car "car" (:inside [car "car"])))
+                    '(:kind "ordinary"
+                      :nested (car "car" (:inside [car "car"]))))
+              (list "alist"
+                    '((:kind . "ordinary")
+                      (:nested . (car "car" (:inside [car "car"]))))
+                    '(:kind "ordinary"
+                      :nested (car "car" (:inside [car "car"]))))))
+      (pcase-let ((`(,name ,selector-attributes ,message-attributes) case))
+        (should (e-board-selector-attributes-valid-p selector-attributes))
+        (let* ((board (e-board-create :id (concat "attribute-" name)))
+               (_participant
+                (e-board-add-participant
+                 board :id "participant" :create-pickup-subscription-id
+                 "address"))
+               (_subscription
+                (e-board-subscribe
+                 board "participant" (list :attributes selector-attributes)
+                 :id "attribute-selector"))
+               (publication
+                (e-board-post-input
+                 board :id "attribute-input" :attributes message-attributes
+                 :content "attribute input"))
+               (message (e-board-publication-message publication)))
+          (should (eq (e-board-message-routing-state message) 'routed))
+          (should (equal (e-board-message-matching-participant-ids message)
+                         '("participant")))
+          (should (= (length (e-board-message-pickup-ids message)) 1))
+          (should (equal
+                   (e-board-pickup-participant-id
+                    (e-board-pickup
+                     board (car (e-board-message-pickup-ids message))))
+                   "participant")))))))
+
+(ert-deftest e-board-test-attribute-grammar-rejects-non-clause-shapes ()
+  "The board matcher rejects unsupported top-level attribute shapes early."
+  (dolist (attributes
+           (list [car "car"]
+                 '(car "car")
+                 '(:kind "ordinary" :odd)
+                 '((:kind . "ordinary") ("kind" . "bad"))))
+    (should-not (e-board-selector-attributes-valid-p attributes))))
+
 (ert-deftest e-board-test-tag-routes-once-per-participant-and-freezes-matches ()
   "Tag routing broadcasts while coalescing several matching subscriptions."
   (e-board-test--with-empty-registry

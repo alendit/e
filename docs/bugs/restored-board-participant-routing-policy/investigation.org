@@ -253,8 +253,8 @@ Focused repository evidence:
   compilation of the changed Lisp owners passed; no full suite was run.
 
 The earlier settlement incident and partial-fix counts above are retained as
-historical evidence.  The new ownership gate supersedes their conclusion
-that the restored-routing defect remained open.
+historical evidence.  The new ownership gate addresses that gap in this
+candidate, but does not replace the required independent acceptance.
 
 * F001-F007 Implementation And Evidence (2026-08-28)
 
@@ -308,6 +308,38 @@ Current repository-side evidence is bounded as follows:
 The bug index remains =New= pending a fresh independent review of the exact
 revision.  The historical full-suite classification above is not a current
 acceptance claim; the focused evidence is the bounded candidate evidence only.
+
+* Integrated candidate closure (2026-08-28)
+
+This candidate now has one explicit admission boundary for a board-backed
+participant.  Board and routing-policy validation, participant identity, and
+the exact next controller command shape are prepared before the association is
+attached.  Direct, queued, and controller paths publish the complete session
+admission pair only after that preparation succeeds.  The deferred participant
+event is published only after successful admission; an expected rejection is
+not represented by a durable participant-added event.  The application-service
+rollback removes only this operation's unpublished live state, queued writes,
+and retained, unacknowledged controller append work.  It does not claim to
+retract an acknowledged controller command; unexpected post-submission errors
+remain visible for recovery.
+
+The selected-event fix is likewise a candidate implementation: service
+projection derives selected ownership from the restored binding and event
+subject, and the shell settles only selected-owned terminal output/activity.
+Sibling success, failure, cancellation, and empty-output rows remain
+renderable without mutating selected progress, status, composer, or
+submit/steer state.  The stable replay key is board/participant/source-turn
+scoped, with a per-message fallback only for malformed subjectless synthetic
+rows.  The routing-policy codec keeps symbol/string selector attributes
+distinct through JSONL and the Node checkpoint/index path while rejecting
+unbudgeted structures before mutation.
+
+The focused F009 and controller-command-shape regressions are green (4/4 and
+2/2 respectively); the broader owner-lane results are recorded only after the
+bounded closure run below.  This section is an implementation handoff, not a
+fixed-point acceptance: the bug remains =New= and =In-review= pending an
+independent review of the exact candidate revision.  Running Emacs was left
+untouched.
 
 * Presentation cleanup
 

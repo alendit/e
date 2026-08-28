@@ -210,8 +210,39 @@ input publication and the acknowledgement fact."
     (ignore-errors
       (e-board-registry-detach-client
        board
-       (e-board-registry-client-id
+         (e-board-registry-client-id
         (e-chat-service-binding-client binding))))))
+
+(defun e-chat-service--discard-binding (binding)
+  "Discard an unpublished BINDING and all of its owned runtime state.
+This is the application-service admission inverse, not ordinary participant
+removal: it emits no board removal event and removes the binding from every
+  process-local catalog before releasing its client and attachment."
+  (when (e-chat-service-binding-p binding)
+    (let* ((harness (e-chat-service-binding-harness binding))
+           (session-id (e-chat-service-binding-session-id binding))
+           (board (e-chat-service-binding-board binding))
+           (board-id (e-board-registry-board-id board))
+           (bindings (e-chat-service--harness-bindings harness))
+           (attachment (e-chat-service-binding-attachment binding))
+           (client (e-chat-service-binding-client binding)))
+      (dolist (subscription (e-chat-service-binding-subscribers binding))
+        (setf (e-chat-service-subscription-active-p subscription) nil))
+      (setf (e-chat-service-binding-subscribers binding) nil)
+      (when (eq (gethash session-id bindings) binding)
+        (remhash session-id bindings))
+      (puthash board-id
+               (delq binding (gethash board-id e-chat-service--board-bindings))
+               e-chat-service--board-bindings)
+      (when (eq (gethash board-id e-chat-service--board-log-owners) binding)
+        (remhash board-id e-chat-service--board-log-owners))
+      (when attachment
+        (ignore-errors (e-board-runtime-abort-new-attachment attachment)))
+      (when client
+        (ignore-errors
+          (e-board-registry-detach-client
+           board (e-board-registry-client-id client))))
+      t)))
 
 (defun e-chat-service-binding (harness session-id)
   "Return HARNESS SESSION-ID's live chat board binding, or nil."
@@ -378,8 +409,12 @@ so a sibling cannot settle a selected binding through a malformed projection."
                 :subject-participant-id
                 subject-participant-id
                 :selected-participant-p
-                (e-chat-service--selected-participant-p
-                 binding subject-participant-id)
+                ;; Ordinary user input has no participant subject, but it is
+                ;; the selected conversation turn.  Terminal/output ownership
+                ;; remains subject-based below.
+                (or (eq kind 'input)
+                    (e-chat-service--selected-participant-p
+                     binding subject-participant-id))
                 :source-turn-id source-turn-id
                 :caused-by-delivery-ids
                 (copy-tree (e-board-message-caused-by-delivery-ids message)))))
@@ -430,6 +465,14 @@ so a sibling cannot settle a selected binding through a malformed projection."
                                :board-seq (e-board-message-seq message)
                                :subject-participant-id
                                (e-board-message-subject-participant-id message)
+                               ;; Replay uses the nested message projection
+                               ;; for observed-row identity.  Preserve the
+                               ;; durable source turn there as well as on the
+                               ;; outer board event so one sibling does not
+                               ;; split into an output record plus activity
+                               ;; records after reopen.
+                               :source-turn-id
+                               (e-board-message-source-turn-id message)
                                :selected-participant-p
                                (plist-get identity :selected-participant-p))))))
       ('activity
@@ -692,14 +735,17 @@ resolved participant identity so restart never needs shell or caller policy."
               (list :subject-participant-id participant-id)
             observer-selector))
          (default-to (if (eq default-to :self) participant-id default-to))
-         (policy (list :participant-id (copy-sequence participant-id)
-                       :pickup-selector (copy-tree pickup-selector)
-                       :observer-selector (copy-tree observer-selector)
-                       :default-tags (copy-tree default-tags)
-                       :default-to (copy-tree default-to))))
+         ;; Keep caller-owned values untouched until session's bounded
+         ;; admission walk has completed.  The session copy is the one durable
+         ;; detached representation used after this check.
+         (policy (list :participant-id participant-id
+                       :pickup-selector pickup-selector
+                       :observer-selector observer-selector
+                       :default-tags default-tags
+                       :default-to default-to)))
     (unless (e-session-board-routing-policy-valid-p policy)
       (signal 'e-session-error (list "Invalid board routing policy" policy)))
-    policy))
+    (e-session--board-routing-copy-value policy)))
 
 (defun e-chat-service--canonical-legacy-root-p (session association)
   "Return non-nil when SESSION has the established root identity defaults."
@@ -735,14 +781,16 @@ resolved participant identity so restart never needs shell or caller policy."
   (and participant-id-supplied-p pickup-selector-supplied-p
        observer-selector-supplied-p default-tags-supplied-p
        default-to-supplied-p
-       (and (stringp participant-id)
-            (not (string-empty-p participant-id)))
-       (e-session--board-routing-selector-valid-p pickup-selector)
-       (or (eq observer-selector :self)
-           (e-session--board-routing-selector-valid-p observer-selector))
-       (e-session--board-routing-tag-list-valid-p default-tags)
-       ;; `nil' is the valid explicit default-to value.
-       (or (null default-to) (stringp default-to) (eq default-to :self))))
+       ;; Route all complete-policy validation through the session-owned
+       ;; bounded admission contract.  In particular, do not scan a hostile
+       ;; selector/tag value here before that budget is charged.
+       (condition-case nil
+           (progn
+             (e-chat-service--routing-policy
+              participant-id pickup-selector observer-selector
+              default-tags default-to)
+             t)
+         (e-session-error nil))))
 
 (defun e-chat-service--routing-override-conflicts-p
     (policy participant-id participant-id-supplied-p
@@ -811,79 +859,130 @@ resolved participant identity so restart never needs shell or caller policy."
     (board harness session-id &key principal participant-id
            (pickup-selector '(:tags (main)))
            (observer-selector '(:tags (main)))
-           (default-tags '(main)) default-to)
+           (default-tags '(main)) default-to
+           defer-participant-publication)
   "Install one HARNESS SESSION-ID participant/client binding on BOARD."
   (or (e-chat-service-binding harness session-id)
       (progn
         (e-session-get (e-harness-sessions harness) session-id)
-        (let* ((principal (or principal (e-board-registry-board-principal board)))
-               (client (e-board-registry-attach-client
-                        board :principal principal :author "e-chat"))
-               (requester (e-board-registry-client-requester-context
-                           board (e-board-registry-client-id client)))
-               (attachment
-                (e-board-runtime-attach
-                 board harness session-id :participant-id participant-id
-                 :principal principal :controller principal :author "e-chat"))
-               (participant (e-board-runtime-attachment-participant attachment))
-               (_main-subscription
-                (e-board-registry-install-subscription
-                 board participant pickup-selector))
-               (source-board (e-board-registry-board-source-board board))
-               (snapshot-cursor (e-board-next-seq source-board))
-               (observer (e-board-registry-install-observer
-                          board (e-board-registry-client-id client)
-                          observer-selector
-                          :start-seq snapshot-cursor))
-               (binding
-                (e-chat-service--binding-create
-                 :harness harness :session-id session-id :board board
-                 :client client :requester requester :attachment attachment
-                 :observer observer :subscribers nil
-                 :turn-map (make-hash-table :test 'equal) :input-sequence 0
-                 :default-tags (copy-tree default-tags) :default-to default-to
-                 :message-projection (e-chat-service--make-projection)
-                 :activity-projection (e-chat-service--make-projection))))
-          (puthash session-id binding (e-chat-service--harness-bindings harness))
-          (puthash (e-board-registry-board-id board)
-                   (cons binding
-                         (gethash (e-board-registry-board-id board)
-                                  e-chat-service--board-bindings))
-                   e-chat-service--board-bindings)
-          (unless (gethash (e-board-registry-board-id board)
-                           e-chat-service--board-log-owners)
-            (puthash (e-board-registry-board-id board) binding
-                     e-chat-service--board-log-owners))
-          (setf (e-board-message-notification-function
-                 (e-board-registry-board-source-board board))
-                (lambda (source message)
-                  (when-let ((owner (gethash (e-board-id source)
-                                             e-chat-service--board-log-owners)))
-                    (e-chat-service--persist-board-message owner message))
-                  (dolist (current (copy-sequence
-                                    (gethash (e-board-id source)
-                                             e-chat-service--board-bindings)))
-                    (dolist (subscription
-                             (copy-sequence
-                              (e-chat-service-binding-subscribers current)))
-                      (e-chat-service--schedule-subscription-drain
-                       subscription))
-                    (e-chat-service--schedule-observer-drain current))
-                  (when-let ((owner (gethash (e-board-id source)
-                                              e-chat-service--board-log-owners)))
-                    (e-chat-service--reconcile-board-continuation owner))))
-          (setf (e-board-processing-record-notification-function
-                 (e-board-registry-board-source-board board))
-                (lambda (source record type)
-                  (when-let ((owner (gethash (e-board-id source)
-                                             e-chat-service--board-log-owners)))
-                    (e-chat-service--persist-board-processing-record owner record type))))
-          ;; Materialize only the recent bounded tail.  The observer's live
-          ;; cursor already starts at the same high watermark, so retained
-          ;; history is never rescanned to fill a fixed-capacity projection.
-          (e-chat-service--seed-binding-projection binding)
-          (e-chat-service--reconcile-board-continuation binding)
-          binding))))
+        (let (client requester attachment participant main-subscription
+                     source-board snapshot-cursor observer binding)
+          (condition-case error
+              (progn
+                (setq principal (or principal
+                                    (e-board-registry-board-principal board)))
+                (setq client
+                      (e-board-registry-attach-client
+                       board :principal principal :author "e-chat"))
+                (setq requester
+                      (e-board-registry-client-requester-context
+                       board (e-board-registry-client-id client)))
+                (setq attachment
+                      (e-board-runtime-attach
+                       board harness session-id :participant-id participant-id
+                       :principal principal :controller principal
+                       :author "e-chat"
+                       :defer-participant-publication
+                       defer-participant-publication))
+                (setq participant
+                      (e-board-runtime-attachment-participant attachment))
+                (setq main-subscription
+                      (e-board-registry-install-subscription
+                       board participant pickup-selector))
+                (setq source-board
+                      (e-board-registry-board-source-board board))
+                (setq snapshot-cursor (e-board-next-seq source-board))
+                (setq observer
+                      (e-board-registry-install-observer
+                       board (e-board-registry-client-id client)
+                       observer-selector :start-seq snapshot-cursor))
+                (setq binding
+                      (e-chat-service--binding-create
+                       :harness harness :session-id session-id :board board
+                       :client client :requester requester
+                       :attachment attachment :observer observer
+                       :subscribers nil :turn-map (make-hash-table :test 'equal)
+                       :input-sequence 0 :default-tags (copy-tree default-tags)
+                       :default-to default-to
+                       :message-projection (e-chat-service--make-projection)
+                       :activity-projection (e-chat-service--make-projection)))
+                (puthash session-id binding
+                         (e-chat-service--harness-bindings harness))
+                (puthash (e-board-registry-board-id board)
+                         (cons binding
+                               (gethash (e-board-registry-board-id board)
+                                        e-chat-service--board-bindings))
+                         e-chat-service--board-bindings)
+                (unless (gethash (e-board-registry-board-id board)
+                                 e-chat-service--board-log-owners)
+                  (puthash (e-board-registry-board-id board) binding
+                           e-chat-service--board-log-owners))
+                ;; Materialize only the recent bounded tail.  The observer's
+                ;; live cursor already starts at the same high watermark, so
+                ;; retained history is never rescanned to fill a fixed-capacity
+                ;; projection.
+                (e-chat-service--seed-binding-projection binding)
+                (e-chat-service--reconcile-board-continuation binding)
+                ;; These callbacks are installed only after all admission
+                ;; steps above succeed, keeping attachment failure cleanup
+                ;; independent of board notification publication.
+                (setf (e-board-message-notification-function source-board)
+                      (lambda (source message)
+                        (when-let ((owner (gethash
+                                           (e-board-id source)
+                                           e-chat-service--board-log-owners)))
+                          (e-chat-service--persist-board-message owner message))
+                        (dolist (current (copy-sequence
+                                          (gethash (e-board-id source)
+                                                   e-chat-service--board-bindings)))
+                          (dolist (subscription
+                                   (copy-sequence
+                                    (e-chat-service-binding-subscribers current)))
+                            (e-chat-service--schedule-subscription-drain
+                             subscription))
+                          (e-chat-service--schedule-observer-drain current))
+                        (when-let ((owner (gethash
+                                           (e-board-id source)
+                                           e-chat-service--board-log-owners)))
+                          (e-chat-service--reconcile-board-continuation owner))))
+                (setf (e-board-processing-record-notification-function source-board)
+                      (lambda (source record type)
+                        (when-let ((owner (gethash
+                                           (e-board-id source)
+                                           e-chat-service--board-log-owners)))
+                          (e-chat-service--persist-board-processing-record
+                           owner record type))))
+                binding)
+            (error
+             ;; No binding is returned until all process-local maps are in a
+             ;; coherent state.  If a later setup step fails, remove only the
+             ;; objects allocated by this admission and leave the board event
+             ;; stream untouched.
+             (when binding
+               (let ((bindings (e-chat-service--harness-bindings harness))
+                     (board-id (e-board-registry-board-id board)))
+                 (when (eq (gethash session-id bindings) binding)
+                   (remhash session-id bindings))
+                 (puthash board-id
+                          (delq binding (gethash board-id
+                                                 e-chat-service--board-bindings))
+                          e-chat-service--board-bindings)
+                 (when (eq (gethash board-id e-chat-service--board-log-owners)
+                           binding)
+                   (remhash board-id e-chat-service--board-log-owners))))
+             (when main-subscription
+               (setf (e-board-subscription-state main-subscription)
+                     'cancelled)
+               (remhash (e-board-subscription-id main-subscription)
+                        (e-board-subscription-id-table source-board)))
+             (when attachment
+               (ignore-errors
+                 (e-board-runtime-abort-new-attachment attachment)))
+             (when client
+               (ignore-errors
+                 (e-board-registry-detach-client
+                  board (e-board-registry-client-id client))))
+             (signal (car error) (cdr error))))))))
 
 (defun e-chat-service--bind-session (harness session-id)
   "Restore and bind board-native HARNESS SESSION-ID as its main member."
@@ -1005,10 +1104,17 @@ resolved participant identity so restart never needs shell or caller policy."
                 (list "Routing policy override conflicts with durable state"
                       session-id))))
      (complete-p
-      (setq routing-policy
+     (setq routing-policy
             (e-chat-service--routing-policy
              participant-id pickup-selector observer-selector
              default-tags default-to))
+      ;; A complete legacy upgrade is admitted against the real runtime before
+      ;; changing durable association bytes.  In particular, an occupied board
+      ;; participant id or already-attached session fails without wedging the
+      ;; legacy record into an unusable policy.
+      (e-board-runtime-admission-available-p
+       board harness session-id participant-id
+       :principal (plist-get state :principal))
       ;; Admission upgrades are durable before a runtime attachment can expose
       ;; the participant to board traffic.
       (e-chat-service--persist-board-state
@@ -1066,40 +1172,57 @@ LIMIT defaults to the registry's fixed page bound."
          (_ (when (gethash participant-id
                            (e-board-registry-board-participants board))
              (signal 'e-board-registry-id-conflict (list participant-id))))
+         (session-id (or id (e-session-generate-id)))
+         (_ (e-board-runtime-admission-available-p
+             board harness session-id participant-id
+             :principal principal :require-session nil))
          (_ (when id
              (condition-case nil
                  (progn (e-session-get store id)
                         (signal 'e-session-duplicate (list id)))
                (e-session-missing nil)))))
-    (let* ((session (e-harness-create-session harness :id id :metadata metadata))
-           (session-id (plist-get session :id))
-           (attached-participant nil))
+    (let ((session nil)
+          (binding nil))
       (condition-case error
           (progn
-            (e-chat-service--persist-board-state
-             store session-id principal (e-board-registry-board-id board)
-             e-chat-service--board-role-participant routing-policy)
-            (let ((binding
-                   (e-chat-service--install-participant-binding
-                    board harness session-id
-                    :participant-id (plist-get routing-policy :participant-id)
-                    :pickup-selector (plist-get routing-policy :pickup-selector)
-                    :observer-selector (plist-get routing-policy :observer-selector)
-                    :default-tags (plist-get routing-policy :default-tags)
-                    :default-to (plist-get routing-policy :default-to))))
-              (setq attached-participant
-                    (and (e-chat-service-binding-p binding)
-                         (e-board-runtime-attachment-participant
-                          (e-chat-service-binding-attachment binding))))
-              session))
+            ;; Session id and runtime occupancy were preflighted above.  Keep
+            ;; creation inside this owning failure boundary so a later service
+            ;; error cannot strand the newly allocated root.
+            (setq session
+                  (e-session-create-board-admission
+                   store :id session-id :metadata metadata
+                   :principal principal
+                   :board-id (e-board-registry-board-id board)
+                   :association-role e-chat-service--board-role-participant
+                   :routing-policy routing-policy))
+            (setq binding
+                  (e-chat-service--install-participant-binding
+                   board harness session-id
+                   :participant-id (plist-get routing-policy :participant-id)
+                   :pickup-selector (plist-get routing-policy :pickup-selector)
+                   :observer-selector (plist-get routing-policy :observer-selector)
+                   :default-tags (plist-get routing-policy :default-tags)
+                   :default-to (plist-get routing-policy :default-to)
+                   :defer-participant-publication t))
+              ;; The session owner publishes root + association only after the
+              ;; registry/runtime attachment has completed successfully.
+              (e-session-commit-board-admission store session-id)
+              ;; The participant's source-board event is deliberately
+              ;; published only after the session declaration has crossed its
+              ;; durable admission boundary.  A failed commit therefore
+              ;; cannot leave a replayable participant-added ghost.
+              (e-board-registry-publish-participant-admission
+               board
+               (e-board-runtime-attachment-participant
+                (e-chat-service-binding-attachment binding)))
+              session)
         (error
          ;; Expected service-owned failures must not leave a false root in the
-         ;; catalog.  Remove a participant only when this operation actually
-         ;; attached one; all unexpected errors are re-signalled unchanged.
-         (when (and attached-participant
-                    (e-board-registry-participant-p attached-participant))
-           (e-board-registry-remove-participant board attached-participant))
-         (e-session-abort-created store session-id)
+         ;; catalog.  Discard the unpublished runtime binding without emitting
+         ;; a board removal event, then remove the session reservation.
+         (when (e-chat-service-binding-p binding)
+           (e-chat-service--discard-binding binding))
+         (ignore-errors (e-session-abort-created store session-id))
          (signal (car error) (cdr error)))))))
 
 (defun e-chat-service--harness-has-capability-p (harness capability-id)

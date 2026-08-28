@@ -263,6 +263,19 @@ resolves `:self`; `e-board-registry` allocates participant ids. Restoration
 validates the policy before attachment, while a participant-role record
 without a complete policy fails closed rather than borrowing the `main` route.
 
+The current restored-participant candidate also keeps admission and selected
+settlement at their owning boundaries.  Session admission preflights the
+complete policy and the exact next controller command shape before exposing a
+binding; direct and queued stores publish the prepared pair only after
+validation, while a controller store retains one batch command.  Cleanup
+discards only retained, unacknowledged work owned by the failed admission and
+does not imply that acknowledged controller commands can be retracted.
+`e-chat-service` derives a process-local selected-owner fact from the binding
+and event subject, and `e-chat` renders sibling terminal rows without letting
+them settle selected progress, status, or composer state.  This is a current
+candidate boundary pending independent bug acceptance, not a second settlement
+owner or a board-wide completion aggregator.
+
 The store is append-only evidence plus derived mutable projections. Future
 semantic state artifacts such as canvas revisions should not be hidden inside a
 presentation shell; they should be session records or separate resources with

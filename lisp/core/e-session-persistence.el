@@ -151,6 +151,37 @@ manifests to reach the independent encoded-byte limit."
    :request request
    :wire (e-session-persistence--encode-command request)))
 
+(defun e-session-persistence--next-command-id (controller)
+  "Return the command id CONTROLLER will assign to its next submission.
+Admission preflight uses the same id shape as the eventual outbox command so
+the generated instance/sequence suffix cannot turn a successful preflight
+into a later command-size rejection.  The caller remains on one synchronous
+stack until submission, so no command can consume this sequence in between."
+  (format "%s:%d"
+          (e-session-persistence-instance-id controller)
+          (1+ (e-session-persistence-next-sequence controller))))
+
+(defun e-session-persistence-validate-record (controller session-id record)
+  "Validate RECORD for SESSION-ID without adding it to CONTROLLER's outbox.
+The returned command is detached and deliberately discarded; this is the
+session admission preflight used before a newly created root is published."
+  (e-session-persistence--prepare-command
+   (list :id (e-session-persistence--next-command-id controller)
+         :directory (e-session-store-directory
+                     (e-session-persistence-store controller))
+         :op "append" :session-id session-id :record record)))
+
+(defun e-session-persistence-validate-admission (controller session-id records)
+  "Validate an admission RECORDS batch without entering CONTROLLER's outbox.
+The batch command is the controller-side atomic publication unit used by a
+new session plus its board association."
+  (e-session-persistence--prepare-command
+   (list :id (e-session-persistence--next-command-id controller)
+         :directory (e-session-store-directory
+                     (e-session-persistence-store controller))
+         :op "append-batch" :session-id session-id
+         :records (vconcat records))))
+
 (defun e-session-persistence--send (controller command)
   "Send one prepared COMMAND to CONTROLLER's live writer.
 Raw request plists remain accepted for controllers created before a live
@@ -361,6 +392,38 @@ they do not introduce a checkpoint or a second write."
   (e-session-persistence--submit
    controller (list :op "append" :session-id session-id :record record)
    on-done on-error))
+
+(defun e-session-persistence-submit-admission (controller session-id records)
+  "Submit one atomic session-admission RECORDS batch to CONTROLLER.
+The controller retains one retry identity for the whole root/association
+publication rather than exposing separate commands that can be split."
+  (e-session-persistence--submit
+   controller (list :op "append-batch" :session-id session-id
+                    :records (vconcat records))))
+
+(defun e-session-persistence--discard-retained-admission-commands
+    (controller session-id)
+  "Remove retained, not-yet-acknowledged append work for SESSION-ID.
+This private admission cleanup boundary only drops commands still owned by
+CONTROLLER's local outbox, preserves unrelated sessions, and never pretends to
+retract a command already acknowledged by the writer."
+  (let (cancelled)
+    (maphash
+     (lambda (id command)
+       (let* ((request (and (e-session-persistence-command-p command)
+                            (e-session-persistence-command-request command)))
+              (operation (plist-get request :op)))
+         (when (and (member operation '("append" "append-batch"))
+                    (equal (plist-get request :session-id) session-id))
+           (push id cancelled))))
+     (e-session-persistence-outbox controller))
+    (dolist (id cancelled)
+      (remhash id (e-session-persistence-outbox controller))
+      (remhash id (e-session-persistence-callbacks controller))
+      (e-session--adjust-unsettled-writes
+       (e-session-persistence-store controller) -1))
+    (e-session-persistence--trim-outbox-order controller)
+    cancelled))
 
 (defun e-session-persistence--checkpoint-operation (controller session-id)
   "Return one bounded writer checkpoint operation for CONTROLLER SESSION-ID."
