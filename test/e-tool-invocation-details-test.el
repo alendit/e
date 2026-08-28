@@ -342,6 +342,99 @@ ordinary tool implementation used by the test capability."
                    result)))
       (e-session-tmp-cleanup-harness harness))))
 
+(ert-deftest e-tool-invocation-details-test-streams-and-cleans-file-content ()
+  "An owned file carrier is archived completely and consumed after success."
+  (let* ((session-id "invocation-details-file-content")
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (source (make-temp-file "e-invocation-details-file-" nil ".txt"))
+         (complete "one\ntwo\nthree\n\"quoted\"\\slash\tend")
+         (carrier
+          (e-tools-file-content-create
+           :path source :preview "one\ntwo\n"
+           :original-bytes (string-bytes complete)
+           :original-lines 4 :preview-bytes 8 :preview-lines 2 :owned t))
+         (call (e-tool-invocation-details-test--call))
+         (result (e-tool-invocation-details-test--result
+                  carrier '(:semantic t) 'ok))
+         (context (list :harness harness
+                        :session-id session-id
+                        :turn-id "turn-1"
+                        :tool-call call
+                        :invocation-details-uri nil))
+         archived)
+    (unwind-protect
+        (progn
+          (write-region complete nil source nil 'silent)
+          (setq archived
+                (e-tool-invocation-details--post-tool-call result context))
+          (should-not (file-exists-p source))
+          (should (eq (plist-get archived :content) carrier))
+          (should-not (e-tools-file-content-owned carrier))
+          (let* ((uri (plist-get (plist-get archived :metadata)
+                                 :invocation-details-uri))
+                 (details
+                  (e-tool-invocation-details-decode
+                   (e-tool-invocation-details-test--read-uri
+                    harness session-id uri))))
+            (should (equal
+                     (plist-get (plist-get details :result) :content)
+                     complete))))
+      (when (file-exists-p source)
+        (delete-file source))
+      (e-session-tmp-cleanup-harness harness))))
+
+(ert-deftest e-tool-invocation-details-test-streams-unicode-across-chunk-boundary ()
+  "A split UTF-8 sequence remains readable semantic content."
+  (let* ((session-id "invocation-details-unicode-boundary")
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (source (make-temp-file "e-invocation-details-unicode-" nil ".txt"))
+         ;; 65,535 ASCII bytes put the first byte of EURO SIGN at the end of
+         ;; the validator's 65,536-byte source chunk.
+         (complete (concat (make-string 65535 ?x) "€end"))
+         (carrier
+          (e-tools-file-content-create
+           :path source :preview "xxxxxxxx"
+           :original-bytes (string-bytes complete)
+           :original-lines 1 :preview-bytes 8 :preview-lines 1 :owned t))
+         (call (e-tool-invocation-details-test--call))
+         (result (e-tool-invocation-details-test--result
+                  carrier nil 'ok))
+         (context (list :harness harness :session-id session-id
+                        :turn-id "turn-1" :tool-call call))
+         archived)
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8-unix))
+            (write-region complete nil source nil 'silent))
+          (setq archived
+                (e-tool-invocation-details--post-tool-call result context))
+          (let* ((uri (plist-get (plist-get archived :metadata)
+                                 :invocation-details-uri))
+                 (details
+                  (e-tool-invocation-details-decode
+                   (e-tool-invocation-details-test--read-uri
+                    harness session-id uri))))
+            (should (equal
+                     (plist-get (plist-get details :result) :content)
+                     complete))))
+      (when (file-exists-p source) (delete-file source))
+      (e-session-tmp-cleanup-harness harness))))
+
+(ert-deftest e-tool-invocation-details-test-structured-encoding-shape-is-semantic ()
+  "A legitimate data/encoding content object is never treated as codec data."
+  (let* ((content '(:data "literal" :encoding "base64-utf8-bytes"))
+         (document
+          (e-tool-invocation-details--document
+           (e-tool-invocation-details-test--call)
+           (e-tool-invocation-details-test--result content nil 'ok)))
+         (decoded
+          (e-tool-invocation-details-decode
+           (e-tool-invocation-details-encode document))))
+    (should (equal (plist-get (plist-get decoded :result) :content)
+                   '(:data "literal" :encoding "base64-utf8-bytes")))))
+
 (ert-deftest e-tool-invocation-details-test-lifecycle-archives-once-before-truncation ()
   "Harness lifecycle archives the full semantic result before its preview hook."
   (let* ((base (e-harness-base-layer-create))

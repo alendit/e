@@ -20,6 +20,7 @@
 (require 'e-request)
 (require 'e-resources)
 (require 'e-search-providers)
+(require 'e-tool-invocation-details)
 (require 'e-tools)
 (require 'e-work)
 (require 'seq)
@@ -1085,6 +1086,32 @@ content, and it must return in well under the wall-clock a full diff would take.
                                     (plist-get result :content)))))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-small-non-session-bash-cleans-temp-output ()
+  "Bounded non-session bash materializes its string and removes the temp file."
+  (let* ((directory (make-temp-file "e-base-bash-temp-cleanup-" t))
+         (registry (e-tools-registry-create))
+         (original-make-temp-file (symbol-function 'make-temp-file))
+         output-file)
+    (unwind-protect
+        (progn
+          (e-base-tools-register-bash registry directory)
+          (cl-letf (((symbol-function 'make-temp-file)
+                     (lambda (prefix &rest arguments)
+                       (let ((path (apply original-make-temp-file
+                                          prefix arguments)))
+                         (when (string-prefix-p "e-base-bash-" prefix)
+                           (setq output-file path))
+                         path))))
+            (let ((result
+                   (e-base-tools-test--execute
+                    registry "bash" '(:command "printf small"))))
+              (should (equal (plist-get result :content) "small"))))
+          (should (stringp output-file))
+          (should-not (file-exists-p output-file)))
+      (when (and output-file (file-exists-p output-file))
+        (delete-file output-file))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-bash-output-with-raw-bytes-does-not-prompt ()
   "Bash output containing eight-bit bytes never invokes the coding selector.
 Regression: streaming bash output to its log file via `write-region' left
@@ -1187,9 +1214,97 @@ picker."
       (should (e-work-spec-p (plist-get tool :work)))
       (should-not (plist-get tool :start)))))
 
-(ert-deftest e-base-tools-test-bash-streams-large-output-to-session-tmp ()
-  "The bash start path writes full large output directly to session tmp."
-  (let* ((directory (make-temp-file "e-base-bash-session-tmp-" t))
+(ert-deftest e-base-tools-test-bash-output-names-do-not-alias ()
+  "Case-varying and long provider IDs produce distinct bounded output names."
+  (let ((upper (e-base-tools--bash-relative-name
+                '(:turn-id "Turn" :tool-call (:id "Call"))))
+        (lower (e-base-tools--bash-relative-name
+                '(:turn-id "turn" :tool-call (:id "call"))))
+        (long (e-base-tools--bash-relative-name
+               (list :turn-id (make-string 300 ?t)
+                     :tool-call (list :id (make-string 300 ?c))))))
+    (should-not (equal upper lower))
+    (should (< (length (file-name-nondirectory long)) 100))))
+
+(ert-deftest e-base-tools-test-inline-small-bash-consumes-streamed-source ()
+  "Small inline bash output is archived once and leaves no output duplicate."
+  (let* ((directory (make-temp-file "e-base-bash-small-details-" t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (append
+                    (e-layer-capabilities (e-harness-base-layer-create))
+                    (e-layer-capabilities (e-base-layer-create directory)))))
+         result request output-file)
+    (unwind-protect
+        (progn
+          (setq request
+                (e-tool-lifecycle-start-call
+                 (e-harness-tool-lifecycle harness "small-session" "turn-1")
+                 '(:id "call-small" :name "bash"
+                   :stated-purpose "Verify single-copy small output."
+                   :arguments (:command "printf small"))
+                 :on-request-start
+                 (lambda (started)
+                   (setq output-file
+                         (plist-get (e-tools-request-metadata started)
+                                    :output-file)))
+                 :on-done (lambda (value) (setq result value))))
+          (should (e-base-tools-test--wait-until (lambda () result) 2.0))
+          (should (equal (plist-get result :content) "small"))
+          (should-not (file-exists-p output-file))
+          (let* ((uri (plist-get (plist-get result :metadata)
+                                 :invocation-details-uri))
+                 (details
+                  (e-tool-invocation-details-decode
+                   (e-resources-read
+                    (e-harness-resources harness "small-session" "turn-1")
+                    uri nil))))
+            (should (equal (plist-get (plist-get details :result) :content)
+                           "small"))))
+      (e-session-tmp-cleanup-harness harness)
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-raw-byte-bash-details-round-trip-exactly ()
+  "Session details preserve the exact semantic result for invalid UTF-8 bytes."
+  (let* ((directory (make-temp-file "e-base-bash-raw-details-" t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (append
+                    (e-layer-capabilities (e-harness-base-layer-create))
+                    (e-layer-capabilities (e-base-layer-create directory)))))
+         result)
+    (unwind-protect
+        (progn
+          (e-tool-lifecycle-start-call
+           (e-harness-tool-lifecycle harness "raw-session" "turn-1")
+           '(:id "call-raw" :name "bash"
+             :stated-purpose "Verify exact raw-byte archival."
+             :arguments (:command "printf '\300\301'"))
+           :on-done (lambda (value) (setq result value)))
+          (should (e-base-tools-test--wait-until (lambda () result) 2.0))
+          (let* ((semantic (plist-get result :content))
+                 (uri (plist-get (plist-get result :metadata)
+                                 :invocation-details-uri))
+                 (wire (e-resources-read
+                        (e-harness-resources harness "raw-session" "turn-1")
+                        uri nil))
+                 (details (e-tool-invocation-details-decode wire))
+                 (archived (plist-get (plist-get details :result) :content)))
+            (should (json-parse-string wire))
+            (should (string-match-p
+                     "\\\"content_encoding\\\":\\\"base64-utf8-bytes\\\""
+                     wire))
+            (should (equal archived semantic))))
+      (e-session-tmp-cleanup-harness harness)
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-streams-large-output-to-invocation-details ()
+  "Multi-megabyte bash output is streamed to complete bounded details."
+  (let* ((output-bytes (* 3 1024 1024))
+         (expected (concat (make-string output-bytes ?x) "END"))
+         (directory (make-temp-file "e-base-bash-session-tmp-" t))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :intrinsic-capabilities
@@ -1197,43 +1312,163 @@ picker."
                     (e-layer-capabilities (e-harness-base-layer-create))
                     (e-layer-capabilities (e-base-layer-create directory)))))
          (result nil)
+         output-file
+         (max-read-span 0)
          request)
     (unwind-protect
-        (let ((e-tool-output-truncation-max-bytes 1000)
-              (e-tool-output-truncation-max-lines 2))
-          (setq request
-                (e-tool-lifecycle-start-call
-                 (e-harness-tool-lifecycle harness "session-1" "turn-1")
-                 '(:id "call-1"
-                   :name "bash"
-                   :stated-purpose "Verify large output streaming."
-                   :arguments (:command "printf 'one\ntwo\nthree\nfour\n'"))
-                 :on-done (lambda (value) (setq result value))))
-          (should (e-tools-request-p request))
-          (should (eq (plist-get (e-tools-request-metadata request)
-                                 :transport)
-                      'work))
-          (should (e-work-handle-p
-                   (plist-get (e-tools-request-metadata request)
-                              :work-handle)))
-          (should (plist-get (e-tools-request-metadata request) :output-file))
+        (let ((e-tool-output-truncation-max-bytes 1024)
+              (e-tool-output-truncation-max-lines 1000)
+              (original-insert (symbol-function 'insert-file-contents-literally)))
+          (cl-letf (((symbol-function 'insert-file-contents-literally)
+                     (lambda (filename &optional visit beg end replace)
+                       (when (and output-file (equal filename output-file))
+                         (unless (and (integerp beg) (integerp end))
+                           (error "Unbounded production read of bash output"))
+                         (setq max-read-span (max max-read-span (- end beg)))
+                         (when (> (- end beg)
+                                  e-tool-invocation-details--stream-chunk-bytes)
+                           (error "Oversized production read of bash output")))
+                       (funcall original-insert filename visit beg end replace))))
+            (setq request
+                  (e-tool-lifecycle-start-call
+                   (e-harness-tool-lifecycle harness "session-1" "turn-1")
+                   (list :id "call-1"
+                         :name "bash"
+                         :stated-purpose "Verify bounded large-output streaming."
+                         :arguments
+                         (list :command
+                               (format "head -c %d /dev/zero | tr '\\0' x; printf END"
+                                       output-bytes)))
+                   :on-request-start
+                   (lambda (started)
+                     (setq output-file
+                           (plist-get (e-tools-request-metadata started)
+                                      :output-file)))
+                   :on-done (lambda (value) (setq result value))))
+            (should (e-tools-request-p request))
+            (should (e-base-tools-test--wait-until (lambda () result) 10.0)))
+          (should (stringp output-file))
+          (should (> max-read-span 0))
+          (should (<= max-read-span
+                      e-tool-invocation-details--stream-chunk-bytes))
           (should-not (plist-get (e-tools-request-metadata request) :buffer))
-          (should (e-base-tools-test--wait-until
-                   (lambda () result)
-                   1.0))
           (let* ((metadata (plist-get result :metadata))
-                 (uri (plist-get metadata :tmp-uri)))
+                 (uri (plist-get metadata :tmp-uri))
+                 (details
+                  (e-tool-invocation-details-decode
+                   (e-resources-read
+                    (e-harness-resources harness "session-1" "turn-1")
+                    uri nil))))
             (should (equal (plist-get result :status) 'ok))
             (should (plist-get metadata :truncated))
-            (should (equal uri "tmp://tool-results/turn-1/bash-call-1.txt"))
-            (should (string-prefix-p "one\ntwo\n" (plist-get result :content)))
+            (should (equal uri
+                           "tmp://tool-invocations/turn-1/call-1.json"))
+            (should (< (string-bytes (plist-get result :content)) 2048))
+            (should (string-prefix-p (make-string 100 ?x)
+                                     (plist-get result :content)))
             (should (string-match-p (regexp-quote uri)
                                     (plist-get result :content)))
-            (should (equal (e-resources-read
-                            (e-harness-resources harness "session-1" "turn-1")
-                            uri
-                            nil)
-                           "one\ntwo\nthree\nfour\n"))))
+            (let ((archived
+                   (plist-get (plist-get details :result) :content)))
+              (should (= (string-bytes archived) (string-bytes expected)))
+              (should (equal (secure-hash 'sha256 archived)
+                             (secure-hash 'sha256 expected))))
+            ;; The exact streamed source is consumed after the canonical
+            ;; details write; no second artifact for this call remains.
+            (should-not (file-exists-p output-file))))
+      (e-session-tmp-cleanup-harness harness)
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-cancel-removes-streamed-output ()
+  "Cancelling default bash removes its lifecycle-owned output file."
+  (let* ((directory (make-temp-file "e-base-bash-staging-cancel-" t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (append
+                    (e-layer-capabilities (e-harness-base-layer-create))
+                    (e-layer-capabilities (e-base-layer-create directory)))))
+         request)
+    (unwind-protect
+        (progn
+          (setq request
+                (e-tool-lifecycle-start-call
+                 (e-harness-tool-lifecycle harness "cancel-session" "turn-1")
+                 '(:id "call-cancel"
+                   :name "bash"
+                   :stated-purpose "Exercise staging cancellation."
+                   :arguments (:command "printf partial; sleep 5"))))
+          (should (e-tools-request-p request))
+          (let ((output-file
+                 (plist-get (e-tools-request-metadata request)
+                            :output-file)))
+            (should (stringp output-file))
+            (should (file-exists-p output-file))
+            (should (e-tools-cancel-request request))
+            (should-not (file-exists-p output-file))))
+      (e-session-tmp-cleanup-harness harness)
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-detached-bash-keeps-live-output-resource ()
+  "A detached bash archives its ack while its advertised output keeps streaming."
+  (let* ((directory (make-temp-file "e-base-bash-staging-detach-" t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (append
+                    (e-layer-capabilities (e-harness-base-layer-create))
+                    (e-layer-capabilities (e-base-layer-create directory)))))
+         result
+         request
+         detached-handle)
+    (unwind-protect
+        (progn
+          (setq request
+                (e-tool-lifecycle-start-call
+                 (e-harness-tool-lifecycle harness "detach-session" "turn-1")
+                 '(:id "call-detach"
+                   :name "bash"
+                   :stated-purpose "Exercise detached output staging."
+                   :arguments (:command "printf partial; sleep 5"
+                               :wait_for 0))
+                 :on-done (lambda (value) (setq result value))))
+          (should (e-tools-request-p request))
+          (should (e-base-tools-test--wait-until (lambda () result) 1.0))
+          (let* ((content (plist-get result :content))
+                 (reference (plist-get content :reference))
+                 (output-uri (plist-get content :output_uri))
+                 (output-file
+                  (plist-get (e-tools-request-metadata request)
+                             :output-file))
+                 (details-uri
+                  (plist-get (plist-get result :metadata)
+                             :invocation-details-uri))
+                 (details
+                  (e-tool-invocation-details-decode
+                   (e-resources-read
+                    (e-harness-resources harness "detach-session" "turn-1")
+                    details-uri nil))))
+            (should (equal (plist-get content :state) "running"))
+            (should (string-prefix-p "work:" reference))
+            (should (string-prefix-p "tmp://tool-results/"
+                                     output-uri))
+            (should (file-exists-p output-file))
+            (should (equal
+                     (plist-get
+                      (plist-get (plist-get details :result) :content)
+                      :reference)
+                     reference))
+            (setq detached-handle
+                  (e-work-detached-handle
+                   (substring reference (length "work:"))))
+            (should (e-work-handle-p detached-handle))
+            (should (e-work-cancel detached-handle))
+            (should-not (file-exists-p output-file))))
+      (when (and (e-work-handle-p detached-handle)
+                 (not (e-request-terminal-p
+                       (e-work-handle-lifecycle detached-handle))))
+        (e-work-cancel detached-handle))
+      (e-session-tmp-cleanup-harness harness)
       (delete-directory directory t))))
 
 (ert-deftest e-base-tools-test-bash-starts-asynchronously ()

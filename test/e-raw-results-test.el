@@ -41,6 +41,27 @@
                          "abcdefghijklmnopqrstuvwxyz")))
       (delete-directory directory t))))
 
+(ert-deftest e-raw-results-test-import-file-copies-with-bounded-metadata ()
+  "File import copies complete content without requiring a content string."
+  (let* ((directory (make-temp-file "e-raw-results-import-" t))
+         (e-raw-results-directory directory)
+         (source (make-temp-file "e-raw-results-source-" nil ".txt"))
+         reference)
+    (unwind-protect
+        (progn
+          (write-region "complete source" nil source nil 'silent)
+          (setq reference
+                (e-raw-results-import-file
+                 source :id "import.txt" :preview "complete"
+                 :preview-bytes 4 :original-bytes 15))
+          (should (equal (plist-get reference :preview) "comp"))
+          (should (= (plist-get reference :original-bytes) 15))
+          (should (equal (e-raw-results-read (plist-get reference :uri))
+                         "complete source"))
+          (should (file-exists-p source)))
+      (when (file-exists-p source) (delete-file source))
+      (delete-directory directory t))))
+
 (ert-deftest e-raw-results-test-resource-method-reads-reference ()
   "The raw-result capability exposes stored output through the read operation."
   (should (require 'e-raw-results nil t))

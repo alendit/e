@@ -31,6 +31,25 @@ and only six sandbox-blocked localhost cases, all six of which passed in the
 permitted socket environment.  Receipt projection and unified truncation
 references remain future slices.
 
+Slice F90.3 is complete: session-owned top-level truncation reuses the
+already-attached =:invocation-details-uri= and no longer writes a duplicate
+=tmp://tool-results/= full-result artifact.  Non-session results retain the
+generic =raw-result://= fallback.  Focused tests prove that a large semantic
+result remains complete in invocation details while the provider-visible
+preview stays bounded.  Default =bash= streams through collision-resistant
+generic file-backed semantic content: inline completion archives the source in
+64 KiB JSON-escaped chunks and consumes it only after the atomic details write,
+while a genuinely detached child keeps its advertised output resource until
+cancellation or session cleanup.  A 3 MiB regression proves bounded production
+reads, complete decoded details, bounded presentation, and removal of the
+per-call source artifact.  Invalid UTF-8 output uses an explicit sibling
+content encoding and streamed base64 so raw bytes round-trip without making
+ordinary structured content ambiguous; valid Unicode remains readable even
+across chunk boundaries.  Forged detail URIs cannot authorize reuse; only
+successful lifecycle-stage provenance can.  The 413-test owner gate passes,
+as does warnings-as-errors compilation.  Receipt projection remains a future
+slice.
+
 * Goal
 
 Keep a compact, truthful mark of every completed model-facing tool invocation

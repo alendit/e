@@ -816,6 +816,31 @@ encode; without these bindings `write-region' would invoke
     (e-session-tmp--touch-root root)
     (e-session-tmp--uri relative-name)))
 
+(defun e-session-tmp-write-generated (harness session-id relative-name writer)
+  "Have WRITER generate RELATIVE-NAME and return its tmp URI.
+WRITER receives the absolute destination path.  This is the bounded-memory
+counterpart to `e-session-tmp-write' for producers that stream their content."
+  (unless (functionp writer)
+    (signal 'wrong-type-argument (list 'functionp writer)))
+  (let ((path (e-session-tmp--path harness session-id relative-name))
+        (root (e-session-tmp-directory harness session-id)))
+    (make-directory (file-name-directory path) t)
+    (let ((temporary (make-temp-file (concat path ".") nil ".tmp")))
+      (unwind-protect
+          (progn
+            (funcall writer temporary)
+            (unless (file-regular-p temporary)
+              (signal 'file-missing
+                      (list "Generated tmp resource is missing" temporary)))
+            (rename-file temporary path t)
+            (setq temporary nil))
+        (when (and temporary (file-exists-p temporary))
+          (delete-file temporary))))
+    (unless (file-regular-p path)
+      (signal 'file-missing (list "Generated tmp resource is missing" path)))
+    (e-session-tmp--touch-root root)
+    (e-session-tmp--uri relative-name)))
+
 (cl-defun e-session-tmp-write-raw-result
     (harness session-id relative-name content
              &key owner redaction-policy cleanup-lifetime preview

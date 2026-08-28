@@ -2157,23 +2157,23 @@ compaction) where exposing tools risks a tool-call instead of a reply."
               tools
               tool-call
               :context (context)
-               :on-request-start on-request-start
-               :on-work-prepared on-work-prepared
-               :on-event on-event
+              :on-request-start on-request-start
+              :on-work-prepared on-work-prepared
+              :on-event on-event
               :on-done
               (lambda (result)
                   (condition-case err
-                    (when on-done
-                      (funcall
-                       on-done
-                        (e-harness--tool-result-through-stages
-                         harness session-id turn-id tool-call result
-                         archival-call archival-rejected-p
-                        archival-received-arguments (context))))
-                  (error
-                   (if on-error
-                       (funcall on-error err)
-                     (signal (car err) (cdr err))))))
+                      (when on-done
+                        (funcall
+                         on-done
+                         (e-harness--tool-result-through-stages
+                          harness session-id turn-id tool-call result
+                          archival-call archival-rejected-p
+                          archival-received-arguments (context))))
+                    (error
+                     (if on-error
+                         (funcall on-error err)
+                       (signal (car err) (cdr err))))))
               :on-error on-error)))))))))
 
 (defun e-harness-context
@@ -2842,6 +2842,11 @@ they are never included in the transcript message or lifecycle event."
           (e-hooks-run-reduce hooks :post-tool-call result context))
          (detail-context
           (append (list :tool-call tool-call
+                        ;; This slot is populated only by the successful
+                        ;; invocation-details stage below.  Keep it separate
+                        ;; from result metadata so a caller cannot authorize
+                        ;; truncation by forging a canonical URI.
+                        :invocation-details-uri nil
                         :archival-call archival-call
                         :archival-rejected-p archival-rejected-p
                         :archival-received-arguments
@@ -2849,8 +2854,16 @@ they are never included in the transcript message or lifecycle event."
                   context))
          (archived-result
           (e-hooks-run-reduce hooks :invocation-details semantic-result
-                              detail-context)))
-    (e-hooks-run-reduce hooks :tool-result-presentation archived-result context)))
+                              detail-context))
+         ;; Only the details stage may authorize reuse of its canonical URI.
+         ;; Preserve the original context for semantic hooks and expose the
+         ;; successful stage result to presentation through a fresh overlay.
+         (presentation-context
+          (append (list :invocation-details-uri
+                        (plist-get detail-context :invocation-details-uri))
+                  context)))
+    (e-hooks-run-reduce hooks :tool-result-presentation archived-result
+                        presentation-context)))
 
 (defun e-harness--append-cancelled-tool-result (harness session-id turn-id entry)
   "Append a cancellation tool result when ENTRY has an open tool call."

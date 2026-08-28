@@ -410,6 +410,52 @@
       (should (equal (plist-get result :stdout) "ok"))
       (should (equal (plist-get result :lines) '("ok"))))))
 
+(ert-deftest e-work-test-process-carrier-runs-owner-cancel-hook ()
+  "The process carrier lets its owner clean private state on cancellation."
+  (let* ((state (list :staging "private"))
+         seen
+         (spec
+          (e-work-spec-create
+           :id "process-cancel-cleanup"
+           :execution 'process
+           :interactive-policy 'async
+           :command
+           (lambda (_arguments _context)
+             (list :program "/bin/sh"
+                   :args '("-c" "sleep 5")
+                   :state state
+                   :on-cancel
+                   (lambda (_handle _process active-state)
+                     (setq seen active-state))))))
+         (handle (e-work-start spec nil)))
+    (should (e-work-cancel handle))
+    (should (eq seen state))))
+
+(ert-deftest e-work-test-process-carrier-cleans-owner-state-on-start-failure ()
+  "A process command owner can clean allocations when startup fails."
+  (let* ((state (list :allocated t))
+         seen
+         (spec
+          (e-work-spec-create
+           :id "process-start-cleanup"
+           :execution 'process
+           :interactive-policy 'async
+           :command
+           (lambda (_arguments _context)
+             (list :program "/definitely/missing/e-work-program"
+                   :state state
+                   :on-cancel
+                   (lambda (_handle _process active-state)
+                     (setq seen active-state)))))))
+    (let ((handle
+           (cl-letf (((symbol-function 'make-process)
+                      (lambda (&rest _)
+                        (signal 'file-missing '("simulated start failure")))))
+             (e-work-start spec nil))))
+      (should (eq (e-request-lifecycle-state (e-work-handle-lifecycle handle))
+                  'failed))
+      (should (eq seen state)))))
+
 (ert-deftest e-work-test-process-carrier-publishes-streaming-progress ()
   "The process carrier can publish push-style progress from output chunks."
   (let ((seen "")

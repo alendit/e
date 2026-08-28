@@ -920,6 +920,7 @@ detach branch, and the child stays ignorant of detachment entirely."
              (ok-statuses (or (plist-get command :ok-statuses) '(0)))
              (name (or (plist-get command :name) "e-work-process"))
              (on-output (plist-get command :on-output))
+             (on-cancel (plist-get command :on-cancel))
              (progress (plist-get command :progress))
              (progress-interval (or (plist-get command :progress-interval) 0))
              (timeout (or (plist-get command :timeout)
@@ -1083,12 +1084,13 @@ detach branch, and the child stays ignorant of detachment entirely."
           (setf (e-work-handle-cancel-function handle)
                 (lambda (_handle)
                   (when (and process (process-live-p process))
-                    (kill-process process))))
-          (let ((started nil))
-            (unwind-protect
-                (let ((default-directory directory))
-                  (setq process
-                        (make-process
+                    (kill-process process))
+                  (when on-cancel
+                    (funcall on-cancel handle process state))))
+          (condition-case err
+              (let ((default-directory directory))
+                (setq process
+                      (make-process
                          :name name
                          :buffer stdout
                          :stderr stderr
@@ -1107,7 +1109,7 @@ detach branch, and the child stays ignorant of detachment entirely."
                                             '(exit signal)))
                              (if (eq (process-status proc) 'signal)
                                  (finish-signal)
-                               (finish-process)))))))
+                               (finish-process))))))
                   (set-process-query-on-exit-flag process nil)
                   (setf (e-work-handle-metadata handle)
                         (append (e-work-handle-metadata handle)
@@ -1116,10 +1118,16 @@ detach branch, and the child stays ignorant of detachment entirely."
                   (when timeout
                     (setq timeout-timer
                           (run-at-time timeout nil #'finish-timeout)))
-                  (setq started t)
-                  handle)
-              (unless started
-                (e-work--cleanup handle))))))))
+                handle)
+            (error
+             ;; The owner may have allocated command state before
+             ;; `make-process' failed.  Give it the same bounded cleanup
+             ;; opportunity as explicit cancellation, then preserve the
+             ;; carrier's original startup error for the lifecycle owner.
+             (when on-cancel
+               (funcall on-cancel handle process state))
+             (e-work--cleanup handle)
+             (signal (car err) (cdr err)))))))))
 
 (defun e-work--start-url (handle arguments context)
   "Start HANDLE on the URL carrier."

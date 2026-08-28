@@ -1543,13 +1543,21 @@ result plist; otherwise return nil so the caller runs the default backend."
     (if (string-empty-p safe) fallback safe)))
 
 (defun e-base-tools--bash-relative-name (context)
-  "Return the session tmp relative output name for CONTEXT."
-  (let ((turn-id (e-base-tools--safe-fragment
-                  (plist-get context :turn-id)
-                  "turn"))
-        (call-id (e-base-tools--safe-fragment
-                  (plist-get (plist-get context :tool-call) :id)
-                  "call")))
+  "Return a collision-resistant session tmp output name for CONTEXT."
+  (let* ((turn-value (format "%s" (or (plist-get context :turn-id) "turn")))
+         (call-value
+          (format "%s"
+                  (or (plist-get (plist-get context :tool-call) :id) "call")))
+         (turn-id
+          (format "%s-%s"
+                  (substring (e-base-tools--safe-fragment turn-value "turn")
+                             0 (min 48 (length turn-value)))
+                  (substring (secure-hash 'sha256 turn-value) 0 16)))
+         (call-id
+          (format "%s-%s"
+                  (substring (e-base-tools--safe-fragment call-value "call")
+                             0 (min 48 (length call-value)))
+                  (substring (secure-hash 'sha256 call-value) 0 16))))
     (format "tool-results/%s/bash-%s.txt" turn-id call-id)))
 
 (defun e-base-tools--context-capability-active-p (context capability-id)
@@ -1562,18 +1570,18 @@ result plist; otherwise return nil so the caller runs the default backend."
   "Return plist describing where bash output should be streamed for CONTEXT."
   (let ((relative-name (e-base-tools--bash-relative-name context)))
     (if (and (plist-get context :harness)
-             (plist-get context :session-id)
-             (e-base-tools--context-capability-active-p
-              context
-              'session-tmp-resources)
-             (require 'e-session-tmp-resources nil t)
-             (fboundp 'e-session-tmp-file-path))
-        (let ((path (e-session-tmp-file-path
-                     (plist-get context :harness)
-                     (plist-get context :session-id)
-                     relative-name)))
-          (list :output-file path
-                :output-uri (format "tmp://%s" relative-name)))
+           (plist-get context :session-id)
+           (e-base-tools--context-capability-active-p
+            context
+            'session-tmp-resources)
+           (require 'e-session-tmp-resources nil t)
+           (fboundp 'e-session-tmp-file-path))
+      (let ((path (e-session-tmp-file-path
+                   (plist-get context :harness)
+                   (plist-get context :session-id)
+                   relative-name)))
+        (list :output-file path
+              :output-uri (format "tmp://%s" relative-name)))
       (list :output-file (make-temp-file "e-base-bash-" nil ".log")))))
 
 (defun e-base-tools--bash-collector-start (context)
@@ -1733,9 +1741,38 @@ result plist; otherwise return nil so the caller runs the default backend."
 (defun e-base-tools--bash-finish-value
     (collector call status &optional suffix)
   "Return final bash result value from COLLECTOR for CALL and STATUS."
-  (let ((content (e-base-tools--bash-collector-content collector suffix))
-        (metadata (when (e-base-tools--bash-collector-truncated collector)
-                    (e-base-tools--bash-collector-metadata collector))))
+  (when suffix
+    ;; Make the backing file the complete semantic string.  The bounded
+    ;; preview is updated independently while output remains within its limit.
+    (e-base-tools--bash-collector-append collector (format "\n\n%s" suffix)))
+  (let* ((file-backed-p
+          (e-base-tools--bash-collector-output-uri collector))
+         (content
+          (if file-backed-p
+              (e-tools-file-content-create
+               :path (e-base-tools--bash-collector-output-file collector)
+               :uri (e-base-tools--bash-collector-output-uri collector)
+               :preview (e-base-tools--bash-collector-preview collector)
+               :original-bytes
+               (e-base-tools--bash-collector-total-bytes collector)
+               :original-lines
+               (e-base-tools--bash-collector-original-lines collector)
+               :preview-bytes
+               (e-base-tools--bash-collector-preview-bytes collector)
+               :preview-lines
+               (e-base-tools--logical-line-count
+                (e-base-tools--bash-collector-preview collector))
+               :owned t)
+            (e-base-tools--bash-collector-content collector)))
+         (metadata
+          (unless file-backed-p
+            (when (e-base-tools--bash-collector-truncated collector)
+              (e-base-tools--bash-collector-metadata collector)))))
+    (when (and (not file-backed-p)
+               (not (e-base-tools--bash-collector-truncated collector))
+               (file-exists-p
+                (e-base-tools--bash-collector-output-file collector)))
+      (delete-file (e-base-tools--bash-collector-output-file collector)))
     (if call
         (e-tools-result-create call status content metadata)
       content)))
@@ -1769,6 +1806,12 @@ tool-call progress metadata."
                           :output-uri
                           (e-base-tools--bash-collector-output-uri collector)
                           :cancellable t)
+          :on-cancel
+          (lambda (_handle _process active-collector)
+            (when (file-exists-p
+                    (e-base-tools--bash-collector-output-file active-collector))
+              (delete-file
+               (e-base-tools--bash-collector-output-file active-collector))))
           :on-output
           (lambda (_handle _process chunk active-collector)
             (e-base-tools--bash-collector-append active-collector chunk))

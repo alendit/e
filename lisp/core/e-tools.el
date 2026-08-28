@@ -30,6 +30,23 @@
   prepare
   start)
 
+(cl-defstruct (e-tools-file-content
+               (:constructor e-tools-file-content-create))
+  "One file-backed semantic text value owned by the tool lifecycle.
+PATH is an internal readable file.  URI, when non-nil, is the resource that
+already owns that file.  PREVIEW and the byte/line counts are bounded
+presentation facts collected while the producer streamed the complete value.
+When OWNED is non-nil, the first consumer that durably adopts the value may
+delete PATH after its replacement write succeeds."
+  path
+  uri
+  preview
+  original-bytes
+  original-lines
+  preview-bytes
+  preview-lines
+  owned)
+
 (defvar e-tools--current-context nil
   "Context dynamically visible while a tool implementation starts.")
 
@@ -715,12 +732,39 @@ table schemas compare identically while preserving all material fields."
 
 (defun e-tools-result-content-text (content)
   "Return the model-visible text representation for tool result CONTENT."
-  (if (stringp content)
-      content
+  (cond
+   ((stringp content) content)
+   ((e-tools-file-content-p content)
+    (or (e-tools-file-content-preview content) ""))
+   (t
     (condition-case nil
         (json-encode (e-tools--json-normalize content))
       (error
-       (prin1-to-string content)))))
+       (prin1-to-string content))))))
+
+(defun e-tools-file-content-valid-p (content)
+  "Return non-nil when CONTENT is a valid file-backed text carrier."
+  (and (e-tools-file-content-p content)
+       (stringp (e-tools-file-content-path content))
+       (or (null (e-tools-file-content-uri content))
+           (stringp (e-tools-file-content-uri content)))
+       (stringp (e-tools-file-content-preview content))
+       (cl-every (lambda (value) (and (integerp value) (>= value 0)))
+                 (list (e-tools-file-content-original-bytes content)
+                       (e-tools-file-content-original-lines content)
+                       (e-tools-file-content-preview-bytes content)
+                       (e-tools-file-content-preview-lines content)))))
+
+(defun e-tools-file-content-dispose (content)
+  "Delete owned CONTENT's backing file and mark it consumed.
+Return the deleted path, or nil when CONTENT does not own a live file."
+  (when (and (e-tools-file-content-valid-p content)
+             (e-tools-file-content-owned content)
+             (file-exists-p (e-tools-file-content-path content)))
+    (let ((path (e-tools-file-content-path content)))
+      (delete-file path)
+      (setf (e-tools-file-content-owned content) nil)
+      path)))
 
 (defun e-tools--string-byte-prefix (text max-bytes)
   "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."

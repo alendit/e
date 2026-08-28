@@ -47,6 +47,41 @@
                     nil)
                    "full output"))))
 
+(ert-deftest e-session-tmp-test-generated-write-is-atomic ()
+  "Generated resources replace only after their writer succeeds."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (session-id (format "generated-%s" (gensym)))
+         (relative "details/item.json"))
+    (unwind-protect
+        (progn
+          (e-session-tmp-write harness session-id relative "old")
+          (should-error
+           (e-session-tmp-write-generated
+            harness session-id relative
+            (lambda (path)
+              (write-region "partial" nil path nil 'silent)
+              (error "writer failed"))))
+          (should (equal
+                   (e-resources-read
+                    (e-harness-resources harness session-id "turn")
+                    (concat "tmp://" relative) nil)
+                   "old"))
+          (should (equal
+                   (e-session-tmp-write-generated
+                    harness session-id relative
+                    (lambda (path)
+                      (write-region "complete" nil path nil 'silent)))
+                   (concat "tmp://" relative)))
+          (should (equal
+                   (e-resources-read
+                    (e-harness-resources harness session-id "turn")
+                    (concat "tmp://" relative) nil)
+                   "complete")))
+      (e-session-tmp-cleanup-harness harness))))
+
 (ert-deftest e-session-tmp-test-write-does-not-prompt-for-coding ()
   "Writing eight-bit content never invokes the coding-system selector.
 Regression: tmp:// writes left `coding-system-for-write' unbound, so bytes the

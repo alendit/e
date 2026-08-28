@@ -17,6 +17,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-hooks)
@@ -25,6 +26,10 @@
 
 (defconst e-tool-invocation-details-version 1
   "Version of the temporary tool invocation details document.")
+
+(defconst e-tool-invocation-details--base64-content-encoding
+  "base64-utf8-bytes"
+  "Wire encoding for semantic strings containing Emacs raw-byte characters.")
 
 (define-error 'e-tool-invocation-details-invalid
   "Tool invocation details are invalid")
@@ -177,21 +182,41 @@ cycles and prevents a malformed handler value from recursing indefinitely."
                (plist-member result :status)
                (plist-member result :content))
     (signal 'e-tool-invocation-details-invalid (list result)))
-  (let ((content (e-tool-invocation-details--portable-value
-                  (plist-get result :content)))
-        (metadata
+  (let* ((source-content (plist-get result :content))
+         (declared-encoding (plist-get result :content-encoding))
+         (raw-string-p
+          (and (stringp source-content)
+               (seq-some (lambda (character) (> character #x10ffff))
+                         source-content)))
+         (content
+          (if declared-encoding
+              source-content
+            (if raw-string-p
+              (base64-encode-string
+               (encode-coding-string source-content 'utf-8-unix) t)
+              (e-tool-invocation-details--portable-value source-content))))
+         (metadata
          (e-tool-invocation-details--portable-value
           (or (plist-get result :metadata)
               (make-hash-table :test 'equal))
           t)))
-    (list (cons "status"
-                (e-tool-invocation-details--portable-value
-                 (plist-get result :status)))
-          (cons "content" content)
-          (cons "metadata"
-                (if (eq metadata e-tool-invocation-details--omit)
-                    (make-hash-table :test 'equal)
-                  metadata)))))
+    (when (and declared-encoding
+               (not (equal declared-encoding
+                           e-tool-invocation-details--base64-content-encoding)))
+      (signal 'e-tool-invocation-details-invalid (list result)))
+    (append
+     (list (cons "status"
+                 (e-tool-invocation-details--portable-value
+                  (plist-get result :status)))
+           (cons "content" content))
+     (when (or raw-string-p declared-encoding)
+       (list (cons "content_encoding"
+                   (or declared-encoding
+                       e-tool-invocation-details--base64-content-encoding))))
+     (list (cons "metadata"
+                 (if (eq metadata e-tool-invocation-details--omit)
+                     (make-hash-table :test 'equal)
+                   metadata))))))
 
 (defun e-tool-invocation-details--document-wire (document)
   "Validate DOCUMENT and return its canonical JSON object shape."
@@ -283,19 +308,36 @@ cycles and prevents a malformed handler value from recursing indefinitely."
                      (plist-get parsed :stated_purpose))))
       (signal 'e-tool-invocation-details-invalid (list parsed)))
     (let ((result-keys result)
+          (content-encoding (plist-get result :content_encoding))
           (result-value nil))
       (while result-keys
-        (unless (memq (pop result-keys) '(:status :content :metadata))
+        (unless (memq (pop result-keys)
+                      '(:status :content :content_encoding :metadata))
           (signal 'e-tool-invocation-details-invalid (list parsed)))
         (pop result-keys))
       (unless (and (plist-member result :status)
                    (plist-member result :content)
                    (plist-member result :metadata))
         (signal 'e-tool-invocation-details-invalid (list parsed)))
+      (when (and content-encoding
+                 (not (and
+                       (equal content-encoding
+                              e-tool-invocation-details--base64-content-encoding)
+                       (stringp (plist-get result :content)))))
+        (signal 'e-tool-invocation-details-invalid (list parsed)))
       (setq result-value
-            (list :status (plist-get result :status)
-                  :content (plist-get result :content)
-                  :metadata (plist-get result :metadata)))
+            (list
+             :status (plist-get result :status)
+             :content
+             (if content-encoding
+                 (condition-case nil
+                     (decode-coding-string
+                      (base64-decode-string (plist-get result :content))
+                      'utf-8-unix t)
+                   (error
+                    (signal 'e-tool-invocation-details-invalid (list parsed))))
+               (plist-get result :content))
+             :metadata (plist-get result :metadata)))
       (append (list :version version :tool-call-id call-id :tool tool)
               (when purpose-p
                 (list :stated-purpose (plist-get parsed :stated_purpose)))
@@ -384,6 +426,173 @@ stable hash suffix so distinct provider identifiers cannot alias one artifact."
       (eq (plist-get (plist-get result :metadata) :error)
           'e-tools-invalid-stated-purpose)))
 
+(defconst e-tool-invocation-details--stream-chunk-bytes (* 64 1024)
+  "Maximum source bytes held while streaming file-backed detail content.")
+
+(defun e-tool-invocation-details--write-bytes (path bytes &optional append)
+  "Write unibyte BYTES to PATH, appending when APPEND is non-nil."
+  (let ((coding-system-for-write 'binary)
+        (select-safe-coding-system-function nil))
+    (write-region bytes nil path append 'silent)))
+
+(defun e-tool-invocation-details--json-escape-bytes (bytes)
+  "Return bounded JSON string contents for unibyte BYTES.
+UTF-8 bytes above the ASCII control range pass through unchanged; JSON syntax
+and control bytes are escaped without decoding across chunk boundaries."
+  (let ((start 0)
+        pieces)
+    (dotimes (index (length bytes))
+      (let ((byte (aref bytes index)))
+        (when (or (< byte 32) (= byte ?\") (= byte ?\\))
+          (when (< start index)
+            (push (substring bytes start index) pieces))
+          (push (pcase byte
+                  (8 "\\b") (9 "\\t") (10 "\\n")
+                  (12 "\\f") (13 "\\r")
+                  (?\" "\\\"") (?\\ "\\\\")
+                  (_ (format "\\u%04x" byte)))
+                pieces)
+          (setq start (1+ index)))))
+    (when (< start (length bytes))
+      (push (substring bytes start) pieces))
+    (apply #'concat (nreverse pieces))))
+
+(defun e-tool-invocation-details--utf8-prefix (bytes final-p)
+  "Validate unibyte BYTES and return its incomplete UTF-8 suffix.
+Return nil for invalid UTF-8.  FINAL-P makes an incomplete suffix invalid."
+  (let ((index 0)
+        (length (length bytes))
+        valid)
+    (catch 'invalid
+      (while (< index length)
+        (let* ((first (aref bytes index))
+               (width
+                (cond ((< first #x80) 1)
+                      ((<= #xc2 first #xdf) 2)
+                      ((<= #xe0 first #xef) 3)
+                      ((<= #xf0 first #xf4) 4)
+                      (t (throw 'invalid nil)))))
+          (when (> (+ index width) length)
+            (if final-p
+                (throw 'invalid nil)
+              (setq valid (substring bytes index)
+                    index length)))
+          (when (< index length)
+            (let ((second (and (> width 1) (aref bytes (1+ index)))))
+              (unless
+                  (and
+                   (or (= width 1) (<= #x80 second #xbf))
+                   (or (/= first #xe0) (>= second #xa0))
+                   (or (/= first #xed) (<= second #x9f))
+                   (or (/= first #xf0) (>= second #x90))
+                   (or (/= first #xf4) (<= second #x8f))
+                   (cl-loop for offset from 2 below width
+                            always (<= #x80 (aref bytes (+ index offset))
+                                       #xbf)))
+                (throw 'invalid nil))
+              (setq index (+ index width))))))
+      (cons t (or valid "")))))
+
+(defun e-tool-invocation-details--source-utf8-p (source)
+  "Return non-nil when SOURCE contains complete, strictly valid UTF-8."
+  (let ((offset 0)
+        (size (file-attribute-size (file-attributes source)))
+        (carry "")
+        valid)
+    (catch 'invalid
+      (while (< offset size)
+        (let ((end (min size (+ offset
+                                e-tool-invocation-details--stream-chunk-bytes))))
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert-file-contents-literally source nil offset end)
+            (setq valid
+                  (e-tool-invocation-details--utf8-prefix
+                   (concat carry (buffer-string)) (= end size))))
+          (unless valid (throw 'invalid nil))
+          (setq carry (cdr valid)
+                offset end)))
+      (and (string-empty-p carry) t))))
+
+(defun e-tool-invocation-details--stream-json-string (source destination)
+  "Append SOURCE as escaped UTF-8 JSON string content to DESTINATION."
+  (unless (and (stringp source) (file-regular-p source) (file-readable-p source))
+    (signal 'e-tool-invocation-details-invalid
+            (list "File-backed invocation content is unavailable")))
+  (let ((offset 0)
+        (size (file-attribute-size (file-attributes source))))
+    (while (< offset size)
+      (let ((end (min size (+ offset
+                              e-tool-invocation-details--stream-chunk-bytes))))
+        (with-temp-buffer
+          (set-buffer-multibyte nil)
+          (insert-file-contents-literally source nil offset end)
+          (e-tool-invocation-details--write-bytes
+           destination
+           (e-tool-invocation-details--json-escape-bytes (buffer-string))
+           t))
+        (setq offset end)))))
+
+(defun e-tool-invocation-details--stream-base64 (source destination)
+  "Append SOURCE as one unpadded-line base64 string to DESTINATION."
+  (let ((offset 0)
+        (size (file-attribute-size (file-attributes source)))
+        ;; Every non-final chunk must end on a base64 quantum boundary.
+        (chunk-size (* 3 (/ e-tool-invocation-details--stream-chunk-bytes 3))))
+    (while (< offset size)
+      (let ((end (min size (+ offset chunk-size))))
+        (with-temp-buffer
+          (set-buffer-multibyte nil)
+          (insert-file-contents-literally source nil offset end)
+          (e-tool-invocation-details--write-bytes
+           destination (base64-encode-string (buffer-string) t) t))
+        (setq offset end)))))
+
+(defun e-tool-invocation-details--stream-document
+    (destination document carrier)
+  "Write DOCUMENT with file-backed CARRIER content to DESTINATION."
+  (unless (e-tools-file-content-valid-p carrier)
+    (signal 'e-tool-invocation-details-invalid (list carrier)))
+  (let* ((sentinel
+          (format "__e_file_content_%s__"
+                  (secure-hash
+                   'sha256
+                   (format "%s:%s" (e-tools-file-content-path carrier)
+                           (float-time)))))
+         (copy (copy-sequence document))
+         (result (copy-sequence (plist-get copy :result)))
+         (utf8-p
+          (e-tool-invocation-details--source-utf8-p
+           (e-tools-file-content-path carrier)))
+         (encoded-sentinel (json-encode-string sentinel))
+         encoded start finish)
+    (setq result (plist-put result :content sentinel))
+    (unless utf8-p
+      (setq result
+            (plist-put result :content-encoding
+                       e-tool-invocation-details--base64-content-encoding)))
+    (setq copy (plist-put copy :result result))
+    (setq encoded (e-tool-invocation-details-encode copy))
+    (setq start (string-match (regexp-quote encoded-sentinel) encoded))
+    (unless (and start
+                 (not (string-match (regexp-quote encoded-sentinel)
+                                    encoded (+ start (length encoded-sentinel)))))
+      (signal 'e-tool-invocation-details-invalid
+              (list "Invocation detail stream placeholder is ambiguous")))
+    (setq finish (+ start (length encoded-sentinel)))
+    (e-tool-invocation-details--write-bytes
+     destination (encode-coding-string (substring encoded 0 (1+ start))
+                                       'utf-8-unix))
+    (if utf8-p
+        (e-tool-invocation-details--stream-json-string
+         (e-tools-file-content-path carrier) destination)
+      (e-tool-invocation-details--stream-base64
+       (e-tools-file-content-path carrier) destination))
+    (e-tool-invocation-details--write-bytes
+     destination
+     (encode-coding-string (substring encoded (1- finish)) 'utf-8-unix)
+     t)))
+
 (defun e-tool-invocation-details--document
     (call result &optional rejected-p received-arguments)
   "Build the portable invocation document for CALL and semantic RESULT."
@@ -427,10 +636,17 @@ and is never attached to CALL or its transcript metadata."
             (list "Invocation details require a session")))
   (let* ((document (e-tool-invocation-details--document
                     call result rejected-p received-arguments))
-         (json (e-tool-invocation-details-encode document))
          (relative-name (e-tool-invocation-details-relative-name
-                         turn-id (plist-get call :id))))
-    (e-session-tmp-write harness session-id relative-name json)))
+                         turn-id (plist-get call :id)))
+         (content (plist-get result :content)))
+    (if (e-tools-file-content-p content)
+        (e-session-tmp-write-generated
+         harness session-id relative-name
+         (lambda (path)
+           (e-tool-invocation-details--stream-document path document content)))
+      (e-session-tmp-write
+       harness session-id relative-name
+       (e-tool-invocation-details-encode document)))))
 
 (defun e-tool-invocation-details--post-tool-call (result context)
   "Archive semantic RESULT once at the explicit invocation-details stage."
@@ -458,6 +674,12 @@ and is never attached to CALL or its transcript metadata."
                      (plist-get context :archival-received-arguments))))
              (metadata (copy-sequence (plist-get result :metadata)))
              (copy (copy-sequence result)))
+        (when (e-tools-file-content-p (plist-get result :content))
+          (e-tools-file-content-dispose (plist-get result :content)))
+        ;; The harness passes this fresh slot to presentation only after the
+        ;; archive write succeeds.  Presentation must not trust a URI copied
+        ;; into an arbitrary result metadata plist.
+        (plist-put context :invocation-details-uri uri)
         ;; `plist-put' returns a new list when METADATA is nil; assign both
         ;; results so a result without prior metadata still receives the URI.
         (setq metadata (plist-put metadata :invocation-details-uri uri))

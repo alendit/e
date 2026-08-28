@@ -89,6 +89,11 @@ never serializes or walks an unbounded result on the Emacs main thread."
       (let ((item (pop pending)))
         (setq nodes (1+ nodes))
         (cond
+         ;; A file-backed value is deliberately opaque outside the lifecycle
+         ;; stages that archive or present it.  Never expose its host path in
+         ;; an await report, even when the carrier itself is structurally small.
+         ((e-tools-file-content-p item)
+          (setq overflow t))
          ((> nodes e-await-tool-max-inline-result-nodes)
           (setq overflow t))
          ((stringp item)

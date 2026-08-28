@@ -236,6 +236,31 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
               (should (equal (plist-get reported :result-ref) "fake:large")))))
       (e-work-cancel handle))))
 
+(ert-deftest e-await-tool-test-file-content-never-exposes-host-path ()
+  "Await tombstones file-backed content even when its carrier is small."
+  (let ((handle (e-await-tool-test--pending-handle))
+        (path "/private/opaque/tool-output.txt"))
+    (unwind-protect
+        (e-await-tool-test--with-scheme (list (cons "file" handle))
+          (let ((registry (e-tools-registry-create))
+                result)
+            (e-await-tool-register registry)
+            (e-tools-start
+             registry
+             '(:id "c" :name "await" :arguments (:refs ["fake:file"]))
+             :on-done (lambda (value) (setq result value)))
+            (e-work-finish
+             handle
+             (e-tools-file-content-create
+              :path path :preview "small" :original-bytes 1000000
+              :original-lines 1 :preview-bytes 5 :preview-lines 1))
+            (let* ((entry (car (plist-get (plist-get result :content) :results)))
+                   (reported (plist-get entry :result)))
+              (should (plist-get reported :omitted))
+              (should-not (string-match-p
+                           (regexp-quote path) (prin1-to-string entry))))))
+      (e-work-cancel handle))))
+
 (provide 'e-await-tool-test)
 
 ;;; e-await-tool-test.el ends here

@@ -137,6 +137,37 @@ model/display preview; otherwise CONTENT is previewed with
         (append reference (list :metadata metadata))
       reference)))
 
+(cl-defun e-raw-results-import-file
+    (source &key id owner redaction-policy cleanup-lifetime preview
+            preview-bytes original-bytes metadata)
+  "Copy file-backed text SOURCE into the raw-result store.
+Unlike `e-raw-results-write', this path never materializes SOURCE in an Emacs
+string.  PREVIEW is already bounded by the producer.  ORIGINAL-BYTES may be
+supplied from streaming counters; otherwise it is read from file metadata."
+  (unless (and (stringp source) (file-regular-p source))
+    (signal 'file-missing (list "Raw result source does not exist" source)))
+  (let* ((name (e-raw-results--safe-name (or id (e-raw-results--generated-name))))
+         (limit (max 0 (or preview-bytes e-raw-results-preview-bytes)))
+         (preview-data (e-tools-result-content-preview (or preview "") limit))
+         (path (e-raw-results--path name))
+         (reference
+          (list :uri (e-raw-results--uri name)
+                :owner owner
+                :storage 'raw-result-store
+                :original-bytes
+                (or original-bytes
+                    (file-attribute-size (file-attributes source)))
+                :preview (plist-get preview-data :text)
+                :preview-bytes (plist-get preview-data :shown-bytes)
+                :preview-truncated t
+                :redaction-policy (or redaction-policy 'none)
+                :cleanup-lifetime (or cleanup-lifetime 'raw-result-store))))
+    (make-directory (file-name-directory path) t)
+    (copy-file source path t)
+    (if metadata
+        (append reference (list :metadata metadata))
+      reference)))
+
 (defun e-raw-results-read (uri)
   "Read raw-result URI and return its content."
   (let* ((name (e-raw-results--name-from-uri uri))
