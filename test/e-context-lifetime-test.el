@@ -50,6 +50,25 @@
                      :body (list (list :role "user"
                                        :content (format "source-%d" index)))))))
 
+(defun e-context-lifetime-test--multi-tool-source-frame (count)
+  "Return a live frame with COUNT ordinary tool-result sources."
+  (e-context-lifetime-frame-create-from-segments
+   :id "multi-tool-source-frame"
+   :generation-id "generation-1"
+   :consumer-request-id "consumer-1"
+   :segments
+   (list
+    (list :kind "tool-result"
+          :id "tool-fanout"
+          :messages
+          (cl-loop for index from 1 to count
+                   collect
+                   (list :tool-call
+                         (list :id (format "tool-call-%d" index))
+                         :tool-result
+                         (list :tool-call-id (format "tool-call-%d" index)
+                               :content (format "tool-source-%d" index))))))))
+
 (ert-deftest e-context-lifetime-test-shadow-projection-forgets-consumed-frame ()
   "Consumed observation bytes disappear from the next semantic projection."
   (let* ((generation (e-context-lifetime-test--generation))
@@ -379,7 +398,7 @@
           (e-context-lifetime-frame-curation-presentation frame 1.0))
          (record
           (e-context-lifetime-prepare-curation
-           frame '(:keep (1) :summaries nil :drop (2 3 4))
+           frame '(:keep (1))
            "response-curation" 1.0)))
     (should (= (length observation-ids)
                (length (delete-dups (copy-sequence observation-ids)))))
@@ -408,6 +427,10 @@
                          "bounded result" "message result")))
     (should (equal (plist-get (nth 2 sources) :source-observation-id)
                    (nth 2 observation-ids)))
+    (should (equal (plist-get (nth 2 sources) :tool-call-id)
+                   "call-1"))
+    (should (equal (plist-get (nth 3 sources) :tool-call-id)
+                   "call-2"))
     (should (equal (plist-get (nth 0 sources) :marker)
                    (format "[ephemeral context source 1, ~%d tokens]"
                            (plist-get (nth 0 sources) :estimated-tokens))))
@@ -425,7 +448,8 @@
     (dolist (source presentation)
       (should-not (plist-member source :source-observation-id))
       (should-not (plist-member source :source-entry-ref))
-      (should-not (plist-member source :source-fingerprint)))
+      (should-not (plist-member source :source-fingerprint))
+      (should-not (plist-member source :tool-call-id)))
     (should (equal (plist-get (car sources) :value) "first source"))
     (should (equal (plist-get (car (plist-get record :items)) :value)
                    "first source"))))
@@ -450,7 +474,7 @@
      :type 'e-context-lifetime-invalid-record)
     (should-error
      (e-context-lifetime-prepare-curation
-      frame '(:keep (1) :summaries nil :drop (2)) "response-1")
+      frame '(:keep (1)) "response-1")
      :type 'e-context-lifetime-invalid-record)))
 
 (ert-deftest e-context-lifetime-test-segment-fingerprint-uses-semantic-tool-value ()
@@ -529,32 +553,36 @@
                (ceiling (/ bytes 4.0))))))
 
 (ert-deftest e-context-lifetime-test-curation-disposition-arguments-are-strict ()
-  "Curation arguments require one exhaustive disposition shape."
+  "Curation arguments accept optional origin disposition keys strictly."
   (let ((valid '(:keep (2)
-                 :summaries ((:sources (1 3) :text "combined fact"))
-                 :drop nil)))
+                 :summaries ((:sources (1 3) :text "combined fact")))))
     (should (equal (e-context-lifetime-normalize-curation-disposition valid)
-                   valid))
+                   '(:keep (2)
+                     :summaries ((:sources (1 3) :text "combined fact"))
+                     :erase nil)))
     (should (equal
              (e-context-lifetime-normalize-curation-disposition
               '(:summaries [(:sources [1] :text "one")]
-                :keep nil :drop (2 3)))
+                :keep nil))
              '(:keep nil :summaries ((:sources (1) :text "one"))
-               :drop (2 3))))
+               :erase nil)))
     (dolist (bad
              (list
-              '(:keep (1) :summaries nil)
               '(:keep ("1"))
               '(:keep 1)
               '(:keep (1 1))
               '(:keep (1) :summaries ((:sources (1) :text "duplicate"))
-                :drop (2))
+                :erase (2))
               '(:summaries ((:sources nil :text "missing-source"))
-                :keep nil :drop (1))
+                :keep nil)
               '(:summaries ((:sources (1) :text ""))
-                :keep nil :drop (2))
+                :keep nil)
               '(:summaries ((:sources (1) :text "ok" :extra t))
-                :keep nil :drop (2))
+                :keep nil)
+              '(:keep (1) :summaries nil :erase (1))
+              '(:keep (1) :summaries ((:sources (1) :text "overlap"))
+                :erase (3))
+              '(:keep (1) :summaries nil :erase (1 2))
               '(:unknown (1))
               '()))
       (should-error
@@ -587,8 +615,7 @@
           (e-context-lifetime-prepare-curation
            frame
            '(:keep (1)
-             :summaries ((:sources (2 3) :text "durable replacement"))
-             :drop nil)
+             :summaries ((:sources (2 3) :text "durable replacement")))
            "response-1"
            1.0))
          (items (plist-get record :items)))
@@ -621,14 +648,14 @@
   (let ((frame (e-context-lifetime-test--frame)))
     (should-error
      (e-context-lifetime-prepare-curation
-      frame '(:keep (2) :summaries nil :drop (1)) "response-1")
+      frame '(:keep (2)) "response-1")
      :type 'e-context-lifetime-invalid-record)
     (let ((consumed
            (e-context-lifetime-frame-complete-for-consumer
             frame "consumer-1" "response-1")))
       (should-error
        (e-context-lifetime-prepare-curation
-        consumed '(:keep (1) :summaries nil :drop nil) "response-2")
+        consumed '(:keep (1)) "response-2")
        :type 'e-context-lifetime-invalid-record))))
 
 (ert-deftest e-context-lifetime-test-curation-source-and-byte-bounds ()
@@ -639,14 +666,14 @@
                         (e-context-lifetime-prepare-curation
                          sixteen
                          (list :keep (number-sequence 1 16)
-                               :summaries nil :drop nil)
+                         :summaries nil)
                          "response-16")
                         :items))
                16))
     (should-error
      (e-context-lifetime-prepare-curation
       seventeen (list :keep (number-sequence 1 17)
-                      :summaries nil :drop nil)
+                      :summaries nil)
       "response-17")
      :type 'e-context-lifetime-invalid-record))
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
@@ -658,41 +685,44 @@
                          :summaries
                          (list (list :sources '(1)
                                      :text (make-string length ?x))))
-                   for candidate =
+                   for record =
                    (e-context-lifetime--curation-record
                     frame normalized "response-bytes" sources)
+                   for candidate = (list :promotion record :erasure nil)
                    when (= (e-context-lifetime--bytes candidate) 8192)
                    return length)))
     (should length-at-limit)
-      (let ((effect (list :keep nil :summaries
+    (let ((effect (list :keep nil :summaries
                         (list (list :sources '(1)
-                                    :text (make-string length-at-limit ?x)))
-                        :drop nil))
+                                    :text (make-string length-at-limit ?x)))))
           (too-large (list :keep nil :summaries
                            (list (list :sources '(1)
                                        :text
                                        (make-string (1+ length-at-limit)
-                                                    ?x)))
-                           :drop nil)))
+                                                    ?x))))))
       (should (= (e-context-lifetime--bytes
-                  (e-context-lifetime-prepare-curation
-                   frame effect "response-bytes" 1.0))
+                  (plist-get
+                   (e-context-lifetime-prepare-curation-disposition
+                    frame effect "response-bytes" 1.0)
+                   :package))
                  8192))
       (should-error
        (e-context-lifetime-prepare-curation
         frame too-large "response-bytes" 1.0)
        :type 'e-context-lifetime-invalid-record))))
 
-(ert-deftest e-context-lifetime-test-exhaustive-curation-disposition-is-complete ()
-  "Exhaustive curation partitions every presented source exactly once."
+(ert-deftest e-context-lifetime-test-curation-disposition-allows-omission ()
+  "Optional curation disposes selected sources and omits the rest."
   (let* ((frame (e-context-lifetime-test--multi-source-frame 3))
          (arguments
           '(:keep (1)
-            :summaries ((:sources (2) :text "durable summary"))
-            :drop (3)))
+            :summaries ((:sources (2) :text "durable summary"))))
          (normalized
           (e-context-lifetime-normalize-curation-disposition arguments 3)))
-    (should (equal normalized arguments))
+    (should (equal normalized
+                   '(:keep (1)
+                     :summaries ((:sources (2) :text "durable summary"))
+                     :erase nil)))
     (let* ((prepared
             (e-context-lifetime-prepare-curation-disposition
              frame arguments "response-mixed"))
@@ -710,33 +740,33 @@
                                   (prin1-to-string record))))
     (dolist (bad
              (list
-              '(:keep nil :summaries nil :drop nil)
-              '(:keep (1) :summaries nil :drop (1 2 3))
-              '(:keep (1) :summaries nil :drop (2))
-              '(:keep nil :summaries ((:sources (1) :text "")) :drop (2 3))
-              '(:keep (1) :summaries nil :drop (2 4))))
+              '(:keep nil :summaries nil)
+              '(:keep (1) :summaries nil :erase (1 2 3))
+              '(:keep (1) :summaries ((:sources (1) :text "duplicate")))
+              '(:keep nil :summaries ((:sources (1) :text ""))
+                :erase nil)
+              '(:keep (1) :summaries ((:sources (1) :text "overlap"))
+                :erase (2))))
       (should-error
        (e-context-lifetime-normalize-curation-disposition bad 3)
        :type 'e-context-lifetime-invalid-record))
     (let* ((seventeen (e-context-lifetime-test--multi-source-frame 17))
-           (all-drop
+           (omitted
             (e-context-lifetime-prepare-curation-disposition
              seventeen
-             (list :keep nil :summaries nil
-                   :drop (number-sequence 1 17))
-             "response-drop")))
-      (should (plist-get all-drop :drop-only-p))
-      (should-not (plist-get all-drop :record))
-      (should (= (plist-get all-drop :source-count) 17))
-      (should (= (plist-get all-drop :retained-source-count) 0))
+             '(:keep (1))
+             "response-omitted")))
+      (should (plist-get omitted :record))
+      (should (= (plist-get omitted :source-count) 17))
+      (should (= (plist-get omitted :retained-source-count) 1))
       (should-error
        (e-context-lifetime-prepare-curation-disposition
         seventeen
-        (list :keep (number-sequence 1 17) :summaries nil :drop nil)
+        (list :keep (number-sequence 1 17))
         "response-retain-17")
        :type 'e-context-lifetime-invalid-record))))
 
-(ert-deftest e-context-lifetime-test-exhaustive-curation-disposition-bounds-live-frame ()
+(ert-deftest e-context-lifetime-test-curation-disposition-bounds-live-frame ()
   "Disposition preparation rejects consumed frames and one-over records."
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
          (sources (e-context-lifetime-frame-curation-sources frame 1.0))
@@ -745,29 +775,28 @@
                    for summary =
                    (list :sources '(1)
                          :text (make-string length ?x))
-                   for candidate =
+                   for record =
                    (e-context-lifetime--curation-record
                     frame (list :keep nil :summaries (list summary))
                     "response-disposition-bytes" sources)
+                   for candidate = (list :promotion record :erasure nil)
                    when (= (e-context-lifetime--bytes candidate) 8192)
                    return length)))
     (should length-at-limit)
-    (let ((at-limit
-           (list :keep nil
-                 :summaries
-                 (list (list :sources '(1)
-                             :text (make-string length-at-limit ?x)))
-                 :drop nil))
-          (one-over
-           (list :keep nil
-                 :summaries
-                 (list (list :sources '(1)
-                             :text (make-string (1+ length-at-limit) ?x)))
-                 :drop nil)))
+    (let* ((at-limit
+            (list :keep nil
+                  :summaries
+                  (list (list :sources '(1)
+                              :text (make-string length-at-limit ?x)))))
+           (one-over
+            (list :keep nil
+                  :summaries
+                  (list (list :sources '(1)
+                              :text (make-string (1+ length-at-limit) ?x))))))
       (let ((prepared
              (e-context-lifetime-prepare-curation-disposition
               frame at-limit "response-disposition-bytes" 1.0)))
-        (should (= (e-context-lifetime--bytes (plist-get prepared :record))
+        (should (= (e-context-lifetime--bytes (plist-get prepared :package))
                    8192))
         (should (= (plist-get prepared :retained-source-count) 1)))
       (should-error
@@ -779,9 +808,252 @@
             frame "consumer-1" "response-consumed")))
       (should-error
        (e-context-lifetime-prepare-curation-disposition
-        consumed '(:keep nil :summaries nil :drop (1))
+        consumed '(:keep (1))
         "response-after-consume")
        :type 'e-context-lifetime-invalid-record))))
+
+(ert-deftest e-context-lifetime-test-curation-erasure-is-tool-bound-and-content-free ()
+  "Erasure records carry ordered tool identities, never source content."
+  (let* ((frame (e-context-lifetime-test--multi-tool-source-frame 4))
+         (arguments
+          '(:keep (1)
+            :summaries ((:sources (2) :text "durable summary"))
+            :erase (4)))
+         (prepared
+          (e-context-lifetime-prepare-curation-disposition
+           frame arguments "response-erasure"))
+         (record (plist-get prepared :record))
+         (erasure (plist-get prepared :erasure-record))
+         (erased-source (car (plist-get erasure :sources)))
+         (encoded (prin1-to-string erasure)))
+    (should (equal (plist-get prepared :arguments) arguments))
+    (should (eq (plist-get erasure :type) 'context-erasure))
+    (should (= (plist-get erasure :record-version) 1))
+    (should (equal (plist-get erasure :response-entry-id)
+                   "response-erasure"))
+    (should (= (length (plist-get erasure :sources)) 1))
+    (should (equal (plist-get erased-source :tool-call-id) "tool-call-4"))
+    (should (equal (plist-get erased-source :source-observation-id)
+                   (plist-get
+                    (nth 3 (e-context-lifetime-frame-curation-sources frame))
+                    :source-observation-id)))
+    (should-not (plist-member erased-source :value))
+    (should-not (plist-member erased-source :body))
+    (should-not (string-match-p (regexp-quote "tool-source-4") encoded))
+    (should-not (string-match-p (regexp-quote "LIVE-TOOL-OUTPUT") encoded))
+    (should-not (string-match-p (regexp-quote "tool-source-3")
+                                (prin1-to-string record)))
+    (should (= (length (plist-get record :items)) 2))
+    (should-not
+     (plist-member
+      (e-context-lifetime-curation-source-presentation
+       (car (e-context-lifetime-frame-curation-sources frame)))
+      :tool-call-id))))
+
+(ert-deftest e-context-lifetime-test-curation-erasure-fanout-and-byte-bound ()
+  "Erasure shares the disposed-label and prepared-package bounds."
+  (let* ((representative e-context-lifetime-curation-max-sources)
+         (frame (e-context-lifetime-test--multi-tool-source-frame representative))
+         (arguments
+          (list :erase (number-sequence 1 representative)))
+         (prepared
+          (e-context-lifetime-prepare-curation-disposition
+           frame arguments "response-32"))
+         (erasure (plist-get prepared :erasure-record))
+         (bytes (e-context-lifetime--bytes erasure)))
+    (should (= representative 16))
+    (should (<= bytes e-context-lifetime-curation-max-record-bytes))
+    (should (= (plist-get prepared :source-count) representative))
+    (should (= (plist-get prepared :erased-source-count) representative))
+    (should (= (plist-get prepared :retained-source-count) 0))
+    (should (plist-get prepared :erase-only-p))
+    ;; The shared 16-label ceiling applies to erase as well; there is no
+    ;; independent erasure fanout allowance.
+    (let* ((larger-count 17)
+           (larger-frame
+            (e-context-lifetime-test--multi-tool-source-frame larger-count))
+           (larger-arguments
+            (list
+                  :erase (number-sequence 1 larger-count))))
+      (should-error
+       (e-context-lifetime-prepare-curation-disposition
+        larger-frame larger-arguments "response-large")
+       :type 'e-context-lifetime-invalid-record))))
+
+(ert-deftest e-context-lifetime-test-curation-erasure-byte-bound-is-exact ()
+  "The shared prepared-package byte bound accepts its exact edge and rejects +1."
+  (let* ((count 1)
+         (frame (e-context-lifetime-test--multi-tool-source-frame count))
+         (sources (e-context-lifetime-frame-curation-sources frame))
+         (normalized (list :erase (number-sequence 1 count)))
+         (base
+          (e-context-lifetime--curation-erasure-record
+           frame normalized "r" sources))
+         ;; The package wrapper is the measured object, so derive a response
+         ;; id that places the complete wrapper exactly on the shared bound.
+         (package-base (list :promotion nil :erasure base))
+         (package-bytes (e-context-lifetime--bytes package-base))
+         (package-at-limit-id
+          (make-string
+           (+ (length "r")
+              (- e-context-lifetime-curation-max-record-bytes
+                 package-bytes))
+           ?r))
+         (package-one-over-id (concat package-at-limit-id "r"))
+         (prepared
+          (e-context-lifetime-prepare-curation-disposition
+           frame normalized package-at-limit-id))
+      (should (= (e-context-lifetime--bytes
+                  (list :promotion nil
+                        :erasure (plist-get prepared :erasure-record)))
+                 e-context-lifetime-curation-max-record-bytes)))
+    (should-error
+     (e-context-lifetime-prepare-curation-disposition
+      frame normalized package-one-over-id)
+     :type 'e-context-lifetime-invalid-record)))
+
+(ert-deftest e-context-lifetime-test-curation-erasure-requires-tool-source ()
+  "Erasure rejects non-tool sources and tool envelopes without call IDs."
+  (let ((frame (e-context-lifetime-test--frame)))
+    (should-error
+     (e-context-lifetime-prepare-curation-disposition
+      frame '(:erase (1))
+      "response-non-tool")
+     :type 'e-context-lifetime-invalid-record))
+  (let ((frame
+         (e-context-lifetime-frame-create-from-segments
+          :id "missing-tool-id-frame"
+          :generation-id "generation-1"
+          :consumer-request-id "consumer-1"
+          :segments
+          (list (list :kind "tool-result"
+                      :id "tool-source"
+                      :messages (list (list :role "tool"
+                                            :content "no call id")))))))
+    (should-error
+     (e-context-lifetime-prepare-curation-disposition
+      frame '(:erase (1))
+      "response-missing-tool-id")
+     :type 'e-context-lifetime-invalid-record))
+  (let ((frame
+         (e-context-lifetime-frame-create-from-segments
+          :id "mismatched-tool-id-frame"
+          :generation-id "generation-1"
+          :consumer-request-id "consumer-1"
+          :segments
+          (list (list :kind "tool-result"
+                      :id "tool-source"
+                      :messages
+                      (list (list :tool-call '(:id "call-a")
+                                  :tool-result
+                                  '(:tool-call-id "call-b"
+                                    :content "mismatched ids"))))))))
+    (should-error
+     (e-context-lifetime-prepare-curation-disposition
+      frame '(:erase (1))
+     "response-mismatched-tool-id")
+     :type 'e-context-lifetime-invalid-record)))
+
+(ert-deftest e-context-lifetime-test-curation-erasure-v1-codec-is-detached-and-strict ()
+  "The version-1 erasure codec accepts only content-free source identities."
+  (cl-labels
+      ((without-key
+        (plist key)
+        (let (result)
+          (while plist
+            (let ((current-key (pop plist))
+                  (value (pop plist)))
+              (unless (eq current-key key)
+                (setq result (append result (list current-key value))))))
+          result)))
+    (let ((record
+           '(:record-version 1
+             :type context-erasure
+             :id "erasure-1"
+             :frame-id "frame-1"
+             :generation-id "generation-1"
+             :consumer-request-id "consumer-1"
+             :response-entry-id "response-1"
+             :sources ((:source-observation-id "observation-1"
+                        :source-ref "external:tool:1"
+                        :source-fingerprint "fingerprint-1"
+                        :tool-call-id "tool-call-1")))))
+      (should (equal (e-context-lifetime-curation-erasure-from-record record)
+                     record))
+      (dolist (bad
+               (list
+                (without-key record :sources)
+                (let ((copy (copy-tree record)))
+                  (plist-put copy :record-version 2))
+                (let ((copy (copy-tree record)))
+                  (plist-put copy :type 'context-promotion))
+                (let ((copy (copy-tree record)))
+                  (plist-put copy :source-body "must-not-persist"))
+                (let ((copy (copy-tree record)))
+                  (plist-put
+                   copy :sources
+                   '((:source-observation-id "observation-1"
+                      :source-ref "external:tool:1"
+                      :source-fingerprint "fingerprint-1"
+                      :tool-call-id "tool-call-1"
+                      :value "tool output"))))
+                (let ((copy (copy-tree record)))
+                  (plist-put
+                   copy :sources
+                   '((:source-observation-id "observation-1"
+                      :source-ref "external:tool:1"
+                      :source-fingerprint "fingerprint-1"
+                      :tool-call-id "tool-call-1")
+                     (:source-observation-id "observation-1"
+                      :source-ref "external:tool:2"
+                      :source-fingerprint "fingerprint-2"
+                      :tool-call-id "tool-call-2"))))))
+        (should-error
+         (e-context-lifetime-curation-erasure-from-record bad)
+         :type 'e-context-lifetime-invalid-record)))))
+
+(ert-deftest e-context-lifetime-test-curation-erasure-v1-codec-detaches-mutated-input ()
+  "Decoded erasure identities do not alias mutable caller strings or plists."
+  (let* ((id (copy-sequence "erasure-input"))
+         (frame-id (copy-sequence "frame-input"))
+         (generation-id (copy-sequence "generation-input"))
+         (consumer-id (copy-sequence "consumer-input"))
+         (response-id (copy-sequence "response-input"))
+         (observation-id (copy-sequence "observation-input"))
+         (source-ref (copy-sequence "source-ref-input"))
+         (fingerprint (copy-sequence "fingerprint-input"))
+         (tool-call-id (copy-sequence "tool-call-input"))
+         (source (list :source-observation-id observation-id
+                       :source-ref source-ref
+                       :source-fingerprint fingerprint
+                       :tool-call-id tool-call-id))
+         (record (list :record-version 1
+                       :type 'context-erasure
+                       :id id
+                       :frame-id frame-id
+                       :generation-id generation-id
+                       :consumer-request-id consumer-id
+                       :response-entry-id response-id
+                       :sources (list source)))
+         (decoded (e-context-lifetime-curation-erasure-from-record record)))
+    (dolist (value (list id frame-id generation-id consumer-id response-id
+                         observation-id source-ref fingerprint tool-call-id))
+      (setf (aref value 0) ?X))
+    (plist-put source :tool-call-id "replaced-tool-call")
+    (should (equal (plist-get decoded :id) "erasure-input"))
+    (should (equal (plist-get decoded :frame-id) "frame-input"))
+    (should (equal (plist-get decoded :generation-id) "generation-input"))
+    (should (equal (plist-get decoded :consumer-request-id) "consumer-input"))
+    (should (equal (plist-get decoded :response-entry-id) "response-input"))
+    (let ((decoded-source (car (plist-get decoded :sources))))
+      (should (equal (plist-get decoded-source :source-observation-id)
+                     "observation-input"))
+      (should (equal (plist-get decoded-source :source-ref)
+                     "source-ref-input"))
+      (should (equal (plist-get decoded-source :source-fingerprint)
+                     "fingerprint-input"))
+      (should (equal (plist-get decoded-source :tool-call-id)
+                     "tool-call-input")))))
 
 (ert-deftest e-context-lifetime-test-curation-revision-identity-is-stable ()
   "Revision identity exposes schema, presentation, ratio, and bounds inputs."
@@ -791,7 +1063,7 @@
     (should (equal first same))
     (should-not (equal first different))
     (should (equal (plist-get first :schema-revision)
-                   "context-curate-v4"))
+                   "context-curate-v5"))
     (should (equal (plist-get first :presentation-revision)
                    "context-curation-presentation-v2"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))

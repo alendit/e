@@ -1634,12 +1634,11 @@ retained response already carries the stable segment and its earlier marker."
    :type "function"
    :name "context-curate"
    :description
-   "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."
+   "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."
    :parameters
    (list
     :type "object"
     :additionalProperties :json-false
-    :required ["keep" "summaries" "drop"]
     :properties
     (list
      :keep
@@ -1663,8 +1662,9 @@ retained response already carries the stable segment and its earlier marker."
               :items (list :type "integer" :minimum 1))
         :text
         (list :type "string" :minLength 1))))
-     :drop
+     :erase
      (list :type "array"
+           :maxItems 16
            :items (list :type "integer" :minimum 1))))))
 
 (defun e-openai-codex--text-verbosity (model options)

@@ -152,7 +152,8 @@ activity cannot evict the semantic state needed by board reducers."
 (defconst e-session--replay-list-fields
   '(:session-events :messages :activity-events :branch-summaries
     :compactions :provider-anchors :process-reports
-    :context-generations :context-promotions)
+    :context-generations :context-promotions :context-erasures
+    :context-curation-packages)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session--list-tail-fields
@@ -163,11 +164,13 @@ activity cannot evict the semantic state needed by board reducers."
     (:provider-anchors . :provider-anchors-tail)
     (:process-reports . :process-reports-tail)
     (:context-generations . :context-generations-tail)
-    (:context-promotions . :context-promotions-tail))
+    (:context-promotions . :context-promotions-tail)
+    (:context-erasures . :context-erasures-tail)
+    (:context-curation-packages . :context-curation-packages-tail))
   "Internal append-only list fields and their cached tail cells.")
 
 (defconst e-session--context-lifetime-entry-types
-  '(context-generation context-promotion)
+  '(context-generation context-promotion context-erasure)
   "Durable entry types owned by the generational context lifetime model.")
 
 (defconst e-session-metadata-schema
@@ -709,6 +712,8 @@ arrays and sometimes inverted key/value pairs."
     "process-report"
     "context-generation"
     "context-promotion"
+    "context-erasure"
+    "context-curation-package"
     "current-branch"
     "messages-cleared")
   "Persistent record types that must flush before derived queued records.")
@@ -1157,7 +1162,9 @@ and RECORD supplies persisted identity fields during replay."
             (plist-get session :provider-anchors)
             (plist-get session :process-reports)
             (plist-get session :context-generations)
-            (plist-get session :context-promotions))))
+            (plist-get session :context-promotions)
+            (plist-get session :context-erasures)
+            (plist-get session :context-curation-packages))))
 
 (defun e-session-entry-by-id (store session-id entry-id)
   "Return durable entry ENTRY-ID from SESSION-ID."
@@ -1323,42 +1330,113 @@ application service always supplies a current-path boundary."
     path))
 
 (defun e-session--checkpoint-context-lifetime-state (store session-id)
-  "Return the narrowed generation and promotion projection for SESSION-ID.
+  "Return narrowed generation, promotion, and erasure state for SESSION-ID.
 
 Frames are runtime-only.  Only the latest generation and promotions on the
 current canonical branch are retained in the checkpoint manifest; durable tail
-bodies are reconstructed by the later context consumer from session entries."
+bodies are reconstructed by the later context consumer from session entries.
+Erasure authorities are retained on the selected path so suppression cannot
+disappear while an automatic projection could still reference its subject."
   (let* ((path (e-session--checkpoint-path-suffix store session-id))
+         (complete-path (e-session-current-path store session-id))
+         (generation-entries
+          (seq-filter
+           (lambda (entry)
+             (eq (plist-get entry :type) 'context-generation))
+           complete-path))
          (generation-entry
           (car (last
-                (seq-filter
-                 (lambda (entry)
-                   (eq (plist-get entry :type) 'context-generation))
-                 path))))
+                generation-entries)))
          (generation
           (and generation-entry
                (e-session--context-record generation-entry)))
+         ;; A curation package is one path entry.  Its semantic components are
+         ;; inspected only through this detached view; checkpoint records keep
+         ;; the package envelope intact so replay cannot split a mixed commit.
+         (component-pairs
+          (lambda (entries)
+            (cl-mapcan
+             (lambda (entry)
+               (mapcar (lambda (component)
+                         (cons entry component))
+                       (e-session--context-entry-components entry)))
+             entries)))
+         (path-components (funcall component-pairs path))
+         (complete-components (funcall component-pairs complete-path))
          ;; Promotions are durable semantic facts, not frame bodies.  Keep
          ;; them from the complete current canonical path even when an older
          ;; generation is covered by the latest checkpoint only when they are
          ;; owned by that active generation.  Older records remain audit-only;
          ;; their selected facts are carried by the portable checkpoint.
          (promotions
+          (delq nil
+                (mapcar
+                 (lambda (pair)
+                   (let ((component (cdr pair)))
+                     (when (and (eq (car component) 'context-promotion)
+                                generation
+                                (equal (plist-get (cdr component) :generation-id)
+                                       (plist-get generation :id)))
+                       (cdr component))))
+                 path-components)))
+         (promotion-entries
+          (delq nil
+                (mapcar
+                 (lambda (pair)
+                   (let ((component (cdr pair)))
+                     (when (and (eq (car component) 'context-promotion)
+                                (member (cdr component) promotions))
+                       (car pair))))
+                 path-components)))
+         ;; Erasure authorities remain path-scoped durable facts even when a
+         ;; compaction boundary moves the ordinary resumable suffix forward.
+         ;; Their subjects may still be eligible for automatic projection, so
+         ;; retain the content-free record until a later owner can prove safe
+         ;; pruning.  The session layer does not inspect source bodies.
+         (erasures
+          (delq nil
+                (mapcar
+                 (lambda (pair)
+                   (when (eq (car (cdr pair)) 'context-erasure)
+                     (cdr (cdr pair))))
+                 complete-components)))
+         (erasure-entries
+          (delq nil
+                (mapcar
+                 (lambda (pair)
+                   (when (eq (car (cdr pair)) 'context-erasure)
+                     (car pair)))
+                 complete-components)))
+         ;; An erasure remains owned by the generation that was active when it
+         ;; was prepared.  Retain every such generation in checkpoint order;
+         ;; keeping only the latest generation would make replay validate an
+         ;; older erasure against the wrong owner (or lose its authority).
+         (erasure-generation-ids
+          (delete-dups
+           (mapcar (lambda (record)
+                     (plist-get record :generation-id))
+                   erasures)))
+         (required-generation-entries
           (seq-filter
            (lambda (entry)
-             (and (eq (plist-get entry :type) 'context-promotion)
-                  generation
-                  (equal (plist-get (e-session--context-record entry) :generation-id)
-                         (plist-get generation :id))))
-           path))
+             (or (eq entry generation-entry)
+                 (member (plist-get (e-session--context-record entry) :id)
+                         erasure-generation-ids)))
+           generation-entries))
          (entries
           (seq-filter (lambda (entry)
-                        (or (eq entry generation-entry)
-                            (memq entry promotions)))
-                      path)))
+                        (or (memq entry required-generation-entries)
+                            (member entry promotion-entries)
+                            (member entry erasure-entries)))
+                      complete-path)))
     (list :generation (and generation (copy-tree generation))
+          :generations
+          (vconcat (mapcar #'e-session--context-record
+                           required-generation-entries))
           :promotions
-          (vconcat (mapcar #'e-session--context-record promotions))
+          (vconcat (mapcar #'copy-tree promotions))
+          :erasures
+          (vconcat (mapcar #'copy-tree erasures))
           :entry-ids
           (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries)))))
 
@@ -1403,27 +1481,36 @@ bodies are reconstructed by the later context consumer from session entries."
            (plist-get session :provider-anchors)))
          (context-state
           (e-session--checkpoint-context-lifetime-state store session-id))
-         ;; A v3 curation record carries the durable response identity of the
-         ;; reserved response.  Its matching audit control is normally in the
-         ;; recent activity tail, but must remain resolvable when later
-         ;; activity would evict it.  Pin only exact controls for active v3
-         ;; records; do not retain unrelated activity or copy this audit state
-         ;; into a fork.
+         ;; A v3 curation or v1 erasure record carries the durable response
+         ;; identity of the reserved response.  Its matching audit control is
+         ;; normally in the recent activity tail, but must remain resolvable
+         ;; when later activity would evict it.  Pin only exact controls for
+         ;; active semantic records; do not retain unrelated activity or copy
+         ;; this audit state into a fork.
          (curation-response-ids
           (delq nil
                 (mapcar
                  (lambda (record)
-                   (when (equal (plist-get record :record-version)
-                                e-context-lifetime-curation-record-version)
+                   (when (or (equal (plist-get record :record-version)
+                                   e-context-lifetime-curation-record-version)
+                             (equal (plist-get record :record-version)
+                                    e-context-lifetime-curation-erasure-record-version))
                      (plist-get record :response-entry-id)))
-                 (append (plist-get context-state :promotions) nil))))
+                 (append (plist-get context-state :promotions)
+                         (plist-get context-state :erasures)
+                         nil))))
          (curation-response-events
           (seq-filter
            (lambda (entry)
              (and (eq (plist-get entry :type) 'activity-event)
                   (eq (plist-get entry :event-type)
                       'context-curation-response)
-                  (member (plist-get entry :id) path-ids)
+                  ;; A response control can precede the latest compaction
+                  ;; boundary while its semantic record remains on the
+                  ;; selected path.  Resolve the dependency against the
+                  ;; complete path; the exact response-id predicates below
+                  ;; still prevent unrelated audit activity from being pinned.
+                  (member (plist-get entry :id) complete-path-ids)
                   (member (plist-get entry :id) curation-response-ids)
                   (equal (plist-get (plist-get entry :payload)
                                     :response-entry-id)
@@ -1552,7 +1639,7 @@ bodies are reconstructed by the later context consumer from session entries."
          (list :type "process-report" :session-id session-id
                :id id :parent-id parent-id :timestamp timestamp
                :report report)))
-      ((or 'context-generation 'context-promotion)
+      ((or 'context-generation 'context-promotion 'context-erasure)
        (list :type (symbol-name (plist-get entry :type))
              :session-id session-id
              :id id
@@ -1561,6 +1648,18 @@ bodies are reconstructed by the later context consumer from session entries."
              :context-record
              (e-session--context-record-for-json
               (plist-get entry :context-record))))
+      ('context-curation-package
+       (list :type "context-curation-package"
+             :session-id session-id
+             :id id
+             :parent-id parent-id
+             :timestamp timestamp
+             :promotion (and (plist-get entry :promotion)
+                             (e-session--context-record-for-json
+                              (plist-get entry :promotion)))
+             :erasure (and (plist-get entry :erasure)
+                           (e-session--context-record-for-json
+                            (plist-get entry :erasure)))))
       ('session-event
        (pcase (plist-get entry :event-type)
          ('current-branch
@@ -2047,6 +2146,8 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                             :process-reports nil
                             :context-generations nil
                             :context-promotions nil
+                            :context-erasures nil
+                            :context-curation-packages nil
                             :created-at (or (plist-get record :created-at)
                                             timestamp)
                             :updated-at (or (plist-get record :updated-at)
@@ -2240,6 +2341,10 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
       ;; runtime frame or recovery state.
       ((or "context-frame" "context-frame-settlement")
        nil)
+      ("context-curation-package"
+       (when session
+         (e-session--replay-context-curation-package
+          store session-id record)))
       ((or "context-generation" "context-promotion")
        (let* ((entry-type (intern type))
               (raw-context-record (plist-get record :context-record)))
@@ -2277,6 +2382,29 @@ checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
                     record)))
              (e-session--prepend-replayed-item session field entry)
              (e-session--touch store session timestamp)))))
+      ("context-erasure"
+       (when session
+         (let* ((raw-context-record (plist-get record :context-record))
+                (_duplicate
+                 (when (e-session--context-record-has-duplicate-key-p
+                        raw-context-record)
+                   (signal 'e-session-error
+                           (list "Context erasure replay has duplicate fields"))))
+                (context-record
+                 (e-context-lifetime-curation-erasure-from-record
+                  (e-session--normalize-context-record-for-replay
+                   'context-erasure raw-context-record)))
+                (_ownership
+                 (e-session--validate-context-entry-ownership
+                  store session-id 'context-erasure context-record))
+                (entry
+                 (e-session--normalize-entry-from-record
+                  session 'context-erasure
+                  (list :context-record context-record)
+                  timestamp record)))
+           (e-session--prepend-replayed-item
+            session :context-erasures entry)
+           (e-session--touch store session timestamp))))
       ("current-branch"
        (when session
          (plist-put session :current-branch
@@ -2461,6 +2589,10 @@ This explicit operation is the only checkpoint-less full-journal replay path."
                    :compactions nil
                    :provider-anchors nil
                    :process-reports nil
+                   :context-generations nil
+                   :context-promotions nil
+                   :context-erasures nil
+                   :context-curation-packages nil
                    :turn-options nil
                    :created-at (plist-get entry :created-at)
                    :updated-at (plist-get entry :updated-at)
@@ -2859,6 +2991,8 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                         :process-reports nil
                         :context-generations nil
                         :context-promotions nil
+                        :context-erasures nil
+                        :context-curation-packages nil
                         :turn-options nil
                         :created-at timestamp
                         :updated-at timestamp
@@ -3172,9 +3306,71 @@ its dedicated board journal accessors."
    (plist-get (e-session--get-live store session-id) :context-generations)))
 
 (defun e-session-context-promotions (store session-id)
-  "Return context promotion entries for SESSION-ID in insertion order."
-  (copy-tree
-   (plist-get (e-session--get-live store session-id) :context-promotions)))
+  "Return detached context promotion entries for SESSION-ID in path order.
+
+Promotion components carried by a curation package are projected as virtual
+entries so this compatibility accessor has the same :context-record shape as
+standalone promotion entries.  The package remains the only persisted entry."
+  (let (promotions)
+    (dolist (entry (e-session-current-path store session-id)
+                   (nreverse promotions))
+      (dolist (component (e-session--context-entry-components entry))
+        (when (eq (car component) 'context-promotion)
+          (let ((record (cdr component)))
+            (push
+             (if (eq (plist-get entry :type) 'context-promotion)
+                 (copy-tree entry)
+               (list :type 'context-promotion
+                     :id (plist-get record :id)
+                     :parent-id (plist-get entry :parent-id)
+                     :created-at (plist-get entry :created-at)
+                     :context-record (copy-tree record)))
+             promotions)))))))
+
+(defun e-session-context-erasures (store session-id)
+  "Return detached version-1 erasure records for SESSION-ID in path order.
+
+The returned records are detached and contain only identity/provenance.  This
+accessor is an audit surface; model-facing projection uses the selected-head
+query below instead of scanning every session entry itself."
+  (let (records)
+    (dolist (entry (e-session-current-path store session-id)
+                   (nreverse records))
+      (dolist (component (e-session--context-entry-components entry))
+        (when (eq (car component) 'context-erasure)
+          (push (e-context-lifetime-curation-erasure-record
+                 (cdr component))
+                records))))))
+
+(defun e-session-erased-tool-call-ids
+    (store session-id &optional selected-head-id)
+  "Return canonical erased tool-call IDs on SESSION-ID's selected head.
+
+SELECTED-HEAD-ID is an optional durable entry id; nil selects the session's
+current head.  The query walks only the parent path ending at that head,
+preserves path/source order, and removes duplicate identities.  It is
+intentionally read-only and does not inspect any Feature 90 receipt or
+provider state."
+  (unless (or (null selected-head-id) (stringp selected-head-id))
+    (signal 'e-session-error
+            (list "Invalid selected context head" selected-head-id)))
+  (when (and selected-head-id
+             (not (e-session-entry-by-id store session-id selected-head-id)))
+    (signal 'e-session-error
+            (list "Unknown selected context head" selected-head-id)))
+  (let ((head-id selected-head-id)
+        (seen (make-hash-table :test 'equal))
+        ids)
+    (dolist (entry (e-session-current-path store session-id head-id)
+                   (nreverse ids))
+      (dolist (component (e-session--context-entry-components entry))
+        (when (eq (car component) 'context-erasure)
+          (dolist (tool-call-id
+                   (e-context-lifetime-curation-erasure-tool-call-ids
+                    (cdr component)))
+            (unless (gethash tool-call-id seen)
+              (puthash tool-call-id t seen)
+              (push tool-call-id ids))))))))
 
 (defun e-session-context-curations (store session-id)
   "Return version-3 curation records for SESSION-ID in insertion order.
@@ -3184,12 +3380,14 @@ this accessor selects the new record version without exposing v2 promotion
 records as if they were v3 records."
   (delq nil
         (mapcar
-         (lambda (entry)
-           (let ((record (e-session--context-record entry)))
-             (when (equal (plist-get record :record-version)
-                          e-context-lifetime-curation-record-version)
+         (lambda (component)
+           (let ((record (cdr component)))
+             (when (and (eq (car component) 'context-promotion)
+                        (equal (plist-get record :record-version)
+                               e-context-lifetime-curation-record-version))
                (copy-tree record))))
-         (e-session-context-promotions store session-id))))
+         (cl-mapcan #'e-session--context-entry-components
+                    (e-session-current-path store session-id)))))
 
 (defun e-session-context-lifetime-current-generation
     (store session-id &optional head-id)
@@ -3273,40 +3471,41 @@ consumer-bound frame at request construction time."
          (promotion-message-entry-groups nil)
          (promotion-frontier nil))
     (dolist (entry path)
-      (when (and (eq (plist-get entry :type) 'context-promotion)
-                 generation-id)
-        (condition-case error
-            (let ((record (e-session--context-record entry)))
-              (when (equal (plist-get record :generation-id)
-                           generation-id)
-                (if (equal (plist-get record :record-version)
-                           e-context-lifetime-curation-record-version)
-                    (let ((curation
-                           (e-context-lifetime-curation-from-record record)))
-                      (push curation curations)
+      (dolist (component (e-session--context-entry-components entry))
+        (when (and (eq (car component) 'context-promotion)
+                   generation-id)
+          (condition-case error
+              (let ((record (cdr component)))
+                (when (equal (plist-get record :generation-id)
+                             generation-id)
+                  (if (equal (plist-get record :record-version)
+                             e-context-lifetime-curation-record-version)
+                      (let ((curation
+                             (e-context-lifetime-curation-from-record record)))
+                        (push curation curations)
+                        (push
+                         (mapcar
+                          (lambda (message)
+                            (list :kind 'v3 :message
+                                  (copy-tree message)))
+                          (e-context-lifetime-curation-messages curation))
+                         promotion-message-entry-groups))
+                    (let ((promotion
+                           (e-context-lifetime-promotion-from-record record)))
+                      (push promotion promotions)
                       (push
                        (mapcar
                         (lambda (message)
-                          (list :kind 'v3 :message
+                          (list :kind 'v2 :message
                                 (copy-tree message)))
-                        (e-context-lifetime-curation-messages curation))
-                       promotion-message-entry-groups))
-                  (let ((promotion
-                         (e-context-lifetime-promotion-from-record record)))
-                    (push promotion promotions)
-                    (push
-                     (mapcar
-                      (lambda (message)
-                        (list :kind 'v2 :message
-                              (copy-tree message)))
-                      (e-context-lifetime-promotion-fact-messages
-                       (list promotion)))
-                     promotion-message-entry-groups)))
-                (push (plist-get record :id) promotion-frontier)))
-          (e-context-lifetime-invalid-record
-           (signal 'e-session-error
-                   (list "Invalid current context promotion"
-                         session-id error))))))
+                        (e-context-lifetime-promotion-fact-messages
+                         (list promotion)))
+                       promotion-message-entry-groups)))
+                  (push (plist-get record :id) promotion-frontier)))
+            (e-context-lifetime-invalid-record
+             (signal 'e-session-error
+                     (list "Invalid current context promotion"
+                           session-id error)))))))
     (let* ((promotion-message-entries
             (if promotion-message-entry-groups
                 (apply #'append (nreverse promotion-message-entry-groups))
@@ -3792,6 +3991,30 @@ otherwise a list containing one message is flattened into one object."
   "Return provider-neutral context RECORD safe for JSON persistence."
   (e-session--context-value-for-json record))
 
+(defun e-session--context-entry-components (entry)
+  "Return semantic context components carried by durable ENTRY.
+
+Standalone promotion/erasure entries remain readable compatibility records.
+The current curation package is one indexed session entry whose optional
+  components are projected here without creating virtual entries or a second
+  ledger."
+  (pcase (plist-get entry :type)
+    ('context-promotion
+     (list (cons 'context-promotion
+                 (e-session--context-record entry))))
+    ('context-erasure
+     (list (cons 'context-erasure
+                 (e-session--context-record entry))))
+    ('context-curation-package
+     (delq nil
+           (list (and (plist-get entry :promotion)
+                      (cons 'context-promotion
+                            (copy-tree (plist-get entry :promotion))))
+                 (and (plist-get entry :erasure)
+                      (cons 'context-erasure
+                            (copy-tree (plist-get entry :erasure)))))))
+    (_ nil)))
+
 (defun e-session--normalize-context-record-for-replay (type record)
   "Restore the outer TYPE symbol after JSON decoding RECORD."
   (if (not (e-session--keyword-plist-p record))
@@ -3844,6 +4067,8 @@ non-nil, fences an append boundary to one context-promotion version."
               (cond
                ((eq type 'context-generation)
                 (e-context-lifetime-generation-from-record record))
+               ((eq type 'context-erasure)
+                (e-context-lifetime-curation-erasure-from-record record))
                ((equal record-version
                        e-context-lifetime-curation-record-version)
                 (e-context-lifetime-curation-from-record record))
@@ -3852,12 +4077,14 @@ non-nil, fences an append boundary to one context-promotion version."
                 (e-context-lifetime-promotion-from-record record))
                (t
                 (signal 'e-session-error
-                        (list "Context promotion writes require version 3"
+                        (list "Context lifetime writes require a supported version"
                               record-version)))))
              (normalized
               (cond
                ((eq type 'context-generation)
                 (e-context-lifetime-generation-record decoded))
+               ((eq type 'context-erasure)
+                (e-context-lifetime-curation-erasure-record decoded))
                ((equal record-version
                        e-context-lifetime-curation-record-version)
                 (e-context-lifetime-curation-record decoded))
@@ -3866,8 +4093,8 @@ non-nil, fences an append boundary to one context-promotion version."
                ;; deliberately no version-2 production encoder.
                (read-legacy-p (copy-tree record))
                (t
-                (signal 'e-session-error
-                        (list "Context promotion writes require version 3"
+               (signal 'e-session-error
+                        (list "Context lifetime writes require a supported version"
                               record-version))))))
         (when (and expected-record-version
                    (not (equal expected-record-version
@@ -3892,15 +4119,27 @@ non-nil, fences an append boundary to one context-promotion version."
                                (plist-get session :provider-anchors)
                                (plist-get session :process-reports)
                                (plist-get session :context-generations)
-                               (plist-get session :context-promotions))))
+                               (plist-get session :context-promotions)
+                               (plist-get session :context-erasures)
+                               (plist-get session :context-curation-packages))))
          (by-id (make-hash-table :test #'equal))
+         (visited (make-hash-table :test #'equal))
          path
          (head-id (or head-id
                       (and session (plist-get session :current-head-id)))))
     (dolist (entry entries)
       (puthash (plist-get entry :id) entry by-id))
     (while head-id
-      (when-let ((entry (gethash head-id by-id)))
+      (when (gethash head-id visited)
+        (signal 'e-session-error
+                (list "Context session path contains a cycle"
+                      session-id head-id)))
+      (puthash head-id t visited)
+      (let ((entry (gethash head-id by-id)))
+        (unless entry
+          (signal 'e-session-error
+                  (list "Context session path has unresolved head or parent"
+                        session-id head-id)))
         (push entry path)
         (setq head-id (plist-get entry :parent-id))))
     path))
@@ -3921,15 +4160,227 @@ non-nil, fences an append boundary to one context-promotion version."
                (e-session--context-record generation-entry)))
          (generation-id (and generation-record
                              (plist-get generation-record :id))))
-    (when (and (eq type 'context-promotion)
+    (when (and (memq type '(context-promotion context-erasure))
                (not (equal (plist-get context-record :generation-id)
                            generation-id)))
       (signal 'e-session-error
-              (list "Context promotion has no active generation owner"
+              (list "Context lifetime record has no active generation owner"
                     session-id
                     (plist-get context-record :generation-id)
                     generation-id)))
     context-record))
+
+(defun e-session--normalize-context-curation-package (package)
+  "Return detached validated semantic components from curation PACKAGE.
+
+This is the one Feature 88 package shape owned by the session boundary.  It is
+deliberately not a general transaction abstraction: the only allowed fields
+are the optional version-3 promotion and version-1 erasure components."
+  (unless (e-session--keyword-plist-p package)
+    (signal 'e-session-error
+            (list "Context curation package must be a keyword plist" package)))
+  (when (e-session--context-record-has-duplicate-key-p package)
+    (signal 'e-session-error
+            (list "Context curation package has duplicate fields")))
+  (let ((keys nil)
+        (tail package))
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (setq keys (nreverse keys))
+    (unless (and (= (length keys) 2)
+                 (memq :promotion keys)
+                 (memq :erasure keys))
+      (signal 'e-session-error
+              (list "Context curation package has unsupported fields" keys))))
+  (let* ((promotion-raw (plist-get package :promotion))
+         (erasure-raw (plist-get package :erasure))
+         (promotion
+          (and promotion-raw
+               (e-session--normalize-context-record
+                'context-promotion promotion-raw
+                e-context-lifetime-curation-record-version)))
+         (erasure
+          (and erasure-raw
+               (e-session--normalize-context-record
+                'context-erasure erasure-raw
+                e-context-lifetime-curation-erasure-record-version))))
+    (unless (or promotion erasure)
+      (signal 'e-session-error
+              (list "Context curation package has no semantic component")))
+    (when (and promotion erasure)
+      (dolist (field '(:frame-id :generation-id :consumer-request-id
+                       :response-entry-id))
+        (unless (equal (plist-get promotion field)
+                       (plist-get erasure field))
+          (signal 'e-session-error
+                  (list "Context curation package component identity mismatch"
+                        field)))))
+    (list :promotion promotion :erasure erasure)))
+
+(defun e-session--context-curation-package-id (session-id package)
+  "Return the deterministic identity for semantic curation PACKAGE."
+  (format "context-curation-package:%s"
+          (substring
+           (secure-hash 'sha256
+                        (prin1-to-string
+                         (list session-id
+                               (plist-get package :promotion)
+                               (plist-get package :erasure))))
+           0 32)))
+
+(defun e-session--context-curation-package-record
+    (session-id package package-id parent-id timestamp)
+  "Return one JSON-safe session record for curation PACKAGE."
+  (list :type "context-curation-package"
+        :session-id session-id
+        :id package-id
+        :parent-id parent-id
+        :timestamp timestamp
+        :promotion (and (plist-get package :promotion)
+                        (e-session--context-record-for-json
+                         (plist-get package :promotion)))
+        :erasure (and (plist-get package :erasure)
+                      (e-session--context-record-for-json
+                       (plist-get package :erasure)))))
+
+(defun e-session--prepare-context-curation-package
+    (store session-id package)
+  "Prepare one persistent curation PACKAGE without mutating STORE.
+
+The returned value contains detached normalized components and one indexed
+session entry.  The package is the commit unit; its optional promotion and
+erasure components are never represented as independently persisted entries."
+  (let* ((package (e-session--normalize-context-curation-package package))
+         (session (e-session--get-live store session-id))
+         (timestamp (e-session--timestamp))
+         (base-parent (plist-get session :current-head-id))
+         (_promotion
+          (when-let ((record (plist-get package :promotion)))
+            (e-session--validate-context-entry-ownership
+             store session-id 'context-promotion record)))
+         (_erasure
+          (when-let ((record (plist-get package :erasure)))
+            (e-session--validate-context-entry-ownership
+             store session-id 'context-erasure record)))
+         (package-id (e-session--context-curation-package-id
+                      session-id package))
+         (record (e-session--context-curation-package-record
+                  session-id package package-id base-parent timestamp))
+         (entry
+          (e-session--normalize-entry-from-record
+           session 'context-curation-package
+           (list :promotion (plist-get package :promotion)
+                 :erasure (plist-get package :erasure))
+           timestamp record)))
+    (list :package package
+          :entry entry
+          :package-id package-id
+          :timestamp timestamp
+          :record record)))
+
+(defun e-session--context-curation-package-existing-state
+    (store session-id prepared)
+  "Return an exact existing package for PREPARED, or signal a conflict."
+  (let ((existing (e-session-entry-by-id
+                   store session-id (plist-get prepared :package-id))))
+    (cond
+     ((null existing) nil)
+     ((and (eq (plist-get existing :type) 'context-curation-package)
+           (equal (plist-get existing :parent-id)
+                  (plist-get (plist-get prepared :entry) :parent-id))
+           (equal (plist-get existing :promotion)
+                  (plist-get (plist-get prepared :package) :promotion))
+           (equal (plist-get existing :erasure)
+                  (plist-get (plist-get prepared :package) :erasure)))
+      existing)
+     (t
+      (signal 'e-session-error
+              (list "Context curation package identity conflict"
+                    (plist-get prepared :package-id)))))))
+
+(defun e-session--replay-context-curation-package
+    (store session-id record)
+  "Replay one validated curation PACKAGE RECORD atomically.
+
+All semantic components are normalized and ownership-checked before the one
+package entry is installed.  A repeated exact package is idempotent; an entry
+with the same identity but different canonical components is rejected."
+  (unless (and (e-session--keyword-plist-p record)
+               (not (e-session--context-record-has-duplicate-key-p record)))
+    (signal 'e-session-error
+            (list "Invalid context curation package record")))
+  (let ((keys nil)
+        (tail record))
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (setq keys (nreverse keys))
+    (unless (equal keys '(:type :session-id :id :parent-id :timestamp
+                          :promotion :erasure))
+      (signal 'e-session-error
+              (list "Invalid context curation package fields" keys))))
+  ;; Replay is already inside the owning session's load transaction.  Calling
+  ;; `e-session--get-live' here would see the not-yet-finalized replay session
+  ;; as unloaded and recursively restart the same journal replay.
+  (let* ((session (gethash session-id (e-session-store-sessions store)))
+         (package
+          (e-session--normalize-context-curation-package
+           (list :promotion
+                 (e-session--normalize-context-record-for-replay
+                  'context-promotion (plist-get record :promotion))
+                 :erasure
+                 (e-session--normalize-context-record-for-replay
+                  'context-erasure (plist-get record :erasure)))))
+         (package-id (plist-get record :id))
+         (expected-id (e-session--context-curation-package-id
+                       session-id package))
+         ;; Do not use the public lazy-loading lookup while a session is being
+         ;; replayed.  Its fallback walks the live entry lists through
+         ;; `e-session--get-live', which would recursively restart this same
+         ;; journal load before the replay session has been finalized.
+         (existing (gethash package-id
+                            (e-session--entry-index store session-id))))
+    (unless (and (equal (plist-get record :type)
+                        "context-curation-package")
+                 (equal (plist-get record :session-id) session-id)
+                 (stringp package-id)
+                 (stringp (plist-get record :timestamp))
+                 (equal package-id expected-id))
+      (signal 'e-session-error
+              (list "Invalid context curation package identity" package-id)))
+    (dolist (component (list (cons 'context-promotion
+                                   (plist-get package :promotion))
+                             (cons 'context-erasure
+                                   (plist-get package :erasure))))
+      (when (cdr component)
+        (e-session--validate-context-entry-ownership
+         store session-id (car component) (cdr component))))
+    (cond
+     (existing
+      (unless (and (eq (plist-get existing :type)
+                       'context-curation-package)
+                   (equal (plist-get existing :parent-id)
+                          (plist-get record :parent-id))
+                   (equal (plist-get existing :promotion)
+                          (plist-get package :promotion))
+                   (equal (plist-get existing :erasure)
+                          (plist-get package :erasure)))
+        (signal 'e-session-error
+                (list "Context curation package replay conflict" package-id)))
+      nil)
+     (t
+      (let ((entry
+             (e-session--normalize-entry-from-record
+              session 'context-curation-package
+              (list :promotion (plist-get package :promotion)
+                    :erasure (plist-get package :erasure))
+              (plist-get record :timestamp)
+              record)))
+        (e-session--prepend-replayed-item
+         session :context-curation-packages entry)
+        (e-session--index-entry store session-id entry)
+        (e-session--touch store session (plist-get record :timestamp)))))))
 
 (cl-defun e-session--append-context-entry
     (store session-id type field context-record &key (write-index t)
@@ -3983,6 +4434,56 @@ alias and validates the record through the same codec used during replay."
    store session-id 'context-promotion :context-promotions record
    :write-index write-index
    :expected-record-version e-context-lifetime-curation-record-version))
+
+(cl-defun e-session-append-context-curation-package
+    (store session-id package &key (write-index t))
+  "Atomically append semantic curation PACKAGE for SESSION-ID.
+
+PACKAGE is the narrow pure value produced by
+`e-context-lifetime-prepare-curation-disposition'.  Its optional promotion and
+erasure components are validated and staged on a detached session before one
+`context-curation-package' persistence operation is submitted.  The package
+is therefore one direct write, one queued record, or one controller outbox
+command; it is never split into independent component appends.  A repeated
+package with the same component identities is idempotent.  Audit response
+controls remain a separate activity append owned by the harness.
+
+The persistence operation precedes live-session mutation, so synchronous write,
+queue, or controller submission errors leave both semantic projections absent
+and leave frame consumption to the caller."
+  (let* ((prepared (e-session--prepare-context-curation-package
+                    store session-id package))
+         (existing (e-session--context-curation-package-existing-state
+                    store session-id prepared))
+         (entry (plist-get prepared :entry))
+         (session (e-session--get-live store session-id))
+         (timestamp (plist-get prepared :timestamp)))
+    (if existing
+        (list :id (plist-get prepared :package-id)
+              :package (plist-get prepared :package)
+              :entry existing
+              :promotion (plist-get existing :promotion)
+              :erasure (plist-get existing :erasure)
+              :already-present t)
+      ;; `_append-record' is deliberately the first side effect.  A synchronous
+      ;; persistence failure cannot leave one of the two semantic components in
+      ;; the live projection, and the harness consequently cannot consume its
+      ;; frame after the failed call.
+      (e-session--append-record
+       store session-id (plist-get prepared :record))
+      (e-session--append-list-item
+       session :context-curation-packages entry)
+      (e-session--index-entry store session-id entry)
+      (e-session--advance-head session entry)
+      (e-session--touch store session timestamp)
+      (when write-index
+        (e-session--write-index store))
+      (list :id (plist-get prepared :package-id)
+            :package (plist-get prepared :package)
+            :record (plist-get prepared :record)
+            :entry entry
+            :promotion (plist-get entry :promotion)
+            :erasure (plist-get entry :erasure)))))
 
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set SESSION-ID current branch cursor to BRANCH-ID in STORE."

@@ -135,10 +135,7 @@ covered by the adapter tests below."
                           (lambda (candidate)
                             (equal (plist-get candidate :value) raw-result))
                           sources))
-                        (label (and source (plist-get source :label)))
-                        (drop
-                         (cl-remove
-                          label (number-sequence 1 (length sources)))))
+                        (label (and source (plist-get source :label))))
                    (should source)
                    (setq curation-input
                          (list
@@ -148,8 +145,7 @@ covered by the adapter tests below."
                                 :summaries
                                 (list (list
                                        :sources (list label)
-                                       :text "selected from tool result"))
-                                :drop drop)))
+                                       :text "selected from tool result")))))
                    (funcall on-item curation-input))
                  (funcall on-item
                           '(:type assistant-message :content "B"))
@@ -1139,14 +1135,11 @@ ordinary-turn anchor."
                         (e-context-lifetime-frame-curation-sources
                          captured-tool-frame))
                        (source
-                        (seq-find
+                       (seq-find
                          (lambda (candidate)
                            (equal (plist-get candidate :value) raw-result))
                          sources))
                        (label (and source (plist-get source :label)))
-                       (drop
-                        (cl-remove
-                         label (number-sequence 1 (length sources))))
                        (curation-arguments
                         (json-encode
                          (list
@@ -1154,8 +1147,7 @@ ordinary-turn anchor."
                           :summaries
                           (vector
                            (list :sources (vector label)
-                                 :text "PROMOTED-CANONICAL-FACT"))
-                          :drop (vconcat drop)))))
+                                 :text "PROMOTED-CANONICAL-FACT"))))))
                   (unless (and source label)
                     (error "Missing canonical curation frontier"))
                   (let ((response

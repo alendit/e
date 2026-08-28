@@ -83,7 +83,7 @@
       (should (equal (plist-get result :content) "ok"))
       (should-not (string-match-p "short method" (plist-get result :content))))))
 
-(ert-deftest e-process-reporting-test-capture-attaches-redacted-evidence-and-links ()
+(ert-deftest e-process-reporting-test-capture-attaches-content-free-evidence-and-links ()
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
       (e-harness--emit-turn-event
@@ -109,7 +109,17 @@
                        "session://e/sessions/session-1/process-reports"))
         (should (equal (plist-get record :tool-call-id) "marker-call"))
         (should (equal (plist-get trigger :call-id) "failed-call"))
-        (should (string-match-p "REDACTED" serialized))
+        (should (equal (plist-get trigger :event-type) "tool-finished"))
+        (should (equal (plist-get trigger :name) "bash"))
+        (should (stringp (plist-get trigger :activity-event-id)))
+        (should (= (length (plist-get record :trigger-chain)) 1))
+        (should (equal (plist-get trigger :activity-event-id)
+                       (plist-get (car (plist-get record :trigger-chain))
+                                  :activity-event-id)))
+        (should-not (plist-get trigger :arguments-preview))
+        (should-not (plist-get trigger :result-preview))
+        (should-not (plist-get trigger :error-preview))
+        (should-not (string-match-p "REDACTED" serialized))
         (should-not (string-match-p "top-secret\\|private-value" serialized))))))
 
 (ert-deftest e-process-reporting-test-effective-action-feedback-is-task-relative ()

@@ -72,6 +72,59 @@
           :body (list :role 'system
                       :content (or value "HARNESS-EXACT-VALUE"))))))
 
+(defun e-harness-test--tool-result-curation-frame
+    (generation-id &optional frame-id call-id value observation-id source-ref
+                  source-fingerprint)
+  "Return one live tool-result source frame for erasure tests."
+  (let ((call-id (or call-id "call:harness-tool-result")))
+    (e-context-lifetime-frame-create
+     :id (or frame-id "frame:harness-tool-result")
+     :generation-id generation-id
+     :consumer-request-id "consumer:harness-tool-result"
+     :observations
+     (list
+      (list :observation-id (or observation-id "observation:harness-tool-result")
+            :kind "tool-result"
+            :source-entry-ref (or source-ref "source:harness-tool-result")
+            :source-fingerprint
+            (or source-fingerprint "fingerprint:harness-tool-result")
+            :effective-delivery "inherited"
+            :body (list :role 'tool
+                        :content (list :tool-call-id call-id
+                                        :name "inspect"
+                                        :status 'ok
+                                        :content
+                                        (or value "HARNESS-TOOL-RESULT"))))))))
+
+(defun e-harness-test--two-tool-result-curation-frame (generation-id)
+  "Return a two-source tool-result frame for mixed curation tests."
+  (e-context-lifetime-frame-create
+   :id "frame:harness-mixed-tool-results"
+   :generation-id generation-id
+   :consumer-request-id "consumer:harness-mixed-tool-results"
+   :observations
+   (list
+    (list :observation-id "observation:harness-mixed-1"
+          :kind "tool-result"
+          :source-entry-ref "source:harness-mixed-1"
+          :source-fingerprint "fingerprint:harness-mixed-1"
+          :effective-delivery "inherited"
+          :body (list :role 'tool
+                      :content (list :tool-call-id "call:harness-mixed-1"
+                                      :name "inspect"
+                                      :status 'ok
+                                      :content "HARNESS-MIXED-ONE")))
+    (list :observation-id "observation:harness-mixed-2"
+          :kind "tool-result"
+          :source-entry-ref "source:harness-mixed-2"
+          :source-fingerprint "fingerprint:harness-mixed-2"
+          :effective-delivery "inherited"
+          :body (list :role 'tool
+                      :content (list :tool-call-id "call:harness-mixed-2"
+                                      :name "inspect"
+                                      :status 'ok
+                                      :content "HARNESS-MIXED-TWO"))))))
+
 (ert-deftest e-harness-test-capability-config-is-harness-local ()
   "Runtime capability config belongs to one harness."
   (let ((first (e-harness-create :backend (e-backend-fake-create :items nil)))
@@ -5203,8 +5256,7 @@ Return request options, persisted anchors, and the final context."
                frame
                '(:keep nil
                  :summaries ((:sources (1)
-                              :text "selected durable fact"))
-                 :drop nil)
+                              :text "selected durable fact")))
                "response-portable-summary"
                1.0)))
         (e-session-append-context-curation store "session-1" curation))
@@ -5256,8 +5308,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
            (list :keep nil
                  :summaries
                  (list (list :sources '(1)
-                             :text (format "selected-%s" suffix)))
-                 :drop nil)
+                             :text (format "selected-%s" suffix))))
            response-id
            1.0)))
     (e-session-append-context-curation store session-id curation)))
@@ -5975,8 +6026,7 @@ an empty summary\"."
                                   '(:keep nil
                                     :summaries
                                     ((:sources (1)
-                                      :text "selected durable fact"))
-                                    :drop nil)))
+                                      :text "selected durable fact")))))
                       (funcall on-item curation-input)
                       (funcall on-item '(:type done :reason tool-use)))
                   (funcall on-item
@@ -6419,8 +6469,7 @@ an empty summary\"."
                                '(:keep nil
                                  :summaries
                                  ((:sources (2)
-                                   :text "selected from tool result"))
-                                 :drop (1))
+                                   :text "selected from tool result")))
                                :provider-replay-items
                                '((:type provider-replay-item
                                  :provider-id openai
@@ -6535,8 +6584,7 @@ an empty summary\"."
                              '(:keep nil
                                :summaries
                                ((:sources (2)
-                                 :text "selected from tool result"))
-                               :drop (1))))
+                                 :text "selected from tool result")))))
               (should tool-message-c)
               (should (equal (mapcar (lambda (item)
                                        (plist-get (plist-get item :item) :type))
@@ -6677,8 +6725,7 @@ an empty summary\"."
                 (funcall on-item
                          '(:type context-curate
                            :arguments (:keep (999)
-                                       :summaries nil
-                                       :drop nil)))
+                                       :summaries nil)))
                 (funcall on-item
                          '(:type tool-call
                            :id "call-after-invalid-session"
@@ -6735,8 +6782,8 @@ an empty summary\"."
 (ert-deftest e-harness-test-context-lifetime-preflights-before-assistant-append ()
   "Completion-only curation failures do not append an assistant or consume its frame."
   (e-harness-test--with-empty-layer-registry
-    (dolist (case '((unknown-label . (:keep (2) :summaries nil :drop nil))
-                    (oversized-record . (:keep (1) :summaries nil :drop nil))))
+             (dolist (case '((unknown-label . (:keep (2) :summaries nil))
+                    (oversized-record . (:keep (1) :summaries nil))))
       (let* ((request-count 0)
              (source-value "PREFLIGHT-SOURCE")
              (captured-frame nil)
@@ -6780,8 +6827,7 @@ an empty summary\"."
                                (list :keep nil
                                      :summaries
                                      (list (list :sources '(1)
-                                                 :text text))
-                                     :drop nil))
+                                                 :text text))))
                            (cdr case))))
                     (funcall on-item
                              (list :type 'context-curate
@@ -6854,7 +6900,7 @@ an empty summary\"."
               (lambda (&key on-item &allow-other-keys)
                 (funcall on-item
                          '(:type context-curate
-                           :arguments (:keep (1) :summaries nil :drop nil)))
+                           :arguments (:keep (1) :summaries nil)))
                 (funcall on-item
                          '(:type assistant-message :content "selected"))
                 (funcall on-item '(:type done :reason stop))))))
@@ -6983,29 +7029,45 @@ an empty summary\"."
     (should (e-context-lifetime-frame-observations frame))
     (should-not (e-session-context-curations store "session-1"))))
 
-(ert-deftest e-harness-test-context-lifetime-drop-only-curation-is-audit-only ()
-  "An exhaustive drop-only response consumes sources without a promotion record."
-  (let* ((directory (make-temp-file "e-harness-drop-only-" t))
+(ert-deftest e-harness-test-context-lifetime-erase-only-curation-is-audit-and-erasure ()
+  "An erase-only response records erasure and audit before consuming its frame."
+  (let* ((directory (make-temp-file "e-harness-erase-only-" t))
          (store (e-session-persistent-store-create directory))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
-         (frame (e-harness-test--curation-frame))
-         (entry (list :status 'running :context-frame frame))
+         frame entry
          (events nil)
          (order nil)
+         (append-package
+          (symbol-function 'e-session-append-context-curation-package))
          (append-control
           (symbol-function 'e-session-append-context-curation-response))
          (complete-frame
           (symbol-function 'e-context-lifetime-frame-complete-for-consumer)))
     (unwind-protect
         (progn
-          (e-harness-create-session harness :id "drop-only")
+          (e-harness-create-session harness :id "erase-only")
+          (let ((generation
+                 (e-harness--context-lifetime-ensure-generation
+                  harness "erase-only")))
+            (setq frame
+                  (e-harness-test--tool-result-curation-frame
+                   (e-context-lifetime-generation-id generation)
+                   "frame:erase-only" "call-erase-only"
+                   "ERASE-ONLY-RAW" "observation:erase-only"
+                   "source:erase-only" "fingerprint:erase-only"))
+            (setq entry (list :status 'running :context-frame frame)))
           (e-harness--install-activity-sink
            harness (lambda (event) (push event events))
-           :session-id "drop-only")
+           :session-id "erase-only")
           (let ((e-context-lifetime-shadow-projection-enabled t))
             (cl-letf (((symbol-function
+                        'e-session-append-context-curation-package)
+                       (lambda (&rest arguments)
+                         (setq order (append order '(package)))
+                         (apply append-package arguments)))
+                      ((symbol-function
                         'e-session-append-context-curation-response)
                        (lambda (&rest arguments)
                          (setq order (append order '(control)))
@@ -7018,95 +7080,189 @@ an empty summary\"."
               (should
                (e-context-lifetime-frame-consumed-p
                 (e-harness--lifetime-commit-response
-                 harness "drop-only" "turn-drop" entry
+                 harness "erase-only" "turn-erase" entry
                  (list :frame frame
-                       :response-entry-id "response-drop-only"
+                       :response-entry-id "response-erase-only"
                        :curation-effects
                        (list
                         (list :type 'context-curate
-                              :arguments
-                              '(:keep nil :summaries nil :drop (1))))))))))
-          (should (equal order '(control consume)))
+                              :arguments '(:keep nil :summaries nil
+                                            :erase (1))))))))))
+          (should (equal order '(package control consume)))
           (e-session-flush-write-queue store)
-          (let* ((controls
+          (let* ((erasures (e-session-context-erasures store "erase-only"))
+                 (controls
                   (seq-filter
                    (lambda (event)
                      (eq (plist-get event :event-type)
                          'context-curation-response))
-                   (e-session-activity-events store "drop-only")))
-                 (reopened (e-session-persistent-store-create directory))
-                 (reopened-controls
-                  (seq-filter
-                   (lambda (event)
-                     (eq (plist-get event :event-type)
-                         'context-curation-response))
-                   (e-session-activity-events reopened "drop-only")))
-                 (reopened-consumed-events
-                  (seq-filter
-                   (lambda (event)
-                     (eq (plist-get event :event-type)
-                         'context-frame-consumed))
-                   (e-session-activity-events reopened "drop-only")))
-                 (control (car controls))
+                   (e-session-activity-events store "erase-only")))
                  (consumed-event
-                  (seq-find
+                 (seq-find
                    (lambda (event)
-                     (eq (plist-get event :type) 'context-frame-consumed))
-                   events)))
+                     (eq (plist-get event :type)
+                         'context-frame-consumed))
+                   events))
+                 (reopened (e-session-persistent-store-create directory)))
+            (should (= (length erasures) 1))
+            (should (equal
+                     (e-session-erased-tool-call-ids store "erase-only")
+                     '("call-erase-only")))
             (should (= (length controls) 1))
-            (should (= (length reopened-controls) 1))
-            (should (= (length reopened-consumed-events) 1))
             (should consumed-event)
+            (should (equal (plist-get (plist-get consumed-event :payload)
+                                      :response-entry-id)
+                           "response-erase-only"))
             (should (equal (plist-get (plist-get consumed-event :payload)
                                       :frame-id)
                            (e-context-lifetime-frame-id frame)))
-            (should (equal (plist-get (plist-get consumed-event :payload)
-                                      :response-entry-id)
-                           "response-drop-only"))
-            (should (equal (plist-get control :id)
-                           (plist-get (car reopened-controls) :id)))
-            (should (equal (plist-get (plist-get control :payload)
-                                      :response-entry-id)
-                           "response-drop-only"))
-            (let ((reopened-consumed (car reopened-consumed-events)))
-              (should (equal (plist-get (plist-get reopened-consumed :payload)
-                                        :frame-id)
-                             (e-context-lifetime-frame-id frame)))
-              (should (equal (plist-get (plist-get reopened-consumed :payload)
+            (should-not (e-session-context-curations store "erase-only"))
+            (let* ((reopened-erasures
+                    (e-session-context-erasures reopened "erase-only"))
+                   (reopened-controls
+                    (seq-filter
+                     (lambda (event)
+                       (eq (plist-get event :event-type)
+                           'context-curation-response))
+                     (e-session-activity-events reopened "erase-only")))
+                   (control (car controls))
+                   (reopened-control
+                    (car reopened-controls)))
+              (should (= (length reopened-erasures) 1))
+              (should (equal
+                       (e-session-erased-tool-call-ids reopened "erase-only")
+                       '("call-erase-only")))
+              (should (= (length reopened-controls) 1))
+              (should (equal (plist-get control :id)
+                             (plist-get reopened-control :id)))
+              (should (equal (plist-get (plist-get reopened-control :payload)
                                         :response-entry-id)
-                             "response-drop-only")))
-            (should-not (e-session-context-curations store "drop-only"))
-            (should-not (e-session-context-curations reopened "drop-only"))
-            (should (e-session-entry-by-id
-                     reopened "drop-only" (plist-get control :id)))
-            (should-not
-             (seq-find
-              (lambda (message)
-                (equal (plist-get message :id) (plist-get control :id)))
-              (e-session-messages reopened "drop-only")))
-            (dotimes (index 65)
-              (e-session-append-activity-event
-               store "drop-only" "turn-later" 'tool-progress
-               (list :index index)))
-            (e-session-flush-write-queue store)
-            (e-session--write-session-checkpoint-now store "drop-only")
-            (let ((evicted (e-session-persistent-store-create directory)))
+                             "response-erase-only"))
+              (should (e-session-entry-by-id
+                       reopened "erase-only" (plist-get control :id)))
               (should-not
                (seq-find
-                (lambda (event)
-                  (eq (plist-get event :event-type)
-                      'context-curation-response))
-                (e-session-activity-events evicted "drop-only")))
-              (should-not
-               (seq-find
-                (lambda (event)
-                  (eq (plist-get event :event-type)
-                      'context-frame-consumed))
-                (e-session-activity-events evicted "drop-only")))
-              (should-not
-               (e-session-entry-by-id evicted "drop-only"
-                                      (plist-get control :id)))
-              (should-not (e-session-context-curations evicted "drop-only")))))
+                (lambda (message)
+                  (equal (plist-get message :id) (plist-get control :id)))
+                (e-session-messages reopened "erase-only"))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-harness-test-context-lifetime-mixed-curation-package-is-atomic ()
+  "Mixed exact retention and erasure share one package and failure is inert."
+  (let* ((directory (make-temp-file "e-harness-mixed-curation-" t))
+         (store (e-session-persistent-store-create directory))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         frame entry)
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "mixed")
+          (let ((generation
+                 (e-harness--context-lifetime-ensure-generation
+                  harness "mixed")))
+            (setq frame
+                  (e-harness-test--two-tool-result-curation-frame
+                   (e-context-lifetime-generation-id generation)))
+            (setq entry (list :status 'running :context-frame frame)))
+          (let ((e-context-lifetime-shadow-projection-enabled t))
+            (should
+             (e-context-lifetime-frame-consumed-p
+              (e-harness--lifetime-commit-response
+               harness "mixed" "turn-mixed" entry
+               (list :frame frame
+                     :response-entry-id "response-mixed"
+                     :curation-effects
+                     (list
+                      (list :type 'context-curate
+                            :arguments
+                            '(:keep (1)
+                              :summaries nil
+                              :erase (2)))))))))
+          (let* ((package-entry
+                  (seq-find
+                   (lambda (item)
+                     (eq (plist-get item :type)
+                         'context-curation-package))
+                   (e-session-current-path store "mixed")))
+                 (curations (e-session-context-curations store "mixed"))
+                 (erasures (e-session-context-erasures store "mixed")))
+            (should package-entry)
+            (should (plist-get package-entry :promotion))
+            (should (plist-get package-entry :erasure))
+            (should (= (length curations) 1))
+            (should (= (length erasures) 1))
+            (should (equal (e-session-erased-tool-call-ids store "mixed")
+                           '("call:harness-mixed-2"))))
+          (e-session-flush-write-queue store)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (should (= (length (e-session-context-curations
+                                reopened "mixed"))
+                       1))
+            (should (= (length (e-session-context-erasures reopened "mixed"))
+                       1))
+            (should (equal (e-session-erased-tool-call-ids reopened "mixed")
+                           '("call:harness-mixed-2"))))
+
+          (e-harness-create-session harness :id "mixed-invalid")
+          (let (bad-frame bad-entry)
+            (let ((generation
+                   (e-harness--context-lifetime-ensure-generation
+                    harness "mixed-invalid")))
+              (setq bad-frame
+                    (e-harness-test--two-tool-result-curation-frame
+                     (e-context-lifetime-generation-id generation)))
+              (setq bad-entry
+                    (list :status 'running :context-frame bad-frame)))
+            (let ((e-context-lifetime-shadow-projection-enabled t))
+              (should-error
+               (e-harness--lifetime-commit-response
+                harness "mixed-invalid" "turn-mixed-invalid" bad-entry
+                (list :frame bad-frame
+                      :response-entry-id "response-mixed-invalid"
+                      :curation-effects
+                      (list
+                       (list :type 'context-curate
+                             :arguments
+                             '(:keep (1)
+                               :summaries nil
+                               :erase (1))))))
+               :type 'e-context-lifetime-invalid-record))
+            (should-not (e-context-lifetime-frame-consumed-p bad-frame))
+            (should-not (e-session-context-curations store "mixed-invalid"))
+            (should-not (e-session-context-erasures store "mixed-invalid")))
+
+          (e-harness-create-session harness :id "mixed-failure")
+          (let (failure-frame failure-entry)
+            (let ((generation
+                   (e-harness--context-lifetime-ensure-generation
+                    harness "mixed-failure")))
+              (setq failure-frame
+                    (e-harness-test--two-tool-result-curation-frame
+                     (e-context-lifetime-generation-id generation)))
+              (setq failure-entry
+                    (list :status 'running :context-frame failure-frame)))
+            (cl-letf (((symbol-function
+                        'e-session-append-context-curation-package)
+                       (lambda (&rest _)
+                         (error "synthetic curation package failure"))))
+              (let ((e-context-lifetime-shadow-projection-enabled t))
+                (should-error
+                 (e-harness--lifetime-commit-response
+                  harness "mixed-failure" "turn-mixed-failure" failure-entry
+                  (list :frame failure-frame
+                        :response-entry-id "response-mixed-failure"
+                        :curation-effects
+                        (list
+                         (list :type 'context-curate
+                               :arguments
+                               '(:keep (1)
+                                 :summaries nil
+                                 :erase (2))))))
+                 :type 'error)))
+            (should-not (e-context-lifetime-frame-consumed-p failure-frame))
+            (should-not (e-session-context-curations store "mixed-failure"))
+            (should-not (e-session-context-erasures store "mixed-failure"))))
       (delete-directory directory t))))
 
 (ert-deftest e-harness-test-context-lifetime-curation-binds-payload-frame-over-descendant ()
@@ -7140,7 +7296,7 @@ an empty summary\"."
                    :curation-effects
                    (list (list :type 'context-curate
                                :arguments
-                               '(:keep (1) :summaries nil :drop nil)))))))
+                               '(:keep (1) :summaries nil)))))))
     (should (equal (e-context-lifetime-frame-id consumed) "frame:a"))
     (should (eq (plist-get entry :context-frame) frame-b))
     (should-not (e-context-lifetime-frame-consumed-p frame-b))
@@ -7208,7 +7364,7 @@ an empty summary\"."
                :curation-effects
                (list (list :type 'context-curate
                            :arguments
-                           '(:keep (2) :summaries nil :drop nil)))))
+                           '(:keep (2) :summaries nil)))))
        :type 'e-context-lifetime-invalid-record))
     (should (eq (plist-get entry :context-frame) frame))
     (should-not (e-context-lifetime-frame-consumed-p frame))
@@ -7224,8 +7380,8 @@ an empty summary\"."
          (store (e-harness-sessions harness))
          frame entry
          (order nil)
-         (append-context-curation
-          (symbol-function 'e-session-append-context-curation))
+         (append-context-curation-package
+          (symbol-function 'e-session-append-context-curation-package))
          (complete-frame
           (symbol-function 'e-context-lifetime-frame-complete-for-consumer)))
     (e-harness-create-session harness :id "session-1")
@@ -7237,10 +7393,10 @@ an empty summary\"."
              (e-context-lifetime-generation-id generation)))
       (setq entry (list :status 'running :context-frame frame)))
     (let ((e-context-lifetime-shadow-projection-enabled t))
-      (cl-letf (((symbol-function 'e-session-append-context-curation)
+      (cl-letf (((symbol-function 'e-session-append-context-curation-package)
                  (lambda (&rest arguments)
-                   (setq order (append order '(append)))
-                   (apply append-context-curation arguments)))
+                   (setq order (append order '(package)))
+                   (apply append-context-curation-package arguments)))
                 ((symbol-function
                   'e-context-lifetime-frame-complete-for-consumer)
                  (lambda (&rest arguments)
@@ -7254,8 +7410,8 @@ an empty summary\"."
                :curation-effects
                (list (list :type 'context-curate
                            :arguments
-                           '(:keep (1) :summaries nil :drop nil)))))))
-    (should (equal order '(append consume)))
+                           '(:keep (1) :summaries nil)))))))
+    (should (equal order '(package consume)))
     (should (= (length (e-session-context-curations store "session-1")) 1))
     (should (e-context-lifetime-frame-consumed-p
              (plist-get entry :context-frame)))))
@@ -7314,8 +7470,7 @@ an empty summary\"."
                                    '(:keep nil
                                      :summaries
                                      ((:sources (2)
-                                       :text "selected after B"))
-                                     :drop (1))))
+                                       :text "selected after B")))))
                               (funcall on-item
                                        '(:type assistant-message
                                          :content "B"))

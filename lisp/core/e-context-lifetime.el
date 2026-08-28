@@ -73,7 +73,7 @@ version-3 curation codec and its complete-record bound.")
 (defconst e-context-lifetime-curation-record-version 3
   "Version of durable prepared context-curation records.")
 
-(defconst e-context-lifetime-curation-schema-revision "context-curate-v4"
+(defconst e-context-lifetime-curation-schema-revision "context-curate-v5"
   "Stable revision of the model-facing context-curate shape and guidance.")
 
 (defconst e-context-lifetime-curation-presentation-revision
@@ -81,13 +81,17 @@ version-3 curation codec and its complete-record bound.")
   "Stable revision of frame-local curation labels, lifetime, and size markers.")
 
 (defconst e-context-lifetime-curation-max-sources 16
-  "Maximum distinct frame-local sources retained by one curation.
+  "Maximum distinct frame-local sources disposed by one curation.
 
-The bound applies to `:keep' and `:summaries' sources only.  A complete
-disposition's `:drop' labels are bounded by the live frame instead.")
+The bound applies across exact retention, summary sources, and explicit
+erasure.  Ordinary omitted sources are not part of the submitted disposition
+and therefore do not consume this ceiling.")
 
 (defconst e-context-lifetime-curation-max-record-bytes 8192
   "Maximum canonical UTF-8 bytes in one prepared curation record.")
+
+(defconst e-context-lifetime-curation-erasure-record-version 1
+  "Version of the pure, content-free context-erasure record.")
 
 (defconst e-context-lifetime-observation-kinds
   '("current-state" "dynamic-context" "tool-result" "trace"
@@ -592,6 +596,57 @@ acknowledgements, metadata, and backing objects never become source values."
         (plist-get item :content)
       item)))
 
+(defun e-context-lifetime--curation-tool-call-id (item)
+  "Return the trusted internal tool-call identity carried by ITEM.
+
+ITEM is a tool-result source envelope.  The result's call id is preferred,
+with the nested call and direct envelope fields accepted when present.  Any
+present identities must agree; a missing identity is returned as nil so the
+source remains valid for keep or omission but cannot be selected for erasure.
+This identity is never included in the source value or model-facing
+presentation."
+  (let* ((item-plist (and (e-context-lifetime--keyword-plist-p item) item))
+         (nested-call (and item-plist (plist-get item-plist :tool-call)))
+         (nested-call-plist
+          (and (e-context-lifetime--keyword-plist-p nested-call)
+               nested-call))
+         (result
+          (cond
+           ((and item-plist (plist-member item-plist :tool-result))
+            (plist-get item-plist :tool-result))
+           ((and item-plist (plist-member item-plist :content)
+                 (e-context-lifetime--keyword-plist-p
+                  (plist-get item-plist :content))
+                 (plist-member (plist-get item-plist :content)
+                               :tool-call-id))
+            (plist-get item-plist :content))
+           (t item)))
+         (result-plist
+          (and (e-context-lifetime--keyword-plist-p result) result))
+         (candidates
+          (list (cons (and result-plist
+                           (plist-member result-plist :tool-call-id))
+                       (and result-plist
+                            (plist-get result-plist :tool-call-id)))
+                (cons (and nested-call-plist
+                           (plist-member nested-call-plist :id))
+                      (and nested-call-plist
+                           (plist-get nested-call-plist :id)))
+                (cons (and item-plist
+                           (plist-member item-plist :tool-call-id))
+                      (and item-plist
+                           (plist-get item-plist :tool-call-id)))))
+         identity)
+    (dolist (candidate candidates identity)
+      (when (car candidate)
+        (let ((value (e-context-lifetime--require-id
+                      (cdr candidate) 'tool-call-id)))
+          (when (and identity (not (equal identity value)))
+            (signal 'e-context-lifetime-invalid-record
+                    (list 'curation-source :tool-call-id-mismatch
+                          identity value)))
+          (setq identity value))))))
+
 (defun e-context-lifetime--segment-observations (segments delivery)
   "Return one validated observation per semantic source from SEGMENTS and DELIVERY.
 
@@ -708,6 +763,8 @@ that an outer anchor or cache identity can fence later."
         e-context-lifetime-curation-presentation-revision
         :schema-revision e-context-lifetime-curation-schema-revision
         :record-version e-context-lifetime-curation-record-version
+        :erasure-record-version
+        e-context-lifetime-curation-erasure-record-version
         :estimate-bytes-per-token
         (e-context-lifetime--curation-estimator-ratio bytes-per-token)
         :max-sources e-context-lifetime-curation-max-sources
@@ -755,20 +812,28 @@ BYTES-PER-TOKEN supplies the estimate ratio."
                            kind (car items))))
                (source-label (setq label (1+ label)))
                (estimated-tokens
-                (e-context-lifetime--curation-estimate value ratio)))
+                (e-context-lifetime--curation-estimate value ratio))
+               (tool-call-id
+                (and (equal kind "tool-result")
+                     (e-context-lifetime--curation-tool-call-id
+                      (car items)))))
           (push
-           (list :label source-label
-                 :value value
-                 :estimated-tokens estimated-tokens
-                 :marker (format "[ephemeral context source %d, ~%d tokens]"
-                                 source-label estimated-tokens)
-                 :kind kind
-                 :source-observation-id
-                 (e-context-lifetime--detached-copy observation-id)
-                 :source-entry-ref
-                 (e-context-lifetime--detached-copy source-entry-ref)
-                 :source-fingerprint
-                 (e-context-lifetime--detached-copy source-fingerprint))
+           (append
+            (list :label source-label
+                  :value value
+                  :estimated-tokens estimated-tokens
+                  :marker (format "[ephemeral context source %d, ~%d tokens]"
+                                  source-label estimated-tokens)
+                  :kind kind
+                  :source-observation-id
+                  (e-context-lifetime--detached-copy observation-id)
+                  :source-entry-ref
+                  (e-context-lifetime--detached-copy source-entry-ref)
+                  :source-fingerprint
+                  (e-context-lifetime--detached-copy source-fingerprint))
+            (when tool-call-id
+              (list :tool-call-id
+                    (e-context-lifetime--detached-copy tool-call-id))))
            result))))))
 
 (defun e-context-lifetime-frame-curation-sources
@@ -842,17 +907,29 @@ REQUIRE-NONEMPTY rejects an empty sequence when non-nil."
 
 (defun e-context-lifetime-normalize-curation-disposition
     (arguments &optional source-count)
-  "Normalize exhaustive curation ARGUMENTS for SOURCE-COUNT presented sources.
+  "Normalize optional curation ARGUMENTS for SOURCE-COUNT presented sources.
 
-The arrays may be empty, but their union must be non-empty, contain each
-positive source label exactly once, and, when SOURCE-COUNT is supplied, cover
-exactly the labels from one through SOURCE-COUNT.  Only labels and summary text
-are copied; dropped source bodies and provenance never enter the normalized
-value.  When SOURCE-COUNT is nil, shape, duplicate, and retained-label
-validation still runs so a later frame-bound preparation can perform the
-complete partition check without trusting provider input."
-  (e-context-lifetime--validate-exact-plist
-   arguments '(:keep :summaries :drop) 'curation-disposition)
+The accepted keys are optional `:keep', `:summaries', and `:erase'; omission
+means an empty disposition.  Submitted labels must be positive, unique, and
+within SOURCE-COUNT when it is supplied.  Only labels and summary text are
+copied; omitted or erased source bodies and provenance never enter the
+normalized value.  At least one label must be explicitly disposed."
+  (unless (e-context-lifetime--keyword-plist-p arguments)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-disposition :not-keyword-plist arguments)))
+  (let ((keys nil)
+        (tail arguments))
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (setq keys (nreverse keys))
+    (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every (lambda (key)
+                             (memq key '(:keep :summaries :erase)))
+                           keys))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-disposition :keys keys
+                    :allowed '(:keep :summaries :erase)))))
   (when (and source-count
              (not (and (integerp source-count) (> source-count 0))))
     (signal 'e-context-lifetime-invalid-record
@@ -863,9 +940,9 @@ complete partition check without trusting provider input."
          (raw-summaries
           (e-context-lifetime--curation-sequence
            (plist-get arguments :summaries) 'curation-summaries))
-         (drop
+         (erase
           (e-context-lifetime--curation-labels
-           (plist-get arguments :drop) 'curation-drop))
+           (plist-get arguments :erase) 'curation-erase))
          (seen (make-hash-table :test #'eql))
          (retained-count 0)
          summaries)
@@ -899,38 +976,28 @@ complete partition check without trusting provider input."
           (push (list :sources (copy-sequence sources)
                       :text (copy-sequence text))
                 summaries)))
-      (record-labels drop 'curation-drop nil)
+      (record-labels erase 'curation-erase nil)
       (unless (> (hash-table-count seen) 0)
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation-disposition :no-disposition)))
-      (when (> retained-count e-context-lifetime-curation-max-sources)
+      (when (> (hash-table-count seen)
+               e-context-lifetime-curation-max-sources)
         (signal 'e-context-lifetime-invalid-record
-                (list 'curation-disposition :retained-source-count
-                      retained-count)))
-      (when source-count
-        (dotimes (index source-count)
-          (let ((label (1+ index)))
-            (unless (gethash label seen)
-              (signal 'e-context-lifetime-invalid-record
-                      (list 'curation-disposition :missing-label label)))))
-        (unless (= (hash-table-count seen) source-count)
-          (signal 'e-context-lifetime-invalid-record
-                  (list 'curation-disposition :partition-size
-                        (hash-table-count seen) source-count))))
+                (list 'curation-disposition :disposed-source-count
+                      (hash-table-count seen))))
       (list :keep keep
             :summaries (nreverse summaries)
-            :drop drop))))
+            :erase erase))))
 
 (defun e-context-lifetime-prepare-curation-disposition
     (frame arguments response-entry-id &optional bytes-per-token)
-  "Prepare exhaustive curation ARGUMENTS against live FRAME.
+  "Prepare optional curation ARGUMENTS against live FRAME.
 
-The returned pure value contains the normalized complete disposition and a
-version-3 promotion RECORD only when at least one source is retained or
-summarized.  A drop-only disposition has a nil RECORD; its response control
-and frame consumption remain the harness/session responsibility.  Dropped
-source bodies and provenance are used only for the frame-bound label check and
-are not copied into the normalized disposition or durable record."
+The returned pure value contains the normalized disposition, an optional
+version-3 promotion RECORD, an optional content-free version-1 erasure record,
+and a narrow :package containing those optional components.  Omitted and
+erased source bodies are used only for frame-bound checks and are not copied
+into the normalized disposition or either record."
   (unless (e-context-lifetime-frame-p frame)
     (signal 'wrong-type-argument
             (list 'e-context-lifetime-frame-p frame)))
@@ -950,27 +1017,47 @@ are not copied into the normalized disposition or durable record."
          (retained
           (list :keep (plist-get normalized :keep)
                 :summaries (plist-get normalized :summaries)))
-         (drop-only-p
-          (and (null (plist-get normalized :keep))
-               (null (plist-get normalized :summaries))))
+         (promotion-p
+          (or (plist-get normalized :keep)
+              (plist-get normalized :summaries)))
          (record
-          (unless drop-only-p
+          (when promotion-p
             (e-context-lifetime--curation-record
              frame retained response-entry-id sources)))
+         (erasure-record
+          (e-context-lifetime--curation-erasure-record
+           frame normalized response-entry-id sources))
          (record-bytes
           (and record (e-context-lifetime--bytes record))))
     (when (and record-bytes
                (> record-bytes e-context-lifetime-curation-max-record-bytes))
       (signal 'e-context-lifetime-invalid-record
               (list 'curation-disposition :bytes record-bytes)))
-    (list :arguments normalized
-          :record record
-          :drop-only-p drop-only-p
-          :source-count (length sources)
-          :retained-source-count
-          (+ (length (plist-get normalized :keep))
-             (cl-loop for summary in (plist-get normalized :summaries)
-                      sum (length (plist-get summary :sources)))))))
+    (let* ((package (and (or record erasure-record)
+                         (list :promotion record
+                               :erasure erasure-record)))
+           (package-bytes (and package (e-context-lifetime--bytes package))))
+      (when (and package-bytes
+                 (> package-bytes e-context-lifetime-curation-max-record-bytes))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-disposition :bytes package-bytes)))
+      (list :arguments normalized
+            :record record
+            :erasure-record erasure-record
+            ;; This is a deliberately narrow semantic package, not a general
+            ;; transaction value.  The session owner persists the optional
+            ;; components as one context-curation-package record.
+            :package package
+            :erase-only-p (and (plist-get normalized :erase)
+                               (null (plist-get normalized :keep))
+                               (null (plist-get normalized :summaries)))
+            :source-count (length sources)
+            :retained-source-count
+            (+ (length (plist-get normalized :keep))
+               (cl-loop for summary in (plist-get normalized :summaries)
+                        sum (length (plist-get summary :sources))))
+            :erased-source-count
+            (length (plist-get normalized :erase))))))
 
 (defun e-context-lifetime--curation-source-for-label (sources label)
   "Return trusted SOURCE from SOURCES matching positive local LABEL."
@@ -1063,16 +1150,211 @@ FRAME and SOURCES are bound using NORMALIZED and RESPONSE-ENTRY-ID."
                               response-entry-id)
           :items items)))
 
+(defun e-context-lifetime--curation-erasure-entry-id
+    (frame normalized response-entry-id)
+  "Return deterministic pure erasure ENTRY ID.
+FRAME, NORMALIZED, and RESPONSE-ENTRY-ID supply its identity inputs."
+  (format "erasure:%s"
+          (substring
+           (secure-hash
+            'sha256
+            (prin1-to-string
+             (list (e-context-lifetime-frame-id frame)
+                   (e-context-lifetime-frame-generation-id frame)
+                   (e-context-lifetime-frame-consumer-request-id frame)
+                   response-entry-id normalized)))
+           0 32)))
+
+(defun e-context-lifetime--curation-erasure-record
+    (frame normalized response-entry-id sources)
+  "Build a pure content-free version-1 erasure record for NORMALIZED.
+Only ordinary tool-result source identities are eligible.  SOURCE values and
+the source bodies never enter the returned record."
+  (let ((erase-labels (plist-get normalized :erase)))
+    (when erase-labels
+      (list
+       :record-version e-context-lifetime-curation-erasure-record-version
+       :type 'context-erasure
+       :id (e-context-lifetime--curation-erasure-entry-id
+            frame normalized response-entry-id)
+       :frame-id (e-context-lifetime--detached-copy
+                  (e-context-lifetime-frame-id frame))
+       :generation-id (e-context-lifetime--detached-copy
+                       (e-context-lifetime-frame-generation-id frame))
+       :consumer-request-id
+       (e-context-lifetime--detached-copy
+        (e-context-lifetime-frame-consumer-request-id frame))
+       :response-entry-id
+       (e-context-lifetime--detached-copy response-entry-id)
+       :sources
+       (mapcar
+        (lambda (label)
+          (let ((source
+                 (e-context-lifetime--curation-source-for-label
+                  sources label)))
+            (unless (and (equal (plist-get source :kind) "tool-result")
+                         (plist-member source :tool-call-id)
+                         (plist-get source :tool-call-id))
+              (signal 'e-context-lifetime-invalid-record
+                      (list 'curation-erasure :non-tool-source label)))
+            (list :source-observation-id
+                  (e-context-lifetime--detached-copy
+                   (plist-get source :source-observation-id))
+                  :source-ref
+                  (e-context-lifetime--detached-copy
+                   (plist-get source :source-entry-ref))
+                  :source-fingerprint
+                  (e-context-lifetime--detached-copy
+                   (plist-get source :source-fingerprint))
+                  :tool-call-id
+                  (e-context-lifetime--detached-copy
+                   (e-context-lifetime--require-id
+                    (plist-get source :tool-call-id) 'tool-call-id)))))
+        erase-labels)))))
+
+(defun e-context-lifetime--curation-erasure-sources (sources)
+  "Return canonical detached source identities from erasure SOURCES.
+
+SOURCES is the content-free source list in a version-1 erasure record.  The
+codec keeps only identity/provenance fields; source bodies, values, and tool
+metadata are never accepted at this boundary."
+  (let (result observation-ids tool-call-ids)
+    (let ((items
+           (cond
+            ((vectorp sources) (append sources nil))
+            ((and (proper-list-p sources)
+                  (not (e-context-lifetime--keyword-plist-p sources)))
+             sources)
+            (t
+             (signal 'e-context-lifetime-invalid-record
+                     (list 'context-erasure :sources-shape sources))))))
+      (unless items
+        (signal 'e-context-lifetime-invalid-record
+                (list 'context-erasure :empty-sources)))
+      (dolist (source items (nreverse result))
+        (e-context-lifetime--validate-exact-plist
+         source '(:source-observation-id :source-ref
+                  :source-fingerprint :tool-call-id)
+         'context-erasure-source)
+        (let* ((observation-id
+                (e-context-lifetime--detached-copy
+                 (e-context-lifetime--require-id
+                  (plist-get source :source-observation-id)
+                  'context-erasure-observation)))
+               (source-ref
+                (e-context-lifetime--detached-copy
+                 (e-context-lifetime--require-id
+                  (plist-get source :source-ref)
+                  'context-erasure-source-ref)))
+               (fingerprint
+                (e-context-lifetime--detached-copy
+                 (e-context-lifetime--require-id
+                  (plist-get source :source-fingerprint)
+                  'context-erasure-fingerprint)))
+               (tool-call-id
+                (e-context-lifetime--detached-copy
+                 (e-context-lifetime--require-id
+                  (plist-get source :tool-call-id)
+                  'context-erasure-tool-call-id))))
+          (when (member observation-id observation-ids)
+            (signal 'e-context-lifetime-invalid-record
+                    (list 'context-erasure :duplicate-observation
+                          observation-id)))
+          (when (member tool-call-id tool-call-ids)
+            (signal 'e-context-lifetime-invalid-record
+                    (list 'context-erasure :duplicate-tool-call
+                          tool-call-id)))
+          (push observation-id observation-ids)
+          (push tool-call-id tool-call-ids)
+          (push (list :source-observation-id observation-id
+                      :source-ref source-ref
+                      :source-fingerprint fingerprint
+                      :tool-call-id tool-call-id)
+                result))))))
+
+(defun e-context-lifetime--curation-erasure-record-from-record (record)
+  "Return a detached canonical version-1 context-erasure RECORD.
+
+This codec is deliberately separate from the version-3 promotion codec.  It
+accepts only content-free source identities and is used by the session owner
+for both direct append and persistent replay."
+  (e-context-lifetime--validate-exact-plist
+   record
+   '(:record-version :type :id :frame-id :generation-id
+     :consumer-request-id :response-entry-id :sources)
+   'context-erasure)
+  (unless (and (equal (plist-get record :record-version)
+                      e-context-lifetime-curation-erasure-record-version)
+               (eq (plist-get record :type) 'context-erasure))
+    (signal 'e-context-lifetime-invalid-record
+            (list 'context-erasure :version-or-type record)))
+  (let ((normalized
+         (list :record-version
+               e-context-lifetime-curation-erasure-record-version
+               :type 'context-erasure
+               :id (e-context-lifetime--require-id
+                    (e-context-lifetime--detached-copy
+                     (plist-get record :id))
+                    'context-erasure-id)
+               :frame-id (e-context-lifetime--require-id
+                          (e-context-lifetime--detached-copy
+                           (plist-get record :frame-id))
+                          'context-erasure-frame)
+               :generation-id (e-context-lifetime--require-id
+                               (e-context-lifetime--detached-copy
+                                (plist-get record :generation-id))
+                               'context-erasure-generation)
+               :consumer-request-id
+               (e-context-lifetime--require-id
+                (e-context-lifetime--detached-copy
+                 (plist-get record :consumer-request-id))
+                'context-erasure-consumer)
+               :response-entry-id
+               (e-context-lifetime--require-id
+                (e-context-lifetime--detached-copy
+                 (plist-get record :response-entry-id))
+                'context-erasure-response)
+               :sources
+               (e-context-lifetime--curation-erasure-sources
+                (plist-get record :sources)))))
+    (when (> (e-context-lifetime--bytes normalized)
+             e-context-lifetime-curation-max-record-bytes)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'context-erasure :bytes
+                    (e-context-lifetime--bytes normalized))))
+    ;; IDs above are validated as scalars, but the caller may have supplied
+    ;; mutable strings.  Return a fresh recursive copy so neither the codec
+    ;; result nor session-owned storage aliases caller input.
+    (e-context-lifetime--detached-copy normalized)))
+
+(defun e-context-lifetime-curation-erasure-from-record (record)
+  "Decode and strictly canonicalize a version-1 context-erasure RECORD."
+  (e-context-lifetime--curation-erasure-record-from-record record))
+
+(defun e-context-lifetime-curation-erasure-record (record)
+  "Encode prepared version-1 context-erasure RECORD canonically.
+
+The session persistence boundary calls this function before writing or
+replaying an erasure."
+  (e-context-lifetime-curation-erasure-from-record record))
+
+(defun e-context-lifetime-curation-erasure-tool-call-ids (record)
+  "Return canonical erased tool-call IDs from version-1 RECORD."
+  (mapcar (lambda (source) (plist-get source :tool-call-id))
+          (plist-get
+           (e-context-lifetime-curation-erasure-from-record record)
+           :sources)))
+
 (defun e-context-lifetime-prepare-curation
     (frame arguments response-entry-id &optional bytes-per-token)
-  "Prepare an exhaustive curation RECORD against live FRAME.
+  "Prepare a curation RECORD against live FRAME.
 
 RESPONSE-ENTRY-ID is the runtime response binding.  ARGUMENTS must contain the
-complete `:keep', `:summaries', and `:drop' partition; a missing `:drop' is an
-invalid model effect.  A drop-only disposition returns nil because it has no
-semantic promotion record.  No frame/session mutation occurs here; exact
-values and provenance are detached before the complete canonical record is
-measured against the 8,192-byte bound."
+optional `:keep', `:summaries', and `:erase' keys; omitted labels are ordinary
+source omission and at least one explicit disposition is required.  No
+frame/session mutation occurs here; exact values and provenance are detached
+before the complete optional promotion/erasure package is measured against
+the shared byte bound."
   (plist-get
    (e-context-lifetime-prepare-curation-disposition
     frame arguments response-entry-id bytes-per-token)

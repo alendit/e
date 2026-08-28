@@ -46,13 +46,6 @@ content."
   :type 'integer
   :group 'e)
 
-(defvar e-harness-base-receipt-erased-tool-call-ids nil
-  "Consumer-supplied tool-call identities to omit from receipt projection.
-
-Feature 88 owns the path-scoped erasure authority.  This variable is only a
-narrow input seam for that authority's eventual consumer; harness-base does
-not query, infer, persist, or otherwise implement erasure policy.")
-
 (defun e-harness-base--receipt-events
     (harness session-id erased-tool-call-ids)
   "Return current-path receipt events excluding erased call identities.
@@ -178,7 +171,9 @@ before current-path ordering, entry/byte bounds, and omitted-count derivation."
   (plist-get
    (e-harness-base-receipt-projection
     harness session-id
-    :erased-tool-call-ids e-harness-base-receipt-erased-tool-call-ids)
+    :erased-tool-call-ids
+    (e-session-erased-tool-call-ids
+     (e-harness-sessions harness) session-id))
    :messages))
 
 (defconst e-harness-base-instructions

@@ -3278,9 +3278,10 @@ identity fallback: a non-tool completion must carry its durable entry ID."
   "Return a pure curation completion value for PAYLOAD.
 
 Resolve the provider-request frame before any assistant message is appended.
-The returned value contains the trusted frame, response binding, and optional
-prepared version-3 record; it does not append to the session or consume the
-frame."
+  The returned value contains the trusted frame, response binding, and optional
+  prepared promotion/erasure package; it does not append to the session or
+  consume the frame.  Omitted source labels remain ordinary omission and are
+  not represented as a durable curation decision."
   (when (and (e-context-lifetime-shadow-enabled-p)
              (e-harness--active-turn-running-p active-entry))
     (let* ((payload-frame (plist-get payload :frame))
@@ -3326,8 +3327,9 @@ frame."
                    (e-context-lifetime-frame-consumer-request-id frame))
               :response-id response-id
               :reserved-response-p reserved-response-p
-              :drop-only-p (plist-get prepared :drop-only-p)
               :record (plist-get prepared :record)
+              :erasure-record (plist-get prepared :erasure-record)
+              :package (plist-get prepared :package)
               :curation-preparation prepared)))))
 
 (defun e-harness--lifetime-commit-response
@@ -3337,9 +3339,9 @@ frame."
 The loop has already validated the effect shape while streaming.  A pure
 preflight value from `e-harness--lifetime-preflight-response' is consumed when
 present; direct synthetic callers without that value are preflighted here.
-For a reserved-only response, the session first appends its audit-only control
-entry using the preflight response id, then appends the semantic record.  The
-session append precedes frame consumption and the next provider request."
+For a reserved-only response, the session first appends its semantic package,
+then its separate audit control using the preflight response id.  The session
+append precedes frame consumption and the next provider request."
   (when (and (e-context-lifetime-shadow-enabled-p)
              (e-harness--active-turn-running-p active-entry))
     (let* ((preflight
@@ -3350,7 +3352,8 @@ session append precedes frame consumption and the next provider request."
            (active-frame (plist-get active-entry :context-frame))
            (frame (plist-get preflight :frame))
            (response-id (plist-get preflight :response-id))
-           (record (plist-get preflight :record)))
+           (record (plist-get preflight :record))
+           (package (plist-get preflight :package)))
       (when (and frame (e-context-lifetime-frame-p frame)
                  (not (e-context-lifetime-frame-consumed-p frame)))
         (let* ((consumer-id
@@ -3359,13 +3362,19 @@ session append precedes frame consumption and the next provider request."
                (curation-id (and record (plist-get record :id)))
                (appended
                 (progn
+                  ;; Semantic promotion/erasure components share one session
+                  ;; package write.  The audit control remains a separate
+                  ;; activity entry and is emitted only after that package is
+                  ;; accepted.
+                  (when package
+                    (e-session-append-context-curation-package
+                     (e-harness-sessions harness) session-id package
+                     :write-index nil))
                   (when (plist-get preflight :reserved-response-p)
                     (e-session-append-context-curation-response
                      (e-harness-sessions harness) session-id turn-id response-id
                      :write-index nil))
-                  (when record
-                    (e-session-append-context-curation
-                     (e-harness-sessions harness) session-id record))))
+                  package))
                (consumed
                 (e-context-lifetime-frame-complete-for-consumer
                  frame consumer-id response-id

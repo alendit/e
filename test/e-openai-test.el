@@ -5268,13 +5268,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
              :call_id "curation-call"
              :name "context-curate"
              :arguments
-             "{\"keep\":[1],\"summaries\":[{\"sources\":[2,3],\"text\":\"selected\"}],\"drop\":[]}")))))
+             "{\"keep\":[1],\"summaries\":[{\"sources\":[2,3],\"text\":\"selected\"}],\"erase\":[4]}")))))
     (should (eq (plist-get item :type) 'context-curate))
     (should-not (plist-member item :name))
     (should (equal (plist-get item :arguments)
                    '(:keep (1) :summaries
                            ((:sources (2 3) :text "selected"))
-                     :drop nil)))
+                     :erase (4))))
     (should-not (string-match-p
                  "frame\|observation\|fingerprint\|schema-version"
                  (prin1-to-string (plist-get item :arguments))))))
@@ -5299,12 +5299,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should (= (length enabled-tools) 1))
     (should (equal (plist-get (aref enabled-tools 0) :name)
                    "context-curate"))
-    ;; The carrier is the exact exhaustive partition shape.  Internal
-    ;; frame/source identities do not belong in the provider schema.
+    ;; Internal frame/source identities do not belong in the provider schema.
     (should
      (equal
       (plist-get (aref enabled-tools 0) :description)
-      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."))
+      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
            (properties (plist-get parameters :properties))
            (summary-schema (plist-get properties :summaries))
@@ -5312,28 +5311,33 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
            (plist-get (plist-get summary-schema :items) :properties))
            (source-schema (plist-get summary-properties :sources))
            (text-schema (plist-get summary-properties :text))
-           (drop-schema (plist-get properties :drop)))
+           (erase-schema (plist-get properties :erase)))
       (should (equal (sort (copy-sequence
                             (cl-loop for (key value) on properties by #'cddr
                                      collect key))
                            (lambda (left right)
                              (string< (symbol-name left)
                                       (symbol-name right))))
-                     '(:drop :keep :summaries)))
-      (should (equal (plist-get parameters :required)
-                     ["keep" "summaries" "drop"]))
+                     '(:erase :keep :summaries)))
+      (should-not (plist-member parameters :required))
       (should (equal (plist-get (plist-get properties :keep) :type)
                      "array"))
       (should (equal (plist-get (plist-get properties :summaries) :type)
                      "array"))
-      (should (equal (plist-get drop-schema :type) "array"))
-      (should-not (plist-member drop-schema :maxItems))
+      (should (equal (plist-get erase-schema :type) "array"))
+      (should (equal (plist-get erase-schema :maxItems) 16))
+      (should (equal (plist-get (plist-get erase-schema :items) :type)
+                     "integer"))
+      (should (equal (plist-get (plist-get erase-schema :items) :minimum)
+                     1))
       (should (equal (plist-get (plist-get properties :keep) :maxItems)
                      16))
       (should (equal (plist-get (plist-get properties :summaries) :maxItems)
                      16))
       (should (equal (plist-get source-schema :minItems) 1))
       (should (equal (plist-get source-schema :maxItems) 16))
+      (should (equal (plist-get (plist-get summary-schema :items) :required)
+                     ["sources" "text"]))
       (should (equal (plist-get text-schema :minLength) 1))
       (should-not (plist-member properties :frame-id))
       (should-not (plist-member properties :source-observation-ids))
@@ -5343,7 +5347,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should-not (plist-member disabled :tools))))
 
 (ert-deftest e-openai-test-context-curation-schema-core-shape-agrees-on-transports ()
-  "HTTP and WebSocket requests expose the same exhaustive core shape."
+  "HTTP and WebSocket requests expose the same optional core shape."
   (dolist (transport '(http websocket))
     (let* ((body
             (e-openai-codex-request-body
@@ -5357,23 +5361,32 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
            (tool (aref (plist-get body :tools) 0))
            (parameters (plist-get tool :parameters))
            (properties (plist-get parameters :properties))
-           (drop (plist-get properties :drop)))
-      (should (equal (plist-get parameters :required)
-                     ["keep" "summaries" "drop"]))
+           (erase (plist-get properties :erase)))
+      (should-not (plist-member parameters :required))
       (should (eq (plist-get parameters :additionalProperties) :json-false))
-      (should (equal (plist-get drop :type) "array"))
-      (should-not (plist-member drop :maxItems))
+      (should (equal (sort (copy-sequence
+                            (cl-loop for (key value) on properties by #'cddr
+                                     collect key))
+                           (lambda (left right)
+                             (string< (symbol-name left)
+                                      (symbol-name right))))
+                     '(:erase :keep :summaries)))
+      (should (equal (plist-get erase :type) "array"))
+      (should (equal (plist-get erase :maxItems) 16))
+      (should (equal (plist-get (plist-get erase :items) :type)
+                     "integer"))
+      (should (equal (plist-get (plist-get erase :items) :minimum) 1))
       (should (equal
                (e-context-lifetime-normalize-curation-disposition
-                '(:keep (1) :summaries nil :drop (2)))
-               '(:keep (1) :summaries nil :drop (2))))
+                '(:keep (1) :summaries nil :erase (2)))
+               '(:keep (1) :summaries nil :erase (2))))
       (should-error
        (e-context-lifetime-normalize-curation-disposition
-        '(:keep (1) :summaries nil))
+        '(:keep nil :summaries nil))
        :type 'e-context-lifetime-invalid-record))))
 
 (ert-deftest e-openai-test-context-curation-schema-is-captured-by-both-transports ()
-  "The native HTTP and WebSocket starts capture the same strict carrier."
+  "The native HTTP and WebSocket starts capture the same optional carrier."
   (let* ((process-environment
           (cons "E_OPENAI_TEST_TOKEN=test-token" process-environment)))
     (dolist (transport '(http websocket))
@@ -5421,18 +5434,41 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    (tool (car (append (plist-get body :tools) nil)))
                    (parameters (plist-get tool :parameters))
                    (properties (plist-get parameters :properties))
-                   (drop (plist-get properties :drop)))
+                   (erase (plist-get properties :erase)))
               (should body)
               (should
                (equal
                 (plist-get tool :description)
-                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."))
-              (should (equal (append (plist-get parameters :required) nil)
-                             '("keep" "summaries" "drop")))
+                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
+              (should-not (plist-member parameters :required))
               (should (eq (plist-get parameters :additionalProperties)
                           :json-false))
-              (should (equal (plist-get drop :type) "array"))
-              (should-not (plist-member drop :maxItems))
+              (should (equal (sort (copy-sequence
+                                    (cl-loop for (key value) on properties by #'cddr
+                                             collect key))
+                                   (lambda (left right)
+                                     (string< (symbol-name left)
+                                              (symbol-name right))))
+                             '(:erase :keep :summaries)))
+              (should (equal (plist-get erase :type) "array"))
+              (should (equal (plist-get erase :maxItems) 16))
+              (should (equal (plist-get (plist-get erase :items) :type)
+                             "integer"))
+              (should (equal (plist-get (plist-get erase :items) :minimum)
+                             1))
+              (should (equal (plist-get (plist-get properties :keep)
+                                        :maxItems)
+                             16))
+              (should (equal (plist-get (plist-get properties :summaries)
+                                        :maxItems)
+                             16))
+              (should (equal
+                       (plist-get
+                        (plist-get (plist-get properties :summaries) :items)
+                        :required)
+                       (if (eq transport 'http)
+                           '("sources" "text")
+                         ["sources" "text"])))
               (should-error
                (e-context-lifetime-normalize-curation-disposition
                 '(:keep nil :summaries nil))
@@ -5450,7 +5486,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               :call_id "curation-call"
               :name "context-curate"
               :arguments
-              "{\"keep\":[1],\"summaries\":[],\"drop\":[]}"))))
+              "{\"keep\":[1],\"summaries\":[],\"erase\":[]}"))))
          (replay (plist-get item :provider-replay-item))
          (wire-item (plist-get replay :item)))
     (should (equal (plist-get replay :provider-id) 'openai))
@@ -5462,7 +5498,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
   "The streaming Responses parser preserves the reserved call identity."
   (let* ((items
           (e-openai-codex-parse-stream
-           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"curation-call\",\"name\":\"context-curate\",\"arguments\":\"{\\\"keep\\\":[1],\\\"summaries\\\":[],\\\"drop\\\":[]}\"}}\n\n"))
+           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"curation-call\",\"name\":\"context-curate\",\"arguments\":\"{\\\"keep\\\":[1],\\\"summaries\\\":[],\\\"erase\\\":[]}\"}}\n\n"))
          (item (car items))
          (replay (plist-get item :provider-replay-item)))
     (should (eq (plist-get item :type) 'context-curate))
@@ -5518,7 +5554,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 (ert-deftest e-openai-test-context-curation-full-replay-pair-is-not-anchored-call ()
   "Full replay restores the curation call/output pair; anchors send output only."
   (let* ((effect (e-openai-codex--context-curation-effect
-                  '(:keep (1) :summaries nil :drop nil) "curation-call"))
+                  '(:keep (1) :summaries nil :erase nil) "curation-call"))
          (replays (plist-get effect :provider-replay-items))
          (messages
           `((:role user :content "prompt")
@@ -5552,7 +5588,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                             :item (:type "function_call"
                                    :call_id "curation-call"
                                    :name "context-curate"
-                                   :arguments "{\"keep\":[1],\"summaries\":[],\"drop\":[]}"))
+                                   :arguments "{\"keep\":[1],\"summaries\":[],\"erase\":[]}"))
                            (:type provider-replay-item
                             :provider-id openai
                             :item (:type "function_call_output"
@@ -5619,7 +5655,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (first-items nil)
          (curation-arguments
           (json-encode
-           '(:keep [1] :summaries [] :drop [])))
+           '(:keep [1] :summaries [] :erase [])))
          (first-response
           (mapconcat
            (lambda (event)

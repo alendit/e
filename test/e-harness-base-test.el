@@ -202,6 +202,57 @@
                                   (e-harness-base-test--receipt-content
                                    projection))))))
 
+(ert-deftest e-harness-base-test-receipt-provider-reads-session-erasure-authority ()
+  "The dynamic provider reads erased ids from the active session path."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-harness-base-context-capability-create))))
+         (session-id "receipt-session-erasure")
+         (store (e-harness-sessions harness)))
+    (e-harness-create-session harness :id session-id)
+    (dolist (id '("call-a" "call-b"))
+      (e-harness-base-test--emit-receipt
+       harness session-id id id "probe"
+       (format "tmp://details/%s.json" id)))
+    (let* ((session (e-session-get store session-id))
+           (root-id (plist-get session :root-event-id))
+           (generation-id "generation-receipt-session")
+           (generation
+            (e-context-lifetime-generation-create
+             :id generation-id
+             :checkpoint nil
+             :covered-session-boundary root-id))
+           (erasure
+            (list :record-version 1
+                  :type 'context-erasure
+                  :id "erasure-receipt-session"
+                  :frame-id "frame-receipt-session"
+                  :generation-id generation-id
+                  :consumer-request-id "consumer-receipt-session"
+                  :response-entry-id "response-receipt-session"
+                  :sources
+                  '((:source-observation-id "observation-call-b"
+                     :source-ref "context-source:call-b"
+                     :source-fingerprint "fingerprint-call-b"
+                     :tool-call-id "call-b"))))
+           (provider
+            (car (e-capability-context-providers
+                  (e-harness-base-context-capability-create)))))
+      (e-session-append-context-generation store session-id generation)
+      (e-session-append-context-curation-package
+       store session-id (list :promotion nil :erasure erasure))
+      (let* ((messages
+              (e-context-provider-build
+               provider :harness harness :session-id session-id
+               :turn-id "turn-receipt-session" :context-purpose 'turn))
+             (content (plist-get (car messages) :content)))
+        (should (equal (e-session-erased-tool-call-ids store session-id)
+                       '("call-b")))
+        (should (string-match-p "call-a" content))
+        (should-not (string-match-p "call-b" content))
+        (should (= (length messages) 1))))))
+
 (ert-deftest e-harness-base-test-receipt-provider-renders-resource-liveness ()
   "Receipt context distinguishes a readable detail resource from an expired one."
   (let* ((harness (e-harness-create

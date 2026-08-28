@@ -57,17 +57,19 @@ provider fields remain in the detached invocation-details resource.  The
 receipt owner is the existing session activity stream, so no parallel receipt
 ledger is introduced.
 
-Slice F90.4b is in progress: harness-base now exposes a late dynamic receipt
+Slice F90.4b is complete: harness-base exposes a late dynamic receipt
 context provider over the selected session path.  It orders only durable
-=tool-finished= receipts, accepts a narrow consumer-supplied erased-call set
-before every aggregate, renders current details-resource liveness without
-touching expiry, and enforces measured representative defaults of 8 entries
-and 4096 canonical UTF-8 bytes.  Focused owner tests cover exact and one-over
-count/byte bounds, a wide stated-purpose tail, selected-path sibling and
-checkpoint/reopen behavior, snapshots/stable-prefix exclusion, unavailable
-details, and erased-input filtering.  The Feature 88 authority/query and the
-composed Addendum 7 join remain future work; this slice does not implement
-either.
+=tool-finished= receipts, obtains the selected-path erased-call set from the
+Feature 88 session authority before every aggregate, renders current
+details-resource liveness without touching expiry, and enforces measured
+representative defaults of 8 entries and 4096 canonical UTF-8 bytes.  Focused
+owner tests cover exact and one-over count/byte bounds, a wide stated-purpose
+tail, selected-path sibling and checkpoint/reopen behavior,
+snapshots/stable-prefix exclusion, unavailable details, and erasure filtering.
+The composed Addendum 7 credential-free path proves both omission-preserved
+receipts and explicit-erasure suppression while durable activity and temporary
+details remain available.  The integrated repository gate passes 2,453 tests
+with zero unexpected results.
 
 * Goal
 
@@ -287,10 +289,10 @@ A harness-owned context provider projects a bounded recent receipt list into
 ordinary model context.  This projection is separate from transcript messages
 and from Feature 88's exact or summarized curation items.
 
-The projection includes receipts when Feature 88 keeps, summarizes, or
-explicitly drops the matching exact tool source.  An explicit =drop= therefore
-removes the exact bundle but leaves its compact mark.  Feature 88 Addendum 7's explicit
-=erase= disposition suppresses the matching receipt completely.  Feature 90
+The projection includes receipts when Feature 88 keeps, summarizes, or omits
+the matching exact tool source.  Ordinary omission removes the exact bundle
+but leaves its compact mark.  Feature 88 Addendum 7's explicit =erase=
+disposition suppresses the matching receipt completely.  Feature 90
 does not define, infer, or persist that decision; it consumes the canonical
 erased-tool-call set produced by Feature 88.  The path-scoped authority and
 eligibility query are the =F88A7-DURABLE= boundary in
@@ -389,9 +391,9 @@ links.
 ** Slice 5: lifetime integration and system proof
 
 Exercise one complete Feature 88 turn where an ordinary tool bundle is consumed
-and explicitly dropped by curation.  Prove that later context lacks the arguments and
-result, retains the compact receipt, and can read the complete details while the
-tmp resource is live.  Exercise a second turn with Addendum 7 explicit erasure
+and omitted from the curation disposition.  Prove that later context lacks the
+arguments and result, retains the compact receipt, and can read the complete
+details while the tmp resource is live.  Exercise a second turn with Addendum 7 explicit erasure
 and prove later context contains no result, receipt, purpose, URI, or aggregate
 mark while transcript and stored details remain intact.  Then clean a live
 resource and prove an unerased receipt remains truthful without claiming
@@ -415,7 +417,7 @@ readable details.
 - Tool-output truncation reuses the invocation-details resource and does not
   write a second full session result.
 - Later ordinary context retains a bounded receipt after ordinary Feature 88
-  =drop= removes the matching exact tool bundle.
+  omission removes the matching exact tool bundle.
 - Feature 88 explicit erasure suppresses the matching receipt and every
   receipt-derived aggregate without deleting transcript, activity, or temporary
   details.

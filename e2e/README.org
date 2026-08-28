@@ -219,23 +219,25 @@ the configured Responses HTTP record is current and confirms exact adoption for
 that profile.  Exact built-in ChatGPT/WebSocket adoption remains a separate,
 unconfirmed scope.
 
-The Addendum 6 negative-adoption selector uses a fresh session and the same
+The Addendum 7 negative-adoption selector uses a fresh session and the same
 configured Responses profile:
 
 #+begin_src sh
 E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
 eldev -s test -f e2e/e-live-e2e-test.el \
-  e-live-e2e-test-responses-autonomous-curation-drop
+  e-live-e2e-test-responses-autonomous-curation-erase
 #+end_src
 
 It requires the ordinary deterministic tool to be useful only for the current
-answer, then checks the exact transformed answer and one exhaustive drop
-disposition.  Its bounded record reports =adoption-disposition drop=,
+answer, then checks the exact transformed answer and one explicit erase
+disposition selected through the optional =context-curate-v5= carrier.  The
+composition gates prove durable erasure, receipt/aggregate suppression, and
+preserved activity and temporary details across reopen.  Its bounded record
+reports =adoption-disposition erase=,
 =adoption-result=, =composition-result=, and =failure-stage= separately and
 contains no prompt, sentinel, answer, summary text, or authentication data.
-The current configured HTTP run passed this scenario; it does not confirm the
-exact ChatGPT/WebSocket scope.
+No Addendum 6 =drop= evidence is reused for this materially different schema.
 
 To rerun the current configured Responses HTTP evidence set, select all five
 Feature 88 scenarios together:
@@ -246,19 +248,19 @@ E_E2E_CONFIG=e2e/e-e2e-config-eng-ai-gateway.el \
 eldev -s test -f e2e/e-live-e2e-test.el \
   e-live-e2e-test-responses-reasoning-summary-capability \
   e-live-e2e-test-responses-autonomous-curation-adoption \
-  e-live-e2e-test-responses-autonomous-curation-drop \
+  e-live-e2e-test-responses-autonomous-curation-erase \
   e-live-e2e-test-responses-canonical-warm-prefix \
   e-live-e2e-test-responses-canonical-tool-heavy
 #+end_src
 
 The 2026-08-28 run at revision =01a8466a= used the Engineering AI Model
 Gateway / GPT (Responses) profile over native HTTP, with =:json-false= store
-mode and model =gpt-5.6-sol=.  It passed the one-request reasoning probe, exact
-adoption, explicit drop adoption, warm-prefix cache, and tool-heavy cache
-scenarios.  The identity-complete records contain only bounded request
-identity, revisions, classifications, counts, and timing; see the Feature 88
-addendum ledgers for exact metrics.  HTTP evidence does not confirm the exact
-built-in ChatGPT/WebSocket selectors.
+mode and model =gpt-5.6-sol=.  Its Addendum 6 results are historical after the
+carrier revision.  A current Addendum 7 rerun must pass the reasoning probe,
+positive adoption, explicit erase adoption, warm-prefix cache, and tool-heavy
+cache scenarios under =context-curate-v5=.  Identity-complete records contain
+only bounded request identity, revisions, classifications, counts, and timing;
+HTTP evidence does not confirm the exact built-in ChatGPT/WebSocket selectors.
 
 The Addendum 6 reasoning-summary capability probe is a separate, one-request
 check of the configured Responses adapter:

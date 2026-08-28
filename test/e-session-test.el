@@ -37,6 +37,25 @@ promotion writer; new production records are version 3 only."
     (e-session--replay-record store entry)
     record))
 
+(defun e-session-test--literal-v1-erasure-record (&optional suffix)
+  "Return a detached literal version-1 erasure fixture.
+
+This helper is deliberately a test fixture for the session codec; it does not
+stand in for the pure curation preparation path."
+  (let ((suffix (or suffix "1")))
+    (list :record-version 1
+          :type 'context-erasure
+          :id (format "erasure-%s" suffix)
+          :frame-id (format "frame-%s" suffix)
+          :generation-id "generation-erasure"
+          :consumer-request-id (format "consumer-%s" suffix)
+          :response-entry-id (format "response-%s" suffix)
+          :sources
+          (list (list :source-observation-id (format "observation-%s" suffix)
+                      :source-ref (format "external:tool:%s" suffix)
+                      :source-fingerprint (format "fingerprint-%s" suffix)
+                      :tool-call-id (format "tool-call-%s" suffix))))))
+
 (ert-deftest e-session-test-create-and-read ()
   "Sessions can be created and read by id."
   (let ((store (e-session-store-create)))
@@ -229,6 +248,641 @@ promotion writer; new production records are version 3 only."
                      '((:role system :content "C0")
                        (:role system
                         :content "Promoted fact fact-v2: legacy value"))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-context-curation-package-is-one-replayable-unit ()
+  "A mixed curation package persists, reopens, and stays clean on a fork."
+  (let* ((directory (make-temp-file "e-session-context-package-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "context-package")
+         (generation-id "generation-package")
+         (response-id "response-package")
+         (v3-record
+          '(:record-version 3
+            :type context-promotion
+            :id "curation-package"
+            :frame-id "frame-package"
+            :generation-id "generation-package"
+            :consumer-request-id "consumer-package"
+            :response-entry-id "response-package"
+            :items ((:kind exact :value "selected package semantic"
+                     :source-observation-ids ("observation-package")
+                     :source-refs ("source-package")
+                     :source-fingerprints ("fingerprint-package")))))
+         (erasure-record
+          '(:record-version 1
+            :type context-erasure
+            :id "erasure-package"
+            :frame-id "frame-package"
+            :generation-id "generation-package"
+            :consumer-request-id "consumer-package"
+            :response-entry-id "response-package"
+            :sources ((:source-observation-id "erasure-observation"
+                       :source-ref "erasure-source"
+                       :source-fingerprint "erasure-fingerprint"
+                       :tool-call-id "tool-call-package")))))
+    (unwind-protect
+        (progn
+          (let* ((session (e-session-create store :id session-id))
+                 (root-id (plist-get session :root-event-id)))
+            (e-session-append-context-generation
+             store session-id
+             (e-context-lifetime-generation-create
+              :id generation-id
+              :checkpoint '((:role system :content "package checkpoint"))
+              :covered-session-boundary root-id))
+            (e-session-append-message
+             store session-id
+             '(:id "tool-result-package" :role tool
+               :content "raw package output")))
+          (let* ((committed
+                  (e-session-append-context-curation-package
+                   store session-id
+                   (list :promotion v3-record :erasure erasure-record)))
+                 (package-id (plist-get committed :id))
+                 (package-entry (plist-get committed :entry))
+                 (control
+                  (e-session-append-context-curation-response
+                   store session-id "turn-package" response-id))
+                 (assistant
+                  (e-session-append-message
+                   store session-id
+                   '(:id "assistant-package" :role assistant
+                     :content "package complete"))))
+            (should (eq (plist-get package-entry :type)
+                        'context-curation-package))
+            (should (equal (plist-get (plist-get package-entry :promotion)
+                                      :id)
+                           "curation-package"))
+            (should (equal (plist-get (plist-get package-entry :erasure)
+                                      :id)
+                           "erasure-package"))
+            (should (equal (plist-get (e-session-entry-by-id
+                                       store session-id package-id)
+                                      :id)
+                           package-id))
+            (should (= (length (e-session-context-curations store session-id))
+                       1))
+            (let ((promotion (car (e-session-context-promotions
+                                   store session-id))))
+              (should (eq (plist-get promotion :type)
+                          'context-promotion))
+              (should (equal (plist-get promotion :id)
+                             "curation-package"))
+              (should (equal (plist-get promotion :created-at)
+                             (plist-get package-entry :created-at)))
+              (should (equal (plist-get promotion :context-record)
+                             v3-record)))
+            (should (equal (e-session-erased-tool-call-ids store session-id)
+                           '("tool-call-package")))
+            (should (equal (plist-get control :event-type)
+                           'context-curation-response))
+            (should (equal (plist-get assistant :role) 'assistant))
+            (should (= (length
+                        (seq-filter
+                         (lambda (entry)
+                           (eq (plist-get entry :type)
+                               'context-curation-package))
+                         (e-session-current-path store session-id)))
+                       1)))
+          (e-session-flush-write-queue store)
+          (let* ((journal (e-session--session-file store session-id))
+                 (reopened (e-session-persistent-store-create directory))
+                 (package-entry
+                  (seq-find
+                   (lambda (entry)
+                     (eq (plist-get entry :type)
+                         'context-curation-package))
+                   (e-session-current-path reopened session-id)))
+                 (fork (e-session-fork reopened session-id
+                                        :at "assistant-package"))
+                 (fork-id (plist-get fork :id))
+                 (source-projection
+                  (prin1-to-string
+                   (e-session-context-lifetime-projection
+                    reopened session-id)))
+                 (fork-projection
+                  (prin1-to-string
+                   (e-session-context-lifetime-projection
+                    reopened fork-id))))
+            (should package-entry)
+            (should (equal (plist-get package-entry :promotion)
+                           v3-record))
+            (should (equal (plist-get package-entry :erasure)
+                           erasure-record))
+            (should (= (length (e-session-context-curations
+                                reopened session-id))
+                       1))
+            (should (equal (e-session-erased-tool-call-ids
+                            reopened session-id)
+                           '("tool-call-package")))
+            (should (e-session-entry-by-id
+                     reopened session-id response-id))
+            (should (equal (plist-get
+                            (plist-get (e-session-entry-by-id
+                                        reopened session-id response-id)
+                                       :payload)
+                            :response-entry-id)
+                           response-id))
+            (should (=
+                     (with-temp-buffer
+                       (insert-file-contents journal)
+                       (let (count)
+                         (goto-char (point-min))
+                         (while (search-forward
+                                 "\"type\":\"context-curation-package\""
+                                 nil t)
+                           (setq count (1+ (or count 0))))
+                         count))
+                       1))
+            (should (string-match-p "selected package semantic"
+                                    source-projection))
+            (should (string-match-p "selected package semantic"
+                                    fork-projection))
+            ;; Clean forks carry the portable selected meaning, never source
+            ;; suppression authority or its audit control.
+            (should-not (e-session-erased-tool-call-ids reopened fork-id))
+            (should-not (e-session-context-erasures reopened fork-id))
+            (should-not (e-session-entry-by-id reopened fork-id response-id))
+            (should-not (string-match-p "response-package" fork-projection))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-context-current-path-fails-on-broken-links ()
+  "Context ownership paths reject missing heads, parents, and cycles."
+  (let* ((store (e-session-store-create))
+         (session-id "context-path-integrity")
+         (session (e-session-create store :id session-id))
+         (root-id (plist-get session :root-event-id))
+         (message
+          (e-session-append-message
+           store session-id
+           '(:id "context-path-message" :role assistant :content "path")))
+         (message-id (plist-get message :id))
+         (root (e-session-entry-by-id store session-id root-id)))
+    (should-error
+     (e-session--context-current-path store session-id "missing-head")
+     :type 'e-session-error)
+    (plist-put message :parent-id "missing-parent")
+    (should-error
+     (e-session--context-current-path store session-id message-id)
+     :type 'e-session-error)
+    (plist-put message :parent-id root-id)
+    (plist-put root :parent-id message-id)
+    (should-error
+     (e-session--context-current-path store session-id message-id)
+     :type 'e-session-error)))
+
+(ert-deftest e-session-test-context-erasure-query-is-path-scoped-and-not-forked ()
+  "Erasure identities follow a selected path but are not copied to a clean fork."
+  (let* ((directory (make-temp-file "e-session-context-erasure-path-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "context-erasure-path"))
+    (unwind-protect
+        (progn
+          (let* ((session (e-session-create store :id session-id))
+                 (root-id (plist-get session :root-event-id))
+                 (generation
+                  (e-session-append-context-generation
+                   store session-id
+                   (e-context-lifetime-generation-create
+                    :id "generation-erasure"
+                    :checkpoint
+                    '((:role system :content "selected semantic context"))
+                    :covered-session-boundary root-id)))
+                 (before-id (plist-get generation :id))
+                 (tool-message
+                  (e-session-append-message
+                   store session-id
+                   '(:id "tool-result-1" :role tool :content "raw tool output")))
+                 (before-erasure-id (plist-get tool-message :id))
+                 (curation-package
+                  (e-session-append-context-curation-package
+                   store session-id
+                   (list :promotion nil
+                         :erasure
+                         (e-session-test--literal-v1-erasure-record))))
+                 (erasure-entry-id
+                  (plist-get (plist-get curation-package :entry) :id))
+                 (control
+                  (e-session-append-context-curation-response
+                   store session-id "turn-erasure" "response-1"))
+                 (descendant
+                  (e-session-append-message
+                   store session-id
+                   '(:id "after-erasure" :role assistant :content "continued"))))
+            (should (equal (e-session-erased-tool-call-ids
+                            store session-id before-id)
+                           nil))
+            (should (equal (e-session-erased-tool-call-ids
+                            store session-id before-erasure-id)
+                           nil))
+            (should (equal (e-session-erased-tool-call-ids
+                            store session-id erasure-entry-id)
+                           '("tool-call-1")))
+            (should (equal (e-session-erased-tool-call-ids
+                            store session-id (plist-get descendant :id))
+                           '("tool-call-1")))
+            (should (equal (mapcar #'e-context-lifetime-curation-erasure-tool-call-ids
+                                   (e-session-context-erasures store session-id))
+                           '(("tool-call-1"))))
+            (should (eq (plist-get (e-session-entry-by-id
+                                    store session-id erasure-entry-id)
+                                   :type)
+                        'context-curation-package))
+            (should (equal (plist-get (e-session-entry-by-id
+                                       store session-id "response-1")
+                                      :event-type)
+                           'context-curation-response))
+            (e-session-flush-write-queue store)
+            (let* ((reopened (e-session-persistent-store-create directory))
+                   (reopened-erasures
+                    (e-session-context-erasures reopened session-id))
+                   (sibling-message
+                    (e-session-append-message
+                     reopened session-id
+                     '(:parent-id "tool-result-1"
+                       :role assistant :content "sibling continuation")))
+                   (sibling-head-id (plist-get sibling-message :id))
+                   (sibling-path
+                    (e-session-current-path reopened session-id sibling-head-id))
+                   (sibling-projection
+                    (prin1-to-string
+                     (e-session-context-lifetime-projection
+                      reopened session-id sibling-head-id)))
+                   ;; A fork made from the post-erasure head is also clean:
+                   ;; it copies portable semantic context, never the source's
+                   ;; audit/control records or erasure query state.
+                   (post-erasure-fork
+                    (e-session-fork reopened session-id :at "after-erasure"))
+                   (post-erasure-fork-id (plist-get post-erasure-fork :id))
+                   (post-erasure-projection
+                    (prin1-to-string
+                     (e-session-context-lifetime-projection
+                      reopened post-erasure-fork-id))))
+              (should (equal (e-session-erased-tool-call-ids
+                              reopened session-id "after-erasure")
+                             '("tool-call-1")))
+              (should-error
+               (e-session-erased-tool-call-ids
+                reopened session-id "unknown-selected-head")
+               :type 'e-session-error)
+              ;; Capture the source-path audit view before moving the live
+              ;; session head onto the intentionally clean sibling branch.
+              (should (= (length reopened-erasures) 1))
+              (should (e-session-entry-by-id reopened session-id "response-1"))
+              ;; The same-session sibling branches before the erasure and
+              ;; remains free of it even after receiving a new descendant.
+              (should-not (e-session-erased-tool-call-ids
+                           reopened session-id sibling-head-id))
+              (should-not
+               (seq-find (lambda (entry)
+                           (memq (plist-get entry :type)
+                                 '(context-erasure
+                                   context-curation-package)))
+                         sibling-path))
+              (should-not
+               (seq-find (lambda (entry)
+                           (eq (plist-get entry :event-type)
+                               'context-curation-response))
+                         sibling-path))
+              (should (string-match-p "sibling continuation"
+                                      sibling-projection))
+              ;; The post-erasure clean fork likewise does not copy the
+              ;; detached erasure/control records or query result.
+              (should-not (e-session-erased-tool-call-ids
+                           reopened post-erasure-fork-id))
+              (should-not (e-session-context-erasures
+                           reopened post-erasure-fork-id))
+              (should-not (e-session-entry-by-id
+                           reopened post-erasure-fork-id "response-1"))
+              (should (string-match-p "selected semantic context"
+                                      sibling-projection))
+              (should (string-match-p "selected semantic context"
+                                      post-erasure-projection))
+              (should-not (string-match-p "erasure-1" sibling-projection))
+              (should-not (string-match-p "response-1" sibling-projection))
+              (should-not (string-match-p "erasure-1"
+                                          post-erasure-projection))
+              (should-not (string-match-p "response-1"
+                                          post-erasure-projection)))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-context-erasure-append-detaches-input-through-reopen ()
+  "Session-owned erasures retain original identities after caller mutation."
+  (let* ((directory (make-temp-file "e-session-context-erasure-detach-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "context-erasure-detach"))
+    (unwind-protect
+        (let* ((session (e-session-create store :id session-id))
+               (root-id (plist-get session :root-event-id))
+               (record
+                (e-context-lifetime--detached-copy
+                 (e-session-test--literal-v1-erasure-record "detached"))))
+          (e-session-append-context-generation
+           store session-id
+           (e-context-lifetime-generation-create
+            :id "generation-erasure"
+            :checkpoint '((:role system :content "detach context"))
+            :covered-session-boundary root-id))
+          (e-session-append-context-curation-package
+           store session-id (list :promotion nil :erasure record))
+          (let ((source (car (plist-get record :sources))))
+            (dolist (value (list (plist-get record :id)
+                                 (plist-get record :frame-id)
+                                 (plist-get record :generation-id)
+                                 (plist-get record :consumer-request-id)
+                                 (plist-get record :response-entry-id)
+                                 (plist-get source :source-observation-id)
+                                 (plist-get source :source-ref)
+                                 (plist-get source :source-fingerprint)))
+              (setf (aref value 0) ?X))
+            (plist-put source :tool-call-id "replaced-tool-call"))
+          (let ((stored (car (e-session-context-erasures store session-id))))
+            (should (equal (plist-get stored :id) "erasure-detached"))
+            (should (equal
+                     (plist-get (car (plist-get stored :sources))
+                                :tool-call-id)
+                     "tool-call-detached"))
+            (should (equal (e-session-erased-tool-call-ids
+                            store session-id)
+                           '("tool-call-detached"))))
+          (e-session-flush-write-queue store)
+          (let ((reopened (e-session-persistent-store-create directory)))
+            (let ((stored (car (e-session-context-erasures
+                                reopened session-id))))
+              (should (equal (plist-get stored :id) "erasure-detached"))
+              (should (equal
+                       (plist-get (car (plist-get stored :sources))
+                                  :tool-call-id)
+                       "tool-call-detached")))
+            (should (equal (e-session-erased-tool-call-ids
+                            reopened session-id)
+                           '("tool-call-detached")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-context-erasure-checkpoint-retains-audit-across-compaction ()
+  "A current erasure and its response control survive compaction checkpoints."
+  (let* ((directory (make-temp-file "e-session-context-erasure-checkpoint-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "context-erasure-checkpoint"))
+    (unwind-protect
+        (progn
+          (let* ((session (e-session-create store :id session-id))
+                 (root-id (plist-get session :root-event-id)))
+            (e-session-append-context-generation
+             store session-id
+             (e-context-lifetime-generation-create
+              :id "generation-erasure"
+              :checkpoint '((:role system :content "checkpoint context"))
+              :covered-session-boundary root-id)))
+          (let* ((_package
+                  (e-session-append-context-curation-package
+                   store session-id
+                   (list :promotion nil
+                         :erasure
+                         (e-session-test--literal-v1-erasure-record
+                          "checkpoint"))))
+                 (_control
+                  (e-session-append-context-curation-response
+                   store session-id "turn-erasure" "response-checkpoint"))
+                 (_old
+                  (e-session-append-activity-event
+                   store session-id "turn-old" 'tool-progress '(:which old)
+                   :write-index nil))
+                 (boundary
+                  (e-session-append-message
+                   store session-id
+                   '(:id "checkpoint-boundary" :role user :content "boundary")))
+                 (_compaction
+                  (e-session-append-compaction
+                   store session-id "checkpoint summary"
+                   :first-kept-entry-id (plist-get boundary :id))))
+            ;; The exact 63/64 boundary covers the pinned control plus the
+            ;; ordinary 64-event activity tail; then make the later history
+            ;; substantially larger before the first persistent checkpoint.
+            (dotimes (index 63)
+              (e-session-append-activity-event
+               store session-id "turn-later" 'tool-progress
+               (list :index index) :write-index nil))
+            (cl-labels
+                ((checkpoint-records ()
+                   (e-session--checkpoint-records store session-id))
+                 (activity-records (records)
+                   (seq-filter
+                    (lambda (record)
+                      (equal (plist-get record :type) "activity-event"))
+                    records)))
+              (let* ((records (checkpoint-records))
+                     (activities (activity-records records))
+                     (packages
+                      (seq-filter
+                       (lambda (record)
+                         (and (equal (plist-get record :type)
+                                     "context-curation-package")
+                              (plist-get record :erasure)))
+                       records))
+                     (generations
+                      (seq-filter
+                       (lambda (record)
+                         (equal (plist-get record :type) "context-generation"))
+                       records))
+                     (controls
+                      (seq-filter
+                       (lambda (record)
+                         (and (equal (plist-get record :event-type)
+                                     'context-curation-response)
+                              (equal (plist-get record :id)
+                                     "response-checkpoint")))
+                       activities)))
+                (should (= (length packages) 1))
+                (should (= (length generations) 1))
+                (should (= (length controls) 1))
+                (should (equal (plist-get (car controls) :id)
+                               (plist-get (plist-get (car packages)
+                                                     :erasure)
+                                            :response-entry-id)))
+                (should (= (length activities) 64))
+                (should-not
+                 (seq-find
+                  (lambda (record)
+                    (equal (plist-get (plist-get record :payload) :which)
+                           'old))
+                  activities)))
+              (e-session-append-activity-event
+               store session-id "turn-later" 'tool-progress
+               '(:index 63) :write-index nil)
+              (let* ((boundary-records (checkpoint-records))
+                     (boundary-activities (activity-records boundary-records))
+                     (boundary-controls
+                      (seq-filter
+                       (lambda (record)
+                         (and (equal (plist-get record :event-type)
+                                     'context-curation-response)
+                              (equal (plist-get record :id)
+                                     "response-checkpoint")))
+                       boundary-activities)))
+                (should (= (length boundary-activities) 65))
+                (should (= (length boundary-controls) 1)))
+              (dotimes (index 64)
+                (e-session-append-activity-event
+                 store session-id "turn-later" 'tool-progress
+                 (list :index (+ 64 index)) :write-index nil))
+              (e-session--write-session-checkpoint-now store session-id)
+              (let* ((reopened (e-session-persistent-store-create directory))
+                     (reopened-activities
+                      (e-session-activity-events reopened session-id))
+                     (reopened-controls
+                      (seq-filter
+                       (lambda (event)
+                         (eq (plist-get event :event-type)
+                             'context-curation-response))
+                       reopened-activities)))
+                (should (equal
+                         (e-session-erased-tool-call-ids reopened session-id)
+                         '("tool-call-checkpoint")))
+                (should (= (length (e-session-context-erasures
+                                    reopened session-id))
+                           1))
+                (should (= (length reopened-controls) 1))
+                (should (equal (plist-get (car reopened-controls) :id)
+                               "response-checkpoint"))
+                (should (equal
+                         (plist-get (plist-get (car reopened-controls)
+                                               :payload)
+                                    :response-entry-id)
+                         (plist-get
+                          (car (e-session-context-erasures
+                                reopened session-id))
+                          :response-entry-id)))
+                (should (e-session-entry-by-id
+                         reopened session-id "response-checkpoint"))
+                (dotimes (index 70)
+                  (e-session-append-activity-event
+                   reopened session-id "turn-after-reopen" 'tool-progress
+                   (list :index index) :write-index nil))
+                (e-session--write-session-checkpoint-now reopened session-id)
+                (let* ((reopened-again
+                        (e-session-persistent-store-create directory))
+                       (tail-records
+                        (e-session--checkpoint-records
+                         reopened-again session-id))
+                       (tail-activities
+                        (activity-records tail-records))
+                       (tail-controls
+                        (seq-filter
+                         (lambda (record)
+                           (and (equal (plist-get record :event-type)
+                                       'context-curation-response)
+                                (equal (plist-get record :id)
+                                       "response-checkpoint")))
+                         tail-activities)))
+                  (should (= (length tail-activities) 65))
+                  (should (= (length tail-controls) 1))
+                  (should (= (length (e-session-context-erasures
+                                      reopened-again session-id))
+                             1))
+                  (should (equal
+                           (e-session-erased-tool-call-ids
+                            reopened-again session-id)
+                           '("tool-call-checkpoint")))
+                  (should-not
+                   (seq-find
+                    (lambda (record)
+                      (equal (plist-get (plist-get record :payload) :which)
+                             'old))
+                    tail-activities)))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-context-erasure-checkpoint-retains-each-generation-owner ()
+  "Checkpoint replay keeps every generation that owns a retained erasure."
+  (let* ((directory (make-temp-file "e-session-context-erasure-generations-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "context-erasure-generations"))
+    (unwind-protect
+        (let* ((session (e-session-create store :id session-id))
+               (root-id (plist-get session :root-event-id)))
+          (e-session-append-context-generation
+           store session-id
+           (e-context-lifetime-generation-create
+            :id "generation-erasure-1"
+            :checkpoint '((:role system :content "first checkpoint"))
+            :covered-session-boundary root-id))
+          (let* ((first-record
+                  (e-session-test--literal-v1-erasure-record "g1"))
+                 (first-package
+                  (progn
+                    (plist-put first-record :generation-id
+                               "generation-erasure-1")
+                    (e-session-append-context-curation-package
+                     store session-id
+                     (list :promotion nil :erasure first-record))))
+                 (_first-control
+                  (e-session-append-context-curation-response
+                   store session-id "turn-erasure-1" "response-g1")))
+            (e-session-append-context-generation
+             store session-id
+             (e-context-lifetime-generation-create
+              :id "generation-erasure-2"
+              :checkpoint '((:role system :content "second checkpoint"))
+              :covered-session-boundary
+              (plist-get (plist-get first-package :entry) :id)))
+            (let ((second-record
+                   (e-session-test--literal-v1-erasure-record "g2")))
+              (plist-put second-record :generation-id "generation-erasure-2")
+              (e-session-append-context-curation-package
+               store session-id
+               (list :promotion nil :erasure second-record))
+              (e-session-append-context-curation-response
+               store session-id "turn-erasure-2" "response-g2")))
+          (let* ((boundary
+                  (e-session-append-message
+                   store session-id
+                   '(:id "two-generation-boundary"
+                     :role user :content "boundary"))))
+            (e-session-append-compaction
+             store session-id "two-generation summary"
+             :first-kept-entry-id (plist-get boundary :id)))
+          (dotimes (index 70)
+            (e-session-append-activity-event
+             store session-id "turn-two-generation-tail" 'tool-progress
+             (list :index index) :write-index nil))
+          (let* ((state (e-session--checkpoint-context-lifetime-state
+                         store session-id))
+                 (records (e-session--checkpoint-records store session-id))
+                 (generation-records
+                  (seq-filter
+                   (lambda (record)
+                     (equal (plist-get record :type) "context-generation"))
+                   records))
+                 (package-records
+                  (seq-filter
+                   (lambda (record)
+                     (and (equal (plist-get record :type)
+                                 "context-curation-package")
+                          (plist-get record :erasure)))
+                   records)))
+            (should (= (length (plist-get state :generations)) 2))
+            (should (= (length (plist-get state :erasures)) 2))
+            (should (= (length generation-records) 2))
+            (should (= (length package-records) 2)))
+          (e-session--write-session-checkpoint-now store session-id)
+          (let* ((reopened (e-session-persistent-store-create directory))
+                 (generations (e-session-context-generations reopened session-id))
+                 (erasures (e-session-context-erasures reopened session-id))
+                 (ids (e-session-erased-tool-call-ids reopened session-id)))
+            (should (= (length generations) 2))
+            (should (= (length erasures) 2))
+            (should (equal ids '("tool-call-g1" "tool-call-g2")))
+            (should (equal
+                     (mapcar (lambda (entry)
+                               (plist-get (plist-get entry :context-record)
+                                          :id))
+                             generations)
+                     '("generation-erasure-1" "generation-erasure-2")))
+            (should (equal
+                     (mapcar #'e-context-lifetime-curation-erasure-tool-call-ids
+                             erasures)
+                     '(("tool-call-g1") ("tool-call-g2"))))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-context-codecs-own-malformed-append-and-replay ()

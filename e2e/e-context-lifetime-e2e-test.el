@@ -19,6 +19,7 @@
 (require 'e-context)
 (require 'e-context-lifetime)
 (require 'e-harness)
+(require 'e-harness-base)
 (require 'e-openai)
 (require 'e-session)
 (require 'e-tools)
@@ -167,8 +168,13 @@ have a presentation-side attachment for the newly compacted session head."
      :attachment-token
      (e-board-runtime-attachment-endpoint-token attachment))))
 
-(ert-deftest e-context-lifetime-e2e-test-tool-observe-curate-forget ()
-  "Observe a tool bundle, curate one fact, then forget the raw bundle.
+(defun e-context-lifetime-e2e--run-tool-observe-curate
+    (&optional erase-p)
+  "Run the credential-free tool curation case.
+
+When ERASE-P is non-nil, explicitly erase the ordinary tool-result source;
+otherwise its label is omitted from the curation response and its receipt is
+preserved for the next turn.
 
 This intentionally drives the real OpenAI Responses adapter with an injected
 transport.  The transport is the only fake boundary: all context, capability,
@@ -199,6 +205,8 @@ loop, session, and ordinary tool behavior remains production behavior."
          (request-count 0)
          (tool-count 0)
          (curation-wire-arguments nil)
+         (curation-canvas-label nil)
+         (curation-tool-label nil)
          (captured-tool-frame nil)
          (harness nil)
          (stable-provider
@@ -287,7 +295,7 @@ loop, session, and ordinary tool behavior remains production behavior."
                (let* ((sources
                        (e-context-lifetime-frame-curation-sources
                         captured-tool-frame))
-                      (source
+                      (tool-source
                        (seq-find
                         (lambda (candidate)
                           (and (stringp (plist-get candidate :value))
@@ -295,21 +303,33 @@ loop, session, and ordinary tool behavior remains production behavior."
                                 "OBSERVATION-ONE"
                                 (plist-get candidate :value))))
                         sources))
-                      (label (and source (plist-get source :label)))
-                      (drop
-                       (cl-remove
-                        label (number-sequence 1 (length sources))))
+                      (tool-label (and tool-source
+                                       (plist-get tool-source :label)))
+                      (canvas-source
+                       (seq-find
+                        (lambda (candidate)
+                          (and (stringp (plist-get candidate :value))
+                               (equal (plist-get candidate :value)
+                                      canvas)))
+                        sources))
+                      (canvas-label (and canvas-source
+                                         (plist-get canvas-source :label)))
                       (curation-arguments
                        (json-encode
-                        (list
-                         :keep (vector)
-                         :summaries
-                         (vector
-                          (list :sources (vector label)
-                                :text "normalize-price"))
-                         :drop (vconcat drop)))))
-                 (unless (and source label)
+                        (append
+                         (list
+                          :keep (vector canvas-label)
+                          :summaries (vector))
+                         (when erase-p
+                           (list :erase (vector tool-label)))))))
+                 (unless (and tool-source tool-label
+                              canvas-source canvas-label)
                    (error "Follow-up lacks trusted curation frontier"))
+                 (unless (/= tool-label canvas-label)
+                   (error "Tool and canvas labels unexpectedly match: %s"
+                          tool-label))
+                 (setq curation-canvas-label canvas-label)
+                 (setq curation-tool-label tool-label)
                  (setq curation-wire-arguments curation-arguments)
                    (e-context-lifetime-e2e--store-provider-chain
                     response-items
@@ -359,6 +379,9 @@ loop, session, and ordinary tool behavior remains production behavior."
            :provider 'context-lifetime-e2e
            :model "gpt-e2e"
            :request-function request-function))
+    (dolist (base-capability
+             (e-layer-capabilities (e-harness-base-layer-create)))
+      (e-harness-activate-capability harness base-capability))
     (e-harness-activate-capability harness capability)
     (let ((original-body (symbol-function 'e-openai-codex-request-body))
           (original-frame
@@ -450,15 +473,55 @@ loop, session, and ordinary tool behavior remains production behavior."
                (next-body (plist-get next-request :body))
                (next-effective
                 (plist-get next-request :effective-context))
+               (next-effective-input
+                (plist-get next-effective :input))
+               (next-effective-instructions
+                (plist-get next-effective :instructions))
                (next-effective-text
                 (e-context-lifetime-e2e--model-context-text
                  next-effective))
+               (next-effective-input-text
+                (prin1-to-string next-effective-input))
+               (next-input-text
+                (prin1-to-string
+                 (plist-get (plist-get next-request :parsed) :input)))
                (curations
                 (e-session-context-promotions
                  (e-harness-sessions harness)
                  "context-lifetime-e2e"))
                (curation-record
                 (plist-get (car curations) :context-record))
+               (receipt-event
+                (seq-find
+                 (lambda (entry)
+                   (let ((receipt
+                          (plist-get (plist-get entry :payload) :receipt)))
+                     (and (memq (plist-get entry :event-type)
+                                '(tool-finished "tool-finished"))
+                          (listp receipt)
+                          (equal (plist-get receipt :tool-call-id)
+                                 "call-normalize-price"))))
+                 (e-harness-session-activity-events
+                  harness "context-lifetime-e2e")))
+               (receipt
+                (and receipt-event
+                     (plist-get receipt-event :payload)
+                     (plist-get (plist-get receipt-event :payload) :receipt)))
+               (details-uri (and receipt (plist-get receipt :details-uri)))
+               (receipt-input
+                (seq-find
+                 (lambda (item)
+                   (and (string-prefix-p "- " item)
+                        (string-match-p "tool_call_id" item)
+                        (string-match-p "details_uri" item)
+                        (string-match-p "call-normalize-price" item)))
+                 (split-string (or next-effective-instructions "")
+                               "\n" t)))
+               (receipt-input-text
+                receipt-input)
+               (erased-tool-call-ids
+                (e-session-erased-tool-call-ids
+                 (e-harness-sessions harness) "context-lifetime-e2e"))
                (current-path
                 (e-session-current-path
                  (e-harness-sessions harness)
@@ -481,18 +544,68 @@ loop, session, and ordinary tool behavior remains production behavior."
           (should-not
            (plist-get (plist-get next-request :parsed)
                       :previous_response_id))
-          (should (string-match-p "normalize-price" next-effective-text))
-          (dolist (marker '("OBSERVATION-ONE" "call-normalize-price"
-                            "REPLAY-ONE" "resp-A" "resp-B"))
-            (should-not (string-match-p marker next-effective-text)))
+          (should (equal
+                   (plist-get
+                    (plist-get (plist-get next-request :parsed) :reasoning)
+                    :summary)
+                   "auto"))
+          (should receipt-event)
+          (should (equal (plist-get receipt :tool-call-id)
+                         "call-normalize-price"))
+          (should (equal (plist-get receipt :tool) "normalize-price"))
+          (should (equal (plist-get receipt :stated-purpose)
+                         "Normalize the price."))
+          (should (stringp details-uri))
+          (should (e-session-tmp-reference-available-p
+                   harness "context-lifetime-e2e" details-uri))
+          (should (string-match-p "CANVAS-ONE" next-effective-text))
+          (dolist (marker '("OBSERVATION-ONE" "REPLAY-ONE" "resp-A" "resp-B"))
+            (should-not (string-match-p marker next-effective-text))
+            (should-not (string-match-p marker next-input-text)))
+          (if erase-p
+              (progn
+                (should (equal erased-tool-call-ids
+                               (list "call-normalize-price")))
+                (should-not receipt-input)
+                ;; The registered tool schema remains in the request envelope;
+                ;; these assertions inspect the model-visible input frontier.
+                (dolist (marker '("OBSERVATION-ONE" "call-normalize-price"
+                                  "normalize-price" "Normalize the price."
+                                  "tmp://tool-invocations/" "tool receipt"
+                                  "tool receipts" "earlier tool receipt"
+                                  "earlier tool receipts" "receipt omitted"
+                                  "receipts omitted"))
+                  (should-not (string-match-p marker next-effective-text))
+                  (should-not (string-match-p marker next-input-text)))
+                (should-not (string-match-p "call-normalize-price" next-body))
+                (should-not (string-match-p "Normalize the price." next-body))
+                (should-not (string-match-p "tmp://tool-invocations/"
+                                            next-body)))
+            (progn
+              (should-not (member "call-normalize-price"
+                                  erased-tool-call-ids))
+              (should receipt-input)
+              (dolist (marker '("call-normalize-price" "normalize-price"
+                                "Normalize the price." "tmp://tool-invocations/"))
+                (should (string-match-p marker receipt-input-text)))
+              (let ((non-receipt-instructions
+                     (replace-regexp-in-string
+                      (regexp-quote receipt-input-text) ""
+                      (or next-effective-instructions "") t t)))
+                (dolist (marker '("call-normalize-price" "normalize-price"
+                                  "Normalize the price."
+                                  "tmp://tool-invocations/"))
+                  (should-not (string-match-p marker
+                                              non-receipt-instructions))))))
           (should (string-match-p "normalize-price" next-body))
-          (dolist (marker '("OBSERVATION-ONE" "call-normalize-price"
-                            "REPLAY-ONE" "resp-A" "resp-B"))
+          (dolist (marker '("OBSERVATION-ONE" "REPLAY-ONE" "resp-A" "resp-B"))
             (should-not (string-match-p marker next-body)))
           (should (= (length curations) 1))
-          (let ((item (car (plist-get curation-record :items))))
-            (should (eq (plist-get item :kind) 'summary))
-            (should (equal (plist-get item :text) "normalize-price"))
+          (let* ((items (plist-get curation-record :items))
+                 (item (car items)))
+            (should (= (length items) 1))
+            (should (eq (plist-get item :kind) 'exact))
+            (should (equal (plist-get item :value) "CANVAS-ONE"))
             (should (= (length (plist-get item :source-observation-ids)) 1))
             (should (= (length (plist-get item :source-refs)) 1))
             (should (= (length (plist-get item :source-fingerprints)) 1)))
@@ -501,9 +614,14 @@ loop, session, and ordinary tool behavior remains production behavior."
           ;; resolves its trusted provenance from the live frame at commit.
           (let ((wire (e-context-lifetime-e2e--json-body
                        curation-wire-arguments)))
-            (should (plist-get wire :summaries))
-            (should (plist-member wire :keep))
-            (should (plist-member wire :drop))
+            (should (equal (plist-get wire :keep)
+                           (list curation-canvas-label)))
+            (should (null (plist-get wire :summaries)))
+            (if erase-p
+                (should (equal (plist-get wire :erase)
+                               (list curation-tool-label)))
+              (should-not (plist-member wire :erase)))
+            (should-not (plist-member wire :drop))
             (should-not (plist-member wire :frame))
             (should-not (plist-member wire :observation))
             (should-not (plist-member wire :ref))
@@ -519,6 +637,14 @@ loop, session, and ordinary tool behavior remains production behavior."
               (member (plist-get (plist-get anchor :metadata) :response-id)
                       '("resp-A" "resp-B")))
             anchors))))))
+
+(ert-deftest e-context-lifetime-e2e-test-tool-observe-curate-omission-preserves-receipt ()
+  "Omitting a tool source drops raw content while preserving its receipt."
+  (e-context-lifetime-e2e--run-tool-observe-curate))
+
+(ert-deftest e-context-lifetime-e2e-test-tool-observe-curate-erase-suppresses-receipt ()
+  "Explicitly erasing a tool source suppresses its receipt projection."
+  (e-context-lifetime-e2e--run-tool-observe-curate t))
 
 (ert-deftest e-context-lifetime-e2e-test-canvas-replacement-profiles ()
   "Exercise canvas replacement and anchor safety through real OpenAI profiles.

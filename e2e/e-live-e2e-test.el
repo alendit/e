@@ -34,6 +34,7 @@
 (require 'e-context-lifetime)
 (require 'e-default-harnesses)
 (require 'e-harness)
+(require 'e-harness-base)
 (require 'e-harness-registry)
 (require 'e-layers)
 (require 'e-openai)
@@ -775,7 +776,7 @@ call must have exactly one matching empty output in causal order."
          (< call-index output-index))))
 
 (defconst e-live-e2e--context-curation-description
-  "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Partition every presented label exactly once: use keep for exact retention, summaries for compact durable replacements, and drop for every source that should not remain."
+  "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."
   "Expected lifecycle affordance in the reserved curation carrier.")
 
 (defun e-live-e2e--context-curation-carrier-p (body)
@@ -790,7 +791,7 @@ call must have exactly one matching empty output in causal order."
             (summary-properties (plist-get summary-item :properties))
             (sources (plist-get summary-properties :sources))
             (text (plist-get summary-properties :text))
-            (drop (plist-get properties :drop))
+            (erase (plist-get properties :erase))
             (keys (cl-loop for (key _value) on properties by #'cddr
                            collect key)))
        (and (equal (plist-get tool :type) "function")
@@ -799,13 +800,12 @@ call must have exactly one matching empty output in causal order."
                    e-live-e2e--context-curation-description)
             (equal (plist-get parameters :type) "object")
             (eq (plist-get parameters :additionalProperties) :json-false)
-            (equal (append (plist-get parameters :required) nil)
-                   '("keep" "summaries" "drop"))
+            (not (plist-member parameters :required))
             (equal (sort (copy-sequence keys)
                          (lambda (left right)
                            (string< (symbol-name left)
                                     (symbol-name right))))
-                   '(:drop :keep :summaries))
+                   '(:erase :keep :summaries))
             (equal (plist-get keep :type) "array")
             (equal (plist-get keep :maxItems) 16)
             (equal (plist-get summaries :type) "array")
@@ -815,8 +815,8 @@ call must have exactly one matching empty output in causal order."
             (equal (plist-get sources :maxItems) 16)
             (equal (plist-get text :type) "string")
             (equal (plist-get text :minLength) 1)
-            (equal (plist-get drop :type) "array")
-            (not (plist-member drop :maxItems)))))
+            (equal (plist-get erase :type) "array")
+            (equal (plist-get erase :maxItems) 16))))
    (append (plist-get body :tools) nil)))
 
 (defun e-live-e2e--responses-reasoning-auto-p (body)
@@ -1283,7 +1283,7 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
           cache-result result adoption-result composition-result failure-stage
           adoption-disposition scenario-prompt-identity affordance-revision
           presentation-revision adoption-gates adoption-dependency-identity
-          drop-adoption-gates
+          erase-adoption-gates
           evidence-schema-revision reasoning-effort reasoning-summary
           probe-request-identity dependency-identity returned-summary-presence)
   "Return one bounded identity-complete external evidence RECORD.
@@ -1291,7 +1291,7 @@ REQUEST-BODIES are hashed and reduced to shapes; no prompt, token, auth header,
 or response body is emitted.  REQUEST-METADATA and USAGE-PAYLOADS are ordered
 lists matching those requests where available.  Each body receives one shape
 by request index; absent metadata leaves only its metadata-derived fields
-unavailable.  DROP-ADOPTION-GATES selects the autonomous-drop classifier;
+unavailable.  ERASE-ADOPTION-GATES selects the autonomous-erasure classifier;
 otherwise ADOPTION-GATES retains the positive-adoption classifier."
   (let* ((request-bodies (or request-bodies nil))
          (request-metadata (or request-metadata nil))
@@ -1344,10 +1344,10 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
            (t "pass")))
          (adoption-classification
           (cond
-           (drop-adoption-gates
-            (apply #'e-live-e2e--classify-autonomous-drop
+           (erase-adoption-gates
+            (apply #'e-live-e2e--classify-autonomous-erase
                    (append (list :identity-result identity-result)
-                           drop-adoption-gates)))
+                           erase-adoption-gates)))
            (adoption-gates
             (apply #'e-live-e2e--classify-autonomous-adoption
                    (append (list :identity-result identity-result)
@@ -1523,7 +1523,7 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
                  :cache-result (or cache-result "unavailable")
                  :result record-result)))
       (setq record
-            (if (or evidence-schema-revision reasoning-effort reasoning-summary
+         (if (or evidence-schema-revision reasoning-effort reasoning-summary
                     probe-request-identity dependency-identity
                     returned-summary-presence)
                 (append record
@@ -1539,7 +1539,8 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
                               (or returned-summary-presence "unavailable")))
               record))
       (if (or adoption-result composition-result failure-stage
-              adoption-gates drop-adoption-gates adoption-disposition
+              adoption-gates erase-adoption-gates
+              adoption-disposition
               scenario-prompt-identity
               affordance-revision presentation-revision
               adoption-dependency-identity)
@@ -1692,8 +1693,8 @@ finalization, including when the original condition is re-signalled."
                 (plist-get state :presentation-revision)
                 :adoption-gates
                 (plist-get state :adoption-gates)
-                :drop-adoption-gates
-                (plist-get state :drop-adoption-gates)))))
+                :erase-adoption-gates
+                (plist-get state :erase-adoption-gates)))))
           (if condition
               (signal (car condition) (cdr condition))
             value))
@@ -1718,7 +1719,7 @@ finalization, including when the original condition is re-signalled."
 
 (defconst e-live-e2e--adoption-negative-terms
   '("context-curate" "curate" "keep" "summary" "summaries"
-    "curation" "drop" "retain" "source" "label" "numeric-label"
+    "curation" "drop" "erase" "retain" "source" "label" "numeric-label"
     "carrier" "reasoning" "schema" "argument")
   "Case-insensitive words forbidden in the autonomous-adoption prompt.")
 
@@ -1780,11 +1781,11 @@ finalization, including when the original condition is re-signalled."
 
 (defun e-live-e2e--adoption-positive-effect-valid-p
     (arguments source-count record sentinel)
-  "Return non-nil for an exhaustive positive adoption disposition.
-The disposition must cover exactly SOURCE-COUNT labels, retain SENTINEL by an
-exact or summary item, and contain at least one retained item.  Core remains
-the authority for strict shape and partition validation; this predicate only
-joins that result to the content-free evidence record."
+  "Return non-nil for an explicit positive adoption disposition.
+The disposition must retain SENTINEL by an exact or summary item.  Other
+presented labels may be omitted under the optional carrier contract.  Core
+remains the authority for strict shape and label validation; this predicate
+only joins that result to the content-free evidence record."
   (condition-case nil
       (let* ((normalized
               (e-context-lifetime-normalize-curation-disposition
@@ -1804,22 +1805,27 @@ joins that result to the content-free evidence record."
               record sentinel)))
     (error nil)))
 
-(defun e-live-e2e--adoption-drop-effect-valid-p (arguments source-count)
-  "Return non-nil for an exhaustive drop-only disposition.
-The complete partition is validated by core; this predicate additionally
-requires that no semantic exact/summary item was selected."
+(defun e-live-e2e--adoption-erase-effect-valid-p (arguments source-count)
+  "Return non-nil for one explicit erase-only disposition.
+Core validates the carrier shape and source membership; this predicate joins
+that result to the negative-adoption contract, which accepts exactly one
+submitted erase label and no retained exact or summary labels."
   (condition-case nil
-      (let ((normalized
-             (e-context-lifetime-normalize-curation-disposition
-              arguments source-count)))
+      (let* ((normalized
+              (e-context-lifetime-normalize-curation-disposition
+               arguments source-count))
+             (erase (plist-get normalized :erase))
+             (label (car erase)))
         (and (integerp source-count)
              (> source-count 0)
              (null (plist-get normalized :keep))
              (null (plist-get normalized :summaries))
-             (= (length (plist-get normalized :drop)) source-count)))
+             (= (length erase) 1)
+             (integerp label)
+             (<= 1 label source-count)))
     (error nil)))
 
-(defun e-live-e2e--autonomous-drop-prompt (&optional tool-name)
+(defun e-live-e2e--autonomous-erase-prompt (&optional tool-name)
   "Return the naturalistic negative-adoption prompt for TOOL-NAME.
 The prompt describes current-answer use only and deliberately contains no
 carrier, curation, source-label, reasoning, schema, or argument vocabulary."
@@ -1827,16 +1833,16 @@ carrier, curation, source-label, reasoning, schema, or argument vocabulary."
    "Call the %s lookup tool exactly once. The returned value is useful only for the current answer. Reverse every character of its returned sentinel exactly and reply with only that transformed value and no extra text."
    (or tool-name "e2e_deterministic")))
 
-(cl-defun e-live-e2e--classify-autonomous-drop
+(cl-defun e-live-e2e--classify-autonomous-erase
     (&key identity-result ordinary-tool-p prompt-control-p carrier-p
-          current-answer-p effect-present-p exact-partition-p drop-only-p
-          audit-linked-p consumed-p no-promotion-p reopened-p evicted-p
-          residue-free-p)
+          current-answer-p effect-present-p explicit-erasure-p
+          audit-linked-p consumed-p no-promotion-p erasure-persisted-p
+          receipt-suppressed-p details-preserved-p reopened-p)
   "Return bounded classification for explicit negative adoption.
 An absent effect is a product-contract observation, while a wrong current
-answer or malformed partition is semantic failure.  A valid exhaustive drop
-has one logical disposition and requires all audit, consumption, reopen,
-eviction, and residue gates before composition can pass."
+answer is semantic failure.  A valid explicit erasure requires the audit,
+consumption, persistence, receipt-suppression, details-preservation, and
+reopen gates before composition can pass."
   (if (not (equal identity-result "pass"))
       (list :adoption-result "unavailable"
             :composition-result "unavailable"
@@ -1874,13 +1880,7 @@ eviction, and residue gates before composition can pass."
             :failure-stage "model-selection"
             :adoption-disposition "unavailable"
             :result "product-contract-failure"))
-     ((not exact-partition-p)
-      (list :adoption-result "unavailable"
-            :composition-result "failure"
-            :failure-stage "exact-partition"
-            :adoption-disposition "unavailable"
-            :result "semantic-failure"))
-     ((not drop-only-p)
+     ((not explicit-erasure-p)
       (list :adoption-result "product-contract-failure"
             :composition-result "pass"
             :failure-stage "model-selection"
@@ -1890,37 +1890,43 @@ eviction, and residue gates before composition can pass."
       (list :adoption-result "pass"
             :composition-result "failure"
             :failure-stage "commit"
-            :adoption-disposition "drop"
+            :adoption-disposition "erase"
             :result "semantic-failure"))
      ((not no-promotion-p)
       (list :adoption-result "pass"
             :composition-result "failure"
             :failure-stage "no-promotion"
-            :adoption-disposition "drop"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
+     ((not erasure-persisted-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "erasure-persisted"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
+     ((not receipt-suppressed-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "receipt-suppressed"
+            :adoption-disposition "erase"
+            :result "semantic-failure"))
+     ((not details-preserved-p)
+      (list :adoption-result "pass"
+            :composition-result "failure"
+            :failure-stage "details-preserved"
+            :adoption-disposition "erase"
             :result "semantic-failure"))
      ((not reopened-p)
       (list :adoption-result "pass"
             :composition-result "failure"
             :failure-stage "reopen"
-            :adoption-disposition "drop"
-            :result "semantic-failure"))
-     ((not evicted-p)
-      (list :adoption-result "pass"
-            :composition-result "failure"
-            :failure-stage "eviction"
-            :adoption-disposition "drop"
-            :result "semantic-failure"))
-     ((not residue-free-p)
-      (list :adoption-result "pass"
-            :composition-result "failure"
-            :failure-stage "residue"
-            :adoption-disposition "drop"
+            :adoption-disposition "erase"
             :result "semantic-failure"))
      (t
       (list :adoption-result "pass"
             :composition-result "pass"
             :failure-stage "none"
-            :adoption-disposition "drop"
+            :adoption-disposition "erase"
             :result "pass")))))
 
 (defun e-live-e2e--adoption-audit-linked-p
@@ -1961,10 +1967,10 @@ session activity ledger."
          (e-session-entry-by-id store session-id response-entry-id)
          consumed)))
 
-(defun e-live-e2e--autonomous-drop-audit-links (store session-id)
-  "Return bounded control/consumption identities for a drop-only response.
+(defun e-live-e2e--autonomous-erase-audit-links (store session-id)
+  "Return bounded control/consumption identities for an erase response.
 The curation response control and consumed-frame event are durable activity;
-the nil curation-id list is intentional for a drop-only disposition.  Return
+the nil curation-id list is intentional for an erase disposition.  Return
 only opaque identities so callers cannot accidentally put event content into
 external evidence."
   (let* ((events (e-session-activity-events store session-id))
@@ -2126,9 +2132,9 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                     (e-live-e2e--adoption-prompt-violations
                      "CONTEXT-CURATE is forbidden.")))))
 
-(ert-deftest e-live-e2e-test-autonomous-drop-prompt-negative-inventory ()
+(ert-deftest e-live-e2e-test-autonomous-erase-prompt-negative-inventory ()
   "The negative adoption prompt requests only a current-answer transformation."
-  (let ((prompt (e-live-e2e--autonomous-drop-prompt "e2e_deterministic")))
+  (let ((prompt (e-live-e2e--autonomous-erase-prompt "e2e_deterministic")))
     (should (string-match-p (regexp-quote "e2e_deterministic") prompt))
     (should (string-match-p (regexp-quote "exactly once") prompt))
     (should (string-match-p (regexp-quote "useful only for the current answer")
@@ -2139,7 +2145,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                             prompt))
     (should (string-match-p (regexp-quote "no extra text") prompt))
     (should-not (e-live-e2e--adoption-prompt-violations prompt))
-    (dolist (term '("context-curate" "curation" "keep" "drop" "retain"
+    (dolist (term '("context-curate" "curation" "keep" "drop" "erase" "retain"
                     "summary" "summaries" "reasoning" "schema" "source"
                     "label" "numeric-label" "carrier" "argument"))
       (should (member term
@@ -2147,7 +2153,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                        (concat prompt " " term)))))))
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-positive-effect-validation ()
-  "Positive adoption accepts exhaustive exact/summary retention only."
+  "Positive adoption accepts explicit exact or summary retention."
   (let* ((sentinel "LIVE-ADOPTION-SENTINEL")
          (exact-record (list :items
                              (list (list :kind 'exact :value sentinel))))
@@ -2157,11 +2163,10 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                             :text (concat "Remember " sentinel)))))
          (other-record
           '(:items ((:kind exact :value "OTHER-SENTINEL"))))
-         (exact-arguments '(:keep (1) :summaries nil :drop (2)))
+         (exact-arguments '(:keep (1)))
          (summary-arguments
-          '(:keep nil
-            :summaries ((:sources (1) :text "Remember LIVE-ADOPTION-SENTINEL"))
-            :drop (2))))
+          '(:summaries
+            ((:sources (1) :text "Remember LIVE-ADOPTION-SENTINEL")))))
     (should (e-live-e2e--adoption-positive-effect-valid-p
              exact-arguments 2 exact-record sentinel))
     (should (e-live-e2e--adoption-positive-effect-valid-p
@@ -2171,50 +2176,53 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
     (should-not (e-live-e2e--adoption-positive-effect-valid-p
                  summary-arguments 2 nil sentinel))
     (dolist (bad
-             '((:keep (1) :summaries nil)
-               (:keep (1) :summaries nil :drop (1))
-               (:keep nil :summaries nil :drop (1 2))))
+             '((:keep nil :summaries nil)
+               (:keep (1) :erase (1))
+               (:erase (1 2))))
       (should-not (e-live-e2e--adoption-positive-effect-valid-p
                    bad 2 exact-record sentinel)))
-    ;; The independent drop partition has no positive adoption evidence.
+    ;; The independent erasure disposition has no positive adoption evidence.
     (should-not (e-live-e2e--adoption-positive-effect-valid-p
-                 '(:keep nil :summaries nil :drop (1 2))
+                 '(:erase (1 2))
                  2 exact-record sentinel))))
 
-(ert-deftest e-live-e2e-test-autonomous-adoption-drop-effect-validation ()
-  "Drop validation accepts an exhaustive drop-only partition without a cap."
-  (should (e-live-e2e--adoption-drop-effect-valid-p
-           '(:keep nil :summaries nil :drop (1 2)) 2))
-  (should (e-live-e2e--adoption-drop-effect-valid-p
-           (list :keep nil :summaries nil :drop (number-sequence 1 17))
-           17))
+(ert-deftest e-live-e2e-test-autonomous-adoption-erase-effect-validation ()
+  "Erase validation accepts exactly one submitted source label."
+  (should (e-live-e2e--adoption-erase-effect-valid-p
+           '(:erase (1)) 2))
+  (should (e-live-e2e--adoption-erase-effect-valid-p
+           '(:keep nil :summaries nil :erase (2)) 2))
   (dolist (bad
-           '((:keep (1) :summaries nil :drop (2))
-             (:keep nil :summaries ((:sources (1) :text "fact")) :drop (2))
-             (:keep nil :summaries nil :drop (1))
-             (:keep nil :summaries nil :drop (1 1))
-             (:keep nil :summaries nil)))
-    (should-not (e-live-e2e--adoption-drop-effect-valid-p bad 2)))
-  ;; Drop has no independent sixteen-source ceiling; retained labels do.
-  (should-not
-   (e-live-e2e--adoption-drop-effect-valid-p
-    (list :keep (number-sequence 1 17) :summaries nil :drop nil)
-    17)))
+           '((:keep (1) :summaries nil :erase (2))
+             (:keep nil :summaries ((:sources (1) :text "fact")) :erase (2))
+             (:keep nil :summaries nil :erase nil)
+             (:keep nil :summaries nil :erase (1 2))
+             (:keep nil :summaries nil)
+             (:erase (0))
+             (:erase (3))
+             (:erase ("1"))
+             (:unknown (1))))
+    (should-not (e-live-e2e--adoption-erase-effect-valid-p bad 2)))
+  ;; Explicit erasure is one submitted label even when the source frontier is
+  ;; larger; source eligibility is checked by the core frame preparation.
+  (should (e-live-e2e--adoption-erase-effect-valid-p
+           '(:erase (17)) 17)))
 
-(ert-deftest e-live-e2e-test-autonomous-drop-classification-partitions ()
-  "Drop adoption and composition failures remain independently classified."
+(ert-deftest e-live-e2e-test-autonomous-erase-classification-partitions ()
+  "Erase adoption and composition failures remain independently classified."
   (let ((base '(:identity-result "pass"
                 :ordinary-tool-p t :prompt-control-p t :carrier-p t
                 :current-answer-p t :effect-present-p t
-                :exact-partition-p t :drop-only-p t
+                :explicit-erasure-p t
                 :audit-linked-p t :consumed-p t :no-promotion-p t
-                :reopened-p t :evicted-p t :residue-free-p t)))
-    (let ((passing (apply #'e-live-e2e--classify-autonomous-drop base)))
+                :erasure-persisted-p t :receipt-suppressed-p t
+                :details-preserved-p t :reopened-p t)))
+    (let ((passing (apply #'e-live-e2e--classify-autonomous-erase base)))
       (should (equal passing
                      '(:adoption-result "pass"
                        :composition-result "pass"
                        :failure-stage "none"
-                       :adoption-disposition "drop"
+                       :adoption-disposition "erase"
                        :result "pass"))))
     (dolist
         (case
@@ -2228,25 +2236,25 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             "unavailable" "semantic-failure")
            (:effect-present-p nil "product-contract-failure" "pass"
             "model-selection" "unavailable" "product-contract-failure")
-           (:exact-partition-p nil "unavailable" "failure" "exact-partition"
-            "unavailable" "semantic-failure")
-           (:drop-only-p nil "product-contract-failure" "pass"
+           (:explicit-erasure-p nil "product-contract-failure" "pass"
             "model-selection" "unavailable" "product-contract-failure")
-           (:audit-linked-p nil "pass" "failure" "commit" "drop"
+           (:audit-linked-p nil "pass" "failure" "commit" "erase"
             "semantic-failure")
-           (:consumed-p nil "pass" "failure" "commit" "drop"
+           (:consumed-p nil "pass" "failure" "commit" "erase"
             "semantic-failure")
-           (:no-promotion-p nil "pass" "failure" "no-promotion" "drop"
+           (:no-promotion-p nil "pass" "failure" "no-promotion" "erase"
             "semantic-failure")
-           (:reopened-p nil "pass" "failure" "reopen" "drop"
+           (:erasure-persisted-p nil "pass" "failure" "erasure-persisted" "erase"
             "semantic-failure")
-           (:evicted-p nil "pass" "failure" "eviction" "drop"
+           (:receipt-suppressed-p nil "pass" "failure" "receipt-suppressed" "erase"
             "semantic-failure")
-           (:residue-free-p nil "pass" "failure" "residue" "drop"
+           (:details-preserved-p nil "pass" "failure" "details-preserved" "erase"
+            "semantic-failure")
+           (:reopened-p nil "pass" "failure" "reopen" "erase"
             "semantic-failure")))
       (let* ((arguments
               (plist-put (copy-sequence base) (nth 0 case) (nth 1 case)))
-             (result (apply #'e-live-e2e--classify-autonomous-drop arguments)))
+             (result (apply #'e-live-e2e--classify-autonomous-erase arguments)))
         (should (equal (plist-get result :adoption-result) (nth 2 case)))
         (should (equal (plist-get result :composition-result) (nth 3 case)))
         (should (equal (plist-get result :failure-stage) (nth 4 case)))
@@ -2254,7 +2262,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                        (nth 5 case)))
         (should (equal (plist-get result :result) (nth 6 case)))))
     (let ((unavailable
-           (apply #'e-live-e2e--classify-autonomous-drop
+           (apply #'e-live-e2e--classify-autonomous-erase
                   (plist-put (copy-sequence base)
                              :identity-result "unavailable"))))
       (should (equal (plist-get unavailable :adoption-result) "unavailable"))
@@ -2363,23 +2371,23 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                        '((:body-sha256 "body-2")))
       "2026-08-30T00:00:00Z"))))
 
-(ert-deftest e-live-e2e-test-autonomous-drop-evidence-freshness-and-reuse ()
-  "Drop evidence reuses only within seven days and equal material identity."
+(ert-deftest e-live-e2e-test-autonomous-erase-evidence-freshness-and-reuse ()
+  "Erase evidence reuses only within seven days and equal material identity."
   (let* ((base
-          '(:scenario "responses-autonomous-curation-drop"
+          '(:scenario "responses-autonomous-curation-erase"
             :provider-id "gateway" :profile-id "Responses"
             :base-url-identity "https://gateway.example"
             :endpoint-identity "https://gateway.example/responses"
             :transport "responses-http" :store-mode "json-false"
             :native-requester "e-openai-codex--http-request-start"
             :model-id "gpt-5.6-sol"
-            :material-request-shape ((:body-sha256 "drop-body-1"))
+            :material-request-shape ((:body-sha256 "erase-body-1"))
             :prompt-layout-revision "layout-1"
             :prompt-cache-key-derivation-revision "cache-1"
-            :scenario-prompt-identity "drop-prompt-1"
-            :affordance-revision "context-curate-v4"
+            :scenario-prompt-identity "erase-prompt-1"
+            :affordance-revision "context-curate-v5"
             :presentation-revision "context-curation-presentation-v2"
-            :adoption-dependency-identity "drop-cone-1"
+            :adoption-dependency-identity "erase-cone-1"
             :repository-revision "repo-1"
             :timestamp "2026-08-27T00:00:00Z"))
          (current (copy-sequence base)))
@@ -2387,7 +2395,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
      (e-live-e2e--adoption-evidence-reusable-p
       base current "2026-08-30T00:00:00Z"))
     ;; Repository provenance is retained but does not invalidate the material
-    ;; drop result by itself.
+    ;; erase result by itself.
     (should
      (e-live-e2e--adoption-evidence-reusable-p
       base (plist-put (copy-sequence current) :repository-revision "repo-2")
@@ -2395,7 +2403,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
     (should-not
      (e-live-e2e--adoption-evidence-reusable-p
       base (plist-put (copy-sequence current)
-                      :adoption-dependency-identity "drop-cone-2")
+                      :adoption-dependency-identity "erase-cone-2")
       "2026-08-30T00:00:00Z"))
     (should-not
      (e-live-e2e--adoption-evidence-reusable-p
@@ -2635,7 +2643,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
            :failure-stage "none"
            :adoption-disposition "summary"
            :scenario-prompt-identity "prompt-hash"
-           :affordance-revision "context-curate-v4"
+           :affordance-revision "context-curate-v5"
            :presentation-revision "context-curation-presentation-v2"
            :adoption-gates
            '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
@@ -2729,8 +2737,8 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
         (should-not (e-live-e2e--adoption-audit-linked-p
                      'store "session-1" record sink-events))))))
 
-(ert-deftest e-live-e2e-test-autonomous-drop-audit-links-filter-unrelated-events ()
-  "Drop audit linkage ignores other consumed frames but rejects duplicates."
+(ert-deftest e-live-e2e-test-autonomous-erase-audit-links-filter-unrelated-events ()
+  "Erase audit linkage ignores other consumed frames but rejects duplicates."
   (let* ((control
           '(:id "response-1" :turn-id "turn-2"
             :event-type context-curation-response
@@ -2752,10 +2760,10 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                (lambda (_store _session entry-id)
                  (and (equal entry-id "response-1")
                       (list :id entry-id)))))
-      (should (e-live-e2e--autonomous-drop-audit-links
+      (should (e-live-e2e--autonomous-erase-audit-links
                'store "session-1"))
       (setq events (append events (list (copy-tree matching))))
-      (should-not (e-live-e2e--autonomous-drop-audit-links
+      (should-not (e-live-e2e--autonomous-erase-audit-links
                    'store "session-1")))))
 
 (ert-deftest e-live-e2e-test-external-finalizer-preserves-adoption-partitions ()
@@ -2813,8 +2821,8 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                      "model-selection"))
       (should (equal (plist-get record :semantic-result) "pass")))))
 
-(ert-deftest e-live-e2e-test-external-finalizer-classifies-autonomous-drop-partitions ()
-  "The shared finalizer records autonomous-drop outcomes without content."
+(ert-deftest e-live-e2e-test-external-finalizer-classifies-autonomous-erase-partitions ()
+  "The shared finalizer records autonomous-erasure outcomes without content."
   (let* ((profile '(:name "Configured Responses"
                     :wire-api responses
                     :responses-transport http
@@ -2822,19 +2830,20 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                     :response-store :json-false))
          (body '(:model "gpt-5.6-sol" :store :json-false
                  :input [(:type "message" :role "user"
-                          :content "PRIVATE-DROP-SENTINEL")]))
+                          :content "PRIVATE-ERASE-SENTINEL")]))
          (metadata '((:url "https://gateway.example/v1/responses"
                       :transport url-retrieve)))
          (base-gates '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
                        :current-answer-p t :effect-present-p t
-                       :exact-partition-p t :drop-only-p t
+                       :explicit-erasure-p t
                        :audit-linked-p t :consumed-p t :no-promotion-p t
-                       :reopened-p t :evicted-p t :residue-free-p t))
+                       :erasure-persisted-p t :receipt-suppressed-p t
+                       :details-preserved-p t :reopened-p t))
          (cases
           (list
            (list :gates base-gates :bodies (list body)
                  :condition nil :result "pass" :adoption "pass"
-                 :composition "pass" :stage "none" :disposition "drop")
+                 :composition "pass" :stage "none" :disposition "erase")
            (list :gates (plist-put (copy-sequence base-gates)
                                    :effect-present-p nil)
                  :bodies (list body) :condition 'ert-test-failed
@@ -2860,7 +2869,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                      (lambda (record) (push record records))))
             (condition-case caught
                 (e-live-e2e--run-external-scenario
-                 :scenario 'responses-autonomous-curation-drop
+                 :scenario 'responses-autonomous-curation-erase
                  :provider 'configured-provider
                  :profile profile
                  :model "gpt-5.6-sol"
@@ -2871,15 +2880,15 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                    (list :request-bodies (plist-get case :bodies)
                          :request-metadata
                          (and (plist-get case :bodies) metadata)
-                         :drop-adoption-gates (plist-get case :gates)
-                         :adoption-disposition "drop"
+                         :erase-adoption-gates (plist-get case :gates)
+                         :adoption-disposition "erase"
                          :semantic-result "pass"
                          :cache-result "unavailable"))
                  :thunk
                  (lambda ()
                    (if (plist-get case :condition)
-                       (ert-fail "autonomous drop gate failed")
-                     :drop-pass)))
+                       (ert-fail "autonomous erase gate failed")
+                     :erase-pass)))
               (error (setq condition caught))))
           (should (= (length records) 1))
           (should (if (plist-get case :condition)
@@ -2889,7 +2898,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
           (let* ((record (car records))
                  (encoded (json-encode (e-live-e2e--json-plist record))))
             (should (equal (plist-get record :scenario)
-                           "responses-autonomous-curation-drop"))
+                           "responses-autonomous-curation-erase"))
             (should (equal (plist-get record :result)
                            (plist-get case :result)))
             (should (equal (plist-get record :adoption-result)
@@ -2901,7 +2910,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             (should (equal (plist-get record :adoption-disposition)
                            (plist-get case :disposition)))
             (should-not (string-match-p
-                         (regexp-quote "PRIVATE-DROP-SENTINEL") encoded))))))))
+                         (regexp-quote "PRIVATE-ERASE-SENTINEL") encoded))))))))
 
 (ert-deftest e-live-e2e-test-external-evidence-record-is-bounded-and-complete ()
   "The external record is machine-readable, identity-complete, and content-free."
@@ -4540,21 +4549,21 @@ provider turn to settle without an implicit local deadline."
   "A configured Responses model autonomously curates a future-turn tool result."
   (e-live-e2e--run-autonomous-curation-adoption))
 
-(defun e-live-e2e--run-autonomous-curation-drop ()
-  "Run the isolated naturalistic Responses drop-only scenario.
+(defun e-live-e2e--run-autonomous-curation-erase ()
+  "Run the isolated naturalistic Responses explicit-erasure scenario.
 The scenario makes one ordinary tool request, then verifies the curation-only
-response as an audit/consumption operation through persistence and bounded
-activity eviction.  Its evidence remains content-free; all source values and
- provider arguments stay local to the scenario gates."
+response as an audit/consumption operation through persistence and the
+receipt projection.  Its evidence remains content-free; all source values
+and provider arguments stay local to the scenario gates."
   (e-live-e2e--require-enabled)
   (let* ((provider-id e-openai-default-provider)
          (profile (e-openai-provider-profile provider-id)))
     (unless (eq (e-openai--provider-wire-api profile) 'responses)
       (ert-skip "The configured provider is not a Responses profile."))
     (let* ((tool-name "e2e_deterministic")
-           (raw-tool-output (format "LIVE-DROP-%s"
+           (raw-tool-output (format "LIVE-ERASE-%s"
                                    (e-live-e2e--nonce)))
-           (prompt (e-live-e2e--autonomous-drop-prompt tool-name))
+           (prompt (e-live-e2e--autonomous-erase-prompt tool-name))
            (prompt-identity (e-live-e2e--sha256 prompt))
            (affordance-revision
             (format "%s" e-context-lifetime-curation-schema-revision))
@@ -4573,6 +4582,8 @@ activity eviction.  Its evidence remains content-free; all source values and
                  request-bodies
                  request-handles
                  first-result
+                 tool-finished-before
+                 curation-preparation
                  curation-arguments
                  curation-source-count
                  (curation-preparation-count 0)
@@ -4590,9 +4601,9 @@ activity eviction.  Its evidence remains content-free; all source values and
                  (semantic-result "unavailable")
                  (cache-result "unavailable")
                  (scenario-result nil)
-                 drop-adoption-gates)
+                 erase-adoption-gates)
             (e-live-e2e--run-external-scenario
-             :scenario 'responses-autonomous-curation-drop
+             :scenario 'responses-autonomous-curation-erase
              :provider provider-id
              :profile profile
              :model e-openai-default-model
@@ -4633,7 +4644,7 @@ activity eviction.  Its evidence remains content-free; all source values and
                        :composition-result composition-result
                        :failure-stage failure-stage
                        :adoption-disposition adoption-disposition
-                       :drop-adoption-gates drop-adoption-gates
+                       :erase-adoption-gates erase-adoption-gates
                        :scenario-prompt-identity prompt-identity
                        :affordance-revision affordance-revision
                        :presentation-revision presentation-revision
@@ -4642,9 +4653,9 @@ activity eviction.  Its evidence remains content-free; all source values and
              (lambda ()
                (cl-labels
                    ((classify (gates)
-                      (setq drop-adoption-gates gates)
+                      (setq erase-adoption-gates gates)
                       (let ((classification
-                             (apply #'e-live-e2e--classify-autonomous-drop
+                             (apply #'e-live-e2e--classify-autonomous-erase
                                     (append (list :identity-result "pass")
                                             gates))))
                         (setq adoption-result
@@ -4671,14 +4682,15 @@ activity eviction.  Its evidence remains content-free; all source values and
                                    :carrier-p t
                                    :current-answer-p t
                                    :effect-present-p t
-                                   :exact-partition-p t
-                                   :drop-only-p t
+                                   :explicit-erasure-p t
                                    :audit-linked-p t
                                    :consumed-p t
                                    :no-promotion-p t
+                                   :erasure-persisted-p t
+                                   :receipt-suppressed-p t
+                                   :details-preserved-p t
                                    :reopened-p t
-                                   :evicted-p t
-                                   :residue-free-p t)))
+                                   )))
                         (plist-put
                          gates
                          (pcase stage
@@ -4686,26 +4698,28 @@ activity eviction.  Its evidence remains content-free; all source values and
                            ("prompt-control" :prompt-control-p)
                            ("carrier" :carrier-p)
                            ("current-answer" :current-answer-p)
-                           ("exact-partition" :exact-partition-p)
+                           ("model-selection" :explicit-erasure-p)
                            ("no-promotion" :no-promotion-p)
                            ("commit" :audit-linked-p)
+                           ("erasure-persisted" :erasure-persisted-p)
+                           ("receipt-suppressed" :receipt-suppressed-p)
+                           ("details-preserved" :details-preserved-p)
                            ("reopen" :reopened-p)
-                           ("eviction" :evicted-p)
-                           ("residue" :residue-free-p))
+                           )
                          nil)))
                     (fail (stage message)
                       (classify (gates-for-stage stage))
                       (ert-fail message))
-                    (model-selection-failure (effect-p exact-p drop-p message)
+                    (model-selection-failure (effect-p explicit-p message)
                       (classify
                        (list :ordinary-tool-p t :prompt-control-p t
                              :carrier-p t :current-answer-p t
                              :effect-present-p effect-p
-                             :exact-partition-p exact-p
-                             :drop-only-p drop-p
+                             :explicit-erasure-p explicit-p
                              :audit-linked-p t :consumed-p t
-                             :no-promotion-p t :reopened-p t
-                             :evicted-p t :residue-free-p t))
+                             :no-promotion-p t :erasure-persisted-p t
+                             :receipt-suppressed-p t :details-preserved-p t
+                             :reopened-p t))
                       (ert-fail message))
                     (require-gate (condition stage message)
                       (unless condition
@@ -4713,12 +4727,12 @@ activity eviction.  Its evidence remains content-free; all source values and
                  (require-gate
                   (null (e-live-e2e--adoption-prompt-violations prompt))
                   "prompt-control"
-                  "The naturalistic drop prompt contains reserved vocabulary.")
+                  "The naturalistic erase prompt contains reserved vocabulary.")
                  (require-gate
                   (and (string-match-p (regexp-quote tool-name) prompt)
                        (= (length (split-string prompt tool-name t)) 2))
                   "prompt-control"
-                  "The drop prompt did not name the ordinary tool exactly once.")
+                  "The erase prompt did not name the ordinary tool exactly once.")
                  (let ((original-prepare
                         (symbol-function
                          'e-context-lifetime-prepare-curation-disposition)))
@@ -4735,9 +4749,13 @@ activity eviction.  Its evidence remains content-free; all source values and
                                      (length
                                       (e-context-lifetime-frame-curation-sources
                                        frame bytes-per-token)))
-                               (funcall original-prepare
-                                         frame arguments response-entry-id
-                                         bytes-per-token))))
+                               (let ((prepared
+                                      (funcall original-prepare
+                                               frame arguments response-entry-id
+                                               bytes-per-token)))
+                                 (setq curation-preparation
+                                       (copy-tree prepared))
+                                 prepared))))
                          (e-live-e2e--with-responses-request-capture
                              profile request-bodies request-handles
                            (setq first-result
@@ -4746,14 +4764,15 @@ activity eviction.  Its evidence remains content-free; all source values and
                      (e-context-lifetime-invalid-record
                       ;; Convert the typed core failure into classified ERT
                       ;; evidence while preserving its details in the message.
-                      (classify
+                     (classify
                        '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
                          :current-answer-p t :effect-present-p t
-                         :exact-partition-p nil :drop-only-p nil
+                         :explicit-erasure-p nil
                          :audit-linked-p t :consumed-p t :no-promotion-p t
-                         :reopened-p t :evicted-p t :residue-free-p t))
+                         :erasure-persisted-p t :receipt-suppressed-p t
+                         :details-preserved-p t :reopened-p t))
                       (ert-fail
-                       (format "Invalid curation partition: %S" caught)))
+                       (format "Invalid curation disposition: %S" caught)))
                      (error (signal (car caught) (cdr caught)))))
                  (let ((tool-starts
                         (e-live-e2e--activity-of-type
@@ -4768,6 +4787,7 @@ activity eviction.  Its evidence remains content-free; all source values and
                    (require-gate (= (length tool-finishes) 1)
                                  "ordinary-tool"
                                  "The ordinary deterministic tool did not finish once.")
+                   (setq tool-finished-before (car tool-finishes))
                    (require-gate
                     (equal (string-trim assistant)
                            (concat (reverse raw-tool-output)))
@@ -4799,20 +4819,17 @@ activity eviction.  Its evidence remains content-free; all source values and
                                  "The source continuation lacked the strict carrier or reasoning auto."))
                  (let* ((effect-present-p
                          (= curation-preparation-count 1))
-                        (normalized
+                        (explicit-erasure-p
                          (and effect-present-p
-                              (condition-case nil
-                                  (e-context-lifetime-normalize-curation-disposition
-                                   curation-arguments curation-source-count)
-                                (error nil))))
-                        (exact-partition-p (and normalized t))
-                        (drop-only-p
-                         (and normalized
-                              (null (plist-get normalized :keep))
-                              (null (plist-get normalized :summaries)))))
+                              (e-live-e2e--adoption-erase-effect-valid-p
+                               curation-arguments curation-source-count))))
                    (unless effect-present-p
-                     (model-selection-failure nil exact-partition-p drop-only-p
-                                              "The model did not select one curation effect."))
+                     (model-selection-failure
+                      nil nil "The model did not select one curation effect."))
+                   (unless explicit-erasure-p
+                     (model-selection-failure
+                      t nil
+                      "The selected effect was not one explicit erase of a single source."))
                    (setq ack-index
                          (cl-loop for body in
                                   (nthcdr (1+ source-bearing-index)
@@ -4847,117 +4864,159 @@ activity eviction.  Its evidence remains content-free; all source values and
                               1))
                                    "carrier"
                                    "The curation effect/ack was not one bounded causal stage."))
-                   (unless exact-partition-p
-                     (fail "exact-partition"
-                           "The curation effect did not exhaustively drop its presented sources."))
-                   (unless drop-only-p
-                     (model-selection-failure t exact-partition-p nil
-                                              "The selected disposition retained a source."))
                    (let* ((store (e-harness-sessions harness))
                           (links
-                           (e-live-e2e--autonomous-drop-audit-links
-                            store session-id)))
+                           (e-live-e2e--autonomous-erase-audit-links
+                            store session-id))
+                          (tool-finished
+                           (car (e-live-e2e--activity-of-type
+                                 harness session-id 'tool-finished)))
+                          (receipt
+                           (and tool-finished
+                                (plist-get (plist-get tool-finished :payload)
+                                           :receipt)))
+                          (tool-call-id
+                           (and receipt (plist-get receipt :tool-call-id)))
+                          (details-uri
+                           (and receipt (plist-get receipt :details-uri)))
+                          (erasure-record
+                          (plist-get curation-preparation :erasure-record))
+                          (package
+                           (plist-get curation-preparation :package))
+                          (actual-erasures
+                           (e-session-context-erasures store session-id))
+                          (actual-erasure (car actual-erasures))
+                          (package-entry
+                           (seq-find
+                            (lambda (entry)
+                              (eq (plist-get entry :type)
+                                  'context-curation-package))
+                            (e-session-current-path store session-id)))
+                          (erased-tool-call-ids
+                           (e-session-erased-tool-call-ids store session-id))
+                          (tool-finishes-after
+                           (e-live-e2e--activity-of-type
+                            harness session-id 'tool-finished))
+                          (receipt-projection
+                           (e-harness-base-receipt-projection
+                            harness session-id
+                            :erased-tool-call-ids erased-tool-call-ids)))
                      (setq response-entry-id
                            (plist-get links :response-entry-id))
                      (require-gate (and links (plist-get links :control-p))
                                    "commit"
-                                   "The drop response control was not linked exactly once.")
+                                   "The erase response control was not linked exactly once.")
                      (require-gate (and links (plist-get links :consumed-p))
                                    "commit"
-                                   "The drop response did not consume its live frame." )
-                     (let ((printed
-                            (prin1-to-string
-                             (e-session-context-lifetime-projection
-                              store session-id))))
-                       (require-gate
-                        (and (null (e-session-context-curations store session-id))
-                             (null (e-session-context-promotions store session-id)))
-                        "no-promotion"
-                        "Drop-only curation left a promotion record.")
-                       (require-gate
-                        (not (string-match-p
-                              (regexp-quote raw-tool-output) printed))
-                        "residue"
-                        "Drop-only curation left a raw source residue."))
+                                   "The erase response did not consume its live frame.")
+                     (require-gate
+                      (and curation-preparation
+                           erasure-record
+                           package
+                           (null (plist-get package :promotion))
+                           (equal (plist-get package :erasure)
+                                  erasure-record)
+                           (null (plist-get curation-preparation :record))
+                           package-entry
+                           (null (plist-get package-entry :promotion))
+                           (null (e-session-context-promotions store session-id))
+                           (null (e-session-context-curations store session-id)))
+                      "no-promotion"
+                      "Erase-only curation persisted a promotion component.")
+                     (require-gate
+                      (and (stringp tool-call-id)
+                           (= (length actual-erasures) 1)
+                           (equal actual-erasure erasure-record)
+                           (equal (plist-get erasure-record
+                                             :response-entry-id)
+                                  response-entry-id)
+                           (equal
+                            (e-context-lifetime-curation-erasure-tool-call-ids
+                             erasure-record)
+                            (list tool-call-id))
+                           (equal erased-tool-call-ids (list tool-call-id))
+                           (= (length tool-finishes-after) 1)
+                           (equal (car tool-finishes-after)
+                                  tool-finished-before))
+                      "erasure-persisted"
+                      "The selected path did not expose one durable tool erasure.")
+                     (require-gate
+                      (and (null (plist-get receipt-projection :receipts))
+                           (= (plist-get receipt-projection :selected-count) 0)
+                           (= (plist-get receipt-projection :total-count) 0)
+                           (= (plist-get receipt-projection :omitted-count) 0)
+                           (null (plist-get receipt-projection :messages)))
+                      "receipt-suppressed"
+                      "The erased receipt or an aggregate mark remained projected.")
+                     (require-gate
+                      (and (listp receipt)
+                           (stringp details-uri)
+                           (e-session-tmp-reference-available-p
+                            harness session-id details-uri))
+                      "details-preserved"
+                      "Erasure changed durable activity or temporary details.")
                      (e-session-flush-write-queue store)
-                     (let* ((reopened
+                            (let* ((reopened
                              (e-session-persistent-store-create
                               (e-session-store-directory store)))
                             (reopened-links
-                             (e-live-e2e--autonomous-drop-audit-links
+                             (e-live-e2e--autonomous-erase-audit-links
                               reopened session-id))
-                            (reopened-printed
-                             (prin1-to-string
-                              (e-session-context-lifetime-projection
-                               reopened session-id))))
+                            (reopened-erasures
+                             (e-session-context-erasures reopened session-id))
+                            (reopened-erasure (car reopened-erasures))
+                            (reopened-receipt-event
+                             (seq-find
+                              (lambda (event)
+                                (let ((candidate
+                                       (plist-get
+                                        (plist-get event :payload) :receipt)))
+                                  (and (eq (plist-get event :event-type)
+                                           'tool-finished)
+                                       (equal (plist-get candidate :tool-call-id)
+                                              tool-call-id))))
+                              (e-session-activity-events reopened session-id))))
                        (require-gate
                         (and reopened-links
-                             (equal (plist-get reopened-links
-                                               :response-entry-id)
+                             (equal (plist-get reopened-links :response-entry-id)
                                     response-entry-id)
+                             (= (length (e-session-context-erasures
+                                         reopened session-id))
+                                1)
+                             (equal (e-session-erased-tool-call-ids
+                                     reopened session-id)
+                                    (list tool-call-id))
+                             (= (length reopened-erasures) 1)
+                             (equal reopened-erasure erasure-record)
                              (null (e-session-context-curations
                                     reopened session-id))
                              (null (e-session-context-promotions
                                     reopened session-id))
-                             (not (string-match-p
-                                   (regexp-quote raw-tool-output)
-                                   reopened-printed)))
+                             reopened-receipt-event
+                             (equal
+                              (plist-get
+                               (plist-get
+                                (plist-get reopened-receipt-event :payload)
+                                :receipt)
+                               :receipt)
+                              (plist-get (plist-get tool-finished-before
+                                                    :payload)
+                                         :receipt))
+                             (e-session-tmp-reference-available-p
+                              harness session-id details-uri))
                         "reopen"
-                        "The drop-only audit or source residue did not survive reopen correctly."))
-                     (dotimes (index 65)
-                       (e-session-append-activity-event
-                        store session-id (or (plist-get first-result :id)
-                                            "turn-drop-tail")
-                        'tool-progress (list :index index)))
-                     (e-session-flush-write-queue store)
-                     (e-session--write-session-checkpoint-now store session-id)
-                     (let* ((evicted
-                             (e-session-persistent-store-create
-                              (e-session-store-directory store)))
-                            (activity (e-session-activity-events
-                                       evicted session-id))
-                            (entry-missing-p
-                             (condition-case nil
-                                 (null (e-session-entry-by-id
-                                        evicted session-id response-entry-id))
-                               (error t)))
-                            (projection-printed
-                             (prin1-to-string
-                              (e-session-context-lifetime-projection
-                               evicted session-id))))
-                       (require-gate
-                        (and (not (seq-some
-                                   (lambda (event)
-                                     (memq (plist-get event :event-type)
-                                           '(context-curation-response
-                                             context-frame-consumed)))
-                                   activity))
-                             entry-missing-p)
-                        "eviction"
-                        "Drop audit activity was not evicted from the bounded tail.")
-                       (let ((residue-free-p
-                              (and (null (e-session-context-curations
-                                          evicted session-id))
-                                   (null (e-session-context-promotions
-                                          evicted session-id))
-                                   (not (string-match-p
-                                         (regexp-quote raw-tool-output)
-                                         projection-printed))
-                                (not (string-match-p
-                                         "context-drop\\|curation-drop"
-                                         projection-printed)))))
-                         (classify
-                          (list :ordinary-tool-p t :prompt-control-p t
-                                :carrier-p t :current-answer-p t
-                                :effect-present-p t
-                                :exact-partition-p t :drop-only-p t
-                                :audit-linked-p t :consumed-p t
-                                :no-promotion-p t :reopened-p t
-                                :evicted-p t :residue-free-p residue-free-p)))))))))))))))
+                        "Erasure authority or preserved storage failed reopen."))
+                     (classify
+                      '(:ordinary-tool-p t :prompt-control-p t :carrier-p t
+                        :current-answer-p t :effect-present-p t
+                        :explicit-erasure-p t :audit-linked-p t :consumed-p t
+                        :no-promotion-p t :erasure-persisted-p t
+                        :receipt-suppressed-p t :details-preserved-p t
+                        :reopened-p t)))))))))))))
 
-(ert-deftest e-live-e2e-test-responses-autonomous-curation-drop ()
-  "A configured Responses model autonomously drops a current-turn source."
-  (e-live-e2e--run-autonomous-curation-drop))
+(ert-deftest e-live-e2e-test-responses-autonomous-curation-erase ()
+  "A configured Responses model autonomously erases a current-turn source."
+  (e-live-e2e--run-autonomous-curation-erase))
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-runner-keeps-cleanup-outside-call ()
   "The adoption runner passes only its declared keywords before cleanup."
@@ -5007,8 +5066,8 @@ activity eviction.  Its evidence remains content-free; all source values and
       (should (functionp (plist-get received :cancel)))
       (should-not request-attempted))))
 
-(ert-deftest e-live-e2e-test-autonomous-drop-runner-keeps-cleanup-outside-call ()
-  "The drop runner passes only its declared keywords before cleanup."
+(ert-deftest e-live-e2e-test-autonomous-erase-runner-keeps-cleanup-outside-call ()
+  "The erase runner passes only its declared keywords before cleanup."
   (let (received request-attempted)
     (cl-letf (((symbol-function 'e-live-e2e--require-enabled)
                (lambda () t))
@@ -5033,7 +5092,7 @@ activity eviction.  Its evidence remains content-free; all source values and
               ((symbol-function 'e-harness--remove-activity-sink)
                (lambda (&rest _) nil))
               ((symbol-function 'make-temp-file)
-               (lambda (&rest _) "/private/tmp/e-drop-runner-test"))
+               (lambda (&rest _) "/private/tmp/e-erase-runner-test"))
               ((symbol-function 'delete-directory)
                (lambda (&rest _) nil))
               ((symbol-function 'e-live-e2e--run-external-scenario)
@@ -5047,7 +5106,7 @@ activity eviction.  Its evidence remains content-free; all source values and
               ((symbol-function 'e-live-e2e--report-external-evidence)
                (lambda (&rest _) nil)))
       (let ((e-openai-default-provider 'test-provider))
-        (e-live-e2e--run-autonomous-curation-drop))
+        (e-live-e2e--run-autonomous-curation-erase))
       (should (equal
                (cl-loop for (key _value) on received by #'cddr collect key)
                '(:scenario :provider :profile :model :timeout :started-at
@@ -5453,7 +5512,7 @@ continuation and socket assertions used by the compatibility selector."
                         (let ((tool-result
                                (e-live-e2e--prompt-batch-before-deadline
                                 harness session-id
-                                "Call e2e_deterministic exactly once. After its result arrives, call the reserved context-curate carrier exactly once. For context-curate, send keep as an empty array and exactly one summary object: its sources array must contain only the one numeric source label whose displayed exact value is the result returned by e2e_deterministic, and its text must be exactly LIVE-CURATED-FACT; send drop containing every other displayed source label exactly once. Do not put that label in keep, do not add another summary, and do not call any other tool. Then reply with exactly LIVE-R2-READY and no other text."
+                                "Call e2e_deterministic exactly once. After its result arrives, call the reserved context-curate carrier exactly once. For context-curate, send exactly one summary object: its sources array must contain only the one numeric source label whose displayed exact value is the result returned by e2e_deterministic, and its text must be exactly LIVE-CURATED-FACT. Omit keep and erase, omit every other displayed source label, do not add another summary, and do not call any other tool. Then reply with exactly LIVE-R2-READY and no other text."
                                 deadline)))
                           (setq tool-turn-id (plist-get tool-result :id))
                           (setq curation-record
