@@ -4,7 +4,7 @@
 
 * Status
 
-Ready.
+In-progress.
 
 This feature is the current implementation gate.  It must reach =Done= before
 implementation or review remediation continues in any other feature.  Planning
@@ -24,6 +24,119 @@ layers package capabilities, backend adapters own provider behavior, and shells
 own presentation.  Improve the physical decomposition and the interfaces
 between those owners rather than introducing a new framework or changing
 product behavior.
+
+* Implementation package
+
+** Current baseline
+
+Implementation starts from =b2c3f3f691b5cd97fdb208b4973f185ebd005e24=.
+This supersedes the older sizing baseline for preservation and topology
+evidence: Feature 66's restored participant-routing work is accepted behavior
+that this feature must preserve.
+
+At this baseline production Lisp contains 86,133 lines across 128 files and
+test Lisp contains 83,372 lines across 124 files.  The principal roots are
+=e-chat.el= (10,921 lines), =e-session.el= (5,595), =e-harness.el= (4,811),
+=e-openai.el= (4,072), =e-board.el= (3,536), and =e-board-runtime.el= (2,738).
+Cross-owner production code still references 57 distinct =e-chat--*= symbols,
+16 distinct =e-harness--*= symbols, and 10 distinct =e-session--*= symbols.
+These counts locate the responsibility analysis; the contract below is based
+on ownership and dependency evidence rather than size alone.
+
+** Behavioral goal record
+
+- Goal ID: =F91-GOAL=.
+- Behavioral goal: a maintainer or coding agent can change one established
+  semantic owner through a bounded module and owner-level tests without
+  loading unrelated responsibilities or depending on another owner's private
+  state.
+- Direct scenario: starting from a fresh batch Emacs, load an existing public
+  facade, exercise one representative public composition for the changed
+  owner, and observe the same command behavior, event ordering, request or
+  durable-record shape, and error contract as the baseline while forbidden
+  cross-owner private dependencies remain absent.
+- Product authority: this feature plan and the operator-approved project
+  architecture guidance.
+- Owning contract: =F91-OWNER=.
+- Behavioral status: partial; the public behavior passes today, but the
+  bounded-owner and private-dependency parts do not.
+
+** Contract and evidence matrix
+
+| Contract ID | Observable or owner-level invariant | Semantic owner | Lifetime, recovery, or bound | Implementation round | Named scenario | Evidence class | Status |
+|-------------+-------------------------------------+----------------+------------------------------+----------------------+----------------+----------------+--------|
+| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Pending |
+| =F91-PRESENTATION= | Chat and Org Canvas preserve public interaction while surface, composer, transcript, activity, and overview code and buffer-local state have explicit owners; external consumers use no chat-private symbols. | Chat presentation family | Buffer-local presentation state; reloadable shell modules. | 1 | =F91-S-PRESENTATION= | Deterministic repository and isolated graphical | Pending |
+| =F91-SESSION= | Session aggregate operations preserve current durable records and restart behavior while codec/replay, checkpoint/catalog policy, and JSONL I/O are separate owner-shaped modules. | Session aggregate and current storage adapter | Existing durable lifetime and recovery; no migration or new format. | 2 | =F91-S-RESTART= | Deterministic repository | Pending |
+| =F91-RUNTIME= | Board attachment and ordinary turns preserve admission, ordering, settlement, abort, and activity behavior through public attached-turn and harness-owner boundaries, without private callback mutation. | Harness application services and board runtime | Process-local turn/queue/activity state; existing durable session and board effects. | 3 | =F91-S-ATTACHED-TURN= | Deterministic repository | Pending |
+| =F91-OPENAI= | Existing profiles, auth, wire mappings, transports, decoding, diagnostics, and compaction compose behind the unchanged OpenAI facade without cross-variant branches. | OpenAI backend adapter | Request/stream lifetime, cancellation, retry, and effective provider identity unchanged. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
+| =F91-MCP= | Helper-process and HTTP transports satisfy the same supported MCP client contract, while capability/tool/resource/context composition is transport-independent. | MCP client and capability composition | Existing connection/process lifetime and error behavior. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
+| =F91-BASE= | File/resource behavior and bash process/collector behavior compose into the unchanged base capability without sharing an accidental implementation owner. | Base capability components | Existing buffer/file coherence and process/collector lifetimes. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
+| =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Pending |
+| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Pending |
+
+** Scenario portfolio
+
+- =F91-S-FRESH-OWNER=: fresh-load each facade, exercise an owner-level public
+  operation and its realistic composition, and search for forbidden private or
+  reversed dependency edges.  It localizes a failure to load topology, owner
+  behavior, or composition.
+- =F91-S-PRESENTATION=: focused chat and Org Canvas ERT plus isolated graphical
+  composer, transcript, activity, window, focus, and replay transitions.
+- =F91-S-RESTART=: append and replay representative chat, board, context, and
+  metadata records through the public session API, restart, and compare the
+  recovered aggregate and current durable files with the baseline contracts.
+- =F91-S-ATTACHED-TURN=: run ordinary and board-attached submit, steer, queue,
+  abort, activity, and settlement partitions through public services.
+- =F91-S-ADAPTERS=: compare existing OpenAI request/stream fixtures, both MCP
+  transports, and base file/bash public tools before and after decomposition.
+- =F91-S-RESIDUAL=: independently inventory every affected root and test root,
+  challenge each retained material cluster with its smallest plausible complete
+  private boundary, and verify the resulting dependency graph.
+
+All required acceptance evidence is repository-controlled.  Live provider
+capability evidence is not applicable because this package changes no provider
+contract.  Load time and relevant hot-path measurements are observational
+unless they reveal an actual regression against the baseline comparison.
+
+** Large implementation rounds
+
+The persistent implementer receives five owner-level rounds.  Internal moves
+within a round are not separate acceptance cycles unless they expose a new
+architectural decision on which later work depends.
+
+1. Presentation family: chat facade and five components, Org Canvas and other
+   consumers, owner tests, and graphical composition.
+2. Session family: aggregate, codec/replay, checkpoint/catalog, current JSONL
+   adapter, consumers, restart tests, and the Feature 87-facing boundary.
+3. Runtime-control family: attached-turn port plus harness capability,
+   activity, queue, context-runtime, and turn-orchestration owners and tests.
+4. Adapter/capability family: OpenAI, MCP, and base file/bash owners and tests.
+5. Residual topology and architecture evidence: every affected and explicitly
+   retained root, dependency and private-symbol sweeps, performance comparison,
+   repository architecture documentation, and final package gates.
+
+The order makes the session boundary stable before harness extraction and lets
+the harness facade depend on that accepted lower-level contract.  Provider and
+capability decomposition follows because it must preserve the accepted harness
+and session composition, but does not define either owner.
+
+** Initial residual-topology inventory
+
+The implementer must refine this inventory before moving code and report every
+cluster's final disposition.  =Unknown= is deliberate at package start.
+
+| Root | Material responsibility clusters | Initial disposition |
+|------|----------------------------------|---------------------|
+| =e-chat.el= and =e-chat-test.el= | surface, composer/context editing, transcript/blocks/replay, activity, overview, facade composition | Unknown |
+| =e-org-canvas.el= and its tests | canvas/session commands, transient input, result/transcript presentation, chat component adaptation | Unknown |
+| =e-session.el= and =e-session-test.el= | aggregate/identity, typed mutation/query, record codec/replay, checkpoint/catalog, JSONL/index I/O, concrete metadata vocabulary | Unknown |
+| =e-harness.el= and =e-harness-test.el= | capability derivation, activity, active turn/queue, context/compaction/anchors, top-level turn orchestration, facade composition | Unknown |
+| =e-board-runtime.el= | board orchestration and the harness attached-turn adaptation | Unknown |
+| =e-openai.el= and =e-openai-test.el= | profiles/auth, two wire mappings, HTTP/WebSocket, decoding, diagnostics, compaction, facade composition | Unknown |
+| =e-mcp.el= and =e-mcp-test.el= | client semantics, helper transport, HTTP transport, catalog/tools/resources/context, capability composition | Unknown |
+| =e-base-tools.el= and =e-base-tools-test.el= | file/resource/coherence/search and bash process/stream collector | Unknown |
+| =e-board.el=, =e-context-lifetime.el=, =e-loop.el=, =e-tools.el=, and =e-work.el= | their currently cohesive domain/state-machine responsibilities and any plausible observer, lifecycle, routing, or dispatch subowner | Unknown |
 
 * Blocking prerequisite
 
