@@ -15,6 +15,10 @@
 
 (require 'cl-lib)
 
+(declare-function e-chat-surface-transcript-buffer "e-chat-surface")
+(declare-function e-chat-surface-status "e-chat-surface")
+(declare-function e-chat-activity-progress-turn-id "e-chat-activity")
+
 (define-error 'e-dev-live-probe-unsupported
   "Unsupported e live probe")
 
@@ -172,9 +176,8 @@ DEPTH limits nesting, SEEN prevents cycles, and BUDGET bounds total work."
 (defun e-dev-live-probe--chat ()
   "Return bounded presentation-owned state for the selected chat surface."
   (let* ((selected (e-dev-live-probe--selected-buffer))
-         (candidate
-          (e-dev-live-probe--buffer-local-value
-           'e-chat--surface-transcript-buffer selected))
+         (candidate (and (buffer-live-p selected)
+                         (e-chat-surface-transcript-buffer selected)))
          (transcript (if (buffer-live-p candidate) candidate selected)))
     (list :selected-buffer
           (and (buffer-live-p selected) (buffer-name selected))
@@ -185,12 +188,13 @@ DEPTH limits nesting, SEEN prevents cycles, and BUDGET bounds total work."
                (buffer-local-value 'major-mode transcript))
           :session-id
           (e-dev-live-probe--buffer-local-value
-           'e-chat-session-id transcript)
+          'e-chat-session-id transcript)
           :status
-          (e-dev-live-probe--buffer-local-value 'e-chat--status transcript)
+          (and (buffer-live-p transcript)
+               (e-chat-surface-status transcript))
           :progress-turn-id
-          (e-dev-live-probe--buffer-local-value
-           'e-chat--progress-turn-id transcript)
+          (and (buffer-live-p transcript)
+               (e-chat-activity-progress-turn-id transcript))
           :has-harness
           (not (null
                 (e-dev-live-probe--buffer-local-value

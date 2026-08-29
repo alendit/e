@@ -184,9 +184,7 @@
           (progn
             (e-chat-starter-mode)
             (setq-local e-chat-starter--state state)
-            (cl-letf (((symbol-function 'e-chat--apply-markdown-mode-properties)
-                       (lambda (_start _end) nil)))
-              (e-chat-starter--render))
+            (e-chat-starter--render)
             (goto-char (point-min))
             (search-forward "docs/feats/14-canvas-shell/review.org")
             (let ((faces (ensure-list
@@ -277,7 +275,7 @@ its final value only when the turn settled."
                  :status 'running
                  :buffer buffer)))
     (unwind-protect
-        (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+        (cl-letf (((symbol-function 'float-time)
                    (lambda () now)))
           (with-current-buffer buffer
             (e-chat-starter-mode)

@@ -14,6 +14,8 @@
 (require 'cl-lib)
 (require 'ert)
 (require 'e-dev-probe)
+(require 'e-chat-surface)
+(require 'e-chat-activity)
 
 (ert-deftest e-dev-probe-test-ping-is-fixed-and-scalar ()
   "The ping probe returns one fixed bounded result."
@@ -48,8 +50,8 @@
         (save-window-excursion
           (with-current-buffer buffer
             (setq-local e-chat-session-id "session-1")
-            (setq-local e-chat--status "waiting")
-            (setq-local e-chat--progress-turn-id "turn-1")
+            (e-chat-surface-set-status "waiting")
+            (e-chat-activity-start-progress "turn-1")
             (setq-local e-chat-harness harness))
           (switch-to-buffer buffer)
           (let* ((result (e-dev-live-probe 'chat))
@@ -60,6 +62,9 @@
             (should (equal (plist-get projection :progress-turn-id) "turn-1"))
             (should (eq (plist-get projection :has-harness) t))
             (should-not (memq harness projection))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (e-chat-activity-stop-progress)))
       (kill-buffer buffer))))
 
 (ert-deftest e-dev-probe-test-windows-obeys-hard-limit ()

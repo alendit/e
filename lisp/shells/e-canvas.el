@@ -58,7 +58,7 @@ open/resume/recovery semantics."
 
 (defun e-canvas--default-harness ()
   "Return the default chat harness used by canvas commands."
-  (e-chat--default-harness))
+  (e-chat-default-harness))
 
 (defun e-canvas--buffer-uri (&optional buffer)
   "Return a resource URI for BUFFER or the current buffer."
@@ -168,7 +168,7 @@ canvas sessions share one chat pane."
     (let ((window (next-window)))
       (set-window-buffer window chat-buffer)
       (select-window window)))
-  (e-chat--after-display-buffer chat-buffer)
+  (e-chat-after-display-buffer chat-buffer)
   chat-buffer)
 
 (defun e-canvas--identity-prepare-buffer (_buffer _options)
@@ -276,7 +276,7 @@ OPTIONS are kind-owned creation options and DISPLAY controls presentation."
     (kind harness buffer options display)
   "Create and open KIND's Canvas session in HARNESS for BUFFER.
 OPTIONS belong to KIND, and DISPLAY controls presentation."
-  (let* ((session (e-chat--create-session harness))
+  (let* ((session (e-chat-create-session :harness harness))
          (session-id (plist-get session :id))
          (attachment
           (funcall (e-canvas-kind-attachment-function kind) buffer)))
@@ -374,7 +374,7 @@ chat buffer in a side pane."
 
 (defun e-canvas--session-choice-label (session)
   "Return completion label for SESSION metadata."
-  (e-chat--session-choice-label session))
+  (e-chat-session-choice-label session))
 
 (defun e-canvas--read-session (harness prompt)
   "Read a HARNESS session id or a new-session choice with PROMPT."
@@ -397,9 +397,9 @@ chat buffer in a side pane."
    ((e-chat-service-root-session-list harness)
     (or (e-canvas--read-session harness
                                 "Attach canvas context to e session: ")
-        (plist-get (e-chat--create-session harness) :id)))
+        (plist-get (e-chat-create-session :harness harness) :id)))
    (t
-    (plist-get (e-chat--create-session harness) :id))))
+    (plist-get (e-chat-create-session :harness harness) :id))))
 
 (defun e-canvas--attach (harness session-id attachment &optional canvas)
   "Attach ATTACHMENT to HARNESS SESSION-ID and optionally mark it CANVAS."

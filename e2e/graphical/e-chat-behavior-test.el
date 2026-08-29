@@ -168,7 +168,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
     (let ((inhibit-read-only t))
       (goto-char (point-max))
       (dotimes (index lines)
-        (e-chat--insert-protected
+        (e-chat-transcript-insert-protected
          (format "history %04d: rendered transcript property boundary\n" index)
          (if (cl-evenp index)
              'e-chat-assistant-face
@@ -213,10 +213,10 @@ Return a plist containing its stream, harness, transcript, and visible windows."
       (error
        (ert-fail
         (with-current-buffer transcript
-          (format "%s\nbackend failure: %S\nchat status: %S\nactive turn: %S\nharness events: %S\nboard messages: %S\nattachment current: %S\nsubscription: %S\nruntime activity queue: %S\nruntime deferred hooks: %S\npending UI jobs: %S\ntranscript:\n%s"
+                  (format "%s\nbackend failure: %S\nchat status: %S\nactive turn: %S\nharness events: %S\nboard messages: %S\nattachment current: %S\nsubscription: facade-managed\nruntime activity queue: %S\nruntime deferred hooks: %S\npending UI jobs: %S\ntranscript:\n%s"
                   (error-message-string err)
                   (e-graphical-test-stream-failure stream)
-                  e-chat--status
+                  (e-chat-surface-status)
                   (let ((turn
                          (gethash
                           (plist-get fixture :session-id)
@@ -251,16 +251,6 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                           (plist-get fixture :session-id))))
                     (e-board-runtime--current-attachment-p
                      (e-chat-service-binding-attachment binding)))
-                  (let ((subscription e-chat--event-subscription))
-                    (and subscription
-                         (list
-                          :active
-                          (e-chat-service-subscription-active-p subscription)
-                          :state
-                          (e-chat-service-subscription-state subscription)
-                          :drain-scheduled
-                          (e-chat-service-subscription-drain-scheduled
-                           subscription))))
                   (and (boundp 'e-board-runtime--pending-activity-head)
                        e-board-runtime--pending-activity-head)
                   (and (boundp 'e-board-runtime--deferred-hook-head)
@@ -288,7 +278,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                 (plist-get fixture :stream)))
           (with-current-buffer (plist-get fixture :transcript)
             (and (string-match-p (regexp-quote answer) (buffer-string))
-                 (equal e-chat--status "done")
+                 (equal (e-chat-surface-status) "done")
                  (null (e-ui-work-pending (current-buffer)))
                  (e-chat-behavior-test--surface-windows
                   (current-buffer))))))
@@ -324,14 +314,15 @@ than the invisible insertion position."
                         (tail-y (e-graphical-test-tail-y window (1+ tail)))
                         (body-pixels (window-body-height window t))
                         (line-pixels (frame-char-height))
-                        (spacer
-                         (cl-find-if
-                          (lambda (overlay)
-                            (eq (overlay-get
-                                 overlay
-                                 e-chat--output-bottom-spacer-property)
-                                window))
-                          (e-chat--output-bottom-spacer-overlays))))
+                         (spacer
+                          (cl-find-if
+                           (lambda (overlay)
+                             (eq (overlay-get overlay 'window) window))
+                           (delete-dups
+                            (append (overlays-at (point-min))
+                                    (overlays-in (point-min)
+                                                 (min (point-max)
+                                                      (1+ (point-min)))))))))
                    (setq snapshot
                          (list
                           :tail-y tail-y
@@ -346,9 +337,9 @@ than the invisible insertion position."
                           :start (window-start window)
                           :end (window-end window t)
                           :point (window-point window)
-                          :follow (e-chat--window-follows-output-p window)
-                          :output (e-chat--output-follow-position)
-                          :bounds (e-chat--running-status-bounds)))
+                          :follow (e-chat-surface-window-follows-output-p window)
+                          :output (e-chat-surface-output-follow-position)
+                          :bounds (e-chat-surface-running-status-bounds)))
                    (and (eq (window-buffer window) transcript)
                         (pos-visible-in-window-p tail window t)
                         (integerp tail-y)
@@ -565,7 +556,9 @@ than the invisible insertion position."
                  (fresh
                   (e-harness-create
                    :backend fresh-backend
-                   :sessions (e-harness-sessions retained))))
+                   :sessions (e-harness-sessions retained)
+                   :default-options
+                   '(:model "gpt-5.6-sol" :reasoning-effort "high"))))
             (e-harness-activate-capability
              fresh (e-chat-session-capability-create))
             (e-harness-registry-register-factory :chat-test (lambda () fresh))
@@ -579,17 +572,23 @@ than the invisible insertion position."
             (let ((transcript (plist-get fixture :transcript))
                   (composer
                    (window-buffer (plist-get fixture :composer-window))))
-              (should (eq (buffer-local-value
-                           'e-chat--surface-transcript-buffer composer)
+              (should (eq (e-chat-surface-transcript-buffer composer)
                           transcript))
               (with-current-buffer transcript
-                (setq-local e-chat--mode-line-status
-                            "e-chat gpt-5.6-sol/high 18% (64k/353k tok)")
-                (setq-local mode-name
-                            '(:eval (format-mode-line mode-name))))
+                (e-session-append-activity-event
+                 (e-harness-sessions retained)
+                 e-chat-session-id
+                 "reload-status-turn"
+                 'token-usage
+                 '(:input-tokens 64000
+                   :cached-input-tokens 0
+                   :output-tokens 0
+                   :reasoning-output-tokens 0
+                   :total-tokens 64000))
+                (e-chat-surface-refresh-mode-line-status t))
               (with-current-buffer composer
                 (should
-                 (equal (e-chat--surface-composer-mode-name)
+                 (equal (format-mode-line mode-name)
                         "e-chat gpt-5.6-sol/high 18 pct (64k/353k tok)"))))
             (should (eq (selected-window)
                         (plist-get fixture :composer-window)))
@@ -621,9 +620,9 @@ than the invisible insertion position."
                    "\n")))
             (with-current-buffer transcript
               (let ((inhibit-read-only t))
-                (e-chat--clear t)
-                (e-chat--render-session-loading (list :summary summary)))
-              (e-chat--show-latest-output window))
+                (e-chat-clear t)
+                (e-chat-transcript-render-session-loading (list :summary summary)))
+              (e-chat-surface-show-latest-output window))
             (redisplay t)
             (when (e-graphical-test-screenshot-enabled-p)
               (e-graphical-test-capture-state "large-index-summary-loading"))
@@ -711,24 +710,25 @@ than the invisible insertion position."
                          :type 'provider-request-started :session-id session-id
                          :turn-id "turn-intermediate"
                          :created-at (+ started-at 0.03))))
-                (e-chat--render-event event)))
+                (e-chat-render-event event)))
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer transcript
-                 (and (equal e-chat--progress-turn-id "turn-intermediate")
+                 (and (equal (e-chat-activity-progress-turn-id)
+                             "turn-intermediate")
                       (string-match-p "Initial answer" (buffer-string))
                       (not (string-match-p "Turn took" (buffer-string))))))
              2.0 "intermediate answer with live progress")
             (e-chat-behavior-test--capture-state
              "intermediate-assistant-with-live-progress")
             (with-current-buffer transcript
-              (e-chat--render-event
+              (e-chat-render-event
                (e-events-make
                 :type 'provider-request-finished :session-id session-id
                 :turn-id "turn-intermediate"
                 :created-at (+ started-at 0.05)
                 :payload '(:status done)))
-              (e-chat--render-event
+              (e-chat-render-event
                (e-events-make
                 :type 'message-added :session-id session-id
                 :turn-id "turn-intermediate"
@@ -736,7 +736,7 @@ than the invisible insertion position."
                 :payload '(:message
                            (:id "answer-2" :role assistant
                             :content "Corrected answer."))))
-              (e-chat--render-event
+              (e-chat-render-event
                (e-events-make
                 :type 'turn-finished :session-id session-id
                 :turn-id "turn-intermediate"
@@ -744,7 +744,7 @@ than the invisible insertion position."
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer transcript
-                 (and (null e-chat--progress-turn-id)
+                 (and (null (e-chat-activity-progress-turn-id))
                       (= (save-excursion
                            (goto-char (point-min))
                            (how-many "Turn took" (point-min) (point-max)))
@@ -768,21 +768,22 @@ than the invisible insertion position."
                 (session-id (plist-get fixture :session-id))
                 (started-at (float-time)))
             (with-current-buffer transcript
-              (e-chat--render-event
+                (e-chat-render-event
                (e-events-make
                 :type 'turn-started :session-id session-id
                 :turn-id "turn-board-final" :created-at started-at))
-              (e-chat--render-event
+              (e-chat-render-event
                (e-events-make
                 :type 'provider-request-started :session-id session-id
                 :turn-id "turn-board-final" :created-at started-at)))
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer transcript
-                 (equal e-chat--progress-turn-id "turn-board-final")))
+                 (equal (e-chat-activity-progress-turn-id)
+                        "turn-board-final")))
              2.0 "live progress before board-final output")
             (with-current-buffer transcript
-              (e-chat--render-event
+              (e-chat-render-event
                (e-events-make
                 :type 'message-added :session-id session-id
                 :turn-id "turn-board-final" :created-at (+ started-at 1.0)
@@ -793,7 +794,7 @@ than the invisible insertion position."
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer transcript
-                 (and (null e-chat--progress-turn-id)
+                 (and (null (e-chat-activity-progress-turn-id))
                       (string-match-p "Board-final answer" (buffer-string))
                       (not (string-match-p "Thinking for" (buffer-string)))
                       (null (e-ui-work-pending (current-buffer))))))
@@ -834,7 +835,7 @@ than the invisible insertion position."
                      :payload '(:error "503: upstream unavailable"
                                 :details (:status 503)
                                 :attempt 1 :backoff-seconds 2.0))))
-                (e-chat--render-event event)))
+                (e-chat-render-event event)))
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer transcript
@@ -991,7 +992,7 @@ than the invisible insertion position."
                  (buffer-local-value
                   'mode-name (plist-get fixture :transcript))
                  (with-current-buffer (plist-get fixture :transcript)
-                   (e-chat--mode-line-status-text t))
+                   (e-chat-surface-mode-line-status-text t))
                  (e-session-latest-token-usage-event
                   (e-harness-sessions (plist-get fixture :harness))
                   (plist-get fixture :session-id))
@@ -1036,7 +1037,7 @@ than the invisible insertion position."
                (with-current-buffer transcript
                  (pos-visible-in-window-p
                   (e-chat-behavior-test--rendered-tail-position
-                   (e-chat--output-follow-position))
+                   (e-chat-surface-output-follow-position))
                   (car (e-chat-behavior-test--fixture-windows fixture))
                   t)))
              1.0 "stream tail visible after redisplay")
@@ -1046,7 +1047,7 @@ than the invisible insertion position."
             (let ((following-start (window-start window))
                   (old-tail
                    (with-current-buffer transcript
-                     (e-chat--output-follow-position))))
+                     (e-chat-surface-output-follow-position))))
               ;; A one-line move toward older output is deliberate scrollback
               ;; even while the old tail remains visible in the viewport.
               (e-chat-behavior-test--send-semantic-command
@@ -1055,7 +1056,7 @@ than the invisible insertion position."
               (should (< (window-start window) following-start))
               (with-current-buffer transcript
                 (should (>= (window-end window t) old-tail))
-                (should-not (e-chat--window-follows-output-p window))))
+                (should-not (e-chat-surface-window-follows-output-p window))))
             (let ((scrolled-start (window-start window)))
               (e-chat-behavior-test--emit
                fixture '(:type reasoning-delta :content " stream update two")
@@ -1067,7 +1068,7 @@ than the invisible insertion position."
              'e-chat-test-scroll-forward
              #'e-chat-behavior-test--scroll-output-forward-one-line)
             (with-current-buffer transcript
-              (should (e-chat--window-follows-output-p window)))
+              (should (e-chat-surface-window-follows-output-p window)))
             (e-chat-behavior-test--emit
              fixture '(:type reasoning-delta :content " stream update three")
              "stream update three")
@@ -1144,7 +1145,7 @@ than the invisible insertion position."
               ;; The submitted turn's first frame is already visible.  Isolate
               ;; the repeating interval from any one-shot redraw queued before
               ;; the recursive minibuffer starts.
-              (e-chat--cancel-pending-activity-redraw)
+              (e-chat-activity-cancel-pending-redraw)
               (setq tick-before (buffer-chars-modified-tick)))
             (e-chat-behavior-test--read-minibuffer-for
              0.25
@@ -1154,16 +1155,23 @@ than the invisible insertion position."
                        (buffer-chars-modified-tick))
                      deferred-before-exit
                      (with-current-buffer transcript
-                       (copy-tree e-chat--deferred-activity-redraw)))
+                       (copy-tree
+                        (plist-get (e-chat-activity-redraw-state)
+                                   :deferred))))
                (when (e-graphical-test-screenshot-enabled-p)
                  (e-graphical-test-capture-state
                   "large-chat-before-minibuffer-exit"))))
             (should (= tick-before-exit tick-before))
-            (should (equal (cdr deferred-before-exit) 'progress))
+            (let ((redraw-state
+                   (with-current-buffer transcript
+                     (e-chat-activity-redraw-state))))
+              (should (plist-get redraw-state :deferred))
+              (should (eq (plist-get redraw-state :deferred-kind) 'progress)))
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer transcript
-                 (null e-chat--deferred-activity-redraw)))
+                 (null (plist-get (e-chat-activity-redraw-state)
+                                  :deferred))))
              1.0 "deferred activity redraw after minibuffer exit")
             ;; Provider events still cross the production async boundary while
             ;; the next recursive minibuffer owns input.  Only their cosmetic
@@ -1183,7 +1191,7 @@ than the invisible insertion position."
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer transcript
-                 (and (equal e-chat--status "done")
+                 (and (equal (e-chat-surface-status) "done")
                       (null (e-ui-work-pending (current-buffer))))))
              3.0 "large chat settled after minibuffer provider completion")))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
@@ -1201,36 +1209,28 @@ than the invisible insertion position."
           (e-chat-behavior-test--submit fixture "long activity prompt")
           (let ((transcript (plist-get fixture :transcript)))
             (with-current-buffer transcript
-              (let* ((turn-id e-chat--progress-turn-id)
-                     (record (e-chat--existing-turn-record turn-id))
-                     (now (float-time))
-                     rounds)
+              (let* ((turn-id (e-chat-activity-progress-turn-id))
+                     (events (list (list :event-type 'turn-started
+                                         :created-at 0))))
                 (dotimes (index 48)
-                  (setq rounds
-                        (append
-                         rounds
-                         (list (list :kind 'round
-                                     :round (1+ index)
-                                     :started-at (+ 10 (* index 2))
-                                     :ended-at (+ 11 (* index 2))
-                                     :status 'done
-                                     :reasoning nil
-                                     :tool-batches nil)))))
-                (setq rounds
-                      (append rounds
-                              (list (list :kind 'round
-                                          :round 49
-                                          :started-at (- now 5)
-                                          :status 'active
-                                          :reasoning nil
-                                          :tool-batches nil))))
-                (plist-put record :activity-records rounds)
-                (plist-put record :activity-round 49)
-                (plist-put record :has-provider-activity t)
-                (e-chat--render-turn-transient turn-id record)
-                (e-chat--cancel-pending-activity-redraw)
+                  (let ((started-at (+ 10 (* index 2))))
+                    (setq events
+                          (append events
+                                  (list
+                                   (list :event-type 'provider-request-started
+                                         :created-at started-at)
+                                   (list :event-type 'provider-request-finished
+                                         :created-at (1+ started-at)
+                                         :payload '(:status done)))))))
+                (setq events
+                      (append events
+                              (list (list :event-type 'provider-request-started
+                                          :created-at 106))))
+                (e-chat-activity-replay-events turn-id events)
+                (e-chat-activity-render-turn-transient turn-id)
+                (e-chat-activity-cancel-pending-redraw)
                 (let* ((tail-start
-                        (marker-position e-chat--progress-start-marker))
+                       (car (e-chat-surface-running-status-bounds)))
                        (stable-prefix
                         (buffer-substring-no-properties
                          (point-min) tail-start))
@@ -1242,7 +1242,9 @@ than the invisible insertion position."
                   (e-graphical-test-wait-until
                    (lambda ()
                      (and changes
-                          (> e-chat--progress-frame 0)))
+                          (> (plist-get (e-chat-activity-progress-state)
+                                        :frame)
+                             0)))
                    1.0 "incremental graphical progress tick")
                   (should (cl-every (lambda (change)
                                       (>= (car change) tail-start))
@@ -1267,56 +1269,71 @@ than the invisible insertion position."
           (e-chat-behavior-test--submit fixture "bounded activity prompt")
           (let ((transcript (plist-get fixture :transcript)))
             (with-current-buffer transcript
-              (let* ((turn-id e-chat--progress-turn-id)
-                     (record (e-chat--existing-turn-record turn-id))
-                     (now (float-time))
-                     rounds)
+              (let ((turn-id (e-chat-activity-progress-turn-id)))
+              ;; Submission has already produced the first provider-started
+              ;; event.  Reset the activity owner before replaying the exact
+              ;; thirty-round synthetic history used by this bound assertion.
+              (e-chat-activity-reset)
+              (let ((events (list (list :event-type 'turn-started
+                                        :created-at 0))))
                 (dotimes (offset 30)
-                  (let ((index (1+ offset)))
-                    (push
-                     (list :kind 'round
-                           :round index
-                           :started-at (+ 10 (* index 2))
-                           :ended-at (and (< index 30)
-                                          (+ 11 (* index 2)))
-                           :status (if (= index 30) 'active 'done)
-                           :reasoning
-                           (list (list :content
-                                       (format "reasoning-round-%02d" index)))
-                           :tool-batches
-                           (list
-                            (list :items
+                  (let* ((index (1+ offset))
+                         (started-at (+ 10 (* index 2)))
+                         (call-id (format "call-%02d" index))
+                         (tool-name (format "tool-%02d" index)))
+                    (setq events
+                          (append events
                                   (list
-                                   (list :id (format "call-%02d" index)
-                                         :call (format "tool-%02d" index)
-                                         :output
-                                         (format "output-%02d" index))))))
-                     rounds)))
-                (setq rounds (nreverse rounds))
-                (plist-put (car (last rounds)) :started-at (- now 5))
-                (plist-put record :activity-records rounds)
-                (plist-put record :activity-round 30)
-                (plist-put record :has-provider-activity t)
-                (e-chat--render-turn-transient turn-id record)
-                (e-chat--cancel-pending-activity-redraw)
-                (let* ((bounds (e-chat--running-status-bounds))
+                                   (list :event-type 'provider-request-started
+                                         :created-at started-at)
+                                   (list :event-type 'reasoning-delta
+                                         :created-at started-at
+                                         :payload
+                                         (list :content
+                                               (format "reasoning-round-%02d"
+                                                       index)))
+                                   (list :event-type 'tool-started
+                                         :created-at started-at
+                                         :payload
+                                         (list :id call-id
+                                               :name tool-name
+                                               :arguments nil))
+                                   (list :event-type 'tool-finished
+                                         :created-at (1+ started-at)
+                                         :payload
+                                         (list
+                                          :tool-call
+                                          (list :id call-id :name tool-name)
+                                          :result
+                                          (list :status 'ok
+                                                :content
+                                                (format "output-%02d" index)))))))
+                    (when (< index 30)
+                      (setq events
+                            (append events
+                                    (list
+                                     (list :event-type
+                                           'provider-request-finished
+                                           :created-at (1+ started-at)
+                                           :payload '(:status done))))))))
+                (e-chat-activity-replay-events turn-id events)
+                (e-chat-activity-render-turn-transient turn-id)
+                (e-chat-activity-cancel-pending-redraw)
+                (let* ((bounds (e-chat-surface-running-status-bounds))
                        (text (buffer-substring-no-properties
                               (car bounds) (cdr bounds)))
-                       (block
-                        (gethash (plist-get record :activity-block-id)
-                                 e-chat--block-registry))
-                       (tools (plist-get block :tool-items))
-                       (details (e-chat--activity-expanded-text record)))
+                       (display (e-chat-activity-turn-display turn-id))
+                       (details (plist-get display :expanded-text)))
                   (should (string-match-p
                            "24 earlier activity rounds omitted" text))
                   (should-not (string-match-p "reasoning-round-01" text))
                   (should (string-match-p "reasoning-round-25" text))
                   (should (string-match-p "reasoning-round-30" text))
-                  (should (= (length tools) 6))
-                  (should (equal (plist-get (car tools) :call) "tool-25"))
+                  (should (string-match-p "tool-25" text))
+                  (should-not (string-match-p "tool-24" text))
                   (should (string-match-p "reasoning-round-01" details))
                   (e-chat-behavior-test--capture-state
-                   "bounded-live-activity-history"))))))
+                   "bounded-live-activity-history")))))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-persp-switch-restores-focused-surface ()
@@ -1382,7 +1399,7 @@ than the invisible insertion position."
           (let ((transcript (plist-get fixture :transcript))
                 (window (car (e-chat-behavior-test--fixture-windows fixture))))
             (with-current-buffer transcript
-              (e-chat--show-latest-output window)))
+              (e-chat-surface-show-latest-output window)))
           (redisplay t)
           (e-chat-behavior-test--assert-tail-near-bottom fixture)
           (let* ((harness (plist-get fixture :harness))

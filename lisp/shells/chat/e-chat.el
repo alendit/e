@@ -40,6 +40,16 @@
 (require 'e-ui-work)
 (require 'e-workspaces)
 
+;; Load presentation owners in dependency order.  Keeping this at the import
+;; boundary makes the composition root's collaborators real at evaluation
+;; time, rather than relying on declarations until the end of this file:
+;; surface -> transcript -> composer -> activity -> overview.
+(require 'e-chat-surface)
+(require 'e-chat-transcript)
+(require 'e-chat-composer)
+(require 'e-chat-activity)
+(require 'e-chat-overview)
+
 ;; Writable workspace snapshots must retain Emacs's native surface structure.
 (add-to-list 'window-persistent-parameters '(window-atom . writable))
 
@@ -52,23 +62,121 @@
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
 (declare-function visual-fill-column-mode "ext:visual-fill-column")
 
+;; Public presentation-owner ports used by this composition root.  Keeping the
+;; declarations here documents the dependency direction without importing any
+;; owner-private state into the facade.
+(declare-function e-chat-surface-transcript-p "e-chat-surface")
+(declare-function e-chat-surface-composer-p "e-chat-surface")
+(declare-function e-chat-surface-transcript-buffer "e-chat-surface")
+(declare-function e-chat-surface-composer-buffer "e-chat-surface")
+(declare-function e-chat-surface-mark-transcript "e-chat-surface")
+(declare-function e-chat-surface-bind-composer "e-chat-surface")
+(declare-function e-chat-surface-kill-composer "e-chat-surface")
+(declare-function e-chat-surface-refresh-composer-position "e-chat-surface")
+(declare-function e-chat-surface-refresh-visible-windows "e-chat-surface")
+(declare-function e-chat-surface-capture-live-output-follow-windows "e-chat-surface")
+(declare-function e-chat-surface-restore-output-tail-windows "e-chat-surface")
+(declare-function e-chat-surface-after-display-buffer "e-chat-surface")
+(declare-function e-chat-surface-display-from-side-window "e-chat-surface")
+(declare-function e-chat-surface-pop-to-buffer "e-chat-surface")
+(declare-function e-chat-surface-initialize "e-chat-surface")
+(declare-function e-chat-surface-setup-line-wrapping "e-chat-surface")
+(declare-function e-chat-surface-mark-composer-layout-dirty "e-chat-surface")
+(declare-function e-chat-surface-capture-selected-output-follow-command "e-chat-surface")
+(declare-function e-chat-surface-pre-command "e-chat-surface")
+(declare-function e-chat-surface-post-command "e-chat-surface")
+(declare-function e-chat-surface-refresh-command-map "e-chat-surface")
+(declare-function e-chat-overview-mark-selected-session-read "e-chat-overview")
+(declare-function e-chat-overview-session-selection "e-chat-overview")
+(declare-function e-chat-overview-active-session-candidates "e-chat-overview")
+(declare-function e-chat-overview-active-session-candidate-key "e-chat-overview")
+(declare-function e-chat-overview-active-session-line "e-chat-overview")
+(declare-function e-chat-overview-active-session-preview "e-chat-overview")
+(declare-function e-chat-overview-refresh-keymap "e-chat-overview")
+(declare-function e-chat-surface-refresh-mode-line-status "e-chat-surface")
+(declare-function e-chat-surface-request-mode-line-status-refresh "e-chat-surface")
+(declare-function e-chat-surface-selected-chat-surface "e-chat-surface")
+(declare-function e-chat-surface-set-window-output-follow "e-chat-surface")
+(declare-function e-chat-surface-window-reaches-output-p "e-chat-surface")
+(declare-function e-chat-surface-without-recenter "e-chat-surface")
+(declare-function e-chat-composer-active-p "e-chat-composer")
+(declare-function e-chat-composer-text "e-chat-composer")
+(declare-function e-chat-composer-submission "e-chat-composer")
+(declare-function e-chat-composer-ensure "e-chat-composer")
+(declare-function e-chat-composer-enter-input-state "e-chat-composer")
+(declare-function e-chat-composer-insert "e-chat-composer")
+(declare-function e-chat-composer-delete "e-chat-composer")
+(declare-function e-chat-composer-insert-context-reference "e-chat-composer")
+(declare-function e-chat-composer-capture-context-reference-for-command "e-chat-composer")
+(declare-function e-chat-composer-cancel-pending-references "e-chat-composer")
+(declare-function e-chat-composer-cancel-file-candidate-refresh "e-chat-composer")
+(declare-function e-chat-composer-mark-scroll-needed "e-chat-composer")
+(declare-function e-chat-composer-pre-command "e-chat-composer")
+(declare-function e-chat-composer-disable-modal-editing "e-chat-composer")
+(declare-function e-chat-composer-disable-completion "e-chat-composer")
+(declare-function e-chat-composer-start-position "e-chat-composer")
+(declare-function e-chat-composer-initialize "e-chat-composer")
+(declare-function e-chat-composer-project-root "e-chat-composer")
+(declare-function e-chat-transcript-render-session "e-chat-transcript")
+(declare-function e-chat-transcript-render-replay "e-chat-transcript")
+(declare-function e-chat-transcript-rerender "e-chat-transcript")
+(declare-function e-chat-transcript-event-selected-participant-p "e-chat-transcript")
+(declare-function e-chat-transcript-message-selected-participant-p "e-chat-transcript")
+(declare-function e-chat-transcript-observed-turn-id "e-chat-transcript")
+(declare-function e-chat-transcript-presentation-turn-id "e-chat-transcript")
+(declare-function e-chat-transcript-rerender-assistant-blocks "e-chat-transcript")
+(declare-function e-chat-transcript-system-glyph "e-chat-transcript")
+(declare-function e-chat-transcript-insert-entry "e-chat-transcript")
+(declare-function e-chat-transcript-insert-protected "e-chat-transcript")
+(declare-function e-chat-transcript-render-durable-message "e-chat-transcript")
+(declare-function e-chat-transcript-reconcile-message-display "e-chat-transcript")
+(declare-function e-chat-transcript-block-at-point "e-chat-transcript")
+(declare-function e-chat-transcript-turn-id-at-point "e-chat-transcript")
+(declare-function e-chat-transcript-cancel-markdown-presentation "e-chat-transcript")
+(declare-function e-chat-transcript-set-preview-p "e-chat-transcript")
+(declare-function e-chat-transcript-preview-p "e-chat-transcript")
+(declare-function e-chat-transcript-has-navigable-blocks-p "e-chat-transcript")
+(declare-function e-chat-transcript-leave-navigation "e-chat-transcript")
+(declare-function e-chat-transcript-refresh-keymaps "e-chat-transcript")
+(declare-function e-chat-activity-assistant-streaming-p "e-chat-activity")
+(declare-function e-chat-activity-set-assistant-streaming "e-chat-activity")
+(declare-function e-chat-activity-cancel-pending-redraw "e-chat-activity")
+(declare-function e-chat-activity-start-progress "e-chat-activity")
+(declare-function e-chat-activity-stop-progress "e-chat-activity")
+(declare-function e-chat-activity-delete-turn-transient "e-chat-activity")
+(declare-function e-chat-activity-render-turn-transient "e-chat-activity")
+(declare-function e-chat-activity-run-pending-redraw "e-chat-activity")
+(declare-function e-chat-activity-running-status-turn-id "e-chat-activity")
+(declare-function e-chat-activity-progress-turn-id "e-chat-activity")
+(declare-function e-chat-activity-render-replay "e-chat-activity")
+(declare-function e-chat-activity-handle-event "e-chat-activity")
+(declare-function e-chat-activity-message-rendered "e-chat-activity")
+(declare-function e-chat-activity-failed-turn-p "e-chat-activity")
+(declare-function e-chat-activity-flush-deferred-redraws "e-chat-activity")
+(declare-function e-chat-activity-flush-deferred-redraws-after-minibuffer "e-chat-activity")
+(declare-function e-chat-overview-update-unread-cache "e-chat-overview")
+(declare-function e-chat-overview-remove-unread-buffer "e-chat-overview")
+(declare-function e-chat-overview-rebuild-unread-cache "e-chat-overview")
+(declare-function e-chat-overview-mark-session-read "e-chat-overview")
+(defvar e-chat-response-navigation-mode-map)
+(defvar e-chat-block-view-mode-map)
+(defvar e-chat-tool-list-mode-map)
+(defvar e-chat-tool-output-mode-map)
+
+
+;; Presentation owners initialize their own buffer-local state.  The facade
+;; composes their public ports below and deliberately keeps no mirror of those
+;; records here.
+
 (defgroup e-chat nil
   "Chat presentation for e."
   :group 'e
   :prefix "e-chat-")
 
-(defcustom e-chat-mode-line-status-delay 0.15
-  "Seconds to coalesce non-terminal chat mode-line status updates."
-  :type 'number
-  :group 'e-chat)
-
 (defcustom e-chat-context-buffer-name "*e-chat-context*"
   "Buffer name for read-only context previews."
   :type 'string
   :group 'e-chat)
-
-(defconst e-chat--resume-preview-buffer-name "*e-chat-resume-preview*"
-  "Buffer name for temporary resume candidate previews.")
 
 (defun e-chat--profile-enabled-p ()
   "Return non-nil when developer profiling is currently available."
@@ -82,186 +190,137 @@
       (e-dev-profile-measure-thunk event options thunk)
     (funcall thunk)))
 
+(defun e-chat-profile-call (event options thunk)
+  "Measure presentation THUNK as EVENT with OPTIONS when profiling is enabled."
+  (e-chat--profile-call event options thunk))
+
+;; Stable facade ports for callers that historically consumed presentation
+;; status directly from `e-chat'.  The semantic cells now live in the surface
+;; owner; these functions only compose that owner and intentionally do not
+;; mirror its state.
+(defun e-chat-status (&optional buffer)
+  "Return the presentation status for BUFFER's chat surface."
+  (e-chat-surface-status buffer))
+
+(defun e-chat-set-status (status &optional refresh-mode-line)
+  "Set the current chat surface STATUS."
+  (e-chat-surface-set-status status refresh-mode-line))
+
+(defun e-chat-mode-line-status (&optional buffer)
+  "Return semantic mode-line status for BUFFER's chat surface."
+  (e-chat-surface-mode-line-status buffer))
+
+(defun e-chat-mode-line-display-text (status)
+  "Return host-neutral display text for semantic STATUS."
+  (e-chat-surface-mode-line-display-text status))
+
+(defun e-chat-flush-deferred-mode-line-statuses (&rest args)
+  "Flush deferred mode-line status work for visible chat buffers."
+  (apply #'e-chat-surface-flush-deferred-mode-line-statuses args))
+
+(defun e-chat-invalidate-mode-line-context-estimate (&optional buffer)
+  "Invalidate mode-line context caches for BUFFER."
+  (e-chat-surface-invalidate-mode-line-context-estimate buffer))
+
+(defun e-chat-refresh-ui-work-diagnostics ()
+  "Refresh pending UI-work diagnostics for the current chat surface."
+  (e-chat-surface-refresh-ui-work-diagnostics))
+
+(defun e-chat-after-display-buffer (buffer)
+  "Restore the composed chat input state after displaying BUFFER.
+The surface owner restores window membership and viewport state; this facade
+then composes the composer owner for modal/completion cleanup and input focus."
+  (e-chat-surface-after-display-buffer buffer)
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (e-chat-composer-disable-modal-editing)
+      (e-chat-composer-disable-completion)
+      (e-chat-composer-enter-input-state)))
+  buffer)
+
+(defun e-chat--active-transcript-turn-state ()
+  "Return the currently projected active turn id, or nil.
+The facade owns this small transition lookup because inserting any durable
+presentation row must temporarily remove the activity transient and restore it
+after the transcript owner has appended the row.  The activity and transcript
+owners retain their respective state; this is only composition glue."
+  (or (e-chat-activity-progress-turn-id)
+      (e-chat-activity-running-status-turn-id)))
+
+(defun e-chat--insert-transcript-entry
+    (title content &optional ensure-composer turn-id details-text)
+  "Insert a composed transcript entry and preserve active activity ordering.
+The activity transient is removed before the durable row and restored after it,
+matching the historical facade behavior while keeping both mechanisms in
+their owners."
+  (let ((active (e-chat--active-transcript-turn-state)))
+    (when active
+      (e-chat-activity-delete-turn-transient active))
+    (prog1
+        (e-chat-transcript-insert-entry
+         title content ensure-composer turn-id details-text)
+      (when active
+        (e-chat-activity-render-turn-transient active)))))
+
+(defun e-chat--render-transcript-message
+    (message turn-id &optional ensure-composer details-text)
+  "Render durable MESSAGE while preserving the active activity transient."
+  (let ((active (e-chat--active-transcript-turn-state)))
+    (when active
+      (e-chat-activity-delete-turn-transient active))
+    (prog1
+        (e-chat-transcript-render-durable-message
+         message turn-id ensure-composer details-text)
+      (when active
+        (e-chat-activity-render-turn-transient active)))))
+
+(defun e-chat--ensure-presentation-hooks ()
+  "Install composed chat presentation hooks and remove retired bridges.
+Surface owns activation and window-refresh callbacks; overview owns read
+markers; activity owns deferred redraw flushes.  The facade only composes
+those owner ports into the host hook lists."
+  ;; These callbacks belonged to the retired active-turn presentation path.
+  ;; Remove them even when a development reload leaves them in dynamically
+  ;; scoped hook variables.
+  (dolist (hook '(window-selection-change-functions
+                  window-configuration-change-hook
+                  buffer-list-update-hook
+                  persp-activated-functions))
+    (when (boundp hook)
+      (dolist (function '(e-chat--tail-selected-active-turn
+                          e-chat--activate-selected-surface-after-buffer-switch
+                          e-chat--activate-selected-surface-after-workspace-switch))
+        (remove-hook hook function))))
+  (e-chat-surface-initialize)
+  (add-hook 'window-selection-change-functions
+            #'e-chat-overview-mark-selected-session-read)
+  (add-hook 'window-configuration-change-hook
+            #'e-chat-activity-flush-deferred-redraws)
+  (add-hook 'window-configuration-change-hook
+            #'e-chat-surface-flush-deferred-mode-line-statuses)
+  (add-hook 'window-buffer-change-functions
+            #'e-chat-activity-flush-deferred-redraws)
+  (add-hook 'window-buffer-change-functions
+            #'e-chat-surface-flush-deferred-mode-line-statuses)
+  (add-hook 'minibuffer-exit-hook
+            #'e-chat-activity-flush-deferred-redraws-after-minibuffer)
+  (when (boundp 'persp-activated-functions)
+    (add-hook 'persp-activated-functions
+              #'e-chat-overview-mark-selected-session-read)))
+
 (defun e-chat--reject-sync-in-hot-path (operation)
   "Reject synchronous chat OPERATION from marked interactive hot paths."
   (when (e-request-hot-path-active-p)
     (e-request-hot-path-blocking-error operation)))
 
-(defcustom e-chat-overview-buffer-name "*e-chat-overview*"
-  "Buffer name for the chat session overview."
-  :type 'string
-  :group 'e-chat)
-
-(defcustom e-chat-resume-preview-message-limit 2
-  "Maximum number of transcript messages rendered in resume previews."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-session-summary-preview-max-chars 512
-  "Maximum session-summary characters rendered before transcript replay.
-Persistent indexes retain the complete first user message as their summary.
-That message can be a very large generated bootstrap prompt, so metadata-only
-loading and picker previews must never project it without a display bound."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-session-replay-message-limit 40
-  "Maximum recent transcript messages reconstructed in a chat buffer.
-Older durable messages remain available to the harness but are omitted from
-the presentation replay.  Unloaded indexed sessions still use the asynchronous
-session loader before this bounded view is rendered."
-  :type '(integer 1)
-  :group 'e-chat)
-
-(defcustom e-chat-session-replay-activity-event-limit 64
-  "Maximum recent activity events reconstructed in a chat buffer.
-Replay first restricts activity to turns represented by the bounded message
-tail plus any currently active turn, then retains at most this many newest
-events.  Durable board history is not changed."
-  :type '(integer 1)
-  :group 'e-chat)
-
-(defcustom e-chat-ui-work-diagnostics nil
-  "When non-nil, show pending UI work counts in the chat header line."
-  :type 'boolean
-  :group 'e-chat)
-
-(defcustom e-chat-details-buffer-name "*e-chat-details*"
-  "Buffer name for read-only focused block details."
-  :type 'string
-  :group 'e-chat)
-
-(defcustom e-chat-tool-output-buffer-name "*e-chat-tool-output*"
-  "Buffer name for read-only focused tool output."
-  :type 'string
-  :group 'e-chat)
-
-(defcustom e-chat-tool-activity-preview-bytes 4096
-  "Maximum UTF-8 bytes of a tool result retained in chat activity UI."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-deferred-markdown-threshold-bytes 8192
-  "Assistant message size above which Markdown presentation is deferred.
-The raw assistant text is inserted immediately; only Markdown faces and syntax
-concealment are scheduled for a later timer tick."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-deferred-markdown-chunk-lines 80
-  "Maximum number of lines processed by one deferred Markdown render job."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-mode-line-context-estimate-cache-seconds 2.0
-  "Seconds to reuse approximate context-token estimates for mode-line refreshes."
-  :type 'number
-  :group 'e-chat)
+(defun e-chat-reject-sync-in-hot-path (operation)
+  "Reject synchronous OPERATION from a marked chat hot path."
+  (e-chat--reject-sync-in-hot-path operation))
 
 (defcustom e-chat-default-harness-id :chat-default
   "Harness registry id used by default chat commands."
   :type 'symbol
   :group 'e-chat)
-
-(defcustom e-chat-progress-interval 0.6
-  "Seconds between active assistant progress indicator frames."
-  :type 'number
-  :group 'e-chat)
-
-(defcustom e-chat-activity-redraw-delay 0.05
-  "Seconds to coalesce running activity redraws."
-  :type 'number
-  :group 'e-chat)
-
-(defcustom e-chat-running-status-diff-max-chars 20000
-  "Region size above which running-status updates use a bounded diff.
-Below this size, an in-place update walks the region with an exact
-character-by-character prefix/suffix scan.  At or above it, the update is
-handed to `replace-region-contents' with time and cost caps so a very large
-transient activity block degrades to a coarse replacement instead of a
-guaranteed O(n) scan on every progress tick."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-running-status-diff-max-seconds 0.05
-  "Time cap handed to `replace-region-contents' for large running-status diffs.
-See `e-chat-running-status-diff-max-chars'."
-  :type 'number
-  :group 'e-chat)
-
-(defcustom e-chat-activity-redraw-large-block-chars 8000
-  "Transient block size above which activity redraws are throttled harder.
-Once the visible running-status region exceeds this many characters, its
-coalescing delay is multiplied by `e-chat-activity-redraw-large-block-factor'
-so a big, rapidly-updating block repaints less often."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-activity-redraw-large-block-factor 4.0
-  "Delay multiplier applied to activity redraws of a large transient block.
-See `e-chat-activity-redraw-large-block-chars'."
-  :type 'number
-  :group 'e-chat)
-
-(defcustom e-chat-activity-reasoning-visible-line-limit 3
-  "Maximum non-empty reasoning lines shown in compact activity summaries.
-The complete reasoning text remains available from response details."
-  :type 'natnum
-  :group 'e-chat)
-
-(defcustom e-chat-live-activity-round-limit 12
-  "Maximum recent provider rounds shown in a live activity block.
-Earlier rounds remain in the turn record and settled expandable details."
-  :type '(integer 1)
-  :group 'e-chat)
-
-(define-obsolete-variable-alias
-  'e-chat-model-context-token-limits
-  'e-context-budget-model-token-limits
-  "0.1.0")
-
-(defcustom e-chat-context-token-estimate-bytes-per-token 4.0
-  "Approximate UTF-8 bytes per token for mode-line context estimates."
-  :type 'number
-  :group 'e-chat)
-
-(defcustom e-chat-command-output-timeout 30
-  "Seconds to wait for composer ! commands before capturing a timeout."
-  :type 'number
-  :group 'e-chat)
-
-(defcustom e-chat-command-output-max-bytes 24000
-  "Maximum UTF-8 bytes captured from a composer ! command."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-file-reference-max-bytes 64000
-  "Maximum UTF-8 bytes read for composer @ file references."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-project-file-candidate-limit 2000
-  "Maximum number of files offered by composer @ completion."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-visual-fill-column 80
-  "Column at which chat buffer text wraps, or nil to wrap at the window edge.
-When set to an integer, chat buffers enable `visual-line-mode' and
-`visual-fill-column-mode' so long lines wrap at this column instead of
-running the full width of a wide frame.  When nil, no wrapping column is
-imposed and text follows the default window-edge behaviour.
-
-The wrapping is visual only: it never inserts hard line breaks into the
-transcript or the composed prompt.  `visual-fill-column-mode' provides
-the measured wrap; when that package is unavailable, `visual-line-mode'
-is enabled as a word-wrap fallback."
-  :type '(choice (const :tag "Wrap at window edge" nil)
-                 (integer :tag "Wrap column"))
-  :group 'e-chat)
-
-(when (equal e-chat-progress-interval 0.35)
-  (setq e-chat-progress-interval 0.6))
 
 ;; Chat block faces inherit neutral theme faces rather than hardcoding a
 ;; palette, so the chat buffer follows whatever theme (light or dark) the user
@@ -541,374 +600,8 @@ is enabled as a word-wrap fallback."
 (defvar-local e-chat-observer-id nil
   "Observer id used by the current chat buffer's board binding.")
 
-(defvar-local e-chat--preview-buffer nil
-  "Non-nil when this buffer is a transient chat preview, not a session shell.")
-
-(defvar e-chat--workspace-unread-counts (make-hash-table :test #'equal)
-  "Cached unread chat-buffer count by workspace display name.")
-
-(defvar e-chat--workspace-unread-buffer-state (make-hash-table :test #'eq)
-  "Cached unread state by chat buffer.
-Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
-
-(defvar e-chat--workspace-unread-cache-valid-p nil
-  "Non-nil when workspace unread cache reflects live chat buffers.")
-
-(defvar e-chat--read-markers (make-hash-table :test #'eq)
-  "Process-local read markers keyed by harness.
-Read markers are presentation state for unread indicators.  They are
-intentionally not persisted in session metadata.")
-
-(defvar-local e-chat--surface-activation-handle nil
-  "Deferred UI work completing explicit activation of this chat surface.")
-
-(defvar-local e-chat--surface-activation-generation 0
-  "Generation token for stale chat-surface activation callbacks.")
-
-(defconst e-chat--selected-surface-frame-parameter
-  'e-chat-selected-surface
-  "Frame parameter holding the last selected chat surface.")
-
-(defun e-chat--workspace-unread-cache-invalidate ()
-  "Mark the workspace unread cache stale."
-  (setq e-chat--workspace-unread-cache-valid-p nil))
-
-(defun e-chat--transcript-buffer-for (buffer)
-  "Return BUFFER's owning chat transcript, or nil.
-BUFFER may itself be a transcript or its dedicated composer."
-  (when (buffer-live-p buffer)
-    (let ((transcript
-           (or (buffer-local-value 'e-chat--surface-transcript-buffer buffer)
-               buffer)))
-      (and (buffer-live-p transcript)
-           (buffer-local-value 'e-chat-harness transcript)
-           (buffer-local-value 'e-chat-session-id transcript)
-           transcript))))
-
-(defun e-chat--selected-chat-surface (&optional selected)
-  "Return SELECTED window's chat surface as (TRANSCRIPT . TRANSCRIPT-WINDOW).
-SELECTED defaults to the selected window.
-The selected window may contain a surface's transcript or dedicated input
-pane.  TRANSCRIPT owns output state and
-TRANSCRIPT-WINDOW owns the viewport that activation is allowed to move."
-  (let* ((selected (or selected (selected-window)))
-         (selected-buffer (window-buffer selected))
-         (transcript (e-chat--transcript-buffer-for selected-buffer)))
-    (when transcript
-      (let ((transcript-window
-             (if (eq selected-buffer transcript)
-                 selected
-               (with-current-buffer transcript
-                 (cl-find-if
-                  (lambda (window)
-                    (and (eq (window-frame window) (window-frame selected))
-                         (e-chat--surface-window-directly-below-p
-                          window selected)))
-                  (get-buffer-window-list transcript nil t))))))
-        (when (and (window-live-p transcript-window)
-                   (eq (window-buffer transcript-window) transcript))
-          (cons transcript transcript-window))))))
-
-(defun e-chat--selected-chat-buffer ()
-  "Return the transcript owning the selected e-chat surface, or nil."
-  (car-safe (e-chat--selected-chat-surface)))
-
-(defun e-chat--refresh-workspace-unread-presentation ()
-  "Refresh cached unread state and workspace displays."
-  (e-chat--workspace-unread-cache-rebuild)
-  (force-mode-line-update t)
-  (when (fboundp '+workspace/display)
-    (ignore-errors
-      (+workspace/display))))
-
-(defun e-chat--mark-buffer-session-read-if-selected (&optional buffer)
-  "Mark BUFFER's latest assistant output read when BUFFER is selected."
-  (let ((buffer (e-chat--transcript-buffer-for
-                 (or buffer (current-buffer)))))
-    (when (and (eq buffer (e-chat--selected-chat-buffer))
-               (buffer-live-p buffer))
-      (with-current-buffer buffer
-        (when (and e-chat-harness e-chat-session-id)
-          (let ((was-unread (e-chat--buffer-unread-p buffer)))
-            (e-chat-overview--mark-session-read
-             e-chat-harness
-             e-chat-session-id
-             e-chat-harness-instance-id)
-            (when was-unread
-              (e-chat--refresh-workspace-unread-presentation))))))))
-
-(defun e-chat--mark-selected-session-read (&rest _)
-  "Mark the currently selected chat session read after focus changes."
-  (when-let ((buffer (e-chat--selected-chat-buffer)))
-    (e-chat--mark-buffer-session-read-if-selected buffer)))
-
-(defun e-chat--show-surface-latest-output (surface)
-  "Show latest output in SURFACE without changing its selected input pane."
-  (let ((buffer (car-safe surface))
-        (window (cdr-safe surface)))
-    (when (and (buffer-live-p buffer)
-               (window-live-p window)
-               (eq (window-buffer window) buffer))
-      (with-current-buffer buffer
-        (e-chat--show-latest-output window)))))
-
-(defun e-chat--complete-surface-activation-if-selected (surface)
-  "Complete SURFACE activation when it remains selected after redisplay."
-  (let* ((window (cdr-safe surface))
-         (frame (and (window-live-p window) (window-frame window))))
-    (when (and (frame-live-p frame)
-               (equal surface
-                      (e-chat--selected-chat-surface
-                       (frame-selected-window frame))))
-      (with-current-buffer (car surface)
-        (unless (window-live-p (e-chat--surface-composer-window window))
-          (e-chat--surface-display-composer window t)))
-      (e-chat--show-surface-latest-output surface))))
-
-(defun e-chat--schedule-surface-activation (surface)
-  "Schedule a post-focus latest-output restore for selected SURFACE."
-  (let ((buffer (car-safe surface)))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (when (e-work-handle-p e-chat--surface-activation-handle)
-          (e-ui-work-cancel e-chat--surface-activation-handle)
-          (setq e-chat--surface-activation-handle nil))
-        (setq e-chat--surface-activation-generation
-              (1+ e-chat--surface-activation-generation))
-        (let ((generation e-chat--surface-activation-generation))
-          (setq e-chat--surface-activation-handle
-                (e-ui-work-schedule
-                 (e-ui-work-spec-create
-                  :id "chat_surface_activation"
-                  :description "Finish chat surface activation after focus settles."
-                  :owner 'surface-activation
-                  :target-buffer buffer
-                  :key (cdr surface)
-                  :generation generation
-                  :delay 0
-                  :coalesce t
-                  :focus-policy 'explicit
-                  :reentrancy-policy 'defer
-                  :apply
-                  (lambda (_job _handle)
-                    (setq e-chat--surface-activation-handle nil)
-                    (when (= generation e-chat--surface-activation-generation)
-                      (e-chat--complete-surface-activation-if-selected
-                       surface))))
-                 :on-event (lambda (&rest _)
-                             (e-chat--refresh-ui-work-diagnostics)))))))))
-
-(defun e-chat--activate-surface (surface)
-  "Explicitly activate SURFACE at its latest output and input pane.
-The immediate update is the presentation contract.  A single coalesced retry
-wins host window-restoration races without observing every unrelated window
-configuration change."
-  (when surface
-    (let* ((frame (window-frame (cdr surface)))
-           (selected (frame-selected-window frame)))
-      (when (equal surface
-                   (e-chat--selected-chat-surface
-                    selected))
-        (set-frame-parameter frame
-                             e-chat--selected-surface-frame-parameter
-                             surface)
-        ;; Entering a composed surface through its transcript routes input to
-        ;; the composer.  Internal composer-to-transcript navigation does not
-        ;; activate the already-selected surface again and remains focused.
-        (when (eq (window-buffer selected) (car surface))
-          (with-current-buffer (car surface)
-            (when (window-live-p
-                   (e-chat--surface-composer-window (cdr surface)))
-              (e-chat--enter-composer-input-state))))))
-    (e-chat--show-surface-latest-output surface)
-    (e-chat--schedule-surface-activation surface)))
-
-(defun e-chat--activate-selected-surface-on-selection (&optional changed-frame)
-  "Activate latest output when selection enters a different chat surface."
-  (let* ((frame (if (frame-live-p changed-frame)
-                    changed-frame
-                  (selected-frame)))
-         (surface (e-chat--selected-chat-surface
-                   (frame-selected-window frame)))
-         (previous (frame-parameter
-                    frame e-chat--selected-surface-frame-parameter)))
-    (set-frame-parameter frame e-chat--selected-surface-frame-parameter surface)
-    (when (and surface (not (equal surface previous)))
-      (e-chat--activate-surface surface))))
-
-(defun e-chat--activate-selected-surface-after-window-buffer-change (frame)
-  "Activate FRAME's selected chat surface after redisplay settles.
-`window-buffer-change-functions' runs from redisplay after a generic buffer or
-workspace transition has finished changing the window tree."
-  (when (frame-live-p frame)
-    (e-chat--activate-selected-surface-on-selection frame)))
-
-(defun e-chat--ensure-window-selection-hook ()
-  "Install chat focus hooks for window and workspace changes."
-  ;; These hooks implemented the pre-surface active-turn policy.  Remove them
-  ;; explicitly so reloading this feature cannot leave obsolete behavior live.
-  (remove-hook 'window-selection-change-functions
-               'e-chat--tail-selected-active-turn)
-  (remove-hook 'window-configuration-change-hook
-               'e-chat--tail-selected-active-turn)
-  (remove-hook 'buffer-list-update-hook
-               'e-chat--activate-selected-surface-after-buffer-switch)
-  (when (boundp 'persp-activated-functions)
-    (remove-hook 'persp-activated-functions
-                 'e-chat--tail-selected-active-turn)
-    (remove-hook 'persp-activated-functions
-                 'e-chat--activate-selected-surface-after-workspace-switch))
-  (unless (memq #'e-chat--mark-selected-session-read
-                window-selection-change-functions)
-    (add-hook 'window-selection-change-functions
-              #'e-chat--mark-selected-session-read))
-  (unless (memq #'e-chat--activate-selected-surface-on-selection
-                window-selection-change-functions)
-    (add-hook 'window-selection-change-functions
-              #'e-chat--activate-selected-surface-on-selection))
-  (unless (memq #'e-chat--flush-deferred-activity-redraws
-                window-configuration-change-hook)
-    (add-hook 'window-configuration-change-hook
-              #'e-chat--flush-deferred-activity-redraws))
-  (unless (memq #'e-chat--flush-deferred-hidden-mode-line-statuses
-                window-configuration-change-hook)
-    (add-hook 'window-configuration-change-hook
-              #'e-chat--flush-deferred-hidden-mode-line-statuses))
-  (when (boundp 'window-buffer-change-functions)
-    (unless (memq
-             #'e-chat--activate-selected-surface-after-window-buffer-change
-             window-buffer-change-functions)
-      (add-hook
-       'window-buffer-change-functions
-       #'e-chat--activate-selected-surface-after-window-buffer-change))
-    (unless (memq #'e-chat--flush-deferred-activity-redraws
-                  window-buffer-change-functions)
-      (add-hook 'window-buffer-change-functions
-                #'e-chat--flush-deferred-activity-redraws))
-    (unless (memq #'e-chat--flush-deferred-hidden-mode-line-statuses
-                  window-buffer-change-functions)
-      (add-hook 'window-buffer-change-functions
-                #'e-chat--flush-deferred-hidden-mode-line-statuses)))
-  (unless (memq #'e-chat--flush-deferred-activity-redraws-after-minibuffer
-                minibuffer-exit-hook)
-    (add-hook 'minibuffer-exit-hook
-              #'e-chat--flush-deferred-activity-redraws-after-minibuffer))
-  (when (boundp 'persp-activated-functions)
-    (unless (memq #'e-chat--mark-selected-session-read
-                  persp-activated-functions)
-      (add-hook 'persp-activated-functions
-                #'e-chat--mark-selected-session-read))))
-
-(e-chat--ensure-window-selection-hook)
-
-(defvar-local e-chat--output-follow-command-state nil
-  "Paired transcript viewport captured before the current user command.")
-
-(defcustom e-chat-composer-window-min-height 5
-  "Minimum height of an e chat composer window.
-
-Window heights include Emacs's mode line, so the default leaves four editable
-text rows in the composer."
-  :type 'integer
-  :group 'e-chat)
-
-(defcustom e-chat-composer-window-max-height 10
-  "Maximum height of an e chat composer window."
-  :type 'integer
-  :group 'e-chat)
-
-(defvar-local e-chat--surface-composer-buffer nil
-  "Composer buffer paired with this transcript buffer, if any.")
-
-(defvar-local e-chat--surface-transcript-buffer nil
-  "Transcript buffer owned by this composer buffer, if any.")
-
-(defvar-local e-chat--surface-composer-layout-dirty nil
-  "Whether a composer edit may require its paired window to be refitted.")
-
-(defvar-local e-chat--composer-start-marker nil
-  "Marker at the beginning of editable composer text.")
-
-(defvar-local e-chat--queue-start-marker nil
-  "Marker at the start of the queued prompt list.")
-
-(defvar-local e-chat--queue-end-marker nil
-  "Marker at the end of the queued prompt list.")
-
-(defvar-local e-chat--composer-scroll-needed nil
-  "Non-nil when a composer edit should scroll input fully into view.")
-
-(defvar-local e-chat--composer-scroll-suppressed nil
-  "Non-nil while internal composer rewrites should not request scrolling.")
-
-(defvar-local e-chat--turn-registry nil
-  "Hash table of rendered turn metadata keyed by turn id.")
-
-(defvar-local e-chat--block-registry nil
-  "Hash table of rendered block metadata keyed by block id.")
-
-(defvar-local e-chat--message-block-index nil
-  "Hash table mapping durable message ids to rendered block ids.
-The session owns message identity; this buffer-local projection owns the
-corresponding presentation block.  It lets display-disposition events update a
-single rendered message without replaying the transcript.")
-
-(defvar-local e-chat--block-order nil
-  "Rendered block ids in transcript order.")
-
-(defvar-local e-chat--focused-turn-id nil
-  "Turn id belonging to the currently focused response-navigation block.")
-
-(defvar-local e-chat--focused-block-id nil
-  "Block id currently focused by response navigation.")
-
-(defvar-local e-chat--block-counter 0
-  "Counter used to assign display-local block ids.")
-
-(defvar-local e-chat--focused-turn-overlay nil
-  "Overlay highlighting the focused response-navigation turn.")
-
-(defvar-local e-chat--latest-final-block-id nil
-  "Most recent final assistant block id in this chat buffer.")
-
-(defvar-local e-chat--last-rendered-turn-id nil
-  "Most recent turn id that rendered a durable transcript block.")
-
-(defvar-local e-chat--last-rendered-side nil
-  "Side of the most recent durable transcript block.")
-
-(defvar-local e-chat--block-view-block-id nil
-  "Block id currently active in block view mode.")
-
-(defvar-local e-chat--tool-list-block-id nil
-  "Activity block id currently showing a tool list.")
-
-(defvar-local e-chat--tool-list-index 0
-  "Selected tool item index in the focused activity tool list.")
-
 (defvar-local e-chat--event-subscription nil
   "Harness event subscription owned by this chat buffer.")
-
-(defvar-local e-chat--tool-list-overlay nil
-  "Overlay highlighting the selected activity tool list item.")
-
-(defvar-local e-chat--tool-output-origin-buffer nil
-  "Chat buffer that opened the current tool output buffer.")
-
-(defvar-local e-chat--context-reference-counter 0
-  "Counter used to assign inline composer reference ids.")
-
-(defvar-local e-chat--pending-command-requests nil
-  "Alist of pending composer command-reference ids to cancellable requests.")
-
-(defvar-local e-chat--project-file-candidate-cache nil
-  "Cached composer file candidates as a plist with :key and :candidates.")
-
-(defvar-local e-chat--project-file-candidate-request nil
-  "Active async refresh request for composer file candidates.")
-
-(defvar-local e-chat--project-file-candidate-generation 0
-  "Generation token for composer file candidate refresh callbacks.")
 
 (defvar-local e-chat--session-load-request nil
   "Active async transcript load request for this chat buffer.")
@@ -916,135 +609,8 @@ single rendered message without replaying the transcript.")
 (defvar-local e-chat--session-load-generation 0
   "Generation token for async transcript load callbacks.")
 
-(defvar-local e-chat--progress-turn-id nil
-  "Turn id currently represented by the assistant progress indicator.")
-
-(defvar-local e-chat--progress-frame 0
-  "Current active assistant progress indicator frame.")
-
-(defvar-local e-chat--progress-start-marker nil
-  "Marker at the start of the active assistant progress indicator.")
-
-(defvar-local e-chat--progress-end-marker nil
-  "Marker at the end of the active assistant progress indicator.")
-
-(defvar-local e-chat--running-status-start-marker nil
-  "Marker at the start of the active running-turn status region.")
-
-(defvar-local e-chat--running-status-end-marker nil
-  "Marker at the end of the active running-turn status region.")
-
-(defvar-local e-chat--pending-activity-redraw-turn-id nil
-  "Turn id with a scheduled running activity redraw.")
-
-(defvar-local e-chat--pending-activity-redraw-handle nil
-  "UI work handle scheduled to redraw running activity.")
-
-(defvar-local e-chat--pending-activity-redraw-kind nil
-  "Kind of pending activity redraw, either `activity' or `progress'.")
-
-(defvar-local e-chat--pending-activity-redraw-generation nil
-  "Generation token for the pending activity redraw.")
-
-(defvar-local e-chat--activity-redraw-generation 0
-  "Latest activity redraw generation for stale timer detection.")
-
-(defvar-local e-chat--activity-redraw-running nil
-  "Non-nil while this buffer is executing an activity redraw.")
-
-(defvar-local e-chat--deferred-activity-redraw nil
-  "Latest (TURN-ID . KIND) activity redraw withheld from this chat buffer.
-Hidden chat buffers and active minibuffers skip cosmetic transcript repainting.
-The pending turn is re-issued when the buffer becomes visible and ordinary
-top-level interaction resumes.")
-
-(defvar e-chat--recenter-inhibited nil
-  "Non-nil when chat display restoration must not call `recenter'.")
-
-(defvar-local e-chat--markdown-presentation-generation 0
-  "Generation token for deferred assistant Markdown presentation callbacks.")
-
-(defvar-local e-chat--mode-line-status nil
-  "Current compact e chat status text shown in the mode line.")
-
-(defvar-local e-chat--mode-line-status-dirty nil
-  "Non-nil when a hidden chat buffer needs a scheduled status refresh.")
-
-(defvar-local e-chat--mode-line-status-generation 0
-  "Generation used to discard stale scheduled mode-line refreshes.")
-
-(defvar-local e-chat--mode-line-status-prefer-token-usage nil
-  "Whether the pending mode-line refresh should prefer provider token usage.")
-
-(defvar-local e-chat--mode-line-context-estimate-cache nil
-  "Caller-owned (TOKENS . TIME) cache cell for context-token estimates.
-Passed to `e-context-status-text' to reuse approximate estimates between
-mode-line refreshes for the current chat buffer.")
-
-(defvar-local e-chat--mode-line-context-status-cache nil
-  "Caller-owned status text snapshot cache for this chat buffer's mode line.")
-
-(defvar-local e-chat--status nil
-  "Current chat status text shown in the header line.")
-
-(defvar-local e-chat--assistant-streaming-p nil
-  "Non-nil after this chat has displayed streaming status for a provider round.
-Provider text deltas remain necessary to assemble the durable final message,
-but the shell only needs the first one to update its status presentation.")
-
 (defvar-local e-chat--rendered-session-title nil
   "Session title currently rendered in the chat title block.")
-
-(defvar-local e-chat--progress-interval-handle nil
-  "UI work interval advancing the active assistant progress indicator.")
-
-(defvar-local e-chat--progress-next-tick-time nil
-  "Expected `float-time' of the next assistant progress interval tick.")
-
-(defvar-local e-chat--running-status-rendered-hook nil
-  "Abnormal hook run after each running-status redraw.
-Each function is called with the active turn id.  Buffer-local so
-embedders (e.g. Org Canvas) can keep output visible on interval-driven
-progress redraws that never pass through harness event dispatch.")
-
-(defconst e-chat--user-glyph ">"
-  "Glyph shown before user-authored chat blocks.")
-
-(defconst e-chat--assistant-glyph "●"
-  "Glyph shown before assistant chat blocks.")
-
-(defconst e-chat--system-glyph "·"
-  "Glyph shown before compact system chat blocks.")
-
-(defconst e-chat--hidden-glyph "⋯"
-  "Glyph shown before a revealed hidden audit chat block.")
-
-(defconst e-chat--hidden-entry-title-prefix "Hidden"
-  "Title prefix marking a revealed hidden message's rendered block.
-Any entry title with this prefix renders as a dimmed audit block and maps to
-the `hidden' block kind.")
-
-(defconst e-chat--progress-glyphs ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
-  "Glyphs used for the active assistant progress indicator.")
-
-(defconst e-chat--composer-glyph "❯ "
-  "Glyph shown before editable e chat composer text.")
-
-(defconst e-chat--composer-separator
-  "────────────────────────────────────────────────────────────────"
-  "Separator shown above the e chat composer.")
-
-(defconst e-chat--turn-separator
-  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  "Separator shown between rendered e chat turns.")
-
-(defconst e-chat--response-separator
-  e-chat--composer-separator
-  "Separator shown between prompt and agent-side blocks in a turn.")
-
-(defconst e-chat--activity-separator
-  "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
-  "Subtle separator shown between intermittent activity rounds.")
 
 (defconst e-chat--title "E Agent Session"
   "Title shown at the top of e chat buffers.")
@@ -1055,128 +621,6 @@ the `hidden' block kind.")
 
 (defconst e-chat--new-context-session-label "+ New e chat session"
   "Picker label for creating a new chat session for context insertion.")
-
-(defvar-local e-chat--assume-redraw-visible nil
-  "Test override that treats this buffer as visible for redraw gating.
-Production visibility is decided by `get-buffer-window'; tests that drive
-redraws without a live window set this buffer-local flag.")
-
-(defvar-local e-chat--reveal-hidden nil
-  "When non-nil, render messages hidden from the clean transcript.
-A calibration follow-up hides the superseded first attempt and the
-machine-authored corrective prompt so the reply reads as one answer.  Response
-navigation flips this flag to expose those messages as dimmed, focusable blocks
-for audit, then clears it when the user returns to the composer.")
-
-(defvar e-chat--refresh-visible-composers-in-progress nil
-  "Non-nil while visible e chat composers are being refreshed.")
-
-(defconst e-chat--protected-properties
-  '(read-only t
-    e-chat-protected t
-    front-sticky (read-only e-chat-protected field)
-    rear-nonsticky (read-only e-chat-protected field
-                    face font-lock-face invisible display
-                    e-chat-block-id e-chat-turn-id e-chat-separator
-                    e-chat-composer e-chat-context-reference
-                    e-chat-transient-turn-id e-chat-progress-turn-id
-                    e-chat-markdown-syntax mouse-face help-echo)
-    field e-chat-transcript)
-  "Text properties applied to protected e chat presentation text.")
-
-(defconst e-chat--composer-stripped-properties
-  '(read-only e-chat-protected field
-    face font-lock-face invisible display
-    e-chat-block-id e-chat-turn-id e-chat-separator e-chat-composer
-    e-chat-transient-turn-id e-chat-progress-turn-id
-    e-chat-markdown-syntax mouse-face help-echo)
-  "Presentation properties stripped from ordinary composer text.")
-
-(defconst e-chat--composer-reference-stripped-properties
-  '(e-chat-protected field
-    face invisible e-chat-block-id e-chat-turn-id e-chat-separator
-    e-chat-composer e-chat-transient-turn-id e-chat-progress-turn-id
-    e-chat-markdown-syntax)
-  "Presentation properties stripped from inline composer references.")
-
-(defconst e-chat--composer-edit-commands
-  '(self-insert-command
-    e-chat-composer-bang
-    e-chat-composer-at
-    e-chat-composer-slash
-    newline
-    yank
-    yank-pop
-    clipboard-yank
-    quoted-insert
-    e-chat-delete-backward-char
-    e-chat-delete-forward-char
-    delete-backward-char
-    backward-delete-char-untabify
-    delete-forward-char
-    delete-char)
-  "Commands that should resume composer input from readback position.")
-
-(defun e-chat--make-response-navigation-mode-map (&optional map)
-  "Return MAP configured for `e-chat-response-navigation-mode'."
-  (let ((map (or map (make-sparse-keymap))))
-    (define-key map (kbd "j") #'e-chat-response-navigation-next)
-    (define-key map (kbd "k") #'e-chat-response-navigation-previous)
-    (define-key map (kbd "RET") #'e-chat-response-navigation-activate)
-    (define-key map (kbd "i") #'e-chat-response-navigation-insert)
-    (define-key map (kbd "<escape>") #'e-chat-response-navigation-insert)
-    (define-key map (kbd "y") #'e-chat-response-navigation-copy)
-    (define-key map (kbd "o") #'e-chat-response-navigation-open)
-    (define-key map (kbd "d") #'e-chat-response-navigation-details)
-    (define-key map (kbd "h") #'e-chat-response-navigation-toggle-hidden)
-    map))
-
-(defvar e-chat-response-navigation-mode-map
-  (e-chat--make-response-navigation-mode-map)
-  "Keymap for response navigation inside `e-chat-mode'.")
-
-(defun e-chat--make-block-view-mode-map (&optional map)
-  "Return MAP configured for `e-chat-block-view-mode'."
-  (let ((map (or map (make-sparse-keymap))))
-    (define-key map (kbd "h") #'e-chat-block-view-left)
-    (define-key map (kbd "j") #'e-chat-block-view-down)
-    (define-key map (kbd "k") #'e-chat-block-view-up)
-    (define-key map (kbd "l") #'e-chat-block-view-right)
-    (define-key map (kbd "G") #'e-chat-block-view-end)
-    (define-key map (kbd "g g") #'e-chat-block-view-beginning)
-    (define-key map (kbd "v") #'e-chat-block-view-select)
-    (define-key map (kbd "y") #'e-chat-block-view-copy)
-    (define-key map (kbd "i") #'e-chat-block-view-insert)
-    (define-key map (kbd "<escape>") #'e-chat-block-view-back)
-    map))
-
-(defvar e-chat-block-view-mode-map
-  (e-chat--make-block-view-mode-map)
-  "Keymap for block-local view mode inside `e-chat-mode'.")
-
-(defun e-chat--make-tool-list-mode-map (&optional map)
-  "Return MAP configured for `e-chat-tool-list-mode'."
-  (let ((map (or map (make-sparse-keymap))))
-    (define-key map (kbd "j") #'e-chat-tool-list-next)
-    (define-key map (kbd "k") #'e-chat-tool-list-previous)
-    (define-key map (kbd "RET") #'e-chat-tool-list-open-output)
-    (define-key map (kbd "<escape>") #'e-chat-tool-list-back)
-    map))
-
-(defvar e-chat-tool-list-mode-map
-  (e-chat--make-tool-list-mode-map)
-  "Keymap for activity tool-list mode inside `e-chat-mode'.")
-
-(defun e-chat--make-tool-output-mode-map (&optional map)
-  "Return MAP configured for `e-chat-tool-output-mode'."
-  (let ((map (or map (make-sparse-keymap))))
-    (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "<escape>") #'e-chat-tool-output-back)
-    map))
-
-(defvar e-chat-tool-output-mode-map
-  (e-chat--make-tool-output-mode-map)
-  "Keymap for read-only tool output buffers.")
 
 (defun e-chat--host-alt-leader-binding ()
   "Return a host-provided alternate leader key and map, when available."
@@ -1227,40 +671,6 @@ for audit, then clears it when the user returns to the composer.")
 (defvar e-chat-mode-map (e-chat--make-mode-map)
   "Keymap for `e-chat-mode'.")
 
-(defun e-chat--make-surface-command-map (&optional map)
-  "Return high-priority MAP for chat-specific surface commands.
-Native atomic windows own structural delete semantics.  This map only keeps
-chat focus and external-split policy above host minor-mode remappings."
-  (let ((map (or map (make-sparse-keymap))))
-    ;; Clear ordinary-pair bindings when refreshing a map created by an older
-    ;; loaded e-chat version.
-    (define-key map (kbd "C-x 0") nil)
-    (define-key map (kbd "C-x 1") nil)
-    (define-key map [remap delete-window] nil)
-    (define-key map [remap delete-other-windows] nil)
-    (define-key map (kbd "C-x o") #'e-chat-surface-other-window)
-    (define-key map (kbd "C-x 2") #'e-chat-surface-split-window-below)
-    (define-key map (kbd "C-x 3") #'e-chat-surface-split-window-right)
-    (define-key map [remap split-window-below]
-                #'e-chat-surface-split-window-below)
-    (define-key map [remap split-window-right]
-                #'e-chat-surface-split-window-right)
-    map))
-
-(defvar e-chat--surface-command-map
-  (e-chat--make-surface-command-map)
-  "High-priority structural command map for a composed chat surface.")
-
-(defvar-local e-chat--surface-command-map-active nil
-  "Non-nil when the current buffer owns chat-surface window commands.")
-
-(defvar e-chat--surface-emulation-mode-map-alist
-  `((e-chat--surface-command-map-active . ,e-chat--surface-command-map))
-  "Emulation map entry keeping surface commands above host minor modes.")
-
-(add-to-list 'emulation-mode-map-alists
-             'e-chat--surface-emulation-mode-map-alist)
-
 (defvar e-chat-context-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "s-i") #'e-chat-add-context-to-latest)
@@ -1283,31 +693,6 @@ This leaves the global minor mode enabled for every other buffer."
     (push (cons 'e-chat-context-mode nil)
           minor-mode-overriding-map-alist))
   e-chat-context-mode-suppressed)
-
-(defun e-chat--make-overview-mode-map (&optional map)
-  "Return MAP configured as the keymap for `e-chat-overview-mode'."
-  (let ((map (or map (make-sparse-keymap))))
-    (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "RET") #'e-chat-overview-open-session)
-    (define-key map (kbd "o") #'e-chat-overview-open-session)
-    (define-key map (kbd "v") #'e-chat-overview-preview-session)
-    (define-key map (kbd "j") #'e-chat-overview-next-session)
-    (define-key map (kbd "k") #'e-chat-overview-previous-session)
-    (define-key map (kbd "g") #'e-chat-overview-refresh)
-    (define-key map (kbd "q") #'e-chat-overview-close)
-    map))
-
-(defvar e-chat-overview-mode-map (e-chat--make-overview-mode-map)
-  "Keymap for `e-chat-overview-mode'.")
-
-(defvar-local e-chat-overview--harness nil
-  "Harness whose sessions are rendered in this overview buffer.")
-
-(defvar-local e-chat-overview--subscription nil
-  "Harness event subscription for this overview buffer.")
-
-(defvar-local e-chat-overview--subscriptions nil
-  "Harness event subscriptions for multi-instance overview buffers.")
 
 (defun e-chat--configure-evil-context-bindings ()
   "Configure Evil normal-state bindings for `e-chat-context-mode-map'."
@@ -1370,467 +755,39 @@ A no-op when Evil is absent."
 
 (defun e-chat--refresh-keymaps ()
   "Refresh chat keymaps after live reload."
-  (setq e-chat-response-navigation-mode-map
-        (e-chat--make-response-navigation-mode-map
-         e-chat-response-navigation-mode-map))
-  (setq e-chat-block-view-mode-map
-        (e-chat--make-block-view-mode-map e-chat-block-view-mode-map))
-  (setq e-chat-tool-list-mode-map
-        (e-chat--make-tool-list-mode-map e-chat-tool-list-mode-map))
-  (setq e-chat-tool-output-mode-map
-        (e-chat--make-tool-output-mode-map e-chat-tool-output-mode-map))
-  (setq e-chat-overview-mode-map
-        (e-chat--make-overview-mode-map e-chat-overview-mode-map))
+  (e-chat-transcript-refresh-keymaps)
+  (e-chat-overview-refresh-keymap #'e-chat-overview-open-session)
   (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
   (setq e-chat-composer-mode-map
         (e-chat--make-composer-mode-map e-chat-composer-mode-map))
-  (setq e-chat--surface-command-map
-        (e-chat--make-surface-command-map
-         e-chat--surface-command-map))
+  (e-chat-surface-refresh-command-map)
   (e-chat--configure-evil-composer-bindings))
-
-(defun e-chat--setup-line-wrapping ()
-  "Wrap chat text visually at `e-chat-visual-fill-column' when configured.
-Enables `visual-fill-column-mode' for a measured wrap column, falling back
-to plain `visual-line-mode' when the package is missing.  Does nothing when
-`e-chat-visual-fill-column' is nil, leaving default window-edge wrapping."
-  (when e-chat-visual-fill-column
-    (visual-line-mode 1)
-    (if (require 'visual-fill-column nil t)
-        (progn
-          (setq-local visual-fill-column-width e-chat-visual-fill-column)
-          (setq-local visual-fill-column-center-text nil)
-          (visual-fill-column-mode 1))
-      (message "e-chat: visual-fill-column unavailable; wrapping at window edge"))))
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers.
 In the composer, leading ! captures command output, @ inserts file context,
 and / expands available prompts."
-  (setq-local e-chat--surface-command-map-active t)
-  (e-chat--setup-line-wrapping)
+  (e-chat-surface-setup-line-wrapping)
+  (e-chat-surface-mark-transcript)
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
-  (add-hook 'kill-buffer-hook #'e-chat--surface-kill-composer nil t)
-  (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
-  (add-hook 'kill-buffer-hook #'e-chat--cancel-pending-command-references nil t)
+  (add-hook 'kill-buffer-hook #'e-chat-surface-kill-composer nil t)
+  (add-hook 'kill-buffer-hook #'e-chat-activity-stop-progress nil t)
+  (add-hook 'kill-buffer-hook #'e-chat-composer-cancel-pending-references nil t)
   (add-hook 'kill-buffer-hook
-            #'e-chat--cancel-project-file-candidate-refresh nil t)
+            #'e-chat-composer-cancel-file-candidate-refresh nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-session-load-request nil t)
   (add-hook 'kill-buffer-hook
-            #'e-chat--cancel-pending-markdown-presentation nil t)
+            #'e-chat-transcript-cancel-markdown-presentation nil t)
   (add-hook 'kill-buffer-hook
-            #'e-chat--workspace-unread-cache-remove-buffer nil t)
-  (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
+            #'e-chat-overview-remove-unread-buffer nil t)
+  (add-hook 'evil-local-mode-hook #'e-chat-enforce-modal-editing-policy nil t)
   (add-hook 'after-change-functions
-            #'e-chat--mark-composer-scroll-needed nil t)
+            #'e-chat-composer-mark-scroll-needed nil t)
   (add-hook 'after-change-functions
-            #'e-chat--surface-mark-composer-layout-dirty nil t)
-  (add-hook 'pre-command-hook #'e-chat--pre-command nil t)
-  (add-hook 'pre-command-hook
-            #'e-chat--capture-selected-output-follow-command nil t)
-  (add-hook 'post-command-hook #'e-chat--post-command nil t)
-  (e-chat--ensure-window-selection-hook))
-
-(defun e-chat--surface-composer-mode-name ()
-  "Return the transcript-owned mode-line status for this composer.
-The composer is the focused half of a composed chat surface, but model and
-context-fill state belongs to the transcript.  Project its semantic status
-cache, never its `mode-name' display form: Doom formats `mode-name' recursively,
-so forwarding another evaluable mode-line form creates an infinite redisplay
-cycle."
-  (if (and (buffer-live-p e-chat--surface-transcript-buffer)
-           (not (eq e-chat--surface-transcript-buffer (current-buffer))))
-      (let ((status
-             (buffer-local-value 'e-chat--mode-line-status
-                                 e-chat--surface-transcript-buffer)))
-        (if (stringp status)
-            (e-chat--mode-line-display-text status)
-          "e-chat"))
-    "e-chat-input"))
-
-(define-derived-mode e-chat-composer-mode text-mode "e-chat-input"
-  "Editable input pane using the e chat composer contract.
-Most composer buffers are owned by a transcript surface.  Presentation shells
-may also derive a transient standalone input/result pane from this mode."
-  (use-local-map e-chat-composer-mode-map)
-  (setq-local e-chat--surface-command-map-active t)
-  (setq-local mode-name '(:eval (e-chat--surface-composer-mode-name)))
-  (e-chat--setup-line-wrapping)
-  (e-chat--disable-modal-editing)
-  (e-chat--disable-completion)
-  (add-hook 'after-change-functions
-            #'e-chat--mark-composer-scroll-needed nil t)
-  (add-hook 'after-change-functions
-            #'e-chat--surface-mark-composer-layout-dirty nil t)
-  (add-hook 'pre-command-hook
-            #'e-chat--capture-selected-output-follow-command nil t)
-  (add-hook 'post-command-hook #'e-chat--post-command nil t)
-  (add-hook 'post-command-hook #'e-chat--surface-composer-post-command nil t)
-  (add-hook 'kill-buffer-hook
-            #'e-chat--cancel-pending-command-references nil t)
-  (add-hook 'kill-buffer-hook #'e-chat--surface-composer-killed nil t))
-
-(defun e-chat--composer-enter-insert-state ()
-  "Put an Evil-enabled composer buffer into insert state when it is focused."
-  (when (fboundp 'evil-insert-state)
-    (evil-insert-state)))
-
-(defun e-chat--surface-transcript-p ()
-  "Return non-nil when the current buffer owns a separate composer buffer."
-  (buffer-live-p e-chat--surface-composer-buffer))
-
-(defun e-chat--surface-composer-p ()
-  "Return non-nil when the current buffer is a composed chat input pane."
-  (buffer-live-p e-chat--surface-transcript-buffer))
-
-(defun e-chat--composer-buffer-p ()
-  "Return non-nil when the current buffer implements the composer contract."
-  (derived-mode-p 'e-chat-composer-mode))
-
-(defun e-chat--surface-transcript-buffer ()
-  "Return the transcript buffer for the current chat surface."
-  (if (e-chat--surface-composer-p)
-      e-chat--surface-transcript-buffer
-    (current-buffer)))
-
-(defun e-chat--surface-composer-killed ()
-  "Clear this input pane from its transcript surface when it is killed."
-  (let ((composer (current-buffer)))
-    (when-let ((transcript e-chat--surface-transcript-buffer))
-      (when (buffer-live-p transcript)
-        (with-current-buffer transcript
-          (when (eq e-chat--surface-composer-buffer composer)
-            (setq e-chat--surface-composer-buffer nil)))))))
-
-(defun e-chat--surface-kill-composer ()
-  "Kill the composer buffer paired with the current transcript buffer."
-  ;; Release both constituents before either buffer dies.  A soft-dedicated
-  ;; atomic constituent is deleted when its buffer dies; deleting one also
-  ;; deletes its sibling while `kill-buffer' may still be traversing another
-  ;; visible transcript view.
-  (dolist (window (get-buffer-window-list (current-buffer) nil t))
-    (set-window-dedicated-p window nil)
-    (set-window-parameter window 'window-atom nil))
-  (when-let ((composer e-chat--surface-composer-buffer))
-    (when (buffer-live-p composer)
-      ;; The surface is already being torn down.  Releasing its ephemeral
-      ;; dedication lets Emacs replace both buffers without mutating the window
-      ;; tree out from under that traversal.
-      (dolist (window (get-buffer-window-list composer nil t))
-        (set-window-dedicated-p window nil)
-        (set-window-parameter window 'window-atom nil))
-      (kill-buffer composer)))
-  (setq e-chat--surface-composer-buffer nil))
-
-(defun e-chat--surface-initialize-composer (&optional text preserve-focus)
-  "Replace the current composer pane contents with TEXT.
-PRESERVE-FOCUS keeps point where possible.  This only runs in the dedicated
-composer buffer; transcript rendering never calls it."
-  (let ((inhibit-read-only t)
-        (e-chat--composer-scroll-suppressed t)
-        (saved-point (point)))
-    (erase-buffer)
-    (setq e-chat--queue-start-marker nil)
-    (setq e-chat--queue-end-marker nil)
-    (e-chat--insert-queued-prompts)
-    ;; The composer has its own window, so its prompt glyph is sufficient
-    ;; chrome at the input boundary.
-    (e-chat--insert-protected e-chat--composer-glyph 'e-chat-composer-face
-                              '(e-chat-composer t))
-    (setq e-chat--composer-start-marker (point-marker))
-    (set-marker-insertion-type e-chat--composer-start-marker nil)
-    (when text
-      (insert (e-chat--sanitize-composer-text text)))
-    (setq e-chat--composer-scroll-needed nil)
-    (goto-char (if preserve-focus
-                   (min saved-point (point-max))
-                 (point-max)))))
-
-(defun e-chat--surface-bind-composer (composer transcript)
-  "Bind COMPOSER to its distinct owning TRANSCRIPT and current chat context."
-  (unless (and (buffer-live-p composer)
-               (buffer-live-p transcript)
-               (not (eq composer transcript)))
-    (signal 'wrong-type-argument
-            (list 'distinct-live-chat-surface-buffers composer transcript)))
-  (with-current-buffer composer
-    (setq-local e-chat--surface-transcript-buffer transcript)
-    (setq-local e-current-harness
-                (buffer-local-value 'e-current-harness transcript))
-    (setq-local e-chat-harness
-                (buffer-local-value 'e-chat-harness transcript))
-    (setq-local e-chat-harness-instance-id
-                (buffer-local-value 'e-chat-harness-instance-id transcript))
-    (setq-local e-chat-session-id
-                (buffer-local-value 'e-chat-session-id transcript))
-    (setq-local e-chat--preview-buffer nil)
-    (setq-local default-directory
-                (buffer-local-value 'default-directory transcript))
-    (when-let ((workspace (e-buffer-workspace transcript)))
-      (e-buffer-set-workspace composer workspace)
-      (e-workspace-add-buffer composer workspace)))
-  composer)
-
-(defun e-chat--surface-create-composer (transcript)
-  "Create and return TRANSCRIPT's dedicated composer buffer."
-  (let ((composer (generate-new-buffer
-                   (format " *e-chat input:%s*" (buffer-name transcript)))))
-    (with-current-buffer composer
-      (e-chat-composer-mode))
-    (e-chat--surface-bind-composer composer transcript)
-    (with-current-buffer composer
-      (e-chat--surface-initialize-composer))
-    composer))
-
-(defun e-chat--surface-ensure-composer ()
-  "Return the dedicated composer buffer for the current transcript buffer."
-  (if (e-chat--surface-composer-p)
-      (current-buffer)
-    (unless (buffer-live-p e-chat--surface-composer-buffer)
-      (setq e-chat--surface-composer-buffer
-            (e-chat--surface-create-composer (current-buffer))))
-    e-chat--surface-composer-buffer))
-
-(defun e-chat--surface-window-directly-below-p
-    (transcript-window composer-window)
-  "Return non-nil when COMPOSER-WINDOW is directly below TRANSCRIPT-WINDOW."
-  (let ((transcript-edges (window-edges transcript-window))
-        (composer-edges (window-edges composer-window)))
-    (and (= (nth 0 transcript-edges) (nth 0 composer-edges))
-         (= (nth 2 transcript-edges) (nth 2 composer-edges))
-         (= (nth 3 transcript-edges) (nth 1 composer-edges)))))
-
-(defun e-chat--surface-composer-window (&optional transcript-window)
-  "Return TRANSCRIPT-WINDOW's composer constituent, if any.
-The composer buffer owns transcript identity.  Native atomic structure and
-vertical adjacency identify its visible constituent without changing the host
-window tree."
-  (setq transcript-window (or transcript-window (selected-window)))
-  (when (and (window-live-p transcript-window)
-             (buffer-live-p e-chat--surface-composer-buffer))
-    (when-let ((atom-root (window-atom-root transcript-window)))
-      (cl-find-if
-       (lambda (candidate)
-         (and (eq atom-root (window-atom-root candidate))
-              (e-chat--surface-window-directly-below-p
-               transcript-window candidate)))
-       (get-buffer-window-list e-chat--surface-composer-buffer nil t)))))
-
-(defun e-chat--surface-member-window-p (window transcript composer)
-  "Return non-nil when WINDOW belongs to TRANSCRIPT and COMPOSER's surface."
-  (memq (window-buffer window) (list transcript composer)))
-
-(defun e-chat-surface-other-window (&optional arg all-frames)
-  "Select the next window outside the current composed chat surface.
-The transcript and its composer are one interaction surface: transcript
-navigation is explicit, so ordinary window cycling must not land in the
-read-only transcript."
-  (interactive "^p")
-  (let* ((transcript (e-chat--surface-transcript-buffer))
-         (composer (and (buffer-live-p transcript)
-                        (buffer-local-value 'e-chat--surface-composer-buffer
-                                            transcript)))
-         (steps (abs (or arg 1)))
-         (direction (if (< (or arg 1) 0) -1 1)))
-    (if (not (buffer-live-p composer))
-        (other-window (or arg 1) all-frames)
-      (dotimes (_ steps)
-        ;; `other-window' owns the host's frame/minibuffer policy.  We only
-        ;; skip the windows that make up this one chat surface.
-        (let ((remaining (max 1 (length (window-list nil 'nomini)))))
-          (while (and (> remaining 0)
-                      (progn
-                        (other-window direction all-frames)
-                        (e-chat--surface-member-window-p
-                         (selected-window) transcript composer)))
-            (setq remaining (1- remaining))))))))
-
-(defun e-chat--surface-split-replacement-buffer (transcript composer)
-  "Return a current-workspace buffer outside TRANSCRIPT and COMPOSER.
-A root split initially duplicates the selected surface constituent.  Replace
-that transient internal view before the command returns."
-  (let* ((workspace (e-workspace-current))
-         (frame (selected-frame))
-         (buffer
-          (cl-find-if
-           (lambda (candidate)
-             (let ((name (buffer-name candidate)))
-               (and name
-                    (not (memq candidate (list transcript composer)))
-                    (not (string-prefix-p " " name))
-                    (e-workspace-buffer-member-p candidate workspace))))
-           (buffer-list frame))))
-    (or buffer
-        (let ((scratch (get-buffer-create "*scratch*")))
-          (unless (e-workspace-buffer-member-p scratch workspace)
-            (e-workspace-add-buffer scratch workspace))
-          scratch))))
-
-(defun e-chat--surface-split-window (split-function)
-  "Use SPLIT-FUNCTION without leaving an independent composer view."
-  (let* ((transcript (e-chat--surface-transcript-buffer))
-         (composer (and (buffer-live-p transcript)
-                        (buffer-local-value 'e-chat--surface-composer-buffer
-                                            transcript)))
-         (window (funcall split-function)))
-    (when (and (window-live-p window)
-               (buffer-live-p composer)
-               (memq (window-buffer window) (list transcript composer)))
-      (set-window-buffer
-       window
-       (e-chat--surface-split-replacement-buffer transcript composer)))
-    window))
-
-(defun e-chat-surface-split-window-below ()
-  "Split below the complete composed surface."
-  (interactive)
-  (e-chat--surface-split-window #'split-window-below))
-
-(defun e-chat-surface-split-window-right ()
-  "Split right of the complete composed surface."
-  (interactive)
-  (e-chat--surface-split-window #'split-window-right))
-
-(defun e-chat--surface-fit-composer-window (&optional composer-window)
-  "Fit COMPOSER-WINDOW to its input buffer within configured bounds."
-  (when (window-live-p composer-window)
-    (fit-window-to-buffer composer-window
-                          e-chat-composer-window-max-height
-                          e-chat-composer-window-min-height
-                          nil nil t)))
-
-(defun e-chat--surface-dedicate-windows (transcript-window composer-window)
-  "Reserve TRANSCRIPT-WINDOW and COMPOSER-WINDOW for their chat buffers.
-The native atom owns structural split and deletion semantics.  Window
-dedication separately prevents generic display commands from replacing either
-constituent; windows split outside the atom remain ordinary host windows.
-Soft dedication still permits an explicit host operation such as workspace
-teardown or state restoration to replace the buffer without chat knowledge."
-  (set-window-dedicated-p transcript-window 'soft)
-  (set-window-dedicated-p composer-window 'soft))
-
-(defun e-chat--surface-refresh-visible-windows ()
-  "Refresh every visible instance of the current transcript surface.
-One transcript buffer may be shown in multiple windows.  Refresh each instance
-locally so reload reapplies current composer layout and ownership without any
-workspace or generic display component knowing about chat composition."
-  (dolist (transcript-window
-           (get-buffer-window-list (current-buffer) nil t))
-    (e-chat--surface-display-composer transcript-window)))
-
-(defun e-chat--surface-display-composer (&optional transcript-window select)
-  "Display the current transcript's composer below TRANSCRIPT-WINDOW.
-When SELECT is non-nil, select the composer window."
-  (let* ((transcript (current-buffer))
-         (composer (e-chat--surface-ensure-composer))
-         (transcript-window (or transcript-window
-                                (get-buffer-window transcript t)))
-         composer-window)
-    (when (window-live-p transcript-window)
-      (setq composer-window
-            (or (e-chat--surface-composer-window transcript-window)
-                (let ((window
-                       (display-buffer
-                        composer
-                        `((display-buffer-in-atom-window)
-                          (window . ,transcript-window)
-                          (side . below)
-                          (window-height
-                           . ,e-chat-composer-window-min-height)))))
-                  (unless (and (window-live-p window)
-                               (eq (window-buffer window) composer)
-                               (window-atom-root transcript-window)
-                               (eq (window-atom-root transcript-window)
-                                   (window-atom-root window)))
-                    (error "Could not create atomic e-chat composer window"))
-                  window)))
-      (e-chat--surface-dedicate-windows transcript-window composer-window)
-      (e-chat--surface-fit-composer-window composer-window)
-      (when select
-        (select-window composer-window)))
-    composer-window))
-
-(defun e-chat--surface-mark-composer-layout-dirty (_begin _end _length)
-  "Record that this composer changed and may need window sizing work."
-  (when (e-chat--surface-composer-p)
-    (setq e-chat--surface-composer-layout-dirty t)))
-
-(defun e-chat--surface-composer-post-command ()
-  "Keep a visible composer pane fitted after an input command."
-  (when (and (e-chat--surface-composer-p)
-             e-chat--surface-composer-layout-dirty)
-    (setq e-chat--surface-composer-layout-dirty nil)
-    (when-let ((transcript e-chat--surface-transcript-buffer))
-      (when (buffer-live-p transcript)
-        (with-current-buffer transcript
-          (dolist (transcript-window
-                   (get-buffer-window-list transcript nil t))
-            (e-chat--surface-fit-composer-window
-             (e-chat--surface-composer-window transcript-window))))))))
-
-(defun e-chat--surface-refresh-composer-queue ()
-  "Refresh queue chrome in the separate composer without touching transcript.
-Queue changes are the only harness event that changes composer presentation;
-ordinary transcript rendering must leave the composer buffer untouched."
-  (when-let ((composer (e-chat--surface-ensure-composer)))
-    (with-current-buffer composer
-      (when (e-chat--composer-active-p)
-        (e-chat--surface-initialize-composer
-         (buffer-substring e-chat--composer-start-marker (point-max)) t)))))
-
-(defun e-chat-composer-enter-navigation ()
-  "Focus the transcript and enter response navigation when it has a block."
-  (interactive)
-  (let ((transcript e-chat--surface-transcript-buffer))
-    (unless (buffer-live-p transcript)
-      (user-error "This e chat composer has no live transcript"))
-    (when-let ((window (get-buffer-window transcript t)))
-      (select-window window))
-    (with-current-buffer transcript
-      ;; A brand-new transcript has no block to navigate, but Escape still
-      ;; means leave the composer.  Once content exists, retain the normal
-      ;; navigation behavior.
-      (when (or (e-chat--block-at-point)
-                (e-chat--last-rendered-block-id))
-        (e-chat-enter-response-navigation)))))
-
-(define-minor-mode e-chat-response-navigation-mode
-  "Navigate rendered turn blocks in an e chat buffer."
-  :lighter " Nav"
-  :keymap e-chat-response-navigation-mode-map
-  (unless e-chat-response-navigation-mode
-    (setq e-chat--focused-turn-id nil)
-    (setq e-chat--focused-block-id nil)
-    (when (overlayp e-chat--focused-turn-overlay)
-      (delete-overlay e-chat--focused-turn-overlay))))
-
-(define-minor-mode e-chat-block-view-mode
-  "Move within the focused e chat block."
-  :lighter " View"
-  :keymap e-chat-block-view-mode-map
-  (unless e-chat-block-view-mode
-    (setq e-chat--block-view-block-id nil)))
-
-(define-minor-mode e-chat-tool-list-mode
-  "Navigate tool calls for a focused e chat activity block."
-  :lighter " Tools"
-  :keymap e-chat-tool-list-mode-map
-  (unless e-chat-tool-list-mode
-    (setq e-chat--tool-list-block-id nil)
-    (setq e-chat--tool-list-index 0)
-    (when (overlayp e-chat--tool-list-overlay)
-      (delete-overlay e-chat--tool-list-overlay))))
-
-(define-derived-mode e-chat-tool-output-mode special-mode "e-chat-tool-output"
-  "Major mode for read-only e chat tool output buffers.")
-
-(define-derived-mode e-chat-overview-mode special-mode "e-chat-overview"
-  "Major mode for the e chat session overview."
-  (add-hook 'kill-buffer-hook #'e-chat-overview--unsubscribe nil t)
-  (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
-  (e-chat--disable-modal-editing)
-  (buffer-disable-undo)
-  (setq-local truncate-lines t))
+            #'e-chat-surface-mark-composer-layout-dirty nil t)
+  (add-hook 'pre-command-hook #'e-chat-surface-pre-command nil t)
+  (add-hook 'post-command-hook #'e-chat-surface-post-command nil t)
+  (e-chat-surface-initialize))
 
 ;;;###autoload
 (define-minor-mode e-chat-context-mode
@@ -1840,22 +797,13 @@ ordinary transcript rendering must leave the composer buffer untouched."
   :keymap e-chat-context-mode-map
   (e-chat--configure-evil-context-bindings))
 
-(defun e-chat--disable-modal-editing ()
-  "Disable local modal editing state for the chat buffer when available."
-  (when (fboundp 'evil-local-mode)
-    (evil-local-mode -1))
-  (when (boundp 'evil-local-mode)
-    (setq-local evil-local-mode nil))
-  (when (boundp 'evil-state)
-    (setq-local evil-state nil)))
-
-(defun e-chat--enforce-modal-editing-policy ()
+(defun e-chat-enforce-modal-editing-policy ()
   "Disable modal editing when it is reactivated in chat buffers."
   (when (and (or (derived-mode-p 'e-chat-mode)
                  (derived-mode-p 'e-chat-overview-mode))
              (boundp 'evil-local-mode)
              evil-local-mode)
-    (e-chat--disable-modal-editing)))
+    (e-chat-composer-disable-modal-editing)))
 
 (defun e-chat--configure-modal-editing-policy ()
   "Configure modal editors to keep `e-chat-mode' non-normal."
@@ -1869,19 +817,6 @@ ordinary transcript rendering must leave the composer buffer untouched."
 (with-eval-after-load 'evil
   (e-chat--configure-modal-editing-policy)
   (e-chat--configure-evil-composer-bindings))
-
-(defun e-chat--disable-completion ()
-  "Disable completion sources and completion UI in the chat composer."
-  (when (fboundp 'company-mode)
-    (company-mode -1))
-  (when (fboundp 'corfu-mode)
-    (corfu-mode -1))
-  (when (fboundp 'auto-complete-mode)
-    (auto-complete-mode -1))
-  (setq-local completion-at-point-functions nil)
-  (setq-local completion-in-region-function #'ignore)
-  (setq-local company-backends nil)
-  (setq-local company-idle-delay nil))
 
 (defun e-chat--harness-has-capability-p (harness capability-id)
   "Return non-nil when HARNESS has active capability CAPABILITY-ID."
@@ -1926,6 +861,46 @@ ordinary transcript rendering must leave the composer buffer untouched."
       (user-error "Harness %S does not provide chat-session capability"
                   e-chat-default-harness-id))
     harness))
+
+;; Public facade contracts used by embedding shells.  The implementation
+;; helpers stay private to this composition root; presentation consumers must
+;; not reach through the facade into those helpers.
+(defun e-chat-default-harness ()
+  "Return the configured default chat harness."
+  (e-chat--default-harness))
+
+(defun e-chat-chat-instances ()
+  "Return configured chat harness instances."
+  (e-chat--chat-instances))
+
+(defun e-chat-harness-for-instance (instance)
+  "Return the live chat harness represented by INSTANCE."
+  (e-chat--harness-for-instance instance))
+
+(defun e-chat-session-candidates ()
+  "Return the bounded session candidates shown by chat pickers."
+  (e-chat-overview-session-candidates))
+
+(defun e-chat-session-buffer-for-context
+    (harness session-id &optional instance-id)
+  "Return the existing or newly named context BUFFER for SESSION-ID."
+  (e-chat--session-buffer-for-context harness session-id instance-id))
+
+(defun e-chat-ordered-completion-table (labels &optional category)
+  "Return an order-preserving completion table for LABELS."
+  (e-chat--ordered-completion-table labels category))
+
+(defun e-chat-render-resume-preview (harness session)
+  "Render the bounded resume preview for SESSION from HARNESS."
+  (e-chat-overview-render-resume-preview harness session))
+
+(defun e-chat-board-session-p (session)
+  "Return non-nil when SESSION has board-native persistent identity."
+  (e-chat-overview-board-session-p session))
+
+(defun e-chat-short-session-id (session-id)
+  "Return the compact display id for SESSION-ID."
+  (e-chat-overview-short-session-id session-id))
 
 (defun e-chat--instance-label (instance)
   "Return a completion label for chat harness INSTANCE."
@@ -1983,80 +958,17 @@ PROMPT forces completion even when only one/default instance exists."
                       (list :reason 'chat-buffer-cancelled))
     (setq e-chat--session-load-request nil)))
 
-(defun e-chat--render-session-loading (session)
-  "Render cheap loading state for unloaded indexed SESSION."
-  (when-let ((summary (e-chat--session-summary-preview session)))
-    (unless (string-empty-p summary)
-      (e-chat--insert-entry "You" summary nil)))
-  (e-chat--insert-protected
-   (format "%s Loading transcript...\n\n" e-chat--system-glyph)
-   'e-chat-activity-face))
+(defun e-chat-session-summary-preview (session)
+  "Return bounded summary text for SESSION metadata."
+  (e-chat-transcript-session-summary-preview session))
 
-(defun e-chat--session-summary-preview (session)
-  "Return SESSION summary bounded for metadata-only presentation."
-  (when-let ((summary (plist-get session :summary)))
-    (let ((limit e-chat-session-summary-preview-max-chars))
-      (unless (and (integerp limit) (> limit 0))
-        (user-error
-         "e-chat-session-summary-preview-max-chars must be a positive integer"))
-      (if (> (length summary) limit)
-          (concat (substring summary 0 limit) "…")
-        summary))))
+(defun e-chat-session-replay-message-count (messages)
+  "Return the bounded replay count for MESSAGES."
+  (e-chat-transcript-session-replay-message-count messages))
 
-(defun e-chat--validated-replay-limit (value option)
-  "Return positive integer VALUE or report invalid replay OPTION."
-  (unless (and (integerp value) (> value 0))
-    (user-error "%s must be a positive integer" option))
-  value)
-
-(defun e-chat--session-replay-message-count (messages)
-  "Return the bounded number of recent MESSAGES to reconstruct."
-  (min (length messages)
-       (e-chat--validated-replay-limit
-        e-chat-session-replay-message-limit
-        'e-chat-session-replay-message-limit)))
-
-(cl-defun e-chat--render-session-replay
-    (messages &optional (activity-events nil activity-events-supplied-p))
-  "Render the bounded recent replay of loaded transcript MESSAGES.
-The caller owns composer removal and restoration.  When ACTIVITY-EVENTS is
-supplied, use the same service snapshot as MESSAGES."
-  (let* ((total-count (length messages))
-         (rendered-count (e-chat--session-replay-message-count messages))
-         (omitted (max 0 (- total-count rendered-count)))
-         (tail (if (> rendered-count 0)
-                   (e-chat--tail-messages messages rendered-count)
-                 nil)))
-    (when (> omitted 0)
-      (e-chat--insert-protected
-       (format "%s %d earlier transcript message%s omitted from this view.\n\n"
-               e-chat--system-glyph
-               omitted
-               (if (= omitted 1) "" "s"))
-       'e-chat-activity-face))
-    (when tail
-      (if activity-events-supplied-p
-          (e-chat--render-session tail activity-events)
-        (e-chat--render-session tail)))))
-
-(defun e-chat--rerender-transcript ()
-  "Rebuild the attached session transcript in place, preserving the composer.
-Used when stored message state changes after messages were already rendered --
-for example when a message's display disposition flips to hidden -- since the
-shell keys rendered blocks by block id, not message id, and cannot delete one
-message's block surgically."
-  (when (and e-chat-harness e-chat-session-id
-             (derived-mode-p 'e-chat-mode)
-             (not e-chat--preview-buffer))
-    (let ((output-tail-windows
-           (e-chat--capture-output-tail-windows))
-          (messages
-           (e-chat-service-messages e-chat-harness e-chat-session-id)))
-      (let ((inhibit-read-only t))
-        (e-chat--clear t)
-        (e-chat--render-session-replay messages))
-      (e-chat--restore-output-tail-windows
-       output-tail-windows))))
+(defun e-chat-validated-replay-limit (value option)
+  "Validate positive replay LIMIT VALUE for OPTION."
+  (e-chat-transcript-validated-replay-limit value option))
 
 (defun e-chat--session-load-current-p
     (request generation harness session-id instance-id)
@@ -2081,7 +993,7 @@ ON-SESSION-LOAD-ERROR with the load condition after rendering the failure."
                 (when (e-chat--session-load-current-p
                        request generation harness session-id instance-id)
                   (setq e-chat--session-load-request nil)
-                  (e-chat--attach-buffer
+                  (e-chat-attach-buffer
                    buffer harness session-id instance-id))))))
          (on-error
           (lambda (err)
@@ -2091,14 +1003,14 @@ ON-SESSION-LOAD-ERROR with the load condition after rendering the failure."
                   (when (e-chat--session-load-current-p
                          request generation harness session-id instance-id)
                     (setq e-chat--session-load-request nil)
-                    (e-chat--set-status "session load failed" nil)
+                    (e-chat-surface-set-status "session load failed" nil)
                     (let ((inhibit-read-only t))
                       (save-excursion
-                        (goto-char (or e-chat--composer-start-marker
+                        (goto-char (or (e-chat-composer-start-position)
                                        (point-max)))
-                        (e-chat--insert-protected
+                        (e-chat-transcript-insert-protected
                          (format "%s Failed to load transcript: %S\n\n"
-                                 e-chat--system-glyph
+                                 (e-chat-transcript-system-glyph)
                                  err)
                          'e-chat-error-face)))
                     (setq handled t))))
@@ -2124,32 +1036,12 @@ ON-SESSION-LOAD-ERROR with the load condition after rendering the failure."
        (run-at-time 0 nil on-error err)))
     request))
 
-(defun e-chat--git-root (directory)
-  "Return Git worktree root containing DIRECTORY, or nil."
-  (when-let ((root (locate-dominating-file directory ".git")))
-    (file-name-as-directory (expand-file-name root))))
-
 (defun e-chat--project-root (&optional directory)
-  "Return the project root for DIRECTORY, falling back to DIRECTORY.
-Projectile is preferred when available, followed by `project-current', then a
-plain Git ancestor check.  The return value is always a normalized directory
-name."
-  (let* ((directory (file-name-as-directory
-                     (expand-file-name (or directory default-directory))))
-         (projectile-root
-          (when (fboundp 'projectile-project-root)
-            (let ((default-directory directory))
-              (ignore-errors (projectile-project-root)))))
-         (project-root
-          (let ((default-directory directory))
-            (ignore-errors
-              (when-let ((project (project-current nil)))
-                (project-root project)))))
-         (root (or projectile-root
-                   project-root
-                   (e-chat--git-root directory)
-                   directory)))
-    (file-name-as-directory (expand-file-name root))))
+  (e-chat-composer-project-root directory))
+
+(defun e-chat-project-root (&optional directory)
+  "Return the chat-compatible project root for DIRECTORY."
+  (e-chat-composer-project-root directory))
 
 (defun e-chat--session-metadata (&optional instance-id)
   "Return metadata for a chat session created from the current buffer."
@@ -2184,7 +1076,7 @@ When HARNESS or INSTANCE-ID is non-nil, require the buffer to match it."
     (with-current-buffer buffer
       (and (eq major-mode 'e-chat-mode)
            (equal e-chat-session-id session-id)
-           (not e-chat--preview-buffer)
+           (not (e-chat-transcript-preview-p))
            (or (not harness)
                (eq e-chat-harness harness))
            (or (not instance-id)
@@ -2204,8 +1096,8 @@ context insertions from the chat buffer the user is looking at."
 (defun e-chat--empty-composer-p (buffer)
   "Return non-nil when BUFFER has no composer draft text."
   (with-current-buffer buffer
-    (or (not (e-chat--composer-active-p))
-        (string-empty-p (e-chat--composer-text)))))
+    (or (not (e-chat-composer-active-p))
+        (string-empty-p (e-chat-composer-text)))))
 
 (defun e-chat--prune-duplicate-session-buffers
     (keeper session-id &optional harness instance-id)
@@ -2226,11 +1118,11 @@ context insertions from the chat buffer the user is looking at."
       e-chat-harness
       e-chat-session-id)
      t)
-    (when (buffer-live-p e-chat--surface-composer-buffer)
-      (with-current-buffer e-chat--surface-composer-buffer
+    (when-let ((composer (e-chat-surface-composer-buffer)))
+      (with-current-buffer composer
         (rename-buffer
          (format " *e-chat input:%s*"
-                 (buffer-name e-chat--surface-transcript-buffer))
+                 (buffer-name (e-chat-surface-transcript-buffer)))
          t)))))
 
 (defun e-chat--event-consumer (harness buffer)
@@ -2263,8 +1155,8 @@ context insertions from the chat buffer the user is looking at."
             (with-current-buffer buffer
               (unless (and
                        (eq (plist-get event :type) 'assistant-delta)
-                       e-chat--assistant-streaming-p
-                       (equal e-chat--status "streaming"))
+                       (e-chat-activity-assistant-streaming-p)
+                       (equal (e-chat-status) "streaming"))
                 (e-chat--render-event event))))))))))
 
 (defun e-chat--subscribe (harness buffer session-id)
@@ -2287,5512 +1179,6 @@ context insertions from the chat buffer the user is looking at."
     (e-chat-service-unsubscribe e-chat--event-subscription))
   (setq e-chat--event-subscription nil))
 
-(defun e-chat--mark-protected (start end)
-  "Mark text between START and END as protected presentation text."
-  (when (< start end)
-    (add-text-properties start end e-chat--protected-properties)))
-
-(defun e-chat--insert-protected (text &optional face properties)
-  "Insert TEXT as protected presentation text at point.
-FACE is applied when non-nil.  PROPERTIES are added with text properties."
-  (let ((start (point)))
-    (insert text)
-    (e-chat--mark-protected start (point))
-    (when face
-      (add-text-properties start (point) `(font-lock-face ,face)))
-    (when properties
-      (add-text-properties start (point) properties))))
-
-(defun e-chat--apply-activity-separator-face (start end)
-  "Apply the quiet activity separator face between START and END."
-  (when (< start end)
-    (save-excursion
-      (goto-char start)
-      (while (search-forward e-chat--activity-separator end t)
-        (add-text-properties
-         (match-beginning 0)
-         (match-end 0)
-         '(font-lock-face e-chat-activity-separator-face))))))
-
-(defun e-chat--entry-side (title)
-  "Return the prompt/agent side represented by entry TITLE."
-  (if (equal title "You") 'user 'agent))
-
-(defun e-chat--insert-horizontal-separator (text face)
-  "Insert protected separator TEXT with FACE at point."
-  (e-chat--insert-protected
-   (concat text "\n")
-   face
-   '(e-chat-separator t)))
-
-(defun e-chat--maybe-insert-turn-separator (turn-id)
-  "Insert a stable separator before TURN-ID when crossing turns."
-  (when (and turn-id
-             e-chat--last-rendered-turn-id
-             (not (equal turn-id e-chat--last-rendered-turn-id)))
-    (e-chat--insert-horizontal-separator
-     e-chat--turn-separator
-     'e-chat-turn-separator-face)))
-
-(defun e-chat--maybe-insert-response-separator (turn-id side)
-  "Insert a stable separator before TURN-ID's first agent SIDE block."
-  (when (and turn-id
-             (eq side 'agent)
-             (equal e-chat--last-rendered-turn-id turn-id)
-             (eq e-chat--last-rendered-side 'user))
-    (let ((record (e-chat--turn-record turn-id)))
-      (unless (plist-get record :response-separator-rendered)
-        (e-chat--insert-horizontal-separator
-         e-chat--response-separator
-         'e-chat-separator-face)
-        (plist-put record :response-separator-rendered t)))))
-
-(defun e-chat--insert-durable-entry-separators (turn-id side)
-  "Insert separators needed before a durable TURN-ID block on SIDE."
-  (e-chat--maybe-insert-turn-separator turn-id)
-  (e-chat--maybe-insert-response-separator turn-id side))
-
-(defun e-chat--record-durable-entry-rendered (turn-id side)
-  "Record that a durable TURN-ID block on SIDE was rendered."
-  (when (and turn-id side)
-    (setq e-chat--last-rendered-turn-id turn-id)
-    (setq e-chat--last-rendered-side side)))
-
-(defun e-chat--composer-active-p ()
-  "Return non-nil when the current buffer has an active composer."
-  (and (markerp e-chat--composer-start-marker)
-       (marker-position e-chat--composer-start-marker)))
-
-(defun e-chat--delete-composer ()
-  "Clear editable input from the current composer buffer.
-Return non-nil when active input was removed."
-  (when (and (e-chat--composer-buffer-p)
-             (e-chat--composer-active-p))
-    (let ((inhibit-read-only t)
-          (e-chat--composer-scroll-suppressed t))
-      (delete-region (marker-position e-chat--composer-start-marker)
-                     (point-max)))
-    (set-marker e-chat--composer-start-marker nil)
-    (setq e-chat--composer-scroll-needed nil)
-    t))
-
-(defun e-chat--sanitize-composer-text (text)
-  "Return TEXT without leaked transcript presentation properties."
-  (let ((copy (copy-sequence text))
-        (position 0)
-        next)
-    (while (< position (length copy))
-      (setq next (or (next-single-property-change
-                      position 'e-chat-context-reference copy)
-                     (length copy)))
-      (remove-list-of-text-properties
-       position
-       next
-       (if (get-text-property position 'e-chat-context-reference copy)
-           e-chat--composer-reference-stripped-properties
-         e-chat--composer-stripped-properties)
-       copy)
-      (setq position next))
-    copy))
-
-(defun e-chat--visible-window ()
-  "Return a visible window for the current chat buffer."
-  (get-buffer-window (current-buffer) t))
-
-(defun e-chat--redraw-visible-p ()
-  "Return non-nil when this chat buffer should run expensive redraws now.
-A chat buffer displayed in no window is never repainted for progress or
-activity; the redraw is deferred until the buffer next becomes visible.  This
-keeps a background turn from stalling the single main thread by repainting a
-transcript nobody is looking at.  Tests without a live window force visibility
-with `e-chat--assume-redraw-visible'."
-  (or e-chat--assume-redraw-visible
-      (and (get-buffer-window (current-buffer) t) t)))
-
-(defun e-chat--queued-prompts ()
-  "Return queued prompt items for the attached chat session."
-  (when (and e-chat-harness e-chat-session-id)
-    (ignore-errors
-      (e-chat-service-queued-inputs e-chat-harness e-chat-session-id))))
-
-(defun e-chat--queue-preview-text (prompt)
-  "Return compact one-line preview text for queued PROMPT."
-  (let ((text (string-trim
-               (replace-regexp-in-string "[\n\r\t ]+" " " (or prompt "")))))
-    (if (> (length text) 96)
-        (concat (substring text 0 93) "...")
-      text)))
-
-(defun e-chat--insert-queued-prompts ()
-  "Insert queued prompt previews above the composer separator."
-  (let ((items (e-chat--queued-prompts)))
-    (if (not items)
-        (progn
-          (when (markerp e-chat--queue-start-marker)
-            (set-marker e-chat--queue-start-marker nil))
-          (when (markerp e-chat--queue-end-marker)
-            (set-marker e-chat--queue-end-marker nil)))
-      (setq e-chat--queue-start-marker (point-marker))
-      (set-marker-insertion-type e-chat--queue-start-marker nil)
-      (e-chat--insert-protected "Queued prompts\n" 'e-chat-separator-face)
-      (cl-loop for item in items
-               for index from 1
-               do (e-chat--insert-protected
-                   (format "%d. %s\n"
-                           index
-                           (e-chat--queue-preview-text
-                            (plist-get item :prompt)))
-                   'e-chat-separator-face))
-      (setq e-chat--queue-end-marker (point-marker))
-      (set-marker-insertion-type e-chat--queue-end-marker nil))))
-
-(defun e-chat--insert-composer (&optional text preserve-focus)
-  "Initialize the current chat surface's editable composer.
-PRESERVE-FOCUS retains composer point when the current buffer is the composer."
-  (if (e-chat--surface-transcript-p)
-      (e-chat--surface-ensure-composer)
-    (unless (e-chat--composer-buffer-p)
-      (user-error "This buffer is not an e chat composer"))
-    (e-chat--surface-initialize-composer text preserve-focus)))
-
-(defun e-chat--ensure-composer ()
-  "Ensure the current chat buffer has an active composer."
-  (if (e-chat--surface-transcript-p)
-      (e-chat--surface-ensure-composer)
-    (unless (e-chat--composer-buffer-p)
-      (user-error "This buffer is not an e chat surface"))
-    (unless (e-chat--composer-active-p)
-      (e-chat--surface-initialize-composer))))
-
-(defun e-chat--point-in-composer-p (&optional position)
-  "Return non-nil when POSITION, or point, is in editable composer text."
-  (and (e-chat--composer-active-p)
-       (>= (or position (point))
-           (marker-position e-chat--composer-start-marker))))
-
-(defun e-chat--clamp-to-composer ()
-  "Move point back to the editable composer boundary when it escaped upward."
-  (when (and (e-chat--composer-active-p)
-             (not e-chat-response-navigation-mode)
-             (not e-chat-block-view-mode)
-             (not e-chat-tool-list-mode)
-             (< (point) (marker-position e-chat--composer-start-marker)))
-    (goto-char e-chat--composer-start-marker)))
-
-(defun e-chat--mark-composer-scroll-needed (_begin end _length)
-  "Record that a composer edit ending at END needs bottom visibility."
-  (when (and (not e-chat--composer-scroll-suppressed)
-             (e-chat--composer-active-p)
-             (> end (marker-position e-chat--composer-start-marker)))
-    (setq e-chat--composer-scroll-needed t)))
-
-(defun e-chat--scroll-composer-edit-into-view ()
-  "Scroll the current composer edit down without changing user scroll policy."
-  (when-let ((window (e-chat--visible-window)))
-    (set-window-point window (point))
-    (with-selected-window window
-      (ignore-errors
-        (recenter -2)))))
-
-(defun e-chat--composer-edit-command-p (command)
-  "Return non-nil when COMMAND should target composer input."
-  (memq command e-chat--composer-edit-commands))
-
-(defun e-chat--pre-command ()
-  "Redirect edit commands from readback into the composer."
-  (cond
-   ((and (e-chat--composer-active-p)
-         (not e-chat-response-navigation-mode)
-         (not e-chat-block-view-mode)
-         (not e-chat-tool-list-mode)
-         (not (e-chat--point-in-composer-p))
-         (e-chat--composer-edit-command-p this-command))
-    (e-chat--show-composer))))
-
-(defun e-chat--update-output-follow-after-command ()
-  "Update paired transcript follow intent after a viewport-moving command."
-  (let ((state e-chat--output-follow-command-state))
-    (setq e-chat--output-follow-command-state nil)
-    (when-let* ((state state)
-              (transcript (plist-get state :buffer))
-              ((buffer-live-p transcript))
-              (window (plist-get state :window))
-              ((window-live-p window))
-              ((eq (window-buffer window) transcript)))
-      (with-current-buffer transcript
-        (let ((old-start (plist-get state :window-start))
-              (old-point (plist-get state :window-point))
-              (start (window-start window))
-              (point (window-point window)))
-          (cond
-           ;; Any movement toward older output is deliberate scrollback, even
-           ;; when a tall viewport still happens to contain the live tail.
-           ((or (< start old-start)
-                (and (= start old-start) (< point old-point)))
-            (e-chat--set-window-output-follow window nil))
-           ;; Movement toward newer output repins only once the viewport reaches
-           ;; the tail.  Commands which do not move the viewport preserve intent.
-           ((or (> start old-start) (> point old-point))
-            (e-chat--set-window-output-follow
-             window
-             (e-chat--window-reaches-output-p
-              window (e-chat--output-follow-position))))))))))
-
-(defun e-chat--capture-selected-output-follow-command ()
-  "Capture the selected transcript viewport before a user command."
-  (setq e-chat--output-follow-command-state nil)
-  (when-let* ((surface (e-chat--selected-chat-surface))
-              (transcript (car surface))
-              (window (cdr surface)))
-    (setq e-chat--output-follow-command-state
-          (list :buffer transcript
-                :window window
-                :window-start (window-start window)
-                :window-point (window-point window)))))
-
-(defun e-chat--post-command ()
-  "Maintain composer and transcript viewport invariants after commands."
-  (e-chat--update-output-follow-after-command)
-  (when e-chat--composer-scroll-needed
-    (setq e-chat--composer-scroll-needed nil)
-    (when (e-chat--point-in-composer-p)
-      (e-chat--scroll-composer-edit-into-view))))
-
-(defun e-chat-previous-line (&optional arg try-vscroll)
-  "Move up ARG lines like `previous-line', honoring TRY-VSCROLL.
-Keep point inside the composer when movement starts there."
-  (interactive "^p\np")
-  (let ((started-in-composer (e-chat--point-in-composer-p)))
-    (unwind-protect
-        (line-move (- (or arg 1)) nil nil try-vscroll)
-      (when started-in-composer
-        (e-chat--clamp-to-composer)))))
-
-(defun e-chat--composer-text ()
-  "Return the current editable composer text."
-  (unless (e-chat--composer-active-p)
-    (user-error "No active e chat composer"))
-  (string-trim
-   (buffer-substring-no-properties e-chat--composer-start-marker
-                                   (point-max))))
-
-(defun e-chat--composer-text-before-point ()
-  "Return composer text from its start through point."
-  (buffer-substring-no-properties e-chat--composer-start-marker (point)))
-
-(defun e-chat--composer-leading-prefix-p ()
-  "Return non-nil when point is at the first non-whitespace composer input."
-  (and (e-chat--point-in-composer-p)
-       (string-match-p "\\`[[:space:]]*\\'"
-                       (e-chat--composer-text-before-point))))
-
-(defun e-chat--composer-word-boundary-prefix-p ()
-  "Return non-nil when point is at a composer prefix word boundary."
-  (and (e-chat--point-in-composer-p)
-       (let ((start (marker-position e-chat--composer-start-marker)))
-         (or (= (point) start)
-             (eq (char-syntax (char-before)) ?\s)))))
-
-(defun e-chat--insert-literal-prefix (prefix)
-  "Insert literal PREFIX in the composer when possible."
-  (when (e-chat--point-in-composer-p)
-    (insert prefix)))
-
-(defun e-chat--self-insert-prefix ()
-  "Fallback to ordinary self insertion for a non-triggering prefix command."
-  (if (e-chat--point-in-composer-p)
-      (call-interactively #'self-insert-command)
-    nil))
-
-(defun e-chat--command-uri (command)
-  "Return a compact command URI for COMMAND."
-  (concat "command://"
-          (replace-regexp-in-string "[\n\r\t ]+" " " command)))
-
-(cl-defun e-chat--run-shell-command-start
-    (command directory &key on-done on-error on-request-start)
-  "Start shell COMMAND in DIRECTORY and report captured output asynchronously.
-ON-DONE receives the same result plist returned by `e-chat--run-shell-command'.
-ON-ERROR receives an Emacs condition list.  ON-REQUEST-START receives a
-cancellable process request."
-  (let* ((directory (file-name-as-directory (expand-file-name directory)))
-         (buffer (generate-new-buffer " *e-chat-command-output*"))
-         (settled nil)
-         process
-         timeout-timer
-         request)
-    (cl-labels
-        ((cleanup
-          ()
-          (when (timerp timeout-timer)
-            (cancel-timer timeout-timer))
-          (when (buffer-live-p buffer)
-            (kill-buffer buffer)))
-         (result
-          (&optional timed-out)
-          (when (buffer-live-p buffer)
-            (with-current-buffer buffer
-              (let* ((output (buffer-string))
-                     (truncated (> (string-bytes output)
-                                   e-chat-command-output-max-bytes))
-                     (output (if truncated
-                                 (concat
-                                  (e-chat--string-byte-prefix
-                                   output
-                                   e-chat-command-output-max-bytes)
-                                  "\n[Command output truncated]\n")
-                               output)))
-                (list :output output
-                      :exit (unless timed-out
-                              (and process (process-exit-status process)))
-                      :truncated truncated
-                      :timed-out timed-out)))))
-         (finish
-          (&optional timed-out)
-          (unless settled
-            (setq settled t)
-            (let ((value (result timed-out)))
-              (cleanup)
-              (when on-done
-                (funcall on-done value)))))
-         (fail
-          (err)
-          (unless settled
-            (setq settled t)
-            (cleanup)
-            (when on-error
-              (funcall on-error err))))
-         (cancel
-          ()
-          (unless settled
-            (setq settled t)
-            (when (timerp timeout-timer)
-              (cancel-timer timeout-timer))
-            (when (and process (process-live-p process))
-              (kill-process process))
-            (when (buffer-live-p buffer)
-              (kill-buffer buffer)))
-          t))
-      (condition-case err
-          (let ((default-directory directory))
-            (setq process
-                  (make-process
-                   :name "e-chat-command-output"
-                   :buffer buffer
-                   :stderr buffer
-                   :command (list shell-file-name shell-command-switch command)
-                   :connection-type 'pipe
-                   :noquery t
-                   :sentinel
-                   (lambda (proc _event)
-                     (when (and (not settled)
-                                (memq (process-status proc) '(exit signal)))
-                       (finish nil)))))
-            (set-process-query-on-exit-flag process nil)
-            (setq request
-                  (e-tools-request-create
-                   :cancel #'cancel
-                   :metadata (list :transport 'process
-                                   :process process
-                                   :command command
-                                   :cancellable t)))
-            (when on-request-start
-              (funcall on-request-start request))
-            (setq timeout-timer
-                  (run-at-time
-                   e-chat-command-output-timeout
-                   nil
-                   (lambda ()
-                     (unless settled
-                       (when (process-live-p process)
-                         (kill-process process))
-                       (finish t)))))
-            request)
-        (error
-         (fail err)
-         nil)))))
-
-(defun e-chat--run-shell-command (command directory)
-  "Run shell COMMAND in DIRECTORY and return captured output metadata."
-  (e-chat--reject-sync-in-hot-path 'e-chat--run-shell-command)
-  (let ((done nil)
-        result
-        failure)
-    (e-chat--run-shell-command-start
-     command
-     directory
-     :on-done (lambda (value)
-                (setq result value)
-                (setq done t))
-     :on-error (lambda (err)
-                 (setq failure err)
-                 (setq done t)))
-    (while (not done)
-      (accept-process-output nil 0.05))
-    (when failure
-      (signal (car failure) (cdr failure)))
-    result))
-
-(defun e-chat--command-output-reference (command result)
-  "Return a context reference for shell COMMAND RESULT."
-  (let* ((timed-out (plist-get result :timed-out))
-         (exit (plist-get result :exit))
-         (status (if timed-out
-                     (format "timed out after %ss"
-                             e-chat-command-output-timeout)
-                   (format "exit %s" exit)))
-         (output (plist-get result :output)))
-    (list :uri (e-chat--command-uri command)
-          :label (format "$ %s (%s)" command status)
-          :text (string-join
-                 (delq nil
-                       (list (format "$ %s" command)
-                             (format "Status: %s" status)
-                             (when (plist-get result :truncated)
-                               "Output was truncated.")
-                             ""
-                             output))
-                 "\n"))))
-
-(defun e-chat--workspace-roots ()
-  "Return active chat workspace roots, falling back to the project root."
-  (or (and e-chat-harness
-           e-chat-session-id
-           (e-harness-workspace-roots e-chat-harness e-chat-session-id))
-      (list (e-chat--project-root))))
-
-(defun e-chat--git-file-candidates (root limit)
-  "Return git-tracked and untracked file paths under ROOT, or nil.
-When ROOT is inside a git repository with no eligible files, return
-`:e-chat-git-empty' so callers do not fall through to an ignore-blind recursive
-scan."
-  (when (executable-find "git")
-    (with-temp-buffer
-      (let ((status (process-file
-                     "git"
-                     nil
-                     (list t nil)
-                     nil
-                     "-C"
-                     root
-                     "ls-files"
-                     "-co"
-                     "--exclude-standard")))
-        (when (zerop status)
-          (let (files)
-            (dolist (line (split-string (buffer-string) "\n" t))
-              (when (< (length files) limit)
-                (push (expand-file-name line root) files)))
-            (or (nreverse files) :e-chat-git-empty)))))))
-
-(defun e-chat--fallback-file-candidates (root limit)
-  "Return at most LIMIT regular file paths under ROOT."
-  (let (files)
-    (catch 'done
-      (cl-labels ((walk
-                   (directory)
-                   (dolist (path (directory-files
-                                  directory
-                                  t
-                                  directory-files-no-dot-files-regexp))
-                     (cond
-                      ((and (file-directory-p path)
-                            (not (member (file-name-nondirectory path)
-                                         '(".git" ".hg" ".svn"))))
-                       (walk path))
-                      ((file-regular-p path)
-                       (push path files)
-                       (when (>= (length files) limit)
-                         (throw 'done nil)))))))
-        (walk root)))
-    (nreverse files)))
-
-(defun e-chat--fd-executable ()
-  "Return the fd executable for file candidate discovery, or nil."
-  (or (executable-find "fd")
-      (executable-find "fdfind")))
-
-(defun e-chat--fd-file-candidates (root limit)
-  "Return at most LIMIT regular file paths under ROOT using fd."
-  (when-let ((fd (e-chat--fd-executable)))
-    (with-temp-buffer
-      (let ((status (process-file
-                     fd
-                     nil
-                     (list t nil)
-                     nil
-                     "--type"
-                     "file"
-                     "--hidden"
-                     "--exclude"
-                     ".git"
-                     "--color"
-                     "never"
-                     "--base-directory"
-                     root
-                     ".")))
-        (when (zerop status)
-          (let (files)
-            (dolist (line (split-string (buffer-string) "\n" t))
-              (when (< (length files) limit)
-                (push (expand-file-name line root) files)))
-            (nreverse files)))))))
-
-(defun e-chat--usable-workspace-root-p (root)
-  "Return non-nil when ROOT can be scanned for composer file completion."
-  (and (stringp root)
-       (file-directory-p root)))
-
-(defun e-chat--project-file-candidate-cache-key ()
-  "Return cache key for the active composer file candidate snapshot."
-  (list :roots (mapcar (lambda (root)
-                         (file-name-as-directory (expand-file-name root)))
-                       (e-chat--workspace-roots))
-        :limit e-chat-project-file-candidate-limit))
-
-(defun e-chat--project-file-candidate-cache-hit-p (key)
-  "Return non-nil when composer file candidate cache matches KEY."
-  (and (plist-get e-chat--project-file-candidate-cache :ready)
-       (equal key (plist-get e-chat--project-file-candidate-cache :key))))
-
-(defun e-chat--project-file-candidates-loading-p ()
-  "Return non-nil when composer file candidate refresh is in flight."
-  (and e-chat--project-file-candidate-request t))
-
-(defun e-chat--cancel-project-file-candidate-refresh ()
-  "Cancel the active composer file candidate refresh request."
-  (when e-chat--project-file-candidate-request
-    (e-tools-cancel-request e-chat--project-file-candidate-request)
-    (setq e-chat--project-file-candidate-request nil)))
-
-(defun e-chat--disambiguate-file-candidates (candidates)
-  "Return CANDIDATES with duplicate labels qualified by root."
-  (let ((counts (make-hash-table :test 'equal)))
-    (dolist (candidate candidates)
-      (let ((label (plist-get candidate :label)))
-        (puthash label (1+ (gethash label counts 0)) counts)))
-    (mapcar
-     (lambda (candidate)
-       (let ((label (plist-get candidate :label)))
-         (if (> (gethash label counts 0) 1)
-             (plist-put (copy-sequence candidate)
-                        :label
-                        (format "%s (%s)"
-                                label
-                                (abbreviate-file-name
-                                 (directory-file-name
-                                  (plist-get candidate :root)))))
-           candidate)))
-     candidates)))
-
-(defun e-chat--project-file-candidates-sync ()
-  "Return project file completion candidates for the active chat session."
-  (e-chat--reject-sync-in-hot-path 'e-chat--project-file-candidates-sync)
-  (let ((remaining e-chat-project-file-candidate-limit)
-        candidates)
-    (dolist (root (e-chat--workspace-roots))
-      (when (> remaining 0)
-        (let ((root (file-name-as-directory (expand-file-name root))))
-          (when (e-chat--usable-workspace-root-p root)
-            (let* ((files (e-chat--git-file-candidates root remaining))
-                   (files (cond
-                           ((eq files :e-chat-git-empty) nil)
-                           (files files)
-                           (t (or (e-chat--fd-file-candidates
-                                   root
-                                   remaining)
-                                  (e-chat--fallback-file-candidates
-                                   root
-                                   remaining))))))
-              (dolist (file files)
-                (let ((label (file-relative-name file root)))
-                  (push (list :label label :path file :root root) candidates)))
-              (setq remaining (- remaining (length files))))))))
-    (e-chat--disambiguate-file-candidates (nreverse candidates))))
-
-(defun e-chat--project-file-candidates-refresh-start (key)
-  "Start an async refresh of composer file candidates for KEY."
-  (unless (and e-chat--project-file-candidate-request
-               (equal key (plist-get e-chat--project-file-candidate-cache :key)))
-    (e-chat--cancel-project-file-candidate-refresh)
-    (setq e-chat--project-file-candidate-generation
-          (1+ e-chat--project-file-candidate-generation))
-    (setq e-chat--project-file-candidate-cache
-          (list :key key :ready nil :candidates nil))
-    (let* ((buffer (current-buffer))
-           (generation e-chat--project-file-candidate-generation)
-           (settled nil)
-           timer
-           request)
-      (cl-labels
-          ((current-p
-            ()
-            (and (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (and (eq request e-chat--project-file-candidate-request)
-                        (= generation
-                           e-chat--project-file-candidate-generation)
-                        (equal key
-                               (plist-get
-                                e-chat--project-file-candidate-cache
-                                :key))))))
-           (finish
-            (candidates)
-            (unless settled
-              (setq settled t)
-              (when (current-p)
-                (with-current-buffer buffer
-                  (setq e-chat--project-file-candidate-cache
-                        (list :key key
-                              :ready t
-                              :candidates candidates))
-                  (setq e-chat--project-file-candidate-request nil)))))
-           (fail
-            (_error)
-            (unless settled
-              (setq settled t)
-              (when (current-p)
-                (with-current-buffer buffer
-                  (setq e-chat--project-file-candidate-cache
-                        (list :key key
-                              :ready t
-                              :candidates nil))
-                  (setq e-chat--project-file-candidate-request nil)))))
-           (cancel
-            ()
-            (unless settled
-              (setq settled t)
-              (when (timerp timer)
-                (cancel-timer timer))
-              (when (buffer-live-p buffer)
-                (with-current-buffer buffer
-                  (when (eq request
-                            e-chat--project-file-candidate-request)
-                    (setq e-chat--project-file-candidate-request nil)))))))
-        (setq request
-              (e-tools-request-create
-               :cancel #'cancel
-               :metadata (list :kind 'composer-file-candidates
-                               :key key
-                               :generation generation
-                               :cancellable t)))
-        (setq timer
-              (run-at-time
-               0 nil
-               (lambda ()
-                 (condition-case err
-                     (when (current-p)
-                       (with-current-buffer buffer
-                         (finish (e-chat--project-file-candidates-sync))))
-                   (error (fail err))))))
-        (setq e-chat--project-file-candidate-request request)
-        request))))
-
-(defun e-chat--project-file-candidates ()
-  "Return cached project file candidates and refresh stale snapshots async."
-  (let ((key (e-chat--project-file-candidate-cache-key)))
-    (if (e-chat--project-file-candidate-cache-hit-p key)
-        (plist-get e-chat--project-file-candidate-cache :candidates)
-      (e-chat--project-file-candidates-refresh-start key)
-      nil)))
-
-(defun e-chat--read-file-reference-text (path)
-  "Return reference text for PATH, truncated when necessary."
-  (with-temp-buffer
-    (insert-file-contents-literally
-     path nil 0 (1+ e-chat-file-reference-max-bytes))
-    (let* ((content (buffer-string))
-           (truncated (> (string-bytes content)
-                         e-chat-file-reference-max-bytes)))
-      (if truncated
-          (concat
-           (e-chat--string-byte-prefix content e-chat-file-reference-max-bytes)
-           "\n[File reference truncated]\n")
-        content))))
-
-(defun e-chat--insert-file-reference (candidate)
-  "Insert CANDIDATE as an inline file reference."
-  (let* ((path (plist-get candidate :path))
-         (label (plist-get candidate :label))
-         (reference (list :uri (concat "file://" (expand-file-name path))
-                          :label label
-                          :text (e-chat--read-file-reference-text path))))
-    (e-chat--insert-context-reference reference)))
-
-(defun e-chat--resource-candidate-label (entry)
-  "Return composer @ candidate label for e:// resource ENTRY."
-  (let ((description (e-store-entry-description entry)))
-    (if (and (stringp description)
-             (not (string-empty-p description)))
-        (format "resource: %s - %s" (e-store-entry-uri entry) description)
-      (format "resource: %s" (e-store-entry-uri entry)))))
-
-(defun e-chat--capability-candidate-label (capability)
-  "Return composer @ candidate label for CAPABILITY."
-  (let ((id (e-capability-id capability))
-        (name (e-capability-name capability)))
-    (if (and (stringp name)
-             (not (string-empty-p name)))
-        (format "capability: %s - %s" id name)
-      (format "capability: %s" id))))
-
-(defun e-chat--resource-candidates ()
-  "Return active e:// resource candidates for the current chat harness."
-  (when e-chat-harness
-    (mapcar (lambda (entry)
-              (list :kind 'resource
-                    :label (e-chat--resource-candidate-label entry)
-                    :entry entry))
-            (e-store-list
-             (e-harness-store e-chat-harness e-chat-session-id)))))
-
-(defun e-chat--capability-candidates ()
-  "Return active capability candidates for the current chat harness."
-  (when e-chat-harness
-    (mapcar (lambda (capability)
-              (list :kind 'capability
-                    :label (e-chat--capability-candidate-label capability)
-                    :capability capability))
-            (e-chat-service-active-capabilities e-chat-harness))))
-
-(defun e-chat--at-candidates ()
-  "Return composer @ candidates for files, resources, and capabilities."
-  (let ((file-candidates (e-chat--project-file-candidates)))
-    (append
-     (mapcar (lambda (candidate)
-               (let ((candidate (copy-sequence candidate)))
-                 (plist-put candidate :kind 'file)
-                 (plist-put candidate
-                            :label
-                            (format "file: %s" (plist-get candidate :label)))))
-             file-candidates)
-     (when (and (null file-candidates)
-                (e-chat--project-file-candidates-loading-p))
-       (list (list :kind 'status :label "files: loading...")))
-     (e-chat--resource-candidates)
-     (e-chat--capability-candidates))))
-
-(defun e-chat--resource-reference-text (entry)
-  "Return model-facing reference text for e:// resource ENTRY."
-  (let ((description (e-store-entry-description entry))
-        (uri (e-store-entry-uri entry)))
-    (string-join
-     (delq nil
-           (list
-            (format "Resource: %s" uri)
-            (when (and (stringp description)
-                       (not (string-empty-p description)))
-              (format "Description: %s" description))
-            ""
-            (condition-case err
-                (e-store-read-entry entry nil)
-              (error
-               (format "Read %s for the full resource. Reading now failed: %s"
-                       uri
-                       (error-message-string err))))))
-     "\n")))
-
-(defun e-chat--insert-resource-reference (candidate)
-  "Insert CANDIDATE as an inline e:// resource reference."
-  (let* ((entry (plist-get candidate :entry))
-         (reference (list :uri (e-store-entry-uri entry)
-                          :label (e-store-entry-uri entry)
-                          :text (e-chat--resource-reference-text entry))))
-    (e-chat--insert-context-reference reference)))
-
-(defun e-chat--resource-line-for-capability (entry)
-  "Return one lean resource listing line for e:// resource ENTRY."
-  (let ((description (e-store-entry-description entry)))
-    (if (and (stringp description)
-             (not (string-empty-p description)))
-        (format "- %s: %s" (e-store-entry-uri entry) description)
-      (format "- %s" (e-store-entry-uri entry)))))
-
-(defun e-chat--capability-resource-lines (capability)
-  "Return lean resource lines for active resources owned by CAPABILITY."
-  (when e-chat-harness
-    (let ((capability-id (symbol-name (e-capability-id capability))))
-      (mapcar #'e-chat--resource-line-for-capability
-              (cl-remove-if-not
-               (lambda (entry)
-                 (equal (e-store-entry-capability entry) capability-id))
-               (e-store-list
-                (e-harness-store e-chat-harness e-chat-session-id)))))))
-
-(defun e-chat--capability-reference-text (capability)
-  "Return model-facing reference text for CAPABILITY."
-  (let* ((id (e-capability-id capability))
-         (name (e-capability-name capability))
-         (resource-lines (e-chat--capability-resource-lines capability)))
-    (string-join
-     (delq nil
-           (list
-            (format "The user referenced capability `%s` with @." id)
-            (when (and (stringp name)
-                       (not (string-empty-p name)))
-              (format "Capability name: %s" name))
-            "Interpret this as: consider using the context, actions, tools, or resources provided by this capability."
-            (when resource-lines
-              (concat "Available resources:\n"
-                      (string-join resource-lines "\n")))))
-     "\n\n")))
-
-(defun e-chat--insert-capability-reference (candidate)
-  "Insert CANDIDATE as an inline capability reference."
-  (let* ((capability (plist-get candidate :capability))
-         (id (e-capability-id capability))
-         (reference (list :uri (format "e://%s" id)
-                          :label (format "capability:%s" id)
-                          :text (e-chat--capability-reference-text capability))))
-    (e-chat--insert-context-reference reference)))
-
-(defun e-chat--insert-at-reference (candidate)
-  "Insert selected composer @ CANDIDATE as an inline reference."
-  (pcase (plist-get candidate :kind)
-    ('file (e-chat--insert-file-reference candidate))
-    ('resource (e-chat--insert-resource-reference candidate))
-    ('capability (e-chat--insert-capability-reference candidate))
-    ('status (e-chat--insert-literal-prefix "@"))
-    (_ (e-chat--insert-file-reference candidate))))
-
-(defun e-chat--prompt-candidates ()
-  "Return prompt completion candidates for the active chat harness."
-  (when e-chat-harness
-    (mapcar (lambda (prompt)
-              (list :label (e-prompt-spec-name prompt)
-                    :prompt prompt))
-            (e-chat-service-prompt-catalog e-chat-harness))))
-
-(defun e-chat--collect-prompt-arguments (prompt)
-  "Read arguments for PROMPT and return an alist."
-  (let (arguments)
-    (dolist (parameter (e-prompt-spec-parameters prompt))
-      (let* ((name (e-prompt-parameter-name parameter))
-             (default (e-prompt-parameter-default parameter))
-             (description (e-prompt-parameter-description parameter))
-             (value (read-string
-                     (if default
-                         (format "%s (%s): " description default)
-                       (format "%s: " description))
-                     nil
-                     nil
-                     default)))
-        (unless (and (not (e-prompt-parameter-required parameter))
-                     (string-empty-p value))
-          (push (cons name value) arguments))))
-    (nreverse arguments)))
-
-(defvar-local e-chat--inline-completion-overlay nil)
-
-(defun e-chat--inline-completion-delete ()
-  "Delete the active composer inline completion overlay."
-  (when (overlayp e-chat--inline-completion-overlay)
-    (delete-overlay e-chat--inline-completion-overlay))
-  (setq e-chat--inline-completion-overlay nil))
-
-(defun e-chat--inline-completion-fuzzy-match-p (filter label)
-  "Return non-nil when LABEL contains FILTER characters in order.
-Matching is case-insensitive."
-  (let ((needle (downcase (or filter "")))
-        (haystack (downcase (or label "")))
-        (start 0)
-        (index 0)
-        found)
-    (catch 'missing
-      (while (< index (length needle))
-        (setq found (string-match-p
-                     (regexp-quote (char-to-string (aref needle index)))
-                     haystack
-                     start))
-        (unless found
-          (throw 'missing nil))
-        (setq start (1+ found))
-        (setq index (1+ index)))
-      t)))
-
-(defun e-chat--inline-completion-matches (candidates filter)
-  "Return CANDIDATES whose labels fuzzily match FILTER."
-  (if (string-empty-p filter)
-      candidates
-    (cl-remove-if-not
-     (lambda (candidate)
-       (e-chat--inline-completion-fuzzy-match-p
-        filter
-        (plist-get candidate :label)))
-     candidates)))
-
-(defun e-chat--inline-completion-render (prompt candidates index filter)
-  "Render PROMPT, CANDIDATES, INDEX, and FILTER as popup text."
-  (let ((rows (cl-subseq candidates 0 (min 8 (length candidates)))))
-    (concat
-     prompt
-     filter
-     "\n"
-     (mapconcat
-      (lambda (candidate)
-        (let ((label (plist-get candidate :label)))
-          (format "%s %s"
-                  (if (eq candidate (nth index candidates)) ">" " ")
-                  label)))
-      rows
-      "\n"))))
-
-(defun e-chat--inline-completion-show (prompt candidates index filter)
-  "Show an inline completion popup at point."
-  (e-chat--inline-completion-delete)
-  (setq e-chat--inline-completion-overlay (make-overlay (point) (point)))
-  (overlay-put e-chat--inline-completion-overlay
-               'after-string
-               (propertize
-                (e-chat--inline-completion-render
-                 prompt
-                 candidates
-                 index
-                 filter)
-                'face 'shadow)))
-
-(defun e-chat--inline-completion-select (prompt candidates)
-  "Select one of CANDIDATES through an inline composer popup."
-  (when candidates
-    (let ((filter "")
-          (index 0))
-      (unwind-protect
-          (catch 'selected
-            (while t
-              (let ((matches (e-chat--inline-completion-matches
-                              candidates
-                              (downcase filter))))
-                (setq index (min index (max 0 (1- (length matches)))))
-                (e-chat--inline-completion-show prompt matches index filter)
-                (let ((key (read-key)))
-                  (cond
-                   ((memq key '(return ?\r))
-                    (when-let ((candidate (nth index matches)))
-                      (throw 'selected candidate)))
-                   ((memq key '(?\C-g escape))
-                    (signal 'quit nil))
-                   ((memq key '(?\C-n down tab))
-                    (setq index (if matches
-                                    (mod (1+ index) (length matches))
-                                  0)))
-                   ((memq key '(?\C-p up backtab))
-                    (setq index (if matches
-                                    (mod (1- index) (length matches))
-                                  0)))
-                   ((memq key '(?\C-h ?\177 backspace delete))
-                    (unless (string-empty-p filter)
-                      (setq filter (substring filter 0 -1))
-                      (setq index 0)))
-                   ((and (characterp key)
-                         (>= key 32)
-                         (/= key 127))
-                    (setq filter (concat filter (string key)))
-                    (setq index 0)))))))
-        (e-chat--inline-completion-delete)))))
-
-(defun e-chat-composer-bang ()
-  "Run a leading composer ! command and insert its output as context."
-  (interactive)
-  (if (not (e-chat--composer-leading-prefix-p))
-      (e-chat--self-insert-prefix)
-    (condition-case nil
-        (let ((command (read-shell-command "! ")))
-          (if (string-empty-p (string-trim command))
-              (e-chat--insert-literal-prefix "!")
-            (let* ((buffer (current-buffer))
-                   (pending (e-chat--insert-context-reference
-                             (list :uri (e-chat--command-uri command)
-                                   :label (format "$ %s (running)" command)
-                                   :text "Command output is still running."
-                                   :pending t
-                                   :command command)))
-                   (reference-id (plist-get pending :id))
-                   request)
-              (setq
-               request
-               (e-chat--run-shell-command-start
-                command
-                (e-chat--project-root)
-                :on-done
-                (lambda (result)
-                  (when (buffer-live-p buffer)
-                    (with-current-buffer buffer
-                      (e-chat--forget-pending-command-request reference-id)
-                      (e-chat--replace-context-reference
-                       reference-id
-                       (e-chat--command-output-reference command result)))))
-                :on-error
-                (lambda (err)
-                  (when (buffer-live-p buffer)
-                    (with-current-buffer buffer
-                      (e-chat--forget-pending-command-request reference-id)
-                      (e-chat--replace-context-reference
-                       reference-id
-                       (e-chat--command-output-reference
-                        command
-                        (list :output (error-message-string err)
-                              :exit "error"))))))))
-              (when request
-                (e-chat--remember-pending-command-request
-                 reference-id
-                 request)))))
-      (quit (e-chat--insert-literal-prefix "!")))))
-
-(defun e-chat-composer-at ()
-  "Insert a project file reference from a composer @ prefix."
-  (interactive)
-  (if (not (e-chat--composer-word-boundary-prefix-p))
-      (e-chat--self-insert-prefix)
-    (condition-case nil
-        (if-let ((candidate (e-chat--inline-completion-select
-                             "@ reference: "
-                             (e-chat--at-candidates))))
-            (e-chat--insert-at-reference candidate)
-          (e-chat--insert-literal-prefix "@"))
-      (quit (e-chat--insert-literal-prefix "@")))))
-
-(defun e-chat-composer-slash ()
-  "Expand a capability prompt from a composer / prefix."
-  (interactive)
-  (if (not (e-chat--composer-leading-prefix-p))
-      (e-chat--self-insert-prefix)
-    (condition-case nil
-        (if-let* ((candidate (e-chat--inline-completion-select
-                              "/ prompt: "
-                              (e-chat--prompt-candidates)))
-                  (prompt (plist-get candidate :prompt)))
-            (condition-case err
-                (insert (e-prompt-render
-                         prompt
-                         (e-chat--collect-prompt-arguments prompt)))
-              (error (user-error "%s" (error-message-string err))))
-          (e-chat--insert-literal-prefix "/"))
-      (quit (e-chat--insert-literal-prefix "/")))))
-
-(defun e-chat--active-region-p ()
-  "Return non-nil when the current buffer has a meaningful active region."
-  (and mark-active
-       (mark t)
-       (/= (region-beginning) (region-end))))
-
-(defun e-chat--last-content-line-number ()
-  "Return the last content line number in the current buffer."
-  (save-excursion
-    (goto-char (point-max))
-    (if (and (bolp) (not (bobp)))
-        (line-number-at-pos (1- (point)))
-      (line-number-at-pos))))
-
-(defun e-chat--line-range-text (start-line end-line)
-  "Return text from START-LINE through END-LINE, preserving final newlines."
-  (save-excursion
-    (goto-char (point-min))
-    (forward-line (1- start-line))
-    (let ((start (point)))
-      (forward-line (1+ (- end-line start-line)))
-      (buffer-substring-no-properties start (point)))))
-
-(defun e-chat--source-uri ()
-  "Return a resource URI for the current source buffer."
-  (if buffer-file-name
-      (concat "file://" (expand-file-name buffer-file-name))
-    (concat "buffer://" (buffer-name))))
-
-(defun e-chat--source-label (start-line end-line &optional focus-line)
-  "Return a compact source label for START-LINE through END-LINE.
-When FOCUS-LINE is non-nil, make that point line the primary label and keep
-the surrounding line range as context."
-  (format "%s:%s"
-          (if buffer-file-name
-              (file-name-nondirectory buffer-file-name)
-            (buffer-name))
-          (cond
-           ((and focus-line (= start-line end-line))
-            (number-to-string focus-line))
-           (focus-line
-            (format "%d (context %d-%d)"
-                    focus-line
-                    start-line
-                    end-line))
-           ((= start-line end-line)
-            (number-to-string start-line))
-           (t
-            (format "%d-%d" start-line end-line)))))
-
-(defun e-chat--capture-context-reference ()
-  "Capture the current point or active region as a chat context reference."
-  (e-chat-capture-source-reference))
-
-;;;###autoload
-(defun e-chat-capture-source-reference (&optional line-radius)
-  "Capture the current point or active region as a chat source reference.
-LINE-RADIUS controls the number of lines around point used when no region is
-active.  It defaults to the historical chat context radius of two lines."
-  (let* ((point-line (line-number-at-pos))
-         (has-region (e-chat--active-region-p))
-         (line-radius (or line-radius 2))
-         (start-line (if has-region
-                         (line-number-at-pos (region-beginning))
-                       (max 1 (- point-line line-radius))))
-         (end-line (if has-region
-                       (line-number-at-pos
-                        (max (region-beginning) (1- (region-end))))
-                     (min (e-chat--last-content-line-number)
-                          (+ point-line line-radius))))
-         (text (if has-region
-                   (buffer-substring-no-properties
-                    (region-beginning)
-                    (region-end))
-                 (e-chat--line-range-text start-line end-line))))
-    (let ((reference
-           (list :uri (e-chat--source-uri)
-                 :label (e-chat--source-label
-                         start-line
-                         end-line
-                         (and (not has-region) point-line))
-                 :text text
-                 :start-line start-line
-                 :end-line end-line
-                 :point-line point-line)))
-      (unless has-region
-        (setq reference (plist-put reference :point-context t)))
-      reference)))
-
-(defun e-chat--capture-context-reference-for-command ()
-  "Capture a chat context reference and clear source buffer selection."
-  (prog1 (e-chat--capture-context-reference)
-    (when (e-chat--active-region-p)
-      (deactivate-mark t))))
-
-(defun e-chat--next-context-reference-id ()
-  "Return the next display-local context reference id."
-  (setq e-chat--context-reference-counter
-        (1+ e-chat--context-reference-counter))
-  (format "ref-%d" e-chat--context-reference-counter))
-
-(defun e-chat--context-reference-with-id (reference)
-  "Return REFERENCE with a stable id."
-  (let ((reference (copy-sequence reference)))
-    (unless (plist-get reference :id)
-      (setq reference
-            (plist-put reference
-                       :id
-                       (e-chat--next-context-reference-id))))
-    reference))
-
-(defun e-chat--insert-context-reference (reference)
-  "Insert REFERENCE as a protected inline atom in the composer."
-  (if (e-chat--surface-transcript-p)
-      (with-current-buffer (e-chat--surface-ensure-composer)
-        (e-chat--insert-context-reference reference))
-    (unless (e-chat--composer-active-p)
-      (e-chat--insert-composer))
-    (unless (e-chat--point-in-composer-p)
-      (goto-char (point-max)))
-    (let* ((reference (e-chat--context-reference-with-id reference))
-           (display (format "@[%s]" (plist-get reference :label)))
-           (start (point))
-           (inhibit-read-only t))
-      (insert display)
-      (add-text-properties
-       start
-       (point)
-       `(read-only t
-         e-chat-context-reference ,reference
-         font-lock-face e-chat-context-reference-face
-         help-echo ,(plist-get reference :uri)
-         front-sticky nil
-         rear-nonsticky t))
-      reference)))
-
-(defun e-chat--replace-context-reference (old-id new-reference)
-  "Replace inline composer reference OLD-ID with NEW-REFERENCE."
-  (when (and (e-chat--composer-active-p) old-id)
-    (let ((position (marker-position e-chat--composer-start-marker))
-          (end (point-max))
-          bounds
-          old-reference)
-      (while (and (< position end) (not bounds))
-        (let ((reference (get-text-property position 'e-chat-context-reference)))
-          (if (and reference (equal (plist-get reference :id) old-id))
-              (setq bounds (e-chat--context-reference-bounds-at position)
-                    old-reference reference)
-            (setq position
-                  (or (next-single-property-change
-                       position 'e-chat-context-reference nil end)
-                      end)))))
-      (when bounds
-        (let* ((new-reference (copy-sequence new-reference))
-               (new-reference (plist-put new-reference :id old-id))
-               (display (format "@[%s]" (plist-get new-reference :label)))
-               (inhibit-read-only t))
-          (when (plist-get old-reference :pending)
-            (setq new-reference (plist-put new-reference :pending nil)))
-          (save-excursion
-            (goto-char (car bounds))
-            (delete-region (car bounds) (cdr bounds))
-            (insert display)
-            (add-text-properties
-             (car bounds)
-             (point)
-             `(read-only t
-               e-chat-context-reference ,new-reference
-               font-lock-face e-chat-context-reference-face
-               help-echo ,(plist-get new-reference :uri)
-               front-sticky nil
-               rear-nonsticky t)))
-          new-reference)))))
-
-(defun e-chat--pending-context-reference-p (reference)
-  "Return non-nil when REFERENCE is still being populated."
-  (and (plist-get reference :pending) t))
-
-(defun e-chat--composer-pending-references ()
-  "Return pending inline references in the current composer."
-  (when (e-chat--composer-active-p)
-    (cl-remove-if-not
-     #'e-chat--pending-context-reference-p
-     (plist-get (e-chat--composer-document) :references))))
-
-(defun e-chat--remember-pending-command-request (reference-id request)
-  "Remember cancellable REQUEST for pending command REFERENCE-ID."
-  (when (and reference-id request)
-    (push (cons reference-id request) e-chat--pending-command-requests)))
-
-(defun e-chat--forget-pending-command-request (reference-id)
-  "Forget pending command request for REFERENCE-ID."
-  (setq e-chat--pending-command-requests
-        (assoc-delete-all reference-id e-chat--pending-command-requests)))
-
-(defun e-chat--cancel-pending-command-references ()
-  "Cancel pending command references owned by this chat buffer."
-  (dolist (entry e-chat--pending-command-requests)
-    (ignore-errors
-      (e-tools-cancel-request (cdr entry))))
-  (setq e-chat--pending-command-requests nil))
-
-(defun e-chat--context-reference-bounds-at (position)
-  "Return bounds of the inline context reference adjacent to POSITION."
-  (when (e-chat--composer-active-p)
-    (let* ((start-limit (marker-position e-chat--composer-start-marker))
-           (end-limit (point-max))
-           (probe (cond
-                   ((and (< position end-limit)
-                         (get-text-property
-                          position
-                          'e-chat-context-reference))
-                    position)
-                   ((and (> position start-limit)
-                         (get-text-property
-                          (1- position)
-                          'e-chat-context-reference))
-                    (1- position)))))
-      (when probe
-        (let ((reference (get-text-property probe 'e-chat-context-reference))
-              (start probe)
-              (end (1+ probe)))
-          (while (and (> start start-limit)
-                      (equal (get-text-property
-                              (1- start)
-                              'e-chat-context-reference)
-                             reference))
-            (setq start (1- start)))
-          (while (and (< end end-limit)
-                      (equal (get-text-property
-                              end
-                              'e-chat-context-reference)
-                             reference))
-            (setq end (1+ end)))
-          (cons start end))))))
-
-(defun e-chat--delete-context-reference-at (position)
-  "Delete the inline context reference adjacent to POSITION, when present."
-  (when-let ((bounds (e-chat--context-reference-bounds-at position)))
-    (let ((inhibit-read-only t))
-      (delete-region (car bounds) (cdr bounds)))
-    t))
-
-(defun e-chat--delete-context-reference-before-point ()
-  "Delete the context reference immediately before point, when present."
-  (when (and (e-chat--composer-active-p)
-             (> (point) (marker-position e-chat--composer-start-marker))
-             (get-text-property (1- (point)) 'e-chat-context-reference))
-    (e-chat--delete-context-reference-at (1- (point)))))
-
-(defun e-chat--delete-context-reference-after-point ()
-  "Delete the context reference immediately after point, when present."
-  (when (and (e-chat--composer-active-p)
-             (< (point) (point-max))
-             (get-text-property (point) 'e-chat-context-reference))
-    (e-chat--delete-context-reference-at (point))))
-
-(defun e-chat-delete-backward-char (arg &optional killp)
-  "Delete backward ARG chars, removing a preceding context atom as a unit.
-KILLP is passed through to `delete-char' for normal text."
-  (interactive "p\nP")
-  (unless (and (= arg 1)
-               (e-chat--delete-context-reference-before-point))
-    (delete-char (- arg) killp)))
-
-(defun e-chat-delete-forward-char (arg &optional killp)
-  "Delete forward ARG chars, removing a following context atom as a unit.
-KILLP is passed through to `delete-char' for normal text."
-  (interactive "p\nP")
-  (unless (and (= arg 1)
-               (e-chat--delete-context-reference-after-point))
-    (delete-char arg killp)))
-
-(defun e-chat-kill-region-or-backward-word (arg)
-  "Kill the active region, or ARG words backward when no region is active.
-This gives the composer the readline-style \\`C-w' users expect in an
-input field while preserving standard `kill-region' behaviour on a
-selection."
-  (interactive "p")
-  (if (use-region-p)
-      (kill-region (region-beginning) (region-end))
-    (backward-kill-word arg)))
-
-(defun e-chat--xml-attribute-escape (value)
-  "Return VALUE escaped for a compact XML-like attribute."
-  (let ((text (format "%s" (or value ""))))
-    (setq text (replace-regexp-in-string "&" "&amp;" text t t))
-    (setq text (replace-regexp-in-string "\"" "&quot;" text t t))
-    (setq text (replace-regexp-in-string "<" "&lt;" text t t))
-    (replace-regexp-in-string ">" "&gt;" text t t)))
-
-(defun e-chat--reference-placeholder (reference)
-  "Return inline model-facing placeholder for REFERENCE."
-  (format "<reference id=\"%s\" label=\"%s\">"
-          (e-chat--xml-attribute-escape (plist-get reference :id))
-          (e-chat--xml-attribute-escape (plist-get reference :label))))
-
-(defun e-chat-reference-placeholder (reference)
-  "Return the model-facing inline placeholder for REFERENCE."
-  (e-chat--reference-placeholder reference))
-
-(defun e-chat--reference-text-lines (text)
-  "Return TEXT split into content lines, ignoring one trailing newline."
-  (let ((lines (split-string (replace-regexp-in-string
-                              "\r" "" (or text "") t t)
-                             "\n")))
-    (if (and (cdr lines)
-             (string-empty-p (car (last lines))))
-        (butlast lines)
-      lines)))
-
-(defun e-chat--point-context-reference-body (reference)
-  "Return a line-numbered body for point-context REFERENCE."
-  (let* ((start-line (plist-get reference :start-line))
-         (end-line (plist-get reference :end-line))
-         (point-line (plist-get reference :point-line))
-         (width (length (number-to-string (or end-line start-line 0))))
-         (line-number start-line)
-         lines)
-    (dolist (line (e-chat--reference-text-lines (plist-get reference :text)))
-      (push (format "%s %s | %s"
-                    (if (= line-number point-line) ">" " ")
-                    (format (format "%%%dd" width) line-number)
-                    line)
-            lines)
-      (setq line-number (1+ line-number)))
-    (format "Context lines %d-%d; focused line %d:\n%s"
-            start-line
-            end-line
-            point-line
-            (string-join (nreverse lines) "\n"))))
-
-(defun e-chat--reference-body (reference)
-  "Return model-facing body text for REFERENCE."
-  (if (plist-get reference :point-context)
-      (e-chat--point-context-reference-body reference)
-    (plist-get reference :text)))
-
-(defun e-chat--reference-section-entry (reference)
-  "Return model-facing reference body for REFERENCE."
-  (format "[%s] %s (%s)\n%s"
-          (plist-get reference :id)
-          (plist-get reference :label)
-          (plist-get reference :uri)
-          (e-chat--reference-body reference)))
-
-(defun e-chat-format-reference-prompt (text references)
-  "Return TEXT with model-facing REFERENCES appended."
-  (let ((references (delq nil references)))
-    (if references
-        (string-trim
-         (concat
-          text
-          "\n\nReferences:\n"
-          (mapconcat #'e-chat--reference-section-entry
-                     references
-                     "\n\n")))
-      (string-trim text))))
-
-(defun e-chat--composer-document ()
-  "Return composer prompt text and ordered inline reference records."
-  (unless (e-chat--composer-active-p)
-    (user-error "No active e chat composer"))
-  (let ((position (marker-position e-chat--composer-start-marker))
-        (end (point-max))
-        segments
-        references)
-    (while (< position end)
-      (let ((reference (get-text-property position 'e-chat-context-reference)))
-        (if reference
-            (let ((next (or (next-single-property-change
-                             position 'e-chat-context-reference nil end)
-                            end)))
-              (push (e-chat--reference-placeholder reference) segments)
-              (push (copy-tree reference) references)
-              (setq position next))
-          (let ((next (or (next-single-property-change
-                           position 'e-chat-context-reference nil end)
-                          end)))
-            (push (buffer-substring-no-properties position next) segments)
-            (setq position next)))))
-    (list :text (string-trim (apply #'concat (nreverse segments)))
-          :references (nreverse references))))
-
-(defun e-chat--composer-submission ()
-  "Return submit-ready prompt and ordered reference metadata."
-  (let* ((document (e-chat--composer-document))
-         (text (plist-get document :text))
-         (references (plist-get document :references)))
-    (when-let ((pending (e-chat--composer-pending-references)))
-      (user-error "Command output still running: %s"
-                  (mapconcat (lambda (reference)
-                               (or (plist-get reference :label)
-                                   (plist-get reference :id)
-                                   "pending command"))
-                             pending
-                             ", ")))
-    (when references
-      (setq text (e-chat-format-reference-prompt text references)))
-    (list :prompt text :references references)))
-
-(defun e-chat--ensure-turn-registry ()
-  "Ensure turn navigation state exists for the current chat buffer."
-  (unless (hash-table-p e-chat--turn-registry)
-    (setq e-chat--turn-registry (make-hash-table :test 'equal)))
-  e-chat--turn-registry)
-
-(defun e-chat--ensure-block-registry ()
-  "Ensure block navigation state exists for the current chat buffer."
-  (unless (hash-table-p e-chat--block-registry)
-    (setq e-chat--block-registry (make-hash-table :test 'equal)))
-  e-chat--block-registry)
-
-(defun e-chat--ensure-message-block-index ()
-  "Ensure durable-message projection state exists for the current chat buffer."
-  (unless (hash-table-p e-chat--message-block-index)
-    (setq e-chat--message-block-index (make-hash-table :test 'equal)))
-  e-chat--message-block-index)
-
-(defun e-chat--message-block-id (message-id)
-  "Return the rendered block id projected for durable MESSAGE-ID, if any."
-  (and message-id
-       (hash-table-p e-chat--message-block-index)
-       (gethash message-id e-chat--message-block-index)))
-
-(defun e-chat--block-display-hidden-p (record)
-  "Return non-nil when rendered block RECORD is hidden by message disposition."
-  (plist-get record :display-hidden))
-
-(defun e-chat--associate-message-block (message-id block-id)
-  "Associate durable MESSAGE-ID with presentation BLOCK-ID.
-The relation is one-to-one inside a chat buffer."
-  (when (and message-id block-id)
-    (puthash message-id block-id (e-chat--ensure-message-block-index))
-    (when-let ((record (gethash block-id (e-chat--ensure-block-registry))))
-      (plist-put record :message-id message-id))))
-
-(defun e-chat--turn-record (turn-id)
-  "Return mutable metadata for TURN-ID, creating it when needed."
-  (when turn-id
-    (let ((registry (e-chat--ensure-turn-registry)))
-      (or (gethash turn-id registry)
-          (let ((record (list :id turn-id
-                              :started-at nil
-                              :ended-at nil
-                              :activity-records nil
-                              :intermittent-entries nil
-                              :failure-error nil
-                              :failure-details nil
-                              :failure-rendered nil
-                              :transient-start-marker nil
-                              :transient-end-marker nil
-                              :activity-block-id nil
-                              :response-separator-rendered nil
-                              :assistant-output-rendered nil
-                              :final-rendered nil)))
-            (puthash turn-id record registry)
-            record)))))
-
-(defun e-chat--existing-turn-record (turn-id)
-  "Return existing metadata for TURN-ID, or nil."
-  (when (and turn-id (hash-table-p e-chat--turn-registry))
-    (gethash turn-id e-chat--turn-registry)))
-
-(defun e-chat--next-block-id ()
-  "Return a new display-local block id."
-  (setq e-chat--block-counter (1+ e-chat--block-counter))
-  (format "block-%d" e-chat--block-counter))
-
-(defun e-chat--block-record (block-id turn-id)
-  "Return mutable metadata for BLOCK-ID belonging to TURN-ID."
-  (let ((registry (e-chat--ensure-block-registry)))
-    (or (gethash block-id registry)
-        (let ((record (list :id block-id
-                            :turn-id turn-id
-                            :kind nil
-                            :action-text nil
-                            :details-text nil
-                            :message-id nil
-                            :display-hidden nil
-                            :display-overlay nil
-                            :side nil
-                            :layout-start-marker nil
-                            :content-start-marker nil
-                            :content-end-marker nil
-                            :tool-items nil
-                            :tool-list-start-marker nil
-                            :tool-list-end-marker nil
-                            :start-marker nil
-                            :end-marker nil)))
-          (puthash block-id record registry)
-          (setq e-chat--block-order (append e-chat--block-order (list block-id)))
-          record))))
-
-(defun e-chat--remove-block-record (block-id)
-  "Remove BLOCK-ID from rendered block metadata."
-  (when block-id
-    (let ((record (and (hash-table-p e-chat--block-registry)
-                       (gethash block-id e-chat--block-registry))))
-      (when-let ((overlay (plist-get record :display-overlay)))
-        (when (overlayp overlay)
-          (delete-overlay overlay)))
-      (when-let ((message-id (plist-get record :message-id)))
-        (when (and (hash-table-p e-chat--message-block-index)
-                   (equal (gethash message-id e-chat--message-block-index)
-                          block-id))
-          (remhash message-id e-chat--message-block-index)))
-      (when (hash-table-p e-chat--block-registry)
-        (remhash block-id e-chat--block-registry)))
-    (setq e-chat--block-order (delete block-id e-chat--block-order))
-    (when (equal e-chat--focused-block-id block-id)
-      (setq e-chat--focused-block-id nil)
-      (setq e-chat--focused-turn-id nil)
-      (when (overlayp e-chat--focused-turn-overlay)
-        (delete-overlay e-chat--focused-turn-overlay)))
-    (when (equal e-chat--block-view-block-id block-id)
-      (setq e-chat--block-view-block-id nil))
-    (when (equal e-chat--tool-list-block-id block-id)
-      (setq e-chat--tool-list-block-id nil)
-      (setq e-chat--tool-list-index 0)
-      (when (overlayp e-chat--tool-list-overlay)
-        (delete-overlay e-chat--tool-list-overlay)))))
-
-(defun e-chat--block-layout-bounds (record)
-  "Return presentation bounds owned by rendered block RECORD, or nil.
-The layout range includes separators immediately preceding the entry, so
-hiding a message cannot leave an orphaned response or turn separator."
-  (let* ((start-marker (or (plist-get record :layout-start-marker)
-                           (plist-get record :start-marker)))
-         (end-marker (plist-get record :end-marker))
-         (start (and (markerp start-marker) (marker-position start-marker)))
-         (end (and (markerp end-marker) (marker-position end-marker))))
-    (and start end (< start end) (cons start end))))
-
-(defun e-chat--set-block-layout-hidden (record hidden)
-  "Set rendered block RECORD's layout visibility to HIDDEN.
-Only visibility owned by the durable-message projection is changed; unrelated
-text invisibility in the chat buffer remains intact."
-  (when-let ((bounds (e-chat--block-layout-bounds record)))
-    (let ((start (car bounds))
-          (end (cdr bounds))
-          (overlay (plist-get record :display-overlay)))
-      (when (overlayp overlay)
-        (delete-overlay overlay))
-      (if hidden
-          (let ((overlay (make-overlay start end nil nil nil)))
-            (overlay-put overlay 'invisible 'e-chat-message-hidden)
-            (overlay-put overlay 'evaporate t)
-            (plist-put record :display-overlay overlay))
-        (plist-put record :display-overlay nil))
-      (plist-put record :display-hidden hidden)
-      t)))
-
-(defun e-chat--refresh-last-rendered-entry ()
-  "Recompute separator state from the final visible durable entry."
-  (let (record)
-    (dolist (block-id (reverse e-chat--block-order))
-      (when (and (not record)
-                 (hash-table-p e-chat--block-registry))
-        (let ((candidate (gethash block-id e-chat--block-registry)))
-          (when (and candidate
-                     (plist-get candidate :side)
-                     (not (e-chat--block-display-hidden-p candidate))
-                     (e-chat--block-layout-bounds candidate))
-            (setq record candidate)))))
-    (setq e-chat--last-rendered-turn-id (plist-get record :turn-id)
-          e-chat--last-rendered-side (plist-get record :side))))
-
-(defun e-chat--refresh-latest-final-block ()
-  "Refresh the latest visible final assistant block cache."
-  (setq e-chat--latest-final-block-id
-        (and (hash-table-p e-chat--block-registry)
-             (cl-find-if
-              (lambda (block-id)
-                (let ((record (gethash block-id e-chat--block-registry)))
-                  (and (eq (plist-get record :kind) 'final)
-                       (not (e-chat--block-display-hidden-p record))
-                       (e-chat--block-layout-bounds record))))
-              (reverse e-chat--block-order)))))
-
-(defun e-chat--reconcile-message-display (message)
-  "Apply MESSAGE's display disposition to its rendered projection.
-Return non-nil when the projection was updated locally.  Audit reveal mode
-uses a distinct hidden-message presentation, so its rare updates deliberately
-fall back to its existing full projection path."
-  (let* ((message-id (plist-get message :id))
-         (block-id (e-chat--message-block-id message-id))
-         (record (and block-id (hash-table-p e-chat--block-registry)
-                      (gethash block-id e-chat--block-registry))))
-    (when (and record (not e-chat--reveal-hidden))
-      (let ((hidden (e-harness-message-hidden-p message)))
-        (e-chat--set-block-layout-hidden record hidden)
-        (when (eq (plist-get message :role) 'assistant)
-          (let* ((presentation
-                  (and (not hidden)
-                       (e-chat-service-message-presentation
-                        e-chat-harness e-chat-session-id message)))
-                 (details (plist-get presentation :details)))
-            (e-chat--record-message-details
-             (plist-get record :turn-id) message-id details)
-            (plist-put record :details-text
-                       (e-chat--message-details-text details))
-            (when-let ((turn-record
-                        (e-chat--existing-turn-record
-                         (plist-get record :turn-id))))
-              (when (plist-get turn-record :final-rendered)
-                (e-chat--render-turn-transient
-                 (plist-get record :turn-id) turn-record))))))
-      (e-chat--refresh-last-rendered-entry)
-      (e-chat--refresh-latest-final-block)
-      t)))
-
-(defun e-chat--set-turn-time (turn-id field value)
-  "Set TURN-ID timing FIELD to VALUE when both are available."
-  (when (and turn-id value)
-    (plist-put (e-chat--turn-record turn-id) field value)))
-
-(defun e-chat--update-block-bounds
-    (block-id turn-id start end
-              &optional kind action-text content-start content-end tool-items
-              details-text)
-  "Set BLOCK-ID bounds START through END and action metadata for TURN-ID.
-Optional KIND, ACTION-TEXT, CONTENT-START, CONTENT-END, TOOL-ITEMS, and
-DETAILS-TEXT describe block actions."
-  (when block-id
-    (e-chat--turn-record turn-id)
-    (let ((record (e-chat--block-record block-id turn-id)))
-      (plist-put record :start-marker (copy-marker start nil))
-      (plist-put record :end-marker (copy-marker end nil))
-      (when kind
-        (plist-put record :kind kind))
-      (when action-text
-        (plist-put record :action-text action-text))
-      (when content-start
-        (plist-put record :content-start-marker (copy-marker content-start nil)))
-      (when content-end
-        (plist-put record :content-end-marker (copy-marker content-end nil)))
-      (when tool-items
-        (plist-put record :tool-items tool-items))
-      (when details-text
-        (plist-put record :details-text details-text))
-      (when (eq kind 'final)
-        (setq e-chat--latest-final-block-id block-id)))))
-
-(defun e-chat--block-at-point ()
-  "Return the rendered block id at point, or nil."
-  (or (get-text-property (point) 'e-chat-block-id)
-      (get-text-property (max (point-min) (1- (point))) 'e-chat-block-id)))
-
-(defun e-chat--last-rendered-block-id ()
-  "Return the most recent rendered block id before the composer."
-  (cl-find-if #'e-chat--live-block-record (reverse e-chat--block-order)))
-
-(defun e-chat--focus-block (block-id)
-  "Focus BLOCK-ID in response navigation mode."
-  (let* ((record (and block-id
-                      (hash-table-p e-chat--block-registry)
-                      (gethash block-id e-chat--block-registry)))
-         (start-marker (plist-get record :start-marker))
-         (end-marker (plist-get record :end-marker))
-         (start (and (markerp start-marker) (marker-position start-marker)))
-         (end (and (markerp end-marker) (marker-position end-marker))))
-    (unless (and record start end (< start end))
-      (user-error "No rendered e chat block to focus"))
-    (setq e-chat--focused-block-id block-id)
-    (setq e-chat--focused-turn-id (plist-get record :turn-id))
-    (unless (overlayp e-chat--focused-turn-overlay)
-      (setq e-chat--focused-turn-overlay (make-overlay start end nil t nil)))
-    (move-overlay e-chat--focused-turn-overlay start end)
-    (overlay-put e-chat--focused-turn-overlay 'face 'e-chat-focused-turn-face)
-    (goto-char start)
-    (when-let ((window (e-chat--visible-window)))
-      (set-window-point window start))
-    block-id))
-
-(defun e-chat--move-focused-block (step)
-  "Move focused block by STEP in rendered block order."
-  (unless e-chat--focused-block-id
-    (user-error "No focused e chat block"))
-  (let ((live-block-order (cl-remove-if-not #'e-chat--live-block-record
-                                            e-chat--block-order))
-        remaining
-        (index 0)
-        found)
-    (setq remaining live-block-order)
-    (while (and remaining (not found))
-      (if (equal (car remaining) e-chat--focused-block-id)
-          (setq found index)
-        (setq index (1+ index)
-              remaining (cdr remaining))))
-    (unless found
-      (user-error "Focused e chat block is no longer rendered"))
-    (let ((next-index (max 0 (min (1- (length live-block-order))
-                                  (+ found step)))))
-      (e-chat--focus-block (nth next-index live-block-order)))))
-
-(defun e-chat--focused-block ()
-  "Return the focused block record."
-  (unless e-chat--focused-block-id
-    (user-error "No focused e chat block"))
-  (or (and (hash-table-p e-chat--block-registry)
-           (gethash e-chat--focused-block-id e-chat--block-registry))
-      (user-error "Focused e chat block is no longer rendered")))
-
-(defun e-chat--hidden-entry-title-p (title)
-  "Return non-nil when TITLE marks a revealed hidden audit block."
-  (and (stringp title)
-       (string-prefix-p e-chat--hidden-entry-title-prefix title)))
-
-(defun e-chat--block-kind-for-title (title)
-  "Return block kind for rendered entry TITLE."
-  (cond
-   ((e-chat--hidden-entry-title-p title) 'hidden)
-   ((equal title "You") 'user)
-   ((equal title "Assistant") 'final)
-   ((equal title "System") 'system)
-   (t 'system)))
-
-(defun e-chat--block-content-bounds (block)
-  "Return content bounds for BLOCK."
-  (let* ((start-marker (or (plist-get block :content-start-marker)
-                           (plist-get block :start-marker)))
-         (end-marker (or (plist-get block :content-end-marker)
-                         (plist-get block :end-marker)))
-         (start (and (markerp start-marker) (marker-position start-marker)))
-         (end (and (markerp end-marker) (marker-position end-marker))))
-    (unless (and start end (<= start end))
-      (user-error "Focused e chat block has no content bounds"))
-    (cons start end)))
-
-(defun e-chat--block-details-bounds (block)
-  "Return visible expanded detail bounds for BLOCK, or nil."
-  (let* ((start-marker (plist-get block :details-start-marker))
-         (end-marker (plist-get block :details-end-marker))
-         (start (and (markerp start-marker) (marker-position start-marker)))
-         (end (and (markerp end-marker) (marker-position end-marker))))
-    (when (and start end (< start end))
-      (cons start end))))
-
-(defun e-chat--block-view-bounds (block)
-  "Return bounds used by block-local view mode for BLOCK."
-  (or (e-chat--block-details-bounds block)
-      (e-chat--block-content-bounds block)))
-
-(defun e-chat--block-action-text (block)
-  "Return action text for BLOCK."
-  (or (plist-get block :action-text)
-      (let ((bounds (e-chat--block-content-bounds block)))
-        (string-trim-right
-         (buffer-substring-no-properties (car bounds) (cdr bounds))))))
-
-(defun e-chat--latest-final-block ()
-  "Return the latest final assistant block record."
-  (let ((block-id e-chat--latest-final-block-id))
-    (unless (and block-id
-                 (hash-table-p e-chat--block-registry)
-                 (let ((record (gethash block-id e-chat--block-registry)))
-                   (and record
-                        (not (e-chat--block-display-hidden-p record)))))
-      (setq block-id
-            (and (hash-table-p e-chat--block-registry)
-                 (cl-find-if
-                  (lambda (candidate)
-                    (let ((record (gethash candidate e-chat--block-registry)))
-                      (and (eq (plist-get record :kind) 'final)
-                           (not (e-chat--block-display-hidden-p record)))))
-                  (reverse e-chat--block-order)))))
-    (or (and block-id (gethash block-id e-chat--block-registry))
-        (user-error "No final e chat response"))))
-
-(defun e-chat--editable-buffer-mode ()
-  "Enable the preferred major mode for editable chat text buffers."
-  (if (or (fboundp 'markdown-mode)
-          (require 'markdown-mode nil t))
-      (markdown-mode)
-    (text-mode)))
-
-(defun e-chat--buffer-with-text (name text &optional read-only)
-  "Display NAME containing TEXT, optionally READ-ONLY."
-  (let ((buffer (generate-new-buffer name)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert text))
-      (if read-only
-          (special-mode)
-        (e-chat--editable-buffer-mode))
-      (goto-char (point-min)))
-    (pop-to-buffer buffer)
-    buffer))
-
-(defun e-chat--resource-link-p (uri)
-  "Return non-nil when URI is an e resource link handled by chat."
-  (and (stringp uri)
-       (or (string-prefix-p "session://" uri)
-           (string-prefix-p "e://" uri))))
-
-;;;###autoload
-(defun e-chat-open-link (&optional event)
-  "Open the resource link at point or mouse EVENT in a read-only buffer.
-Only resources exposed by the current chat harness are opened here."
-  (interactive "e")
-  (when event
-    (mouse-set-point event))
-  (let ((uri (or (get-text-property (point) 'e-chat-link-url)
-                 (and (> (point) (point-min))
-                      (get-text-property (1- (point)) 'e-chat-link-url)))))
-    (unless (e-chat--resource-link-p uri)
-      (user-error "No supported e-chat resource link at point"))
-    (unless (and e-chat-harness e-chat-session-id)
-      (user-error "Resource link needs an attached e-chat session"))
-    (let ((content
-           (e-resources-read
-            (e-harness-resources e-chat-harness e-chat-session-id)
-            uri)))
-      (e-chat--buffer-with-text
-       (format "*e-chat-resource: %s*" uri)
-       (if (stringp content) content (format "%s" content))
-       t))))
-
-(defun e-chat--format-time-value (value)
-  "Return VALUE as a compact display string."
-  (cond
-   ((numberp value)
-    (format-time-string "%Y-%m-%d %H:%M:%S UTC"
-                        (seconds-to-time value)
-                        t))
-   (value (format "%s" value))
-   (t "unknown")))
-
-(defun e-chat--time-seconds (value)
-  "Return VALUE as seconds when it can be parsed as a time."
-  (cond
-   ((numberp value) value)
-   ((stringp value)
-    (condition-case nil
-        (float-time (date-to-time value))
-      (error nil)))
-   (t nil)))
-
-(defun e-chat--format-duration (started-at ended-at)
-  "Return duration between STARTED-AT and ENDED-AT."
-  (let ((started-seconds (e-chat--time-seconds started-at))
-        (ended-seconds (e-chat--time-seconds ended-at)))
-    (if (and started-seconds ended-seconds)
-        (let* ((seconds (max 0 (truncate (- ended-seconds started-seconds))))
-               (minutes (/ seconds 60))
-               (remaining (% seconds 60)))
-          (format "%dmin %dsec" minutes remaining))
-      "unknown")))
-
-(defun e-chat--current-time-seconds ()
-  "Return the current time as float seconds."
-  (float-time))
-
-(defun e-chat--indent-detail-text (text)
-  "Return TEXT with each line indented for expanded turn details."
-  (concat "  " (replace-regexp-in-string "\n" "\n  " (string-trim-right text))))
-
-(defun e-chat--intermittent-entry-text (entry)
-  "Return display text for intermittent turn ENTRY."
-  (format "%s\n%s"
-          (plist-get entry :title)
-          (plist-get entry :content)))
-
-(defun e-chat--activity-tool-count-text (count)
-  "Return collapsed display text for COUNT tool invocations."
-  (format "%d tool call%s" count (if (= count 1) "" "s")))
-
-(defun e-chat--activity-action-count-text (count)
-  "Return collapsed display text for COUNT action invocations."
-  (format "%d action%s" count (if (= count 1) "" "s")))
-
-(defun e-chat--activity-records (record)
-  "Return semantic activity records for RECORD."
-  (plist-get record :activity-records))
-
-(defun e-chat--append-activity-record (record activity-record)
-  "Append semantic ACTIVITY-RECORD to RECORD."
-  (plist-put record
-             :activity-records
-             (append (e-chat--activity-records record)
-                     (list activity-record)))
-  activity-record)
-
-(defun e-chat--last-round-record (record)
-  "Return RECORD's latest provider round record."
-  (car (last (e-chat--activity-records record))))
-
-(defun e-chat--active-round-record (record)
-  "Return RECORD's active provider round record."
-  (cl-find-if
-   (lambda (activity-record)
-     (and (eq (plist-get activity-record :kind) 'round)
-          (eq (plist-get activity-record :status) 'active)))
-   (reverse (e-chat--activity-records record))))
-
-(defun e-chat--round-record-for-child (record)
-  "Return semantic round record that should own the next child event."
-  (or (e-chat--active-round-record record)
-      (e-chat--last-round-record record)))
-
-(defun e-chat--append-round-reasoning (record content &optional append)
-  "Append reasoning CONTENT to RECORD's current round.
-When APPEND is non-nil, merge CONTENT into the previous reasoning child."
-  (when-let ((round (and content
-                         (not (string-empty-p content))
-                         (e-chat--round-record-for-child record))))
-    (let* ((reasoning (plist-get round :reasoning))
-           (last-reasoning (car (last reasoning))))
-      (if (and append last-reasoning)
-          (plist-put last-reasoning
-                     :content
-                     (concat (plist-get last-reasoning :content) content))
-        (plist-put round
-                   :reasoning
-                   (append reasoning
-                           (list (list :kind 'reasoning
-                                       :round (plist-get round :round)
-                                       :content content))))))))
-
-(defun e-chat--current-round-tool-batch (round)
-  "Return ROUND's current tool batch, creating it when needed."
-  (or (car (last (plist-get round :tool-batches)))
-      (let ((batch (list :kind 'tool-batch
-                         :round (plist-get round :round)
-                         :items nil)))
-        (plist-put round
-                   :tool-batches
-                   (append (plist-get round :tool-batches)
-                           (list batch)))
-        batch)))
-
-(defun e-chat--append-round-tool-call (record payload &optional created-at)
-  "Append tool call PAYLOAD to RECORD's current round.
-CREATED-AT records when the tool started so the running row can tick."
-  (when-let ((round (e-chat--round-record-for-child record)))
-    (let* ((batch (e-chat--current-round-tool-batch round))
-           (items (plist-get batch :items))
-           (tool-id (or (plist-get payload :id)
-                        (plist-get payload :call-id))))
-      (plist-put batch
-                 :items
-                 (append items
-                         (list (list :kind 'tool
-                                     :round (plist-get round :round)
-                                     :id tool-id
-                                     :call (e-chat--format-tool-call payload)
-                                     :call-payload payload
-                                     :started-at (or created-at
-                                                     (e-chat--current-time-seconds))
-                                     :output nil)))))))
-
-(defun e-chat--tool-finished-id (payload)
-  "Return the tool id associated with tool-finished PAYLOAD."
-  (let ((tool-call (plist-get payload :tool-call)))
-    (or (plist-get payload :id)
-        (plist-get payload :call-id)
-        (plist-get tool-call :id)
-        (plist-get tool-call :call-id))))
-
-(defun e-chat--round-tool-items (round)
-  "Return all tool items recorded for ROUND."
-  (apply #'append
-         (mapcar (lambda (batch)
-                   (plist-get batch :items))
-                 (plist-get round :tool-batches))))
-
-(defun e-chat--find-round-tool-item (record tool-id)
-  "Return semantic tool item matching TOOL-ID in RECORD."
-  (when tool-id
-    (cl-loop for round in (reverse (e-chat--activity-records record))
-             thereis
-             (cl-find-if
-              (lambda (item)
-                (equal (plist-get item :id) tool-id))
-              (e-chat--round-tool-items round)))))
-
-(defun e-chat--latest-incomplete-tool-item (record)
-  "Return RECORD's latest tool item without output."
-  (cl-loop for round in (reverse (e-chat--activity-records record))
-           thereis
-           (cl-find-if
-            (lambda (item)
-              (not (plist-get item :output)))
-            (reverse (e-chat--round-tool-items round)))))
-
-(defun e-chat--string-byte-prefix (text max-bytes)
-  "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."
-  (let ((bytes 0)
-        (index 0)
-        (length (length text)))
-    (while (and (< index length)
-                (let ((next-bytes
-                       (string-bytes (substring text index (1+ index)))))
-                  (when (<= (+ bytes next-bytes) max-bytes)
-                    (setq bytes (+ bytes next-bytes))
-                    t)))
-      (setq index (1+ index)))
-    (substring text 0 index)))
-
-(defun e-chat--tool-result-display-text (result)
-  "Return compact chat activity display text for tool RESULT."
-  (let* ((content (if (e-tools-result-p result)
-                      (plist-get result :content)
-                    result))
-         (max-bytes (max 0 e-chat-tool-activity-preview-bytes))
-         (preview-data (e-tools-result-content-preview content max-bytes))
-         (preview (plist-get preview-data :text))
-         (shown-bytes (plist-get preview-data :shown-bytes))
-         (original-bytes (and (stringp content) (string-bytes content)))
-         (truncated (or (plist-get preview-data :truncated)
-                        (and original-bytes (> original-bytes max-bytes))))
-         (metadata (and (e-tools-result-p result)
-                        (plist-get result :metadata)))
-         (uri (or (plist-get metadata :tmp-uri)
-                  (plist-get metadata :full-output-path))))
-    (if truncated
-        (string-trim-right
-         (format "%s
-
-[Tool result preview truncated: showing first %d%s bytes%s]"
-                 preview
-                 shown-bytes
-                 (if original-bytes (format " of %d" original-bytes) "")
-                 (if uri (format ". Full output: %s" uri) "")))
-      preview)))
-
-(defun e-chat--complete-round-tool-result (record payload &optional finished-at)
-  "Attach tool result PAYLOAD to the matching semantic tool item in RECORD.
-FINISHED-AT records when the tool completed so the settled row can show
-how long it ran."
-  (let* ((tool-id (e-chat--tool-finished-id payload))
-         (item (or (e-chat--find-round-tool-item record tool-id)
-                   (e-chat--latest-incomplete-tool-item record))))
-    (when item
-      (plist-put item
-                 :finished-at (or finished-at
-                                  (e-chat--current-time-seconds)))
-      (plist-put item
-                 :output
-                 (e-chat--tool-result-display-text
-                  (plist-get payload :result))))))
-
-(defun e-chat--record-round-tool-progress (record payload)
-  "Attach streaming tool progress PAYLOAD to a semantic tool item in RECORD."
-  (let* ((tool-id (or (plist-get payload :tool-call-id)
-                      (plist-get payload :id)
-                      (plist-get payload :call-id)))
-         (item (or (e-chat--find-round-tool-item record tool-id)
-                   (e-chat--latest-incomplete-tool-item record))))
-    (when item
-      (plist-put item :progress payload))))
-
-(defun e-chat--round-tool-progress-text (round)
-  "Return compact output progress text for ROUND, or nil."
-  (when-let* ((item (cl-find-if
-                     (lambda (candidate)
-                       (plist-get candidate :progress))
-                     (reverse (e-chat--round-tool-items round))))
-              (bytes (plist-get (plist-get item :progress) :bytes)))
-    (format "%s bytes output" bytes)))
-
-(defun e-chat--round-tool-count (round)
-  "Return number of tool calls recorded for ROUND."
-  (length (e-chat--round-tool-items round)))
-
-(defun e-chat--activity-record-tool-count (record)
-  "Return number of tool calls recorded in semantic RECORD activity."
-  (apply #'+
-         (mapcar #'e-chat--round-tool-count
-                 (e-chat--activity-records record))))
-
-(defun e-chat--normalize-round-status (status)
-  "Return presentation round status for provider STATUS."
-  (pcase status
-    ((or 'error "error" 'attempt-failed "attempt-failed") 'attempt-failed)
-    ((or 'retrying "retrying") 'retrying)
-    ((or 'failed "failed") 'failed)
-    ((or 'cancelled "cancelled") 'cancelled)
-    ((or 'active "active" 'started "started") 'active)
-    (_ 'done)))
-
-(defun e-chat--thought-content (status started-at ended-at &optional active-at)
-  "Return thought line text for STATUS from STARTED-AT to ENDED-AT.
-ACTIVE-AT is used for active thinking duration."
-  (pcase (e-chat--normalize-round-status status)
-    ('active
-     (format "%s Thinking for %s"
-             (e-chat--progress-dots)
-             (e-chat--format-duration
-              started-at
-              (or active-at (e-chat--current-time-seconds)))))
-    ('failed
-     (format "Thought failed after %s"
-             (e-chat--format-duration started-at ended-at)))
-    ('attempt-failed
-     (format "Provider attempt failed after %s"
-             (e-chat--format-duration started-at ended-at)))
-    ('cancelled
-     (format "Thought cancelled after %s"
-             (e-chat--format-duration started-at ended-at)))
-    (_
-     (format "Thought for %s"
-             (e-chat--format-duration started-at ended-at)))))
-
-(defun e-chat--semantic-tool-items (items)
-  "Return display tool-list items for semantic tool ITEMS."
-  (mapcar
-   (lambda (item)
-     (list :call (plist-get item :call)
-           :output (plist-get item :output)))
-   items))
-
-(defun e-chat--round-thought-text (round)
-  "Return visible thought text for semantic ROUND."
-  (if (eq (e-chat--normalize-round-status (plist-get round :status))
-          'retrying)
-      (concat
-       (format "Provider attempt failed after %s; retry %s in %.0fsec"
-               (e-chat--format-duration
-                (plist-get round :started-at)
-                (plist-get round :ended-at))
-               (or (plist-get round :retry-attempt) 1)
-               (or (plist-get round :retry-backoff-seconds) 0))
-       (when-let ((error-message (plist-get round :error)))
-         (format "\nError: %s" error-message)))
-    (e-chat--thought-content
-     (plist-get round :status)
-     (plist-get round :started-at)
-     (plist-get round :ended-at)
-     (when (eq (e-chat--normalize-round-status
-                (plist-get round :status))
-               'active)
-       (e-chat--current-time-seconds)))))
-
-(defun e-chat--activity-round-row-text (left &optional right)
-  "Return activity round row with LEFT and optional right-side RIGHT text."
-  (if (and right (not (string-empty-p right)))
-      (concat left
-              (propertize
-               " "
-               'display
-               `(space :align-to (- right ,(string-width right))))
-              right)
-    left))
-
-(defun e-chat--activity-round-visible-reasoning-lines (round)
-  "Return compact visible reasoning lines for semantic activity ROUND."
-  (let ((lines nil))
-    (dolist (reasoning (plist-get round :reasoning))
-      (when-let ((content (plist-get reasoning :content)))
-        (dolist (line (string-lines content))
-          (setq line (string-trim line))
-          (unless (string-empty-p line)
-            (push line lines)))))
-    (setq lines (nreverse lines))
-    (let ((limit e-chat-activity-reasoning-visible-line-limit))
-      (cond
-       ((and (integerp limit) (= limit 0))
-        nil)
-       ((and (integerp limit)
-             (> limit 0)
-             (> (length lines) limit))
-        (last lines limit))
-       (t
-        lines)))))
-
-(defun e-chat--round-running-tool-items (round)
-  "Return ROUND's tool items that have started but not yet produced output."
-  (cl-remove-if
-   (lambda (item)
-     (plist-get item :output))
-   (e-chat--round-tool-items round)))
-
-(defun e-chat--tool-item-name (item)
-  "Return a compact display name for tool ITEM.
-When the tool invoked actions (e.g. run_elisp calling `e-actions-call'),
-append the single action name or a count when several distinct actions ran."
-  (let ((name (or (plist-get (plist-get item :call-payload) :name)
-                  (car (split-string (or (plist-get item :call) "") "\n"))
-                  "tool"))
-        (actions (plist-get item :actions)))
-    (cond
-     ((null actions) name)
-     ((= (length actions) 1) (format "%s (%s)" name (car actions)))
-     (t (format "%s (%d actions)" name (length actions))))))
-
-(defun e-chat--round-tool-names-text (round)
-  "Return a comma-joined list of the distinct tool names called in ROUND.
-Returns nil when ROUND recorded no tool calls."
-  (when-let ((names (delete-dups
-                     (mapcar #'e-chat--tool-item-name
-                             (e-chat--round-tool-items round)))))
-    (string-join names ", ")))
-
-(defun e-chat--round-tools-duration-text (round)
-  "Return elapsed run time for ROUND's finished tools, or nil.
-Spans the earliest tool start to the latest tool finish so the settled
-row keeps showing how long the sub-turn's tools ran after they complete.
-Returns nil while any tool is still running or when timing is missing."
-  (let ((items (e-chat--round-tool-items round)))
-    (when (and items
-               (not (e-chat--round-running-tool-items round)))
-      (let ((started (delq nil (mapcar (lambda (item)
-                                         (e-chat--time-seconds
-                                          (plist-get item :started-at)))
-                                       items)))
-            (finished (delq nil (mapcar (lambda (item)
-                                          (e-chat--time-seconds
-                                           (plist-get item :finished-at)))
-                                        items))))
-        (when (and started finished)
-          (e-chat--format-duration (apply #'min started)
-                                   (apply #'max finished)))))))
-
-(defun e-chat--round-running-tools-text (round)
-  "Return live running-tool row text for ROUND, or nil when nothing runs.
-Shows a spinner, the running tool name (or a count when several run at once),
-and how long the oldest running tool has been active."
-  (when-let ((running (e-chat--round-running-tool-items round)))
-    (let* ((names (delete-dups
-                   (mapcar #'e-chat--tool-item-name running)))
-           (started (delq nil (mapcar (lambda (item)
-                                        (e-chat--time-seconds
-                                         (plist-get item :started-at)))
-                                      running)))
-           (oldest (and started (apply #'min started)))
-           (label (if (> (length running) 1)
-                      (format "%d tools (%s)"
-                              (length running)
-                              (string-join names ", "))
-                    (car names))))
-      (format "%s Running %s%s"
-              (e-chat--progress-dots)
-              label
-              (if oldest
-                  (format " for %s"
-                          (e-chat--format-duration
-                           oldest (e-chat--current-time-seconds)))
-                "")))))
-
-(defun e-chat--round-between-steps-text (round)
-  "Return live between-step progress text for settled ROUND.
-This temporary presentation covers an active turn's gap after the provider
-request settles and before a tool or the next provider request starts."
-  (when (eq (e-chat--normalize-round-status (plist-get round :status)) 'done)
-    (format "%s Working for %s"
-            (e-chat--progress-dots)
-            (e-chat--format-duration
-             (plist-get round :started-at)
-             (e-chat--current-time-seconds)))))
-
-(defun e-chat--activity-round-visible-text (round &optional active-tail)
-  "Return visible text for semantic activity ROUND.
-When ACTIVE-TAIL is non-nil, ROUND is the latest settled round of the
-harness-confirmed active turn."
-  (let* ((running-text (e-chat--round-running-tools-text round))
-         ;; While tools are running, replace the frozen \"Thought for ...\"
-         ;; left cell with a live spinner naming the running tool and its
-         ;; elapsed time.  The shared progress interval already reticks this row.
-         (thought (or running-text
-                      (and active-tail
-                           (e-chat--round-between-steps-text round))
-                      (e-chat--round-thought-text round)))
-         (tool-count (e-chat--round-tool-count round))
-         (tool-text (and (> tool-count 0)
-                         (let* ((count-text
-                                 (e-chat--activity-tool-count-text tool-count))
-                                (names-text (e-chat--round-tool-names-text round))
-                                (progress-text
-                                 (e-chat--round-tool-progress-text round))
-                                (duration-text
-                                 (e-chat--round-tools-duration-text round))
-                                ;; Keep the called tool names on the row even
-                                ;; after the calls finish, e.g. "1 tool call
-                                ;; (bash)".
-                                (count-text (if names-text
-                                                (format "%s (%s)"
-                                                        count-text names-text)
-                                              count-text))
-                                ;; Keep the run duration on the row after the
-                                ;; sub-turn settles, e.g. "1 tool call (bash)
-                                ;; for 0min 5sec".
-                                (count-text (if duration-text
-                                                (format "%s for %s"
-                                                        count-text duration-text)
-                                              count-text)))
-                           (if progress-text
-                               (format "%s, %s" count-text progress-text)
-                             count-text))))
-         (lines (and thought
-                     (list (e-chat--activity-round-row-text
-                            thought tool-text))))
-         (reasoning-lines
-          (e-chat--activity-round-visible-reasoning-lines round)))
-    (when reasoning-lines
-      (setq lines (append lines (list "") reasoning-lines)))
-    (when lines
-      (string-join lines "\n"))))
-
-(defun e-chat--activity-record-visible-chunks (record &optional complete)
-  "Return visible activity chunks for semantic activity RECORD.
-When COMPLETE is non-nil, include every durable round."
-  (plist-get (e-chat--activity-record-transient-data record complete) :chunks))
-
-(defun e-chat--activity-record-projected-rounds (record &optional complete)
-  "Return RECORD rounds for a live or COMPLETE activity projection."
-  (let ((rounds (e-chat--activity-records record)))
-    (if complete
-        rounds
-      (last rounds (min (length rounds)
-                        (max 1 e-chat-live-activity-round-limit))))))
-
-(defun e-chat--activity-record-transient-data (record &optional complete)
-  "Return transient render data for semantic activity RECORD.
-The returned plist contains visible :text, :chunks, and :rounds.  Unless
-COMPLETE is non-nil, the live projection is bounded and begins with an omitted
-round summary when needed.  While the latest round is the active turn's mutable
-progress tail, :progress-start and :progress-end delimit only that tail."
-  (let* ((all-rounds (e-chat--activity-records record))
-         (rounds (e-chat--activity-record-projected-rounds record complete))
-         (omitted-count (- (length all-rounds) (length rounds)))
-         (latest (car (last rounds)))
-         (active-tail
-          (and latest
-               (equal (plist-get record :id) e-chat--progress-turn-id)
-               (e-chat--service-active-turn-matches-p
-                e-chat--progress-turn-id)))
-         (separator (concat "\n" e-chat--activity-separator "\n"))
-         chunks
-         (offset 0)
-         progress-start
-         progress-end)
-    (when (> omitted-count 0)
-      (let ((summary
-             (format "… %d earlier activity %s omitted"
-                     omitted-count
-                     (if (= omitted-count 1) "round" "rounds"))))
-        (push summary chunks)
-        (setq offset (length summary))))
-    (dolist (round rounds)
-      (when-let ((text (e-chat--activity-round-visible-text
-                        round (and active-tail (eq round latest)))))
-        (when chunks
-          (setq offset (+ offset (length separator))))
-        (when (and active-tail (eq round latest))
-          (setq progress-start offset)
-          (setq progress-end (+ progress-start (length text))))
-        (setq offset (+ offset (length text)))
-        (push text chunks)))
-    (setq chunks (nreverse chunks))
-    (let ((text (and chunks
-                     (concat (string-join chunks separator) "\n\n"))))
-      (list :chunks chunks
-            :text text
-            :rounds rounds
-            :omitted-round-count omitted-count
-            :progress-start progress-start
-            :progress-end progress-end))))
-
-(defun e-chat--activity-action-visible-chunks (record)
-  "Return visible action chunks from RECORD intermittent entries."
-  (e-chat--activity-visible-chunks
-   (cl-remove-if-not
-    (lambda (entry)
-      (member (plist-get entry :title) '("Action call" "Action")))
-    (plist-get record :intermittent-entries))))
-
-(defun e-chat--activity-visible-chunks (entries)
-  "Return visible collapsed activity chunks for intermittent ENTRIES.
-Count tool invocations after the reasoning chunk they followed."
-  (let ((chunks nil)
-        (current nil)
-        (tool-count 0))
-    (cl-labels
-        ((finish-current
-          ()
-          (when (> tool-count 0)
-            (setq current
-                  (append current
-                          (list (e-chat--activity-tool-count-text
-                                 tool-count))))
-            (setq tool-count 0))
-          (when current
-            (push (string-join current "\n") chunks)
-            (setq current nil))))
-      (dolist (entry entries)
-        (let ((title (plist-get entry :title))
-              (content (plist-get entry :content)))
-          (pcase title
-            ((or "Thinking" "Thought")
-             (finish-current)
-             (when (and content (not (string-empty-p content)))
-               (push content chunks)))
-            ("Tool call"
-             (setq tool-count (1+ tool-count)))
-            ("Tool")
-            ("Action call"
-             (setq current
-                   (append (or current nil)
-                           (list (format "Action: %s" content)))))
-            ("Action")
-            (_
-             (finish-current)
-             (when (and content (not (string-empty-p content)))
-               (setq current (list content)))))))
-      (finish-current)
-      (nreverse chunks))))
-
-(defun e-chat--activity-tool-count (record)
-  "Return number of tool calls recorded for RECORD."
-  (if (e-chat--activity-records record)
-      (e-chat--activity-record-tool-count record)
-    (cl-count-if
-     (lambda (entry)
-       (equal (plist-get entry :title) "Tool call"))
-     (plist-get record :intermittent-entries))))
-
-(defun e-chat--activity-action-count (record)
-  "Return number of action calls recorded for RECORD."
-  (or (plist-get record :action-count)
-      (cl-count-if
-       (lambda (entry)
-         (equal (plist-get entry :title) "Action call"))
-       (plist-get record :intermittent-entries))))
-
-(defun e-chat--record-message-details (turn-id message-id details)
-  "Record generic DETAILS for durable MESSAGE-ID in TURN-ID."
-  (when-let ((record (e-chat--turn-record turn-id)))
-    (let* ((key (or message-id (list 'turn-message turn-id)))
-           (current (assoc-delete-all
-                     key (plist-get record :message-details))))
-      (plist-put record :message-details
-                 (if details
-                     (append current (list (cons key details)))
-                   current)))))
-
-(defun e-chat--message-detail-summary-text (record)
-  "Return the generic message-detail suffix for RECORD."
-  (let (summaries)
-    (dolist (entry (plist-get record :message-details))
-      (dolist (detail (cdr entry))
-        (when-let ((summary (e-message-detail-summary detail)))
-          (unless (member summary summaries)
-            (setq summaries (append summaries (list summary)))))))
-    (if summaries
-        (format " (%s)" (string-join summaries ", "))
-      "")))
-
-(defun e-chat--message-details-text (details)
-  "Return expandable presentation text for generic message DETAILS."
-  (when details
-    (concat (string-join (mapcar #'e-message-detail-body details) "\n\n")
-            "\n")))
-
-(defun e-chat--activity-summary-text (record)
-  "Return settled turn summary text for RECORD."
-  (when (and (plist-get record :started-at)
-             (plist-get record :ended-at)
-             (plist-get record :has-provider-activity))
-    (let* ((duration (e-chat--format-duration
-                      (plist-get record :started-at)
-                      (plist-get record :ended-at)))
-           (tool-count (e-chat--activity-tool-count record))
-           (action-count (e-chat--activity-action-count record))
-           (tool-text (cond
-                       ((= tool-count 0) "")
-                       ((= tool-count 1) ", 1 tool call")
-                       (t (format ", %d tool calls" tool-count))))
-           (action-text (cond
-                         ((= action-count 0) "")
-                         ((= action-count 1) ", 1 action")
-                         (t (format ", %d actions" action-count))))
-           (detail-text (e-chat--message-detail-summary-text record)))
-      (format "Turn took %s%s%s%s." duration tool-text action-text detail-text))))
-
-(defun e-chat--activity-expanded-text (record)
-  "Return expanded per-line activity history for RECORD."
-  (if (e-chat--activity-records record)
-      (when-let ((chunks (append (e-chat--activity-record-visible-chunks
-                                  record t)
-                                 (e-chat--activity-action-visible-chunks record))))
-        (when chunks
-          (concat (string-join
-                   chunks
-                   (concat "\n" e-chat--activity-separator "\n"))
-                  "\n\n")))
-    (when-let ((chunks (e-chat--activity-visible-chunks
-                        (plist-get record :intermittent-entries))))
-      (when chunks
-        (concat (mapconcat #'identity chunks "\n") "\n\n")))))
-
-(defun e-chat--intermittent-details-text (record)
-  "Return expanded intermittent details text for RECORD."
-  (when-let ((entries (plist-get record :intermittent-entries)))
-    (concat
-     (mapconcat
-      (lambda (entry)
-        (e-chat--indent-detail-text (e-chat--intermittent-entry-text entry)))
-      entries
-      "\n\n")
-     "\n\n")))
-
-(defun e-chat--activity-summary-details-text (turn-id record)
-  "Return inline details text for TURN-ID's settled activity summary."
-  (concat
-   (or (e-chat--activity-expanded-text record) "")
-   (format "Turn: %s\nStarted: %s\nEnded: %s\nDuration: %s\n"
-           turn-id
-           (e-chat--format-time-value (plist-get record :started-at))
-           (e-chat--format-time-value (plist-get record :ended-at))
-           (e-chat--format-duration (plist-get record :started-at)
-                                    (plist-get record :ended-at)))))
-
-(defun e-chat--activity-summary-child-records (record)
-  "Return navigable child block descriptors for RECORD's activity summary."
-  (let (children)
-    (dolist (round (e-chat--activity-records record))
-      (when-let ((thought (e-chat--round-thought-text round)))
-        (unless (equal thought "Thinking...")
-          (push (list :kind 'activity-thought
-                      :text thought
-                      :action-text thought)
-                children)))
-      (dolist (reasoning (plist-get round :reasoning))
-        (when-let ((content (plist-get reasoning :content)))
-          (unless (string-empty-p content)
-            (push (list :kind 'activity-reasoning
-                        :text content
-                        :action-text content)
-                  children))))
-      (dolist (batch (plist-get round :tool-batches))
-        (let* ((items (plist-get batch :items))
-               (count (length items)))
-          (when (> count 0)
-            (let ((text (e-chat--activity-tool-count-text count)))
-              (push (list :kind 'activity-tool-batch
-                          :text text
-                          :action-text text
-                          :tool-items (e-chat--semantic-tool-items items))
-                    children))))))
-    (dolist (entry (plist-get record :intermittent-entries))
-      (when (equal (plist-get entry :title) "Action call")
-        (let ((text (format "Action: %s" (plist-get entry :content))))
-          (push (list :kind 'activity-action
-                      :text text
-                      :action-text text)
-                children))))
-    (nreverse children)))
-
-(defun e-chat--failure-details-text (record)
-  "Return expanded failure details text for RECORD."
-  (when-let ((error-message (plist-get record :failure-error)))
-    (concat
-     (e-chat--indent-detail-text
-      (format "Failure\n%s" error-message))
-     "\n\n"
-     (when-let ((details (plist-get record :failure-details)))
-       (concat
-        (e-chat--indent-detail-text
-         (format "Provider details\n%s" (pp-to-string details)))
-        "\n\n")))))
-
-(defun e-chat--retry-details-text (record)
-  "Return expanded provider retry diagnostics for RECORD."
-  (let (sections)
-    (dolist (round (e-chat--activity-records record))
-      (when (or (plist-get round :error)
-                (plist-member round :error-details))
-        (let ((text
-               (format "Provider retry %s\nRetry delay: %s seconds"
-                       (or (plist-get round :retry-attempt) 1)
-                       (or (plist-get round :retry-backoff-seconds) 0))))
-          (when (plist-member round :retry-reset-wait)
-            (setq text
-                  (concat text
-                          (format "\nReset wait: %s seconds"
-                                  (plist-get round :retry-reset-wait)))))
-          (when-let ((error-message (plist-get round :error)))
-            (setq text (concat text "\nError: " error-message)))
-          (when (plist-member round :error-details)
-            (setq text
-                  (concat text "\nProvider details\n"
-                          (string-trim-right
-                           (pp-to-string
-                            (plist-get round :error-details))))))
-          (push (e-chat--indent-detail-text text) sections))))
-    (when sections
-      (concat (string-join (nreverse sections) "\n\n") "\n\n"))))
-
-(defun e-chat--activity-tool-items (record &optional live-projection)
-  "Return tool call/output items derived from RECORD.
-When LIVE-PROJECTION is non-nil, include only live-projected rounds."
-  (if (e-chat--activity-records record)
-      (mapcar
-       (lambda (item)
-         (list :call (plist-get item :call)
-               :output (plist-get item :output)))
-       (apply #'append
-              (mapcar #'e-chat--round-tool-items
-                      (if live-projection
-                          (e-chat--activity-record-projected-rounds record)
-                        (e-chat--activity-records record)))))
-    (let ((items nil)
-          current)
-      (dolist (entry (plist-get record :intermittent-entries))
-        (pcase (plist-get entry :title)
-          ("Tool call"
-           (when current
-             (push current items))
-           (setq current (list :call (plist-get entry :content)
-                               :output nil)))
-          ("Tool"
-           (if current
-               (progn
-                 (plist-put current :output (plist-get entry :content))
-                 (push current items)
-                 (setq current nil))
-             (push (list :call "Tool" :output (plist-get entry :content))
-                   items)))))
-      (when current
-        (push current items))
-      (nreverse items))))
-
-(defun e-chat--settled-activity-p (record)
-  "Return non-nil when RECORD has current activity to keep after final output."
-  (e-chat--activity-summary-text record))
-
-(defun e-chat--transient-text (record)
-  "Return visible transient text for RECORD."
-  (if (e-chat--activity-records record)
-      (plist-get (e-chat--activity-record-transient-data record) :text)
-    (when-let ((entries (plist-get record :intermittent-entries)))
-      (let ((chunks (e-chat--activity-visible-chunks entries)))
-        (when chunks
-          (concat (mapconcat #'identity chunks "\n\n") "\n\n"))))))
-
-(defun e-chat--append-activity-entry (record entry)
-  "Append structured activity ENTRY to RECORD."
-  (plist-put record
-             :intermittent-entries
-             (append (plist-get record :intermittent-entries)
-                     (list entry))))
-
-(defun e-chat--current-activity-round (record)
-  "Return RECORD's current LLM round number."
-  (or (plist-get record :activity-round) 0))
-
-(defun e-chat--record-provider-started (turn-id created-at)
-  "Record provider request start for TURN-ID at CREATED-AT."
-  (let* ((record (e-chat--turn-record turn-id))
-         (round (1+ (e-chat--current-activity-round record))))
-    (plist-put record :has-provider-activity t)
-    (plist-put record :activity-round round)
-    (e-chat--append-activity-record
-     record
-     (list :kind 'round
-           :round round
-           :started-at created-at
-           :ended-at nil
-           :status 'active
-           :reasoning nil
-           :tool-batches nil))
-    (e-chat--append-activity-entry
-     record
-     (list :title "Thinking"
-           :kind 'thinking
-           :round round
-           :status 'active
-           :started-at created-at
-           :content "Thinking..."
-           :source 'activity))
-    record))
-
-(defun e-chat--record-provider-finished (turn-id created-at &optional status)
-  "Record provider request finish for TURN-ID at CREATED-AT.
-STATUS defaults to `done'."
-  (when-let ((record (e-chat--existing-turn-record turn-id)))
-    (let ((round (e-chat--active-round-record record))
-          (status (e-chat--normalize-round-status (or status 'done))))
-      (when round
-        (plist-put round :status status)
-        (plist-put round :ended-at created-at)))
-    (let ((entry
-           (cl-find-if
-            (lambda (candidate)
-              (and (eq (plist-get candidate :kind) 'thinking)
-                   (eq (plist-get candidate :status) 'active)))
-            (reverse (plist-get record :intermittent-entries)))))
-      (when entry
-        (plist-put entry :title
-                   (if (eq status 'attempt-failed)
-                       "Provider attempt"
-                     "Thought"))
-        (plist-put entry :status
-                   (e-chat--normalize-round-status (or status 'done)))
-        (plist-put entry :ended-at created-at)
-        (plist-put entry :content
-                   (e-chat--thought-content
-                    (plist-get entry :status)
-                    (plist-get entry :started-at)
-                    created-at))))
-    record))
-
-(defun e-chat--record-turn-retrying (turn-id payload)
-  "Record retry decision PAYLOAD for TURN-ID's latest failed attempt."
-  (when-let ((record (e-chat--existing-turn-record turn-id)))
-    (let ((round
-           (cl-find-if
-            (lambda (candidate)
-              (memq (e-chat--normalize-round-status
-                     (plist-get candidate :status))
-                    '(attempt-failed retrying)))
-            (reverse (e-chat--activity-records record))))
-          (entry
-           (cl-find-if
-            (lambda (candidate)
-              (and (eq (plist-get candidate :kind) 'thinking)
-                   (memq (e-chat--normalize-round-status
-                          (plist-get candidate :status))
-                         '(attempt-failed retrying))))
-            (reverse (plist-get record :intermittent-entries)))))
-      (when round
-        (plist-put round :status 'retrying)
-        (plist-put round :retry-attempt (plist-get payload :attempt))
-        (plist-put round :retry-backoff-seconds
-                   (plist-get payload :backoff-seconds))
-        (plist-put round :error (plist-get payload :error))
-        (when (plist-member payload :reset-wait)
-          (plist-put round :retry-reset-wait
-                     (plist-get payload :reset-wait)))
-        (when (plist-member payload :details)
-          (plist-put round :error-details (plist-get payload :details))))
-      (when entry
-        (plist-put entry :title "Provider attempt")
-        (plist-put entry :status 'retrying)
-        (when round
-          (plist-put entry :content (e-chat--round-thought-text round))))
-      record)))
-
-(defun e-chat--latest-open-round-record (record)
-  "Return RECORD's latest non-terminal provider round."
-  (cl-find-if
-   (lambda (round)
-     (memq (e-chat--normalize-round-status (plist-get round :status))
-           '(active attempt-failed retrying)))
-   (reverse (e-chat--activity-records record))))
-
-(defun e-chat--settle-open-thinking (turn-id ended-at status)
-  "Settle TURN-ID's open thinking round at ENDED-AT with STATUS."
-  (when-let ((record (e-chat--existing-turn-record turn-id)))
-    (let ((status (e-chat--normalize-round-status status)))
-      (when-let ((round (e-chat--latest-open-round-record record)))
-        (plist-put round :status status)
-        (plist-put round :ended-at ended-at))
-      (when-let ((entry
-                  (cl-find-if
-                   (lambda (candidate)
-                     (and (eq (plist-get candidate :kind) 'thinking)
-                          (memq (e-chat--normalize-round-status
-                                 (plist-get candidate :status))
-                                '(active attempt-failed retrying))))
-                   (reverse (plist-get record :intermittent-entries)))))
-        (plist-put entry :title "Thought")
-        (plist-put entry :status status)
-        (plist-put entry :ended-at ended-at)
-        (plist-put entry :content
-                   (e-chat--thought-content
-                    status
-                    (plist-get entry :started-at)
-                    ended-at))))
-    record))
-
-(defun e-chat--record-reasoning-delta (record content &optional append source)
-  "Record reasoning CONTENT in RECORD and its semantic activity records."
-  (e-chat--append-round-reasoning record content append)
-  (e-chat--add-intermittent-entry record "Reasoning" content append source))
-
-(defun e-chat--record-tool-started (record payload &optional source created-at)
-  "Record tool-started PAYLOAD in RECORD.
-CREATED-AT records the tool start time for the running-tool row."
-  (e-chat--append-round-tool-call record payload created-at)
-  (e-chat--add-intermittent-entry
-   record
-   "Tool call"
-   (e-chat--format-tool-call payload)
-   nil
-   source))
-
-(defun e-chat--record-tool-finished (record payload &optional source finished-at)
-  "Record tool-finished PAYLOAD in RECORD.
-FINISHED-AT records when the tool completed so the settled row can show
-its run duration."
-  (e-chat--complete-round-tool-result record payload finished-at)
-  (e-chat--add-intermittent-entry
-   record
-   "Tool"
-   (e-chat--tool-result-display-text (plist-get payload :result))
-   nil
-   source))
-
-(defun e-chat--format-action-call (payload)
-  "Return compact action call text for PAYLOAD."
-  (let ((capability (plist-get payload :capability-id))
-        (action (plist-get payload :action)))
-    (format "%s/%s"
-            (or capability "unknown")
-            (cond
-             ((keywordp action) (substring (symbol-name action) 1))
-             ((symbolp action) (symbol-name action))
-             ((stringp action) (string-remove-prefix ":" action))
-             (t "unknown")))))
-
-(defun e-chat--action-preview-content (preview)
-  "Return display content from action PREVIEW plist."
-  (cond
-   ((and (listp preview) (plist-get preview :content))
-    (plist-get preview :content))
-   (preview (prin1-to-string preview))
-   (t "")))
-
-(defun e-chat--attach-action-to-parent-tool (record payload)
-  "Record PAYLOAD's action name on its parent run_elisp tool item in RECORD.
-Does nothing when the action has no parent tool call or the parent tool
-item is not found."
-  (when-let* ((tool-id (plist-get payload :parent-tool-call-id))
-              (item (e-chat--find-round-tool-item record tool-id))
-              (name (e-chat--format-action-call payload)))
-    (unless (member name (plist-get item :actions))
-      (plist-put item :actions
-                 (append (plist-get item :actions) (list name))))))
-
-(defun e-chat--record-action-started (record payload &optional source)
-  "Record action-started PAYLOAD in RECORD."
-  (plist-put record :action-count (1+ (or (plist-get record :action-count) 0)))
-  (e-chat--attach-action-to-parent-tool record payload)
-  (e-chat--add-intermittent-entry
-   record
-   "Action call"
-   (e-chat--format-action-call payload)
-   nil
-   source))
-
-(defun e-chat--record-action-finished (record payload &optional source)
-  "Record terminal action PAYLOAD in RECORD."
-  (let* ((status (or (plist-get payload :status) 'ok))
-         (result (or (plist-get payload :result)
-                     (and (plist-get payload :message)
-                          (list :content (plist-get payload :message)))))
-         (preview (string-trim-right (e-chat--action-preview-content result))))
-    (e-chat--add-intermittent-entry
-     record
-     "Action"
-     (string-trim-right
-      (format "%s -> %s%s"
-              (e-chat--format-action-call payload)
-              status
-              (if (string-empty-p preview)
-                  ""
-                (concat "
-" preview))))
-     nil
-     source)))
-
-(defun e-chat--record-tool-progress (record payload)
-  "Record streaming tool progress PAYLOAD in RECORD."
-  (e-chat--record-round-tool-progress record payload))
-
-(defun e-chat--record-steering-input (record preview)
-  "Record accepted steering PREVIEW in RECORD's visible activity."
-  (when (and record preview (not (string-empty-p preview)))
-    (e-chat--add-intermittent-entry
-     record
-     "Steering"
-     (format "Steered: %s" preview)
-     nil
-     'steering)))
-
-(defun e-chat--intermittent-entry-exists-p (record title content &optional source)
-  "Return non-nil when RECORD already has TITLE and CONTENT.
-When SOURCE is non-nil, only match entries from that source."
-  (cl-some
-   (lambda (entry)
-     (and (equal (plist-get entry :title) title)
-          (equal (plist-get entry :content) content)
-          (or (not source)
-              (eq (plist-get entry :source) source))))
-   (plist-get record :intermittent-entries)))
-
-(defun e-chat--remove-intermittent-entry (record title content source)
-  "Remove intermittent RECORD entries matching TITLE, CONTENT, and SOURCE."
-  (plist-put
-   record
-   :intermittent-entries
-   (cl-remove-if
-    (lambda (entry)
-      (and (equal (plist-get entry :title) title)
-           (equal (plist-get entry :content) content)
-           (eq (plist-get entry :source) source)))
-    (plist-get record :intermittent-entries))))
-
-(defun e-chat--add-intermittent-entry (record title content &optional append source)
-  "Add intermittent TITLE and CONTENT to RECORD.
-When APPEND is non-nil, merge CONTENT into the previous entry with TITLE.
-SOURCE identifies where the entry came from for duplicate suppression."
-  (when (and record content (not (string-empty-p content)))
-    (when (eq source 'activity)
-      (e-chat--remove-intermittent-entry record title content 'transcript))
-    (let* ((entries (plist-get record :intermittent-entries))
-           (last-entry (car (last entries))))
-      (if (and append
-               last-entry
-               (equal (plist-get last-entry :title) title))
-          (plist-put last-entry
-                     :content
-                     (concat (plist-get last-entry :content) content))
-        (plist-put record
-                   :intermittent-entries
-                   (append entries
-                           (list (list :title title
-                                       :content content
-                                       :source source))))))))
-
-(defun e-chat--delete-running-status (record)
-  "Delete the currently visible running-turn status region for RECORD.
-When RECORD is nil, clear only buffer-local status markers."
-  (let* ((running-start (and (markerp e-chat--running-status-start-marker)
-                             (marker-position
-                              e-chat--running-status-start-marker)))
-         (start (or running-start
-                    (and (markerp e-chat--progress-start-marker)
-                         (marker-position e-chat--progress-start-marker))
-                    (and record
-                         (markerp (plist-get record :transient-start-marker))
-                         (marker-position
-                          (plist-get record :transient-start-marker)))))
-         (end (or (and (markerp e-chat--running-status-end-marker)
-                       (marker-position e-chat--running-status-end-marker))
-                  (and record
-                       (markerp (plist-get record :transient-end-marker))
-                       (marker-position
-                        (plist-get record :transient-end-marker)))
-                  (and (markerp e-chat--progress-end-marker)
-                       (marker-position e-chat--progress-end-marker)))))
-    (when (and start end (< start end))
-      (let ((inhibit-read-only t))
-        (delete-region start end))))
-  (setq e-chat--running-status-start-marker nil)
-  (setq e-chat--running-status-end-marker nil)
-  (setq e-chat--progress-start-marker nil)
-  (setq e-chat--progress-end-marker nil)
-  (when record
-    (plist-put record :transient-start-marker nil)
-    (plist-put record :transient-end-marker nil)))
-
-(defun e-chat--clear-running-status-markers ()
-  "Clear buffer-local running status markers without deleting text."
-  (setq e-chat--running-status-start-marker nil)
-  (setq e-chat--running-status-end-marker nil)
-  (setq e-chat--progress-start-marker nil)
-  (setq e-chat--progress-end-marker nil))
-
-(defun e-chat--delete-turn-transient (record)
-  "Delete the currently visible transient block for RECORD."
-  (e-chat--delete-running-status record)
-  (when-let ((activity-block-id (and record
-                                     (plist-get record :activity-block-id))))
-    (e-chat--remove-block-record activity-block-id)
-    (plist-put record :activity-block-id nil)))
-
-(defun e-chat--live-block-record (block-id)
-  "Return live block record for BLOCK-ID, or nil."
-  (when-let ((record (and block-id
-                          (hash-table-p e-chat--block-registry)
-                          (gethash block-id e-chat--block-registry))))
-    (let* ((start-marker (plist-get record :start-marker))
-           (end-marker (plist-get record :end-marker))
-           (start (and (markerp start-marker)
-                       (marker-position start-marker)))
-           (end (and (markerp end-marker)
-                     (marker-position end-marker))))
-      (when (and start end (< start end)
-                 (not (e-chat--block-display-hidden-p record)))
-        record))))
-
-(defun e-chat--capture-running-status-navigation-state ()
-  "Capture chat-local navigation state before running status redraw."
-  (cond
-   (e-chat-tool-list-mode
-    (list :mode 'tool-list
-          :block-id e-chat--tool-list-block-id
-          :index e-chat--tool-list-index))
-   (e-chat-block-view-mode
-    (let* ((block-id e-chat--block-view-block-id)
-           (block (e-chat--live-block-record block-id))
-           (bounds (and block (e-chat--block-view-bounds block))))
-      (list :mode 'block-view
-            :block-id block-id
-            :offset (and bounds (max 0 (- (point) (car bounds)))))))
-   (e-chat-response-navigation-mode
-    (list :mode 'response-navigation
-          :block-id e-chat--focused-block-id))))
-
-(defun e-chat--restore-running-status-navigation-state (state)
-  "Restore chat-local navigation STATE after running status redraw."
-  (pcase (plist-get state :mode)
-    ('response-navigation
-     (when (e-chat--live-block-record (plist-get state :block-id))
-       (e-chat-response-navigation-mode 1)
-       (e-chat--focus-block (plist-get state :block-id))))
-    ('block-view
-     (let* ((block-id (plist-get state :block-id))
-            (block (e-chat--live-block-record block-id))
-            (bounds (and block (e-chat--block-view-bounds block))))
-       (when bounds
-         (e-chat-response-navigation-mode -1)
-         (setq e-chat--focused-block-id block-id)
-         (setq e-chat--focused-turn-id (plist-get block :turn-id))
-         (setq e-chat--block-view-block-id block-id)
-         (e-chat-block-view-mode 1)
-         (goto-char (min (cdr bounds)
-                         (+ (car bounds)
-                            (or (plist-get state :offset) 0)))))))
-    ('tool-list
-     (let* ((block-id (plist-get state :block-id))
-            (block (e-chat--live-block-record block-id))
-            (items (and block (plist-get block :tool-items))))
-       (cond
-        (items
-         (let ((index (min (max 0 (or (plist-get state :index) 0))
-                           (1- (length items)))))
-           (e-chat--open-tool-list block)
-           (setq e-chat--tool-list-index index)
-           (e-chat--focus-tool-list-item)))
-        (block
-         (e-chat-response-navigation-mode 1)
-         (e-chat--focus-block block-id)))))))
-
-(defun e-chat--running-status-bounds ()
-  "Return cons bounds for the visible running status, or nil."
-  (let ((start (and (markerp e-chat--running-status-start-marker)
-                    (marker-position e-chat--running-status-start-marker)))
-        (end (and (markerp e-chat--running-status-end-marker)
-                  (marker-position e-chat--running-status-end-marker))))
-    (when (and start end (< start end))
-      (cons start end))))
-
-(defun e-chat--running-status-turn-id ()
-  "Return the turn id for the visible running status, or nil."
-  (when-let ((bounds (e-chat--running-status-bounds)))
-    (or (get-text-property (car bounds) 'e-chat-progress-turn-id)
-        (get-text-property (car bounds) 'e-chat-transient-turn-id)
-        (get-text-property (car bounds) 'e-chat-turn-id))))
-
-(defun e-chat--position-running-offset (position bounds)
-  "Return POSITION's offset inside BOUNDS, or nil."
-  (when (and position
-             bounds
-             (<= (car bounds) position)
-             (<= position (cdr bounds)))
-    (- position (car bounds))))
-
-(defun e-chat--transcript-windows ()
-  "Return every live window currently displaying this transcript buffer."
-  (get-buffer-window-list (current-buffer) nil t))
-
-(defconst e-chat--output-follow-window-parameter 'e-chat-output-follow-state
-  "Window parameter holding transient follow state for an e chat transcript.")
-
-(defconst e-chat--output-bottom-spacer-property
-  'e-chat-output-bottom-spacer-window
-  "Overlay property identifying a transcript's window-scoped top spacer.")
-
-(defun e-chat--output-bottom-spacer-overlays ()
-  "Return output-bottom spacers anchored at the current buffer's beginning."
-  (let* ((start (point-min))
-         (candidates
-          (append (overlays-at start)
-                  (when (< start (point-max))
-                    (overlays-in start (1+ start))))))
-    (cl-remove-if-not
-     (lambda (overlay)
-       (overlay-get overlay e-chat--output-bottom-spacer-property))
-     (delete-dups candidates))))
-
-(defun e-chat--prune-output-bottom-spacers ()
-  "Delete output-bottom spacers whose owning window is no longer usable."
-  (dolist (overlay (e-chat--output-bottom-spacer-overlays))
-    (let ((window
-           (overlay-get overlay e-chat--output-bottom-spacer-property)))
-      (unless (and (window-live-p window)
-                   (eq (window-buffer window) (current-buffer)))
-        (delete-overlay overlay)))))
-
-(defun e-chat--clear-output-bottom-spacer (window)
-  "Remove WINDOW's output-bottom alignment spacer from this transcript."
-  (dolist (overlay (e-chat--output-bottom-spacer-overlays))
-    (when (eq (overlay-get overlay e-chat--output-bottom-spacer-property)
-              window)
-      (delete-overlay overlay))))
-
-(defun e-chat--set-output-bottom-spacer (window lines)
-  "Give pinned transcript WINDOW a top spacer of LINES display rows."
-  (e-chat--prune-output-bottom-spacers)
-  (e-chat--clear-output-bottom-spacer window)
-  (when (and (e-chat--surface-transcript-p) (> lines 0))
-    (let ((overlay
-           (make-overlay (point-min)
-                         (min (point-max) (1+ (point-min)))
-                         (current-buffer) nil t)))
-      (overlay-put overlay 'window window)
-      (overlay-put overlay e-chat--output-bottom-spacer-property window)
-      (overlay-put overlay 'before-string (make-string lines ?\n)))))
-
-(defun e-chat--set-window-output-follow (window follow)
-  "Record whether WINDOW should FOLLOW the current transcript's live output."
-  (unless follow
-    (e-chat--clear-output-bottom-spacer window))
-  (set-window-parameter
-   window e-chat--output-follow-window-parameter
-   (cons (current-buffer) follow)))
-
-(defun e-chat--window-reaches-output-p (window tail)
-  "Return non-nil when WINDOW's current viewport visibly reaches TAIL."
-  (and (window-live-p window)
-       (eq (window-buffer window) (current-buffer))
-       (integer-or-marker-p tail)
-       (>= (window-end window t) tail)))
-
-(defun e-chat--output-follow-position ()
-  "Return the position that represents the visible transcript tail."
-  (or (cdr (e-chat--running-status-bounds))
-      (point-max)))
-
-(defun e-chat--window-follows-output-p (window)
-  "Return whether WINDOW follows the current transcript's live output.
-Follow intent is explicit after the user moves a viewport.  A new or reused
-window derives its initial intent from whether it currently reaches the tail."
-  (and (window-live-p window)
-       (eq (window-buffer window) (current-buffer))
-       (let ((state
-              (window-parameter window
-                                e-chat--output-follow-window-parameter)))
-         (if (and (consp state) (eq (car state) (current-buffer)))
-             (cdr state)
-           (e-chat--window-reaches-output-p
-            window (e-chat--output-follow-position))))))
-
-(defun e-chat--follow-output-window (window position)
-  "Place POSITION near the bottom of transcript WINDOW without selecting it."
-  (when (and (window-live-p window)
-             (eq (window-buffer window) (current-buffer)))
-    (e-chat--clear-output-bottom-spacer window)
-    ;; Give `vertical-motion' a fresh origin when POSITION lies beyond the old
-    ;; viewport.  Without this provisional start it can reuse the stale display
-    ;; matrix and incorrectly report that a long transcript begins at point-min.
-    (set-window-start window position t)
-    (let* ((target-motion (- 2 (window-body-height window)))
-           (motion-and-start
-            (save-excursion
-              (goto-char position)
-              (let ((motion (vertical-motion target-motion window)))
-                (cons motion (point)))))
-           (motion (car motion-and-start))
-           (start (cdr motion-and-start))
-           (short-p (> motion target-motion))
-           (spacer-lines
-            (if short-p
-                (max 0
-                     (- (abs (- 4 (window-body-height window)))
-                        (abs motion)))
-              0)))
-      (e-chat--set-output-bottom-spacer window spacer-lines)
-      (if short-p
-          (progn
-            (set-window-point window position)
-            (set-window-start window (point-min)))
-        (progn
-          (set-window-point window position)
-          (set-window-start window start t)))
-      (e-chat--set-window-output-follow window t))))
-
-(defun e-chat--capture-output-tail-windows ()
-  "Return visible transcript windows physically positioned at the output tail."
-  (let ((tail (e-chat--output-follow-position)))
-    (cl-remove-if-not
-     (lambda (window)
-       (and (e-chat--window-reaches-output-p window tail)
-            (>= (window-point window) tail)))
-     (e-chat--transcript-windows))))
-
-(defun e-chat--capture-live-output-follow-windows ()
-  "Return transcript windows following the current live output boundary.
-Unlike full projection replacement, an incremental terminal event must retain
-the explicit window-local follow decision across transient status removal."
-  (cl-remove-if-not #'e-chat--window-follows-output-p
-                    (e-chat--transcript-windows)))
-
-(defun e-chat--restore-output-tail-windows (windows)
-  "Move still-live transcript WINDOWS to the current output tail."
-  (let ((tail (e-chat--output-follow-position)))
-    (dolist (window windows)
-      (e-chat--follow-output-window window tail))))
-
-(defun e-chat--capture-running-status-display-state ()
-  "Capture each transcript viewport before an active-status redraw.
-Windows already showing the old output tail follow the new tail.  Every other
-window retains its scroll position, including when the composer is focused."
-  (when-let ((bounds (e-chat--running-status-bounds)))
-    (let ((point-offset (e-chat--position-running-offset (point) bounds)))
-      (list
-       :point-offset point-offset
-       :windows
-       (mapcar
-        (lambda (window)
-          (let ((follow-output (e-chat--window-follows-output-p window)))
-            (list :window window
-                :follow-output follow-output
-                :window-point-offset
-                (e-chat--position-running-offset (window-point window) bounds)
-                :window-start-offset
-                (e-chat--position-running-offset (window-start window) bounds))))
-        (e-chat--transcript-windows))))))
-
-(defun e-chat--running-status-position-from-offset (offset bounds)
-  "Return a position inside BOUNDS for OFFSET."
-  (when (and offset bounds)
-    (+ (car bounds)
-       (min offset
-            (max 0 (- (cdr bounds) (car bounds)))))))
-
-(defun e-chat--restore-running-status-display-state (state)
-  "Restore transcript viewports captured by STATE after an active-status redraw."
-  (when state
-    (when-let ((bounds (e-chat--running-status-bounds)))
-      (let ((tail (e-chat--output-follow-position))
-            (point-position
-             (e-chat--running-status-position-from-offset
-              (plist-get state :point-offset)
-              bounds)))
-        (when point-position
-          (goto-char point-position))
-        (dolist (entry (plist-get state :windows))
-          (let ((window (plist-get entry :window)))
-            (when (window-live-p window)
-              (if (plist-get entry :follow-output)
-                  (e-chat--follow-output-window window tail)
-                (let ((window-point-position
-                       (e-chat--running-status-position-from-offset
-                        (plist-get entry :window-point-offset)
-                        bounds))
-                      (window-start-position
-                       (e-chat--running-status-position-from-offset
-                        (plist-get entry :window-start-offset)
-                        bounds)))
-                  (when window-start-position
-                    (set-window-start window window-start-position t))
-                  (when window-point-position
-                    (set-window-point window window-point-position)))))))))))
-
-(defun e-chat--running-status-data (turn-id record)
-  "Return render data for TURN-ID's active progress and RECORD."
-  (let* ((has-progress (and e-chat--progress-turn-id
-                            (equal turn-id e-chat--progress-turn-id)))
-         (final-rendered (and record (plist-get record :final-rendered)))
-         (summary-text (and final-rendered
-                            record
-                            (e-chat--activity-summary-text record)))
-         (pending-summary (and record (plist-get record :pending-hook-summary)))
-         (transient-data
-          (and record
-               (e-chat--activity-records record)
-               (e-chat--activity-record-transient-data record)))
-         (transient-text
-          (and record
-               (or (plist-get transient-data :text)
-                   (e-chat--transient-text record))))
-         (pending-prefix (and pending-summary
-                              (concat pending-summary "\n\n")))
-         (text (if final-rendered
-                   (concat (when summary-text
-                             (concat summary-text "\n\n"))
-                           pending-prefix)
-                 (when (or pending-summary transient-text)
-                   (concat pending-prefix
-                           transient-text
-                           (when (and pending-summary has-progress
-                                      (not transient-text))
-                             (e-chat--entry-text "Assistant"
-                                                 (e-chat--progress-dots)))))))
-         (progress-start
-          (and (not final-rendered)
-               has-progress
-               (cond
-                ((plist-get transient-data :progress-start)
-                 (+ (length (or pending-prefix ""))
-                    (plist-get transient-data :progress-start)))
-                ((and pending-summary (not transient-text))
-                 (length pending-prefix)))))
-         (progress-end
-          (and progress-start
-               (cond
-                ((plist-get transient-data :progress-end)
-                 (+ (length (or pending-prefix ""))
-                    (plist-get transient-data :progress-end)))
-                (t (length text))))))
-    (let ((data
-           (list :has-progress has-progress
-                 :final-rendered final-rendered
-                 :summary-text summary-text
-                 :text text
-                 :progress-start progress-start
-                 :progress-end progress-end
-                 :block-kind (if summary-text 'activity-summary 'activity))))
-      (when (and has-progress (not text))
-        (let ((display (e-chat--entry-text "Assistant"
-                                           (e-chat--progress-dots))))
-          (plist-put data :progress-start 0)
-          (plist-put data :progress-end (length display))))
-      data)))
-
-(defun e-chat--progress-tail-text (turn-id record)
-  "Return only TURN-ID's mutable progress tail text from RECORD."
-  (cond
-   ((and record
-         (e-chat--activity-records record)
-         (equal turn-id e-chat--progress-turn-id)
-         (e-chat--service-active-turn-matches-p turn-id))
-    (when-let ((latest (car (last (e-chat--activity-records record)))))
-      (e-chat--activity-round-visible-text latest t)))
-   ((and record
-         (plist-get record :pending-hook-summary)
-         (not (e-chat--transient-text record)))
-    (e-chat--entry-text "Assistant" (e-chat--progress-dots)))
-   ((not (and record (e-chat--transient-text record)))
-    (e-chat--entry-text "Assistant" (e-chat--progress-dots)))))
-
-(defun e-chat--turn-pending-hook-summary (turn-id)
-  "Return capability-provided pending hook activity for TURN-ID, if any."
-  (when (and e-chat-harness e-chat-session-id turn-id)
-    (when-let ((prompt
-                (seq-find
-                 (lambda (message)
-                   (and (eq (plist-get message :role) 'user)
-                        (equal (plist-get message :turn-id) turn-id)))
-                 (e-chat-service-messages e-chat-harness e-chat-session-id))))
-      (let ((summary (plist-get (plist-get prompt :metadata)
-                                :pending-summary)))
-        (and (stringp summary) summary)))))
-
-(defun e-chat--running-status-display-text (data)
-  "Return the buffer text represented by running-status DATA."
-  (or (plist-get data :text)
-      (and (plist-get data :has-progress)
-           (e-chat--entry-text "Assistant" (e-chat--progress-dots)))))
-
-(defun e-chat--copy-running-status-display-properties (start text)
-  "Copy display properties from TEXT into the buffer at START."
-  (let ((index 0)
-        (limit (length text)))
-    (while (< index limit)
-      (let* ((next (or (next-property-change index text) limit))
-             (display (get-text-property index 'display text))
-             (buffer-start (+ start index))
-             (buffer-end (+ start next)))
-        (if display
-            (add-text-properties buffer-start buffer-end
-                                 `(display ,display))
-          (remove-text-properties buffer-start buffer-end
-                                  '(display nil)))
-        (setq index next)))))
-
-(defun e-chat--running-status-activity-block-id (record)
-  "Return RECORD's activity block id, creating it when needed."
-  (or (plist-get record :activity-block-id)
-      (let ((id (e-chat--next-block-id)))
-        (plist-put record :activity-block-id id)
-        id)))
-
-(defun e-chat--apply-running-status-region (turn-id record data start end)
-  "Apply running status metadata for TURN-ID and RECORD to START through END."
-  (setq e-chat--running-status-start-marker
-        (copy-marker start nil))
-  (setq e-chat--running-status-end-marker
-        (copy-marker end nil))
-  (when (< start end)
-    (e-chat--copy-running-status-display-properties
-     start
-     (e-chat--running-status-display-text data))
-    (e-chat--mark-protected start end)
-    (remove-text-properties
-     start end
-     '(font-lock-face nil
-       e-chat-progress-turn-id nil
-       e-chat-transient-turn-id nil
-       e-chat-turn-id nil
-       e-chat-block-id nil))
-    (if-let ((text (plist-get data :text)))
-        (let* ((activity-block-id
-                (and record
-                     (e-chat--running-status-activity-block-id record)))
-               (progress-start (plist-get data :progress-start))
-               (progress-end (plist-get data :progress-end))
-               (properties `(e-chat-transient-turn-id ,turn-id
-                             e-chat-turn-id ,turn-id)))
-          (setq e-chat--progress-start-marker
-                (and progress-start
-                     (copy-marker (+ start progress-start) nil)))
-          (setq e-chat--progress-end-marker
-                (and progress-end
-                     (copy-marker (+ start progress-end) nil)))
-          (when activity-block-id
-            (setq properties
-                  (append properties
-                          `(e-chat-block-id ,activity-block-id))))
-          (add-text-properties start end
-                               `(font-lock-face e-chat-system-face
-                                 ,@properties))
-          (e-chat--apply-activity-separator-face start end)
-          (when record
-            (plist-put record :transient-start-marker
-                       (copy-marker start nil))
-            (plist-put record :transient-end-marker
-                       (copy-marker end nil)))
-          (when activity-block-id
-            (e-chat--update-block-bounds
-             activity-block-id
-             turn-id
-             start
-             end
-             (plist-get data :block-kind)
-             (string-trim-right text)
-             start
-             end
-             (e-chat--activity-tool-items
-              record (not (plist-get data :final-rendered)))
-             (plist-get data :details-text))))
-      (setq e-chat--progress-start-marker
-            (copy-marker start nil))
-      (setq e-chat--progress-end-marker
-            (copy-marker end nil))
-      (when record
-        (plist-put record :transient-start-marker nil)
-        (plist-put record :transient-end-marker nil))
-      (add-text-properties start end
-                           `(font-lock-face e-chat-assistant-face
-                             e-chat-progress-turn-id ,turn-id)))))
-
-(defun e-chat--common-prefix-length (old-text new-text)
-  "Return common prefix length for OLD-TEXT and NEW-TEXT."
-  (let ((index 0)
-        (limit (min (length old-text) (length new-text))))
-    (while (and (< index limit)
-                (= (aref old-text index) (aref new-text index)))
-      (setq index (1+ index)))
-    index))
-
-(defun e-chat--common-suffix-length (old-text new-text prefix-length)
-  "Return common suffix length after PREFIX-LENGTH has been reserved."
-  (let* ((old-length (length old-text))
-         (new-length (length new-text))
-         (limit (min (- old-length prefix-length)
-                     (- new-length prefix-length)))
-         (suffix 0))
-    (while (and (< suffix limit)
-                (= (aref old-text (- old-length suffix 1))
-                   (aref new-text (- new-length suffix 1))))
-      (setq suffix (1+ suffix)))
-    suffix))
-
-(defun e-chat--replace-region-text-minimally (start end new-text)
-  "Replace START through END with NEW-TEXT by touching only changed text.
-Return the new end position.
-When the region already holds NEW-TEXT verbatim, do nothing but return the
-unchanged end.  A progress spinner tick re-renders an active turn every
-`e-chat-progress-interval' seconds while the transient activity block text is
-unchanged; the C-level `string=' guard skips the O(n) prefix/suffix scan for
-that common case instead of walking a large block character by character."
-  (let ((old-text (buffer-substring-no-properties start end)))
-    (cond
-     ((string= old-text new-text) end)
-     ((>= (max (length old-text) (length new-text))
-          e-chat-running-status-diff-max-chars)
-      (e-chat--replace-region-text-bounded start end new-text))
-     (t (e-chat--replace-region-text-diffing start end old-text new-text)))))
-
-(defun e-chat--replace-region-text-bounded (start end new-text)
-  "Replace START through END with NEW-TEXT under a bounded diff cost.
-Hands the work to `replace-region-contents' with time and cost caps so a very
-large transient block cannot force an unbounded scan on every progress tick.
-Return the new end position."
-  (let ((marker (copy-marker end t)))
-    (unwind-protect
-        (progn
-          (replace-region-contents
-           start end
-           (lambda () new-text)
-           e-chat-running-status-diff-max-seconds
-           (length new-text))
-          (marker-position marker))
-      (set-marker marker nil))))
-
-(defun e-chat--replace-region-text-diffing (start end old-text new-text)
-  "Replace START through END, editing only the span that differs.
-OLD-TEXT is the current region text and NEW-TEXT its replacement; the two are
-known to differ.  Return the new end position."
-  (let* ((prefix-length (e-chat--common-prefix-length old-text new-text))
-         (suffix-length
-          (e-chat--common-suffix-length old-text new-text prefix-length))
-         (replace-start (+ start prefix-length))
-         (replace-end (- end suffix-length))
-         (new-replace-end (- (length new-text) suffix-length)))
-    (unless (and (= replace-start replace-end)
-                 (= prefix-length new-replace-end))
-      (goto-char replace-start)
-      (delete-region replace-start replace-end)
-      (insert (substring new-text prefix-length new-replace-end)))
-    (+ start (length new-text))))
-
-(defun e-chat--insert-running-status-contents (turn-id record data)
-  "Insert running status contents for TURN-ID using RECORD and DATA.
-Point must be at the destination.  Return cons of inserted region bounds."
-  (let ((status-start (point))
-        (text (e-chat--running-status-display-text data)))
-    (when text
-      (insert text))
-    (e-chat--apply-running-status-region turn-id record data status-start (point))
-    (cons status-start (point))))
-
-(defun e-chat--replace-running-status (turn-id record data)
-  "Update the visible running status for TURN-ID in place.
-Return non-nil when an existing status region was updated without rebuilding
-the composer."
-  (let* ((start (and (markerp e-chat--running-status-start-marker)
-                     (marker-position e-chat--running-status-start-marker)))
-         (end (and (markerp e-chat--running-status-end-marker)
-                   (marker-position e-chat--running-status-end-marker)))
-         (text (e-chat--running-status-display-text data)))
-    (when (and start end (< start end) text)
-      (let ((inhibit-read-only t)
-            (new-end nil))
-        (setq new-end
-              (e-chat--replace-region-text-minimally start end text))
-        (e-chat--apply-running-status-region turn-id record data start new-end))
-      t)))
-
-(defun e-chat--render-running-status (turn-id record)
-  "Render TURN-ID's active progress and RECORD transient summary together."
-  (let* ((data (e-chat--running-status-data turn-id record))
-         (has-progress (plist-get data :has-progress))
-         (text (plist-get data :text))
-         (navigation-state
-          (e-chat--capture-running-status-navigation-state))
-         (display-state
-          (e-chat--capture-running-status-display-state))
-         ;; Before the first running-status block exists there are no bounds
-         ;; from which to capture offsets.  Preserve the simpler physical-tail
-         ;; contract so inserting that first block does not strand a pinned
-         ;; composed transcript at its old end.
-         (initial-tail-windows
-          (unless display-state
-            (e-chat--capture-output-tail-windows))))
-    (when (and turn-id
-               (not (plist-get data :final-rendered))
-               (e-chat--active-activity-p record))
-      (e-chat--ensure-progress-interval turn-id))
-    (unless (e-chat--replace-running-status turn-id record data)
-      (e-chat--delete-running-status record)
-      (when (or has-progress text)
-        (let ((inhibit-read-only t))
-          (goto-char (point-max))
-          (unless (or (bobp) (bolp))
-            (insert "\n"))
-          (e-chat--maybe-insert-response-separator turn-id 'agent)
-          (e-chat--insert-running-status-contents turn-id record data))))
-    (e-chat--restore-running-status-navigation-state navigation-state)
-    (unless navigation-state
-      (if display-state
-          (e-chat--restore-running-status-display-state display-state)
-        (e-chat--restore-output-tail-windows initial-tail-windows)))
-    (run-hook-with-args 'e-chat--running-status-rendered-hook turn-id)))
-
-(defun e-chat--render-turn-transient (turn-id record)
-  "Render RECORD's intermittent entries as a temporary block for TURN-ID."
-  (e-chat--profile-call
-   'chat.render-turn-transient
-   (list :session-id e-chat-session-id
-         :turn-id turn-id
-         :buffer-name (buffer-name))
-   (lambda ()
-     (e-chat--render-running-status turn-id record))))
-
-(defun e-chat--cancel-pending-activity-redraw (&optional turn-id)
-  "Cancel the pending activity redraw.
-When TURN-ID is non-nil, cancel only a redraw for that turn."
-  (when (and e-chat--pending-activity-redraw-turn-id
-             (or (not turn-id)
-                 (equal turn-id e-chat--pending-activity-redraw-turn-id)))
-    (when (e-work-handle-p e-chat--pending-activity-redraw-handle)
-      (e-ui-work-cancel e-chat--pending-activity-redraw-handle))
-    (cl-incf e-chat--activity-redraw-generation)
-    (setq e-chat--pending-activity-redraw-turn-id nil)
-    (setq e-chat--pending-activity-redraw-handle nil)
-    (setq e-chat--pending-activity-redraw-kind nil)
-    (setq e-chat--pending-activity-redraw-generation nil)))
-
-(defun e-chat--ensure-pending-activity-redraw-work ()
-  "Ensure the pending activity redraw has scheduled UI work."
-  (when (and e-chat--pending-activity-redraw-turn-id
-             e-chat--pending-activity-redraw-generation
-             (not e-chat--activity-redraw-running)
-             (not (e-work-handle-p e-chat--pending-activity-redraw-handle)))
-    (let ((turn-id e-chat--pending-activity-redraw-turn-id)
-          (generation e-chat--pending-activity-redraw-generation))
-      (setq e-chat--pending-activity-redraw-handle
-            (e-ui-work-schedule
-             (e-ui-work-spec-create
-              :id "chat_activity_redraw"
-              :description "Redraw active chat turn activity."
-              :owner 'activity-redraw
-              :target-buffer (current-buffer)
-              :key turn-id
-              :generation generation
-              :delay (e-chat--activity-redraw-delay)
-              :coalesce t
-              ;; The chat surface owns its transcript viewport policy.  A
-              ;; generic one-buffer focus snapshot cannot represent a focused
-              ;; composer paired with a separately scrolling transcript.
-              :focus-policy 'explicit
-              :reentrancy-policy 'defer
-              :apply
-              (lambda (_job _handle)
-                (setq e-chat--pending-activity-redraw-handle nil)
-                (e-chat--run-pending-activity-redraw generation)))
-             :on-event (lambda (&rest _)
-                         (e-chat--refresh-ui-work-diagnostics)))))))
-
-(defun e-chat--activity-redraw-delay ()
-  "Return the coalescing delay for the next activity redraw.
-A large visible transient block is throttled by
-`e-chat-activity-redraw-large-block-factor' so it repaints less often than a
-small one, since each repaint of a big block costs more."
-  (let ((bounds (e-chat--running-status-bounds)))
-    (if (and bounds
-             (>= (- (cdr bounds) (car bounds))
-                 e-chat-activity-redraw-large-block-chars))
-        (* e-chat-activity-redraw-delay
-           e-chat-activity-redraw-large-block-factor)
-      e-chat-activity-redraw-delay)))
-
-(defun e-chat--run-pending-activity-redraw (&optional expected-generation)
-  "Run and clear the pending activity redraw for this chat buffer."
-  (when (or (null expected-generation)
-            (equal expected-generation
-                   e-chat--pending-activity-redraw-generation))
-    (if e-chat--activity-redraw-running
-        (when expected-generation
-          ;; Leave the work pending for the outer redraw to schedule after it
-          ;; exits.
-          (setq e-chat--pending-activity-redraw-handle nil))
-      (let ((turn-id e-chat--pending-activity-redraw-turn-id)
-            (handle e-chat--pending-activity-redraw-handle)
-            (kind e-chat--pending-activity-redraw-kind))
-        (setq e-chat--activity-redraw-running t)
-        (unwind-protect
-            (let ((e-chat--recenter-inhibited t))
-              (e-chat--profile-call
-               'chat.activity-redraw
-               (list :session-id e-chat-session-id
-                     :turn-id turn-id
-                     :buffer-name (buffer-name)
-                     :metadata (list :kind (and kind (symbol-name kind))
-                                     :generation expected-generation))
-               (lambda ()
-                 (when (e-work-handle-p handle)
-                   (e-ui-work-cancel handle))
-                 (setq e-chat--pending-activity-redraw-turn-id nil)
-                 (setq e-chat--pending-activity-redraw-handle nil)
-                 (setq e-chat--pending-activity-redraw-kind nil)
-                 (setq e-chat--pending-activity-redraw-generation nil)
-                 (when turn-id
-                   (pcase kind
-                     ('progress
-                      (e-chat--render-progress-indicator turn-id))
-                     (_
-                      (when-let ((record (e-chat--existing-turn-record turn-id)))
-                        (e-chat--render-turn-transient turn-id record))))))))
-          (setq e-chat--activity-redraw-running nil)
-          (e-chat--ensure-pending-activity-redraw-work))))))
-
-(defun e-chat--activity-redraw-kind (existing requested)
-  "Return coalesced redraw kind from EXISTING and REQUESTED kinds."
-  (cond
-   ((eq existing 'activity) 'activity)
-   ((eq requested 'activity) 'activity)
-   (requested)
-   (existing)
-   (t 'activity)))
-
-(defun e-chat--request-activity-redraw (turn-id &optional kind)
-  "Schedule one near-future activity redraw for TURN-ID.
-When this chat buffer is displayed in no window, the repaint is withheld and
-remembered in `e-chat--deferred-activity-redraw'; the same applies while a
-minibuffer is active.  The repaint is re-issued once the buffer is visible and
-ordinary top-level interaction resumes.  Skipping cosmetic transcript rewrites
-keeps background sessions and progress animation from starving process output."
-  (when turn-id
-    (if (or (not (e-chat--redraw-visible-p))
-            (active-minibuffer-window))
-        (setq e-chat--deferred-activity-redraw
-              (cons turn-id
-                    (e-chat--activity-redraw-kind
-                     (cdr e-chat--deferred-activity-redraw)
-                     (or kind 'activity))))
-      (setq e-chat--pending-activity-redraw-turn-id turn-id)
-      (setq e-chat--pending-activity-redraw-kind
-            (e-chat--activity-redraw-kind
-             e-chat--pending-activity-redraw-kind
-             (or kind 'activity)))
-      (unless e-chat--pending-activity-redraw-generation
-        (setq e-chat--pending-activity-redraw-generation
-              (cl-incf e-chat--activity-redraw-generation)))
-      (e-chat--ensure-pending-activity-redraw-work))))
-
-(defun e-chat--flush-deferred-activity-redraw ()
-  "Issue this buffer's activity redraw when presentation is ready."
-  (when (and e-chat--deferred-activity-redraw
-             (e-chat--redraw-visible-p)
-             (not (active-minibuffer-window)))
-    (let ((turn-id (car e-chat--deferred-activity-redraw))
-          (kind (cdr e-chat--deferred-activity-redraw)))
-      (setq e-chat--deferred-activity-redraw nil)
-      (e-chat--request-activity-redraw turn-id kind))))
-
-(defun e-chat--flush-deferred-activity-redraws (&rest _)
-  "Flush presentation-ready activity redraws for every chat buffer."
-  (dolist (buffer (buffer-list))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (when (and (derived-mode-p 'e-chat-mode)
-                   e-chat--deferred-activity-redraw)
-          (e-chat--flush-deferred-activity-redraw))))))
-
-(defun e-chat--flush-deferred-activity-redraws-after-minibuffer (&rest _)
-  "Flush activity redraws after Emacs finishes leaving the minibuffer.
-`minibuffer-exit-hook' runs while `active-minibuffer-window' still identifies
-the exiting minibuffer, so defer the coalesced flush by one event-loop turn."
-  (run-at-time 0 nil #'e-chat--flush-deferred-activity-redraws))
-
-(defun e-chat--progress-dots ()
-  "Return the current active assistant progress glyph string."
-  (aref e-chat--progress-glyphs
-        (mod e-chat--progress-frame
-             (length e-chat--progress-glyphs))))
-
-(defun e-chat--active-activity-p (record)
-  "Return non-nil when RECORD has an active provider activity round."
-  (and record (e-chat--active-round-record record)))
-
-(defun e-chat--service-active-turn-matches-p (turn-id)
-  "Return non-nil when TURN-ID is the service's current running turn."
-  (and turn-id
-       e-chat-session-id
-       (e-harness-p e-chat-harness)
-       (equal turn-id
-              (plist-get
-               (e-chat-service-active-turn
-                e-chat-harness e-chat-session-id)
-               :id))))
-
-(defun e-chat--stale-progress-turn-p (turn-id)
-  "Return non-nil when TURN-ID no longer matches harness running state."
-  (when (and turn-id
-             e-chat-session-id
-             (e-harness-p e-chat-harness))
-    (not (e-chat--service-active-turn-matches-p turn-id))))
-
-(defun e-chat--cancel-progress-interval ()
-  "Cancel the active assistant progress UI work interval."
-  (when (e-work-handle-p e-chat--progress-interval-handle)
-    (e-ui-work-cancel e-chat--progress-interval-handle))
-  (setq e-chat--progress-interval-handle nil))
-
-(defun e-chat--progress-interval-active-p (turn-id)
-  "Return non-nil when TURN-ID has a live progress UI work interval."
-  (and (equal e-chat--progress-turn-id turn-id)
-       (e-work-handle-p e-chat--progress-interval-handle)
-       (not (e-request-terminal-p
-             (e-work-handle-lifecycle e-chat--progress-interval-handle)))))
-
-(defun e-chat--ensure-progress-interval (turn-id)
-  "Ensure TURN-ID has a live progress interval without rendering immediately."
-  (unless (e-chat--progress-interval-active-p turn-id)
-    (let ((same-turn (equal e-chat--progress-turn-id turn-id)))
-      (e-chat--cancel-progress-interval)
-      (setq e-chat--progress-turn-id turn-id)
-      (unless same-turn
-        (setq e-chat--progress-frame 0))
-      (setq e-chat--progress-next-tick-time
-            (+ (float-time) e-chat-progress-interval))
-      (setq e-chat--progress-interval-handle
-            (e-ui-work-schedule-interval
-             (e-ui-work-spec-create
-              :id "chat_progress_indicator"
-              :description "Advance active chat progress indicator."
-              :owner 'progress-indicator
-              :target-buffer (current-buffer)
-              :key turn-id
-              :generation e-chat--progress-frame
-              :focus-policy 'preserve
-              :reentrancy-policy 'defer
-              :apply
-              (lambda (_job handle)
-                (if (not (eq e-chat--progress-interval-handle handle))
-                    '(:status stopped)
-                  (e-chat--advance-progress-indicator)
-                  (if (eq e-chat--progress-interval-handle handle)
-                      :continue
-                    '(:status stopped)))))
-             e-chat-progress-interval
-             :on-event (lambda (&rest _)
-                         (e-chat--refresh-ui-work-diagnostics)))))))
-
-(defun e-chat--delete-progress-indicator ()
-  "Delete the active assistant progress indicator."
-  (let ((record (and e-chat--progress-turn-id
-                     (e-chat--existing-turn-record
-                      e-chat--progress-turn-id))))
-    (e-chat--delete-running-status record)))
-
-(defun e-chat--render-progress-indicator (turn-id)
-  "Render active assistant progress indicator for TURN-ID."
-  (let ((record (e-chat--existing-turn-record turn-id)))
-    (unless (e-chat--replace-progress-tail turn-id record)
-      (e-chat--render-running-status turn-id record))))
-
-(defun e-chat--replace-progress-tail (turn-id record)
-  "Replace only TURN-ID's mutable progress tail from RECORD.
-Return non-nil when live tail markers allowed an incremental update."
-  (let* ((start (and (markerp e-chat--progress-start-marker)
-                     (marker-position e-chat--progress-start-marker)))
-         (end (and (markerp e-chat--progress-end-marker)
-                   (marker-position e-chat--progress-end-marker)))
-         (bounds (e-chat--running-status-bounds))
-         (text (e-chat--progress-tail-text turn-id record)))
-    (when (and start end bounds text
-               (<= (car bounds) start)
-               (<= start end)
-               (<= end (cdr bounds)))
-      (let ((navigation-state
-             (e-chat--capture-running-status-navigation-state))
-            (display-state
-             (e-chat--capture-running-status-display-state))
-            (activity-block-id (and record
-                                    (plist-get record :activity-block-id)))
-            new-end)
-        (let ((inhibit-read-only t))
-          (setq new-end
-                (e-chat--replace-region-text-minimally start end text))
-          (e-chat--copy-running-status-display-properties start text)
-          (e-chat--mark-protected start new-end)
-          (if activity-block-id
-              (add-text-properties
-               start new-end
-               `(font-lock-face e-chat-system-face
-                 e-chat-transient-turn-id ,turn-id
-                 e-chat-turn-id ,turn-id
-                 e-chat-block-id ,activity-block-id))
-            (add-text-properties
-             start new-end
-             `(font-lock-face e-chat-assistant-face
-               e-chat-progress-turn-id ,turn-id)))
-          (setq e-chat--progress-start-marker (copy-marker start nil))
-          (setq e-chat--progress-end-marker (copy-marker new-end nil)))
-        (e-chat--restore-running-status-navigation-state navigation-state)
-        (when display-state
-          (e-chat--restore-running-status-display-state display-state))
-        (run-hook-with-args 'e-chat--running-status-rendered-hook turn-id))
-      t)))
-
-(defun e-chat--advance-progress-indicator ()
-  "Advance and rerender the active assistant progress indicator."
-  (when e-chat--progress-turn-id
-    (if (e-chat--stale-progress-turn-p e-chat--progress-turn-id)
-        (let ((turn-id e-chat--progress-turn-id))
-          (e-chat--settle-open-thinking turn-id
-                                        (e-chat--current-time-seconds)
-                                        'done)
-          (e-chat--stop-progress-indicator turn-id)
-          (e-chat--set-status "idle" t))
-      (let* ((now (float-time))
-             (late-by (and e-chat--progress-next-tick-time
-                           (- now e-chat--progress-next-tick-time)))
-             (threshold (max 5.0 (* 3 e-chat-progress-interval))))
-        (when (and late-by (> late-by threshold))
-          (e-chat--set-status
-           (format "Emacs was blocked for %.0fs; checking turn state"
-                   late-by)))
-        (setq e-chat--progress-next-tick-time
-              (+ now e-chat-progress-interval)))
-      (setq e-chat--progress-frame (1+ e-chat--progress-frame))
-      (e-chat--request-activity-redraw e-chat--progress-turn-id 'progress))))
-
-(defun e-chat--start-progress-indicator (turn-id)
-  "Start the active assistant progress indicator for TURN-ID.
-The first visible frame uses the same scheduled projection as later progress
-and activity updates.  Event dispatch only changes local state."
-  (setq e-chat--progress-frame 0)
-  (e-chat--ensure-progress-interval turn-id)
-  (e-chat--request-activity-redraw turn-id 'progress))
-
-(defun e-chat--stop-progress-indicator (&optional turn-id)
-  "Stop and delete the active assistant progress indicator.
-When TURN-ID is non-nil, only stop a matching active indicator."
-  (when (and e-chat--progress-turn-id
-             (or (not turn-id)
-                 (equal turn-id e-chat--progress-turn-id)))
-    (e-chat--cancel-progress-interval)
-    (let ((old-turn-id e-chat--progress-turn-id))
-      (setq e-chat--progress-turn-id nil)
-      (setq e-chat--progress-frame 0)
-      (setq e-chat--progress-next-tick-time nil)
-      (if-let ((record (and old-turn-id
-                            (e-chat--existing-turn-record old-turn-id))))
-          (e-chat--render-running-status old-turn-id record)
-        (progn
-          (e-chat--delete-running-status nil))))))
-
-(defun e-chat--append-intermittent-entry (turn-id title content &optional append source)
-  "Append intermittent TITLE and CONTENT to TURN-ID.
-When APPEND is non-nil, merge CONTENT into the previous entry with TITLE.
-SOURCE identifies where the entry came from for duplicate suppression."
-  (when (and turn-id content (not (string-empty-p content)))
-    (let ((record (e-chat--turn-record turn-id)))
-      (e-chat--add-intermittent-entry record title content append source)
-      (e-chat--request-activity-redraw turn-id 'activity))))
-
-(defun e-chat--format-tool-call (payload)
-  "Return a compact display string for tool-call PAYLOAD."
-  (let ((name (plist-get payload :name))
-        (arguments (plist-get payload :arguments)))
-    (string-join
-     (delq nil
-           (list (and name (format "%s" name))
-                 (and arguments
-                      (format "%S" arguments))))
-     "\n")))
-
-(defun e-chat--tool-message-p (message)
-  "Return non-nil when MESSAGE is a tool transcript message."
-  (memq (plist-get message :role) '(tool-call tool)))
-
-(defun e-chat--record-replayed-message-time (record message)
-  "Record MESSAGE's replay timestamp into RECORD."
-  (when-let ((created-at (plist-get message :created-at)))
-    (unless (plist-get record :started-at)
-      (plist-put record :started-at created-at))
-    (plist-put record :ended-at created-at)))
-
-(defun e-chat--record-hook-audit (record payload &optional source)
-  "Record a generic hook audit PAYLOAD in RECORD.
-
-SOURCE identifies replayed durable activity or a live event.  Capability-owned
-message semantics come through the separate message-details contract; this
-function records only lifecycle audit text."
-  (when-let ((summary (plist-get payload :summary)))
-    (e-chat--add-intermittent-entry record "Hook audit" summary nil source))
-  (when (plist-member payload :pending-summary)
-    (let ((pending-summary (plist-get payload :pending-summary)))
-      (plist-put record
-                 :pending-hook-summary
-                 (and (stringp pending-summary)
-                      (not (string-empty-p pending-summary))
-                      pending-summary)))))
-
-(defun e-chat--record-activity-event (turn-id activity-event)
-  "Record durable ACTIVITY-EVENT for TURN-ID without re-emitting it."
-  (let ((record (e-chat--turn-record turn-id)))
-    (pcase (plist-get activity-event :event-type)
-      ('turn-started
-       (e-chat--set-turn-time turn-id
-                              :started-at
-                              (plist-get activity-event :created-at)))
-      ('provider-request-started
-       (e-chat--record-provider-started
-        turn-id
-        (plist-get activity-event :created-at)))
-      ('provider-request-finished
-       (e-chat--record-provider-finished
-        turn-id
-        (plist-get activity-event :created-at)
-        (plist-get (plist-get activity-event :payload) :status)))
-      ('turn-retrying
-       (e-chat--record-turn-retrying
-        turn-id (plist-get activity-event :payload)))
-      ('turn-finished
-       (e-chat--set-turn-time turn-id
-                              :ended-at
-                              (plist-get activity-event :created-at)))
-      ('reasoning-delta
-       (e-chat--record-reasoning-delta
-        record
-        (plist-get (plist-get activity-event :payload) :content)
-        t
-        'activity))
-      ('tool-started
-       (e-chat--record-tool-started
-        record
-        (plist-get activity-event :payload)
-        'activity
-        (plist-get activity-event :created-at)))
-      ('tool-finished
-       (e-chat--record-tool-finished
-        record
-        (plist-get activity-event :payload)
-        'activity
-        (plist-get activity-event :created-at)))
-      ('action-started
-       (e-chat--record-action-started
-        record
-        (plist-get activity-event :payload)
-        'activity))
-      ((or 'action-finished 'action-failed)
-       (e-chat--record-action-finished
-        record
-        (plist-get activity-event :payload)
-        'activity))
-      ('hook-audit
-       (e-chat--record-hook-audit record (plist-get activity-event :payload)
-                                  'activity))
-      ('tool-progress
-       (e-chat--record-tool-progress
-        record
-        (plist-get activity-event :payload)))
-      ('turn-failed
-       (when (e-chat--event-selected-participant-p activity-event)
-         (e-chat--settle-open-thinking
-          turn-id
-          (plist-get activity-event :created-at)
-          'failed)
-         (e-chat--record-turn-failure
-          turn-id
-          (plist-get activity-event :payload))))
-      ('turn-cancelled
-       (when (e-chat--event-selected-participant-p activity-event)
-         (e-chat--settle-open-thinking
-          turn-id
-          (plist-get activity-event :created-at)
-          'cancelled))))))
-
-(defun e-chat--render-turn-activity-events (turn-id activity-events)
-  "Render durable ACTIVITY-EVENTS for TURN-ID once."
-  (when-let ((record (e-chat--turn-record turn-id)))
-    (unless (plist-get record :activity-rendered)
-      (let (selected-event-p)
-        (dolist (event activity-events)
-          (when (equal (plist-get event :turn-id) turn-id)
-            (let* ((selected-p (e-chat--event-selected-participant-p event))
-                   (render-turn-id (e-chat--presentation-turn-id turn-id event)))
-              (when selected-p
-                (setq selected-event-p t))
-              (e-chat--record-activity-event render-turn-id event)
-              (when-let ((render-record
-                          (e-chat--existing-turn-record render-turn-id)))
-                (plist-put render-record :activity-rendered t)))))
-        ;; An observed sibling can share the causal TURN-ID.  Do not mutate
-        ;; the selected record merely because its sibling's activity was
-        ;; replayed; only selected-owned activity establishes this marker.
-        (when selected-event-p
-          (plist-put record :activity-rendered t)
-          (e-chat--render-turn-transient turn-id record))
-        (when (and (not selected-event-p)
-                   e-chat--progress-turn-id)
-          (when-let ((selected-record
-                      (e-chat--existing-turn-record e-chat--progress-turn-id)))
-            (e-chat--render-turn-transient
-             e-chat--progress-turn-id selected-record)))))))
-
-(defun e-chat--record-turn-failure (turn-id payload)
-  "Record failed-turn PAYLOAD for TURN-ID."
-  (when-let ((record (e-chat--turn-record turn-id)))
-    (plist-put record :failure-error
-               (or (plist-get payload :error) "Turn failed"))
-    (plist-put record :failure-details (plist-get payload :details))
-    record))
-
-(defun e-chat--render-observed-terminal-event
-    (turn-id created-at event-type payload &optional event)
-  "Render an observed sibling terminal EVENT-TYPE without settling this chat.
-The semantic row remains visible, but the selected participant's progress,
-status, and composer are owned by the selected terminal path only."
-  (let* ((render-turn-id (e-chat--observed-turn-id turn-id event))
-         (selected-turn-id e-chat--progress-turn-id)
-         (selected-record (and selected-turn-id
-                               (e-chat--existing-turn-record selected-turn-id)))
-         (record (e-chat--existing-turn-record render-turn-id)))
-    (e-chat--set-turn-time render-turn-id :ended-at created-at)
-    (e-chat--settle-open-thinking render-turn-id created-at event-type)
-    (when (eq event-type 'failed)
-      (e-chat--record-turn-failure render-turn-id payload))
-    (e-chat--insert-entry
-     "System"
-     (if (eq event-type 'cancelled)
-         "Turn cancelled"
-       (format "Turn failed: %s"
-               (or (plist-get payload :error) "Turn failed")))
-     nil
-     render-turn-id
-     (and record (e-chat--turn-details-text render-turn-id record)))
-    ;; Inserting an observed row removes the selected running-status block as
-    ;; a physical-buffer operation.  Re-render only that transient; no selected
-    ;; turn record or settlement state is changed here.
-    (when (and selected-turn-id selected-record
-               (equal e-chat--progress-turn-id selected-turn-id))
-      (e-chat--render-turn-transient selected-turn-id selected-record))))
-
-(defun e-chat--render-turn-failure
-    (turn-id created-at payload &optional ensure-composer)
-  "Render failed TURN-ID with CREATED-AT and failure PAYLOAD."
-  (e-chat--set-turn-time turn-id :ended-at created-at)
-  (e-chat--settle-open-thinking turn-id created-at 'failed)
-  (e-chat--stop-progress-indicator turn-id)
-  ;; Drop the failed turn's live transient activity ("Thinking..."/"Thought
-  ;; for ...") and clear its running-status markers before inserting the
-  ;; failure entry.  Without this the transient block and its separators
-  ;; linger, and the next submitted prompt renders into the orphaned region
-  ;; and appears to vanish.
-  (when-let ((record (e-chat--existing-turn-record turn-id)))
-    (e-chat--delete-turn-transient record))
-  (e-chat--clear-running-status-markers)
-  (let* ((record (e-chat--record-turn-failure turn-id payload))
-         (error-message (or (plist-get payload :error) "Turn failed")))
-    (e-chat--insert-entry
-     "System"
-     (format "Turn failed: %s" error-message)
-     ensure-composer
-     turn-id
-     (and record (e-chat--turn-details-text turn-id record)))
-    (when record
-      (plist-put record :failure-rendered t))
-    ;; Re-render the settled activity summary ("Turn took ..., N tool calls")
-    ;; below the failure entry, so an abnormal end still surfaces duration and
-    ;; tool-call counts.  `finalize-turn-display' is a no-op when the turn did
-    ;; no provider work (`settled-activity-p' is nil), so failures before any
-    ;; round add no empty summary.
-    (e-chat--finalize-turn-display turn-id)))
-
-(defun e-chat--render-turn-cancellation
-    (turn-id created-at &optional ensure-composer)
-  "Render selected TURN-ID as cancelled at CREATED-AT."
-  (e-chat--set-turn-time turn-id :ended-at created-at)
-  (e-chat--settle-open-thinking turn-id created-at 'cancelled)
-  (e-chat--cancel-pending-activity-redraw turn-id)
-  (e-chat--stop-progress-indicator turn-id)
-  (when-let ((record (e-chat--existing-turn-record turn-id)))
-    (e-chat--delete-turn-transient record))
-  (e-chat--clear-running-status-markers)
-  (e-chat--set-status "cancelled")
-  (let ((record (e-chat--existing-turn-record turn-id)))
-    (e-chat--insert-entry
-     "System" "Turn cancelled" ensure-composer turn-id
-     (and record (e-chat--turn-details-text turn-id record)))
-    ;; Persist the activity summary (duration, tool-call count) below the
-    ;; cancellation, matching the failed-turn path.  No-op when the turn did
-    ;; no provider work.
-    (e-chat--finalize-turn-display turn-id)))
-
-(defun e-chat--finalize-turn-display (turn-id)
-  "Mark TURN-ID as having rendered its final response."
-  (when-let ((record (e-chat--turn-record turn-id)))
-    (plist-put record :final-rendered t)
-    (if (e-chat--settled-activity-p record)
-        (e-chat--render-turn-transient turn-id record)
-      (e-chat--delete-turn-transient record))
-    (e-chat--clear-running-status-markers)))
-
-(defun e-chat--delete-block-details (block)
-  "Delete expanded detail text for BLOCK."
-  (let ((start (plist-get block :details-start-marker))
-        (end (plist-get block :details-end-marker)))
-    (when (and (markerp start)
-               (markerp end)
-               (marker-position start)
-               (marker-position end))
-      (let ((inhibit-read-only t))
-        (delete-region start end)))
-    (plist-put block :details-start-marker nil)
-    (plist-put block :details-end-marker nil)))
-
-(defun e-chat--block-order-insert-after (parent-id child-ids)
-  "Place CHILD-IDS immediately after PARENT-ID in `e-chat--block-order'."
-  (let ((remaining e-chat--block-order)
-        before
-        after
-        found)
-    (dolist (block-id remaining)
-      (unless (member block-id child-ids)
-        (if found
-            (push block-id after)
-          (push block-id before))
-        (when (equal block-id parent-id)
-          (setq found t))))
-    (setq e-chat--block-order
-          (append (nreverse before) child-ids (nreverse after)))))
-
-(defun e-chat--activity-summary-expanded-p (block)
-  "Return non-nil when activity summary BLOCK has rendered children."
-  (not (null (plist-get block :children))))
-
-(defun e-chat--delete-activity-summary-children (block)
-  "Delete child blocks rendered for activity summary BLOCK."
-  (let ((children (plist-get block :children)))
-    (when children
-      (let* ((first-block (gethash (car children) e-chat--block-registry))
-             (last-block (gethash (car (last children)) e-chat--block-registry))
-             (start-marker (and first-block
-                                (plist-get first-block :start-marker)))
-             (end-marker (and last-block
-                              (plist-get last-block :end-marker)))
-             (start (and (markerp start-marker)
-                         (marker-position start-marker)))
-             (end (and (markerp end-marker)
-                       (marker-position end-marker))))
-        (when (and start end (< start end))
-          (let ((inhibit-read-only t))
-            (delete-region start end))))
-      (dolist (child-id children)
-        (e-chat--remove-block-record child-id))
-      (plist-put block :children nil)
-      (plist-put block :expanded nil))))
-
-(defun e-chat--insert-activity-summary-child (parent turn-id child)
-  "Insert CHILD for activity summary PARENT and return its block id."
-  (let* ((block-id (e-chat--next-block-id))
-         (text (plist-get child :text))
-         (line (format "  %s\n" text))
-         (start (point))
-         (content-start (+ start 2))
-         (content-end (+ content-start (length text))))
-    (e-chat--insert-protected
-     line
-     'e-chat-system-face
-     `(e-chat-turn-id ,turn-id
-       e-chat-block-id ,block-id
-       e-chat-parent-block-id ,(plist-get parent :id)))
-    (e-chat--update-block-bounds
-     block-id
-     turn-id
-     start
-     (point)
-     (plist-get child :kind)
-     (plist-get child :action-text)
-     content-start
-     content-end
-     (plist-get child :tool-items)
-     nil)
-    (let ((block (e-chat--block-record block-id turn-id)))
-      (plist-put block :parent-block-id (plist-get parent :id)))
-    block-id))
-
-(defun e-chat--insert-activity-summary-children (block)
-  "Insert navigable child blocks for activity summary BLOCK."
-  (e-chat--delete-activity-summary-children block)
-  (let* ((turn-id (plist-get block :turn-id))
-         (turn-record (and turn-id
-                           (gethash turn-id e-chat--turn-registry)))
-         (children (and turn-record
-                        (e-chat--activity-summary-child-records turn-record)))
-         (end-marker (plist-get block :end-marker))
-         (end (and (markerp end-marker)
-                   (marker-position end-marker)))
-         child-ids)
-    (unless end
-      (user-error "Focused activity summary has no insertion point"))
-    (when children
-      (let ((inhibit-read-only t))
-        (goto-char end)
-        (unless (bolp)
-          (insert "\n"))
-        (dolist (child children)
-          (push (e-chat--insert-activity-summary-child block turn-id child)
-                child-ids)))
-      (setq child-ids (nreverse child-ids))
-      (plist-put block :children child-ids)
-      (plist-put block :expanded t)
-      (e-chat--block-order-insert-after (plist-get block :id) child-ids))))
-
-(defun e-chat--toggle-activity-summary-children (block)
-  "Toggle navigable activity summary children for BLOCK."
-  (if (e-chat--activity-summary-expanded-p block)
-      (e-chat--delete-activity-summary-children block)
-    (e-chat--insert-activity-summary-children block)))
-
-(defun e-chat--block-details-visible-p (block)
-  "Return non-nil when BLOCK has visible expanded detail text."
-  (not (null (e-chat--block-details-bounds block))))
-
-(defun e-chat--turn-details-text (turn-id record)
-  "Return expanded details text for TURN-ID using RECORD."
-  (concat
-   (or (e-chat--intermittent-details-text record) "")
-   (or (e-chat--retry-details-text record) "")
-   (or (e-chat--failure-details-text record) "")
-   (format "  Turn: %s\n  Started: %s\n  Ended: %s\n  Duration: %s\n\n"
-           turn-id
-           (e-chat--format-time-value (plist-get record :started-at))
-           (e-chat--format-time-value (plist-get record :ended-at))
-           (e-chat--format-duration (plist-get record :started-at)
-                                    (plist-get record :ended-at)))))
-
-(defun e-chat--insert-block-details (block turn-id record)
-  "Insert expanded details for BLOCK and TURN-ID using RECORD."
-  (e-chat--insert-block-details-text
-   block
-   (e-chat--turn-details-text turn-id record)))
-
-(defun e-chat--insert-block-details-text (block text)
-  "Insert expanded detail TEXT for BLOCK."
-  (e-chat--delete-block-details block)
-  (let* ((end-marker (plist-get block :end-marker))
-         (end (and (markerp end-marker) (marker-position end-marker))))
-    (unless end
-      (user-error "Focused e chat block has no insertion point"))
-    (let ((inhibit-read-only t))
-      (goto-char end)
-      (let ((start (point)))
-        (e-chat--insert-protected
-         text
-         'e-chat-system-face
-         '(e-chat-turn-details t))
-        (plist-put block :details-start-marker (copy-marker start nil))
-        (plist-put block :details-end-marker (copy-marker (point) nil))))))
-
-(defun e-chat--toggle-block-details-text (block text)
-  "Toggle inline detail TEXT for BLOCK."
-  (if (e-chat--block-details-visible-p block)
-      (e-chat--delete-block-details block)
-    (e-chat--insert-block-details-text block text)
-    (e-chat--enter-block-view block)))
-
-(defun e-chat--entry-face (title)
-  "Return face for chat entry TITLE."
-  (cond
-   ((e-chat--hidden-entry-title-p title) 'e-chat-hidden-face)
-   ((equal title "You") 'e-chat-user-face)
-   ((equal title "Assistant") 'e-chat-final-assistant-face)
-   (t 'e-chat-system-face)))
-
-(defun e-chat--entry-glyph (title)
-  "Return glyph for chat entry TITLE."
-  (cond
-   ((e-chat--hidden-entry-title-p title) e-chat--hidden-glyph)
-   ((equal title "You") e-chat--user-glyph)
-   ((equal title "Assistant") e-chat--assistant-glyph)
-   (t e-chat--system-glyph)))
-
-(defun e-chat--entry-heading (title)
-  "Return compact heading text for chat entry TITLE."
-  (pcase title
-    ((or "You" "Assistant") (e-chat--entry-glyph title))
-    (_ (format "%s %s" (e-chat--entry-glyph title) title))))
-
-(defun e-chat--entry-text (title content)
-  "Return display text for chat entry TITLE and CONTENT."
-  (if (member title '("You" "Assistant"))
-      (format "%s %s\n\n" (e-chat--entry-heading title) content)
-    (format "%s\n%s\n\n" (e-chat--entry-heading title) content)))
-
-(defun e-chat--entry-content-offset (title)
-  "Return the character offset of TITLE entry content start."
-  (if (member title '("You" "Assistant"))
-      (1+ (length (e-chat--entry-heading title)))
-    (1+ (length (e-chat--entry-heading title)))))
-
-(defun e-chat--add-markdown-face (start end face)
-  "Add Markdown FACE between START and END."
-  (when (< start end)
-    (add-face-text-property start end face t)))
-
-(defconst e-chat--markdown-mode-copied-properties
-  '(face font-lock-face font-lock-multiline keymap mouse-face help-echo)
-  "Text properties copied from `markdown-mode' fontification.")
-
-(defun e-chat--clear-markdown-presentation (start end)
-  "Clear Markdown presentation properties between START and END."
-  (when (< start end)
-    (remove-list-of-text-properties
-     start end
-     '(face font-lock-face font-lock-multiline keymap mouse-face help-echo
-       invisible display e-chat-markdown-syntax))))
-
-(defun e-chat--apply-markdown-mode-properties (content-start content-end)
-  "Apply `markdown-mode' fontification between CONTENT-START and CONTENT-END.
-Return non-nil when `markdown-mode' was available and used."
-  (when (and (< content-start content-end)
-             (require 'markdown-mode nil t))
-    (let ((content (buffer-substring-no-properties content-start content-end))
-          (target-buffer (current-buffer)))
-      (e-chat--clear-markdown-presentation content-start content-end)
-      (with-temp-buffer
-        (insert content)
-        (markdown-mode)
-        (font-lock-ensure (point-min) (point-max))
-        (let ((source-end (point-max))
-              (source-pos (point-min)))
-          (while (< source-pos source-end)
-            (let ((next-pos (or (next-property-change source-pos nil source-end)
-                                source-end)))
-              (dolist (property e-chat--markdown-mode-copied-properties)
-                (let ((value (get-text-property source-pos property)))
-                  (when value
-                    (with-current-buffer target-buffer
-                      (add-text-properties
-                       (+ content-start (1- source-pos))
-                       (+ content-start (1- next-pos))
-                       (if (eq property 'face)
-                           (list 'face value 'font-lock-face value)
-                         (list property value)))))))
-              (setq source-pos next-pos)))))
-      t)))
-
-(defun e-chat--conceal-markdown-syntax (start end)
-  "Hide Markdown syntax between START and END."
-  (when (< start end)
-    (add-text-properties
-     start end
-     '(invisible e-chat-markdown-syntax
-       e-chat-markdown-syntax t))))
-
-(defun e-chat--display-markdown-syntax (start end display)
-  "Display Markdown syntax between START and END as DISPLAY."
-  (when (< start end)
-    (add-text-properties start end `(display ,display e-chat-markdown-syntax t))))
-
-(defun e-chat--line-content-start (line-start content-start)
-  "Return CONTENT-START or LINE-START, whichever is later."
-  (max line-start content-start))
-
-(defun e-chat--apply-markdown-line-faces (content-start content-end)
-  "Apply block-level Markdown faces between CONTENT-START and CONTENT-END."
-  (save-excursion
-    (goto-char content-start)
-    (let ((in-code-block nil))
-      (while (< (point) content-end)
-        (let* ((line-start (line-beginning-position))
-               (line-end (min (line-end-position) content-end))
-               (line-content-start (e-chat--line-content-start
-                                    line-start content-start))
-               (line-text (buffer-substring-no-properties
-                           line-content-start line-end)))
-          (cond
-           ((string-match-p "\\`[ \t]*```" line-text)
-            (e-chat--conceal-markdown-syntax
-             line-content-start
-             (min (1+ line-end) content-end))
-            (setq in-code-block (not in-code-block)))
-           (in-code-block
-            (e-chat--add-markdown-face line-content-start line-end
-                                       'e-chat-markdown-code-block-face))
-           ((string-match "\\`[ \t]*\\(#[#]*[ \t]+\\)" line-text)
-            (let ((heading-start (+ line-content-start (match-beginning 1)))
-                  (heading-text-start (+ line-content-start (match-end 1))))
-              (e-chat--conceal-markdown-syntax
-               heading-start heading-text-start)
-              (e-chat--add-markdown-face heading-text-start line-end
-                                         'e-chat-markdown-heading-face)))
-           ((string-match
-             "\\`[ \t]*\\([-+*]\\|[0-9]+\\.\\)\\([ \t]+\\)"
-             line-text)
-            (let ((marker-start (+ line-content-start (match-beginning 1)))
-                  (marker-end (+ line-content-start (match-end 1)))
-                  (content-start (+ line-content-start (match-end 0)))
-                  (marker (match-string 1 line-text)))
-              (if (string-match-p "\\`[-+*]\\'" marker)
-                  (e-chat--display-markdown-syntax marker-start marker-end "•")
-                (e-chat--add-markdown-face marker-start marker-end
-                                           'e-chat-markdown-list-face))
-              (e-chat--add-markdown-face content-start line-end
-                                         'e-chat-markdown-list-face))))
-          (forward-line 1))))))
-
-(defun e-chat--apply-markdown-inline-face
-    (regexp content-start content-end face &optional group)
-  "Apply FACE to REGEXP GROUP between CONTENT-START and CONTENT-END."
-  (save-excursion
-    (goto-char content-start)
-    (while (re-search-forward regexp content-end t)
-      (let ((group (or group 1)))
-        (e-chat--add-markdown-face
-         (match-beginning group) (match-end group) face)))))
-
-(defun e-chat--apply-markdown-delimited-face
-    (regexp content-start content-end face)
-  "Apply FACE to REGEXP group 2 between CONTENT-START and CONTENT-END.
-Hide REGEXP groups 1 and 3 as Markdown syntax."
-  (save-excursion
-    (goto-char content-start)
-    (while (re-search-forward regexp content-end t)
-      (e-chat--conceal-markdown-syntax (match-beginning 1) (match-end 1))
-      (e-chat--add-markdown-face (match-beginning 2) (match-end 2) face)
-      (e-chat--conceal-markdown-syntax (match-beginning 3) (match-end 3)))))
-
-(defun e-chat--apply-markdown-emphasis-face (content-start content-end)
-  "Apply emphasis presentation between CONTENT-START and CONTENT-END."
-  (save-excursion
-    (goto-char content-start)
-    (while (re-search-forward
-            "\\(^\\|[[:space:]]\\)\\(\\*\\)\\([^*\n]+\\)\\(\\*\\)"
-            content-end t)
-      (e-chat--conceal-markdown-syntax (match-beginning 2) (match-end 2))
-      (e-chat--add-markdown-face
-       (match-beginning 3) (match-end 3) 'e-chat-markdown-emphasis-face)
-      (e-chat--conceal-markdown-syntax (match-beginning 4) (match-end 4)))))
-
-(defun e-chat--apply-markdown-link-faces (content-start content-end)
-  "Apply Markdown link faces and metadata between CONTENT-START and CONTENT-END."
-  (save-excursion
-    (goto-char content-start)
-    (while (re-search-forward "\\[\\([^]\n]+\\)\\](\\([^) \n]+\\))"
-                              content-end t)
-      (let ((label-start (match-beginning 1))
-            (label-end (match-end 1))
-            (url (match-string-no-properties 2)))
-        (e-chat--add-markdown-face label-start label-end
-                                   'e-chat-markdown-link-face)
-        (add-text-properties label-start label-end
-                             `(help-echo ,url e-chat-link-url ,url))
-        (e-chat--conceal-markdown-syntax (match-beginning 0) label-start)
-        (e-chat--conceal-markdown-syntax label-end (match-end 0))))))
-
-(defun e-chat--apply-assistant-markdown (content-start content-end)
-  "Apply Markdown presentation between CONTENT-START and CONTENT-END."
-  (when (< content-start content-end)
-    (unless (e-chat--apply-markdown-mode-properties content-start content-end)
-      (e-chat--clear-markdown-presentation content-start content-end)
-      (e-chat--apply-markdown-line-faces content-start content-end)
-      (e-chat--apply-markdown-delimited-face
-       "\\(`\\)\\([^`\n]+\\)\\(`\\)" content-start content-end
-       'e-chat-markdown-code-face)
-      (e-chat--apply-markdown-delimited-face
-       "\\(\\*\\*\\)\\([^*\n]+\\)\\(\\*\\*\\)" content-start content-end
-       'e-chat-markdown-strong-face)
-      (e-chat--apply-markdown-emphasis-face content-start content-end)
-      (e-chat--apply-markdown-link-faces content-start content-end))))
-
-(defun e-chat--output-mode ()
-  "Return the effective assistant output markup mode for this chat buffer.
-Defaults to `markdown' outside an attached session."
-  (if (and e-chat-harness e-chat-session-id)
-      (ignore-errors
-        (e-chat-output-mode-resolve e-chat-harness e-chat-session-id))
-    'markdown))
-
-(defun e-chat--structured-blocks-registry ()
-  "Return a fresh structured-block registry for the attached session.
-Returns an empty registry outside an attached session, so unregistered
-content still passes through `e-structured-blocks-render' unchanged."
-  (if (and e-chat-harness e-chat-session-id)
-      (e-harness-structured-blocks e-chat-harness e-chat-session-id)
-    (e-structured-blocks-registry-create)))
-
-(defun e-chat--assistant-display-text (content)
-  "Return CONTENT with any registered structured blocks applied for display.
-This is the shell's only knowledge of structured blocks: it asks the core
-registry generically and never inspects a specific capability's block
-syntax.  With no registered kinds, CONTENT is returned byte-for-byte."
-  (plist-get (e-structured-blocks-render content (e-chat--structured-blocks-registry))
-             :text))
-
-(defun e-chat--apply-org-mode-properties (content-start content-end)
-  "Fontify assistant Org markup between CONTENT-START and CONTENT-END.
-Return non-nil when Org fontification ran."
-  (when (< content-start content-end)
-    (let ((content (buffer-substring-no-properties content-start content-end))
-          (target-buffer (current-buffer)))
-      (e-chat--clear-markdown-presentation content-start content-end)
-      (with-temp-buffer
-        (let ((org-mode-hook nil)
-              (org-inhibit-startup t))
-          (delay-mode-hooks (org-mode)))
-        (insert content)
-        (font-lock-ensure (point-min) (point-max))
-        (let ((source-end (point-max))
-              (source-pos (point-min)))
-          (while (< source-pos source-end)
-            (let ((next-pos (or (next-property-change source-pos nil source-end)
-                                source-end)))
-              (dolist (property e-chat--markdown-mode-copied-properties)
-                (let ((value (get-text-property source-pos property)))
-                  (when value
-                    (with-current-buffer target-buffer
-                      (add-text-properties
-                       (+ content-start (1- source-pos))
-                       (+ content-start (1- next-pos))
-                       (if (eq property 'face)
-                           (list 'face value 'font-lock-face value)
-                         (list property value)))))))
-              (setq source-pos next-pos)))))
-      t)))
-
-(defun e-chat--apply-org-link-metadata (content-start content-end)
-  "Attach clickable link metadata to Org links between CONTENT-START/END.
-Org links `[[target][description]]' and `[[target]]' get a `help-echo' and
-`e-chat-link-url' target; the surrounding bracket syntax is concealed so only
-the description (or the bare target) remains visible."
-  (save-excursion
-    (goto-char content-start)
-    (while (re-search-forward
-            "\\[\\[\\([^]
-]+?\\)\\(?:\\]\\[\\([^]
-]+?\\)\\)?\\]\\]"
-            content-end t)
-      (let* ((target (match-string-no-properties 1))
-             (has-description (match-beginning 2))
-             (visible-start (or has-description (match-beginning 1)))
-             (visible-end (or (match-end 2) (match-end 1))))
-        (e-chat--add-markdown-face visible-start visible-end
-                                   'e-chat-markdown-link-face)
-        (add-text-properties visible-start visible-end
-                             `(help-echo ,target e-chat-link-url ,target))
-        (e-chat--conceal-markdown-syntax (match-beginning 0) visible-start)
-        (e-chat--conceal-markdown-syntax visible-end (match-end 0))))))
-
-(defun e-chat--apply-assistant-org (content-start content-end)
-  "Apply Org presentation between CONTENT-START and CONTENT-END."
-  (when (< content-start content-end)
-    (e-chat--apply-org-mode-properties content-start content-end)
-    (e-chat--apply-org-link-metadata content-start content-end)))
-
-(defun e-chat--apply-assistant-presentation (content-start content-end)
-  "Apply the buffer's output-mode presentation between CONTENT-START/END."
-  (if (eq (e-chat--output-mode) 'org)
-      (e-chat--apply-assistant-org content-start content-end)
-    (e-chat--apply-assistant-markdown content-start content-end))
-  (e-chat--apply-final-assistant-face content-start content-end))
-
-(defun e-chat--rerender-assistant-blocks ()
-  "Re-render already-visible final assistant blocks for the current output mode.
-Toggling output mode applies only to new turns' markup, but the visible
-transcript should still match the new rendering so the toggle is not confusing."
-  (when (hash-table-p e-chat--block-registry)
-    (e-chat--cancel-pending-markdown-presentation)
-    (let ((inhibit-read-only t))
-      (save-excursion
-        (dolist (block-id e-chat--block-order)
-          (let ((block (gethash block-id e-chat--block-registry)))
-            (when (eq (plist-get block :kind) 'final)
-              (let* ((bounds (ignore-errors
-                               (e-chat--block-content-bounds block)))
-                     (start (car-safe bounds))
-                     (end (cdr-safe bounds)))
-                (when (and start end (< start end))
-                  (e-chat--clear-markdown-presentation start end)
-                  (e-chat--apply-assistant-presentation start end))))))))))
-
-(defun e-chat--deferred-markdown-chunk-end (chunk-start content-end)
-  "Return the end of the deferred Markdown chunk after CHUNK-START."
-  (save-excursion
-    (goto-char chunk-start)
-    (let ((lines (if (and (integerp e-chat-deferred-markdown-chunk-lines)
-                          (> e-chat-deferred-markdown-chunk-lines 0))
-                     e-chat-deferred-markdown-chunk-lines
-                   1)))
-      (forward-line lines)
-      (min (point) content-end))))
-
-(defun e-chat--apply-assistant-markdown-chunk
-    (chunk-start chunk-end content-start content-end)
-  "Apply fallback Markdown presentation to one deferred chunk.
-CHUNK-START and CHUNK-END bound the work.  CONTENT-START and CONTENT-END
-bound the original assistant content and are used for first-chunk clearing."
-  (when (= chunk-start content-start)
-    (e-chat--clear-markdown-presentation content-start content-end)
-    (e-chat--apply-final-assistant-face content-start content-end))
-  (e-chat--apply-markdown-line-faces chunk-start chunk-end)
-  (e-chat--apply-markdown-delimited-face
-   "\\(`\\)\\([^`\n]+\\)\\(`\\)" chunk-start chunk-end
-   'e-chat-markdown-code-face)
-  (e-chat--apply-markdown-delimited-face
-   "\\(\\*\\*\\)\\([^*\n]+\\)\\(\\*\\*\\)" chunk-start chunk-end
-   'e-chat-markdown-strong-face)
-  (e-chat--apply-markdown-emphasis-face chunk-start chunk-end)
-  (e-chat--apply-markdown-link-faces chunk-start chunk-end)
-  (e-chat--apply-final-assistant-face chunk-start chunk-end))
-
-(defun e-chat--cancel-pending-markdown-presentation ()
-  "Cancel all pending deferred assistant Markdown presentation jobs."
-  (e-ui-work-cancel-matching (current-buffer) 'markdown-presentation)
-  (cl-incf e-chat--markdown-presentation-generation))
-
-(defun e-chat--defer-assistant-markdown-p (content)
-  "Return non-nil when CONTENT should defer Markdown presentation."
-  (and (stringp content)
-       (integerp e-chat-deferred-markdown-threshold-bytes)
-       (> e-chat-deferred-markdown-threshold-bytes 0)
-       (> (string-bytes content)
-          e-chat-deferred-markdown-threshold-bytes)))
-
-(defun e-chat--finish-deferred-assistant-markdown
-    (start-marker end-marker position-marker)
-  "Release deferred Markdown START-MARKER, END-MARKER, and POSITION-MARKER."
-  (set-marker start-marker nil)
-  (set-marker end-marker nil)
-  (set-marker position-marker nil))
-
-(defun e-chat--run-deferred-assistant-markdown-chunk
-    (start-marker end-marker position-marker generation)
-  "Apply one deferred Markdown chunk.
-GENERATION must match the current buffer-local Markdown presentation
-generation.  Return non-nil when another chunk remains."
-  (if (not (equal generation e-chat--markdown-presentation-generation))
-      (progn
-        (e-chat--finish-deferred-assistant-markdown
-         start-marker end-marker position-marker)
-        nil)
-    (let ((content-start (marker-position start-marker))
-          (content-end (marker-position end-marker))
-          (chunk-start (marker-position position-marker)))
-      (if (not (and content-start
-                    content-end
-                    chunk-start
-                    (< chunk-start content-end)))
-          (progn
-            (e-chat--finish-deferred-assistant-markdown
-             start-marker end-marker position-marker)
-            nil)
-        (let* ((chunk-end
-                (e-chat--deferred-markdown-chunk-end chunk-start content-end))
-               (chunk-end (if (> chunk-end chunk-start)
-                              chunk-end
-                            content-end))
-               (has-more (< chunk-end content-end))
-               (inhibit-read-only t))
-          (save-excursion
-            (e-chat--apply-assistant-markdown-chunk
-             chunk-start chunk-end content-start content-end))
-          (set-marker position-marker chunk-end)
-          (unless has-more
-            (e-chat--finish-deferred-assistant-markdown
-             start-marker end-marker position-marker))
-          has-more)))))
-
-(defun e-chat--schedule-deferred-assistant-markdown-chunk
-    (start-marker end-marker position-marker generation block-id)
-  "Schedule one deferred Markdown chunk for assistant CONTENT markers."
-  (e-ui-work-schedule
-   (e-ui-work-spec-create
-    :id "chat_markdown_presentation"
-    :description "Apply deferred assistant Markdown presentation."
-    :owner 'markdown-presentation
-    :target-buffer (current-buffer)
-    :key generation
-    :generation generation
-    :delay 0
-    :focus-policy 'preserve
-    :reentrancy-policy 'defer
-    :stale-p (lambda (_job)
-               (not (equal generation
-                           e-chat--markdown-presentation-generation)))
-    :apply
-    (lambda (_job _handle)
-      (when (e-chat--run-deferred-assistant-markdown-chunk
-             start-marker
-             end-marker
-             position-marker
-             generation)
-        (e-chat--schedule-deferred-assistant-markdown-chunk
-         start-marker
-         end-marker
-         position-marker
-         generation
-         block-id))))
-   :on-event (lambda (&rest _)
-               (e-chat--refresh-ui-work-diagnostics))))
-
-(defun e-chat--schedule-assistant-markdown
-    (content-start content-end &optional block-id)
-  "Schedule deferred Markdown presentation for assistant CONTENT bounds."
-  (let* ((start-marker (copy-marker content-start nil))
-         (end-marker (copy-marker content-end t))
-         (position-marker (copy-marker content-start nil))
-         (generation e-chat--markdown-presentation-generation))
-    (e-chat--schedule-deferred-assistant-markdown-chunk
-     start-marker
-     end-marker
-     position-marker
-     generation
-     block-id)))
-
-(defun e-chat--apply-final-assistant-face (content-start content-end)
-  "Apply settled assistant styling from CONTENT-START to CONTENT-END.
-Preserve Markdown faces already present in the range."
-  (when (< content-start content-end)
-    (add-face-text-property content-start
-                            content-end
-                            'e-chat-final-assistant-face
-                            t)))
-
-(defun e-chat--insert-entry
-    (title content &optional ensure-composer turn-id details-text message-id hidden
-           assistant-presented)
-  "Insert a protected chat entry with TITLE and CONTENT.
-When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
-TURN-ID tags the rendered entry for response navigation.  DETAILS-TEXT, when
-non-nil, is used by focused block activation.  MESSAGE-ID associates a durable
-session message with its rendered block.  When HIDDEN is non-nil, the entry is
-kept in the projection but invisible until its display disposition changes.
-Assistant CONTENT is passed through the structured-block registry before
-display unless ASSISTANT-PRESENTED is non-nil, meaning the chat application
-service already applied that transform.  A shell with no registered kinds
-shows CONTENT unchanged."
-  (e-chat--profile-call
-   'chat.insert-entry
-   (list :session-id e-chat-session-id
-         :turn-id turn-id
-         :buffer-name (buffer-name)
-         :metadata (list :title title
-                         :ensure-composer (and ensure-composer t)
-                         :durable-message (and message-id t)
-                         :hidden (and hidden t)))
-   (lambda ()
-     (let* ((active-turn-id (or e-chat--progress-turn-id
-                                (e-chat--running-status-turn-id)))
-            (active-record (and active-turn-id
-                                (e-chat--existing-turn-record active-turn-id)))
-            (side (e-chat--entry-side title))
-            (block-id (and turn-id (e-chat--next-block-id)))
-            (content (if (and (equal title "Assistant")
-                              (not assistant-presented))
-                        (e-chat--assistant-display-text content)
-                      content)))
-       (when active-turn-id
-         (e-chat--delete-running-status active-record))
-       (let ((inhibit-read-only t))
-         (goto-char (point-max))
-         (unless (or (bobp) (bolp))
-           (insert "\n"))
-         (let ((layout-start (point)))
-           (e-chat--insert-durable-entry-separators turn-id side)
-           (let* ((start (point))
-                  (content-start (+ start (e-chat--entry-content-offset title))))
-             (e-chat--insert-protected
-              (e-chat--entry-text title content)
-              (e-chat--entry-face title)
-              (when block-id
-                `(e-chat-turn-id ,turn-id
-                  e-chat-block-id ,block-id)))
-             (when (equal title "Assistant")
-               (if (eq (e-chat--output-mode) 'org)
-                   (e-chat--apply-assistant-org content-start (point))
-                 (if (e-chat--defer-assistant-markdown-p content)
-                     (e-chat--schedule-assistant-markdown
-                      content-start (point) block-id)
-                   (e-chat--apply-assistant-markdown content-start (point))))
-               (e-chat--apply-final-assistant-face content-start (point)))
-             (e-chat--update-block-bounds
-              block-id turn-id start (point)
-              (e-chat--block-kind-for-title title)
-              content content-start (+ content-start (length content)) nil details-text)
-             (when block-id
-               (let ((record (e-chat--block-record block-id turn-id)))
-                 (plist-put record :layout-start-marker
-                            (copy-marker layout-start nil))
-                 (plist-put record :side side)
-                 (e-chat--associate-message-block message-id block-id)
-                 (when hidden
-                   (e-chat--set-block-layout-hidden record t))))
-             (unless hidden
-               (e-chat--record-durable-entry-rendered turn-id side))))
-       (when active-turn-id
-         (e-chat--render-running-status active-turn-id active-record))
-       (when hidden
-         (e-chat--refresh-last-rendered-entry)
-         (e-chat--refresh-latest-final-block)))))))
-
-(defun e-chat-enter-response-navigation ()
-  "Enter response navigation mode and focus the nearest rendered turn."
-  (interactive)
-  (unless (derived-mode-p 'e-chat-mode)
-    (user-error "Response navigation is only available in e chat buffers"))
-  (let ((block-id (or (e-chat--block-at-point)
-                      (e-chat--last-rendered-block-id))))
-    (unless block-id
-      (user-error "No rendered e chat blocks"))
-    (e-chat-response-navigation-mode 1)
-    (e-chat--focus-block block-id)))
-
-(defun e-chat-response-navigation-next ()
-  "Focus the next rendered turn block."
-  (interactive)
-  (e-chat--move-focused-block 1))
-
-(defun e-chat-response-navigation-previous ()
-  "Focus the previous rendered turn block."
-  (interactive)
-  (e-chat--move-focused-block -1))
-
-(defun e-chat-response-navigation-activate ()
-  "Activate the focused block according to its kind."
-  (interactive)
-  (let ((block (e-chat--focused-block)))
-    (pcase (plist-get block :kind)
-      ('activity
-       (e-chat--open-tool-list block))
-      ('activity-summary
-       (e-chat--toggle-activity-summary-children block))
-      ('activity-tool-batch
-       (e-chat--open-tool-list block))
-      ('system
-       (if-let ((details-text (plist-get block :details-text)))
-           (e-chat--toggle-block-details-text block details-text)
-         (e-chat--enter-block-view block)))
-      (_
-       (if-let ((details-text (plist-get block :details-text)))
-           (e-chat--toggle-block-details-text block details-text)
-         (e-chat--enter-block-view block))))))
-
-(defun e-chat-response-navigation-insert ()
-  "Leave response navigation and focus the composer."
-  (interactive)
-  (e-chat--enter-composer-input-state))
-
-(defun e-chat-response-navigation-copy ()
-  "Copy the focused block's action text."
-  (interactive)
-  (let ((text (e-chat--block-action-text (e-chat--focused-block))))
-    (kill-new text)
-    (message "Copied e chat block")
-    text))
-
-(defun e-chat--open-block-text (block)
-  "Open BLOCK action text in a new editable buffer."
-  (e-chat--buffer-with-text "*e-chat-block*" (e-chat--block-action-text block)))
-
-(defun e-chat-response-navigation-open ()
-  "Open the focused block in a new editable buffer."
-  (interactive)
-  (e-chat--open-block-text (e-chat--focused-block)))
-
-(defun e-chat--display-details-buffer (text)
-  "Display read-only details TEXT."
-  (let ((buffer (get-buffer-create e-chat-details-buffer-name)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert text))
-      (special-mode)
-      (goto-char (point-min)))
-    (display-buffer buffer)
-    buffer))
-
-(defun e-chat-response-navigation-details ()
-  "Open details for the focused block's turn."
-  (interactive)
-  (let* ((block (e-chat--focused-block))
-         (turn-id (plist-get block :turn-id))
-         (record (and turn-id (gethash turn-id e-chat--turn-registry))))
-    (unless record
-      (user-error "Focused e chat block has no turn details"))
-    (e-chat--display-details-buffer
-     (e-chat--turn-details-text turn-id record))))
-
-(defun e-chat--first-live-block-if (predicate)
-  "Return the first live rendered block id whose record satisfies PREDICATE."
-  (cl-find-if
-   (lambda (block-id)
-     (when-let ((record (e-chat--live-block-record block-id)))
-       (funcall predicate record)))
-   e-chat--block-order))
-
-(defun e-chat-response-navigation-toggle-hidden ()
-  "Reveal or hide messages kept out of the clean transcript.
-A calibration follow-up hides the superseded first attempt and the
-machine-authored corrective prompt so the reply reads as one answer.  This
-exposes them as dimmed, focusable audit blocks so the user can inspect what was
-removed, and hides them again on a second press.  Focus lands on the first
-revealed block when revealing, or on the block that was focused when hiding."
-  (interactive)
-  (unless e-chat-response-navigation-mode
-    (user-error "Response navigation is not active"))
-  (let* ((block (ignore-errors (e-chat--focused-block)))
-         (turn-id (plist-get block :turn-id))
-         (revealing (not e-chat--reveal-hidden)))
-    (setq e-chat--reveal-hidden revealing)
-    (e-chat--rerender-transcript)
-    (e-chat-response-navigation-mode 1)
-    (let ((target
-           (or (and revealing
-                    (e-chat--first-live-block-if
-                     (lambda (record) (eq (plist-get record :kind) 'hidden))))
-               (and turn-id
-                    (e-chat--first-live-block-if
-                     (lambda (record)
-                       (and (equal (plist-get record :turn-id) turn-id)
-                            (not (eq (plist-get record :kind) 'hidden))))))
-               (e-chat--last-rendered-block-id))))
-      (if target
-          (e-chat--focus-block target)
-        (e-chat-response-navigation-mode -1)
-        (message "No rendered e chat blocks to focus")))))
-
-(defun e-chat-copy-latest-response ()
-  "Copy the latest final assistant response."
-  (interactive)
-  (with-current-buffer (e-chat--surface-transcript-buffer)
-    (let ((text (e-chat--block-action-text (e-chat--latest-final-block))))
-      (kill-new text)
-      (message "Copied latest e chat response")
-      text)))
-
-(defun e-chat-open-latest-response ()
-  "Open the latest final assistant response in an editable buffer."
-  (interactive)
-  (with-current-buffer (e-chat--surface-transcript-buffer)
-    (e-chat--open-block-text (e-chat--latest-final-block))))
-
-(defun e-chat--enter-block-view (block)
-  "Enter block-local view mode for BLOCK."
-  (let* ((block-id (plist-get block :id))
-         (bounds (e-chat--block-view-bounds block)))
-    (e-chat-response-navigation-mode -1)
-    (setq e-chat--focused-block-id block-id)
-    (setq e-chat--focused-turn-id (plist-get block :turn-id))
-    (setq e-chat--block-view-block-id block-id)
-    (e-chat-block-view-mode 1)
-    (goto-char (car bounds))))
-
-(defun e-chat--block-view-block ()
-  "Return block active in block view mode."
-  (or (and e-chat--block-view-block-id
-           (hash-table-p e-chat--block-registry)
-           (gethash e-chat--block-view-block-id e-chat--block-registry))
-      (user-error "No e chat block view is active")))
-
-(defun e-chat--block-view-clamp-point ()
-  "Keep point inside the active block content bounds."
-  (let ((bounds (e-chat--block-view-bounds (e-chat--block-view-block))))
-    (when (< (point) (car bounds))
-      (goto-char (car bounds)))
-    (when (> (point) (cdr bounds))
-      (goto-char (cdr bounds)))))
-
-(defun e-chat--block-view-keep-region-active ()
-  "Keep an active block-view region active after modal motion."
-  (when (region-active-p)
-    (setq deactivate-mark nil)))
-
-(defun e-chat-block-view-left ()
-  "Move left inside the focused block."
-  (interactive)
-  (let ((bounds (e-chat--block-view-bounds (e-chat--block-view-block))))
-    (when (> (point) (car bounds))
-      (backward-char 1)))
-  (e-chat--block-view-keep-region-active))
-
-(defun e-chat-block-view-right ()
-  "Move right inside the focused block."
-  (interactive)
-  (let ((bounds (e-chat--block-view-bounds (e-chat--block-view-block))))
-    (when (< (point) (cdr bounds))
-      (forward-char 1)))
-  (e-chat--block-view-keep-region-active))
-
-(defun e-chat-block-view-down ()
-  "Move down inside the focused block."
-  (interactive)
-  (forward-line 1)
-  (e-chat--block-view-clamp-point)
-  (e-chat--block-view-keep-region-active))
-
-(defun e-chat-block-view-up ()
-  "Move up inside the focused block."
-  (interactive)
-  (forward-line -1)
-  (e-chat--block-view-clamp-point)
-  (e-chat--block-view-keep-region-active))
-
-(defun e-chat-block-view-beginning ()
-  "Move to the beginning of the focused block content."
-  (interactive)
-  (goto-char (car (e-chat--block-view-bounds (e-chat--block-view-block))))
-  (e-chat--block-view-keep-region-active))
-
-(defun e-chat-block-view-end ()
-  "Move to the end of the focused block content."
-  (interactive)
-  (goto-char (cdr (e-chat--block-view-bounds (e-chat--block-view-block))))
-  (e-chat--block-view-keep-region-active))
-
-(defun e-chat-block-view-select ()
-  "Start or cancel a block-view text selection at point."
-  (interactive)
-  (if (region-active-p)
-      (deactivate-mark)
-    (set-mark (point))
-    (activate-mark)))
-
-(defun e-chat-block-view-copy ()
-  "Copy the active block-view selection or the whole focused block."
-  (interactive)
-  (let ((text (if (region-active-p)
-                  (buffer-substring-no-properties
-                   (region-beginning)
-                   (region-end))
-                (e-chat--block-action-text (e-chat--block-view-block)))))
-    (kill-new text)
-    (when (region-active-p)
-      (deactivate-mark))
-    (message "Copied e chat block view text")
-    text))
-
-(defun e-chat-block-view-back ()
-  "Return from block view to block navigation."
-  (interactive)
-  (if (region-active-p)
-      (deactivate-mark t)
-    (let ((block-id e-chat--block-view-block-id))
-      (e-chat-block-view-mode -1)
-      (e-chat-response-navigation-mode 1)
-      (e-chat--focus-block block-id))))
-
-(defun e-chat-block-view-insert ()
-  "Leave block view and focus the composer."
-  (interactive)
-  (e-chat--enter-composer-input-state))
-
-(defun e-chat--delete-tool-list (block)
-  "Delete the visible tool list for BLOCK."
-  (let ((start (plist-get block :tool-list-start-marker))
-        (end (plist-get block :tool-list-end-marker)))
-    (when (and (markerp start)
-               (markerp end)
-               (marker-position start)
-               (marker-position end))
-      (let ((inhibit-read-only t))
-        (delete-region start end)))
-    (plist-put block :tool-list-start-marker nil)
-    (plist-put block :tool-list-end-marker nil)))
-
-(defun e-chat--open-tool-list (block)
-  "Open a collapsed tool-call list for activity BLOCK."
-  (let ((items (plist-get block :tool-items)))
-    (unless items
-      (user-error "Focused activity block has no tool calls"))
-    (e-chat--delete-tool-list block)
-    (let* ((end-marker (plist-get block :end-marker))
-           (end (and (markerp end-marker) (marker-position end-marker))))
-      (unless end
-        (user-error "Focused activity block has no insertion point"))
-      (let ((inhibit-read-only t))
-        (goto-char end)
-        (let ((start (point)))
-          (e-chat--insert-protected "\n" 'e-chat-system-face
-                                    '(e-chat-tool-list t))
-          (cl-loop for item in items
-                   for index from 0
-                   do
-                   (let ((item-start (point)))
-                     (e-chat--insert-protected
-                      (format "  %d. %s\n" (1+ index)
-                              (plist-get item :call))
-                      'e-chat-system-face
-                      `(e-chat-tool-list t e-chat-tool-index ,index))
-                     (plist-put item :start-marker (copy-marker item-start nil))
-                     (plist-put item :end-marker (copy-marker (point) nil))))
-          (plist-put block :tool-list-start-marker (copy-marker start nil))
-          (plist-put block :tool-list-end-marker (copy-marker (point) nil)))))
-    (let ((block-id (plist-get block :id)))
-      (e-chat-response-navigation-mode -1)
-      (setq e-chat--focused-block-id block-id)
-      (setq e-chat--focused-turn-id (plist-get block :turn-id))
-      (setq e-chat--tool-list-block-id block-id)
-      (setq e-chat--tool-list-index 0)
-      (e-chat-tool-list-mode 1)
-      (e-chat--focus-tool-list-item))))
-
-(defun e-chat--tool-list-block ()
-  "Return active tool-list block."
-  (or (and e-chat--tool-list-block-id
-           (hash-table-p e-chat--block-registry)
-           (gethash e-chat--tool-list-block-id e-chat--block-registry))
-      (user-error "No e chat tool list is active")))
-
-(defun e-chat--focus-tool-list-item ()
-  "Highlight the selected tool-list item."
-  (let* ((block (e-chat--tool-list-block))
-         (items (plist-get block :tool-items))
-         (item (nth e-chat--tool-list-index items))
-         (start (and item
-                     (markerp (plist-get item :start-marker))
-                     (marker-position (plist-get item :start-marker))))
-         (end (and item
-                   (markerp (plist-get item :end-marker))
-                   (marker-position (plist-get item :end-marker)))))
-    (unless (and start end)
-      (user-error "No e chat tool item to focus"))
-    (unless (overlayp e-chat--tool-list-overlay)
-      (setq e-chat--tool-list-overlay (make-overlay start end nil t nil)))
-    (move-overlay e-chat--tool-list-overlay start end)
-    (overlay-put e-chat--tool-list-overlay 'face 'e-chat-focused-turn-face)
-    (goto-char start)))
-
-(defun e-chat-tool-list-next ()
-  "Focus the next tool call in the active tool list."
-  (interactive)
-  (let* ((items (plist-get (e-chat--tool-list-block) :tool-items))
-         (max-index (1- (length items))))
-    (setq e-chat--tool-list-index (min max-index
-                                       (1+ e-chat--tool-list-index)))
-    (e-chat--focus-tool-list-item)))
-
-(defun e-chat-tool-list-previous ()
-  "Focus the previous tool call in the active tool list."
-  (interactive)
-  (setq e-chat--tool-list-index (max 0 (1- e-chat--tool-list-index)))
-  (e-chat--focus-tool-list-item))
-
-(defun e-chat-tool-list-open-output ()
-  "Open the selected tool output in a read-only buffer."
-  (interactive)
-  (let* ((block (e-chat--tool-list-block))
-         (item (nth e-chat--tool-list-index (plist-get block :tool-items)))
-         (output (or (plist-get item :output) ""))
-         (origin (current-buffer)))
-    (let ((buffer (get-buffer-create e-chat-tool-output-buffer-name)))
-      (with-current-buffer buffer
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert output))
-        (e-chat-tool-output-mode)
-        (setq e-chat--tool-output-origin-buffer origin)
-        (goto-char (point-min)))
-      (display-buffer buffer)
-      buffer)))
-
-(defun e-chat-tool-list-back ()
-  "Collapse the tool list and return to block navigation."
-  (interactive)
-  (let* ((block (e-chat--tool-list-block))
-         (block-id (plist-get block :id)))
-    (e-chat--delete-tool-list block)
-    (e-chat-tool-list-mode -1)
-    (e-chat-response-navigation-mode 1)
-    (e-chat--focus-block block-id)))
-
-(defun e-chat-tool-output-back ()
-  "Close tool output and return to its originating tool list."
-  (interactive)
-  (let ((origin e-chat--tool-output-origin-buffer)
-        (buffer (current-buffer)))
-    (when (buffer-live-p buffer)
-      (kill-buffer buffer))
-    (when (buffer-live-p origin)
-      (pop-to-buffer origin))))
-
-(defun e-chat--refresh-composer-position ()
-  "Fit the current visible chat surface's composer window."
-  (let ((transcript (e-chat--surface-transcript-buffer)))
-    (when (buffer-live-p transcript)
-      (with-current-buffer transcript
-        (when-let ((transcript-window (get-buffer-window transcript t)))
-          (e-chat--surface-fit-composer-window
-           (e-chat--surface-composer-window transcript-window)))))))
-
-(defun e-chat--refresh-visible-composers ()
-  "Refit composer windows for visible e chat buffers."
-  (unless e-chat--refresh-visible-composers-in-progress
-    (let ((e-chat--refresh-visible-composers-in-progress t)
-          (seen nil))
-      (dolist (window (window-list nil 'no-minibuf))
-        (let ((buffer (window-buffer window)))
-          (when (and (buffer-live-p buffer)
-                     (not (memq buffer seen)))
-            (push buffer seen)
-            (with-current-buffer buffer
-              (when (derived-mode-p 'e-chat-mode)
-                (dolist (transcript-window
-                         (get-buffer-window-list buffer nil t))
-                  (e-chat--surface-fit-composer-window
-                   (e-chat--surface-composer-window transcript-window)))))))))))
-
-(defun e-chat--ensure-window-refresh-hook ()
-  "Ensure visible chat composers refresh when frame windows change."
-  (add-hook 'window-configuration-change-hook
-            #'e-chat--refresh-visible-composers))
-
-(defun e-chat--show-composer ()
-  "Move point and visible window focus to the composer."
-  (if (e-chat--surface-transcript-p)
-      (when-let ((window (e-chat--surface-display-composer nil t)))
-        (with-current-buffer (window-buffer window)
-          (e-chat--composer-enter-insert-state)
-          (goto-char (point-max))
-          (set-window-point window (point))))
-    (goto-char (point-max))
-    (when-let ((window (e-chat--visible-window)))
-      (set-window-point window (point))
-      (unless e-chat--recenter-inhibited
-        (with-selected-window window
-          (ignore-errors
-            (recenter -2)))))))
-
-(defun e-chat--show-latest-output (&optional window)
-  "Show the latest chat output in WINDOW while preserving composer focus.
-WINDOW defaults to an arbitrary visible window for the current transcript."
-  (let ((position (e-chat--output-follow-position)))
-    (goto-char position)
-    (when-let ((window (or window (e-chat--visible-window))))
-      (e-chat--follow-output-window window position))))
-
-(defun e-chat--enter-composer-input-state ()
-  "Leave chat-local navigation states and focus editable composer input."
-  (when (region-active-p)
-    (deactivate-mark t))
-  (when e-chat-tool-list-mode
-    (e-chat-tool-list-mode -1))
-  (when e-chat-block-view-mode
-    (e-chat-block-view-mode -1))
-  (when e-chat-response-navigation-mode
-    (e-chat-response-navigation-mode -1))
-  ;; The clean one-answer transcript is the default reading view, so collapse
-  ;; any audit reveal when returning to the composer.
-  (when e-chat--reveal-hidden
-    (setq e-chat--reveal-hidden nil)
-    (e-chat--rerender-transcript))
-  (e-chat--ensure-composer)
-  (e-chat--show-composer))
-
-(defun e-chat--after-display-buffer (buffer)
-  "Restore chat-local editing invariants after displaying BUFFER."
-  (let ((transcript-window (get-buffer-window buffer t))
-        composed-surface-p)
-    (with-current-buffer buffer
-      (e-chat--disable-modal-editing)
-      (e-chat--disable-completion)
-      (setq composed-surface-p (e-chat--surface-transcript-p))
-      (when composed-surface-p
-        (e-chat--surface-display-composer))
-      (e-chat--enter-composer-input-state))
-    (when (and composed-surface-p
-               (window-live-p transcript-window))
-      (e-chat--activate-surface (cons buffer transcript-window))))
-  buffer)
-
-(defun e-chat--side-window-p (&optional window)
-  "Return non-nil when WINDOW (or the selected window) is a side window."
-  (window-parameter (or window (selected-window)) 'window-side))
-
-(defun e-chat--non-side-window (&optional frame)
-  "Return a live non-side window on FRAME, or nil when every window is a side."
-  (cl-find-if-not (lambda (window) (window-parameter window 'window-side))
-                  (window-list frame 'no-minibuf)))
-
-(defun e-chat--display-in-new-root-window (buffer)
-  "Show BUFFER in a fresh normal window split from the frame root, and return it.
-Used when every window on the frame is a side window: side windows (and their
-parents) cannot be split, but the frame root can, which yields an ordinary
-non-side window able to host BUFFER."
-  (let ((window (split-window (frame-root-window) nil 'below)))
-    (set-window-buffer window buffer)
-    window))
-
-(defun e-chat--display-from-side-window (buffer)
-  "Display BUFFER when the selected window is a side window, and return it.
-A side window cannot host an ordinary buffer and cannot be split (nor can its
-parent), so splitting-based display actions signal \"Cannot split side window
-or parent of side window\".  Prefer an existing non-side window: reuse one that
-already shows BUFFER, else reuse/split a normal window.  When the frame has no
-normal window at all (every window is a managed side popup, e.g. an aggressive
-display-buffer-alist or popup manager), split the frame root to create one
-rather than commandeering a side window -- the latter would leave the frame
-with no main window and break ordinary commands like \\[split-window-right]."
-  (if (e-chat--non-side-window)
-      (display-buffer
-       buffer
-       '((display-buffer-reuse-window
-          display-buffer-use-some-window
-          display-buffer-pop-up-window)
-         (inhibit-same-window . t)
-         (some-window . mru)))
-    (e-chat--display-in-new-root-window buffer)))
-
-(defun e-chat--switch-to-buffer (buffer)
-  "Display BUFFER, restoring chat-local editing invariants.
-When the selected window is a side window it cannot show BUFFER, so route the
-display to a normal window and select it instead of erroring."
-  (if (e-chat--side-window-p)
-      (when-let ((window (e-chat--display-from-side-window buffer)))
-        (select-window window))
-    (e-workspace-switch-to-buffer
-     buffer
-     :workspace (or (e-buffer-workspace buffer)
-                    (e-workspace-current))))
-  (e-chat--after-display-buffer buffer))
-
-(defun e-chat--pop-to-buffer (buffer &optional workspace action)
-  "Pop to BUFFER and restore chat-local editing invariants.
-WORKSPACE, when non-nil, overrides BUFFER's workspace affinity for this display.
-ACTION, when non-nil, is passed to `e-workspace-display-buffer'.
-From a side window, `pop-to-buffer' would try to split the side window and
-signal; route the display to a normal window in that case."
-  (cond
-   ((and (e-chat--side-window-p)
-         (not workspace)
-         (not action))
-    (when-let ((window (e-chat--display-from-side-window buffer)))
-      (select-window window)))
-   ((or workspace action)
-    (when-let ((window (e-workspace-display-buffer
-                       buffer
-                       :workspace (or workspace
-                                      (e-buffer-workspace buffer)
-                                      (e-workspace-current))
-                       :action action
-                       :select t)))
-      (select-window window)))
-   (t
-    (e-workspace-pop-to-buffer
-     buffer
-     :workspace (or (e-buffer-workspace buffer)
-                    (e-workspace-current)))))
-  (e-chat--after-display-buffer buffer))
-
 (defun e-chat--session-title ()
   "Return the current attached session title, or nil."
   (and e-chat-harness
@@ -7811,256 +1197,49 @@ signal; route the display to a normal window in that case."
 
 (defun e-chat--clear (&optional _omit-composer)
   "Clear and initialize the current transcript buffer."
-  (e-chat--cancel-pending-command-references)
+  (e-chat-composer-cancel-pending-references)
   (let ((inhibit-read-only t))
-    (e-chat--cancel-pending-markdown-presentation)
+    (e-chat-transcript-cancel-markdown-presentation)
     (erase-buffer)
-    (setq e-chat--turn-registry (make-hash-table :test 'equal))
-    (setq e-chat--block-registry (make-hash-table :test 'equal))
-    (setq e-chat--message-block-index (make-hash-table :test 'equal))
-    (setq e-chat--block-order nil)
-    (setq e-chat--block-counter 0)
-    (setq e-chat--context-reference-counter 0)
-    (setq e-chat--focused-turn-id nil)
-    (setq e-chat--focused-block-id nil)
-    (setq e-chat--latest-final-block-id nil)
-    (setq e-chat--last-rendered-turn-id nil)
-    (setq e-chat--last-rendered-side nil)
-    (setq e-chat--block-view-block-id nil)
-    (setq e-chat--tool-list-block-id nil)
-    (setq e-chat--tool-list-index 0)
-    (setq e-chat--assistant-streaming-p nil)
-    (when (overlayp e-chat--focused-turn-overlay)
-      (delete-overlay e-chat--focused-turn-overlay))
-    (setq e-chat--focused-turn-overlay nil)
-    (when (overlayp e-chat--tool-list-overlay)
-      (delete-overlay e-chat--tool-list-overlay))
-    (setq e-chat--tool-list-overlay nil)
-    (e-chat--cancel-progress-interval)
-    (e-chat--cancel-pending-activity-redraw)
-    (setq e-chat--progress-turn-id nil)
-    (setq e-chat--progress-frame 0)
-    (setq e-chat--progress-start-marker nil)
-    (setq e-chat--progress-end-marker nil)
-    (setq e-chat--running-status-start-marker nil)
-    (setq e-chat--running-status-end-marker nil)
+    ;; Activity reset runs before transcript reset because a live activity
+    ;; record may still own running-status markers in the transcript.
+    (e-chat-activity-reset)
+    (e-chat-transcript-reset)
+    (e-chat-activity-set-assistant-streaming nil)
     (setq e-chat--rendered-session-title (e-chat--session-title))
-    (e-chat--insert-protected (e-chat--title-block-text)
-                              'e-chat-title-face)))
+    (e-chat-transcript-insert-protected
+     (e-chat--title-block-text)
+     'e-chat-title-face)))
 
-(defun e-chat--format-token-count (tokens)
-  "Return compact display text for TOKENS."
-  (e-context-status-format-token-count tokens))
+(defun e-chat-clear (&optional omit-composer)
+  "Clear the current composed chat transcript."
+  (e-chat--clear omit-composer))
 
-(defun e-chat--format-mode-line-status
-    (model effort used-tokens max-tokens &optional approximate)
-  "Return compact mode-line text for MODEL, EFFORT, and context token usage."
-  (e-context-status-format
-   "e-chat" model effort used-tokens max-tokens approximate))
+(defun e-chat-prepare-transient-surface ()
+  "Prepare a standalone composed surface for an embedding shell.
+Reset owner projections without touching durable session state.  Embedding
+shells use this facade operation instead of initializing chat owner registries
+or transient state individually."
+  (e-chat-composer-reset)
+  (e-chat-transcript-reset)
+  (e-chat-activity-reset)
+  (e-chat-surface-set-status nil)
+  (e-chat-transcript-set-preview-p nil)
+  t)
 
-(defun e-chat--model-context-token-limit (model)
-  "Return the configured max context tokens for MODEL, or nil."
-  (e-context-status-model-token-limit model))
-
-(defun e-chat--model-context-window (model)
-  "Return MODEL's configured context window in tokens, or nil."
-  (e-chat--model-context-token-limit model))
-
-(defun e-chat--context-token-estimate (context)
-  "Return approximate token count for model-facing CONTEXT."
-  (e-context-status-context-token-estimate
-   context e-chat-context-token-estimate-bytes-per-token))
-
-(defun e-chat--mode-line-context-estimate-key ()
-  "Return semantic cache key for this buffer's mode-line context estimate."
-  (when (and e-chat-harness e-chat-session-id)
-    (ignore-errors
-      (let* ((state (e-chat-service-state e-chat-harness e-chat-session-id))
-             (options (e-harness-display-options e-chat-harness
-                                                 e-chat-session-id))
-             (usage-event
-              (ignore-errors
-                (e-session-latest-token-usage-event
-                 (e-chat-service-session-store e-chat-harness)
-                 e-chat-session-id))))
-        (list :message-count (plist-get state :message-count)
-              :active-turn (plist-get state :active-turn)
-              :latest-token-usage-id (plist-get usage-event :id)
-              :model (plist-get options :model)
-              :reasoning-effort (plist-get options :reasoning-effort)
-              :layers (e-harness-effective-layer-ids
-                       e-chat-harness e-chat-session-id))))))
-
-(defun e-chat--mode-line-status-text (&optional prefer-token-usage)
-  "Return the current mode-line text for this e chat buffer.
-When PREFER-TOKEN-USAGE is non-nil and fresh provider usage exists, skip the
-expensive context-token estimate path."
-  (unless (consp e-chat--mode-line-context-estimate-cache)
-    (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil)))
-  (unless (consp e-chat--mode-line-context-status-cache)
-    (setq-local e-chat--mode-line-context-status-cache (cons nil nil)))
-  (let ((e-context-status-estimate-cache-seconds
-         e-chat-mode-line-context-estimate-cache-seconds)
-        (cache-key (e-chat--mode-line-context-estimate-key)))
-    (e-context-status-text
-     e-chat-harness e-chat-session-id
-     :prefix "e-chat"
-     :prefer-token-usage prefer-token-usage
-     :estimate-context (not prefer-token-usage)
-     :estimate-cache e-chat--mode-line-context-estimate-cache
-     :estimate-cache-key cache-key
-     :snapshot-cache e-chat--mode-line-context-status-cache
-     :snapshot-cache-key
-     (list :status-key cache-key
-           :prefer-token-usage (and prefer-token-usage t)
-           :estimate-context (not prefer-token-usage))
-     :token-limit-function #'e-chat--model-context-window
-     :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
-
-(defun e-chat--mode-line-display-text (status)
-  "Return a host-neutral mode-line projection of semantic STATUS.
-Mode-line strings interpret `%`, while host renderers disagree on whether
-`mode-name' is formatted once or recursively.  Use the compact textual unit
-`pct` in the presentation projection; the cached semantic status retains `%`."
-  (replace-regexp-in-string "%" " pct" status t t))
-
-(defun e-chat--refresh-mode-line-status (&optional prefer-token-usage)
-  "Refresh this buffer's e chat mode-line text.
-When PREFER-TOKEN-USAGE is non-nil, prefer fresh provider usage over recomputing
-an approximate full-context estimate."
-  (let ((status (e-chat--mode-line-status-text prefer-token-usage)))
-    (unless (equal status e-chat--mode-line-status)
-      (setq-local e-chat--mode-line-status status)
-      ;; Strings inside mode-line constructs interpret `%'.  Keep the cached
-      ;; semantic status literal and make only its display projection neutral.
-      (setq-local mode-name (e-chat--mode-line-display-text status))
-      (force-mode-line-update)
-      (when (buffer-live-p e-chat--surface-composer-buffer)
-        (force-window-update e-chat--surface-composer-buffer)))))
-
-(defun e-chat--request-mode-line-status-refresh (&optional prefer-token-usage immediate)
-  "Schedule a coalesced refresh of this chat buffer's mode-line status.
-Token-usage events are latest-value UI state.  Hidden buffers remember that
-state but do not cause a mode-line redraw until they become visible.  IMMEDIATE
-is reserved for terminal context boundaries."
-  (setq-local e-chat--mode-line-status-dirty t)
-  (setq-local e-chat--mode-line-status-prefer-token-usage
-              (or prefer-token-usage e-chat--mode-line-status-prefer-token-usage))
-  (when (e-chat--redraw-visible-p)
-    (let ((generation (cl-incf e-chat--mode-line-status-generation))
-          (buffer (current-buffer)))
-      (e-ui-work-schedule
-       (e-ui-work-spec-create
-        :id "chat_mode_line_status"
-        :description "Refresh coalesced chat mode-line status."
-        :owner 'chat-mode-line-status
-        :target-buffer buffer
-        :key 'status
-        :generation generation
-        :delay (if immediate 0 e-chat-mode-line-status-delay)
-        :coalesce t
-        :focus-policy 'preserve
-        :reentrancy-policy 'defer
-        :stale-p (lambda (_job)
-                   (/= generation e-chat--mode-line-status-generation))
-        :apply (lambda (_job _handle)
-                 (when (= generation e-chat--mode-line-status-generation)
-                   (let ((prefer e-chat--mode-line-status-prefer-token-usage))
-                     (setq-local e-chat--mode-line-status-dirty nil)
-                     (setq-local e-chat--mode-line-status-prefer-token-usage nil)
-                     (e-chat--refresh-mode-line-status prefer)))))))))
-
-(defun e-chat--flush-deferred-hidden-mode-line-statuses (&rest _)
-  "Schedule deferred mode-line refreshes for chat buffers that became visible."
-  (dolist (buffer (buffer-list))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (when (and (derived-mode-p 'e-chat-mode)
-                   e-chat--mode-line-status-dirty
-                   (e-chat--redraw-visible-p))
-          (e-chat--request-mode-line-status-refresh
-           e-chat--mode-line-status-prefer-token-usage t))))))
-
-(defun e-chat--invalidate-mode-line-context-estimate ()
-  "Clear the buffer-local context estimate used by the mode-line status."
-  (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil))
-  (setq-local e-chat--mode-line-context-status-cache (cons nil nil)))
-
-(defun e-chat--ui-work-owner-counts ()
-  "Return pending UI work counts grouped by owner for this buffer."
-  (let ((counts (make-hash-table :test 'eq)))
-    (dolist (job (e-ui-work-pending (current-buffer)))
-      (let ((owner (or (plist-get job :owner) 'unknown)))
-        (puthash owner (1+ (gethash owner counts 0)) counts)))
-    counts))
-
-(defun e-chat--ui-work-diagnostics-text ()
-  "Return compact pending UI work diagnostic text for the header line."
-  (when-let ((pending (and e-chat-ui-work-diagnostics
-                           (e-ui-work-pending (current-buffer)))))
-    (let* ((counts (e-chat--ui-work-owner-counts))
-           (owners nil))
-      (maphash (lambda (owner count)
-                 (push (format "%s:%d" owner count) owners))
-               counts)
-      (format " - ui %d [%s]"
-              (length pending)
-              (string-join (sort owners #'string<) ", ")))))
-
-(defun e-chat--header-line-text (status)
-  "Return chat header-line text for STATUS and current UI work diagnostics."
-  (let ((diagnostics (or (e-chat--ui-work-diagnostics-text) "")))
-    (if (and e-chat-harness e-chat-session-id)
-        (let* ((title (ignore-errors
-                        (e-harness-session-title
-                         e-chat-harness
-                         e-chat-session-id)))
-               (options (ignore-errors
-                          (e-harness-display-options
-                           e-chat-harness
-                           e-chat-session-id)))
-               (model (plist-get options :model))
-               ;; Reads both the OpenAI-style `:reasoning-effort' and the
-               ;; native Anthropic `:effort' key so the status line reflects
-               ;; the effort an Anthropic harness actually sends.
-               (effort (e-context-budget-options-effort options)))
-          (format "E Chat: %s - %s - %s/%s%s"
-                  status
-                  title
-                  (or model "model unset")
-                  (or effort "effort unset")
-                  diagnostics))
-      (format "E Chat: %s%s" status diagnostics))))
-
-(defun e-chat--refresh-ui-work-diagnostics ()
-  "Refresh foreground UI work diagnostics when they are enabled."
-  (when (and e-chat-ui-work-diagnostics
-             header-line-format)
-    (setq header-line-format
-          (e-chat--header-line-text e-chat--status))
-    (force-mode-line-update t)))
-
-(defun e-chat--set-status (status &optional refresh-mode-line)
-  "Set chat buffer STATUS.
-When REFRESH-MODE-LINE is non-nil, mark the context-aware mode line dirty and
-schedule its coalesced refresh outside this status-rendering call."
-  (if (e-chat--surface-composer-p)
-      (with-current-buffer e-chat--surface-transcript-buffer
-        (e-chat--set-status status refresh-mode-line))
-    (unless (and (not refresh-mode-line)
-                 (equal status e-chat--status)
-                 header-line-format)
-      (e-chat--profile-call
-       'chat.status
-       (list :session-id e-chat-session-id
-             :buffer-name (buffer-name)
-             :metadata (list :status status
-                             :refresh-mode-line (and refresh-mode-line t)))
-       (lambda ()
-         (setq e-chat--status status)
-         (setq header-line-format (e-chat--header-line-text status))
-         (when refresh-mode-line
-           (e-chat--request-mode-line-status-refresh nil t)))))))
+(defun e-chat--rerender-transcript ()
+  "Rebuild the composed transcript and activity projections in place."
+  (let ((output-tail-windows
+         (e-chat-surface-capture-output-tail-windows))
+        (messages (e-chat-service-messages e-chat-harness e-chat-session-id))
+        (activity-events
+         (ignore-errors
+           (e-chat-service-activity-events e-chat-harness e-chat-session-id))))
+    (let ((inhibit-read-only t))
+      (e-chat--clear t)
+      (e-chat-transcript-render-replay messages)
+      (e-chat-activity-render-replay messages activity-events))
+    (e-chat-surface-restore-output-tail-windows output-tail-windows)))
 
 (defun e-chat--title-block-end ()
   "Return the end position of the current title block."
@@ -8076,12 +1255,12 @@ schedule its coalesced refresh outside this status-rendering call."
     (save-excursion
       (delete-region (point-min) (e-chat--title-block-end))
       (goto-char (point-min))
-      (e-chat--insert-protected (e-chat--title-block-text)
-                                'e-chat-title-face))))
+      (e-chat-transcript-insert-protected (e-chat--title-block-text)
+                                          'e-chat-title-face))))
 
 (defun e-chat--refresh-session-display ()
   "Refresh presentation surfaces derived from attached session metadata."
-  (e-chat--profile-call
+  (e-chat-profile-call
    'chat.refresh-session-display
    (list :session-id e-chat-session-id
          :buffer-name (buffer-name))
@@ -8092,8 +1271,8 @@ schedule its coalesced refresh outside this status-rendering call."
            (setq e-chat--rendered-session-title title)
            (e-chat--rename-buffer-for-session)
            (e-chat--refresh-title-block)
-           (when e-chat--status
-             (e-chat--set-status e-chat--status))))))))
+           (when (e-chat-surface-status)
+             (e-chat-surface-set-status (e-chat-surface-status)))))))))
 
 (defun e-chat--context-buffer-text (context session-id)
   "Return display text for CONTEXT belonging to SESSION-ID."
@@ -8117,61 +1296,6 @@ schedule its coalesced refresh outside this status-rendering call."
     (display-buffer buffer)
     buffer))
 
-(defun e-chat--message-entry (message)
-  "Return a rendered entry for MESSAGE."
-  (let ((role (plist-get message :role))
-        (content (plist-get message :content)))
-    (pcase role
-      ('user (cons "You" content))
-      ('assistant (cons "Assistant" content))
-      ('tool (cons "Tool" (format "%S" content)))
-      (_ (cons (format "%s" role) (format "%S" content))))))
-
-(defun e-chat--hidden-message-entry (message)
-  "Return a dimmed audit entry for a hidden MESSAGE revealed for inspection.
-The label names why the message was hidden -- a superseded first attempt or a
-machine-authored calibration prompt -- and the content is shown as stored, not
-passed through assistant fontification, so the audit view is faithful."
-  (let ((role (plist-get message :role))
-        (content (plist-get message :content)))
-    (cons (pcase role
-            ('assistant (concat e-chat--hidden-entry-title-prefix
-                                " · superseded answer"))
-            ('user (concat e-chat--hidden-entry-title-prefix
-                           " · calibration prompt"))
-            (_ (format "%s · %s"
-                       e-chat--hidden-entry-title-prefix role)))
-          (if (stringp content) content (format "%S" content)))))
-
-(defun e-chat--render-durable-message (message turn-id &optional ensure-composer)
-  "Render durable MESSAGE for TURN-ID and return its entry data.
-Hidden messages remain in the buffer-local message projection but are made
-invisible in the normal reading view.  Audit reveal mode deliberately uses its
-separate dimmed representation instead."
-  (let* ((hidden (e-harness-message-hidden-p message))
-         (assistant-p (eq (plist-get message :role) 'assistant))
-         (presentation
-          (and assistant-p
-               (not hidden)
-               (e-chat-service-message-presentation
-                e-chat-harness e-chat-session-id message)))
-         (details (plist-get presentation :details))
-         (entry (if (and hidden e-chat--reveal-hidden)
-                    (e-chat--hidden-message-entry message)
-                  (if presentation
-                      (cons "Assistant" (plist-get presentation :content))
-                    (e-chat--message-entry message)))))
-    (when assistant-p
-      (e-chat--record-message-details
-       turn-id (plist-get message :id) details))
-    (e-chat--insert-entry
-     (car entry) (cdr entry) ensure-composer turn-id
-     (e-chat--message-details-text details)
-     (plist-get message :id)
-     (and hidden (not e-chat--reveal-hidden))
-     (and presentation t))
-    entry))
-
 (defun e-chat--event-may-change-unread-p (event)
   "Return non-nil when board EVENT can change this buffer's unread state."
   (pcase (plist-get event :type)
@@ -8181,586 +1305,168 @@ separate dimmed representation instead."
     ('session-reset t)
     (_ nil)))
 
-(defun e-chat--event-selected-participant-p (event)
-  "Return whether projected EVENT belongs to this chat's participant.
-Board-backed service projections carry this process-local ownership fact.  A
-synthetic shell event without the fact retains the historical direct-render
-behavior; real board events always include the key, including an explicit nil
-for an observed sibling or an event with no participant subject.  A malformed
-board-shaped event without the fact is rejected from selected settlement."
-  (if (plist-member event :selected-participant-p)
-      (eq (plist-get event :selected-participant-p) t)
-    (not (e-chat--board-shaped-p event))))
+(defun e-chat-event-may-change-unread-p (event)
+  "Return non-nil when EVENT may change a session's unread projection."
+  (e-chat--event-may-change-unread-p event))
 
-(defun e-chat--board-shaped-p (value)
-  "Return non-nil when VALUE carries a board projection identity."
-  (or (plist-member value :board-id)
-      (plist-member value :board-seq)
-      (plist-member value :message-id)
-      (plist-member value :subject-participant-id)))
+(defun e-chat-event-selected-participant-p (event)
+  "Return non-nil when EVENT belongs to the selected chat participant."
+  (e-chat-transcript-event-selected-participant-p event))
 
-(defun e-chat--message-selected-participant-p (message)
-  "Return whether projected MESSAGE belongs to this chat's participant."
-  (if (plist-member message :selected-participant-p)
-      (eq (plist-get message :selected-participant-p) t)
-    (not (e-chat--board-shaped-p message))))
+(defun e-chat-message-selected-participant-p (message)
+  "Return non-nil when durable MESSAGE belongs to the selected participant."
+  (e-chat-transcript-message-selected-participant-p message))
 
-(defun e-chat--observed-turn-id (turn-id event)
-  "Return an isolated presentation id for unselected EVENT.
-The causal TURN-ID can be shared by board participants, so sibling rows use
-their own durable board identity and never mutate the selected turn record."
-  (let ((board-id (plist-get event :board-id))
-        (subject-participant-id (plist-get event :subject-participant-id))
-        (source-turn-id (plist-get event :source-turn-id)))
-    (if (and board-id subject-participant-id)
-        ;; Board delivery rows for one sibling turn often have different
-        ;; message/activity ids.  Their durable board + subject + source
-        ;; identity is the stable presentation key; include the causal id to
-        ;; keep reused source ids from crossing selected turns.
-        (list :observed-board-turn
-              :board-id (copy-tree board-id)
-              :subject-participant-id (copy-tree subject-participant-id)
-              :source-turn-id (copy-tree source-turn-id)
-              :causal-turn-id (copy-tree turn-id))
-      ;; Only malformed/subjectless rows may use a per-row fallback.  A
-      ;; well-formed board projection must never split one sibling turn by
-      ;; message id or board sequence.
-      (format "%s:observed:%s"
-              turn-id
-              (or (plist-get event :message-id)
-                  (plist-get event :board-seq)
-                  (plist-get event :id)
-                  (plist-get event :event-type)
-                  (sxhash-equal event))))))
+(defun e-chat-observed-turn-id (turn-id event)
+  "Return the stable observed presentation id for TURN-ID and EVENT."
+  (e-chat-transcript-observed-turn-id turn-id event))
 
-(defun e-chat--presentation-turn-id (turn-id event)
-  "Return EVENT's selected or isolated presentation turn id."
-  (if (e-chat--event-selected-participant-p event)
-      turn-id
-    (e-chat--observed-turn-id turn-id event)))
+(defun e-chat-presentation-turn-id (turn-id event)
+  "Return the selected or isolated presentation id for TURN-ID and EVENT."
+  (e-chat-transcript-presentation-turn-id turn-id event))
 
-(defun e-chat--settle-successful-turn-presentation (turn-id ended-at)
-  "Settle successful TURN-ID presentation at ENDED-AT.
+(defun e-chat--settle-successful-turn-presentation (_turn-id _ended-at)
+  "Settle successful turn presentation.
 Board-final output and the later terminal summary are independent delivery
 rows, so either may establish this idempotent presentation boundary."
-  (e-chat--set-turn-time turn-id :ended-at ended-at)
-  (e-chat--settle-open-thinking turn-id ended-at 'done)
-  (e-chat--cancel-pending-activity-redraw turn-id)
-  (e-chat--stop-progress-indicator turn-id)
-  (when-let ((record (e-chat--existing-turn-record turn-id)))
-    (e-chat--delete-turn-transient record)
-    (when (plist-get record :assistant-output-rendered)
-      (e-chat--finalize-turn-display turn-id)))
-  (e-chat--refresh-mode-line-status t)
-  (e-chat--mark-buffer-session-read-if-selected)
-  (e-chat--set-status "done")
-  (e-chat--ensure-composer)
-  (e-chat--refresh-composer-position))
+  (e-chat-surface-refresh-mode-line-status t)
+  (e-chat-overview-mark-selected-session-read)
+  (e-chat-surface-set-status "done")
+  (e-chat-composer-ensure)
+  (e-chat-surface-refresh-composer-position))
 
 (defun e-chat--render-event (event)
-  "Render harness EVENT into the current chat buffer."
+  "Render harness EVENT into the current chat buffer.
+Activity transitions are delegated to the activity owner as one semantic
+operation.  The facade retains only durable transcript and shell composition."
   (e-chat--profile-call
    'chat.render-event
    (list :session-id e-chat-session-id
          :turn-id (plist-get event :turn-id)
          :buffer-name (buffer-name)
-         :metadata (list :event-type
+     :metadata (list :event-type
                          (symbol-name (plist-get event :type))))
    (lambda ()
-     (pcase (plist-get event :type)
-    ('turn-started
-     (let ((turn-id (plist-get event :turn-id)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-turn-time turn-id :started-at (plist-get event :created-at))
-         (when-let ((pending-summary (e-chat--turn-pending-hook-summary turn-id)))
-           (plist-put (e-chat--turn-record turn-id)
-                      :pending-hook-summary pending-summary))
-         (e-chat--start-progress-indicator turn-id)
-         (e-chat--set-status (format "running %s" turn-id)))))
-    ('turn-finished
-     (when (e-chat--event-selected-participant-p event)
-       (let* ((turn-id (plist-get event :turn-id))
-              (created-at (plist-get event :created-at))
-              (output-tail-windows
-               (e-chat--capture-live-output-follow-windows)))
-         (e-chat--settle-successful-turn-presentation turn-id created-at)
-         (e-chat--restore-output-tail-windows output-tail-windows))))
-    ('turn-failed
-     (if (e-chat--event-selected-participant-p event)
-         (let ((output-tail-windows
-                (e-chat--capture-live-output-follow-windows)))
-           (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
-           (e-chat--set-status "error")
-           (e-chat--render-turn-failure
-            (plist-get event :turn-id)
-            (plist-get event :created-at)
-            (plist-get event :payload)
-            t)
-           (e-chat--restore-output-tail-windows output-tail-windows))
-       (e-chat--render-observed-terminal-event
-        (plist-get event :turn-id)
-        (plist-get event :created-at)
-        'failed
-        (plist-get event :payload)
-        event)))
-    ('turn-cancelled
-     (if (e-chat--event-selected-participant-p event)
-         (let* ((turn-id (plist-get event :turn-id))
-                (created-at (plist-get event :created-at))
-                (output-tail-windows
-                 (e-chat--capture-live-output-follow-windows)))
-           (e-chat--render-turn-cancellation turn-id created-at t)
-           (e-chat--restore-output-tail-windows output-tail-windows))
-       (e-chat--render-observed-terminal-event
-        (plist-get event :turn-id)
-        (plist-get event :created-at)
-        'cancelled
-        (plist-get event :payload)
-        event)))
-    ('compaction-started
-     (let ((payload (plist-get event :payload)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "compacting"))
-       (e-chat--insert-entry
-        "System"
-        (cond
-         ((eq (plist-get payload :reason) 'auto)
-          "Auto-compaction started")
-         ((plist-get payload :active-turn)
-          "Agent compacting context mid-turn")
-         (t
-          "Context compaction started"))
-        t
-        (plist-get event :turn-id))))
-    ('compaction-prepared
-     (let ((payload (plist-get event :payload)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "compaction prepared"))
-       (e-chat--insert-entry
-        "System"
-        (format "Compaction prepared; keeping from %s"
-                (or (plist-get payload :first-kept-entry-id) "boundary"))
-        t
-        (plist-get event :turn-id))))
-    ('compaction-summary-started
-     (when (e-chat--event-selected-participant-p event)
-       (e-chat--set-status "summarizing context")))
-    ('compaction-finished
-     (let ((payload (plist-get event :payload)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--invalidate-mode-line-context-estimate)
-         (e-chat--set-status "compacted" t))
-       (e-chat--insert-entry
-        "System"
-        (format "%s %s"
-                (if (eq (plist-get payload :reason) 'auto)
-                    "Auto-compacted context into"
-                  "Context compacted into")
-                (or (plist-get payload :compaction-id) "summary"))
-        t
-        (plist-get event :turn-id))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--ensure-composer)
-         (e-chat--refresh-composer-position))))
-    ('compaction-failed
-     (when (e-chat--event-selected-participant-p event)
-       (e-chat--set-status "compaction failed"))
-     (e-chat--insert-entry
-      "System"
-      (let ((payload (plist-get event :payload)))
-        (format "%s: %s"
-                (if (eq (plist-get payload :reason) 'auto)
-                    "Auto-compaction failed"
-                  "Context compaction failed")
-                (or (plist-get payload :message)
-                    "unknown error")))
-      t
-      (plist-get event :turn-id)))
-    ('message-added
-     (let ((message (plist-get (plist-get event :payload) :message)))
+     (let ((activity-result (e-chat-activity-handle-event event)))
        (cond
-        ((e-chat--tool-message-p message)
-         ;; Tool transcript messages are internal model context.  Presentation
-         ;; activity is driven only by current durable activity events.
-         nil)
-        (t
-         (let* ((assistant-p (eq (plist-get message :role) 'assistant))
-                (turn-id (plist-get event :turn-id))
-                (render-turn-id
-                 (e-chat--presentation-turn-id turn-id event))
-                (output-tail-windows
-                 (and assistant-p
-                      (e-chat--capture-live-output-follow-windows))))
-           (e-chat--render-durable-message message render-turn-id)
-           (when (and (not (e-chat--event-selected-participant-p event))
-                      e-chat--progress-turn-id)
-             (when-let ((selected-record
-                         (e-chat--existing-turn-record
-                          e-chat--progress-turn-id)))
-               (e-chat--render-turn-transient
-                e-chat--progress-turn-id selected-record)))
-           (when assistant-p
-             (plist-put (e-chat--turn-record render-turn-id)
-                        :assistant-output-rendered t)
-             (when (and (plist-get message :terminal-output)
-                        (e-chat--event-selected-participant-p event))
+        ((and (listp activity-result)
+              (eq (plist-get activity-result :operation) 'message-added))
+         ;; Activity owns message classification and detail preparation.  The
+         ;; facade only composes the returned semantic result with the durable
+         ;; transcript projection, then tells activity that the row exists.
+         (when (plist-get activity-result :render-p)
+           (let* ((message (plist-get (plist-get event :payload) :message))
+                  (render-turn-id (plist-get activity-result :turn-id))
+                  (assistant-p (plist-get activity-result :assistant-p))
+                  (terminal-output-p
+                   (plist-get activity-result :terminal-output-p))
+                  (details-text (plist-get activity-result :details-text))
+                  (output-tail-windows
+                   (and assistant-p
+                        (e-chat-surface-capture-live-output-follow-windows))))
+             (e-chat--render-transcript-message
+              message render-turn-id nil details-text)
+             (e-chat-activity-message-rendered
+              render-turn-id message terminal-output-p
+              (plist-get event :created-at))
+             (when terminal-output-p
                (e-chat--settle-successful-turn-presentation
                 render-turn-id (plist-get event :created-at)))
-             (e-chat--restore-output-tail-windows output-tail-windows))
-           (when (and assistant-p
-                      (e-chat--event-selected-participant-p event))
-             (e-chat--mark-buffer-session-read-if-selected))
-           (when (eq (plist-get message :role) 'user)
-             (e-chat--refresh-session-display)))))))
-    ('message-updated
-     ;; A stored message's display disposition changed (e.g. the bayesian
-     ;; follow-up hid an already-rendered first attempt).  Durable message id
-     ;; projection makes the ordinary clean-view case a local visibility
-     ;; update; audit reveal keeps its distinct hidden-entry representation.
-     (let ((message (plist-get (plist-get event :payload) :message)))
-       (unless (e-chat--reconcile-message-display message)
-         (e-chat--rerender-transcript))))
-    ('provider-request-started
-     (when (e-chat--event-selected-participant-p event)
-       (setq e-chat--assistant-streaming-p nil))
-     (when (e-chat--event-selected-participant-p event)
-       (e-chat--set-status "waiting for provider"))
-     (e-chat--record-provider-started
-      (e-chat--presentation-turn-id
-       (plist-get event :turn-id) event)
-      (plist-get event :created-at))
-     (e-chat--request-activity-redraw
-      (e-chat--presentation-turn-id (plist-get event :turn-id) event)))
-    ('provider-request-finished
-     (e-chat--record-provider-finished
-      (e-chat--presentation-turn-id
-       (plist-get event :turn-id) event)
-      (plist-get event :created-at)
-      (plist-get (plist-get event :payload) :status))
-     (e-chat--request-activity-redraw
-      (e-chat--presentation-turn-id (plist-get event :turn-id) event)))
-    ('turn-retrying
-     (let* ((turn-id (plist-get event :turn-id))
-            (payload (plist-get event :payload))
-            (attempt (plist-get payload :attempt))
-            (backoff (plist-get payload :backoff-seconds)))
-       (setq turn-id (e-chat--presentation-turn-id turn-id event))
-       (e-chat--record-turn-retrying turn-id payload)
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status
-          (format "retry %s in %.0fs" (or attempt 1) (or backoff 0))))
-       (e-chat--request-activity-redraw turn-id 'activity)))
-    ('queue-changed
-     (if (e-chat--surface-transcript-p)
-         (e-chat--surface-refresh-composer-queue)
-       (e-chat--ensure-composer)
-       (e-chat--refresh-composer-position)))
-    ('turn-steered
-     (let* ((turn-id (plist-get event :turn-id))
-            (payload (plist-get event :payload))
-            (render-turn-id (e-chat--presentation-turn-id turn-id event))
-            (record (e-chat--turn-record render-turn-id)))
-       (e-chat--record-steering-input
-        record
-        (plist-get payload :prompt-preview))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "steered"))
-       (e-chat--request-activity-redraw render-turn-id 'activity)))
-    ('assistant-delta
-     (when (e-chat--event-selected-participant-p event)
-       (setq e-chat--assistant-streaming-p t)
-       (e-chat--set-status "streaming")))
-    ('reasoning-delta
-     (let* ((turn-id (plist-get event :turn-id))
-            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "reasoning"))
-       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
-         (e-chat--record-reasoning-delta
-          record
-          (plist-get (plist-get event :payload) :content)
-          t
-          'activity)
-         (e-chat--request-activity-redraw render-turn-id))))
-    ('tool-started
-     (let* ((turn-id (plist-get event :turn-id))
-            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "tool"))
-       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
-         (e-chat--record-tool-started
-          record
-          (plist-get event :payload)
-          'activity
-          (plist-get event :created-at))
-         (e-chat--request-activity-redraw render-turn-id))))
-    ('tool-finished
-     (let* ((turn-id (plist-get event :turn-id))
-            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "tool done"))
-       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
-         (e-chat--record-tool-finished
-          record
-          (plist-get event :payload)
-          'activity
-          (plist-get event :created-at))
-         (e-chat--request-activity-redraw render-turn-id))))
-    ('action-started
-     (let* ((turn-id (plist-get event :turn-id))
-            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "action"))
-       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
-         (e-chat--record-action-started
-          record
-          (plist-get event :payload)
-          'activity)
-         (e-chat--request-activity-redraw render-turn-id))))
-    ((or 'action-finished 'action-failed)
-     (let* ((turn-id (plist-get event :turn-id))
-            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "action done"))
-       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
-         (e-chat--record-action-finished
-          record
-          (plist-get event :payload)
-          'activity)
-         (e-chat--request-activity-redraw render-turn-id))))
-    ('hook-audit
-     ;; Audits remain durable and queryable, but are ordinary turn activity,
-     ;; not user-facing system failures.  Keep the live path consistent with
-     ;; replay, which records the compact summary below.
-     (when-let ((turn-id (plist-get event :turn-id)))
-       (let* ((render-turn-id (e-chat--presentation-turn-id turn-id event))
-              (record (e-chat--turn-record render-turn-id)))
-         (e-chat--record-hook-audit record (plist-get event :payload) 'activity)
-         (e-chat--request-activity-redraw render-turn-id 'activity))))
-    ('tool-progress
-     (let* ((turn-id (plist-get event :turn-id))
-            (render-turn-id (e-chat--presentation-turn-id turn-id event)))
-       (when (e-chat--event-selected-participant-p event)
-         (e-chat--set-status "tool output"))
-       (when-let ((record (e-chat--existing-turn-record render-turn-id)))
-         (e-chat--record-tool-progress record (plist-get event :payload))
-         (e-chat--request-activity-redraw render-turn-id))))
-    ('backend-empty-output
-     (when (e-chat--event-selected-participant-p event)
-       (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
-       (e-chat--stop-progress-indicator (plist-get event :turn-id))
-       (e-chat--set-status "done")))
-    ('token-usage
-     (when (e-chat--event-selected-participant-p event)
-       (e-chat--request-mode-line-status-refresh t)))
-    ('provider-anchor-candidate
-     nil)
-    ('session-reset
-     (e-chat--cancel-pending-activity-redraw)
-     (e-chat--stop-progress-indicator)
-     (e-chat--set-status "idle")
-     (e-chat--insert-entry "System" "Session reset" t))
-    (_
-     (e-chat--insert-entry "System" (format "Event: %S" event) t)))
-     (when (e-chat--event-may-change-unread-p event)
-       (e-chat--workspace-unread-cache-update-buffer)))))
-
-(defun e-chat--tail-messages (messages limit)
-  "Return at most LIMIT trailing MESSAGES."
-  (if (and (integerp limit)
-           (> limit 0)
-           (> (length messages) limit))
-      (nthcdr (- (length messages) limit) messages)
-    messages))
-
-(defun e-chat--session-replay-turn-ids (messages)
-  "Return presentation turn ids needed by replayed MESSAGES and active work."
-  (let (turn-ids)
-    (dolist (message messages)
-      (when-let ((turn-id (plist-get message :turn-id)))
-        (cl-pushnew turn-id turn-ids :test #'equal)))
-    (when (e-chat-service-board-session-p
-           e-chat-harness e-chat-session-id)
-      (when-let ((active-turn
-                  (e-chat-service-active-turn
-                   e-chat-harness e-chat-session-id)))
-        (when-let ((turn-id (plist-get active-turn :id)))
-          (cl-pushnew turn-id turn-ids :test #'equal))))
-    turn-ids))
-
-(cl-defun e-chat--session-replay-activity-events
-    (messages &optional (activity-events nil activity-events-supplied-p))
-  "Return bounded activity events relevant to replayed MESSAGES.
-When ACTIVITY-EVENTS is supplied, filter that snapshot rather than reading the
-service projection again."
-  (let* ((limit
-          (e-chat--validated-replay-limit
-           e-chat-session-replay-activity-event-limit
-           'e-chat-session-replay-activity-event-limit))
-         (turn-ids (e-chat--session-replay-turn-ids messages))
-         (source-events
-          (if activity-events-supplied-p
-              activity-events
-            (e-chat-service-activity-events
-             e-chat-harness e-chat-session-id)))
-         (events
-          (and turn-ids
-               (cl-remove-if-not
-                (lambda (event)
-                  (member (plist-get event :turn-id) turn-ids))
-                source-events))))
-    (e-chat--tail-messages events limit)))
-
-(defun e-chat--terminal-activity-events (turn-id activity-events)
-  "Return all terminal failure/cancellation events for TURN-ID.
-Selected and observed board participants share the causal turn id during
-replay.  Keep every matching terminal row so observed siblings remain
-renderable; settlement is gated separately by ownership in the renderer."
-  (cl-remove-if-not
-   (lambda (event)
-     (and (equal (plist-get event :turn-id) turn-id)
-          (memq (plist-get event :event-type)
-                '(turn-failed turn-cancelled))))
-   activity-events))
-
-(defun e-chat--terminal-activity-event (turn-id activity-events)
-  "Return the first terminal failure/cancellation event for TURN-ID.
-This singular compatibility accessor is retained for callers that only need
-one event; replay rendering uses `e-chat--terminal-activity-events'."
-  (car (e-chat--terminal-activity-events turn-id activity-events)))
-
-(defun e-chat--render-replayed-terminal-event (turn-id activity-events)
-  "Render replayed terminal activity for TURN-ID when no final block exists."
-  (let* ((terminal-events
-          (e-chat--terminal-activity-events turn-id activity-events))
-         (selected-event
-          (cl-find-if #'e-chat--event-selected-participant-p
-                      terminal-events)))
-    (when selected-event
-      (let ((record (e-chat--turn-record turn-id))
-            (event-type (plist-get selected-event :event-type)))
-        (unless (or (plist-get record :final-rendered)
-                    (plist-get record :failure-rendered))
-          (e-chat--render-turn-activity-events turn-id activity-events)
-          (if (eq event-type 'turn-cancelled)
-              (e-chat--render-turn-cancellation
-               turn-id
-               (plist-get selected-event :created-at)
-               t)
-            (e-chat--render-turn-failure
-             turn-id
-             (plist-get selected-event :created-at)
-             (plist-get selected-event :payload)
-             t)))))
-    (dolist (activity-event terminal-events)
-      (unless (eq activity-event selected-event)
-        (e-chat--render-observed-terminal-event
-         turn-id
-         (plist-get activity-event :created-at)
-         (if (eq (plist-get activity-event :event-type) 'turn-cancelled)
-             'cancelled
-           'failed)
-         (plist-get activity-event :payload)
-         activity-event)))))
-
-(defun e-chat--activity-event-turn-ids (activity-events)
-  "Return TURN-IDs represented in ACTIVITY-EVENTS, preserving event order."
-  (let (turn-ids)
-    (dolist (event activity-events)
-      (when-let ((turn-id (plist-get event :turn-id)))
-        (unless (member turn-id turn-ids)
-          (push turn-id turn-ids))))
-    (nreverse turn-ids)))
-
-(defun e-chat--turn-activity-events (turn-id activity-events)
-  "Return ACTIVITY-EVENTS belonging to TURN-ID."
-  (cl-remove-if-not
-   (lambda (event)
-     (equal (plist-get event :turn-id) turn-id))
-   activity-events))
-
-(defun e-chat--terminal-activity-p (events)
-  "Return non-nil when EVENTS contain a terminal turn activity event."
-  (cl-some
-   (lambda (event)
-     (and (e-chat--event-selected-participant-p event)
-          (memq (plist-get event :event-type)
-                '(turn-finished turn-failed turn-cancelled))))
-   events))
-
-(defun e-chat--render-replayed-active-activity (activity-events)
-  "Render replayed non-terminal ACTIVITY-EVENTS as live transient activity."
-  (dolist (turn-id (e-chat--activity-event-turn-ids activity-events))
-    (let* ((events (e-chat--turn-activity-events turn-id activity-events))
-           (record (e-chat--existing-turn-record turn-id)))
-      (when (and record
-                 (not (plist-get record :final-rendered))
-                 (not (plist-get record :failure-rendered))
-                 (not (e-chat--terminal-activity-p events))
-                 (not (e-chat--stale-progress-turn-p turn-id)))
-        (e-chat--render-turn-activity-events turn-id activity-events)))))
-
-(cl-defun e-chat--render-session
-    (&optional (messages nil messages-supplied-p)
-               (replay-activity-events nil replay-activity-events-supplied-p))
-  "Render the attached session transcript in the current buffer.
-When MESSAGES is supplied, render that message list instead of the
-attached session's full transcript.  REPLAY-ACTIVITY-EVENTS is the matching
-service snapshot when supplied."
-  (let* ((messages (if messages-supplied-p
-                       messages
-                     (e-chat-service-messages
-                      e-chat-harness e-chat-session-id)))
-         (turn-index 0)
-         (activity-events
-          (if messages-supplied-p
-              (if replay-activity-events-supplied-p
-                  (e-chat--session-replay-activity-events
-                   messages replay-activity-events)
-                (e-chat--session-replay-activity-events messages))
-            (ignore-errors
-              (e-chat-service-activity-events
-               e-chat-harness e-chat-session-id))))
-         turn-id
-         record)
-    (dolist (message messages)
-      (when (or (plist-get message :turn-id)
-                (not turn-id)
-                (eq (plist-get message :role) 'user))
-        (let ((next-turn-id
-               (or (plist-get message :turn-id)
-                   (format "replayed-turn-%d" (1+ turn-index)))))
-          (when (and turn-id (not (equal turn-id next-turn-id)))
-            (e-chat--render-replayed-terminal-event turn-id activity-events))
-          (setq turn-index (1+ turn-index))
-          (setq turn-id next-turn-id)))
-      (let* ((message-selected-p
-              (e-chat--message-selected-participant-p message))
-             (render-turn-id
-              (if message-selected-p
-                  turn-id
-                (e-chat--observed-turn-id turn-id message))))
-        (setq record (e-chat--turn-record render-turn-id))
-        (e-chat--record-replayed-message-time record message)
-        (let ((hidden (e-harness-message-hidden-p message)))
-        (unless (e-chat--tool-message-p message)
-          (if hidden
-              ;; In normal view, retain a hidden physical projection so the
-              ;; event path can restore it without rebuilding this transcript.
-              ;; Audit reveal renders the separate dimmed entry through the
-              ;; same helper.
-              (e-chat--render-durable-message
-               message render-turn-id message-selected-p)
-            (when (eq (plist-get message :role) 'assistant)
-              (e-chat--render-turn-activity-events turn-id activity-events))
-            (e-chat--render-durable-message
-             message render-turn-id message-selected-p)
-            (when (and (eq (plist-get message :role) 'assistant)
-                       message-selected-p)
-              (e-chat--finalize-turn-display render-turn-id)))))))
-    (e-chat--render-replayed-active-activity activity-events)
-    (when turn-id
-      (e-chat--render-replayed-terminal-event turn-id activity-events))))
+             (when output-tail-windows
+               (e-chat-surface-restore-output-tail-windows
+                output-tail-windows))
+             (when (and assistant-p
+                        (e-chat-event-selected-participant-p event))
+               (e-chat-overview-mark-selected-session-read))
+             (when (eq (plist-get message :role) 'user)
+               (e-chat--refresh-session-display)))))
+        ((eq activity-result :message-updated)
+         ;; Activity has already refreshed its semantic details.  Transcript
+         ;; owns only the durable visibility projection and decides whether a
+         ;; local reconcile is sufficient.
+         (let ((message (plist-get (plist-get event :payload) :message)))
+           (unless (e-chat-transcript-reconcile-message-display message)
+             (e-chat--rerender-transcript))))
+        ((eq activity-result :settled)
+         (e-chat--settle-successful-turn-presentation
+          (plist-get event :turn-id)
+          (plist-get event :created-at)))
+        ((eq activity-result :session-reset)
+         (e-chat--insert-transcript-entry "System" "Session reset" t))
+        ((eq activity-result t)
+         nil)
+        (t
+         (pcase (plist-get event :type)
+           ('compaction-started
+            (let ((payload (plist-get event :payload)))
+              (e-chat--insert-transcript-entry
+               "System"
+               (cond
+                ((eq (plist-get payload :reason) 'auto)
+                 "Auto-compaction started")
+                ((plist-get payload :active-turn)
+                 "Agent compacting context mid-turn")
+                (t
+                 "Context compaction started"))
+               t
+               (plist-get event :turn-id))))
+           ('compaction-prepared
+            (let ((payload (plist-get event :payload)))
+              (e-chat--insert-transcript-entry
+               "System"
+               (format "Compaction prepared; keeping from %s"
+                       (or (plist-get payload :first-kept-entry-id) "boundary"))
+               t
+               (plist-get event :turn-id))))
+           ('compaction-summary-started
+            (when (e-chat-event-selected-participant-p event)
+              (e-chat-surface-set-status "summarizing context")))
+           ('compaction-finished
+            (let ((payload (plist-get event :payload)))
+              (when (e-chat-event-selected-participant-p event)
+                (e-chat-surface-invalidate-mode-line-context-estimate)
+                (e-chat-surface-set-status "compacted" t))
+              (e-chat--insert-transcript-entry
+               "System"
+               (format "%s %s"
+                       (if (eq (plist-get payload :reason) 'auto)
+                           "Auto-compacted context into"
+                         "Context compacted into")
+                       (or (plist-get payload :compaction-id) "summary"))
+               t
+               (plist-get event :turn-id))
+              (when (e-chat-event-selected-participant-p event)
+                (e-chat-composer-ensure)
+                (e-chat-surface-refresh-composer-position))))
+           ('compaction-failed
+            (when (e-chat-event-selected-participant-p event)
+              (e-chat-surface-set-status "compaction failed"))
+            (e-chat--insert-transcript-entry
+             "System"
+             (let ((payload (plist-get event :payload)))
+               (format "%s: %s"
+                       (if (eq (plist-get payload :reason) 'auto)
+                           "Auto-compaction failed"
+                         "Context compaction failed")
+                       (or (plist-get payload :message)
+                           "unknown error")))
+             t
+             (plist-get event :turn-id)))
+           ('queue-changed
+            (if (e-chat-surface-transcript-p)
+                (e-chat-composer-insert-queued-prompts)
+              (e-chat-composer-ensure)
+              (e-chat-surface-refresh-composer-position)))
+           ('session-reset
+            ;; Activity normally claims this event and returns a session-reset
+            ;; result.  Keep this branch for a future owner that elects to
+            ;; leave durable reset composition to the facade.
+            (e-chat--insert-transcript-entry "System" "Session reset" t))
+           (_
+            (e-chat--insert-transcript-entry
+             "System" (format "Event: %S" event) t)))))
+       (when (e-chat-event-may-change-unread-p event)
+         (e-chat-overview-update-unread-cache))))))
 
 (defun e-chat--live-session-buffer-p
     (buffer harness session-id instance-id)
@@ -8774,6 +1480,10 @@ service snapshot when supplied."
               (e-chat-service-subscription-p e-chat--event-subscription)
               (e-chat-service-subscription-active-p
                e-chat--event-subscription)))))
+
+(defun e-chat-render-event (event)
+  "Render harness EVENT through the composed chat presentation facade."
+  (e-chat--render-event event))
 
 (cl-defun e-chat-open
     (&key harness session-id new-session instance-id on-session-load-error)
@@ -8805,7 +1515,7 @@ condition after the chat buffer renders it.  User-facing commands should call
                        chat-session-id)))))
     (unless (e-chat--live-session-buffer-p
              buffer chat-harness chat-session-id chat-instance-id)
-      (e-chat--attach-buffer
+      (e-chat-attach-buffer
        buffer chat-harness chat-session-id chat-instance-id
        on-session-load-error))
     (e-chat--prune-duplicate-session-buffers
@@ -8832,14 +1542,14 @@ condition after the chat buffer renders it.  User-facing commands should call
   "Return non-nil when the attached session has a running active turn."
   (and e-chat-harness
        e-chat-session-id
-       (e-chat--board-session-id-p e-chat-harness e-chat-session-id)
+       (e-chat-service-board-session-p e-chat-harness e-chat-session-id)
        (e-chat-service-active-turn-p e-chat-harness e-chat-session-id)))
 
 (defun e-chat--harness-session-active-turn-p (harness session-id)
   "Return non-nil when HARNESS has a running active turn for SESSION-ID."
   (and (e-harness-p harness)
        session-id
-       (e-chat--board-session-id-p harness session-id)
+       (e-chat-service-board-session-p harness session-id)
        (e-chat-service-active-turn-p harness session-id)))
 
 (defun e-chat--submit-intent (prefix)
@@ -8858,14 +1568,9 @@ condition after the chat buffer renders it.  User-facing commands should call
   "Return failed turn target at point in a chat buffer, or nil."
   (when (and (derived-mode-p 'e-chat-mode)
              e-chat-session-id)
-    (let* ((block-id (e-chat--block-at-point))
-           (block (and block-id
-                       (hash-table-p e-chat--block-registry)
-                       (gethash block-id e-chat--block-registry)))
-           (turn-id (plist-get block :turn-id))
-           (turn-record (e-chat--existing-turn-record turn-id)))
+    (let ((turn-id (e-chat-transcript-turn-id-at-point)))
       (when (and turn-id
-                 (plist-get turn-record :failure-error))
+                 (e-chat-activity-failed-turn-p turn-id))
         (list :session-id e-chat-session-id
               :turn-id turn-id
               :harness e-chat-harness
@@ -8987,8 +1692,61 @@ HARNESS are internal test seams."
                              :session-id session-id
                              :instance-id instance-id)))
     (when display
-      (e-chat--pop-to-buffer buffer))
+      (e-chat-surface-pop-to-buffer buffer))
     buffer))
+
+(defun e-chat-overview-open-session ()
+  "Open the overview selection and compose its read-marker update.
+Overview owns only row selection; this facade command owns chat construction,
+attachment, and the post-open overview refresh."
+  (interactive)
+  (let* ((target (e-chat-overview-session-selection))
+         (harness (plist-get target :harness))
+         (session-id (plist-get target :session-id))
+         (instance-id (plist-get target :instance-id))
+         (buffer (e-chat-open-session
+                  harness session-id
+                  (called-interactively-p 'interactive)
+                  instance-id)))
+    (e-chat-overview-mark-session-read
+     harness
+     (plist-get target :session)
+     instance-id)
+    (when (derived-mode-p 'e-chat-overview-mode)
+      (e-chat-overview-refresh))
+    buffer))
+
+(defun e-chat--open-active-session-candidate (candidate)
+  "Open picker CANDIDATE through the facade's session constructor."
+  (e-chat-open-session
+   (plist-get candidate :harness)
+   (plist-get candidate :session-id)
+   t
+   (plist-get candidate :instance-id)))
+
+(defun e-chat-active-sessions ()
+  "Open a floating picker of active or recent chat sessions."
+  (interactive)
+  (let ((candidates (e-chat-overview-active-session-candidates))
+        (status-cache (make-hash-table :test #'equal)))
+    (unless candidates
+      (user-error "No e chat sessions to show"))
+    (e-picker-open
+     :name 'active-sessions
+     :title "Active sessions"
+     :candidates (lambda () candidates)
+     :candidate-key #'e-chat-overview-active-session-candidate-key
+     :candidate-line
+     (lambda (candidate)
+       (e-chat-overview-active-session-line candidate status-cache))
+     :preview #'e-chat-overview-active-session-preview
+     :refresh-candidate-after-preview t
+     :initial-candidate-limit 15
+     :candidate-limit-step 15
+     :on-select #'e-chat--open-active-session-candidate
+     :footer "RET open  C-g cancel"
+     :width 0.72
+     :height 0.68)))
 
 (cl-defun e-chat-open-board
     (board &key harness session-id metadata
@@ -9044,7 +1802,7 @@ When SESSION-ID is nil, create a private execution session for the participant."
   "Return one bounded page of public board interaction contexts."
   (e-chat-service-list-boards-page :after after :limit limit))
 
-(defun e-chat--attach-buffer
+(defun e-chat-attach-buffer
     (buffer harness session-id &optional instance-id on-session-load-error)
   "Attach BUFFER to HARNESS and SESSION-ID.
 INSTANCE-ID identifies the configured harness instance.
@@ -9057,12 +1815,12 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
       (setq binding (e-chat-service-ensure-binding harness session-id)))
   (with-current-buffer buffer
     (let* ((output-tail-windows
-            (e-chat--capture-output-tail-windows))
+            (e-chat-surface-capture-output-tail-windows))
            (same-session
             (and (eq e-chat-harness harness)
                  (equal e-chat-session-id session-id)
                  (eq e-chat-harness-instance-id instance-id)))
-           (previous-surface-composer e-chat--surface-composer-buffer)
+           (previous-surface-composer (e-chat-surface-composer-buffer))
            (surface-composer
             (and same-session previous-surface-composer))
           (existing-workspace (e-buffer-workspace buffer)))
@@ -9072,9 +1830,9 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
          harness session-id (e-chat--project-root default-directory)))
       (e-chat--unsubscribe)
       (e-chat-mode)
-      (e-chat--disable-modal-editing)
-      (e-chat--disable-completion)
-      (e-chat--ensure-window-refresh-hook)
+      (e-chat-composer-disable-modal-editing)
+      (e-chat-composer-disable-completion)
+      (e-chat-surface-initialize)
       (setq-local e-current-harness harness)
       (setq-local e-chat-harness harness)
       (setq-local e-chat-harness-instance-id instance-id)
@@ -9091,7 +1849,7 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
                   (and binding
                        (e-board-observer-id
                         (e-chat-service-binding-observer binding))))
-      (setq-local e-chat--preview-buffer nil)
+      (e-chat-transcript-set-preview-p nil)
       (e-buffer-set-workspace
        buffer
        (if e-workspace-rebind-shell-on-open
@@ -9100,12 +1858,11 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
              (e-workspace-current))))
       (when (and (buffer-live-p previous-surface-composer)
                  (not same-session))
-        (e-chat--surface-kill-composer))
+        (e-chat-surface-kill-composer))
       (when (buffer-live-p surface-composer)
-        (e-chat--surface-bind-composer surface-composer buffer)
-        (setq-local e-chat--surface-composer-buffer surface-composer))
-      (e-chat--surface-ensure-composer)
-      (e-chat--workspace-unread-cache-update-buffer buffer)
+        (e-chat-surface-bind-composer surface-composer buffer))
+      (e-chat-composer-ensure)
+      (e-chat-overview-update-unread-cache buffer)
       (e-chat--rename-buffer-for-session)
       (unless unloaded-session
         ;; Establish one cursor before rendering.  The returned bounded
@@ -9116,7 +1873,7 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
           (progn
             (let ((inhibit-read-only t))
               (e-chat--clear t)
-              (e-chat--render-session-loading unloaded-session))
+              (e-chat-transcript-render-session-loading unloaded-session))
             (setq e-chat--session-load-generation
                   (1+ e-chat--session-load-generation))
             (setq e-chat--session-load-request
@@ -9129,20 +1886,22 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
                    on-session-load-error)))
         (let ((inhibit-read-only t))
           (e-chat--clear t)
-          (e-chat--render-session-replay
+          (e-chat-transcript-render-replay
+           (e-chat-service-view-messages view))
+          (e-chat-activity-render-replay
            (e-chat-service-view-messages view)
            (e-chat-service-view-activity-events view)))
-        (e-chat--mark-buffer-session-read-if-selected buffer))
-      (e-chat--set-status
+        (e-chat-overview-mark-selected-session-read buffer))
+      (e-chat-surface-set-status
        (if unloaded-session "loading session" "idle")
        t)
       ;; The transcript no longer has an editable composer tail.  Protect it
       ;; as a whole so an early Escape or any unbound editing key cannot make
       ;; arbitrary text part of the rendered conversation.
       (setq-local buffer-read-only t)
-      (e-chat--restore-output-tail-windows
+      (e-chat-surface-restore-output-tail-windows
        output-tail-windows)
-      (e-chat--surface-refresh-visible-windows)))
+      (e-chat-surface-refresh-visible-windows)))
     buffer))
 
 (defun e-chat-reload-buffers ()
@@ -9185,7 +1944,7 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
                           candidate)
                          (t e-chat-harness))))
                   (setq count (1+ count))
-                  (e-chat--attach-buffer
+                  (e-chat-attach-buffer
                    buffer harness session-id
                    e-chat-harness-instance-id))))))))
     (when (called-interactively-p 'interactive)
@@ -9213,20 +1972,13 @@ display path."
                                     (e-harness-instance-id instance)))))
     (when (called-interactively-p 'interactive)
       (if pop-to-side
-          (e-chat--pop-to-buffer buffer)
-        (e-chat--switch-to-buffer buffer)))
+          (e-chat-surface-pop-to-buffer buffer)
+        (e-chat-surface-switch-to-buffer buffer)))
     buffer))
 
-(defun e-chat--session-choice-label (session)
-  "Return completion label for SESSION metadata."
-  (format "%s  [%s]"
-          (plist-get session :title)
-          (plist-get session :id)))
-
-(defun e-chat--session-for-label (sessions labels label)
-  "Return the session from SESSIONS corresponding to LABELS LABEL."
-  (when-let ((index (cl-position label labels :test #'equal)))
-    (nth index sessions)))
+(defun e-chat-session-choice-label (session)
+  "Return the public completion label for SESSION metadata."
+  (e-chat-overview-session-choice-label session))
 
 (defun e-chat--ordered-completion-table (labels &optional category)
   "Return a completion table for LABELS that preserves caller order.
@@ -9239,280 +1991,9 @@ CATEGORY is exposed through completion metadata when non-nil."
           (cycle-sort-function . identity))
       (complete-with-action action labels string predicate))))
 
-(defun e-chat--resume-preview-origin-window ()
-  "Return the window that should display resume previews."
-  (or (and (minibufferp)
-           (window-live-p (minibuffer-selected-window))
-           (minibuffer-selected-window))
-      (selected-window)))
-
-(defun e-chat--render-resume-preview (harness session)
-  "Render SESSION from HARNESS into the reusable resume preview buffer."
-  (let* ((session-id (plist-get session :id))
-         (buffer (get-buffer-create e-chat--resume-preview-buffer-name)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (e-chat-mode)
-        (e-chat--disable-modal-editing)
-        (e-chat--disable-completion)
-        (setq-local e-chat-harness harness)
-        (setq-local e-chat-session-id session-id)
-        (setq-local e-chat--preview-buffer t)
-        (setq-local cursor-type nil)
-        (e-chat--clear t)
-        (if (plist-get session :loaded)
-            (let ((messages (e-chat--tail-messages
-                             (e-chat-service-messages harness session-id)
-                             e-chat-resume-preview-message-limit)))
-              (e-chat--render-session messages))
-          (e-chat--insert-protected
-           (string-join
-            (delq nil
-                  (list (plist-get session :title)
-                        (e-chat--session-summary-preview session)
-                        (when-let ((message-count
-                                    (plist-get session :message-count)))
-                          (format "%d messages" message-count))
-                        (plist-get session :last-message-at)))
-            "\n\n")))
-        (setq buffer-read-only t)
-        (goto-char (point-min))))
-    buffer))
-
-(defun e-chat--resume-preview-state (harness sessions labels)
-  "Return Consult preview state for HARNESS resume SESSIONS and LABELS."
-  (let (origin-window origin-buffer preview-buffer)
-    (cl-labels
-        ((ensure-origin ()
-           (unless (window-live-p origin-window)
-             (setq origin-window (e-chat--resume-preview-origin-window))
-             (setq origin-buffer (window-buffer origin-window))))
-         (restore-origin (&optional kill-preview)
-           (when (and (window-live-p origin-window)
-                      (buffer-live-p origin-buffer))
-             (with-selected-window origin-window
-               (switch-to-buffer origin-buffer 'norecord)))
-           (when (and kill-preview
-                      (buffer-live-p preview-buffer))
-             (kill-buffer preview-buffer)
-             (setq preview-buffer nil))))
-      (lambda (action candidate)
-        (pcase action
-          ('setup
-           (ensure-origin))
-          ('preview
-           (ensure-origin)
-           (if-let ((session (e-chat--session-for-label
-                              sessions labels candidate)))
-               (when (window-live-p origin-window)
-                 (setq preview-buffer
-                       (e-chat--render-resume-preview harness session))
-                 (with-selected-window origin-window
-                   (switch-to-buffer preview-buffer 'norecord)))
-             (restore-origin)))
-          ((or 'exit 'return)
-           (restore-origin t)))))))
-
-(defun e-chat--consult-read-available-p ()
-  "Return non-nil when Consult's previewing reader is available."
-  (and (require 'consult nil t)
-       (fboundp 'consult--read)))
-
-(defun e-chat--read-session-choice (harness sessions &optional labels)
-  "Read and return a resume choice for SESSIONS in HARNESS."
-  (let ((labels (or labels
-                    (mapcar #'e-chat--session-choice-label sessions))))
-    (if (e-chat--consult-read-available-p)
-        (funcall (symbol-function 'consult--read)
-                 labels
-                 :prompt "Resume e session: "
-                 :require-match t
-                 :sort nil
-                 :category 'e-chat-session
-                 :state (e-chat--resume-preview-state
-                         harness sessions labels))
-      (completing-read "Resume e session: " labels nil t))))
-
-(defun e-chat--session-candidate-label (candidate &optional show-instance)
-  "Return completion label for session CANDIDATE.
-When SHOW-INSTANCE is non-nil, prefix the owning target label."
-  (let ((session-label (e-chat--session-choice-label
-                        (plist-get candidate :session))))
-    (if (and show-instance
-             (plist-get candidate :instance))
-        (format "%s  %s"
-                (e-harness-instance-name (plist-get candidate :instance))
-                session-label)
-      session-label)))
-
-(defun e-chat--session-owner-instance-id (harness session)
-  "Return persisted chat harness instance owner for SESSION, or nil."
-  (ignore harness)
-  (plist-get (plist-get session :metadata) :harness-instance-id))
-
-(defun e-chat--session-belongs-to-instance-p
-    (harness session instance-id default-instance-id shared-store-p)
-  "Return non-nil when SESSION should be listed under INSTANCE-ID.
-Owned sessions are listed only under their persisted owner.  Legacy unowned
-sessions in shared stores are listed under the default instance so they show
-once.  Legacy sessions in unique stores stay under their store's instance."
-  (let ((owner (e-chat--session-owner-instance-id harness session)))
-    (if owner
-        (eq owner instance-id)
-      (or (not shared-store-p)
-          (eq instance-id default-instance-id)))))
-
-(defun e-chat--shared-session-store-p (harness store-counts)
-  "Return non-nil when HARNESS shares its session store in STORE-COUNTS."
-  (> (or (gethash (e-chat-service-session-store harness) store-counts) 0) 1))
-
-(defun e-chat--session-candidate-newer-p (left right)
-  "Return non-nil when session LEFT sorts before RIGHT (newest first).
-Order by most recent message, matching the harness session projection, and
-fall back to the touch sequence when two sessions share a last-message
-timestamp."
-  (let ((left-time (or (plist-get left :last-message-at)
-                       (plist-get left :created-at)
-                       ""))
-        (right-time (or (plist-get right :last-message-at)
-                        (plist-get right :created-at)
-                        ""))
-        (left-seq (or (plist-get left :updated-seq) 0))
-        (right-seq (or (plist-get right :updated-seq) 0)))
-    (or (string> left-time right-time)
-        (and (string= left-time right-time)
-             (> left-seq right-seq)))))
-
-(defun e-chat--session-candidates ()
-  "Return root chat session candidates across configured chat instances."
-  (let ((instances (e-chat--chat-instances))
-        (default-instance-id
-         (when-let ((default-instance
-                     (or (e-chat--default-chat-instance)
-                         (e-harness-instance-default :kind 'chat))))
-           (e-harness-instance-id default-instance)))
-        (store-counts (make-hash-table :test 'eq))
-        candidates)
-    (if instances
-        (progn
-          (dolist (instance instances)
-            (let* ((harness (e-chat--harness-for-instance instance))
-                   (store (e-chat-service-session-store harness)))
-              (puthash store (1+ (or (gethash store store-counts) 0))
-                       store-counts)))
-          (dolist (instance instances)
-            (let ((harness (e-chat--harness-for-instance instance))
-                  (instance-id (e-harness-instance-id instance)))
-              (dolist (session (e-chat-service-root-session-list harness))
-                (when (and (e-chat--board-session-p session)
-                           (e-chat--session-belongs-to-instance-p
-                            harness
-                            session
-                            instance-id
-                            default-instance-id
-                            (e-chat--shared-session-store-p
-                             harness store-counts)))
-                  (push (list :instance instance
-                              :instance-id instance-id
-                              :harness harness
-                              :session session
-                              :session-id (plist-get session :id))
-                        candidates)))))
-          (setq candidates
-                (sort candidates
-                      (lambda (left right)
-                        (e-chat--session-candidate-newer-p
-                         (plist-get left :session)
-                         (plist-get right :session))))))
-      (let ((harness (e-chat--default-harness)))
-        (setq candidates
-              (mapcar (lambda (session)
-                        (list :harness harness
-                              :session session
-                              :session-id (plist-get session :id)))
-                      (seq-filter #'e-chat--board-session-p
-                                  (e-chat-service-root-session-list harness))))))
-    candidates))
-
-(defun e-chat--board-session-p (session)
-  "Return non-nil when SESSION carries board-native persistent identity."
-  (or (plist-get (plist-get session :board-session-state) :board-id)
-      (plist-get session :board-id)))
-
-(defun e-chat--board-session-id-p (harness session-id)
-  "Return non-nil when HARNESS SESSION-ID names a board-native session."
-  (e-chat-service-board-session-p harness session-id))
-
-(defun e-chat--candidate-for-label (candidates labels label)
-  "Return session candidate from CANDIDATES matching LABELS LABEL."
-  (when-let ((index (cl-position label labels :test #'equal)))
-    (nth index candidates)))
-
-(defun e-chat--resume-candidate-preview-state (candidates labels)
-  "Return Consult preview state for resume CANDIDATES and LABELS."
-  (let (origin-window origin-buffer preview-buffer)
-    (cl-labels
-        ((ensure-origin ()
-           (unless (window-live-p origin-window)
-             (setq origin-window (e-chat--resume-preview-origin-window))
-             (setq origin-buffer (window-buffer origin-window))))
-         (restore-origin (&optional kill-preview)
-           (when (and (window-live-p origin-window)
-                      (buffer-live-p origin-buffer))
-             (with-selected-window origin-window
-               (switch-to-buffer origin-buffer 'norecord)))
-           (when (and kill-preview
-                      (buffer-live-p preview-buffer))
-             (kill-buffer preview-buffer)
-             (setq preview-buffer nil))))
-      (lambda (action candidate-label)
-        (pcase action
-          ('setup
-           (ensure-origin))
-          ('preview
-           (ensure-origin)
-           (if-let ((candidate (e-chat--candidate-for-label
-                                candidates labels candidate-label)))
-               (when (window-live-p origin-window)
-                 (setq preview-buffer
-                       (e-chat--render-resume-preview
-                        (plist-get candidate :harness)
-                        (plist-get candidate :session)))
-                 (with-selected-window origin-window
-                   (switch-to-buffer preview-buffer 'norecord)))
-             (restore-origin)))
-          ((or 'exit 'return)
-           (restore-origin t)))))))
-
-(defun e-chat--read-session-candidate (candidates &optional prompt)
-  "Read and return one session candidate from CANDIDATES."
-  (let* ((show-instance (> (length (e-chat--chat-instances)) 1))
-         (labels (mapcar (lambda (candidate)
-                           (e-chat--session-candidate-label
-                            candidate show-instance))
-                         candidates))
-         (selected
-          (if (e-chat--consult-read-available-p)
-              (funcall (symbol-function 'consult--read)
-                       labels
-                       :prompt (or prompt "Resume e session: ")
-                       :require-match t
-                       :sort nil
-                       :category 'e-chat-session
-                       :state (e-chat--resume-candidate-preview-state
-                               candidates labels))
-            (completing-read
-             (or prompt "Resume e session: ")
-             labels
-             nil
-             t))))
-    (or (e-chat--candidate-for-label candidates labels selected)
-        (user-error "No e chat session selected"))))
-
 (defun e-chat--latest-session-id (harness)
   "Return the latest session id in HARNESS, creating one when none exists."
-  (or (plist-get (seq-find #'e-chat--board-session-p
+  (or (plist-get (seq-find #'e-chat-overview-board-session-p
                            (e-chat-service-root-session-list harness)) :id)
       (plist-get (e-chat--create-session harness) :id)))
 
@@ -9523,14 +2004,14 @@ timestamp."
          (default-harness (if default-instance
                               (e-chat--harness-for-instance default-instance)
                             (e-chat--default-harness)))
-         (candidates (e-chat--session-candidates))
+         (candidates (e-chat-overview-session-candidates))
          (new-target (list :harness default-harness
                            :instance-id (and default-instance
                                              (e-harness-instance-id
                                               default-instance))))
          (labels (cons e-chat--new-context-session-label
                        (mapcar (lambda (candidate)
-                                 (e-chat--session-candidate-label
+                                 (e-chat-overview-session-candidate-label
                                   candidate
                                   (> (length (e-chat--chat-instances)) 1)))
                                candidates)))
@@ -9547,10 +2028,10 @@ timestamp."
                         (plist-get new-target :instance-id))))
           (append new-target
                   (list :session-id (plist-get session :id))))
-      (let ((candidate (e-chat--candidate-for-label
-                        candidates
-                        (cdr labels)
-                        selected)))
+      (let ((candidate
+             (when-let ((index (cl-position selected (cdr labels)
+                                      :test #'equal)))
+               (nth index candidates))))
         (unless candidate
           (user-error "No e chat session selected"))
         candidate))))
@@ -9611,7 +2092,7 @@ timestamp."
         (list :harness e-chat-harness
               :instance-id e-chat-harness-instance-id
               :session-id e-chat-session-id))
-    (let* ((candidates (e-chat--session-candidates))
+    (let* ((candidates (e-chat-overview-session-candidates))
            (candidate (car candidates)))
       (if candidate
           candidate
@@ -9632,7 +2113,7 @@ timestamp."
     display-buffer-pop-up-window)
   "Display action used when source-buffer context insertion reveals a chat.")
 
-(defun e-chat--add-context-reference-to-session
+(defun e-chat-add-context-reference-to-session
     (reference harness session-id &optional display instance-id source-workspace)
   "Insert REFERENCE into HARNESS SESSION-ID composer.
 When DISPLAY is non-nil, show the target chat buffer.  SOURCE-WORKSPACE, when
@@ -9641,11 +2122,11 @@ operation."
   (let ((buffer (e-chat--session-buffer-for-context
                  harness session-id instance-id)))
     (with-current-buffer buffer
-      (e-chat--enter-composer-input-state)
-      (e-chat--insert-context-reference reference)
-      (e-chat--show-composer))
+      (e-chat-composer-enter-input-state)
+      (e-chat-composer-insert-context-reference reference)
+      (e-chat-surface-show-composer))
     (when display
-      (e-chat--pop-to-buffer
+      (e-chat-surface-pop-to-buffer
        buffer
        (or source-workspace (e-workspace-current))
        e-chat--context-display-action))
@@ -9655,831 +2136,31 @@ operation."
 (defun e-chat-resume ()
   "Resume a recent persisted e chat session."
   (interactive)
-  (let ((candidates (e-chat--session-candidates)))
+  (let ((candidates (e-chat-overview-session-candidates)))
     (unless candidates
       (user-error "No e chat sessions to resume"))
-    (let* ((candidate (e-chat--read-session-candidate candidates))
+    (let* ((candidate (e-chat-overview-read-session-candidate candidates))
            (buffer (e-chat-open
                     :harness (plist-get candidate :harness)
                     :session-id (plist-get candidate :session-id)
                     :instance-id (plist-get candidate :instance-id))))
       (when (called-interactively-p 'interactive)
-        (e-chat--pop-to-buffer buffer))
+        (e-chat-surface-pop-to-buffer buffer))
       buffer)))
 
 ;;;###autoload
 (defun e-chat-switch-session ()
   "Switch to a recent persisted e chat session."
   (interactive)
-  (e-chat--pop-to-buffer (e-chat-resume)))
+  (e-chat-surface-pop-to-buffer (e-chat-resume)))
 
-(defun e-chat-overview--read-marker-key (&optional instance-id)
-  "Return the process-local read marker key for INSTANCE-ID."
-  (cond
-   ((null instance-id) "__default__")
-   ((stringp instance-id) instance-id)
-   ((keywordp instance-id) (substring (symbol-name instance-id) 1))
-   ((symbolp instance-id) (symbol-name instance-id))
-   (t (prin1-to-string instance-id))))
-
-(defun e-chat-overview--read-marker-table (harness)
-  "Return process-local read-marker table for HARNESS."
-  (or (gethash harness e-chat--read-markers)
-      (let ((table (make-hash-table :test #'equal)))
-        (puthash harness table e-chat--read-markers)
-        table)))
-
-(defun e-chat-overview--session-read-marker
-    (harness session &optional instance-id)
-  "Return SESSION's process-local read marker for INSTANCE-ID."
-  (gethash
-   (cons (plist-get session :id)
-         (e-chat-overview--read-marker-key instance-id))
-   (e-chat-overview--read-marker-table harness)))
-
-(defun e-chat-overview--set-session-read-marker
-    (harness session-id marker &optional instance-id)
-  "Store SESSION-ID read MARKER in process-local presentation state."
-  (puthash
-   (cons session-id (e-chat-overview--read-marker-key instance-id))
-   marker
-   (e-chat-overview--read-marker-table harness)))
-
-(defun e-chat-overview--read-marker
-    (session-id &optional harness instance-id)
-  "Return the stored read marker for SESSION-ID in HARNESS."
-  (when-let* ((target-harness (or harness
-                                  e-chat-overview--harness
-                                  (e-chat--default-harness)))
-              (session (e-chat-overview--session-for-id
-                        target-harness
-                        session-id)))
-    (e-chat-overview--session-read-marker
-     target-harness session instance-id)))
-
-(defun e-chat-overview--set-read-marker
-    (session-id marker &optional harness instance-id)
-  "Set SESSION-ID read marker to MARKER in HARNESS."
-  (when-let ((target-harness (or harness
-                                 e-chat-overview--harness
-                                 (e-chat--default-harness))))
-    (e-chat-overview--set-session-read-marker
-     target-harness
-     session-id
-     marker
-     instance-id)))
-
-(defun e-chat-overview--latest-assistant-marker (harness session)
-  "Return SESSION's latest assistant message marker from HARNESS, if loaded."
-  (or (plist-get session :latest-assistant-marker)
-      (when (plist-get session :loaded)
-        (let ((session-id (plist-get session :id))
-              marker)
-          (dolist (message (reverse (e-chat-service-messages harness session-id)))
-            (when (and (not marker)
-                       (eq (plist-get message :role) 'assistant))
-              (setq marker (or (plist-get message :id)
-                               (plist-get message :created-at)))))
-          marker))))
-
-(defun e-chat-overview--session-unread-p (harness session &optional instance-id)
-  "Return non-nil when SESSION has unread assistant output in HARNESS."
-  (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
-    (not (equal marker
-                (e-chat-overview--session-read-marker
-                 harness session instance-id)))))
-
-(defun e-chat--workspace-name (workspace)
-  "Return display name for WORKSPACE token or string."
-  (cond
-   ((e-workspace-token-p workspace)
-    (format "%s" (or (e-workspace-token-name workspace)
-                     (e-workspace-token-id workspace))))
-   ((stringp workspace) workspace)
-   ((null workspace)
-    (e-chat--workspace-name (e-workspace-current)))
-   (t (format "%s" workspace))))
-
-(defun e-chat--workspace-match-p (buffer-workspace workspace)
-  "Return non-nil when BUFFER-WORKSPACE matches WORKSPACE."
-  (cond
-   ((e-workspace-token-p workspace)
-    (e-workspace-equal-p buffer-workspace workspace))
-   ((e-workspace-token-p buffer-workspace)
-    (equal (e-chat--workspace-name buffer-workspace)
-           (e-chat--workspace-name workspace)))
-   (t nil)))
-
-(defun e-chat--buffer-unread-p (buffer)
-  "Return non-nil when chat BUFFER has unread assistant output."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (and (derived-mode-p 'e-chat-mode)
-           (not e-chat--preview-buffer)
-           e-chat-harness
-           e-chat-session-id
-           (when-let ((session (ignore-errors
-                                 (e-chat-overview--session-for-id
-                                  e-chat-harness
-                                  e-chat-session-id))))
-             (e-chat-overview--session-unread-p
-              e-chat-harness
-              session
-              e-chat-harness-instance-id))))))
-
-(defun e-chat--workspace-unread-cache-adjust (workspace delta)
-  "Adjust cached unread count for WORKSPACE by DELTA."
-  (let* ((current (gethash workspace e-chat--workspace-unread-counts 0))
-         (next (+ current delta)))
-    (if (> next 0)
-        (puthash workspace next e-chat--workspace-unread-counts)
-      (remhash workspace e-chat--workspace-unread-counts))))
-
-(defun e-chat--workspace-unread-cache-remove-buffer (&optional buffer)
-  "Remove BUFFER's previous unread contribution from the workspace cache."
-  (let* ((buffer (or buffer (current-buffer)))
-         (previous (gethash buffer e-chat--workspace-unread-buffer-state)))
-    (when (and previous (cdr previous))
-      (e-chat--workspace-unread-cache-adjust (car previous) -1))
-    (remhash buffer e-chat--workspace-unread-buffer-state)))
-
-(defun e-chat--workspace-unread-cache-update-buffer (&optional buffer)
-  "Refresh BUFFER's unread contribution when the workspace cache is valid."
-  (when e-chat--workspace-unread-cache-valid-p
-    (let* ((buffer (or buffer (current-buffer)))
-           (workspace (and (buffer-live-p buffer)
-                           (e-buffer-workspace buffer)))
-           (workspace-name (and workspace
-                                (e-chat--workspace-name workspace)))
-           (unread (and workspace-name
-                        (e-chat--buffer-unread-p buffer))))
-      (e-chat--workspace-unread-cache-remove-buffer buffer)
-      (when workspace-name
-        (puthash buffer
-                 (cons workspace-name unread)
-                 e-chat--workspace-unread-buffer-state)
-        (when unread
-          (e-chat--workspace-unread-cache-adjust workspace-name 1))))))
-
-(defun e-chat--workspace-unread-cache-rebuild ()
-  "Rebuild cached unread chat-buffer counts by workspace."
-  (clrhash e-chat--workspace-unread-counts)
-  (clrhash e-chat--workspace-unread-buffer-state)
-  (setq e-chat--workspace-unread-cache-valid-p t)
-  (dolist (buffer (buffer-list))
-    (e-chat--workspace-unread-cache-update-buffer buffer)))
-
-;;;###autoload
-(defun e-chat-workspace-unread-p (&optional workspace)
-  "Return non-nil when WORKSPACE owns any unread e chat buffer.
-WORKSPACE may be an `e-workspace-token', a workspace name string, or nil for
-the current workspace."
-  (unless e-chat--workspace-unread-cache-valid-p
-    (e-chat--workspace-unread-cache-rebuild))
-  (> (gethash (e-chat--workspace-name workspace)
-              e-chat--workspace-unread-counts
-              0)
-     0))
-
-;;;###autoload
-(defun e-chat-workspace-unread-indicator (&optional workspace)
-  "Return a propertized unread marker for WORKSPACE, or nil."
-  (when (e-chat-workspace-unread-p workspace)
-    (propertize "●" 'font-lock-face 'e-chat-workspace-unread-face)))
-
-(defun e-chat-overview--session-id-at-point ()
-  "Return overview session id at point, or nil."
-  (or (get-text-property (point) 'e-chat-session-id)
-      (get-text-property (line-beginning-position) 'e-chat-session-id)))
-
-(defun e-chat-overview--instance-id-at-point ()
-  "Return overview harness instance id at point, or nil."
-  (or (get-text-property (point) 'e-chat-harness-instance-id)
-      (get-text-property (line-beginning-position)
-                         'e-chat-harness-instance-id)))
-
-(defun e-chat-overview--compact-row-text (text max-chars)
-  "Return TEXT as a single overview row fragment capped at MAX-CHARS."
-  (when (stringp text)
-    (let ((lines (split-string (replace-regexp-in-string "\r" "" text) "\n"))
-          compact)
-      (while (and lines (not compact))
-        (let* ((line (pop lines))
-               (line (replace-regexp-in-string
-                      "</?reference\\b[^>]*>" "" line))
-               (line (string-trim line)))
-          (unless (or (string-empty-p line)
-                      (string-match-p "</?reference\\b" line)
-                      (string= line "References:")
-                      (string-match-p "\\`\\[[^]]+\\]" line))
-            (setq compact (replace-regexp-in-string "[ \t]+" " " line)))))
-      (when compact
-        (if (> (length compact) max-chars)
-            (concat (substring compact 0 max-chars) "...")
-          compact)))))
-
-(defun e-chat-overview--compact-timestamp (timestamp)
-  "Return TIMESTAMP in compact sidebar form."
-  (if (and (stringp timestamp)
-           (string-match
-            "\\`[0-9]\\{4\\}-\\([0-9][0-9]\\)-\\([0-9][0-9]\\)T\\([0-9][0-9]\\):\\([0-9][0-9]\\)"
-            timestamp))
-      (format "%s-%s %s:%s"
-              (match-string 1 timestamp)
-              (match-string 2 timestamp)
-              (match-string 3 timestamp)
-              (match-string 4 timestamp))
-    timestamp))
-
-(defun e-chat-overview--insert-faced (text face)
-  "Insert TEXT with FONT-LOCK FACE."
-  (let ((start (point)))
-    (insert text)
-    (add-text-properties start (point) `(font-lock-face ,face))))
-
-(defun e-chat-overview--summary-duplicates-title-p (summary title)
-  "Return non-nil when SUMMARY is already represented by TITLE."
-  (and (stringp summary)
-       (stringp title)
-       (let ((prefix (if (string-suffix-p "..." title)
-                         (string-remove-suffix "..." title)
-                       title)))
-         (or (string= summary title)
-             (and (not (string-empty-p prefix))
-                  (string-prefix-p prefix summary))))))
-
-(defun e-chat-overview--insert-session-row
-    (harness session &optional instance show-instance)
-  "Insert one overview row for SESSION from HARNESS.
-INSTANCE is the owning chat harness instance when available.  SHOW-INSTANCE
-adds its display name to the row."
-  (let* ((session-id (plist-get session :id))
-         (instance-id (and instance
-                           (e-harness-instance-id instance)))
-         (summary (e-chat-overview--compact-row-text
-                   (plist-get session :summary)
-                   72))
-         (title (or (e-chat-overview--compact-row-text
-                     (plist-get session :title)
-                     48)
-                    summary
-                    session-id))
-         (message-count (or (plist-get session :message-count) 0))
-         (last-message-at (or (plist-get session :last-message-at)
-                              (plist-get session :created-at)))
-         (metadata (string-join
-                    (delq nil
-                          (list (format "[%s]"
-                                        (e-chat--short-session-id session-id))
-                                (when (> message-count 0)
-                                  (format "%d %s"
-                                          message-count
-                                          (if (= message-count 1)
-                                              "msg"
-                                            "msgs")))
-                                (e-chat-overview--compact-timestamp
-                                 last-message-at)))
-                    "  "))
-         (unread (e-chat-overview--session-unread-p
-                  harness session instance-id))
-         (start (point)))
-    (e-chat-overview--insert-faced (if unread "! " "  ")
-                                   (if unread
-                                       'e-chat-overview-unread-face
-                                     'e-chat-overview-meta-face))
-    (when (and show-instance instance)
-      (e-chat-overview--insert-faced
-       (format "%s  " (e-harness-instance-name instance))
-       'e-chat-overview-meta-face))
-    (e-chat-overview--insert-faced title 'e-chat-overview-title-face)
-    (insert "\n  ")
-    (e-chat-overview--insert-faced metadata 'e-chat-overview-meta-face)
-    (when (and summary
-               (not (e-chat-overview--summary-duplicates-title-p
-                     summary title)))
-      (insert "\n  ")
-      (e-chat-overview--insert-faced summary 'e-chat-overview-summary-face))
-    (insert "\n\n")
-    (add-text-properties start (point)
-                         `(e-chat-session-id ,session-id
-                           e-chat-harness-instance-id ,instance-id
-                           help-echo "RET opens this e chat session"))))
-
-(defun e-chat--active-session-title (session)
-  "Return display title for active SESSION."
-  (or (e-chat-overview--compact-row-text (plist-get session :title) 52)
-      (e-chat-overview--compact-row-text (plist-get session :summary) 52)
-      (plist-get session :id)))
-
-(defun e-chat--active-session-candidate-key (candidate)
-  "Return filter key for active session CANDIDATE."
-  (let* ((session (plist-get candidate :session))
-         (instance (plist-get candidate :instance)))
-    (string-join
-     (delq nil
-           (list (plist-get session :title)
-                 (plist-get session :summary)
-                 (plist-get session :id)
-                 (and instance
-                      (e-harness-instance-name instance))))
-     " ")))
-
-(defun e-chat--active-session-user-prompt-p (message)
-  "Return non-nil when MESSAGE is a user prompt."
-  (and (eq (plist-get message :role) 'user)
-       (when-let ((content (plist-get message :content)))
-         (and (stringp content)
-              (not (string-empty-p (string-trim content)))))))
-
-(defun e-chat--active-session-preview-message-p (message)
-  "Return non-nil when MESSAGE belongs in the active-session preview."
-  (and (memq (plist-get message :role) '(user assistant))
-       (when-let ((content (plist-get message :content)))
-         (and (stringp content)
-              (not (string-empty-p (string-trim content)))))))
-
-(defun e-chat--active-session-has-prompt-p (candidate)
-  "Return non-nil when CANDIDATE has at least one user prompt."
-  (let* ((session (plist-get candidate :session))
-         (message-count (plist-get session :message-count)))
-    (or (cl-some #'e-chat--active-session-user-prompt-p
-                 (plist-get session :messages))
-        (and (integerp message-count)
-             (> message-count 0)
-             (when-let ((summary (plist-get session :summary)))
-               (and (stringp summary)
-                    (not (string-empty-p (string-trim summary)))))))))
-
-(defun e-chat--active-session-active-p (harness session-id)
-  "Return non-nil when SESSION-ID has an active turn in HARNESS."
-  (and harness
-       session-id
-       (ignore-errors (e-chat-service-active-turn-p harness session-id))))
-
-(defun e-chat--active-session-state (candidate)
-  "Return read state for active-session CANDIDATE."
-  (let* ((harness (plist-get candidate :harness))
-         (session (plist-get candidate :session))
-         (session-id (plist-get candidate :session-id))
-         (instance-id (plist-get candidate :instance-id)))
-    (cond
-     ((e-chat--active-session-active-p harness session-id) 'active)
-     ((ignore-errors
-        (e-chat-overview--session-unread-p harness session instance-id))
-      'unread)
-     (t 'read))))
-
-(defun e-chat--active-session-indicator (state)
-  "Return the left indicator for active-session STATE."
-  (pcase state
-    ('active
-     (propertize "◆ "
-                 'font-lock-face
-                 'e-chat-overview-unread-face))
-    ('unread
-     (propertize "● "
-                 'font-lock-face
-                 'e-chat-overview-unread-face))
-    (_ "  ")))
-
-(defun e-chat--active-session-status-key (candidate)
-  "Return semantic context-status cache key for active-session CANDIDATE."
-  (let* ((harness (plist-get candidate :harness))
-         (session (plist-get candidate :session))
-         (session-id (plist-get candidate :session-id))
-         (state (ignore-errors
-                  (and harness
-                       session-id
-                       (e-chat-service-state harness session-id))))
-         (options (ignore-errors
-                    (and harness
-                         session-id
-                         (e-harness-display-options harness session-id))))
-         (usage-event (ignore-errors
-                        (and harness
-                             session-id
-                             (e-session-latest-token-usage-event
-                              (e-chat-service-session-store harness)
-                              session-id)))))
-    (list :session-id session-id
-          :message-count (or (plist-get state :message-count)
-                             (plist-get session :message-count))
-          :active-turn (plist-get state :active-turn)
-          :latest-token-usage-id (plist-get usage-event :id)
-          :model (plist-get options :model)
-          :reasoning-effort (plist-get options :reasoning-effort)
-          :layers (ignore-errors
-                    (and harness
-                         session-id
-                         (e-harness-effective-layer-ids harness session-id))))))
-
-(defun e-chat--active-session-status-cache-cell (cache key)
-  "Return status snapshot cache cell from CACHE for KEY."
-  (when (and cache key)
-    (or (gethash key cache)
-        (puthash key (cons nil nil) cache))))
-
-(defun e-chat--active-session-line (candidate &optional status-cache)
-  "Return picker row text for active session CANDIDATE."
-  (let* ((harness (plist-get candidate :harness))
-         (session (plist-get candidate :session))
-         (session-id (plist-get candidate :session-id))
-         (instance (plist-get candidate :instance))
-         (state (e-chat--active-session-state candidate))
-         (title (concat (e-chat--active-session-indicator state)
-                        (e-chat--active-session-title session)))
-         (message-count (or (plist-get session :message-count) 0))
-         (timestamp (or (plist-get session :last-message-at)
-                        (plist-get session :created-at)))
-         (status-key (e-chat--active-session-status-key candidate))
-         (status-cache-cell
-          (e-chat--active-session-status-cache-cell status-cache status-key))
-         (status (ignore-errors
-                   (e-context-status-text
-                    harness
-                    session-id
-                    :prefix "ctx"
-                    :prefer-token-usage t
-                    :estimate-context nil
-                    :snapshot-cache status-cache-cell
-                    :snapshot-cache-key
-                    (list :status-key status-key
-                          :prefer-token-usage t
-                          :estimate-context nil)
-                    :allow-stale-snapshot t)))
-         (meta (string-join
-                (delq nil
-                      (list (and instance
-                                 (e-harness-instance-name instance))
-                            (when (> message-count 0)
-                              (format "%d %s"
-                                      message-count
-                                      (if (= message-count 1)
-                                          "msg"
-                                        "msgs")))
-                            (e-chat-overview--compact-timestamp timestamp)
-                            status))
-                "  ")))
-    (e-picker-make-line title meta 96)))
-
-(defun e-chat--active-session-preview-messages (harness session)
-  "Return messages to render for active-session preview of SESSION."
-  (or (plist-get session :messages)
-      (let* ((store (e-chat-service-session-store harness))
-             (stored-session
-              (ignore-errors
-                (e-session--peek-session store (plist-get session :id)))))
-        (unless (and (e-session--persistent-p store)
-                     (not (plist-get stored-session :loaded)))
-          (copy-sequence (plist-get stored-session :messages))))))
-
-(defun e-chat--active-session-sanitize-preview-properties ()
-  "Strip chat buffer structural properties from the active-session preview.
-The picker owns row layout and selection state, so it must not inherit
-`e-chat-mode' field, read-only, sticky, or block-navigation properties.  Keep
-face properties so the preview still reflects chat rendering."
-  (let ((position (point-min))
-        next face font-lock-face)
-    (while (< position (point-max))
-      (setq next (next-property-change position nil (point-max)))
-      (setq face (get-text-property position 'face))
-      (setq font-lock-face (get-text-property position 'font-lock-face))
-      (set-text-properties position next nil)
-      (when face
-        (put-text-property position next 'face face))
-      (when font-lock-face
-        (put-text-property position next 'font-lock-face font-lock-face))
-      (setq position next))))
-
-(defun e-chat--active-session-preview (candidate buffer)
-  "Render active session CANDIDATE into preview BUFFER."
-  (let* ((harness (plist-get candidate :harness))
-         (session (plist-get candidate :session))
-         (session-id (plist-get candidate :session-id))
-         (messages (cl-remove-if-not
-                    #'e-chat--active-session-preview-message-p
-                    (e-chat--active-session-preview-messages
-                     harness session)))
-         (summary-preview (e-chat--session-summary-preview session)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (e-chat-mode)
-        (e-chat--disable-modal-editing)
-        (e-chat--disable-completion)
-        (setq-local e-chat-harness harness)
-        (setq-local e-chat-session-id session-id)
-        (setq-local e-chat--preview-buffer t)
-        (setq-local cursor-type nil)
-        (e-chat--clear t)
-        (erase-buffer)
-        (cond
-         (messages
-          (e-chat--render-session
-           (e-chat--tail-messages
-            messages
-            e-chat-resume-preview-message-limit)
-           nil))
-         (summary-preview
-          (e-chat--insert-entry "You" summary-preview nil))
-         (t
-          (e-chat--insert-protected "No prompts yet")))
-        (e-chat--active-session-sanitize-preview-properties)
-        (ignore-errors
-          (e-chat-overview--mark-session-read
-           harness
-           session
-           (plist-get candidate :instance-id)))
-        (goto-char (point-min))))))
-
-(defun e-chat--active-session-open (candidate)
-  "Open selected active session CANDIDATE."
-  (e-chat-open-session
-   (plist-get candidate :harness)
-   (plist-get candidate :session-id)
-   t
-   (plist-get candidate :instance-id)))
-
-(defun e-chat-active-sessions ()
-  "Open a floating picker of active or recent chat sessions."
-  (interactive)
-  (let ((candidates (cl-remove-if-not
-                     #'e-chat--active-session-has-prompt-p
-                     (e-chat--session-candidates)))
-        (status-cache (make-hash-table :test #'equal)))
-    (unless candidates
-      (user-error "No e chat sessions to show"))
-    (e-picker-open
-     :name 'active-sessions
-     :title "Active sessions"
-     :candidates (lambda () candidates)
-     :candidate-key #'e-chat--active-session-candidate-key
-     :candidate-line
-     (lambda (candidate)
-       (e-chat--active-session-line candidate status-cache))
-     :preview #'e-chat--active-session-preview
-     :refresh-candidate-after-preview t
-     :initial-candidate-limit 15
-     :candidate-limit-step 15
-     :on-select #'e-chat--active-session-open
-     :footer "RET open  C-g cancel"
-     :width 0.72
-     :height 0.68)))
-
-(defun e-chat-overview--render (&optional harness)
-  "Render HARNESS sessions into the current overview buffer."
-  (let* ((instances (and (not harness)
-                         (e-chat--chat-instances)))
-         (show-instance (> (length instances) 1))
-         (sessions (if instances
-                       (e-chat--session-candidates)
-                     (let ((target (or harness
-                                       e-chat-overview--harness
-                                       (e-chat--default-harness))))
-                       (setq harness target)
-                       (seq-filter #'e-chat--board-session-p
-                                   (e-chat-service-root-session-list target)))))
-         (inhibit-read-only t))
-    (setq-local e-chat-overview--harness harness)
-    (erase-buffer)
-    (if sessions
-        (if instances
-            (dolist (candidate sessions)
-              (e-chat-overview--insert-session-row
-               (plist-get candidate :harness)
-               (plist-get candidate :session)
-               (plist-get candidate :instance)
-               show-instance))
-          (dolist (session sessions)
-            (e-chat-overview--insert-session-row harness session)))
-      (insert "No e chat sessions\n"))
-    (goto-char (point-min))))
-
-(defun e-chat-overview--mark-session-read
-    (harness session-or-id &optional instance-id)
-  "Record SESSION-OR-ID's latest assistant message as read in HARNESS."
-  (let* ((session (if (stringp session-or-id)
-                      (e-chat-overview--session-for-id harness session-or-id)
-                    session-or-id))
-         (session-id (plist-get session :id)))
-    (when-let ((marker (and session
-                            (e-chat-overview--latest-assistant-marker
-                             harness session))))
-      (unless (equal marker
-                      (e-chat-overview--session-read-marker
-                       harness session instance-id))
-        (e-chat-overview--set-session-read-marker
-         harness
-         session-id
-         marker
-         instance-id)
-        (e-chat--workspace-unread-cache-invalidate)))))
-
-(defun e-chat-overview--session-for-id (harness session-id)
-  "Return HARNESS session metadata for SESSION-ID."
-  (condition-case nil
-      (e-chat-service-session harness session-id)
-    (e-session-missing nil)))
-
-(defun e-chat-overview--harness-for-instance-id (instance-id)
-  "Return live harness for INSTANCE-ID, or the overview/default harness."
-  (if instance-id
-      (e-chat--harness-for-instance
-       (or (e-harness-instance-get instance-id)
-           (signal 'e-harness-instance-missing (list instance-id))))
-    (or e-chat-overview--harness
-        (e-chat--default-harness))))
-
-(defun e-chat-overview--row-target-at-point ()
-  "Return overview row target at point."
-  (let* ((session-id (or (e-chat-overview--session-id-at-point)
-                         (user-error "No e chat session at point")))
-         (instance-id (e-chat-overview--instance-id-at-point))
-         (harness (e-chat-overview--harness-for-instance-id instance-id))
-         (session (or (e-chat-overview--session-for-id harness session-id)
-                      (user-error "No e chat session at point"))))
-    (list :harness harness
-          :session session
-          :session-id session-id
-          :instance-id instance-id)))
-
-(defun e-chat-overview--session-row-starts ()
-  "Return overview session row starts as (POSITION . ROW-KEY) pairs."
-  (let ((pos (point-min))
-        (limit (point-max))
-        last-key
-        rows)
-    (while (< pos limit)
-      (let* ((session-id (get-text-property pos 'e-chat-session-id))
-             (instance-id (get-text-property
-                           pos 'e-chat-harness-instance-id))
-             (key (and session-id (cons instance-id session-id))))
-        (when (and key (not (equal key last-key)))
-          (push (cons pos key) rows))
-        (setq last-key key)
-        (setq pos (or (next-single-property-change
-                       pos 'e-chat-session-id nil limit)
-                      limit))))
-    (nreverse rows)))
-
-(defun e-chat-overview--current-session-row-index (rows)
-  "Return current session row index in ROWS."
-  (let ((key (cons (e-chat-overview--instance-id-at-point)
-                   (e-chat-overview--session-id-at-point))))
-    (or (cl-position key rows
-                     :key #'cdr
-                     :test #'equal)
-        (user-error "No e chat session at point"))))
-
-(defun e-chat-overview--preview-session-at-point (&optional display)
-  "Preview the overview session at point.
-When DISPLAY is non-nil, display the preview buffer."
-  (let* ((target (e-chat-overview--row-target-at-point))
-         (buffer (e-chat--render-resume-preview
-                  (plist-get target :harness)
-                  (plist-get target :session))))
-    (when display
-      (display-buffer buffer))
-    buffer))
-
-(defun e-chat-overview--goto-session-row (index)
-  "Move point to overview session row INDEX and preview it."
-  (let* ((rows (e-chat-overview--session-row-starts))
-         (row (nth index rows)))
-    (unless row
-      (user-error "No e chat session at target"))
-    (goto-char (car row))
-    (e-chat-overview--preview-session-at-point t)))
-
-(defun e-chat-overview-next-session ()
-  "Move to the next overview session row and preview it."
-  (interactive)
-  (let* ((rows (e-chat-overview--session-row-starts))
-         (index (e-chat-overview--current-session-row-index rows)))
-    (when (>= (1+ index) (length rows))
-      (user-error "No next e chat session"))
-    (e-chat-overview--goto-session-row (1+ index))))
-
-(defun e-chat-overview-previous-session ()
-  "Move to the previous overview session row and preview it."
-  (interactive)
-  (let* ((rows (e-chat-overview--session-row-starts))
-         (index (e-chat-overview--current-session-row-index rows)))
-    (when (<= index 0)
-      (user-error "No previous e chat session"))
-    (e-chat-overview--goto-session-row (1- index))))
-
-(defun e-chat-overview-open-session ()
-  "Open the overview session at point and mark assistant output read."
-  (interactive)
-  (let* ((target (e-chat-overview--row-target-at-point))
-         (harness (plist-get target :harness))
-         (session-id (plist-get target :session-id))
-         (instance-id (plist-get target :instance-id))
-         (buffer (e-chat-open :harness harness
-                              :session-id session-id
-                              :instance-id instance-id)))
-    (e-chat-overview--mark-session-read
-     harness
-     (plist-get target :session)
-     instance-id)
-    (when (derived-mode-p 'e-chat-overview-mode)
-      (e-chat-overview--render e-chat-overview--harness))
-    (when (called-interactively-p 'interactive)
-      (e-chat--pop-to-buffer buffer))
-    buffer))
-
-(defun e-chat-overview-preview-session ()
-  "Preview the overview session at point."
-  (interactive)
-  (e-chat-overview--preview-session-at-point
-   (called-interactively-p 'interactive)))
-
-(defun e-chat-overview-refresh ()
-  "Refresh the current overview buffer."
-  (interactive)
-  (e-chat-overview--render))
-
-(defun e-chat-overview--unsubscribe ()
-  "Clear obsolete overview live-feed state.
-The overview is explicitly manual-refresh-only after the board cutover; it does
-not open an unbounded process-wide presentation subscription."
-  (setq e-chat-overview--subscription nil)
-  (setq e-chat-overview--subscriptions nil))
-
-(defun e-chat-overview--subscribe (buffer harness)
-  "Keep BUFFER manual-refresh-only for HARNESS after the board cutover."
-  (ignore harness)
-  (with-current-buffer buffer
-    (e-chat-overview--unsubscribe)))
-
-(defun e-chat-overview--subscribe-instances (buffer instances)
-  "Keep BUFFER manual-refresh-only for INSTANCES after the board cutover."
-  (ignore instances)
-  (with-current-buffer buffer
-    (e-chat-overview--unsubscribe)))
-
-(defun e-chat-overview--display (buffer)
-  "Display overview BUFFER as the chat session sidebar."
-  (display-buffer-in-side-window
-   buffer
-   '((side . left)
-     (slot . -1)
-     (window-width . 36))))
-
-(defun e-chat-overview--visible-window ()
-  "Return the visible overview sidebar window, or nil."
-  (when-let ((buffer (get-buffer e-chat-overview-buffer-name))
-             (window (get-buffer-window buffer t)))
-    (and (window-live-p window) window)))
-
-;;;###autoload
-(defun e-chat-overview ()
-  "Open the e chat session overview sidebar."
-  (interactive)
-  (let* ((instances (e-chat--chat-instances))
-         (harness (and (not instances)
-                       (e-chat--default-harness)))
-         (buffer (get-buffer-create e-chat-overview-buffer-name)))
-    (with-current-buffer buffer
-      (e-chat-overview-mode)
-      (setq-local e-chat-overview--harness harness)
-      (e-chat-overview--render harness)
-      (if instances
-          (e-chat-overview--subscribe-instances buffer instances)
-        (e-chat-overview--subscribe buffer harness)))
-    (when (called-interactively-p 'interactive)
-      (e-chat-overview--display buffer))
-    buffer))
-
-;;;###autoload
-(defun e-chat-overview-close ()
-  "Close the e chat session overview sidebar."
-  (interactive)
-  (let ((buffer (get-buffer e-chat-overview-buffer-name)))
-    (when (buffer-live-p buffer)
-      (when-let ((window (get-buffer-window buffer t)))
-        (delete-window window))
-      (kill-buffer buffer))))
-
-;;;###autoload
-(defun e-chat-sidebar-toggle ()
-  "Open or close the e chat session overview sidebar."
-  (interactive)
-  (if (e-chat-overview--visible-window)
-      (e-chat-overview-close)
-    (let ((window (e-chat-overview--display (e-chat-overview))))
-      (when (window-live-p window)
-        (select-window window)))))
-
-;;;###autoload
 (defun e-chat-add-context-to-latest ()
   "Add current point or region to a visible, or latest, e chat session."
   (interactive)
   (let* ((source-workspace (e-workspace-current))
-         (reference (e-chat--capture-context-reference-for-command))
+         (reference (e-chat-composer-capture-context-reference-for-command))
          (target (e-chat--default-context-target)))
-    (e-chat--add-context-reference-to-session
+    (e-chat-add-context-reference-to-session
      reference
      (plist-get target :harness)
      (plist-get target :session-id)
@@ -10492,9 +2173,9 @@ not open an unbounded process-wide presentation subscription."
   "Add the current point or active region to a selected e chat session."
   (interactive)
   (let* ((source-workspace (e-workspace-current))
-         (reference (e-chat--capture-context-reference-for-command))
+         (reference (e-chat-composer-capture-context-reference-for-command))
          (target (e-chat--context-session-target)))
-    (e-chat--add-context-reference-to-session
+    (e-chat-add-context-reference-to-session
      reference
      (plist-get target :harness)
      (plist-get target :session-id)
@@ -10519,9 +2200,11 @@ not open an unbounded process-wide presentation subscription."
   (e-chat--rename-buffer-for-session)
   (let ((inhibit-read-only t))
     (e-chat--clear t)
-    (e-chat--render-session-replay
+    (e-chat-transcript-render-replay
+     (e-chat-service-messages e-chat-harness e-chat-session-id))
+    (e-chat-activity-render-replay
      (e-chat-service-messages e-chat-harness e-chat-session-id)))
-  (e-chat--set-status "idle" t)
+  (e-chat-surface-set-status "idle" t)
   (current-buffer))
 
 ;;;###autoload
@@ -10539,7 +2222,7 @@ not open an unbounded process-wide presentation subscription."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat-session-set-model e-chat-harness e-chat-session-id model)
-  (e-chat--set-status "idle" t)
+  (e-chat-surface-set-status "idle" t)
   (message "Set e chat model to %s" (if (string-empty-p model) "default" model)))
 
 ;;;###autoload
@@ -10563,7 +2246,7 @@ not open an unbounded process-wide presentation subscription."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat-session-set-effort e-chat-harness e-chat-session-id effort)
-  (e-chat--set-status "idle" t)
+  (e-chat-surface-set-status "idle" t)
   (message "Set e chat effort to %s"
            (if (string-empty-p effort) "default" effort)))
 
@@ -10586,8 +2269,8 @@ the transcript matches the new mode immediately."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat-output-mode-session-set e-chat-harness e-chat-session-id mode)
-  (e-chat--rerender-assistant-blocks)
-  (e-chat--set-status "idle" t)
+  (e-chat-transcript-rerender-assistant-blocks)
+  (e-chat-surface-set-status "idle" t)
   (message "Set e chat output mode to %s"
            (or mode
                (format "default (%s)"
@@ -10621,14 +2304,14 @@ the transcript matches the new mode immediately."
 When ARG is a string, submit it as a noninteractive prompt.  Interactively,
 plain submit steers an active turn and prefix submit queues a follow-up."
   (interactive "P")
-  (if (e-chat--surface-transcript-p)
-      (with-current-buffer (e-chat--surface-ensure-composer)
+  (if (e-chat-surface-transcript-p)
+      (with-current-buffer (e-chat-composer-ensure)
         (e-chat-submit arg))
     (unless (and e-chat-harness e-chat-session-id)
       (user-error "This buffer is not attached to an e chat session"))
     (let* ((explicit-prompt (and (stringp arg) arg))
          (prefix (and (not explicit-prompt) arg))
-         (submission (unless explicit-prompt (e-chat--composer-submission)))
+         (submission (unless explicit-prompt (e-chat-composer-submission)))
          (references (plist-get submission :references))
          (prompt (or explicit-prompt (plist-get submission :prompt)))
          (intent (if explicit-prompt
@@ -10660,23 +2343,23 @@ plain submit steers an active turn and prefix submit queues a follow-up."
                  e-chat-harness e-chat-session-id prompt
                  :references references
                  :metadata (e-chat--submit-metadata 'queued references))))
-             (e-chat--delete-composer)
-             (e-chat--set-status
+             (e-chat-composer-delete)
+             (e-chat-surface-set-status
               (pcase intent
                 ('steer "steered")
                 ('queue "queued")
                 (_ "queued")))
-             (e-chat--insert-composer))
+             (e-chat-composer-insert))
          (user-error
           (if (memq intent '(steer queue))
               (progn
-                (e-chat--set-status "input rejected")
+                (e-chat-surface-set-status "input rejected")
                 (message "%s" (error-message-string err)))
             (signal (car err) (cdr err))))
          (error
           (if (memq intent '(steer queue))
               (progn
-                (e-chat--set-status "input failed")
+                (e-chat-surface-set-status "input failed")
                 (message "%s" (error-message-string err)))
             (signal (car err) (cdr err))))))))))
 
@@ -10692,9 +2375,9 @@ plain submit steers an active turn and prefix submit queues a follow-up."
 (defun e-chat-reset ()
   "Reset the current chat session and rendered buffer."
   (interactive)
-  (when (e-chat--surface-composer-p)
+  (when (e-chat-surface-composer-p)
     (cl-return-from e-chat-reset
-      (with-current-buffer e-chat--surface-transcript-buffer
+      (with-current-buffer (e-chat-surface-transcript-buffer)
         (e-chat-reset))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
@@ -10702,7 +2385,7 @@ plain submit steers an active turn and prefix submit queues a follow-up."
         (session-id e-chat-session-id)
         (instance-id e-chat-harness-instance-id))
     (e-chat-session-reset harness session-id)
-    (e-chat--attach-buffer (current-buffer) harness session-id instance-id)))
+    (e-chat-attach-buffer (current-buffer) harness session-id instance-id)))
 
 ;;;###autoload
 (defun e-chat-shell ()
@@ -10908,6 +2591,7 @@ plain submit steers an active turn and prefix submit queues a follow-up."
 
 (defun e-chat-startup ()
   "Refresh and register the chat shell provider for package startup."
+  (e-chat--ensure-presentation-hooks)
   (e-chat--configure-modal-editing-policy)
   (e-chat--refresh-keymaps)
   (e-chat-context-mode 1)
@@ -10915,6 +2599,8 @@ plain submit steers an active turn and prefix submit queues a follow-up."
   (e-chat-reload-buffers))
 
 (add-hook 'e-startup-shell-hook #'e-chat-startup)
+
+(e-chat--ensure-presentation-hooks)
 
 (provide 'e-chat)
 

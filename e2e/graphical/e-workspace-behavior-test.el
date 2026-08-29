@@ -257,7 +257,7 @@
          (select-window composer-window)
          (should (eq (key-binding (kbd "C-x 0"))
                      #'e-persp-test-config-close-window-or-workspace))
-         (should (equal (e-chat--selected-chat-surface)
+         (should (equal (e-chat-surface-selected-chat-surface)
                         (cons transcript (car surface))))
          (e-graphical-test-send-keys "C-x 0")
          (should (= (length (window-list nil 'nomini)) 1))
@@ -278,7 +278,14 @@
                             (- e-chat-composer-window-min-height)
                             'below)))
          (set-window-buffer lower target)
-         (select-window lower))
+         (select-window lower)
+         ;; NS may apply the preceding frame resize one redisplay later.  Let
+         ;; the target perspective settle before recording its exact geometry,
+         ;; otherwise a transient 89/90 percent split becomes a false restore
+         ;; failure when this test follows a chat surface test.
+         (redisplay t)
+         (sit-for 0.05)
+         (redisplay t))
        (let ((target-signature
               (e-workspace-behavior-test--window-signature)))
          (e-workspace-behavior-test--switch "e-chat-source")

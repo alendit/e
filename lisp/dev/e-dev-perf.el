@@ -28,9 +28,11 @@
 (require 'e-dev-profile)
 
 (declare-function e-chat-open "e-chat")
-(declare-function e-chat--render-event "e-chat")
-(declare-function e-chat--invalidate-mode-line-context-estimate "e-chat")
-(declare-function e-chat--set-status "e-chat")
+(declare-function e-chat-render-event "e-chat")
+(declare-function e-chat-invalidate-mode-line-context-estimate "e-chat")
+(declare-function e-chat-set-status "e-chat")
+(declare-function e-chat-overview-prepare-unread-cache "e-chat-overview")
+(declare-function e-chat-surface-set-redraw-visible "e-chat-surface")
 (declare-function e-chat-service-binding-board "e-chat-service")
 (declare-function e-chat-service-binding-observer "e-chat-service")
 (declare-function e-chat-service-create-session "e-chat-service")
@@ -963,20 +965,18 @@ artifacts under `e-dev-perf-run-directory'."
   (let ((buffer (plist-get state :buffer))
         (catalog-scans 0)
         (original (symbol-function 'e-harness-session-list)))
+    (e-chat-overview-prepare-unread-cache)
     (with-current-buffer buffer
-      (let ((e-chat--workspace-unread-cache-valid-p t)
-            (e-chat--workspace-unread-counts (make-hash-table :test 'equal))
-            (e-chat--workspace-unread-buffer-state (make-hash-table :test 'eq)))
-        (cl-letf (((symbol-function 'e-harness-session-list)
-                   (lambda (&rest args)
-                     (setq catalog-scans (1+ catalog-scans))
-                     (apply original args))))
-          (dotimes (index 32)
-            (e-chat--render-event
-             (list :type 'tool-started :session-id e-chat-session-id
-                   :turn-id "unread-perf-turn" :created-at (float-time)
-                   :payload (list :id (format "unread-tool-%d" index)
-                                  :name "fake")))))))
+      (cl-letf (((symbol-function 'e-harness-session-list)
+                 (lambda (&rest args)
+                   (setq catalog-scans (1+ catalog-scans))
+                   (apply original args))))
+        (dotimes (index 32)
+          (e-chat-render-event
+           (list :type 'tool-started :session-id e-chat-session-id
+                 :turn-id "unread-perf-turn" :created-at (float-time)
+                 :payload (list :id (format "unread-tool-%d" index)
+                                :name "fake"))))))
     (list :unread.catalog-scan.count catalog-scans
           :unread.event.count 32)))
 
@@ -986,14 +986,14 @@ artifacts under `e-dev-perf-run-directory'."
         (context-builds 0)
         (original (symbol-function 'e-harness-context)))
     (with-current-buffer buffer
-      (setq-local e-chat--assume-redraw-visible t)
+      (e-chat-surface-set-redraw-visible t)
       (cl-letf (((symbol-function 'e-harness-context)
                  (lambda (&rest args)
                    (setq context-builds (1+ context-builds))
                    (apply original args))))
         (dotimes (index 8)
-          (e-chat--invalidate-mode-line-context-estimate)
-          (e-chat--set-status (format "perf-status-%d" index) t)))
+          (e-chat-invalidate-mode-line-context-estimate)
+          (e-chat-set-status (format "perf-status-%d" index) t)))
       (list :status.synchronous-context-build.count context-builds
             :status.pending-refresh.count
             (e-dev-perf--chat-pending-ui-work-count
@@ -1007,16 +1007,16 @@ artifacts under `e-dev-perf-run-directory'."
     (with-current-buffer buffer
       (e-dev-perf--profile-spans
        (lambda ()
-         (e-chat--render-event
+         (e-chat-render-event
           (list :type 'turn-started :session-id session-id :turn-id turn-id
                 :created-at (float-time) :payload nil))
          (dotimes (index 6)
-           (e-chat--render-event
+           (e-chat-render-event
             (list :type 'reasoning-delta :session-id session-id :turn-id turn-id
                   :created-at (float-time)
                   :payload (list :type 'reasoning-delta
                                  :content (format "thought %d" index))))
-           (e-chat--render-event
+           (e-chat-render-event
             (list :type 'tool-started :session-id session-id :turn-id turn-id
                   :created-at (float-time)
                   :payload (list :id (format "tool-%d" index)
@@ -1044,14 +1044,14 @@ artifacts under `e-dev-perf-run-directory'."
         (let ((metrics
                (e-dev-perf--profile-spans
                 (lambda ()
-                  (e-chat--render-event
+                  (e-chat-render-event
                    (list :type 'turn-started
                          :session-id session-id
                          :turn-id turn-id
                          :created-at (float-time)
                          :payload nil))
                   (dotimes (index 12)
-                    (e-chat--render-event
+                    (e-chat-render-event
                      (list :type 'reasoning-delta
                            :session-id session-id
                            :turn-id turn-id
@@ -1059,7 +1059,7 @@ artifacts under `e-dev-perf-run-directory'."
                            :payload (list :type 'reasoning-delta
                                           :content (format "thought %d" index)))))
                   (e-dev-perf--drain-ui-work buffer)
-                  (e-chat--render-event
+                  (e-chat-render-event
                    (list :type 'message-added
                          :session-id session-id
                          :turn-id turn-id
@@ -1069,7 +1069,7 @@ artifacts under `e-dev-perf-run-directory'."
                                               :turn-id turn-id
                                               :content markdown))))
                   (e-dev-perf--drain-ui-work buffer)
-                  (e-chat--render-event
+                  (e-chat-render-event
                    (list :type 'turn-finished
                          :session-id session-id
                          :turn-id turn-id
@@ -1098,7 +1098,7 @@ artifacts under `e-dev-perf-run-directory'."
                            :content "# Heading\n\n- item one\n- item two\n\n```elisp\n(message \"hi\")\n```\n\n[link](https://example.test)")))
         (e-dev-perf--profile-spans
          (lambda ()
-           (e-chat--render-event
+           (e-chat-render-event
             (list :type 'message-added :session-id session-id :turn-id turn-id
                   :created-at (float-time)
                   :payload (list :message message))))

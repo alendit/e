@@ -192,8 +192,7 @@
                 (insert "* Topic\nBody\n")
                 (let* ((source (current-buffer))
                        (chat-buffer (e-org-canvas-open-for-current-buffer))
-                       (composer (buffer-local-value
-                                  'e-chat--surface-composer-buffer chat-buffer)))
+                       (composer (e-chat-surface-composer-buffer chat-buffer)))
                   (should (buffer-live-p chat-buffer))
                   (should (buffer-live-p composer))
                   (should (eq (window-buffer (selected-window)) composer))
@@ -708,8 +707,7 @@
                   (chat-window (get-buffer-window chat-buffer t))
                   (composer-window
                    (get-buffer-window
-                    (buffer-local-value
-                     'e-chat--surface-composer-buffer chat-buffer)
+                    (e-chat-surface-composer-buffer chat-buffer)
                     t)))
               (should (window-live-p source-window))
               (should (window-live-p chat-window))
@@ -805,7 +803,7 @@
                                     e-chat-session-id))
                        (target-buffer (get-buffer
                                        (plist-get org-canvas :buffer-name)))
-                       (composer e-chat--surface-composer-buffer))
+                       (composer (e-chat-surface-composer-buffer)))
                   (should (plist-get org-canvas :needs-file-name))
                   (should (equal (plist-get org-canvas :target-folder)
                                  directory))
@@ -1206,10 +1204,10 @@
           (with-current-buffer buffer
             (should (derived-mode-p 'e-org-canvas-input-mode))
             (should (derived-mode-p 'e-chat-composer-mode))
-            (should (e-chat--composer-active-p))
+            (should (e-chat-composer-active-p))
             (save-excursion
               (goto-char (point-min))
-              (should (search-forward e-chat--composer-glyph nil t)))
+              (should (e-chat-composer-start-position)))
             (should (equal e-org-canvas-input--session-id "session-1"))
             (should (equal e-org-canvas-input--scope 'document))
             (should-not (string-match-p "Scope:" (buffer-string)))
@@ -1269,8 +1267,7 @@
             (should (eq opened chat))
             (should
              (eq (window-buffer (selected-window))
-                 (buffer-local-value
-                  'e-chat--surface-composer-buffer chat)))
+                 (e-chat-surface-composer-buffer chat)))
             (should-not (eq opened input))
             (should-not (get-buffer-window input t))
             (with-current-buffer opened
@@ -1305,10 +1302,10 @@
         (with-current-buffer input
           (should (derived-mode-p 'e-org-canvas-input-mode))
           (should (equal (current-buffer) (window-buffer (selected-window))))
-          (should (e-chat--point-in-composer-p))
+          (should (e-chat-composer-point-in-composer-p))
           (should (= (point) (point-max)))
           (let ((reference (get-text-property
-                            e-chat--composer-start-marker
+                            (e-chat-composer-start-position)
             'e-chat-context-reference)))
             (should reference)
             (should (equal (plist-get reference :uri)
@@ -1523,14 +1520,14 @@
               ;; path (the same seam e-chat-test uses); otherwise the
               ;; visibility gate defers the transient repaint and no
               ;; "Thinking" status is rendered.
-              (setq-local e-chat--assume-redraw-visible t)
+              (e-chat-surface-set-redraw-visible t)
               (goto-char (point-max))
               (insert "expand this")
               (e-org-canvas-input-submit)
               (e-org-canvas-test--drain-ui-work buffer)
-              (e-chat--run-pending-activity-redraw)
+              (e-chat-activity-run-pending-redraw)
               (should (equal e-org-canvas-input--active-turn-id "turn-1"))
-              (should-not (e-chat--composer-active-p))
+              (should-not (e-chat-composer-active-p))
               (should (string-match-p "Thought for\\|Thinking"
                                       (buffer-string))))))
       (when (buffer-live-p buffer)
@@ -1584,7 +1581,7 @@
                              :content (format "step-%d\n" index)))))
           (e-org-canvas-test--drain-ui-work input)
           (with-current-buffer input
-            (e-chat--run-pending-activity-redraw))
+            (e-chat-activity-run-pending-redraw))
           (with-current-buffer input
             (should (save-excursion
                       (goto-char (window-start window))
@@ -1662,7 +1659,7 @@
                                 :payload '(:error "503: unavailable"
                                            :attempt 1
                                            :backoff-seconds 2.0))))
-            (cl-letf (((symbol-function 'e-chat--render-event)
+            (cl-letf (((symbol-function 'e-chat-render-event)
                        (lambda (candidate)
                          (setq rendered-event candidate))))
               (with-current-buffer buffer
@@ -1703,7 +1700,7 @@
           (e-org-canvas-test--drain-ui-work buffer)
           (with-current-buffer buffer
             (should-not (string-match-p "Status:" (buffer-string)))
-            (should-not (e-chat--composer-active-p))
+            (should-not (e-chat-composer-active-p))
             (should (string-match-p "✓ Done" (buffer-string)))
             (should (timerp e-org-canvas-input--close-timer)))
           (should-not
@@ -1724,7 +1721,7 @@
         (progn
           (with-current-buffer buffer
             (setq-local e-org-canvas-input--active-turn-id "turn-1")
-            (e-chat--delete-composer))
+            (e-chat-composer-delete))
           (e-org-canvas-test--emit-board-event
            harness
            (e-events-make
@@ -1753,7 +1750,7 @@
           (with-current-buffer buffer
             (should (string-match-p "Here is the result." (buffer-string)))
             (should-not (string-match-p "✓ Done" (buffer-string)))
-            (should-not (e-chat--composer-active-p))
+            (should-not (e-chat-composer-active-p))
             (should (timerp e-org-canvas-input--close-timer)))
           (set-window-buffer (selected-window) buffer)
           (with-current-buffer buffer
@@ -1768,7 +1765,7 @@
 (ert-deftest e-org-canvas-test-input-pane_follows_bottom_on_interval_redraw ()
   "Interval-driven running-status redraws keep the input pane pinned to output.
 Regression: progress redraws bypass harness event dispatch, so the pane
-relied on `e-chat--running-status-rendered-hook' to follow the bottom."
+relies on the activity owner's post-redraw hook to follow the bottom."
   (let* ((harness (e-org-canvas-test--harness))
          (target (get-buffer-create "org-canvas-follow-target"))
          buffer)
@@ -1778,10 +1775,6 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
                   :scope 'thread :target-buffer target))
     (unwind-protect
         (progn
-          ;; Hook is wired buffer-locally for the input pane.
-          (with-current-buffer buffer
-            (should (memq #'e-org-canvas--input-follow-bottom-on-redraw
-                          e-chat--running-status-rendered-hook)))
           ;; Display the pane in a NON-selected window: only then does
           ;; `window-point' stay decoupled from buffer point, so the test
           ;; observes the follow hook rather than incidental point movement.
@@ -1794,17 +1787,14 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
               (e-org-canvas--input-enter-result-state)
               (setq-local e-org-canvas-input--active-turn-id "turn-1")
               ;; Mark an active progress turn so the redraw emits a line.
-              (setq-local e-chat--progress-turn-id "turn-1")
-              (setq-local e-chat--progress-frame 0)
+              (e-chat-activity-start-progress "turn-1")
               (let ((inhibit-read-only t))
                 (goto-char (point-max))
                 (insert (make-string 200 ?\n)))
               ;; Park the window at the very top, away from the output tail.
               (set-window-point window (point-min))
               (set-window-start window (point-min))
-              (e-chat--render-running-status
-               "turn-1"
-               (e-chat--turn-record "turn-1"))
+              (e-chat-activity-render-turn-transient "turn-1")
               ;; Follow hook should have dragged the window to the last line.
               (let ((bottom (save-excursion
                               (goto-char (point-max))
@@ -1921,7 +1911,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (with-current-buffer input
           (should (derived-mode-p 'e-org-canvas-input-mode))
           (should (equal e-org-canvas-input--scope 'document))
-          (should (equal (e-chat--composer-text)
+          (should (equal (e-chat-composer-text)
                          "revise the outline")))
       (when (buffer-live-p input)
         (kill-buffer input)))))
@@ -2379,7 +2369,7 @@ Body
         (with-current-buffer input
           (should (derived-mode-p 'e-org-canvas-input-mode))
           (should (equal e-org-canvas-input--scope 'document))
-          (should (string-match-p "clarify scope" (e-chat--composer-text))))
+          (should (string-match-p "clarify scope" (e-chat-composer-text))))
       (when (buffer-live-p input)
         (kill-buffer input)))))
 

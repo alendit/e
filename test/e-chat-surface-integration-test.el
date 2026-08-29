@@ -22,6 +22,9 @@
 (require 'e-harness)
 (require 'e-harness-registry)
 (require 'e-task-queue)
+(load (expand-file-name "e-chat-test-support.el"
+                       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 (load (expand-file-name
        "../e2e/e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
@@ -52,12 +55,12 @@
     (unwind-protect
         (progn
           (switch-to-buffer buffer)
-          (e-chat--after-display-buffer buffer)
+          (e-chat-surface-after-display-buffer buffer)
           (with-current-buffer buffer
-            (let* ((composer e-chat--surface-composer-buffer)
+            (let* ((composer (e-chat-surface-composer-buffer))
                    (transcript-window (get-buffer-window buffer t))
                    (composer-window
-                    (e-chat--surface-composer-window transcript-window)))
+                    (e-chat-surface-composer-window transcript-window)))
               (should (window-live-p transcript-window))
               (should (window-live-p composer-window))
               (should (eq (window-buffer composer-window) composer))
@@ -66,9 +69,7 @@
               (should (= (window-body-height composer-window) 4))
               (should buffer-read-only)
               (with-current-buffer composer
-                (should-not (string-match-p
-                             (regexp-quote e-chat--composer-separator)
-                             (buffer-string))))
+                (should (e-chat-composer-start-position)))
               ;; Escape always leaves the composer.  An empty transcript has
               ;; no response-navigation block yet, but it is still the
               ;; correct focus target.
@@ -96,11 +97,9 @@
                 1.0))
               (with-current-buffer buffer
                 (should (string-match-p "surface prompt" (buffer-string)))
-                (should (string-match-p "surface answer" (buffer-string)))
-                (should-not (string-match-p (regexp-quote e-chat--composer-glyph)
-                                            (buffer-string))))
+                (should (string-match-p "surface answer" (buffer-string))))
               (with-current-buffer composer
-                (should (equal (e-chat--composer-text) "")))
+                (should (equal (e-chat-composer-text) "")))
               (select-window composer-window)
               (with-current-buffer composer
                 (e-chat-composer-enter-navigation))
@@ -117,8 +116,7 @@
   "One real Evil Escape moves input focus to transcript navigation commands."
   (skip-unless (e-chat-surface-integration--load-evil))
   (evil-mode 1)
-  (e-chat--configure-modal-editing-policy)
-  (e-chat--configure-evil-composer-bindings)
+  (e-chat-startup)
   (e-board-e2e-reset-runtime)
   (let* ((backend (e-backend-fake-create
                    :items '((:type assistant-message :content "evil answer")
@@ -131,12 +129,12 @@
     (unwind-protect
         (progn
           (switch-to-buffer buffer)
-          (e-chat--after-display-buffer buffer)
+          (e-chat-surface-after-display-buffer buffer)
           (with-current-buffer buffer
-            (let* ((composer e-chat--surface-composer-buffer)
+            (let* ((composer (e-chat-surface-composer-buffer))
                    (transcript-window (get-buffer-window buffer t))
                    (composer-window
-                    (e-chat--surface-composer-window transcript-window)))
+                    (e-chat-surface-composer-window transcript-window)))
               (select-window composer-window)
               (with-current-buffer composer
                 (evil-local-mode 1)
@@ -226,6 +224,286 @@
               (should (equal (plist-get state :association-role) "owner")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-window-buffer-change-defers-composer-creation ()
+  "A generic chat buffer change restores its paired composer after redisplay."
+  (let* ((buffer (e-chat-test--buffer nil "chat-deferred-restored-window"))
+         (transcript-window (display-buffer buffer))
+         (composer (e-chat-surface-composer-buffer buffer)))
+    (unwind-protect
+        (progn
+          (select-window transcript-window)
+          (set-frame-parameter nil 'e-chat-selected-surface nil)
+          (e-chat-surface-activate-after-window-change
+           (selected-frame))
+          (should (e-ui-work-pending buffer))
+          (with-current-buffer buffer
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer buffer)))
+          (should-not (e-ui-work-pending buffer))
+          (should (eq (window-buffer (selected-window)) composer)))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
+
+
+(ert-deftest e-chat-test-switch-to-buffer-restores-composed-surface ()
+  "Generic buffer switching restores a composed chat's editable surface."
+  (let* ((origin (get-buffer-create " *e-chat switch origin*"))
+         (buffer (e-chat-test--buffer nil "chat-switch-composed-surface"))
+         (window (selected-window))
+         composer)
+    (unwind-protect
+        (progn
+          (delete-other-windows window)
+          (switch-to-buffer origin)
+          (switch-to-buffer buffer)
+          (set-frame-parameter nil 'e-chat-selected-surface nil)
+          (e-chat-surface-activate-after-window-change
+           (selected-frame))
+          (with-current-buffer buffer
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer buffer)))
+          (setq composer (e-chat-surface-composer-buffer buffer))
+          (should (buffer-live-p composer))
+          (should (eq (window-buffer (selected-window)) composer))
+          (should (eq (get-buffer-window buffer t) window))
+          (should (eq (window-atom-root window)
+                      (window-atom-root (selected-window)))))
+      (when (buffer-live-p origin)
+        (kill-buffer origin))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
+
+
+(ert-deftest e-chat-test-loaded-session-reprojection-restores-following-tail ()
+  "Async session replay keeps an activated transcript at its new output tail."
+  (let* ((history (mapconcat (lambda (number)
+                               (format "loaded history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-loaded-following-tail"))
+         transcript-window
+         composer-window
+         loading-tail)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (let ((store (e-chat-service-session-store e-chat-harness)))
+              (e-session-append-message
+               store e-chat-session-id
+               '(:id "msg-1" :role user :content "loaded question"))
+              (e-session-append-message
+               store e-chat-session-id
+               `(:id "msg-2" :role assistant :content ,history))
+              (e-chat-test--seed-board-log-from-private-fixture
+               e-chat-harness e-chat-session-id))
+            ;; Restart first displays and activates a short loading projection.
+            (let ((inhibit-read-only t))
+              (e-chat-clear t)
+              (e-chat-transcript-render-session-loading
+               '(:summary "loaded question")))
+            (setq composer-window
+                  (e-chat-surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (e-chat-surface-after-display-buffer buffer)
+            (setq loading-tail (point-max))
+            (should (= (window-point transcript-window) loading-tail))
+            (should (e-chat-surface-window-follows-output-p transcript-window))
+            ;; Load completion clears that projection and inserts the actual
+            ;; transcript without crossing another display/focus boundary.
+            (e-chat-attach-buffer
+             buffer e-chat-harness e-chat-session-id
+             e-chat-harness-instance-id)
+            (should (> (point-max) loading-tail))
+            (should (= (window-point transcript-window) (point-max)))
+            (should (>= (window-end transcript-window t) (point-max)))
+            (should (eq (selected-window) composer-window))))
+      (set-frame-parameter nil 'e-chat-selected-surface nil)
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
+
+
+(ert-deftest e-chat-test-pinned-short-transcript-aligns-output-bottom ()
+  "A short composed transcript uses window-local space above pinned output."
+  (let* ((configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-short-output-bottom"))
+         transcript-window composer-window spacer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "question" "answer")
+            (setq composer-window
+                  (e-chat-surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (e-chat-surface-show-latest-output transcript-window)
+            (setq spacer
+                  (cl-find-if
+                   (lambda (overlay)
+                     (and (overlay-get overlay 'before-string)
+                          (eq (overlay-get overlay 'window)
+                              transcript-window)))
+                   (overlays-at (point-min))))
+            (should (overlayp spacer))
+            (should (eq (overlay-get spacer 'window) transcript-window))
+            (should (> (length (overlay-get spacer 'before-string)) 0))
+            (should (e-chat-surface-window-follows-output-p transcript-window))
+            (e-chat-surface-set-window-output-follow transcript-window nil)
+            (should-not (overlay-buffer spacer))))
+      (set-window-configuration configuration)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
+
+
+(ert-deftest e-chat-test-surface-activation-survives-late-window-restore ()
+  "One deferred surface activation wins a host restoring stale scrollback."
+  (let* ((history (mapconcat (lambda (number)
+                               (format "history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-surface-activation-late"))
+         transcript-window composer-window)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "question" history)
+            (setq composer-window
+                  (e-chat-surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (let ((stale-point (point-min))
+                  (tail (point-max))
+                  (surface (cons buffer transcript-window)))
+              (set-window-point transcript-window stale-point)
+              (set-window-start transcript-window stale-point)
+              (e-chat-surface-set-window-output-follow transcript-window nil)
+              (e-chat-surface-activate surface)
+              (should (e-ui-work-pending
+                       buffer :owner 'surface-activation))
+              (should (= (window-point transcript-window) tail))
+              ;; Doom workspace restoration can put the old point back after
+              ;; activation returns.  The one deferred retry wins that race.
+              (set-window-point transcript-window stale-point)
+              (set-window-start transcript-window stale-point)
+              (should
+               (e-chat-test--wait-until
+                (lambda ()
+                  (= (window-point transcript-window) tail))
+                0.2)))))
+      (set-frame-parameter nil 'e-chat-selected-surface nil)
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
+
+
+(ert-deftest e-chat-test-entering-surface-pair-focuses-composer ()
+  "Entering a chat pair focuses input without breaking transcript navigation."
+  (let* ((configuration (current-window-configuration))
+         (buffer (e-chat-test--buffer nil "chat-pair-entry-focus"))
+         (external-buffer (generate-new-buffer " *e-chat focus external*"))
+         transcript-window composer-window external-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq transcript-window (selected-window))
+          (setq external-window (split-window transcript-window nil 'right))
+          (set-window-buffer external-window external-buffer)
+          (set-window-buffer transcript-window buffer)
+          (with-current-buffer buffer
+            (setq composer-window
+                  (e-chat-surface-display-composer transcript-window)))
+          (should (eq (window-atom-root transcript-window)
+                      (window-atom-root composer-window)))
+          ;; Entering through the transcript routes input to the composer.
+          (select-window external-window)
+          (set-frame-parameter nil 'e-chat-selected-surface nil)
+          (select-window transcript-window)
+          (e-chat-surface-activate-selected)
+          (should (eq (selected-window) composer-window))
+          ;; Once inside the surface, selecting the transcript is explicit
+          ;; response navigation and must not be redirected back to input.
+          (select-window transcript-window)
+          (e-chat-surface-activate-selected)
+          (should (eq (selected-window) transcript-window)))
+      (set-frame-parameter nil 'e-chat-selected-surface nil)
+      (set-window-configuration configuration)
+      (when (buffer-live-p external-buffer)
+        (kill-buffer external-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
+
+
+(ert-deftest e-chat-test-composer-selection-activates-transcript-once ()
+  "Entering a composer tails its transcript, but staying there preserves scrollback."
+  (let* ((history (mapconcat (lambda (number)
+                               (format "history line %d" number))
+                             (number-sequence 1 300)
+                             "\n"))
+         (buffer (e-chat-test--buffer nil "chat-composer-surface-entry"))
+         transcript-window composer-window)
+    (unwind-protect
+        (progn
+          (setq transcript-window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "question" history)
+            (setq composer-window
+                  (e-chat-surface-display-composer transcript-window t))
+            (set-buffer buffer)
+            (let ((surface (cons buffer transcript-window))
+                  (tail (point-max)))
+              (set-window-point transcript-window (point-min))
+              (set-window-start transcript-window (point-min))
+              (e-chat-surface-set-window-output-follow transcript-window nil)
+              (set-frame-parameter nil 'e-chat-selected-surface nil)
+              (e-chat-surface-activate-selected)
+              (should (equal (e-chat-surface-selected-chat-surface) surface))
+              (should (= (window-point transcript-window) tail))
+              (should (eq (selected-window) composer-window))
+              (e-ui-work-cancel-matching buffer 'surface-activation)
+              (set-window-point transcript-window (point-min))
+              (set-window-start transcript-window (point-min))
+              (e-chat-surface-set-window-output-follow transcript-window nil)
+              (e-chat-surface-activate-selected)
+              (should (= (window-point transcript-window) (point-min)))
+              (should-not (e-ui-work-pending
+                           buffer :owner 'surface-activation))))
+      (set-frame-parameter nil 'e-chat-selected-surface nil)
+      (when (window-live-p composer-window)
+        (delete-window composer-window))
+      (when (window-live-p transcript-window)
+        (delete-window transcript-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))))
 
 (provide 'e-chat-surface-integration-test)
 

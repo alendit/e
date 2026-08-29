@@ -111,7 +111,7 @@ so a child-frame adapter can be added without changing controller logic."
   (when (and (derived-mode-p 'e-chat-starter-mode)
              (boundp 'evil-local-mode)
              evil-local-mode)
-    (e-chat--disable-modal-editing)))
+    (e-chat-composer-disable-modal-editing)))
 
 (defun e-chat-starter--configure-modal-editing-policy ()
   "Configure modal editors to keep `e-chat-starter-mode' non-normal."
@@ -124,7 +124,7 @@ so a child-frame adapter can be added without changing controller logic."
   (add-hook 'evil-local-mode-hook
             #'e-chat-starter--enforce-modal-editing-policy nil t)
   (add-hook 'kill-buffer-hook #'e-chat-starter--cleanup nil t)
-  (e-chat--disable-modal-editing))
+  (e-chat-composer-disable-modal-editing))
 
 (e-chat-starter--configure-modal-editing-policy)
 (with-eval-after-load 'evil
@@ -182,10 +182,7 @@ so a child-frame adapter can be added without changing controller logic."
 
 (defun e-chat-starter--insert-answer-block (text)
   "Insert assistant answer TEXT with Markdown presentation."
-  (let ((start (point)))
-    (insert (string-trim-right (or text "")) "\n")
-    (e-chat--apply-assistant-markdown start (point))
-    (e-chat--apply-final-assistant-face start (point))))
+  (e-chat-transcript-insert-formatted-assistant text))
 
 (defun e-chat-starter--activity-turn-id (state event)
   "Return the activity turn id for STATE and EVENT."
@@ -222,34 +219,36 @@ so a child-frame adapter can be added without changing controller logic."
     (setf (e-chat-starter-state-activity-events state)
           (append (e-chat-starter-state-activity-events state) events))))
 
-(defun e-chat-starter--activity-record (state)
-  "Return an `e-chat' activity record rebuilt from STATE events."
+(defun e-chat-starter--activity-display (state)
+  "Return semantic activity display reconstructed from STATE events.
+The activity owner keeps its registry local to this starter buffer and returns
+text/status values; the starter never reaches into a chat turn record."
   (when-let ((turn-id (or (e-chat-starter-state-turn-id state)
-                         (e-chat-starter-state-session-id state))))
-    (setq-local e-chat--turn-registry (make-hash-table :test 'equal))
-    (dolist (event (e-chat-starter-state-activity-events state))
-      (when (equal (plist-get event :turn-id) turn-id)
-        (e-chat--record-activity-event turn-id event)))
-    (e-chat--existing-turn-record turn-id)))
+                          (e-chat-starter-state-session-id state))))
+    (e-chat-activity-reset)
+    (e-chat-activity-replay-events
+     turn-id
+     (cl-remove-if-not
+      (lambda (event)
+        (equal (plist-get event :turn-id) turn-id))
+      (e-chat-starter-state-activity-events state)))))
 
-(defun e-chat-starter--activity-text (state record)
-  "Return chat-formatted activity text for STATE and RECORD."
-  (when record
+(defun e-chat-starter--activity-text (state display)
+  "Return chat-formatted activity text for STATE and semantic DISPLAY."
+  (when display
     (pcase (e-chat-starter-state-status state)
       ((or 'answered 'failed 'continued)
-       (or (when-let ((summary (e-chat--activity-summary-text record)))
+       (or (when-let ((summary (plist-get display :summary-text)))
              (concat summary "\n"))
-           (e-chat--transient-text record)))
+           (plist-get display :transient-text)))
       (_
-       (e-chat--transient-text record)))))
+       (plist-get display :transient-text)))))
 
 (defun e-chat-starter--insert-activity-block (state)
   "Insert STATE activity using the same formatter as normal chat."
-  (when-let* ((record (e-chat-starter--activity-record state))
-              (text (e-chat-starter--activity-text state record)))
-    (let ((start (point)))
-      (e-chat--insert-protected text 'e-chat-system-face)
-      (e-chat--apply-activity-separator-face start (point)))))
+  (when-let* ((display (e-chat-starter--activity-display state))
+              (text (e-chat-starter--activity-text state display)))
+    (e-chat-transcript-insert-activity-entry text)))
 
 (defun e-chat-starter--render-status (state)
   "Insert a compact status line for STATE."
@@ -488,7 +487,7 @@ the turn settles or the popup buffer dies."
   "Start a one-shot starter QUESTION.
 HARNESS defaults to the chat default harness.  When DISPLAY is non-nil, show the
 popup buffer.  DELAY is forwarded to the chat session submit path for tests."
-  (let* ((harness (or harness (e-chat--default-harness)))
+  (let* ((harness (or harness (e-chat-default-harness)))
          (reference (e-chat-starter--capture-source))
          (session (e-chat-create-session
                    :harness harness

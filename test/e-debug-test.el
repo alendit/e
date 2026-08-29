@@ -151,7 +151,7 @@
     (unwind-protect
         (cl-letf (((symbol-function 'e-debug--popup-available-p)
                    (lambda () t))
-                  ((symbol-function 'e-chat--enter-composer-input-state)
+                  ((symbol-function 'e-chat-surface-enter-composer-input-state)
                    #'ignore)
                   ((symbol-function 'posframe-show)
                    (lambda (shown-buffer &rest args)
@@ -186,7 +186,7 @@
     (unwind-protect
         (cl-letf (((symbol-function 'selected-frame)
                    (lambda () 'child-frame))
-                  ((symbol-function 'e-chat--enter-composer-input-state)
+                  ((symbol-function 'e-chat-surface-enter-composer-input-state)
                    #'ignore)
                   ((symbol-function 'frame-parameter)
                    (lambda (frame parameter)
@@ -284,7 +284,7 @@
                    (lambda (_frame) nil)))
           (with-current-buffer buffer
             (e-chat-composer-mode)
-            (e-chat--insert-composer "for")
+            (e-chat-composer-insert "for")
             (goto-char (point-min))
             (set-mark (point-max))
             (activate-mark)
@@ -293,7 +293,7 @@
           (e-debug--show-buffer buffer)
           (with-current-buffer buffer
             (should (eq cursor-type 'bar))
-            (should (e-chat--point-in-composer-p))
+            (should (e-chat-composer-point-in-composer-p))
             (should-not (region-active-p))
             (should cursor-in-non-selected-windows)))
       (when (buffer-live-p buffer)
@@ -310,7 +310,7 @@
     (unwind-protect
         (cl-letf (((symbol-function 'e-debug--popup-available-p)
                    (lambda () t))
-                  ((symbol-function 'e-chat--enter-composer-input-state)
+                  ((symbol-function 'e-chat-surface-enter-composer-input-state)
                    #'ignore)
                   ((symbol-function 'posframe-show)
                    (lambda (_buffer &rest _args)
@@ -562,7 +562,7 @@
                   ((symbol-function 'tab-bar-rename-tab)
                    (lambda (name)
                      (push (list 'rename name) events)))
-                  ((symbol-function 'e-chat--pop-to-buffer)
+                  ((symbol-function 'e-chat-surface-pop-to-buffer)
                    (lambda (shown)
                      (push (list 'show shown) events))))
           (e-debug--show-buffer buffer)
@@ -587,7 +587,7 @@
                   ((symbol-function 'tab-bar-select-tab-by-name)
                    (lambda (name)
                      (push (list 'select name) events)))
-                  ((symbol-function 'e-chat--pop-to-buffer)
+                  ((symbol-function 'e-chat-surface-pop-to-buffer)
                    (lambda (shown)
                      (push (list 'show shown) events))))
           (e-debug--show-buffer buffer)

@@ -54,7 +54,7 @@
                                                     index
                                                     index))
                            "\n")))
-            (e-chat--render-event
+            (e-chat-render-event
              (list :type 'turn-started
                    :session-id session-id
                    :turn-id turn-id
@@ -64,7 +64,7 @@
                                        :owner 'progress-indicator
                                        :key turn-id))
             (dotimes (index 8)
-              (e-chat--render-event
+              (e-chat-render-event
                (list :type 'reasoning-delta
                      :session-id session-id
                      :turn-id turn-id
@@ -83,7 +83,7 @@
             (should (e-ui-work-pending buffer
                                        :owner 'progress-indicator
                                        :key turn-id))
-            (e-chat--render-event
+            (e-chat-render-event
              (list :type 'message-added
                    :session-id session-id
                    :turn-id turn-id
@@ -101,7 +101,7 @@
             (should (e-ui-work-pending buffer :owner 'markdown-presentation))
             (e-ui-work-integration--drain buffer :owner 'markdown-presentation)
             (should-not (e-ui-work-pending buffer :owner 'markdown-presentation))
-            (e-chat--render-event
+            (e-chat-render-event
              (list :type 'turn-finished
                    :session-id session-id
                    :turn-id turn-id

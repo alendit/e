@@ -141,7 +141,7 @@ A fractional value is interpreted relative to the selected frame height."
   "Return the project root for the last focused non-debug buffer, or nil."
   (when (buffer-live-p e-debug--last-focused-buffer)
     (with-current-buffer e-debug--last-focused-buffer
-      (e-chat--project-root default-directory))))
+      (e-chat-project-root default-directory))))
 
 (defun e-debug--narrower-project-root-p (candidate current)
   "Return non-nil when CANDIDATE is a narrower root than CURRENT."
@@ -183,7 +183,7 @@ A fractional value is interpreted relative to the selected frame height."
   (list :name "Debug Agent"
         :source 'e-debug
         :project-root (or (e-debug--last-focused-project-root)
-                          (e-chat--project-root default-directory))))
+                          (e-chat-project-root default-directory))))
 
 (defun e-debug--debug-session-p (session)
   "Return non-nil when SESSION is the standing debug session."
@@ -256,7 +256,7 @@ A fractional value is interpreted relative to the selected frame height."
           :session-id e-chat-session-id
           :source 'chat-buffer))
    (t
-    (when-let ((harness (ignore-errors (e-chat--default-harness))))
+    (when-let ((harness (ignore-errors (e-chat-default-harness))))
       (list :harness harness
             :source 'default-chat)))))
 
@@ -350,14 +350,14 @@ A fractional value is interpreted relative to the selected frame height."
        (if (e-debug--popup-available-p)
          (e-debug--show-popup buffer)
        (e-debug--select-or-create-tab)
-       (e-chat--pop-to-buffer buffer))))
+       (e-chat-surface-pop-to-buffer buffer))))
     ('tab
      (e-debug--select-or-create-tab)
-     (e-chat--pop-to-buffer buffer))
+     (e-chat-surface-pop-to-buffer buffer))
     ('window
-     (e-chat--pop-to-buffer buffer))
+     (e-chat-surface-pop-to-buffer buffer))
     ('current-window
-     (e-chat--switch-to-buffer buffer))
+     (e-chat-surface-switch-to-buffer buffer))
     (_
      (user-error "Unknown e debug display strategy: %S"
                  e-debug-display-strategy))))
@@ -432,7 +432,7 @@ or tab package."
     (with-current-buffer buffer
       (setq-local cursor-type 'bar)
       (setq-local cursor-in-non-selected-windows t)
-      (e-chat--enter-composer-input-state)
+      (e-chat-composer-enter-input-state)
       (e-debug-popup-mode 1)
       (add-hook 'kill-buffer-hook #'e-debug--popup-cleanup nil t))
     (when (frame-live-p frame)

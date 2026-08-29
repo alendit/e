@@ -373,7 +373,7 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
 
 (defun e-org-canvas--default-harness ()
   "Return the default chat harness used by Org Canvas commands."
-  (e-chat--default-harness))
+  (e-chat-default-harness))
 
 (defun e-org-canvas--harness-for-buffer (buffer)
   "Return BUFFER's Org Canvas harness or the default chat harness."
@@ -397,7 +397,7 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
 (defun e-org-canvas--root-for-buffer (buffer)
   "Return chat-compatible project root for BUFFER."
   (with-current-buffer buffer
-    (e-chat--project-root
+    (e-chat-project-root
      (if buffer-file-name
          (file-name-directory buffer-file-name)
        default-directory))))
@@ -415,7 +415,7 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
                     (e-harness-instance-harness-id instance))
                    harness))
               (root (with-current-buffer buffer
-                      (e-chat--project-root (file-name-directory file)))))
+                      (e-chat-project-root (file-name-directory file)))))
     (e-default-chat-sync-harness-layers harness nil root))
   harness)
 
@@ -559,8 +559,8 @@ the display to a normal window when the selected window is a side window."
     (cond
      ((get-buffer-window buffer t)
       (select-window (get-buffer-window buffer t)))
-     ((e-chat--side-window-p)
-      (when-let ((window (e-chat--display-from-side-window buffer)))
+     ((e-chat-surface-side-window-p)
+      (when-let ((window (e-chat-surface-display-from-side-window buffer)))
         (select-window window)))
      (t (e-workspace-switch-to-buffer
          buffer
@@ -571,8 +571,8 @@ the display to a normal window when the selected window is a side window."
 (defun e-org-canvas--display-chat-buffer (buffer)
   "Display Org Canvas backing chat BUFFER and return its transcript window."
   (when (buffer-live-p buffer)
-    (let ((window (if (e-chat--side-window-p)
-                      (e-chat--display-from-side-window buffer)
+    (let ((window (if (e-chat-surface-side-window-p)
+                      (e-chat-surface-display-from-side-window buffer)
                     (e-workspace-display-buffer
                      buffer
                      :workspace (or (e-buffer-workspace buffer)
@@ -588,7 +588,7 @@ the display to a normal window when the selected window is a side window."
       ;; paired composer window.  It must be the last focus owner: selecting
       ;; the transcript after this would leave users in a read-only buffer.
       (select-window window)
-      (e-chat--after-display-buffer buffer)))
+      (e-chat-after-display-buffer buffer)))
   buffer)
 
 (defun e-org-canvas--restore-buffer-session (buffer harness session-id workspace)
@@ -738,9 +738,9 @@ NEEDS-FILE-NAME and TARGET-FOLDER become stable Org Canvas metadata."
 (defun e-org-canvas-new-buffer (folder)
   "Create a new unsaved Org Canvas buffer targeting FOLDER."
   (interactive
-   (let ((root (e-chat--project-root default-directory)))
+   (let ((root (e-chat-project-root default-directory)))
      (list (e-org-canvas--read-target-folder root))))
-  (let* ((root (e-chat--project-root folder))
+  (let* ((root (e-chat-project-root folder))
          (folder (e-org-canvas--normalize-directory folder))
          (base e-org-canvas-default-buffer-name)
          (buffer (generate-new-buffer
@@ -1059,7 +1059,7 @@ forward only, so the cost is bounded by one screenful."
 
 (defun e-org-canvas--input-follow-bottom-on-redraw (&optional _turn-id)
   "Keep this input pane pinned to the bottom after a running-status redraw.
-Registered on `e-chat--running-status-rendered-hook' so interval-driven
+Registered on the chat activity rendered hook so interval-driven
 progress redraws follow output instead of staying pinned at the top.
 
 The spinner redraw fires every `e-chat-progress-interval' (0.6s) but only
@@ -1071,18 +1071,13 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
 
 (defun e-org-canvas--input-enter-result-state ()
   "Switch the current input pane from editable composer to result display."
-  (e-chat--delete-composer)
+  (e-chat-composer-delete)
   (e-org-canvas-input-result-mode 1))
 
-(defun e-org-canvas--input-clear-progress (turn-id)
+(defun e-org-canvas--input-clear-progress (_turn-id)
   "Clear active progress presentation for TURN-ID in the current input pane."
-  (e-chat--cancel-pending-activity-redraw turn-id)
-  (e-chat--cancel-progress-interval)
-  (setq-local e-chat--progress-turn-id nil)
-  (setq-local e-chat--progress-frame 0)
-  (setq-local e-chat--progress-next-tick-time nil)
-  (e-chat--delete-running-status (e-chat--existing-turn-record turn-id))
-  (e-chat--delete-composer))
+  (e-chat-activity-reset)
+  (e-chat-composer-delete))
 
 (defun e-org-canvas--input-show-done (turn-id)
   "Replace active progress with a terminal done line for TURN-ID."
@@ -1092,7 +1087,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
       (goto-char (point-max))
       (unless (or (bobp) (bolp))
         (insert "\n"))
-      (e-chat--insert-protected
+      (e-chat-transcript-insert-protected
        "✓ Done"
        'e-chat-system-face
        `(e-chat-turn-id ,turn-id)))
@@ -1108,7 +1103,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
          (when (eq (plist-get message :role) 'assistant)
            (setq-local e-org-canvas-input--final-message-rendered-p t)
            (e-org-canvas--input-enter-result-state)
-           (e-chat--render-event event)
+           (e-chat-render-event event)
            (e-org-canvas-input-result-mode 1)
            (e-org-canvas--input-select-result-buffer buffer))))
       ('turn-finished
@@ -1132,16 +1127,16 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
        (e-org-canvas--input-cleanup)
        (e-org-canvas--input-clear-source-selection)
        (e-org-canvas--input-enter-result-state)
-       (e-chat--render-event event)
-       (e-chat--delete-composer)
+       (e-chat-render-event event)
+       (e-chat-composer-delete)
        (e-org-canvas--input-select-result-buffer buffer))
       ((or 'turn-started 'provider-request-started 'provider-request-finished
            'turn-retrying
            'assistant-delta 'reasoning-delta 'tool-started 'tool-finished
            'token-usage)
        (e-org-canvas--input-enter-result-state)
-       (e-chat--render-event event)
-       (e-chat--run-pending-activity-redraw)
+       (e-chat-render-event event)
+       (e-chat-activity-run-pending-redraw)
        (e-org-canvas--input-follow-bottom buffer)))))
 
 (defun e-org-canvas--input-schedule-render-event (buffer event)
@@ -1199,22 +1194,10 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
 
 (defun e-org-canvas--input-reset-chat-state ()
   "Reset chat-local presentation state for a transient Org Canvas input pane."
-  (setq-local e-chat--composer-start-marker nil)
-  (setq-local e-chat--composer-scroll-needed nil)
-  (setq-local e-chat--turn-registry (make-hash-table :test 'equal))
-  (setq-local e-chat--block-registry (make-hash-table :test 'equal))
-  (setq-local e-chat--block-order nil)
-  (setq-local e-chat--block-counter 0)
-  (setq-local e-chat--context-reference-counter 0)
-  (setq-local e-chat--focused-turn-id nil)
-  (setq-local e-chat--focused-block-id nil)
-  (setq-local e-chat--latest-final-block-id nil)
-  (setq-local e-chat--last-rendered-turn-id nil)
-  (setq-local e-chat--last-rendered-side nil)
-  (setq-local e-chat--block-view-block-id nil)
-  (setq-local e-chat--tool-list-block-id nil)
-  (setq-local e-chat--tool-list-index 0)
-  (setq-local e-chat--status nil))
+  ;; The facade composes the presentation owners.  Org Canvas owns only its
+  ;; input/result state and never initializes chat registries, progress,
+  ;; block, focus, or status cells itself.
+  (e-chat-prepare-transient-surface))
 
 (defun e-org-canvas--input-replay-deferred-events (buffer)
   "Replay events captured while BUFFER was submitting."
@@ -1238,16 +1221,16 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
     (when-let ((reference
                 (e-org-canvas--input-thread-reference
                  e-org-canvas-input--target-buffer)))
-      (goto-char (or e-chat--composer-start-marker (point-max)))
+      (goto-char (or (e-chat-composer-start-position) (point-max)))
       (setq-local e-org-canvas-input--scope-reference
-                  (e-chat--insert-context-reference reference))
+                  (e-chat-composer-insert-context-reference reference))
       (insert " "))))
 
 (defun e-org-canvas--input-remove-scope-reference ()
   "Remove the thread-scope cursor reference from the current input pane."
   (when e-org-canvas-input--scope-reference
-    (goto-char (or e-chat--composer-start-marker (point-min)))
-    (when (e-chat--delete-context-reference-at (point))
+    (goto-char (or (e-chat-composer-start-position) (point-min)))
+    (when (e-chat-composer-delete-context-reference-at (point))
       (when (looking-at-p " ")
         (let ((inhibit-read-only t))
           (delete-char 1))))
@@ -1285,8 +1268,8 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
         (erase-buffer)
         (e-org-canvas-input-mode)
         (add-hook 'kill-buffer-hook #'e-org-canvas--input-cleanup nil t)
-        (add-hook 'e-chat--running-status-rendered-hook
-                  #'e-org-canvas--input-follow-bottom-on-redraw nil t)
+        (e-chat-activity-add-rendered-hook
+         #'e-org-canvas--input-follow-bottom-on-redraw nil t)
         (setq-local e-current-harness harness)
         (setq-local e-chat-harness harness)
         (setq-local e-chat-session-id session-id)
@@ -1309,22 +1292,22 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
         (setq-local e-org-canvas-input--source-selection-buffer
                     (and (buffer-live-p target-buffer)
                          (with-current-buffer target-buffer
-                           (and (e-chat--active-region-p) target-buffer))))
+                           (and (e-chat-composer-active-region-p) target-buffer))))
         (e-org-canvas-input-result-mode -1)
-        (e-chat--insert-composer)
+        (e-chat-composer-insert)
         (e-org-canvas--input-insert-scope-reference)))
     (e-org-canvas--input-subscribe buffer harness session-id)
     buffer))
 
 (defun e-org-canvas--input-prompt-text ()
   "Return the editable prompt text from the current input pane."
-  (plist-get (e-chat--composer-submission) :prompt))
+  (plist-get (e-chat-composer-submission) :prompt))
 
 ;;;###autoload
 (defun e-org-canvas-input-submit ()
   "Submit the current Org Canvas input pane."
   (interactive)
-  (let* ((submission (e-chat--composer-submission))
+  (let* ((submission (e-chat-composer-submission))
          (prompt (plist-get submission :prompt))
          (references (plist-get submission :references))
          (harness e-org-canvas-input--harness)
@@ -1462,7 +1445,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
   (let ((window (e-org-canvas--input-display-window input)))
     (when (window-live-p window)
       (select-window window))
-    (e-chat--after-display-buffer input)
+    (e-chat-after-display-buffer input)
     (with-current-buffer input
       (goto-char (point-max)))
     input))
@@ -1678,7 +1661,7 @@ prompt enumerating them, and leave the draft for review before submission."
   "List Org Canvas sessions grouped by file under the current project."
   (interactive)
   (let* ((harness (e-org-canvas--default-harness))
-         (root (e-chat--project-root default-directory))
+         (root (e-chat-project-root default-directory))
          (groups (e-org-canvas--sessions-by-file
                   harness :project-root root)))
     (unless groups

@@ -1,0 +1,281 @@
+#+title: Feature 91 Round 1 Presentation Audit
+#+startup: overview
+
+* Scope
+
+This audit records the corrected Round 1 presentation boundary for
+=F91-OWNER=, =F91-PRESENTATION=, =F91-TOPOLOGY=, and =F91-PRESERVATION=.
+The scope is the chat presentation family, its facade, Org Canvas adaptation,
+the chat starter/debug/canvas/dev consumers, and their tests.  The source
+baseline is the accepted Feature 91 worktree baseline; this worktree was not
+committed by the implementer.
+
+The public chat commands, modes, buffer names, event order, session formats,
+and graphical behavior are intended to remain unchanged.  Internal owner ports
+were narrowed where a facade-only forwarding alias or representation-shaped
+operation had no semantic consumer; mechanism assertions now call only the
+owning private helper.  No compatibility alias for an owner-private symbol
+was introduced.
+
+* Owner and state matrix
+
+| Cluster | Owner | Representation and state | Buffer/lifetime | Dependencies and callers | Boundary and disposition |
+|---------+-------+--------------------------+-----------------+-------------------------+--------------------------|
+| Surface membership and viewport | =e-chat-surface.el= | Transcript/composer role, pair buffers, activation generations, status/mode-line projection, output-follow and running-status bounds, window parameters | Buffer-local for chat identity and projection; window-local for geometry/follow; scheduled handles are transient | Stable =e-ui-work=, context-status, work/workspaces; facade, composer, transcript, activity, overview, Org Canvas, debug, graphical tests | Retain as the low-level presentation owner.  No sibling-owner call is required. |
+| Composer editing | =e-chat-composer.el= | Composer markers, queued prompts, reference ids/properties, pending command/file requests, completion cache, scroll flags | Composer-buffer-local; async request generations and handles are transient | Surface and transcript ports; facade, Org Canvas, starter/debug tests | Retain as the editing/submission owner.  Test-only point predicate remains private. |
+| Transcript and blocks | =e-chat-transcript.el= | Turn/block/message indexes, ordered block ids, focus/navigation ids and overlays, preview flag, replay and Markdown/Org projection | Transcript-buffer-local; block overlays/markers are transient; durable messages remain in session/service | Surface ports and stable service/structured-block contracts; facade, composer, activity, overview, Org Canvas, starter | Retain as the durable-entry/block/navigation/replay owner. |
+| Activity and transient blocks | =e-chat-activity.el= | Activity-owned turn registry containing provider rounds, reasoning/tool/action details, timestamps, failure/message details, streaming state, and redraw/progress state; no transcript markers or block records | Transcript-buffer-local for activity state; redraw/progress scheduling and live projection are transient | Surface ports, service/work, and the semantic transcript projection port; facade dispatch, starter replay, Org Canvas redraw, and dev performance/probe | Retain as activity/progress/redraw owner.  Clock and record seams are private; transcript receives fresh semantic descriptors only. |
+| Session overview | =e-chat-overview.el= | Candidate rows, active previews, read markers, workspace unread cache, overview mode/keymap and subscriptions | Read markers and unread projection follow harness/workspace lifetime; rows and previews are overview-buffer-local/transient | Surface/transcript ports, service, picker, workspaces; facade consumes selection intent and installs the open command | Retain as overview owner.  It never calls the facade or constructs a chat surface. |
+| Chat composition | =e-chat.el= | Major mode/commands, event subscription, harness/session identity, title/context buffers, facade lifecycle and dispatch | Chat-buffer-local identity/subscription; command/keymap composition follows loaded facade; no owner registry mirror | Composes all five owner ports and stable harness/session/service contracts | Retain as public facade/composition root.  It owns orchestration, not owner-private state. |
+| Org Canvas adaptation | =e-org-canvas.el= | Canvas source/session/focus, prompt scope, visibility, result and workspace affinity | Canvas-buffer/local session state; transient prompt/result state | Uses public surface/composer/transcript/activity ports and chat commands | Retain canvas-specific state and commands; removed initialization of chat registries, progress, blocks, focus, and status. |
+| External shell/dev consumers | starter, debug, canvas, dev probe/perf, graphical tests | Consumer-specific prompt, debug, probing, workspace, and screenshot state | Consumer-owned; no chat-private registry lifetime | Public facade/component operations only; integration tests assert public behavior or stable buffer state | Migrate/retain narrow public calls; no production or integration cross-owner private reference remains. |
+
+* Dependency direction
+
+The static call audit in =/tmp/f91-graph-round1-summary-correction-final.log= resolves each exact
+call to the file that defines its target, rather than classifying every legacy
+=e-chat-*= name as a facade call.  The final actual graph is:
+
+#+begin_example
+surface -> (stable core only)
+transcript -> surface
+composer -> surface, transcript
+activity -> surface, transcript
+overview -> surface, transcript
+facade -> surface, transcript, composer, activity, overview
+#+end_example
+
+The counted owner edges are:
+
+| Edge | Call sites |
+|------+------------|
+| transcript -> surface | 14 |
+| composer -> surface | 11 |
+| composer -> transcript | 5 |
+| activity -> surface | 14 |
+| activity -> transcript (semantic ports only) | 17 |
+| overview -> surface | 5 |
+| overview -> transcript | 11 |
+| owner -> facade | 0 |
+
+Overview owns candidate selection and row/preview policy.  Its
+=e-chat-overview-session-selection= operation returns a value describing the
+selected harness/session/instance; the facade's =e-chat-overview-open-session=
+command consumes that value to construct, attach, and subscribe the composed
+chat surface.  There is no overview-to-facade runtime edge.  No owner calls
+another owner's private =--= symbol.  The facade-to-owner edges are composition
+and event dispatch, so the owner graph remains acyclic.
+
+The corresponding state dependencies are:
+
+| Consumer | Reads/mutates through | Does not reach |
+|----------+-----------------------+---------------|
+| Composer | Surface role/window/output-follow ports; transcript navigation/protected insertion | Surface/transcript private variables; facade state |
+| Transcript | Surface identity/output-tail ports | Composer/activity registries; facade state |
+| Activity | Transcript participant/turn identity and semantic activity projection ports; surface viewport/status ports | Transcript records/registries/ids/markers/bounds; composer/overview/facade state |
+| Overview | Surface selection and transcript preview/replay ports | Composer/activity private variables; facade state |
+| Facade | Public owner ports and its own subscription/identity state | Owner-private registries, progress cells, block indexes, or composer markers |
+| Org Canvas and external production consumers | Public facade/component ports | Any =e-chat--*= or owner-private symbol |
+
+Activity/transcript state is intentionally split.  Activity's
+=e-chat-activity--turn-registry= is buffer-local and contains provider rounds,
+reasoning/tool/action records, timing, failures, message details, transient
+state, and redraw state.  Transcript's =e-chat-transcript--turn-registry=
+contains only durable separator/navigation projection metadata; its block
+registry owns physical block ids, markers, bounds, protection, and navigation
+capture/restore.  Activity sends a fresh semantic descriptor to
+=e-chat-transcript-project-activity= and receives only a scalar rendered size.
+The transcript deep-copies descriptor child/tool data before storing it.  No
+mutable activity record or transcript block record crosses that port.
+
+The facade dispatches every board event once through
+=e-chat-activity-handle-event=.  Activity classifies activity-only events and
+updates its own state; the facade only composes durable message insertion and
+shell actions from the returned semantic result.  Adding a provider/tool
+activity event therefore changes the activity owner and its direct tests, not
+a central per-record mutation table in the facade.
+
+* Public API audit
+
+The fresh public inventory is =/tmp/f91-public-api-map-round1-correction-final.log= and the
+consumer map is =/tmp/f91-public-api-consumers-round1-correction-final-tab.log=.  It contains 60
+surface, 31 composer, 41 transcript, 25 activity, and 31 overview public
+definitions (188 total, including commands/modes and owner ports).  The count
+is a report, not a target: each retained operation is either a command/mode,
+facade composition port, embedding-shell port, or semantic downstream-owner
+port.  In particular:
+
+- Surface exposes membership, activation, status, viewport/follow, and
+  pairing operations used by the facade, Org Canvas/debug/dev consumers, and
+  the graphical presentation boundary.
+- Composer exposes editing, submission, completion/reference, and mode
+  operations used by the facade, Org Canvas, starter, and debug shells.
+- Transcript exposes durable rendering, navigation commands/queries, preview
+  rendering, and the semantic activity projection port.  It does not expose
+  raw block records, registries, marker/bounds mutation, or block-id
+  allocation to activity.
+- Activity exposes one event transition operation, replay/display queries,
+  progress/redraw lifecycle ports, and the rendered-message settlement port.
+  Record classification and transitions are private to activity.
+- Overview exposes commands, candidate/preview rendering, read-marker and
+  selection-intent ports.  Selection returns a value; overview does not call
+  the facade.
+
+The cleanup removed facade-bounce wrappers and representation aliases that
+had no semantic consumer (including the old public activity prepare/reconcile/
+settle/tool-message helpers) and renamed component implementation helpers into
+unambiguous owner-private namespaces.  The current API map records the exact
+consumer files, including the small set of graphical/integration component
+ports whose contract is observable window or buffer behavior.  No documented
+chat command, mode, buffer name, event format, or session format changed.
+The 28 rows without a separate production consumer are intentional owner
+commands/keymap operations or observable embedding/test ports (for example,
+surface activation, overview navigation, transcript glyph/separator queries,
+and semantic activity state); they are not raw registry, marker, bounds, or
+record accessors.  Their owning mode, facade composition, embedding shell, or
+direct semantic contract is recorded in the consumer-map evidence.
+
+* Test topology and dispositions
+
+The direct owner contract suites do not require =e-chat= and use only minimal
+owner support:
+
+| Suite | Tests | Disposition |
+|-------+-------+-------------|
+| =test/e-chat-surface-test.el= | 4 | Strengthen/retain surface contract and private-boundary checks |
+| =test/e-chat-composer-test.el= | 4 | Strengthen/retain composer editing/submission checks |
+| =test/e-chat-transcript-test.el= | 5 | Strengthen/retain transcript registry/navigation checks |
+| =test/e-chat-activity-test.el= | 11 | Strengthen/retain activity registry/event/projection/redraw checks |
+| =test/e-chat-overview-test.el= | 4 | Strengthen/retain overview identity/preview checks |
+| =test/e-chat-owner-test-support.el= | support | Retain; deliberately has no facade require |
+
+Composed and graphical behavior remains at the integration boundary:
+
+| Suite | Tests/role | Disposition |
+|-------+------------+-------------|
+| =test/e-chat-test.el= | 88 | Retain as facade/composed behavior; no owner-only claims |
+| =test/e-chat-preservation-test.el= | 25 | Retain focused public preservation contracts; no owner-private calls |
+| =test/e-chat-presentation-integration-test.el= | 159 | Replace the old mixed owner file; retain composed activity/overview/window behavior |
+| =test/e-chat-surface-integration-test.el= | 10 | Retain graphical/window integration; component calls are public semantic ports |
+| =test/e-chat-composer-mechanism-test.el= | 32 | Retain composer-private mechanism checks in the composer suite |
+| =test/e-chat-transcript-mechanism-test.el= | 33 | Retain transcript-private mechanism checks in the transcript suite; board-progress composition moved to integration |
+| =test/e-chat-overview-mechanism-test.el= | 9 | Retain overview-private mechanism checks in the overview suite |
+| starter/surface/canvas/debug/Org Canvas/dev-probe suites | 24/10/9/25/73/9 | Retain preservation coverage with public component calls |
+| =test/e-ui-work-integration-test.el= | 1 | Retain UI-work/chat integration through the public =e-chat-render-event= facade port |
+
+The former owner-level bodies were moved out of the facade suite into the
+explicit presentation integration and owner mechanism suites.  Direct owner
+tests call only their own namespaced private helpers and public lower-owner
+contracts.  Composed/facade/integration tests use public owner/facade behavior
+and stable buffer/window observations; the integration private-reference
+sweep is =/tmp/f91-integration-owner-private-round1-correction-final.log= and has zero
+lines.  The production cross-owner private sweep is
+=/tmp/f91-production-cross-owner-private-round1-correction-final.log= and has zero lines.
+No compatibility alias for an old private symbol was added.
+
+* Validation evidence
+
+| Check | Result | Evidence |
+|-------+--------+----------|
+| Exact preservation set (485 tests) | PASS: 483 expected, 0 unexpected, 2 expected skips | =/tmp/f91-preservation-485-round1-correction-final3.log= |
+| Owner contracts (five direct suites) | PASS: 28/28 after separator cleanup | =/tmp/f91-owner-contracts-round1-separator-fix.log= |
+| Owner contracts + mechanism suites | PASS: 102/102 (28 direct + 74 mechanism); transcript/overview corrected path included | =/tmp/f91-owner-mechanism-correction-final.log= |
+| Facade + presentation integration | PASS: 246 expected, 0 unexpected, 1 expected skip (247 tests) | =/tmp/f91-facade-integration-correction-final.log= |
+| Byte compilation (facade/consumers/five owners) | PASS, no warnings | =/tmp/f91-compile-round1-correction-final.log= |
+| Fresh surface load/operation | PASS; =e-chat= not loaded | =/tmp/f91-fresh-owners-round1-correction-final.log= |
+| Fresh transcript load/operation | PASS; =e-chat= not loaded | =/tmp/f91-fresh-owners-round1-correction-final.log= |
+| Fresh composer load/operation | PASS; =e-chat= not loaded | =/tmp/f91-fresh-owners-round1-correction-final.log= |
+| Fresh activity load/operation | PASS; =e-chat= not loaded | =/tmp/f91-fresh-owners-round1-correction-final.log= |
+| Fresh overview load/operation | PASS; =e-chat= not loaded | =/tmp/f91-fresh-owners-round1-correction-final.log= |
+| External starter/surface/canvas/debug/Org Canvas/dev-probe suites | PASS: 149 expected, 0 unexpected, 1 expected skip (150 tests) | =/tmp/f91-external-round1-correction-final.log= |
+| UI-work/chat integration | PASS: 1/1 | =/tmp/f91-ui-work-integration-round1-final.log= |
+| Public activity-separator integration checks | PASS: 2/2 | =/tmp/f91-separator-integration-round1-fix.log= |
+| Production cross-owner private sweep | PASS: 0 refs | =/tmp/f91-production-cross-owner-private-round1-correction-final.log= |
+| Integration owner-private sweep | PASS: 0 refs | =/tmp/f91-integration-owner-private-round1-correction-final.log= |
+| Compatibility alias/fset sweep | PASS: no aliases or private bridges | =/tmp/f91-alias-sweep-round1-final.log= |
+| Owner mechanism private sweep | PASS: component-private calls stay in owner namespace; facade-private 0 | =/tmp/f91-owner-mechanism-private-round1-final.log= |
+| Owner-suite private sweep | PASS: all eight owner suites have no foreign component-private calls | =/tmp/f91-owner-suite-private-round1-final.log= |
+| Activity/transcript representation sweep | PASS: no cross-owner/private/shared-record refs | =/tmp/f91-state-separation-round1-correction-final.log= |
+| Source/test check-parens sweep | PASS: 289 repository Lisp files (including all changed files) | =/tmp/f91-parens-round1-final-all.log= |
+| Actual dependency graph | PASS: no owner->facade edge; acyclic owner graph | =/tmp/f91-graph-round1-summary-correction-final.log= |
+| Semantic API consumer map | PASS: 188 public definitions mapped by owner/production/test consumer | =/tmp/f91-public-api-consumers-round1-correction-final-tab.log= |
+| Isolated graphical chat/workspace gate | PASS: 27/27, 0 unexpected | =/tmp/f91-graphical-round1-correction-final2.log= |
+
+The exact preservation set skips the existing graphical/Markdown-dependent
+cases =e-chat-surface-integration-test-evil-escape-routes-transcript-commands=
+and =e-chat-test-assistant-markdown-renders-with-text-properties=.  The
+facade/integration run skips only the existing Markdown-dependent case.  These
+are environmental expected skips, not failures.  The fresh owner operations
+load each owner source directly, exercise a semantic operation, and verify
+that the composed =e-chat= feature is not loaded.
+
+* Status and residual risks
+
+- Parent acceptance: Round 1 was accepted on 2026-08-29 after independent
+  ownership, dependency, API, and test-topology review.  The acceptance pass
+  also removed a duplicate activity-separator definition found during source
+  inspection and re-ran the direct owner and separator integration contracts.
+- F91-GOAL behavioral status: focused repository behavior is preserved by the
+  485-case gate (483 expected passes, two expected skips), and the isolated
+  graphical chat/workspace gate passes 27/27.
+- F91-GOAL mechanism status: the corrected owner boundary, activity/transcript
+  state split, directional graph with zero owner-to-facade edges, semantic API
+  map, private namespace sweeps, fresh owner loads, and test topology are
+  complete.
+- Mechanical-equivalence exceptions are limited to owner load order,
+  overview's direct preview-buffer initializer (needed to keep preview
+  construction local), the explicit transcript output-mode require for
+  standalone rendering, deep-copying activity projection descriptors at the
+  transcript boundary, and metadata-only preview fallback when a service has
+  no loaded messages.  These preserve the old public projection while removing
+  reverse runtime dependencies and shared mutable records.
+- Known repository warnings are the expected
+  =visual-fill-column unavailable= fallback in batch tests.  No unresolved
+  source blocker is known.  The async submit status assertion passed in both
+  final 485 runs; earlier retries showed timing sensitivity in an existing
+  test, so it remains a low-risk CI watch item rather than a product-status
+  change.
+- Independent negative checks pass: zero cross-owner private production
+  references, zero owner-private references in composed/integration tests,
+  no shared mutable activity/transcript record, and no representation-shaped
+  transcript port consumed by activity.
+- Residual topology is deliberate: the monolithic chat implementation is
+  removed; each five-owner source and its direct contract/mechanism suite is
+  retained; composed chat/window behavior remains in the facade/integration
+  suites; Org Canvas retains only canvas/session/focus state; starter/debug/
+  canvas/dev consumers use public owner/facade ports; no compatibility bridge
+  or duplicate renderer/composer remains.
+- The user's running Emacs was not queried, reloaded, signaled, or otherwise
+  changed.  A manual reload/restart is intentionally not part of this proof.
+
+* Design self-check
+
+1. If stopped here, the project is better: each presentation responsibility
+   has an owner, direct contracts, and a measurable preservation gate.
+2. This moves toward a facade that composes stable owner ports and toward the
+   later session/runtime/adapter rounds without importing chat-private state.
+3. Stable behavior is represented directly; uncertain reload/preview details
+   are local to the owner and reversible.  No speculative registry or DI layer
+   was introduced.
+4. Ownership follows the five cohesive reasons to change listed above.
+5. Coupling is reduced from the complete mutual graph to a directional graph;
+   the remaining interfaces are consumer-shaped.
+6. No dependency points from a stable core contract toward a concrete sibling
+   or provider; presentation dependencies point to lower owners/stable core.
+7. Window, redraw, and provider-side effects remain behind surface/activity or
+   existing service adapters; the facade composes them.
+8. State remains at buffer, window, workspace, or scheduled-job lifetime as
+   required; no cross-owner state mirror was added.
+9. The split adds no repeated scans or synchronous I/O; existing bounded
+   projection and scheduling paths remain in their owners.
+10. The remaining ports have real consumers and do not require unsupported
+    operations or narrowed preconditions.
+11. Public commands/modes/formats remain compatible; obsolete private aliases
+    were removed rather than wrapped.
+12. Removed now: the monolithic implementation copies, facade-bounce owner
+    aliases, unused owner ports, and Org Canvas chat-private initialization.
+13. Expected presentation errors remain at their existing boundaries;
+    unexpected errors surface through the facade/test runner.
+14. Direct owner tests prove contracts independently; composed tests prove
+    only cross-owner behavior, so another correct decomposition can satisfy
+    the same owner suites.

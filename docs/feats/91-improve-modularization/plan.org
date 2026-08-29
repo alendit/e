@@ -65,15 +65,15 @@ on ownership and dependency evidence rather than size alone.
 
 | Contract ID | Observable or owner-level invariant | Semantic owner | Lifetime, recovery, or bound | Implementation round | Named scenario | Evidence class | Status |
 |-------------+-------------------------------------+----------------+------------------------------+----------------------+----------------+----------------+--------|
-| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Pending |
-| =F91-PRESENTATION= | Chat and Org Canvas preserve public interaction while surface, composer, transcript, activity, and overview code and buffer-local state have explicit owners; external consumers use no chat-private symbols. | Chat presentation family | Buffer-local presentation state; reloadable shell modules. | 1 | =F91-S-PRESENTATION= | Deterministic repository and isolated graphical | Pending |
+| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Partial: Round 1 accepted |
+| =F91-PRESENTATION= | Chat and Org Canvas preserve public interaction while surface, composer, transcript, activity, and overview code and buffer-local state have explicit owners; external consumers use no chat-private symbols. | Chat presentation family | Buffer-local presentation state; reloadable shell modules. | 1 | =F91-S-PRESENTATION= | Deterministic repository and isolated graphical | Accepted |
 | =F91-SESSION= | Session aggregate operations preserve current durable records and restart behavior while codec/replay, checkpoint/catalog policy, and JSONL I/O are separate owner-shaped modules. | Session aggregate and current storage adapter | Existing durable lifetime and recovery; no migration or new format. | 2 | =F91-S-RESTART= | Deterministic repository | Pending |
 | =F91-RUNTIME= | Board attachment and ordinary turns preserve admission, ordering, settlement, abort, and activity behavior through public attached-turn and harness-owner boundaries, without private callback mutation. | Harness application services and board runtime | Process-local turn/queue/activity state; existing durable session and board effects. | 3 | =F91-S-ATTACHED-TURN= | Deterministic repository | Pending |
 | =F91-OPENAI= | Existing profiles, auth, wire mappings, transports, decoding, diagnostics, and compaction compose behind the unchanged OpenAI facade without cross-variant branches. | OpenAI backend adapter | Request/stream lifetime, cancellation, retry, and effective provider identity unchanged. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
 | =F91-MCP= | Helper-process and HTTP transports satisfy the same supported MCP client contract, while capability/tool/resource/context composition is transport-independent. | MCP client and capability composition | Existing connection/process lifetime and error behavior. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
 | =F91-BASE= | File/resource behavior and bash process/collector behavior compose into the unchanged base capability without sharing an accidental implementation owner. | Base capability components | Existing buffer/file coherence and process/collector lifetimes. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
 | =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Pending |
-| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Pending |
+| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Partial: Round 1 accepted |
 
 ** Scenario portfolio
 
@@ -120,6 +120,23 @@ The order makes the session boundary stable before harness extraction and lets
 the harness facade depend on that accepted lower-level contract.  Provider and
 capability decomposition follows because it must preserve the accepted harness
 and session composition, but does not define either owner.
+
+** Accepted rounds
+
+*** Round 1: presentation family
+
+Accepted on 2026-08-29.  The facade now composes five explicit presentation
+owners: surface, composer, transcript, activity, and overview.  Activity and
+transcript own separate buffer-local state and communicate through a semantic
+projection port; the owner dependency graph is directional, with no owner to
+facade edge and no cross-owner private production reference.  Org Canvas and
+the external presentation consumers use public component operations.
+
+The direct owner contracts, mechanism suites, 485-case preservation set,
+external-consumer suites, compilation, fresh owner loads, static dependency
+sweeps, and 27-case isolated graphical gate pass.  The detailed evidence and
+residual-risk record is in =round-1-audit.org=.  The running Emacs was left
+unchanged.
 
 ** Initial residual-topology inventory
 
