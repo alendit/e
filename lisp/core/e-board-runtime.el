@@ -70,6 +70,21 @@
   binding binding-epoch source-key kind tags attributes to mode content reference
   on-settle state publication pending-delivery-ids terminal-results error)
 
+(cl-defstruct (e-board-runtime-producer-delivery
+               (:constructor e-board-runtime--producer-delivery-create)
+               (:conc-name e-board-runtime-producer-delivery-))
+  "One producer delivery with its exact runtime attachment lease.
+The attachment is optional for ordinary board participants; when present, the
+generation is captured at routing commit and is the only authority allowed to
+settle a later consumed turn."
+  id item attachment generation)
+
+(cl-defstruct (e-board-runtime-producer-turn
+               (:constructor e-board-runtime--producer-turn-create)
+               (:conc-name e-board-runtime-producer-turn-))
+  "One consumed producer delivery awaiting its exact turn terminal event."
+  id item delivery-id attachment generation)
+
 (defvar e-board-runtime--admission-open-p t
   "Non-nil while public board-runtime roots may be admitted.")
 
@@ -187,6 +202,9 @@ Operations accepted before this commit may continue to completion."
 (defvar e-board-runtime--activity-drain-scheduled nil
   "Non-nil while the runtime has one activity mailbox drain pending.")
 
+(defvar e-board-runtime--activity-drain-generation 0
+  "Generation fencing scheduled activity drains after attachment retirement.")
+
 (defconst e-board-runtime-pickup-drain-limit 16
   "Maximum frozen pickup attempts the private runtime starts per drain.")
 
@@ -220,7 +238,11 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:conc-name e-board-runtime-attachment-))
   board participant harness session-id delivery-function subscription activity-sequence generation
   turn-activity turn-tags turn-delivery-ids turn-port instance-id instance-catalog-generation
-  harness-id harness-object-generation endpoint-token state reconciliation)
+  harness-id harness-object-generation endpoint-token state reconciliation
+  identity-token
+  owned-pickup-ids producer-delivery-ids producer-turn-keys activity-mailbox-keys
+  retirement-stage retirement-authorized-p retirement-work-authorized-p
+  retirement-generation)
 
 (cl-defstruct (e-board-runtime-reconciliation
                (:constructor e-board-runtime-reconciliation--create)
@@ -502,12 +524,142 @@ participant turns settle.  An unrouted input settles visibly as `unrouted'."
                 (message (e-board-publication-message publication)))
       (remhash (e-board-message-id message) e-board-runtime--producer-inputs))
     (dolist (delivery-id
-             (e-board-runtime-producer-publication-pending-delivery-ids item))
-      (remhash delivery-id e-board-runtime--producer-deliveries))
+             (copy-sequence
+              (e-board-runtime-producer-publication-pending-delivery-ids item)))
+      (let ((record (gethash delivery-id e-board-runtime--producer-deliveries)))
+        (when (e-board-runtime-producer-delivery-p record)
+          (when-let ((attachment
+                      (e-board-runtime-producer-delivery-attachment record)))
+            (remhash delivery-id
+                     (e-board-runtime-attachment-producer-delivery-ids
+                      attachment))))
+        (remhash delivery-id e-board-runtime--producer-deliveries)))
+    (setf (e-board-runtime-producer-publication-pending-delivery-ids item) nil)
     (e-board-runtime--adjust-unsettled-count 'producer -1)
     (when-let ((callback
                 (e-board-runtime-producer-publication-on-settle item)))
       (apply callback (append (list :status status) payload)))))
+
+(defun e-board-runtime--producer-delivery-record (delivery-id)
+  "Return the exact producer DELIVERY-ID record, if still unsettled."
+  (gethash delivery-id e-board-runtime--producer-deliveries))
+
+(defun e-board-runtime--remember-producer-delivery
+    (item delivery-id &optional attachment)
+  "Register DELIVERY-ID with its exact ATTACHMENT generation, if any."
+  (let ((record
+         (e-board-runtime--producer-delivery-create
+          :id delivery-id :item item :attachment attachment
+          :generation (and attachment
+                           (e-board-runtime--attachment-work-generation
+                            attachment)))))
+    (puthash delivery-id record e-board-runtime--producer-deliveries)
+    (when attachment
+      (puthash delivery-id t
+               (e-board-runtime-attachment-producer-delivery-ids attachment)))
+    record))
+
+(defun e-board-runtime--settle-producer-delivery-for-attachment
+    (attachment delivery-id status payload)
+  "Settle DELIVERY-ID only when its record belongs to ATTACHMENT generation."
+  (when-let ((record (e-board-runtime--producer-delivery-record delivery-id)))
+    (when (and (eq (e-board-runtime-producer-delivery-attachment record)
+                   attachment)
+               (= (e-board-runtime-producer-delivery-generation record)
+                  (e-board-runtime--attachment-work-generation attachment)))
+      (e-board-runtime--producer-delivery-terminal
+       (e-board-runtime-producer-delivery-item record)
+       delivery-id status payload))))
+
+(defun e-board-runtime--settle-producer-turns-for-attachment (attachment)
+  "Settle every producer turn key indexed by ATTACHMENT, bounded locally."
+  (maphash
+   (lambda (key _owned)
+     (when-let ((record (gethash key e-board-runtime--producer-turns)))
+       (when (and (e-board-runtime-producer-turn-p record)
+                  (eq (e-board-runtime-producer-turn-attachment record)
+                      attachment)
+                  (= (e-board-runtime-producer-turn-generation record)
+                     (e-board-runtime--attachment-work-generation attachment)))
+         (remhash key e-board-runtime--producer-turns)
+         (e-board-runtime--producer-delivery-terminal
+          (e-board-runtime-producer-turn-item record)
+          (e-board-runtime-producer-turn-delivery-id record)
+          'cancelled '(:reason attachment-retired))))
+     (remhash key
+              (e-board-runtime-attachment-producer-turn-keys attachment)))
+   (copy-hash-table
+   (e-board-runtime-attachment-producer-turn-keys attachment))))
+
+(defun e-board-runtime--settle-producer-deliveries-for-attachment
+    (attachment)
+  "Settle every producer delivery indexed by ATTACHMENT, bounded locally.
+The pickup index normally contains the same ids, but the producer index is the
+authoritative unsettled-work set: retaining this second local pass covers an
+accepted/consumed record whose board pickup has already reached a terminal
+projection without scanning unrelated producer work."
+  (maphash
+   (lambda (delivery-id _owned)
+     (e-board-runtime--settle-producer-delivery-for-attachment
+      attachment delivery-id 'cancelled
+      (list :reason 'attachment-retired)))
+   (copy-hash-table
+    (e-board-runtime-attachment-producer-delivery-ids attachment))))
+
+(defun e-board-runtime--transfer-attachment-pending-work (old new)
+  "Transfer OLD's still-pending producer deliveries to replacement NEW.
+
+Participant rebind deliberately preserves pending and ready board pickups, so
+their producer accounting follows the exact surviving pickup into NEW's
+generation.  Every other producer delivery is terminal by the time rebind
+commits and is settled against OLD instead of being copied across a lifetime
+boundary.  The operation is bounded by OLD's attachment-local indexes."
+  (let ((new-generation (e-board-runtime-attachment-generation new))
+        (source-board
+         (e-board-registry-board-source-board
+          (e-board-runtime-attachment-board old))))
+    (maphash
+     (lambda (delivery-id _owned)
+       (let ((record (gethash delivery-id e-board-runtime--producer-deliveries))
+             (pickup (e-board-pickup source-board delivery-id)))
+         (cond
+          ((and (e-board-runtime-producer-delivery-p record)
+                (eq (e-board-runtime-producer-delivery-attachment record) old)
+                (= (e-board-runtime-producer-delivery-generation record)
+                   (e-board-runtime--attachment-work-generation old))
+                pickup
+                (memq (e-board-pickup-state pickup) '(pending ready)))
+           (setf (e-board-runtime-producer-delivery-attachment record) new
+                 (e-board-runtime-producer-delivery-generation record)
+                 new-generation)
+           (puthash delivery-id t
+                    (e-board-runtime-attachment-producer-delivery-ids new)))
+          ((and (e-board-runtime-producer-delivery-p record)
+                (eq (e-board-runtime-producer-delivery-attachment record) old)
+                (= (e-board-runtime-producer-delivery-generation record)
+                   (e-board-runtime--attachment-work-generation old)))
+           ;; A terminal pickup or an otherwise missing record cannot receive
+           ;; a later old-endpoint receipt.  Close it before OLD is dormant.
+           (e-board-runtime--producer-delivery-terminal
+            (e-board-runtime-producer-delivery-item record)
+            delivery-id 'cancelled '(:reason endpoint-rebound)))))
+       (remhash delivery-id
+                (e-board-runtime-attachment-producer-delivery-ids old)))
+     (copy-hash-table
+      (e-board-runtime-attachment-producer-delivery-ids old)))
+    ;; The surviving participant FIFO is re-indexed by NEW on activation.  A
+    ;; local ownership entry is retained only for a pickup that remains live;
+    ;; terminal records must not be revisited by NEW retirement.
+    (maphash
+     (lambda (delivery-id _owned)
+       (when-let ((pickup (e-board-pickup source-board delivery-id)))
+         (when (memq (e-board-pickup-state pickup) '(pending ready))
+           (puthash delivery-id t
+                    (e-board-runtime-attachment-owned-pickup-ids new))))
+       (remhash delivery-id
+                (e-board-runtime-attachment-owned-pickup-ids old)))
+     (copy-hash-table
+      (e-board-runtime-attachment-owned-pickup-ids old)))))
 
 (defun e-board-runtime--producer-routing-finished (board message-id pickup-ids)
   "Advance producer work MESSAGE-ID after BOARD routing produced PICKUP-IDS."
@@ -523,26 +675,47 @@ participant turns settle.  An unrouted input settles visibly as `unrouted'."
               (e-board-runtime-producer-publication-pending-delivery-ids item)
               (copy-tree pickup-ids))
         (dolist (delivery-id pickup-ids)
-          (puthash delivery-id item e-board-runtime--producer-deliveries))))))
+          (let* ((pickup (e-board-pickup source delivery-id))
+                 (attachment (and pickup
+                                  (e-board-runtime--attachment-for-pickup
+                                   board pickup))))
+            (e-board-runtime--remember-producer-delivery
+             item delivery-id
+             ;; Routing can finish after terminal retirement has fenced the
+             ;; endpoint but before the exact route owner returns.  Retain the
+             ;; current object in that case so its producer slot is settled by
+             ;; the same attachment-local retirement pass; never rediscover a
+             ;; replacement after the maps have changed.
+             (and (e-board-runtime--current-attachment-p attachment)
+                  attachment))))))))
 
 (defun e-board-runtime--producer-delivery-terminal (item delivery-id status payload)
   "Record one producer ITEM DELIVERY-ID terminal STATUS and PAYLOAD."
-  (remhash delivery-id e-board-runtime--producer-deliveries)
-  (setf (e-board-runtime-producer-publication-pending-delivery-ids item)
-        (delete delivery-id
+  (when (member delivery-id
                 (e-board-runtime-producer-publication-pending-delivery-ids item))
-        (e-board-runtime-producer-publication-terminal-results item)
-        (cons (list :delivery-id delivery-id :status status :payload payload)
-              (e-board-runtime-producer-publication-terminal-results item)))
-  (unless (e-board-runtime-producer-publication-pending-delivery-ids item)
-    (let* ((results (nreverse
-                     (e-board-runtime-producer-publication-terminal-results item)))
-           (statuses (mapcar (lambda (result) (plist-get result :status)) results))
-           (final (cond ((memq 'failed statuses) 'failed)
-                        ((memq 'cancelled statuses) 'cancelled)
-                        (t 'done))))
-      (e-board-runtime--settle-producer-input
-       item final (list :results results)))))
+    (let ((record (e-board-runtime--producer-delivery-record delivery-id)))
+      (when (and (e-board-runtime-producer-delivery-p record)
+                 (eq (e-board-runtime-producer-delivery-item record) item))
+        (when-let ((attachment
+                    (e-board-runtime-producer-delivery-attachment record)))
+          (remhash delivery-id
+                   (e-board-runtime-attachment-producer-delivery-ids attachment)))
+        (remhash delivery-id e-board-runtime--producer-deliveries))
+      (setf (e-board-runtime-producer-publication-pending-delivery-ids item)
+            (delete delivery-id
+                    (e-board-runtime-producer-publication-pending-delivery-ids item))
+            (e-board-runtime-producer-publication-terminal-results item)
+            (cons (list :delivery-id delivery-id :status status :payload payload)
+                  (e-board-runtime-producer-publication-terminal-results item)))
+      (unless (e-board-runtime-producer-publication-pending-delivery-ids item)
+        (let* ((results (nreverse
+                         (e-board-runtime-producer-publication-terminal-results item)))
+               (statuses (mapcar (lambda (result) (plist-get result :status)) results))
+               (final (cond ((memq 'failed statuses) 'failed)
+                            ((memq 'cancelled statuses) 'cancelled)
+                            (t 'done))))
+          (e-board-runtime--settle-producer-input
+           item final (list :results results)))))))
 
 (defun e-board-runtime-drain-producers ()
   "Apply one bounded page of accepted trusted producer publications."
@@ -777,11 +950,12 @@ each live harness object."
 
 (defun e-board-runtime--current-attachment-p (attachment)
   "Return non-nil when ATTACHMENT still owns its board participant endpoint."
-  (let* ((board (e-board-runtime-attachment-board attachment))
+  (when (e-board-runtime-attachment-p attachment)
+    (let* ((board (e-board-runtime-attachment-board attachment))
          (participant (e-board-runtime-attachment-participant attachment))
          (instance-id (e-board-runtime-attachment-instance-id attachment))
          (harness-id (e-board-runtime-attachment-harness-id attachment)))
-    (and (or (null instance-id)
+      (and (or (null instance-id)
              (and (equal
                    (e-board-runtime-attachment-instance-catalog-generation
                     attachment)
@@ -804,55 +978,73 @@ each live harness object."
                        (e-board-runtime-attachment-harness attachment)
                       (e-board-runtime-attachment-session-id attachment))
                       e-board-runtime--endpoint-attachments)
-             attachment))))
+             attachment)))))
 
-(defun e-board-runtime--retire-pickups-for-attachment (attachment)
-  "Settle every nonterminal pickup owned by ATTACHMENT's participant.
-Pending and ready records are cancelled; an in-flight or accepted record is
-tombstoned as uncertain because its old endpoint is no longer available for a
-consumption receipt.  No successor is enqueued: terminal attachment cleanup
-owns the complete participant FIFO."
-  (let* ((board (e-board-runtime-attachment-board attachment))
-         (source-board (e-board-registry-board-source-board board))
-         (participant
-          (e-board-runtime-attachment-participant attachment))
-         (participant-id (and participant
-                              (e-board-registry-participant-id participant))))
-    (when participant-id
-      (dolist (delivery-id
-               (copy-sequence (e-board--pickup-queue source-board participant-id)))
-        (when-let ((pickup (e-board-pickup source-board delivery-id)))
-          (pcase (e-board-pickup-state pickup)
-            ((or 'pending 'ready)
-             (e-board-cancel-pickup
-              source-board delivery-id 'attachment-retired))
-            ((or 'delivering 'accepted 'cancelling)
-             (e-board-pickup-mark-uncertain
-              source-board delivery-id 'attachment-retired))))))))
+(defun e-board-runtime--current-active-attachment-p (attachment)
+  "Return non-nil when ATTACHMENT is current and still accepting callbacks."
+  (and (e-board-runtime--current-attachment-p attachment)
+       (eq (e-board-runtime-attachment-state attachment) 'active)))
 
-(defun e-board-runtime--drop-pending-pickups-for-attachment (attachment)
-  "Remove queued runtime pickup callbacks belonging to ATTACHMENT.
-The source-board pickup tombstones are authoritative; this process-local queue
-must also forget their identities so a later replacement attachment cannot
-interpret an old callback as a newly admitted delivery."
-  (let* ((board (e-board-runtime-attachment-board attachment))
-         (board-id (e-board-registry-board-id board))
-         (source-board (e-board-registry-board-source-board board))
-         (participant
-          (e-board-runtime-attachment-participant attachment))
-         (participant-id (and participant
-                              (e-board-registry-participant-id participant)))
-         (cursor e-board-runtime--pending-pickup-head)
-         previous)
+(defun e-board-runtime--attachment-work-generation (attachment)
+  "Return the generation owning ATTACHMENT-local terminal work.
+During retirement the live generation is bumped immediately to fence new
+callbacks; the saved retirement generation still names work accepted by that
+attachment before the transition began."
+  (or (e-board-runtime-attachment-retirement-generation attachment)
+      (e-board-runtime-attachment-generation attachment)))
+
+(defun e-board-runtime--attachment-for-pickup (board pickup)
+  "Return BOARD's current attachment for frozen PICKUP, if any.
+This lookup is one participant-local map operation; it never searches the
+board's global pickup table for an owner."
+  (when-let ((participant
+              (gethash (e-board-pickup-participant-id pickup)
+                       (e-board-registry-board-participants board))))
+    (gethash (e-board-runtime--attachment-key board participant)
+             e-board-runtime--attachments)))
+
+(defun e-board-runtime--index-attachment-pickup (attachment pickup-id)
+  "Remember PICKUP-ID in ATTACHMENT's exact local ownership index."
+  (when (e-board-runtime--current-active-attachment-p attachment)
+    (puthash pickup-id t
+             (e-board-runtime-attachment-owned-pickup-ids attachment))))
+
+(defun e-board-runtime--forget-attachment-pickup (attachment pickup-id)
+  "Forget terminal PICKUP-ID from ATTACHMENT's local ownership index.
+The index is for unsettled attachment work, not a second board history.  Keeping
+only live FIFO identities bounds ordinary delivery overhead while retirement
+still has its producer-delivery and producer-turn indexes for consumed work."
+  (remhash pickup-id
+           (e-board-runtime-attachment-owned-pickup-ids attachment)))
+
+(defun e-board-runtime--forget-terminal-pickup
+    (attachment pickup-id)
+  "Drop PICKUP-ID when its board projection has reached a terminal state."
+  (when-let ((pickup
+              (e-board-pickup
+               (e-board-registry-board-source-board
+                (e-board-runtime-attachment-board attachment))
+               pickup-id)))
+    (when (memq (e-board-pickup-state pickup)
+                '(consumed cancelled discarded failed uncertain expired overflowed))
+      (e-board-runtime--forget-attachment-pickup attachment pickup-id))))
+
+(defun e-board-runtime--forget-terminal-pickup-for-board
+    (board pickup-id)
+  "Forget one terminal PICKUP-ID through BOARD's participant-local owner."
+  (when-let* ((source-board (e-board-registry-board-source-board board))
+              (pickup (e-board-pickup source-board pickup-id))
+              (attachment (e-board-runtime--attachment-for-pickup
+                           board pickup)))
+    (e-board-runtime--forget-terminal-pickup attachment pickup-id)))
+
+(defun e-board-runtime--remove-pending-pickup-key (key)
+  "Remove one exact pending pickup KEY and settle its queue counter."
+  (let ((cursor e-board-runtime--pending-pickup-head)
+        previous)
     (while cursor
-      (let* ((next (cdr cursor))
-             (key (car cursor))
-             (pickup (and (equal (car-safe key) board-id)
-                          (e-board-pickup source-board (cadr key))))
-             (drop-p (and pickup
-                          (equal (e-board-pickup-participant-id pickup)
-                                 participant-id))))
-        (if drop-p
+      (let ((next (cdr cursor)))
+        (if (equal (car cursor) key)
             (progn
               (if previous
                   (setcdr previous next)
@@ -861,39 +1053,87 @@ interpret an old callback as a newly admitted delivery."
                 (setq e-board-runtime--pending-pickup-tail previous))
               (when (gethash key e-board-runtime--pending-pickup-set)
                 (remhash key e-board-runtime--pending-pickup-set)
-                (e-board-runtime--unsettled-changed)))
-          (setq previous cursor))
-        (setq cursor next)))
+                (e-board-runtime--unsettled-changed))
+              (setq cursor nil))
+          (setq previous cursor
+                cursor next))))
     (unless e-board-runtime--pending-pickup-head
       (setq e-board-runtime--pending-pickup-tail nil))))
 
+(defun e-board-runtime--remove-pending-activity-key (key)
+  "Remove one exact pending activity KEY and settle its queue counter."
+  (let ((cursor e-board-runtime--pending-activity-head)
+        previous)
+    (while cursor
+      (let ((next (cdr cursor)))
+        (if (equal (car cursor) key)
+            (progn
+              (if previous
+                  (setcdr previous next)
+                (setq e-board-runtime--pending-activity-head next))
+              (when (eq cursor e-board-runtime--pending-activity-tail)
+                (setq e-board-runtime--pending-activity-tail previous))
+              (when (gethash key e-board-runtime--pending-activity-set)
+                (remhash key e-board-runtime--pending-activity-set)
+                (e-board-runtime--unsettled-changed))
+              (setq cursor nil))
+          (setq previous cursor
+                cursor next))))
+    (unless e-board-runtime--pending-activity-head
+      (setq e-board-runtime--pending-activity-tail nil))))
+
+(defun e-board-runtime--retire-pickups-for-attachment (attachment)
+  "Settle every nonterminal pickup in ATTACHMENT's local ownership index.
+Pending and ready records are cancelled; an in-flight, accepted, or consumed
+record is tombstoned as uncertain and its exact producer delivery/turn slot is
+settled.  No successor is enqueued: terminal attachment cleanup owns the
+complete participant FIFO and never scans unrelated board deliveries."
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (source-board (e-board-registry-board-source-board board)))
+    (maphash
+     (lambda (delivery-id _owned)
+       (when-let ((pickup (e-board-pickup source-board delivery-id)))
+         (pcase (e-board-pickup-state pickup)
+           ((or 'pending 'ready)
+            (e-board-cancel-pickup source-board delivery-id 'attachment-retired))
+           ((or 'delivering 'accepted 'cancelling)
+            (e-board-pickup-mark-uncertain
+             source-board delivery-id 'attachment-retired))))
+       (e-board-runtime--settle-producer-delivery-for-attachment
+        attachment delivery-id 'cancelled
+        (list :reason 'attachment-retired)))
+   (e-board-runtime-attachment-owned-pickup-ids attachment))))
+
+(defun e-board-runtime--drop-pending-pickups-for-attachment (attachment)
+  "Remove queued runtime pickup callbacks belonging to ATTACHMENT.
+The source-board pickup tombstones are authoritative; this process-local queue
+must also forget their identities so a later replacement attachment cannot
+interpret an old callback as a newly admitted delivery."
+  (let ((board (e-board-runtime-attachment-board attachment)))
+    (maphash
+     (lambda (delivery-id _owned)
+       (e-board-runtime--remove-pending-pickup-key
+        (e-board-runtime--pickup-queue-key board delivery-id)))
+     (e-board-runtime-attachment-owned-pickup-ids attachment))
+    (clrhash (e-board-runtime-attachment-owned-pickup-ids attachment))))
+
 (defun e-board-runtime--drop-attachment-activity (attachment)
   "Drop pending activity mailboxes and callbacks belonging to ATTACHMENT."
-  (let (mailbox-ids)
-    (maphash
-     (lambda (mailbox-id mailbox)
-       (when (eq (plist-get mailbox :attachment) attachment)
-         (push mailbox-id mailbox-ids)))
-     e-board-runtime--work-activity-mailboxes)
-    (dolist (mailbox-id mailbox-ids)
-      (remhash mailbox-id e-board-runtime--work-activity-mailboxes)
-      (let ((cursor e-board-runtime--pending-activity-head)
-            previous)
-        (while cursor
-          (let ((next (cdr cursor)))
-            (if (equal (car cursor) mailbox-id)
-                (progn
-                  (if previous
-                      (setcdr previous next)
-                    (setq e-board-runtime--pending-activity-head next))
-                  (when (eq cursor e-board-runtime--pending-activity-tail)
-                    (setq e-board-runtime--pending-activity-tail previous))
-                  (remhash mailbox-id e-board-runtime--pending-activity-set)
-                  (e-board-runtime--unsettled-changed))
-              (setq previous cursor))
-            (setq cursor next))))
-    (unless e-board-runtime--pending-activity-head
-      (setq e-board-runtime--pending-activity-tail nil)))))
+  (maphash
+   (lambda (mailbox-id _owned)
+     (remhash mailbox-id e-board-runtime--work-activity-mailboxes)
+     (e-board-runtime--remove-pending-activity-key mailbox-id))
+   (e-board-runtime-attachment-activity-mailbox-keys attachment))
+  (clrhash (e-board-runtime-attachment-activity-mailbox-keys attachment))
+  (unless e-board-runtime--pending-activity-head
+    (setq e-board-runtime--pending-activity-tail nil))
+  ;; A queued callback may still run after this exact attachment has been
+  ;; retired.  Fence it by generation, then schedule a fresh page for other
+  ;; live attachments if one remains.
+  (cl-incf e-board-runtime--activity-drain-generation)
+  (setq e-board-runtime--activity-drain-scheduled nil)
+  (when e-board-runtime--pending-activity-head
+    (e-board-runtime--schedule-activity-drain)))
 
 (defun e-board-runtime--drop-attachment-invocations (attachment)
   "Retire exact invocation callbacks captured by ATTACHMENT."
@@ -910,19 +1150,20 @@ interpret an old callback as a newly admitted delivery."
 (defun e-board-runtime-retire-attachment (attachment)
   "Idempotently retire exact ATTACHMENT and its runtime-owned board state.
 Chat/application services use this terminal operation after releasing their
-presentation leases.  Runtime ownership alone removes exact attachment maps,
-settles the participant FIFO, drops activity/invocation callbacks, and retires
-the participant's ordinary routes through the board-registry owner.  A held
-board object is valid while active, closing, or closed; durable session and
-board association are deliberately untouched so a later public ensure can
-rebuild an attachment.  Replacement attachments or leases are never removed."
+presentation leases.  Runtime ownership alone fences and settles the local
+pickup, producer, activity, and invocation state, then asks the board-registry
+owner to retire ordinary routes while the exact runtime map triple remains
+authoritative.  Only after that lower owner succeeds are the maps removed.
+The staged operation therefore remains retryable after any lower-owner error;
+replacement attachments or leases are never removed, and durable session/board
+association is deliberately untouched so a later public ensure can rebuild an
+attachment."
   (unless (e-board-runtime-attachment-p attachment)
     (signal 'wrong-type-argument
             (list 'e-board-runtime-attachment-p attachment)))
   (let* ((board (e-board-runtime-attachment-board attachment))
          (participant (e-board-runtime-attachment-participant attachment))
-         (already-retired
-          (eq (e-board-runtime-attachment-state attachment) 'dormant))
+         (stage (e-board-runtime-attachment-retirement-stage attachment))
          (attachment-key
           (and participant
                (e-board-runtime--attachment-key board participant)))
@@ -932,8 +1173,9 @@ rebuild an attachment.  Replacement attachments or leases are never removed."
            (e-board-runtime-attachment-harness attachment)
            (e-board-runtime-attachment-session-id attachment)))
          ;; A rebind/move may leave this object holding the same participant
-         ;; while a newer attachment owns the live maps.  Only their exact
-         ;; triple authorizes participant/FIFO retirement.
+         ;; while a newer attachment owns the live maps.  Only the exact
+         ;; triple captured at retirement start authorizes participant/FIFO
+         ;; retirement, and that authorization is retained across retries.
          (owns-runtime-p
           (and attachment-key
                (eq (gethash attachment-key e-board-runtime--attachments)
@@ -944,37 +1186,64 @@ rebuild an attachment.  Replacement attachments or leases are never removed."
                    attachment)))
          (reconciliation
           (e-board-runtime-attachment-reconciliation attachment)))
-    (when reconciliation
-      (setf (e-board-runtime-reconciliation-state reconciliation) 'cancelled
-            (e-board-runtime-reconciliation-scheduled reconciliation) nil
-            (e-board-runtime-attachment-reconciliation attachment) nil)
-      (unless (e-request-terminal-p
-               (e-board-runtime-reconciliation-request reconciliation))
-        (e-request-fail
-         (e-board-runtime-reconciliation-request reconciliation)
-         (list 'e-board-runtime-attachment-retired))))
-    (e-board-runtime--unsubscribe-attachment-activity attachment)
-    (when owns-runtime-p
-      (e-board-runtime--retire-pickups-for-attachment attachment)
-      (e-board-runtime--drop-pending-pickups-for-attachment attachment))
-    (e-board-runtime--drop-attachment-activity attachment)
-    (e-board-runtime--drop-attachment-invocations attachment)
-    (dolist (table/key
-             (list (cons e-board-runtime--attachments attachment-key)
-                   (cons e-board-runtime--session-attachments session-key)
-                   (cons e-board-runtime--endpoint-attachments endpoint-key)))
-      (when (eq (gethash (cdr table/key) (car table/key)) attachment)
-        (remhash (cdr table/key) (car table/key))))
-    (when (and participant owns-runtime-p)
-      (e-board-registry-retire-participant-exact board participant))
-    (setf (e-board-runtime-attachment-subscription attachment) nil
-          (e-board-runtime-attachment-state attachment) 'dormant
-          (e-board-runtime-attachment-reconciliation attachment) nil)
-    (clrhash (e-board-runtime-attachment-turn-activity attachment))
-    (clrhash (e-board-runtime-attachment-turn-tags attachment))
-    (clrhash (e-board-runtime-attachment-turn-delivery-ids attachment))
-    (unless already-retired
-      (cl-incf (e-board-runtime-attachment-generation attachment)))
+    (unless (eq stage 'done)
+      (when (eq stage 'live)
+        (setf (e-board-runtime-attachment-retirement-authorized-p attachment)
+              owns-runtime-p
+              ;; Local producer records are owned by this attachment object
+              ;; even after a controlled rebind has published a replacement
+              ;; into the runtime maps.  Keep their exact object/generation
+              ;; authority independent from map ownership; board pickup/FIFO
+              ;; mutation below remains restricted to the current map triple.
+              (e-board-runtime-attachment-retirement-work-authorized-p attachment)
+              t
+              (e-board-runtime-attachment-retirement-generation attachment)
+              (e-board-runtime-attachment-generation attachment)
+              (e-board-runtime-attachment-retirement-stage attachment)
+              'local
+              ;; Invalidate every callback captured before this transition.
+              (e-board-runtime-attachment-state attachment) 'retiring)
+        (cl-incf (e-board-runtime-attachment-generation attachment)))
+      (when reconciliation
+        (setf (e-board-runtime-reconciliation-state reconciliation) 'cancelled
+              (e-board-runtime-reconciliation-scheduled reconciliation) nil
+              (e-board-runtime-attachment-reconciliation attachment) nil)
+        (unless (e-request-terminal-p
+                 (e-board-runtime-reconciliation-request reconciliation))
+          (e-request-fail
+           (e-board-runtime-reconciliation-request reconciliation)
+           (list 'e-board-runtime-attachment-retired))))
+      (e-board-runtime--unsubscribe-attachment-activity attachment)
+      (when (e-board-runtime-attachment-retirement-work-authorized-p attachment)
+        ;; Settlement is attachment-local and runs before route teardown, so
+        ;; accepted/consumed producer work cannot strand its aggregate count.
+        (e-board-runtime--settle-producer-turns-for-attachment attachment)
+        (e-board-runtime--settle-producer-deliveries-for-attachment attachment))
+      (when (e-board-runtime-attachment-retirement-authorized-p attachment)
+        (e-board-runtime--retire-pickups-for-attachment attachment)
+        (e-board-runtime--drop-pending-pickups-for-attachment attachment))
+      (e-board-runtime--drop-attachment-activity attachment)
+      (e-board-runtime--drop-attachment-invocations attachment)
+      (when (e-board-runtime-attachment-retirement-authorized-p attachment)
+        ;; This call is deliberately made while the exact runtime maps still
+        ;; exist.  A signal leaves `retirement-stage' at `local' and permits a
+        ;; later retry to use the same authority rather than falling back to
+        ;; an id lookup.
+        (e-board-registry-retire-participant-exact board participant))
+      (setf (e-board-runtime-attachment-retirement-stage attachment) 'maps)
+      (dolist (table/key
+               (list (cons e-board-runtime--attachments attachment-key)
+                     (cons e-board-runtime--session-attachments session-key)
+                     (cons e-board-runtime--endpoint-attachments endpoint-key)))
+        (when (eq (gethash (cdr table/key) (car table/key)) attachment)
+          (remhash (cdr table/key) (car table/key))))
+      (setf (e-board-runtime-attachment-subscription attachment) nil
+            (e-board-runtime-attachment-state attachment) 'dormant
+            (e-board-runtime-attachment-reconciliation attachment) nil
+            (e-board-runtime-attachment-retirement-stage attachment) 'done)
+      (clrhash (e-board-runtime-attachment-turn-activity attachment))
+      (clrhash (e-board-runtime-attachment-turn-tags attachment))
+      (clrhash (e-board-runtime-attachment-turn-delivery-ids attachment)))
     attachment))
 
 (defun e-board-runtime-abort-new-attachment (attachment)
@@ -983,42 +1252,17 @@ Remove only exact runtime ownership, activity sink, and registry membership;
 this path is not a general participant removal operation and emits no durable
 board event."
   (when (e-board-runtime-attachment-p attachment)
-    (let* ((board (e-board-runtime-attachment-board attachment))
-           (participant (e-board-runtime-attachment-participant attachment))
-           (harness (e-board-runtime-attachment-harness attachment))
-           (session-id (e-board-runtime-attachment-session-id attachment)))
-      (e-board-runtime--unsubscribe-attachment-activity attachment)
-      (dolist (table/key
-               (list (cons e-board-runtime--attachments
-                           (and participant
-                                (e-board-runtime--attachment-key
-                                 board participant)))
-                     (cons e-board-runtime--session-attachments
-                           (e-board-runtime--attachment-session-key attachment))
-                     (cons e-board-runtime--endpoint-attachments
-                           (e-board-runtime--session-key harness session-id))))
-        (when (eq (gethash (cdr table/key) (car table/key)) attachment)
-          (remhash (cdr table/key) (car table/key))))
+    ;; Reuse the exact runtime owner transition.  A fully activated
+    ;; attachment retires its participant/routes before map removal; an
+    ;; attachment that failed before the map triple existed is then removed by
+    ;; the unpublished-admission inverse below, whose board owner applies the
+    ;; same exact route fence.  No private route copy or id-only fallback is
+    ;; needed here.
+    (let ((board (e-board-runtime-attachment-board attachment))
+          (participant (e-board-runtime-attachment-participant attachment)))
+      (e-board-runtime-retire-attachment attachment)
       (when participant
-        ;; The chat service may have installed the participant's ordinary
-        ;; pickup subscription before a later admission step failed.  This
-        ;; attachment is still unpublished and owns every subscription for
-        ;; its participant; remove those live routes before dropping the
-        ;; participant so failed admission cannot leave an active ghost.
-        (let* ((source-board
-                (e-board-registry-board-source-board board))
-               (participant-id
-                (e-board-registry-participant-id participant)))
-          (dolist (subscription (copy-sequence
-                                 (e-board-subscriptions source-board)))
-            (when (equal (e-board-subscription-participant-id subscription)
-                         participant-id)
-              (setf (e-board-subscription-state subscription) 'cancelled)
-              (remhash (e-board-subscription-id subscription)
-                       (e-board-subscription-id-table source-board)))))
         (e-board-registry-abort-participant-admission board participant))
-      (setf (e-board-runtime-attachment-state attachment) 'dormant
-            (e-board-runtime-attachment-subscription attachment) nil)
       t)))
 
 (defun e-board-runtime--register-invocation
@@ -1112,19 +1356,33 @@ new runtime.  Hook thunks are already receipt-deduplicated by `e-work'."
     (setq e-board-runtime--deferred-hook-drain-scheduled t)
     (run-at-time 0 nil #'e-board-runtime--drain-deferred-hooks)))
 
-(defun e-board-runtime--enqueue-activity-flush (work-id)
-  "Queue one future flush for WORK-ID without retaining each raw update."
-  (unless (gethash work-id e-board-runtime--pending-activity-set)
-    (puthash work-id t e-board-runtime--pending-activity-set)
-    (let ((cell (list work-id)))
+(defun e-board-runtime--schedule-activity-drain ()
+  "Schedule one generation-fenced activity mailbox drain."
+  (unless e-board-runtime--activity-drain-scheduled
+    (setq e-board-runtime--activity-drain-scheduled t)
+    (let ((generation e-board-runtime--activity-drain-generation))
+      (run-at-time
+       0 nil
+       (lambda ()
+         (when (= generation e-board-runtime--activity-drain-generation)
+           (e-board-runtime--drain-activity-mailboxes generation)))))))
+
+(defun e-board-runtime--enqueue-activity-flush (mailbox-id &optional attachment)
+  "Queue one future flush for MAILBOX-ID without retaining each raw update.
+When ATTACHMENT is supplied, the key is indexed in that attachment's local
+ownership table so retirement does not scan unrelated global mailboxes."
+  (when attachment
+    (puthash mailbox-id t
+             (e-board-runtime-attachment-activity-mailbox-keys attachment)))
+  (unless (gethash mailbox-id e-board-runtime--pending-activity-set)
+    (puthash mailbox-id t e-board-runtime--pending-activity-set)
+    (let ((cell (list mailbox-id)))
       (if e-board-runtime--pending-activity-tail
           (setcdr e-board-runtime--pending-activity-tail cell)
         (setq e-board-runtime--pending-activity-head cell))
       (setq e-board-runtime--pending-activity-tail cell))
     (e-board-runtime--unsettled-changed))
-  (unless e-board-runtime--activity-drain-scheduled
-    (setq e-board-runtime--activity-drain-scheduled t)
-    (run-at-time 0 nil #'e-board-runtime--drain-activity-mailboxes)))
+  (e-board-runtime--schedule-activity-drain))
 
 (defun e-board-runtime--activity-content (activity-kind payload)
   "Return bounded board content for ACTIVITY-KIND and PAYLOAD.
@@ -1139,79 +1397,94 @@ work activity remains a diagnostic snapshot of its arbitrary payload."
            (e-prin1-safe payload))))
     (truncate-string-to-width content 512 nil nil "...")))
 
-(defun e-board-runtime--drain-activity-mailboxes ()
+(defun e-board-runtime--drain-activity-mailboxes (&optional generation)
   "Publish one bounded page of latest work activity mailbox snapshots."
-  (setq e-board-runtime--activity-drain-scheduled nil)
-  (let ((processed 0))
-    (while (and e-board-runtime--pending-activity-head
-                (< processed e-board-runtime-activity-drain-limit))
-      (let* ((work-id (pop e-board-runtime--pending-activity-head))
-             (mailbox (gethash work-id e-board-runtime--work-activity-mailboxes)))
-        (unless e-board-runtime--pending-activity-head
-          (setq e-board-runtime--pending-activity-tail nil))
-        (let ((counted (gethash work-id e-board-runtime--pending-activity-set)))
-          (remhash work-id e-board-runtime--pending-activity-set)
-          (when counted
-            (e-board-runtime--unsettled-changed)))
-        (remhash work-id e-board-runtime--work-activity-mailboxes)
-        (cl-incf processed)
-        (when mailbox
-          (let* ((attachment (plist-get mailbox :attachment))
-                 (board (e-board-registry-board-source-board
-                         (e-board-runtime-attachment-board attachment)))
-                 (participant-id
-                  (e-board-registry-participant-id
-                   (e-board-runtime-attachment-participant attachment))))
-            (when (e-board-runtime--current-attachment-p attachment)
-              (e-board-post-activity
-               board
-               :author (format "participant:%s" participant-id)
-               :subject-participant-id participant-id
-               :source-turn-id (plist-get mailbox :turn-id)
-               :activity-kind (or (plist-get mailbox :activity-kind)
-                                  'work-progress)
-               :tags (copy-tree (plist-get mailbox :tags))
-               :attributes
-               (append (list :work-id work-id)
-                       (when-let ((subagent-id
-                                   (plist-get (plist-get mailbox :payload)
-                                              :subagent-id)))
-                         (list :subagent-id subagent-id)))
-               :content
-               (e-board-runtime--activity-content
-                (or (plist-get mailbox :activity-kind) 'work-progress)
-                (plist-get mailbox :payload))
-               :caused-by-delivery-ids
-               (copy-tree
-                (gethash (plist-get mailbox :turn-id)
-                         (e-board-runtime-attachment-turn-delivery-ids
-                          attachment)))
-               :source-activity-key (plist-get mailbox :source-key)))))))
-    (when e-board-runtime--pending-activity-head
-      (setq e-board-runtime--activity-drain-scheduled t)
-      (run-at-time 0 nil #'e-board-runtime--drain-activity-mailboxes))))
+  (when (or (null generation)
+            (= generation e-board-runtime--activity-drain-generation))
+    (setq e-board-runtime--activity-drain-scheduled nil)
+    (let ((processed 0))
+      (while (and e-board-runtime--pending-activity-head
+                  (< processed e-board-runtime-activity-drain-limit))
+        (let* ((mailbox-id (pop e-board-runtime--pending-activity-head))
+               (mailbox (gethash mailbox-id
+                                  e-board-runtime--work-activity-mailboxes)))
+          (unless e-board-runtime--pending-activity-head
+            (setq e-board-runtime--pending-activity-tail nil))
+          (let ((counted (gethash mailbox-id
+                                  e-board-runtime--pending-activity-set)))
+            (remhash mailbox-id e-board-runtime--pending-activity-set)
+            (when counted
+              (e-board-runtime--unsettled-changed)))
+          (remhash mailbox-id e-board-runtime--work-activity-mailboxes)
+          (when mailbox
+            (let* ((attachment (plist-get mailbox :attachment))
+                   (board (e-board-registry-board-source-board
+                           (e-board-runtime-attachment-board attachment)))
+                   (participant-id
+                    (e-board-registry-participant-id
+                     (e-board-runtime-attachment-participant attachment))))
+              (remhash mailbox-id
+                       (e-board-runtime-attachment-activity-mailbox-keys
+                        attachment))
+              (when (and (e-board-runtime--current-active-attachment-p attachment)
+                         (= (or (plist-get mailbox :generation)
+                                (e-board-runtime-attachment-generation attachment))
+                            (e-board-runtime-attachment-generation attachment)))
+                (e-board-post-activity
+                 board
+                 :author (format "participant:%s" participant-id)
+                 :subject-participant-id participant-id
+                 :source-turn-id (plist-get mailbox :turn-id)
+                 :activity-kind (or (plist-get mailbox :activity-kind)
+                                    'work-progress)
+                 :tags (copy-tree (plist-get mailbox :tags))
+                 :attributes
+                 (append (when-let ((work-id (plist-get mailbox :work-id)))
+                           (list :work-id work-id))
+                         (when-let ((subagent-id
+                                     (plist-get (plist-get mailbox :payload)
+                                                :subagent-id)))
+                           (list :subagent-id subagent-id)))
+                 :content
+                 (e-board-runtime--activity-content
+                  (or (plist-get mailbox :activity-kind) 'work-progress)
+                  (plist-get mailbox :payload))
+                 :caused-by-delivery-ids
+                 (copy-tree
+                  (gethash (plist-get mailbox :turn-id)
+                           (e-board-runtime-attachment-turn-delivery-ids
+                            attachment)))
+                 :source-activity-key (plist-get mailbox :source-key)))))
+          (cl-incf processed)))
+      (when e-board-runtime--pending-activity-head
+        (e-board-runtime--schedule-activity-drain)))))
 
 (defun e-board-runtime--capture-work-activity (attachment handle payload)
   "Replace HANDLE's bounded progress mailbox with PAYLOAD.
 This is the sole synchronous activity observer installed by board enrollment.
 It neither formats nor publishes PAYLOAD; a later runtime activity publisher
 will consume the mailbox under its own bounded drain."
-  (let* ((work-id (e-work-handle-id handle))
+  ;; Check exact current authority before mutating either mailbox or queue.
+  ;; Work listeners outlive a canceled handle by design; a stale listener must
+  ;; be a no-op even if a replacement reuses the same Work id.
+  (when (e-board-runtime--current-active-attachment-p attachment)
+    (let* ((work-id (e-work-handle-id handle))
          (participant-id
           (e-board-registry-participant-id
            (e-board-runtime-attachment-participant attachment)))
+         (generation (e-board-runtime-attachment-generation attachment))
+         (mailbox-id
+          (list (e-board-runtime-attachment-identity-token attachment)
+                generation 'work work-id))
          (sequence (cl-incf (e-board-runtime-attachment-activity-sequence attachment))))
-    (puthash work-id
-             (list :attachment attachment
-                   :turn-id (plist-get (e-work-handle-context handle) :turn-id)
-                   :activity-kind 'work-progress
-                   :payload payload
-                   :source-key
-                   (list participant-id
-                         (e-board-runtime-attachment-generation attachment)
-                         sequence))
-             e-board-runtime--work-activity-mailboxes)
-    (e-board-runtime--enqueue-activity-flush work-id)))
+      (puthash mailbox-id
+               (list :attachment attachment :generation generation :work-id work-id
+                     :turn-id (plist-get (e-work-handle-context handle) :turn-id)
+                     :activity-kind 'work-progress
+                     :payload payload
+                     :source-key (list participant-id generation sequence))
+               e-board-runtime--work-activity-mailboxes)
+      (e-board-runtime--enqueue-activity-flush mailbox-id attachment))))
 
 (defun e-board-runtime--capture-turn-progress (attachment event)
   "Coalesce high-frequency reasoning EVENT into one latest-value mailbox."
@@ -1221,14 +1494,17 @@ will consume the mailbox under its own bounded drain."
           (e-board-registry-participant-id
            (e-board-runtime-attachment-participant attachment)))
          (mailbox-id
-          (list 'turn-progress participant-id
+          (list (e-board-runtime-attachment-identity-token attachment)
                 (e-board-runtime-attachment-generation attachment)
+                'turn-progress participant-id
                 turn-id activity-kind))
          (source-key
           (e-board-runtime--event-activity-source-key
            attachment event activity-kind)))
     (puthash mailbox-id
-             (list :attachment attachment :turn-id turn-id
+             (list :attachment attachment
+                   :generation (e-board-runtime-attachment-generation attachment)
+                   :work-id nil :turn-id turn-id
                    :activity-kind activity-kind
                    :tags (or (copy-tree
                               (gethash
@@ -1238,7 +1514,7 @@ will consume the mailbox under its own bounded drain."
                    :payload (plist-get event :payload)
                    :source-key source-key)
              e-board-runtime--work-activity-mailboxes)
-    (e-board-runtime--enqueue-activity-flush mailbox-id)))
+    (e-board-runtime--enqueue-activity-flush mailbox-id attachment)))
 
 (defun e-board-runtime--install-work-hooks (attachment handle)
   "Install the private board-runtime hook classification on prepared HANDLE."
@@ -1265,6 +1541,12 @@ will consume the mailbox under its own bounded drain."
 (defun e-board-runtime--enqueue-pickups (board pickup-ids)
   "Enqueue BOARD PICKUP-IDS once; never deliver on an append/effect stack."
   (dolist (pickup-id pickup-ids)
+    (when-let ((pickup
+                (e-board-pickup
+                 (e-board-registry-board-source-board board) pickup-id))
+               (attachment
+                (e-board-runtime--attachment-for-pickup board pickup)))
+      (e-board-runtime--index-attachment-pickup attachment pickup-id))
     (let ((key (e-board-runtime--pickup-queue-key board pickup-id)))
       (unless (gethash key e-board-runtime--pending-pickup-set)
         (puthash key t e-board-runtime--pending-pickup-set)
@@ -1584,95 +1866,171 @@ only the generic status fields presentation consumers need."
          :source-activity-key
          (e-board-runtime--event-activity-source-key attachment event 'turn-summary))))))
 
+(defun e-board-runtime--record-turn-delivery
+    (attachment turn-id delivery-id)
+  "Record one unique DELIVERY-ID under ATTACHMENT's TURN-ID projection."
+  (let ((ids (gethash turn-id
+                      (e-board-runtime-attachment-turn-delivery-ids attachment))))
+    (unless (member delivery-id ids)
+      (puthash turn-id (append ids (list delivery-id))
+               (e-board-runtime-attachment-turn-delivery-ids attachment)))))
+
 (defun e-board-runtime--producer-turn-key (attachment turn-id)
-  "Return producer completion key for ATTACHMENT and TURN-ID."
+  "Return exact attachment-generation producer key for TURN-ID."
   (list (e-board-registry-board-id
          (e-board-runtime-attachment-board attachment))
         (e-board-registry-participant-id
          (e-board-runtime-attachment-participant attachment))
+        (e-board-runtime--attachment-work-generation attachment)
         turn-id))
 
 (defun e-board-runtime--settle-producer-turn (attachment event status)
   "Settle any producer delivery causally owned by terminal EVENT."
   (when-let* ((turn-id (plist-get event :turn-id))
-              (entry (gethash (e-board-runtime--producer-turn-key
-                               attachment turn-id)
-                              e-board-runtime--producer-turns)))
-    (remhash (e-board-runtime--producer-turn-key attachment turn-id)
-             e-board-runtime--producer-turns)
-    (e-board-runtime--producer-delivery-terminal
-     (car entry) (cadr entry) status
-     (list :turn-id turn-id :participant-id
-           (e-board-registry-participant-id
-            (e-board-runtime-attachment-participant attachment))))))
+              (key (e-board-runtime--producer-turn-key attachment turn-id))
+              (entry (gethash key e-board-runtime--producer-turns)))
+    (when (and (e-board-runtime-producer-turn-p entry)
+               (eq (e-board-runtime-producer-turn-attachment entry) attachment)
+               (= (e-board-runtime-producer-turn-generation entry)
+                  (e-board-runtime--attachment-work-generation attachment)))
+      (remhash key e-board-runtime--producer-turns)
+      (remhash key (e-board-runtime-attachment-producer-turn-keys attachment))
+      (e-board-runtime--producer-delivery-terminal
+       (e-board-runtime-producer-turn-item entry)
+       (e-board-runtime-producer-turn-delivery-id entry) status
+       (list :turn-id turn-id :participant-id
+             (e-board-registry-participant-id
+              (e-board-runtime-attachment-participant attachment)))))))
 
 (defun e-board-runtime--handle-harness-event (attachment event)
-  "Publish attached output and reconcile board-delivery receipts from EVENT."
+  "Publish attached output and reconcile board-delivery receipts from EVENT.
+Terminal receipts remain admissible while an attachment is detaching: they are
+the lower-owner proof that lets a bounded removal/rebind finish.  High-volume
+progress is still restricted to the active lease, so a late callback cannot
+recreate an activity mailbox after retirement has begun."
   (when (e-board-runtime--current-attachment-p attachment)
-    (let ((type (e-events-type event)))
-      (when (memq type '(reasoning-delta reasoning-raw-delta))
+    (let* ((type (e-events-type event))
+           (state (e-board-runtime-attachment-state attachment))
+           ;; A detaching participant still needs terminal receipts to finish
+           ;; its explicit removal transaction.  A retiring attachment is
+           ;; different: its application owner has already committed terminal
+           ;; teardown, so a retained terminal event may settle a causally
+           ;; owned producer slot but must not publish a second output/activity
+           ;; row or touch the replacement lifetime.
+           (publish-p (not (eq state 'retiring)))
+           (receipt-p (memq state '(active detaching))))
+      (when (and (memq type '(reasoning-delta reasoning-raw-delta))
+                 (e-board-runtime--current-active-attachment-p attachment))
         (e-board-runtime--capture-turn-progress attachment event))
-      (e-board-runtime--observe-turn-activity attachment event)
-      (e-board-runtime--publish-harness-activity attachment event)
+      (when publish-p
+        (e-board-runtime--observe-turn-activity attachment event)
+        (e-board-runtime--publish-harness-activity attachment event))
       (cond
        ((eq type 'turn-finished)
-        (e-board-runtime--publish-output attachment (plist-get event :turn-id))
-        (e-board-runtime--publish-turn-summary attachment event 'finished)
-        (remhash (plist-get event :turn-id)
-                 (e-board-runtime-attachment-turn-tags attachment))
-        (remhash (plist-get event :turn-id)
-                 (e-board-runtime-attachment-turn-delivery-ids attachment))
-        (e-board-runtime--settle-producer-turn attachment event 'done)
-        (e-board-runtime--enqueue-ready-participant-pickup attachment))
+        (let* ((turn-id (plist-get event :turn-id))
+               (delivery-ids
+                (copy-tree
+                 (gethash turn-id
+                          (e-board-runtime-attachment-turn-delivery-ids
+                           attachment)))))
+          (when publish-p
+            (e-board-runtime--publish-output attachment turn-id)
+            (e-board-runtime--publish-turn-summary attachment event 'finished))
+          (remhash turn-id (e-board-runtime-attachment-turn-tags attachment))
+          (remhash turn-id
+                   (e-board-runtime-attachment-turn-delivery-ids attachment))
+          (dolist (delivery-id delivery-ids)
+            (e-board-runtime--forget-terminal-pickup attachment delivery-id))
+          (e-board-runtime--settle-producer-turn attachment event 'done)
+          (when receipt-p
+            (e-board-runtime--enqueue-ready-participant-pickup attachment))))
        ((memq type '(turn-failed turn-cancelled))
-        (e-board-runtime--publish-terminal-activity attachment event)
-        (e-board-runtime--publish-turn-summary attachment event type)
-        (remhash (plist-get event :turn-id)
-                 (e-board-runtime-attachment-turn-tags attachment))
-        (remhash (plist-get event :turn-id)
-                 (e-board-runtime-attachment-turn-delivery-ids attachment))
-        (e-board-runtime--settle-producer-turn
-         attachment event (if (eq type 'turn-cancelled) 'cancelled 'failed))
-        (e-board-runtime--enqueue-ready-participant-pickup attachment))
+        (let* ((turn-id (plist-get event :turn-id))
+               (delivery-ids
+                (copy-tree
+                 (gethash turn-id
+                          (e-board-runtime-attachment-turn-delivery-ids
+                           attachment)))))
+          (when publish-p
+            (e-board-runtime--publish-terminal-activity attachment event)
+            (e-board-runtime--publish-turn-summary attachment event type))
+          (remhash turn-id (e-board-runtime-attachment-turn-tags attachment))
+          (remhash turn-id
+                   (e-board-runtime-attachment-turn-delivery-ids attachment))
+          (dolist (delivery-id delivery-ids)
+            (e-board-runtime--forget-terminal-pickup attachment delivery-id))
+          (e-board-runtime--settle-producer-turn
+           attachment event (if (eq type 'turn-cancelled) 'cancelled 'failed))
+          (when receipt-p
+            (e-board-runtime--enqueue-ready-participant-pickup attachment))))
        ((eq type 'input-consumed)
-        (let* ((payload (plist-get event :payload))
+        (when receipt-p
+          (let* ((payload (plist-get event :payload))
                (delivery-id (plist-get payload :delivery-id))
                (registry-board (e-board-runtime-attachment-board attachment))
                (board (e-board-registry-board-source-board registry-board))
                (pickup (e-board-pickup board delivery-id)))
-          (when (and pickup (plist-get event :turn-id))
-            (puthash (plist-get event :turn-id) (list delivery-id)
-                     (e-board-runtime-attachment-turn-delivery-ids attachment))
+          (when (and pickup (plist-get event :turn-id)
+                     (e-board-runtime--attempt-belongs-to-attachment-p
+                      pickup attachment))
+            (e-board-runtime--record-turn-delivery
+             attachment (plist-get event :turn-id) delivery-id)
             (puthash (plist-get event :turn-id)
                      (copy-tree
                       (plist-get (e-board-pickup-cause-metadata pickup)
                                  :routing-tags))
                      (e-board-runtime-attachment-turn-tags attachment)))
           (when-let* ((turn-id (plist-get event :turn-id))
-                      (item (gethash delivery-id
-                                     e-board-runtime--producer-deliveries)))
-            (puthash (e-board-runtime--producer-turn-key
-                      attachment turn-id)
-                     (list item delivery-id)
-                     e-board-runtime--producer-turns))
+                      (record (e-board-runtime--producer-delivery-record
+                               delivery-id))
+                      (item (and (e-board-runtime-producer-delivery-p record)
+                                 (e-board-runtime-producer-delivery-item record))))
+            (when (and item pickup
+                       (eq (e-board-runtime-producer-delivery-attachment record)
+                           attachment)
+                       (= (e-board-runtime-producer-delivery-generation record)
+                          (e-board-runtime--attachment-work-generation attachment))
+                       (e-board-runtime--attempt-belongs-to-attachment-p
+                        pickup attachment))
+              (let ((key (e-board-runtime--producer-turn-key attachment turn-id)))
+                (puthash key
+                         (e-board-runtime--producer-turn-create
+                          :id key :item item :delivery-id delivery-id
+                          :attachment attachment
+                          :generation
+                          (e-board-runtime--attachment-work-generation attachment))
+                         e-board-runtime--producer-turns)
+                (puthash key t
+                         (e-board-runtime-attachment-producer-turn-keys
+                          attachment)))))
           (when (and pickup
                      (memq (e-board-pickup-state pickup) '(accepted cancelling))
                      (e-board-runtime--consumption-receipt-matches-p
                       pickup attachment payload))
             (when-let ((next-id
                         (e-board-pickup-complete-delivery board delivery-id)))
-              (e-board-runtime--enqueue-pickups registry-board (list next-id))))))
+              (e-board-runtime--enqueue-pickups registry-board (list next-id)))
+            (e-board-runtime--forget-terminal-pickup attachment delivery-id)))))
        ((eq type 'input-discarded)
-        (let* ((payload (plist-get event :payload))
+        (when receipt-p
+          (let* ((payload (plist-get event :payload))
                (delivery-id (plist-get payload :delivery-id))
                (registry-board (e-board-runtime-attachment-board attachment))
                (board (e-board-registry-board-source-board registry-board))
                (pickup (e-board-pickup board delivery-id)))
-          (when-let ((item (gethash delivery-id
-                                    e-board-runtime--producer-deliveries)))
-            (e-board-runtime--producer-delivery-terminal
-             item delivery-id 'failed
-             (list :reason (or (plist-get payload :reason) 'input-discarded))))
+          (when-let ((record (e-board-runtime--producer-delivery-record
+                              delivery-id)))
+            (when (and pickup
+                       (e-board-runtime-producer-delivery-p record)
+                       (eq (e-board-runtime-producer-delivery-attachment record)
+                           attachment)
+                       (e-board-runtime--attempt-belongs-to-attachment-p
+                        pickup attachment))
+              (e-board-runtime--producer-delivery-terminal
+               (e-board-runtime-producer-delivery-item record)
+               delivery-id 'failed
+               (list :reason (or (plist-get payload :reason)
+                                 'input-discarded)))))
           (when (and pickup
                      (memq (e-board-pickup-state pickup) '(accepted cancelling))
                      (e-board-runtime--consumption-receipt-matches-p
@@ -1681,9 +2039,11 @@ only the generic status fields presentation consumers need."
                         (e-board-pickup-discard-delivery
                          board delivery-id
                          (or (plist-get payload :reason) 'input-discarded))))
-              (e-board-runtime--enqueue-pickups registry-board (list next-id))))))
+              (e-board-runtime--enqueue-pickups registry-board (list next-id)))
+            (e-board-runtime--forget-terminal-pickup attachment delivery-id)))))
        ((eq type 'session-reset)
-        (let* ((registry-board (e-board-runtime-attachment-board attachment))
+        (when receipt-p
+          (let* ((registry-board (e-board-runtime-attachment-board attachment))
                (board (e-board-registry-board-source-board registry-board))
                (participant-id
                 (e-board-registry-participant-id
@@ -1695,7 +2055,8 @@ only the generic status fields presentation consumers need."
             (when-let ((next-id
                         (e-board-pickup-discard-delivery
                          board delivery-id 'session-reset)))
-              (e-board-runtime--enqueue-pickups registry-board (list next-id)))))))
+              (e-board-runtime--enqueue-pickups registry-board (list next-id)))
+            (e-board-runtime--forget-terminal-pickup attachment delivery-id))))))
       (when (and (memq type '(queue-changed turn-finished turn-failed
                               turn-cancelled input-consumed input-discarded
                               session-reset))
@@ -1977,6 +2338,15 @@ This operation never invokes an instance factory or loads dormant history."
           :turn-activity (make-hash-table :test 'equal)
           :turn-tags (make-hash-table :test 'equal)
           :turn-delivery-ids (make-hash-table :test 'equal)
+          :identity-token (make-symbol "board-runtime-attachment-")
+          :owned-pickup-ids (make-hash-table :test 'equal)
+          :producer-delivery-ids (make-hash-table :test 'equal)
+          :producer-turn-keys (make-hash-table :test 'equal)
+          :activity-mailbox-keys (make-hash-table :test 'equal)
+          :retirement-stage 'live
+          :retirement-authorized-p nil
+          :retirement-work-authorized-p t
+          :retirement-generation nil
           :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)
           :instance-id (plist-get metadata :instance-id)
           :instance-catalog-generation
@@ -2035,6 +2405,14 @@ This operation never invokes an instance factory or loads dormant history."
     (puthash session-key attachment e-board-runtime--session-attachments)
     (puthash endpoint-key attachment e-board-runtime--endpoint-attachments)
     (e-board-runtime--configure-attachment attachment)
+    ;; Existing participant FIFO records become this attachment's local
+    ;; ownership set at activation; later enqueue edges add only their exact
+    ;; delivery ids.
+    (dolist (delivery-id
+             (e-board--pickup-queue
+              (e-board-registry-board-source-board board)
+              (e-board-registry-participant-id participant)))
+      (e-board-runtime--index-attachment-pickup attachment delivery-id))
     attachment))
 
 (defun e-board-runtime--schedule-reconciliation (reconciliation)
@@ -2163,7 +2541,13 @@ This operation never invokes an instance factory or loads dormant history."
               (list "Participant attachment changed during rebind"
                     (e-board-registry-participant-id participant))))
     (e-board-runtime--require-rebind-target-free new-harness new-session-id)
+    ;; A consumed turn has already quiesced before this commit.  Settle its
+    ;; exact producer handoff before OLD becomes dormant; the transfer helper
+    ;; settles any non-pending receipt and only pending/ready FIFO work crosses
+    ;; the rebind.
+    (e-board-runtime--settle-producer-turns-for-attachment old)
     (setq new (e-board-runtime--prepare-rebind-attachment reconciliation))
+    (e-board-runtime--transfer-attachment-pending-work old new)
     (e-board-runtime--unsubscribe-attachment-activity old)
     (remhash (e-board-runtime--attachment-session-key old)
              e-board-runtime--session-attachments)
@@ -2239,6 +2623,11 @@ This operation never invokes an instance factory or loads dormant history."
                     (e-board-registry-participant-id participant))))
     (e-board-registry-authorize-participant-move
      source destination requester participant destination-participant-id)
+    ;; Move cancels the old participant FIFO rather than preserving it.  Close
+    ;; any exact producer turn/receipt left by the quiescence proof before the
+    ;; attachment changes board ownership.
+    (e-board-runtime--settle-producer-turns-for-attachment old)
+    (e-board-runtime--settle-producer-deliveries-for-attachment old)
     (setq new (e-board-runtime--prepare-move-attachment reconciliation))
     (condition-case condition
         (setq moved-participant
@@ -2295,6 +2684,11 @@ membership operation after the old endpoint becomes quiescent."
     (cond
      ((and pickup (memq (e-board-pickup-state pickup) '(pending ready)))
       (e-board-cancel-pickup source-board delivery-id reason)
+      ;; The pickup is terminal now, so its producer delivery no longer has a
+      ;; future harness receipt that could settle it.  Keep the settlement
+      ;; keyed by this exact attachment; a replacement must not inherit it.
+      (e-board-runtime--settle-producer-delivery-for-attachment
+       attachment delivery-id 'cancelled (list :reason reason))
       (e-request-progress
        request (list :phase 'reconciling-inbox :delivery-id delivery-id))
       (e-board-runtime--schedule-reconciliation reconciliation))
@@ -2673,6 +3067,28 @@ and pickup tombstones remain on the source board."
                             source-board delivery-id 'delivery-authorization-revoked)))
                  (e-board-runtime--enqueue-pickups board (list next-id))))
               ('authorized
+               ;; A classifier already queued before terminal retirement may
+               ;; reach this bounded drain after the attachment has entered its
+               ;; retiring stage.  Cancel only that exact current attachment's
+               ;; ready pickup and settle its producer record; detached/rebind
+               ;; reconciliation retains its own normal receipt protocol.
+               (when-let ((retiring-attachment
+                           (gethash
+                            (and participant
+                                 (e-board-runtime--attachment-key
+                                  board participant))
+                            e-board-runtime--attachments)))
+                 (when (and (eq (e-board-runtime-attachment-state
+                                 retiring-attachment) 'retiring)
+                            (e-board-runtime--current-attachment-p
+                             retiring-attachment))
+                   (e-board-cancel-pickup
+                    source-board delivery-id 'attachment-retired)
+                   (e-board-runtime--settle-producer-delivery-for-attachment
+                    retiring-attachment delivery-id 'cancelled
+                    (list :reason 'attachment-retired))
+                   (e-board-runtime--forget-attachment-pickup
+                    retiring-attachment delivery-id)))
                (when-let* ((attachment
                            (gethash
                              (e-board-runtime--attachment-key board participant)
@@ -2753,8 +3169,13 @@ and pickup tombstones remain on the source board."
                                        'delivery-retry-exhausted)))
                             (e-board-runtime--enqueue-pickups
                              board (list next-id)))
-                        (e-board-runtime--enqueue-pickups
-                         board (list delivery-id)))))))))))))))
+                         (e-board-runtime--enqueue-pickups
+                         board (list delivery-id))))))))))
+            ;; Terminal delivery results no longer need a second local pickup
+            ;; index entry.  The lookup is by this participant's exact map key,
+            ;; never by a board-wide scan.
+            (e-board-runtime--forget-terminal-pickup-for-board
+             board delivery-id))))))
 
 (cl-defun e-board-runtime--post-client-input
     (board-or-id &key id author tags attributes to requester
@@ -2913,7 +3334,10 @@ publication itself."
   (when (e-board-runtime-attachment-subscription attachment)
     (e-harness-attached-turn-port-stop-observing
      (e-board-runtime-attachment-turn-port attachment)
-     (e-board-runtime-attachment-subscription attachment))))
+     (e-board-runtime-attachment-subscription attachment))
+    ;; Clear only after the owner accepted the stop.  If it signals, the exact
+    ;; handle remains available for the retryable retirement stage.
+    (setf (e-board-runtime-attachment-subscription attachment) nil)))
 
 (provide 'e-board-runtime)
 

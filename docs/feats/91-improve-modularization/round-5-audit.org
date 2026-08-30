@@ -756,6 +756,222 @@ behavior, or reload contract changed.  Core runtime/service definitions
 require a restart in an already running Emacs; the running process was not
 queried or changed.
 
+*** Deferred-lifetime remediation (current exact candidate)
+
+This continuation starts from clean exact baseline
+=906a28cf6daf61afca2bb4de1f68b907e1be7ff8= (candidate under review
+=23049b68=).  It is the next exact review candidate, does not edit =review.org= or =index.org=,
+and leaves Feature 91 acceptance pending.  Behavioral status and mechanism
+status remain separate: behavior is green on the current deterministic and
+graphical gates; the staged owner correction is awaiting parent/independent
+review.
+
+**** Responsibility, state, lifetime, and side-effect matrix
+
+| Cluster | Sole owner and state | Lifetime/ordering invariant | Boundary/disposition |
+|---+---+---+---|
+| Attachment authority | =e-board-runtime= exact attachment object, map triple, state, generation, retirement stage | Exact object/map authority is retained from =live= through lower-owner settlement; maps are removed only at =done= | =e-board-runtime-retire-attachment=; retained cohesive adapter, strengthened retry fence |
+| Producer delivery/turn work | =e-board-runtime= attachment-local pickup ids, producer-delivery records, consumed-turn keys | Every unsettled producer item has one exact attachment/generation; terminal retirement settles only its local keys and all counts reach zero | Existing producer port retained; records made identity/generation-shaped, no board-global scan |
+| Work/activity callbacks | =e-board-runtime= attachment mailbox keys and drain generation | Current-active check precedes mailbox mutation; queued drain generation cannot publish after retirement/replacement | Existing observer seam retained; late callback fence strengthened |
+| Board ordinary route | =e-board= subscription object, monotonic lifetime token, timer/replay/activation references | Object and token must match current id-table lifetime; immutable history remains while deferred effects/timers are fenced | New exact board owner operation; no duplicate registry transition |
+| Participant/route catalog | =e-board-registry= exact participant/source maps | Routes retire before participant maps; a failed route step preserves authority for retry; same-id replacement is untouched | Registry delegates to board exact operation, then removes exact maps |
+| Service binding | =e-chat-service= binding state/generation, clients, observer cursor and timer handles | Service remains =retiring= until runtime completion; catalogs/clients are removed only after exact lower-owner success | Existing service coordinator retained; error visibility and re-ensure recovery strengthened |
+| Durable association/history | Session store and board journal | Process-local retirement writes no new association/format; public ensure may reopen durable association | Retained and unchanged |
+
+The side-effect order is intentionally
+=e-chat-service -> e-board-runtime -> e-board-registry -> e-board=.
+Runtime does not call service; registry does not reach runtime maps; board does
+not call either upper owner.  The existing durable participant-removal path is
+not a duplicate of process-local retirement: it emits the established durable
+event and inactive projection, while exact teardown suppresses a synthetic
+transition event and preserves immutable history.
+
+**** Staged transition and retry postconditions
+
+For an exact current attachment, retirement transitions
+=live -> local -> maps -> done=.  At =local= it captures the prior work
+generation, marks the attachment =retiring=, increments callback generation,
+stops its observer (retaining the handle if that stop errors), cancels its
+reconciliation request, and settles local producer/activity/invocation state.
+The exact participant and all three runtime maps remain authoritative while
+the registry/board owner completes route retirement.  A failure at observer
+stop, route transition, route timer/replay cleanup, or participant-map cleanup
+is propagated; the stage and exact object remain retryable.  A repeated call
+is idempotent and re-runs only owner cleanup still needed.  Replacement maps
+are never removed because every mutation is object-identity fenced.
+
+Service binding retirement mirrors this contract: it marks the binding
+=retiring= and retains the service/catalog identity until
+=e-board-runtime-retire-attachment= succeeds.  Thus an unexpected lower-owner
+error remains visible, public ensure cannot create an ambiguous duplicate, and
+the repeated retirement can complete.  Once successful, the binding becomes
+=retired= and service-owned clients/catalogs are removed; durable session/board
+association remains available for allowed re-ensure and submit.
+
+**** Producer ownership and deferred callback matrix
+
+| Source state/event | Exact owner action | Replacement effect |
+|---+---+---|
+| Pending/ready pickup | Cancel source pickup as =attachment-retired=, settle exact producer delivery, remove local queue key | No old FIFO callback can enter replacement |
+| Delivering/accepted/cancelling pickup | Mark source attempt uncertain, settle exact producer delivery/turn slot | Old receipt cannot decrement or publish replacement work |
+| Consumed pickup / active turn handoff | Index turn by attachment-local board/participant/generation/turn key; settle on terminal turn receipt or retirement | Retained old =turn-finished= may close its exact producer record only; no output/activity row reaches replacement |
+| Classifier finishes in retirement window | Route to retiring attachment via current-object check, settle its producer slot, cancel only its ready pickup | No stranded producer item and no unrelated board scan |
+| Controlled rebind | Transfer only producer records and pickup ids still =pending/ready=; settle other records against old generation before commit | Replacement receives surviving FIFO work only |
+| Work progress callback | Require current active attachment before mailbox/queue mutation; mailbox key includes immutable attachment identity and generation | Same Work id on a replacement cannot collide with old mailbox |
+| Queued activity/pickup drain | Remove exact old queue keys and fence drain generation | Queued stale callback is a no-op |
+
+Producer settlement is attachment-local and idempotent.  The producer item
+unsettled counter, attachment delivery/turn indexes, and process-local pending
+queue counters are all reduced at their owner terminal edge.  The implementation
+does not search unrelated board pickups or use a board-global producer index.
+
+**** Exact ordinary-route lifetime fence
+
+=e-board-retire-subscription-exact= owns one exact subscription object and its
+board-monotonic lifetime token.  It cancels readiness/lifetime timers, clears
+accumulators, fences copied classifiers by token, cancels prepared activations
+and their queued effects, removes matching pending replay snapshots, and
+removes only the current id-table entry.  Same-id replacement objects retain
+their independent token and are not changed.  Repeated retirement of a
+cancelled or inactive exact object is a no-op with the same terminal route
+postcondition.  The registry operation enumerates participant routes and
+delegates every transition to this board owner before removing source and
+registry participant maps.  Admission rollback uses the same operation;
+durable participant removal remains its explicitly documented event-emitting
+exception.
+
+The direct route test covers a frozen classifier, prepared continuation effect,
+queued replay, quiet timer, and lifetime-expiry callback against a same-id
+replacement.  The registry tests cover injected board-route failure/retry and
+replacement route cleanup.  The runtime tests cover injected lower-owner
+failure, each observer/route boundary retry, late classifier completion,
+pending/ready/in-flight producer states, consumed turn settlement, controlled
+rebind, and stale Work callbacks.
+
+**** Actual graph and private/duplicate sweeps
+
+The relevant runtime call graph is:
+
+#+begin_example
+e-chat-service -> e-board-runtime -> e-board-registry -> e-board
+e-board-runtime -> e-harness attached-turn port (for observer/turn semantics)
+e-board -> e-work (existing bounded deferred effects)
+#+end_example
+
+No owner calls its facade, no callback registry or service locator is used, and
+there are no reverse runtime edges.  The reproducible all-literal recursive
+local =require= scan (nested/conditional literal forms included, four
+optional local loads included, duplicate source-target edges removed) reports
+=MODULES 163=, =EDGES 709=, =CYCLES []= at
+=/tmp/e-r5-deferred-require-final.log=.  The syntax-aware Feature 91
+extracted-owner production scan reports =CROSS_OWNER_PRIVATE_PRODUCTION 0=
+and
+=DUPLICATE_FUNCTION_DEFINITIONS 0= at
+=/tmp/e-r5-deferred-private-final.log=.  Explicit changed-file whitespace has
+no matches at =/tmp/e-r5-deferred-whitespace-final.log= and =git diff --check=
+is empty at =/tmp/e-r5-deferred-diff-final.log=.  The call graph is acyclic at
+runtime as well as at =require= time because the staged operation calls only
+downward owner contracts and retains exact object authority; no hidden
+declaration/callback edge was introduced.  The paired board core retains its
+established =e-board--append-event=, =e-board--pickup-queue=, and
+=e-board--copy-envelope-value= primitives; those baseline core edges are not
+new extracted-owner bridges and are outside this focused scan.
+
+**** Test topology and dispositions
+
+Existing direct owner suites remain the mechanism boundary: board route
+transitions are asserted in =e-board-test.el=, registry exact membership in
+=e-board-registry-test.el=, attachment/producer/callback lifecycle in
+=e-board-runtime-test.el=, and service recovery/terminal composition in
+=e-modernchat-test.el=.  The new tests are additions/strengthenings rather
+than copied implementation tests.  Public downstream suites continue to test
+board/chat/canvas/task-queue behavior through public operations; no composed
+suite gained a private owner reference.  The exact disposition is: retain
+ordinary owner suites, strengthen with deferred-lifetime regressions, retain
+facade/service scenarios, replace the prior duplicate manual teardown path in
+admission rollback with the board owner operation, and delete no established
+public behavior or durable record test.
+
+**** Exact validation evidence
+
+| Gate | Command/result | Evidence |
+|---+---+---|
+| Board/registry/runtime owners | =eldev test -B --file test/e-board-test.el --file test/e-board-registry-test.el --file test/e-board-runtime-test.el=; 187/187, 0 unexpected | =/tmp/e-r5-deferred-board-reg-runtime-final.log= |
+| Service/modernchat | =eldev test -B --file test/e-modernchat-test.el=; 45/45, 0 unexpected | =/tmp/e-r5-deferred-modernchat-final.log= |
+| Downstream board/session/canvas/task queue | 13 affected files; 208/208, 0 unexpected | =/tmp/e-r5-deferred-consumers-final.log= |
+| Preservation | accepted selector; 485 total, 483 expected, 2 existing skips | =/tmp/e-r5-deferred-preservation-final.log= |
+| Full ERT | =eldev test -B=; 2,585 total, 2,578 expected, 0 unexpected, 7 existing skips | =/tmp/e-r5-deferred-full-ert-final.log= |
+| Compile | =eldev compile=; exit 0, no warning/error output for affected modules | =/tmp/e-r5-deferred-compile-final.log= |
+| Parse/check-parens | eight changed Lisp files; pass | =/tmp/e-r5-deferred-check-parens-final.log= |
+| Fresh owner operations | Fresh =e-board= fact, =e-board-registry= participant, and =e-board-runtime= attach/retire processes pass independently | =/tmp/e-r5-deferred-fresh-board.log=, =/tmp/e-r5-deferred-fresh-registry.log=, =/tmp/e-r5-deferred-fresh-runtime.log=, =/tmp/e-r5-deferred-fresh-runtime-retire.log= |
+| Require/SCC | 163 modules, 709 unique literal local edges, no cycles | =/tmp/e-r5-deferred-require-final.log= |
+| Private/duplicate | production cross-owner private 0; duplicate function definitions 0 | =/tmp/e-r5-deferred-private-final.log= |
+| Whitespace/diff | no changed-file trailing whitespace; =git diff --check= empty | =/tmp/e-r5-deferred-whitespace-final.log=, =/tmp/e-r5-deferred-diff-final.log= |
+| Hot path | board submit 1/1, ~1.893s including startup; no new scan/write path | =/tmp/e-r5-deferred-performance-final.log= |
+| Graphical | isolated runner 27/27, 0 unexpected; sandbox retry failed only at daemon socket bind | =/tmp/e-r5-deferred-graphical-final-escalated.log= |
+
+The full ERT sandbox attempt had six expected fixture-socket failures from
+restricted localhost binding; the escalated rerun is the authoritative full
+result.  The isolated graphical sandbox attempt had the same daemon-socket
+restriction; its escalated rerun is authoritative.  The preservation skips
+are the existing Evil/Markdown environment guards; the full-suite skips also
+include the six fresh owner-load guards.  No external provider call is needed
+for this behavior-neutral package, so live provider capability is
+unconfirmed/not applicable.
+
+**** Deferred-lifetime design self-check
+
+1. *Would stopping here improve the project?*  Yes: partial teardown is
+   retryable, exact route effects cannot revive replacements, and producer
+   counts/callbacks are bounded by the owning attachment.
+2. *What final direction does this move toward?*  One owner per lifecycle
+   concern, with service/application coordination above exact runtime, registry,
+   and board owner operations.
+3. *What is uncertain versus stable?*  Process-local retirement details are
+   local and reversible; durable association, board history, public commands,
+   event order, and formats are stable.  Future persistence changes remain
+   outside this package.
+4. *Who owns each behavior and why?*  Runtime owns attachment/producers and
+   their generations; board owns subscription lifetimes/effects; registry owns
+   participant catalogs; service owns binding/client lifecycle; the session
+   store owns durable association.
+5. *Does coupling increase or decrease?*  It decreases: registry no longer
+   duplicates route transition, runtime uses attachment-local indexes, and
+   service never reaches runtime-private maps.
+6. *Did a dependency point the wrong way?*  No.  Runtime calls the lower
+   registry/board owner and the stable attached-turn port; no lower owner calls
+   service or reaches a concrete upper facade.
+7. *Could side effects move outward?*  Board publication/routing remains board
+   owned, harness event observation remains behind the attached-turn port, and
+   service presentation cleanup remains service owned; no side effect was
+   pushed into a pure helper.
+8. *What state was added or mutated?*  Only process-local exact lifetime,
+   generation, producer, mailbox, and subscription-token state.  Each is owned
+   at the attachment or board subscription lifetime required for fencing; no
+   durable state or shared mutable record was added.
+9. *What is the performance impact?*  Retirement work is proportional to the
+   exact attachment's unsettled local indexes, not board-wide scans.  Normal
+   board submit remains the existing bounded path (~1.893s fresh-process smoke).
+10. *Are interfaces real and substitutable?*  Yes.  Runtime retirement accepts
+    an exact attachment lease; registry retirement accepts an exact participant
+    lease; board route retirement accepts an exact subscription lease.  Tests
+    inject lower-owner failure and retry the same contracts without unsupported
+    operations or generic callback bags.
+11. *What compatibility expectations apply?*  Public commands, event ordering,
+    board history, durable files, formats, retries, and error visibility remain
+    compatible.  Private process state has no alias compatibility promise.
+12. *What legacy code can be removed now?*  Duplicate manual admission-route
+    cancellation and direct registry route teardown were removed from the
+    affected paths; no durable participant-removal event path was removed.
+13. *Where are errors handled?*  Expected delivery/authorization outcomes use
+    existing board statuses; lower-owner and callback errors propagate, leaving
+    the exact retry state.  No new swallowing fallback was added.
+14. *What proves core behavior independently?*  Direct board/registry/runtime
+    and service suites cover owner transitions, injected failures, producer
+    states, route callbacks, rebind, and re-ensure; full ERT, preservation,
+    downstream composition, compile/read/parens, static graph/private scans,
+    performance, and graphical gates cover integration.
+
 * Performance, load, and I/O comparison
 
 The bounded performance command exercised 14 selected existing scenarios:

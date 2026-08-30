@@ -57,7 +57,7 @@
   id board-id participant-id selector effect state built-in-p
   delivery priority self-delivery failure-policy
   readiness accumulator readiness-timer readiness-generation firing-number
-  firing-limit lifetime lifetime-timer lifetime-generation)
+  firing-limit lifetime lifetime-timer lifetime-generation lifetime-token)
 
 (cl-defstruct (e-board-processing-chain
                (:constructor e-board-processing-chain--create)
@@ -177,7 +177,7 @@
 (cl-defstruct (e-board-activation
                (:constructor e-board-activation--create)
                (:conc-name e-board-activation-))
-  id subscription-id message-id effect state)
+  id subscription-id subscription-token message-id effect state)
 
 (cl-defstruct (e-board-open-activity
                (:constructor e-board-open-activity--create)
@@ -220,7 +220,7 @@
   message-table message-seq-table message-index-table event-message-count
   message-kind-newest-table message-kind-tag-newest-table
   participants subscriptions subscriptions-tail subscription-count
-  subscription-index-table subscription-id-table
+  subscription-index-table subscription-id-table subscription-lifetime-sequence
   processing-chains-internal processing-chains-tail-internal processing-chain-table-internal
   processing-chain-reservations
   processing-results-internal processing-results-tail-internal processing-result-table-internal
@@ -397,6 +397,7 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                  :subscription-count 0
                  :subscription-index-table (make-hash-table :test 'eql)
                  :subscription-id-table (make-hash-table :test 'equal)
+                 :subscription-lifetime-sequence 0
                  :processing-chains-internal nil
                  :processing-chains-tail-internal nil
                  :processing-chain-table-internal (make-hash-table :test 'equal)
@@ -1686,6 +1687,16 @@ making `e-work' depend on board state or making the board retain loop closures."
              (e-board-subscription-id-table board))
     subscription))
 
+(defun e-board--next-subscription-lifetime-token (board)
+  "Return BOARD's monotonic identity for one subscription lifetime.
+
+The durable subscription id is intentionally reusable by exact restoration
+and registry teardown.  This separate board-local token is never reused while
+BOARD lives, so queued classifier, replay, timer, and effect callbacks cannot
+mistake a replacement with the same id for their original route."
+  (list (e-board-id board)
+        (cl-incf (e-board-subscription-lifetime-sequence board))))
+
 (cl-defun e-board-add-participant
     (board &key id (state 'active) create-pickup-subscription-id
            (publish-event t))
@@ -1719,7 +1730,8 @@ replace it, and exact input ignores descriptive tags and other subscriptions."
         :selector (list :to id)
         :effect 'create-pickup
         :state 'active :delivery 'normal :self-delivery t
-        :built-in-p t))
+        :built-in-p t
+        :lifetime-token (e-board--next-subscription-lifetime-token board)))
       (when publish-event
         (e-board--append-event board 'participant-added
                                (list :participant-id id
@@ -1735,15 +1747,18 @@ participant admission path when the participant-added event must not be
 published until a surrounding durable declaration succeeds."
   (let ((participant (e-board-participant board participant-id)))
     (when participant
+      ;; Admission rollback owns no durable participant event, but it still
+      ;; uses the same exact route operation as terminal participant cleanup.
+      ;; This keeps timers, classifiers, prepared effects, and replay records
+      ;; fenced if a partially admitted client retained one of their callbacks.
+      (dolist (subscription (copy-sequence (e-board-subscriptions board)))
+        (when (equal (e-board-subscription-participant-id subscription)
+                     participant-id)
+          (when-let ((current
+                      (e-board-find-subscription
+                       board (e-board-subscription-id subscription))))
+            (e-board-retire-subscription-exact board current))))
       (remhash participant-id (e-board-participants board))
-      (when-let ((subscription
-                  (e-board-find-subscription
-                   board
-                   (e-board-participant-create-pickup-subscription-id
-                    participant))))
-        (setf (e-board-subscription-state subscription) 'cancelled)
-        (remhash (e-board-subscription-id subscription)
-                 (e-board-subscription-id-table board)))
       (setf (e-board-participant-state participant) 'removed))
     participant))
 
@@ -1875,7 +1890,8 @@ restricted to input records."
             :readiness (copy-tree readiness) :accumulator nil
             :readiness-generation 0 :firing-number 0
             :firing-limit firing-limit :lifetime lifetime
-            :lifetime-generation 0)))
+            :lifetime-generation 0
+            :lifetime-token (e-board--next-subscription-lifetime-token board))))
       (e-board--append-subscription board subscription)
       (e-board--append-event
        board 'subscription-added
@@ -1891,7 +1907,8 @@ restricted to input records."
                board lifetime
                (lambda ()
                  (e-board--queue-subscription-expiry
-                 board id (e-board-subscription-lifetime-generation subscription))))))
+                 board id (e-board-subscription-lifetime-generation subscription)
+                 (e-board-subscription-lifetime-token subscription))))))
       (when start-seq
         (e-board--queue-subscription-replay board subscription start-seq))
       subscription)))
@@ -2041,9 +2058,8 @@ not normalize or retain caller-owned objects."
 
 (defun e-board--fault-subscription (board subscription err)
   "Record trusted predicate ERR without reviving a changed subscription view."
-  (setf (e-board-subscription-state subscription) 'faulted)
-  (when-let ((current (e-board-find-subscription
-                       board (e-board-subscription-id subscription))))
+  (when-let ((current (e-board--subscription-lifetime-current-p board subscription)))
+    (setf (e-board-subscription-state subscription) 'faulted)
     (when (eq (e-board-subscription-state current) 'active)
       (e-board--transition-subscription board current 'faulted)
       (e-board--append-event
@@ -2407,15 +2423,38 @@ and acknowledge only after their queue accepts the returned page."
   "Return BOARD's subscription SUBSCRIPTION-ID, or nil."
   (gethash subscription-id (e-board-subscription-id-table board)))
 
-(defun e-board--classification-subscription-current-p (board snapshot)
-  "Return the active current subscription represented by frozen SNAPSHOT.
-The snapshot keeps historical selector bytes stable, while this lookup fences
-later mute, terminal, cancellation, expiry, and replacement transitions."
+(defun e-board--subscription-lifetime-current-p (board snapshot)
+  "Return non-nil when SNAPSHOT names the current object and lifetime.
+
+The object identity protects ordinary same-process callbacks while the
+monotonic token protects copied classifier/replay snapshots and same-id
+restoration.  Both checks are intentional: neither a reused id nor a copied
+record may regain authority over a replacement subscription."
   (when-let ((current
               (e-board-find-subscription
                board (e-board-subscription-id snapshot))))
+    (and (equal (e-board-subscription-lifetime-token current)
+                (e-board-subscription-lifetime-token snapshot))
+         current)))
+
+(defun e-board--classification-subscription-current-p (board snapshot)
+  "Return the active current subscription represented by frozen SNAPSHOT.
+  The snapshot keeps historical selector bytes stable, while this lookup fences
+  later mute, terminal, cancellation, expiry, and replacement transitions."
+  (when-let ((current (e-board--subscription-lifetime-current-p board snapshot)))
     (and (eq (e-board-subscription-state current) 'active)
          current)))
+
+(defun e-board--subscription-effect-current-p (board subscription)
+  "Return non-nil when SUBSCRIPTION's exact lifetime may apply an effect.
+Completed lifetimes may still commit an already-reserved activation; muted,
+cancelled, expired, faulted, and replaced lifetimes may not."
+  (let ((current (e-board-find-subscription
+                  board (e-board-subscription-id subscription))))
+    (and (eq current subscription)
+         (equal (e-board-subscription-lifetime-token current)
+                (e-board-subscription-lifetime-token subscription))
+         (memq (e-board-subscription-state current) '(active completed)))))
 
 (defun e-board--subscription-transition-allowed-p (from to)
   "Return non-nil when ordinary subscription state FROM may move to TO."
@@ -2424,8 +2463,12 @@ later mute, terminal, cancellation, expiry, and replacement transitions."
     ('muted (memq to '(active cancelled expired)))
     (_ nil)))
 
-(defun e-board--transition-subscription (board subscription state)
-  "Commit SUBSCRIPTION's ordinary lifecycle transition to STATE on BOARD."
+(defun e-board--transition-subscription (board subscription state
+                                                   &optional suppress-event-p)
+  "Commit SUBSCRIPTION's ordinary lifecycle transition to STATE on BOARD.
+When SUPPRESS-EVENT-P is non-nil, perform process-local owner teardown without
+adding a durable lifecycle event; immutable historical records and callback
+fences are still retained."
   (let ((from (e-board-subscription-state subscription)))
     (unless (memq state e-board--ordinary-subscription-states)
       (signal 'wrong-type-argument
@@ -2441,30 +2484,135 @@ later mute, terminal, cancellation, expiry, and replacement transitions."
       (setf (e-board-subscription-readiness-timer subscription) nil
             (e-board-subscription-accumulator subscription) nil
             (e-board-subscription-readiness-generation subscription)
-            (1+ (e-board-subscription-readiness-generation subscription))))
+            (1+ (or (e-board-subscription-readiness-generation subscription) 0))))
     (when (memq state '(completed faulted cancelled expired))
       (when-let ((timer (e-board-subscription-lifetime-timer subscription)))
         (cancel-timer timer))
       (setf (e-board-subscription-lifetime-timer subscription) nil
             (e-board-subscription-lifetime-generation subscription)
-            (1+ (e-board-subscription-lifetime-generation subscription))))
-    (e-board--append-event board 'subscription-transition
-                           (list :subscription-id (e-board-subscription-id subscription)
-                                 :from from :state state))
+            (1+ (or (e-board-subscription-lifetime-generation subscription) 0))))
+    ;; Keep the historical transition behavior for ordinary public state
+    ;; changes.  Exact owner retirement passes a non-nil suppress marker so
+    ;; process-local participant
+    ;; teardown does not invent a durable event that callers did not publish.
+    (unless suppress-event-p
+      (e-board--append-event
+       board 'subscription-transition
+       (list :subscription-id (e-board-subscription-id subscription)
+             :from from :state state)))
     (when (memq state '(muted cancelled))
       (e-board--cancel-prepared-activations
-       board (e-board-subscription-id subscription) state))
+       board (e-board-subscription-id subscription) state
+       (e-board-subscription-lifetime-token subscription)
+       suppress-event-p))
     subscription))
 
-(defun e-board--cancel-prepared-activations (board subscription-id reason)
-  "Fence prepared effects owned by SUBSCRIPTION-ID before they can apply."
+(defun e-board--cancel-prepared-activations
+    (board subscription-id reason &optional subscription-token
+           suppress-event-p)
+  "Fence prepared effects owned by one subscription lifetime.
+When SUBSCRIPTION-TOKEN is supplied, callbacks from an older same-id lifetime
+are the only activations cancelled; a replacement with the same id is left
+untouched.  SUPPRESS-EVENT-P is used by process-local board close/retirement
+so it can fence an activation without manufacturing a durable cancellation
+record."
   (dolist (activation-id
            (gethash subscription-id (e-board-activation-subscription-index board)))
     (when-let ((activation (e-board-activation board activation-id)))
-      (when (eq (e-board-activation-state activation) 'prepared)
+      (when (and (eq (e-board-activation-state activation) 'prepared)
+                 (or (null subscription-token)
+                     (equal subscription-token
+                            (e-board-activation-subscription-token activation))))
         (setf (e-board-activation-state activation) 'cancelled)
-        (e-board--append-event board 'activation-cancelled
-                               (list :activation-id activation-id :reason reason))))))
+        (unless suppress-event-p
+          (e-board--append-event board 'activation-cancelled
+                                 (list :activation-id activation-id :reason reason)))))))
+
+(defun e-board--cancel-subscription-replays-exact
+    (board subscription-id subscription-token)
+  "Remove queued replay records for one exact subscription lifetime.
+Replay records retain copied subscription values so the board can recover from
+durable history, but once their source lifetime is retired they must not
+re-enter classification under a same-id replacement.  The retained event log
+is intentionally untouched; only the pending process-local replay queue is
+filtered here."
+  (let (kept tail)
+    (dolist (record (e-board-subscription-replays board))
+      (let ((subscription (e-board-subscription-replay-subscription record)))
+        (if (and (equal subscription-id
+                        (e-board-subscription-id subscription))
+                 (equal subscription-token
+                        (e-board-subscription-lifetime-token subscription)))
+            nil
+          (let ((cell (list record)))
+            (if tail
+                (setcdr tail cell)
+              (setq kept cell))
+            (setq tail cell)))))
+    (setf (e-board-subscription-replays board) kept
+          (e-board-subscription-replay-tail board) tail)
+    (unless kept
+      (setf (e-board-subscription-replay-scheduled board) nil))
+    kept))
+
+(defun e-board-retire-subscription-exact
+    (board subscription &optional terminal-state)
+  "Retire exactly SUBSCRIPTION's current lifetime on BOARD.
+
+This is the board owner operation for participant teardown.  It cancels
+readiness/lifetime timers, clears continuation accumulators, fences queued
+classifiers, prepared activations, replay snapshots, and deferred effects by
+the subscription's immutable lifetime token, and finally removes only the
+current id-table entry.  The ordered subscription/event history is retained.
+The operation is idempotent: an absent exact entry is already retired, while a
+different object holding the same id is a replacement and is never touched.
+By default the process-local terminal state is `cancelled'.  BOARD close may
+pass `inactive' to preserve its historical closed-board projection; both
+states have the same exact callback fence and route-removal postcondition.
+No durable transition event is synthesized for process-local teardown."
+  (unless (and (e-board-p board) (e-board-subscription-p subscription))
+    (signal 'wrong-type-argument
+            (list '(e-board-p e-board-subscription-p) board subscription)))
+  (unless (memq (or terminal-state 'cancelled) '(cancelled inactive))
+    (signal 'wrong-type-argument
+            (list '(member cancelled inactive) terminal-state)))
+  (let* ((id (e-board-subscription-id subscription))
+         (current (e-board-find-subscription board id)))
+    (when (or (null current) (eq current subscription))
+      (unless (memq (e-board-subscription-state subscription)
+                    '(cancelled inactive))
+        (if (e-board--subscription-transition-allowed-p
+             (e-board-subscription-state subscription) 'cancelled)
+            (e-board--transition-subscription board subscription 'cancelled t)
+          ;; A completed/faulted/expired route has no legal ordinary
+          ;; transition left, but participant teardown still needs one
+          ;; unambiguous terminal state and the same callback fence.
+          (setf (e-board-subscription-state subscription) 'cancelled)))
+      ;; A terminal subscription may have reached this operation after a
+      ;; previous partial retirement.  Re-run the owner-local cleanup so each
+      ;; retry reaches the same postcondition.
+      (dolist (timer (list (e-board-subscription-readiness-timer subscription)
+                           (e-board-subscription-lifetime-timer subscription)))
+        (when (timerp timer)
+          (cancel-timer timer)))
+      (setf (e-board-subscription-readiness-timer subscription) nil
+            (e-board-subscription-lifetime-timer subscription) nil
+            (e-board-subscription-accumulator subscription) nil
+            (e-board-subscription-readiness-generation subscription)
+            (1+ (or (e-board-subscription-readiness-generation subscription) 0))
+            (e-board-subscription-lifetime-generation subscription)
+            (1+ (or (e-board-subscription-lifetime-generation subscription) 0)))
+      (e-board--cancel-prepared-activations
+       board id 'subscription-retired
+       (e-board-subscription-lifetime-token subscription)
+       t)
+      (e-board--cancel-subscription-replays-exact
+       board id (e-board-subscription-lifetime-token subscription))
+      (when (eq current subscription)
+        (remhash id (e-board-subscription-id-table board)))
+      (when (eq terminal-state 'inactive)
+        (setf (e-board-subscription-state subscription) 'inactive))
+      subscription)))
 
 (defun e-board-set-subscription-state (board subscription-id state)
   "Transition an ordinary BOARD subscription to STATE.
@@ -2658,14 +2806,19 @@ ordinary future routing, which retains its existing append-time classifier."
     (when (e-board-subscription-replays board)
       (e-board--schedule-subscription-replay board)))
 
-(defun e-board--queue-subscription-expiry (board subscription-id generation)
+(defun e-board--queue-subscription-expiry
+    (board subscription-id generation &optional subscription-token)
   "Queue one generation-fenced expiry transition outside the timer callback."
   (e-board--schedule-effect
    board
    (lambda ()
-     (when-let ((subscription (e-board-find-subscription board subscription-id)))
+     (when-let ((subscription
+                 (e-board-find-subscription board subscription-id)))
        (when (and (= generation
                      (e-board-subscription-lifetime-generation subscription))
+                  (or (null subscription-token)
+                      (equal subscription-token
+                             (e-board-subscription-lifetime-token subscription)))
                   (memq (e-board-subscription-state subscription) '(active muted)))
          (e-board--transition-subscription board subscription 'expired))))))
 
@@ -2687,11 +2840,16 @@ FIRING-LIMIT fences later classifier work before it can create another effect."
           (e-board--transition-subscription board subscription 'completed))
         firing-number))))
 
-(defun e-board--flush-continuation-accumulator (board subscription-id generation)
+(defun e-board--flush-continuation-accumulator
+    (board subscription-id generation &optional subscription-token)
   "Freeze the current matching source ids for one deferred continuation effect."
-  (when-let ((subscription (e-board-find-subscription board subscription-id)))
+  (when-let ((subscription
+              (e-board-find-subscription board subscription-id)))
     (when (and (eq (e-board-subscription-state subscription) 'active)
                (= generation (e-board-subscription-readiness-generation subscription))
+               (or (null subscription-token)
+                   (equal subscription-token
+                          (e-board-subscription-lifetime-token subscription)))
                (e-board-subscription-accumulator subscription))
       (when-let ((timer (e-board-subscription-readiness-timer subscription)))
         (cancel-timer timer))
@@ -2705,20 +2863,21 @@ FIRING-LIMIT fences later classifier work before it can create another effect."
          (mapcar (lambda (message-id) (e-board-message board message-id)) message-ids))))))
 
 (defun e-board--queue-continuation-accumulator-flush
-    (board subscription-id generation)
+    (board subscription-id generation &optional subscription-token)
   "Queue a fenced continuation accumulator flush through BOARD's effect drain."
   (e-board--schedule-effect
    board
    (lambda ()
-     (e-board--flush-continuation-accumulator board subscription-id generation))))
+     (e-board--flush-continuation-accumulator
+      board subscription-id generation subscription-token))))
 
 (defun e-board--accept-post-input-match (board frozen-subscription message)
   "Record MESSAGE for FROZEN-SUBSCRIPTION's current continuation policy.
 Classifier snapshots decide matching, while the current subscription fences a
 later mute, replacement, or cancellation before any accumulator mutation."
   (when-let ((subscription
-              (e-board-find-subscription board
-                                         (e-board-subscription-id frozen-subscription))))
+              (e-board--subscription-lifetime-current-p
+               board frozen-subscription)))
     (when (and (eq (e-board-subscription-state subscription) 'active)
                (e-board--authorize-classification
                 board subscription message 'effect-preparation))
@@ -2740,7 +2899,8 @@ later mute, replacement, or cancellation before any accumulator mutation."
                  (cond
                   ((>= (length accumulator) count)
                    (e-board--flush-continuation-accumulator
-                    board (e-board-subscription-id subscription) generation))
+                    board (e-board-subscription-id subscription) generation
+                    (e-board-subscription-lifetime-token subscription)))
                   ((and max-delay
                         (null (e-board-subscription-readiness-timer subscription)))
                    (setf (e-board-subscription-readiness-timer subscription)
@@ -2748,7 +2908,8 @@ later mute, replacement, or cancellation before any accumulator mutation."
                           board max-delay
                           (lambda ()
                             (e-board--queue-continuation-accumulator-flush
-                             board (e-board-subscription-id subscription) generation))))))))
+                             board (e-board-subscription-id subscription) generation
+                             (e-board-subscription-lifetime-token subscription)))))))))
             ('latest-after-quiet
              (let ((generation (1+ (e-board-subscription-readiness-generation subscription))))
                (when-let ((timer (e-board-subscription-readiness-timer subscription)))
@@ -2761,7 +2922,8 @@ later mute, replacement, or cancellation before any accumulator mutation."
                       board (plist-get readiness :quiet-period)
                       (lambda ()
                         (e-board--queue-continuation-accumulator-flush
-                         board (e-board-subscription-id subscription) generation))))))))))))
+                         board (e-board-subscription-id subscription) generation
+                         (e-board-subscription-lifetime-token subscription)))))))))))))
 
 (defun e-board--schedule-post-input (board subscription message-or-messages &optional firing-number)
   "Freeze and schedule SUBSCRIPTION's declarative post from matched records."
@@ -2785,6 +2947,8 @@ later mute, replacement, or cancellation before any accumulator mutation."
          (activation (e-board-activation--create
                       :id activation-id
                       :subscription-id (e-board-subscription-id subscription)
+                      :subscription-token
+                      (e-board-subscription-lifetime-token subscription)
                       :message-id (e-board-message-id message)
                       :effect 'post-input :state 'prepared)))
     (if (> (length lineage) e-board-max-derived-hops)
@@ -2801,11 +2965,14 @@ later mute, replacement, or cancellation before any accumulator mutation."
        board 'activation-prepared
        (list :activation-id activation-id
              :subscription-id (e-board-subscription-id subscription)
+             :subscription-token
+             (e-board-subscription-lifetime-token subscription)
              :effect 'post-input))
       (e-board--schedule-effect
        board
        (lambda ()
-         (when (eq (e-board-activation-state activation) 'prepared)
+         (when (and (eq (e-board-activation-state activation) 'prepared)
+                    (e-board--subscription-effect-current-p board subscription))
            (setf (e-board-activation-state activation) 'applying)
            (e-board--append-event
             board 'activation-applying (list :activation-id activation-id))

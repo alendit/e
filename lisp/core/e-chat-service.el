@@ -159,7 +159,8 @@ only observes durable claim decisions."
   (let ((board (and (e-chat-service-binding-p binding)
                     (e-chat-service-binding-board binding))))
     (and board
-         (not (eq (e-chat-service-binding-lifecycle-state binding) 'retired))
+         (not (memq (e-chat-service-binding-lifecycle-state binding)
+                    '(retiring retired)))
          (eq (e-board-registry-board-state board) 'active)
          (condition-case nil
              (eq board
@@ -346,7 +347,11 @@ orphaned board-registry clients."
       ;; an embedding shell can prove they are stale without consulting a
       ;; process-global registry.
       (unless already-retired
-        (setf (e-chat-service-binding-lifecycle-state binding) 'retired)
+        ;; Keep the binding discoverable as a non-live retry record until the
+        ;; lower runtime owner has completed its exact attachment teardown.
+        ;; This prevents a failed first attempt from letting ensure create a
+        ;; replacement while the old participant/maps still hold authority.
+        (setf (e-chat-service-binding-lifecycle-state binding) 'retiring)
         (cl-incf (e-chat-service-binding-lifecycle-generation binding)))
       (when-let ((timer (e-chat-service-binding-observer-drain-timer binding)))
         (when (timerp timer) (cancel-timer timer))
@@ -378,6 +383,9 @@ orphaned board-registry clients."
       ;; Retain the attachment object so a repeated call is idempotent.
       (when-let ((attachment (e-chat-service-binding-attachment binding)))
         (e-board-runtime-retire-attachment attachment))
+      ;; The lower owner succeeded; only now make terminal service state
+      ;; visible and remove this binding from lookup catalogs.
+      (setf (e-chat-service-binding-lifecycle-state binding) 'retired)
       (when (and bindings (eq (gethash session-id bindings) binding))
         (remhash session-id bindings)
         (when (= (hash-table-count bindings) 0)
@@ -447,7 +455,7 @@ removal: it emits no board removal event and removes the binding from every
       (when (eq (gethash board-id e-chat-service--board-log-owners) binding)
         (remhash board-id e-chat-service--board-log-owners))
       (when attachment
-        (ignore-errors (e-board-runtime-abort-new-attachment attachment)))
+        (e-board-runtime-abort-new-attachment attachment))
       (when client
         (e-board-registry-detach-client-exact board client))
       t)))
@@ -1272,13 +1280,9 @@ resolved participant identity so restart never needs shell or caller policy."
                            binding)
                    (remhash board-id e-chat-service--board-log-owners))))
              (when main-subscription
-               (setf (e-board-subscription-state main-subscription)
-                     'cancelled)
-               (remhash (e-board-subscription-id main-subscription)
-                        (e-board-subscription-id-table source-board)))
+               (e-board-retire-subscription-exact source-board main-subscription))
              (when attachment
-               (ignore-errors
-                 (e-board-runtime-abort-new-attachment attachment)))
+               (e-board-runtime-abort-new-attachment attachment))
              (when client
                (e-board-registry-detach-client-exact board client))
              (signal (car error) (cdr error))))))))

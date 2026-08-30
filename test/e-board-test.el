@@ -1817,6 +1817,131 @@
       (should (equal (mapcar #'e-board-message-id messages)
                      '("main-output"))))))
 
+(ert-deftest e-board-test-exact-retirement-fences-all-deferred-route-work ()
+  "An exact route retirement fences classifiers, effects, replay, and timers.
+
+Each route is restored with the same durable id after retirement.  Deferred
+callbacks from the old object must not mutate that replacement, while the
+board retains the old immutable subscription history for diagnostics."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        classifiers effects continuation-timers subscription-timers)
+    (let ((board
+           (e-board-create
+            :id "board"
+            :input-classification-scheduler
+            (lambda (drain) (push drain classifiers))
+            :effect-scheduler (lambda (effect) (push effect effects))
+            :continuation-timer-scheduler
+            (lambda (_seconds callback)
+              (push callback continuation-timers)
+              nil)
+            :subscription-timer-scheduler
+            (lambda (_seconds callback)
+              (push callback subscription-timers)
+              nil))))
+      (e-board-add-participant
+       board :id "participant" :create-pickup-subscription-id "address")
+
+      ;; A frozen classifier contains the old token, not merely the reusable
+      ;; subscription id.  Retiring first therefore makes the input unrouted.
+      (let* ((old (e-board-subscribe board "participant" '(:tags (old))
+                                     :id "classifier"))
+             (publication (e-board-post-input board :id "classifier-input"
+                                               :tags '(old)))
+             (drain (pop classifiers)))
+        (e-board-retire-subscription-exact board old)
+        (let ((replacement
+               (e-board-subscribe board "participant" '(:tags (new))
+                                  :id "classifier")))
+          (funcall drain)
+          (should (eq (e-board-message-routing-state
+                       (e-board-publication-message publication))
+                      'unrouted))
+          (should (eq (e-board-subscription-state replacement) 'active))))
+
+      ;; A prepared continuation effect is cancelled before its retained
+      ;; effect-drain callback runs, and its same-id replacement stays active.
+      (let* ((old (e-board-subscribe
+                   board "participant" '(:tags (prepared)) :id "prepared"
+                   :effect '(:post-input :content "old-prepared")))
+             (_publication
+              (e-board-post-fact board :id "prepared-fact" :tags '(prepared)
+                                 :source-fact-key '(test 91 1)))
+             (drain (pop classifiers)))
+        (funcall drain)
+        (should effects)
+        (e-board-retire-subscription-exact board old)
+        (let ((replacement
+               (e-board-subscribe
+                board "participant" '(:tags (replacement)) :id "prepared"
+                :effect '(:post-input :content "new-prepared"))))
+          (funcall (pop effects))
+          (should (eq (e-board-subscription-state replacement) 'active))
+          (should-not
+           (cl-find "old-prepared" (e-board-messages board)
+                    :key #'e-board-message-content :test #'equal))))
+
+      ;; Explicit retained replay is removed from the process-local replay
+      ;; queue; the immutable historical fact remains on the board.
+      (e-board-post-fact board :id "replay-fact" :tags '(replay)
+                         :source-fact-key '(test 91 2))
+      (let ((old (e-board-subscribe
+                  board "participant" '(:tags (replay)) :id "replay"
+                  :effect '(:post-input :content "old-replay")
+                  :start-seq 0)))
+        (should (e-board-subscription-replays board))
+        (e-board-retire-subscription-exact board old)
+        (let ((replacement
+               (e-board-subscribe
+                board "participant" '(:tags (replacement)) :id "replay"
+                :effect '(:post-input :content "new-replay"))))
+          (funcall (pop effects))
+          (should-not (e-board-subscription-replays board))
+          (should (eq (e-board-subscription-state replacement) 'active))))
+
+      ;; Retained quiet and expiry timer callbacks are both stale after a
+      ;; same-id replacement, even though the scheduler still invokes them.
+      (let* ((old (e-board-subscribe
+                   board "participant" '(:tags (quiet)) :id "quiet"
+                   :effect '(:post-input :content "old-quiet")
+                   :readiness '(:policy latest-after-quiet :quiet-period 1)))
+             (_publication
+              (e-board-post-fact board :id "quiet-fact" :tags '(quiet)
+                                 :source-fact-key '(test 91 3)))
+             (drain (pop classifiers)))
+        (funcall drain)
+        (let ((quiet-timer (pop continuation-timers)))
+          (e-board-retire-subscription-exact board old)
+          (let ((replacement
+                 (e-board-subscribe
+                  board "participant" '(:tags (replacement)) :id "quiet"
+                  :effect '(:post-input :content "new-quiet"))))
+            (funcall quiet-timer)
+            (funcall (pop effects))
+            (should (eq (e-board-subscription-state replacement) 'active))
+            (should-not
+             (cl-find "old-quiet" (e-board-messages board)
+                      :key #'e-board-message-content :test #'equal)))))
+      (let ((old (e-board-subscribe
+                  board "participant" '(:tags (expiry)) :id "expiry"
+                  :lifetime 1)))
+        (let ((expiry-timer (pop subscription-timers)))
+          (e-board-retire-subscription-exact board old)
+          (let ((replacement
+                 (e-board-subscribe
+                  board "participant" '(:tags (replacement)) :id "expiry")))
+            (funcall expiry-timer)
+            (funcall (pop effects))
+            (should (eq (e-board-subscription-state replacement) 'active)))))
+      (should (cl-every
+               (lambda (subscription)
+                 (or (not (equal (e-board-subscription-id subscription)
+                                 "classifier"))
+                     (memq (e-board-subscription-state subscription)
+                           '(cancelled active))))
+               (e-board-subscriptions board))))))
+
 (provide 'e-board-test)
 
 ;;; e-board-test.el ends here

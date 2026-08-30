@@ -1105,11 +1105,13 @@ missing current principal grant."
   "Retire exactly PARTICIPANT and all of its source-board routes.
 This terminal process-local operation accepts an already-held BOARD object
 while it is active, closing, or closed.  It removes only the exact registry
-participant and source participant objects, disables and deindexes their
-ordinary subscriptions, and emits no participant-removal event; callers that
-need the durable participant lifecycle must use
-`e-board-registry-remove-participant'.  Returning nil means the participant
-was already replaced or absent."
+participant and source participant objects.  Ordinary-route transition,
+timer, classifier, replay, activation, and effect fencing belongs to the
+source board's `e-board-retire-subscription-exact' operation; this registry
+owner only coordinates exact participant membership after every route has
+retired.  It emits no participant-removal event; callers that need the
+durable participant lifecycle must use `e-board-registry-remove-participant'.
+Returning nil means the participant was already replaced or absent."
   (unless (e-board-registry-participant-p participant)
     (signal 'wrong-type-argument
             (list 'e-board-registry-participant-p participant)))
@@ -1127,43 +1129,46 @@ was already replaced or absent."
                (e-board-participant source-board
                                     (e-board-participant-id
                                      source-participant))))
-         (owned-p (and (or (null current) (eq current participant))
-                       (or (null source-current)
-                           (eq source-current source-participant)))))
+         (owned-p
+          (and (or (eq current participant)
+                   (eq source-current source-participant))
+               (or (null current) (eq current participant))
+               (or (null source-current)
+                   (eq source-current source-participant)))))
     (when owned-p
-      (when (eq current participant)
-        (remhash participant-id participants))
-      (when source-current
+      ;; Keep both membership maps authoritative until the board owner has
+      ;; completed every route.  If a lower owner signals halfway through,
+      ;; the exact participant and all remaining subscription objects remain
+      ;; discoverable and a later retry can continue without an id fallback.
+      (when (or source-current (eq current participant))
         (dolist (subscription
                  (copy-sequence (e-board-subscriptions source-board)))
           (when (equal (e-board-subscription-participant-id subscription)
                        participant-id)
-            (dolist (timer (list (e-board-subscription-readiness-timer
-                                  subscription)
-                                 (e-board-subscription-lifetime-timer
-                                  subscription)))
-              (when (timerp timer)
-                (cancel-timer timer)))
-            (setf (e-board-subscription-state subscription) 'cancelled
-                  (e-board-subscription-readiness-timer subscription) nil
-                  (e-board-subscription-lifetime-timer subscription) nil
-                  (e-board-subscription-accumulator subscription) nil
-                  (e-board-subscription-readiness-generation subscription)
-                  (1+ (or (e-board-subscription-readiness-generation
-                           subscription)
-                          0))
-                  (e-board-subscription-lifetime-generation subscription)
-                  (1+ (or (e-board-subscription-lifetime-generation
-                           subscription)
-                          0)))
-            (when (eq (e-board-find-subscription
-                       source-board (e-board-subscription-id subscription))
-                      subscription)
-              (remhash (e-board-subscription-id subscription)
-                       (e-board-subscription-id-table source-board)))))
+            ;; A durable subscription id may have been replaced while the
+            ;; participant object stayed current.  Retire the current route
+            ;; object, not only the historical object in this ordered list;
+            ;; otherwise participant teardown would leave that replacement
+            ;; route indexed and live after membership removal.
+            (let ((current-subscription
+                   (e-board-find-subscription
+                    source-board (e-board-subscription-id subscription))))
+              (when (and current-subscription
+                         (equal
+                          (e-board-subscription-participant-id
+                           current-subscription)
+                          participant-id))
+                (e-board-retire-subscription-exact
+                 source-board current-subscription))))))
+      ;; Membership is removed only after all source routes have reached their
+      ;; terminal owner state.  The operation is therefore retryable even if a
+      ;; route-level retirement was interrupted by an injected failure.
+      (when (eq source-current source-participant)
         (remhash (e-board-participant-id source-participant)
                  (e-board-participants source-board))
         (setf (e-board-participant-state source-participant) 'removed))
+      (when (eq current participant)
+        (remhash participant-id participants))
       (setf (e-board-registry-participant-publication-pending participant)
             nil)
       participant)))
@@ -1376,7 +1381,13 @@ only the board-local replacement identity."
              (if-let ((subscription
                        (pop (e-board-registry-close-operation-subscriptions operation))))
                  (progn
-                   (setf (e-board-subscription-state subscription) 'inactive)
+                   ;; Route teardown belongs to the source board.  The
+                   ;; explicit inactive projection preserves the historical
+                   ;; closed-board state while the owner operation also
+                   ;; fences prepared activations, queued classifiers/replays,
+                   ;; and retained lifecycle callbacks.
+                   (e-board-retire-subscription-exact
+                    source subscription 'inactive)
                    (setq remaining (1- remaining)))
                (setf (e-board-registry-close-operation-phase operation)
                      'participants)))

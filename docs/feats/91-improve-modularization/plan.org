@@ -328,6 +328,65 @@ running Emacs was not queried, reloaded, or otherwise changed; core/session/
 harness/provider source changes require a restart before use in an already
 running process.
 
+*** Deferred-lifetime remediation (current candidate)
+
+This continuation starts from the clean exact baseline
+=906a28cf6daf61afca2bb4de1f68b907e1be7ff8= (candidate under review
+=23049b68=).  It leaves =review.org= and =index.org= untouched and keeps
+parent/reviewer acceptance pending.  Behavioral status is reported separately
+from mechanism status: repository, preservation, owner, composition, and
+graphical gates pass, while this exact owner-boundary candidate awaits
+review.
+
+The deferred-lifetime transition is now staged and retryable.  In
+=e-board-runtime=, =e-board-runtime-retire-attachment= records the exact map
+triple and retirement generation, settles attachment-local producer delivery
+and turn indexes, pickup/FIFO work, activity mailboxes, and invocations, and
+only then delegates participant/route retirement.  A lower-owner error leaves
+the exact maps and participant discoverable in =retiring=; repeating the same
+operation uses the same object authority and completes.  It never falls back
+to an id-only replacement.  Service retirement keeps its binding in
+=retiring= until that operation succeeds, so a failed lower step cannot expose
+a half-removed replacement or strand service catalogs.
+
+Producer records now retain the exact attachment object and work generation,
+with attachment-local pickup, delivery, and consumed-turn indexes.  Pending
+and ready pickups are cancelled on terminal retirement; delivering, accepted,
+and cancelling attempts are tombstoned uncertain; consumed turn handoffs are
+settled against their exact producer item.  Controlled rebind transfers only
+pending/ready work whose board pickup remains live.  Late classifier pages,
+turn receipts, and Work activity callbacks are generation/current-attachment
+fenced and cannot mutate or publish into a replacement.  The implementation
+uses local indexes rather than board-global delivery scans.
+
+=e-board= now owns =e-board-retire-subscription-exact=, which allocates a
+board-monotonic lifetime token and fences queued classifiers, prepared/queued
+effects, replay snapshots, quiet/readiness and lifetime/expiry timers, and
+same-id replacement routes.  =e-board-registry-retire-participant-exact=
+delegates to this operation before removing exact participant catalogs.  The
+pre-existing durable =e-board-registry-remove-participant= path remains
+separate because it must emit the established =participant-removed= event and
+inactive historical projection.  Admission rollback now also uses the board
+owner exact route operation; no private compatibility bridge was added.
+
+Changed implementation/test paths are =e-board.el=,
+=e-board-registry.el=, =e-board-runtime.el=, =e-chat-service.el=,
+=e-board-test.el=, =e-board-registry-test.el=,
+=e-board-runtime-test.el=, and =e-modernchat-test.el=, plus the architecture
+map and this audit/plan evidence.  Test dispositions retain the existing
+owner mechanism suites, strengthen them with exact boundary-failure,
+producer-state, route-lifetime, callback-fence, retry, and service re-ensure
+regressions, and retain composed board/chat behavior without private
+decomposition assertions.  Current evidence is 187/187 board/registry/runtime,
+45/45 service/modernchat, 208/208 downstream board/session/canvas/task-queue,
+485/485 preservation (483 expected and two existing skips), 2,585/2,585 full
+ERT (2,578 expected and seven existing skips), and 27/27 graphical.  Literal
+local requires remain 163 modules/709 unique edges with no SCC; private
+production refs and duplicate definitions remain zero.  Exact commands and
+raw logs are in =round-5-audit.org=.  Runtime/board/service state-shape
+changes require a restart; the running Emacs was not queried, reloaded, or
+changed.
+
 ** Initial residual-topology inventory
 
 The following was the package-start inventory.  Round 5's final dispositions

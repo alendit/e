@@ -923,6 +923,66 @@
                      '("board-31" "board-32" "board-33")))
       (should (equal (plist-get page :next-after) "board-33")))))
 
+(ert-deftest e-board-registry-test-exact-retirement-retries-board-route-failure ()
+  "Participant retirement keeps exact catalogs until a board route succeeds."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (participant (e-board-registry-add-participant
+                         board :id "participant"))
+           (source (e-board-registry-board-source-board board))
+           (ordinary
+            (e-board-registry-install-subscription
+             board participant '(:tags (ordinary)) :id "ordinary"))
+           (calls 0)
+           (original (symbol-function 'e-board-retire-subscription-exact)))
+      ;; Inject the first board-owner boundary failure.  The registry must
+      ;; leave both participant maps and all route objects authoritative so a
+      ;; repeated exact call can finish without an id-only fallback.
+      (cl-letf (((symbol-function 'e-board-retire-subscription-exact)
+                 (lambda (board subscription &optional terminal-state)
+                   (cl-incf calls)
+                   (if (= calls 1)
+                       (signal 'e-board-error '("injected route failure"))
+                     (funcall original board subscription terminal-state)))))
+        (should-error
+         (e-board-registry-retire-participant-exact board participant)
+         :type 'e-board-error)
+        (should (eq (gethash "participant"
+                             (e-board-registry-board-participants board))
+                    participant))
+        (should (eq (e-board-participant source "participant")
+                    (e-board-registry-participant-source-participant
+                     participant)))
+        (should (eq (e-board-find-subscription source "ordinary") ordinary))
+        (e-board-registry-retire-participant-exact board participant)
+        (should (= calls 3))
+        (should-not (gethash "participant"
+                             (e-board-registry-board-participants board)))
+        (should-not (e-board-participant source "participant"))
+        (should-not (e-board-find-subscription source "ordinary"))
+        (should (eq (e-board-subscription-state ordinary) 'cancelled))))))
+
+(ert-deftest e-board-registry-test-participant-retirement-removes-current-same-id-route ()
+  "Participant retirement removes a current route replacing old history."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board"))
+           (participant (e-board-registry-add-participant
+                         board :id "participant"))
+           (source (e-board-registry-board-source-board board))
+           (old (e-board-registry-install-subscription
+                 board participant '(:tags (old)) :id "route")))
+      (e-board-retire-subscription-exact source old)
+      (let ((replacement
+             (e-board-registry-install-subscription
+              board participant '(:tags (replacement)) :id "route")))
+        (should (eq (e-board-find-subscription source "route") replacement))
+        (e-board-registry-retire-participant-exact board participant)
+        (should (eq (e-board-subscription-state replacement) 'cancelled))
+        (should-not (e-board-find-subscription source "route"))
+        (should-not (e-board-participant source "participant"))
+        (should-not (gethash "participant"
+                             (e-board-registry-board-participants board)))))))
+
 (provide 'e-board-registry-test)
 
 ;;; e-board-registry-test.el ends here

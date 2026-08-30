@@ -223,6 +223,22 @@ through the registry owner. `e-chat-service` coordinates its presentation
 clients and calls this operation; it never reaches into runtime maps. The
 operation accepts a held board while active, closing, or closed, while durable
 session/board association remains available for a later public re-ensure.
+Retirement is staged: the exact runtime map triple remains authoritative while
+the observer, attachment-local producer delivery/turn indexes, FIFO pickups,
+activity mailboxes, invocations, and exact participant routes are settled. A
+lower-owner error leaves the attachment in `retiring` with the same exact
+authority, so a repeated call completes rather than falling back to an id-only
+lookup. The retirement generation fences callbacks accepted before the
+transition; Work activity capture checks the current active attachment before
+mutating a mailbox, and a classifier page that arrives in the retirement
+window can cancel only that attachment's ready pickup.
+Ordinary-route retirement is owned by `e-board-retire-subscription-exact` in
+`e-board`: its board-monotonic lifetime token fences classifiers, prepared and
+queued effects, replay snapshots, quiet/lifetime/expiry callbacks, and same-id
+replacement routes. `e-board-registry-retire-participant-exact` delegates to
+that operation before removing participant catalogs. The separate durable
+`e-board-registry-remove-participant` path remains for the established
+`participant-removed` event and inactive historical projection.
 `e-board-message-envelope` is the board-owned detached journal projection, and
 `e-chat-service-reconcile-board-continuation` is the chat-service application
 operation that replays terminal board continuations; neither exposes mutable
@@ -373,8 +389,11 @@ Stable public surfaces include:
 - Narrow semantic projections used by downstream shells: effective default chat
   harness spec, live attachment buffer, bounded chat-service event pumping,
   board journal envelopes, bounded continuation reconciliation, and the
-  attached-turn port. Internal structs, registries, markers, queues,
-  provider sessions, and physical paths are not public contracts.
+  attached-turn port. Board-runtime's exact attachment retirement and the
+  board owner's exact subscription retirement are semantic owner operations
+  for service/registry callers; their object arguments are exact leases, not
+  general-purpose state records. Internal structs, registries, markers,
+  queues, provider sessions, and physical paths are not public contracts.
 
 ## Extension Points
 

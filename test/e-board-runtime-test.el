@@ -110,6 +110,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-board-runtime--pending-activity-tail nil)
           (e-board-runtime--pending-activity-set (make-hash-table :test 'equal))
           (e-board-runtime--activity-drain-scheduled nil)
+          (e-board-runtime--activity-drain-generation 0)
           (e-board-runtime--pending-pickup-head nil)
           (e-board-runtime--pending-pickup-tail nil)
           (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
@@ -2409,8 +2410,13 @@ Tests that explicitly provide `:requester' retain that exact requester."
               (should (functionp (e-work-handle-activity-observer handle)))
               (e-work-start-prepared handle)
               (e-work-progress handle '(:step first))
-              (let ((mailbox (gethash (e-work-handle-id handle)
-                                      e-board-runtime--work-activity-mailboxes)))
+              (let (mailbox)
+                (maphash
+                 (lambda (_mailbox-id candidate)
+                   (when (equal (plist-get candidate :work-id)
+                                (e-work-handle-id handle))
+                     (setq mailbox candidate)))
+                 e-board-runtime--work-activity-mailboxes)
                 (should (plist-member mailbox :attachment))
                 (should (equal (plist-get mailbox :turn-id) "turn"))
                 (should (equal (plist-get mailbox :payload) '(:step first))))
@@ -2558,10 +2564,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should (e-board-participant
                  (e-board-registry-board-source-board board) "participant"))))))
 
-(provide 'e-board-runtime-test)
-
-;;; e-board-runtime-test.el ends here
-
 (ert-deftest e-board-runtime-test-work-progress-preserves-subagent-provenance ()
   "A child work update reaches the board as coalesced work-progress activity."
   (e-board-runtime-test--with-empty-state
@@ -2598,3 +2600,514 @@ Tests that explicitly provide `:requester' retain that exact requester."
                 (should (string-match-p "action-started"
                                         (e-board-message-content message)))))
           (e-work-cancel handle))))))
+
+(ert-deftest e-board-runtime-test-retire-attachment-retries-after-lower-owner-failure ()
+  "A failed exact route retirement keeps its authority for a complete retry."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (calls 0)
+           attachment ordinary original)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :principal "owner"))
+      (setq ordinary
+            (e-board-registry-install-subscription
+             board "participant" '(:tags (ordinary)) :id "ordinary"))
+      (setq original (symbol-function 'e-board-registry-retire-participant-exact))
+      (cl-letf (((symbol-function 'e-board-registry-retire-participant-exact)
+                 (lambda (current-board participant)
+                   (if (= (cl-incf calls) 1)
+                       (signal 'e-board-runtime-error
+                               (list 'injected-route-failure))
+                     (funcall original current-board participant)))))
+        (should-error (e-board-runtime-retire-attachment attachment)
+                      :type 'e-board-runtime-error)
+        ;; The exact runtime triple and participant remain authoritative; a
+        ;; retry must not need an id-only lookup or admit a competing lease.
+        (should (eq (gethash
+                     (e-board-runtime--session-key harness "session")
+                     e-board-runtime--session-attachments)
+                    attachment))
+        (should (eq (e-board-registry-participant board "participant")
+                    (e-board-runtime-attachment-participant attachment)))
+        (should (eq (e-board-find-subscription
+                     (e-board-registry-board-source-board board) "ordinary")
+                    ordinary))
+        (e-board-runtime-retire-attachment attachment))
+      (should (= calls 2))
+      (should (eq (e-board-runtime-attachment-state attachment) 'dormant))
+      (should-not (e-board-runtime--current-attachment-p attachment))
+      (should-not (gethash "participant"
+                           (e-board-registry-board-participants board)))
+      (should-not (e-board-find-subscription
+                   (e-board-registry-board-source-board board) "ordinary"))
+      (should (eq (e-board-subscription-state ordinary) 'cancelled))
+      (let ((replacement
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant"
+              :principal "owner")))
+        (should (e-board-runtime--current-attachment-p replacement))
+        (should-not (eq replacement attachment))))))
+
+(ert-deftest e-board-runtime-test-retirement-retries-each-owner-boundary ()
+  "A partial observer or route failure retains exact authority for retry."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (stop-calls 0)
+           (route-calls 0)
+           attachment)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :principal "owner"))
+      (let ((original-stop
+             (symbol-function 'e-harness-attached-turn-port-stop-observing))
+            (original-route
+             (symbol-function 'e-board-registry-retire-participant-exact)))
+        (cl-letf (((symbol-function 'e-harness-attached-turn-port-stop-observing)
+                   (lambda (port subscription)
+                     (if (= (cl-incf stop-calls) 1)
+                         (signal 'e-board-runtime-error
+                                 (list 'injected-observer-failure))
+                       (funcall original-stop port subscription))))
+                  ((symbol-function 'e-board-registry-retire-participant-exact)
+                   (lambda (current-board participant)
+                     (if (= (cl-incf route-calls) 1)
+                         (signal 'e-board-runtime-error
+                                 (list 'injected-route-failure))
+                       (funcall original-route current-board participant)))))
+          (should-error (e-board-runtime-retire-attachment attachment)
+                        :type 'e-board-runtime-error)
+          (should (eq (e-board-runtime-attachment-state attachment) 'retiring))
+          (should (e-board-runtime-attachment-subscription attachment))
+          (should (e-board-runtime--current-attachment-p attachment))
+          (should-error (e-board-runtime-retire-attachment attachment)
+                        :type 'e-board-runtime-error)
+          (should (eq (e-board-runtime-attachment-state attachment) 'retiring))
+          (should (e-board-runtime--current-attachment-p attachment))
+          (e-board-runtime-retire-attachment attachment)
+          (should (= stop-calls 2))
+          (should (= route-calls 2))
+          (should (eq (e-board-runtime-attachment-state attachment) 'dormant))
+          (should-not (e-board-runtime--current-attachment-p attachment)))))))
+
+(ert-deftest e-board-runtime-test-retiring-attachment-fences-late-terminal-publication ()
+  "A retained old terminal event cannot publish during a retry window."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (calls 0)
+           (original (symbol-function 'e-board-registry-retire-participant-exact)))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"))
+      (cl-letf (((symbol-function 'e-board-registry-retire-participant-exact)
+                 (lambda (board participant)
+                   (cl-incf calls)
+                   (if (= calls 1)
+                       (signal 'e-board-error '("injected lower-owner failure"))
+                     (funcall original board participant))))
+                ((symbol-function 'e-harness-attached-turn-port-assistant-message)
+                 (lambda (&rest _arguments)
+                   (list :content "late output" :board-output-sequence 1))))
+        (should-error (e-board-runtime-retire-attachment attachment)
+                      :type 'e-board-error)
+        (should (eq (e-board-runtime-attachment-state attachment) 'retiring))
+        (let ((before (length (e-board-messages
+                               (e-board-registry-board-source-board board)))))
+          ;; The exact runtime maps remain present only to authorize the retry;
+          ;; they do not keep old terminal publication authority alive.
+          (e-board-runtime--handle-harness-event
+           attachment
+           (e-events-make :type 'turn-finished :session-id "session"
+                          :turn-id "old-turn"))
+          (should (= before
+                     (length (e-board-messages
+                              (e-board-registry-board-source-board board))))))
+        (e-board-runtime-retire-attachment attachment)
+        (should (= calls 2))
+        (should (eq (e-board-runtime-attachment-state attachment) 'dormant))))))
+
+(ert-deftest e-board-runtime-test-retiring-classifier-drain-settles-late-producer-pickup ()
+  "A classifier completing during retirement cannot strand producer accounting."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (binding nil)
+           (settled nil)
+           attachment item)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :principal "owner")
+            binding (e-board-runtime-producer-bind 'producer board)
+            item (e-board-runtime-producer-publish-input
+                  binding :to "participant" :content "late"
+                  :on-settle (lambda (&rest report) (setq settled report))))
+      (e-board-runtime-drain-producers)
+      ;; Leave the classifier queued while the exact lower owner fails.  The
+      ;; attachment remains the current retiring object during this window.
+      (cl-letf (((symbol-function 'e-board-registry-retire-participant-exact)
+                 (lambda (&rest _arguments)
+                   (signal 'e-board-runtime-error
+                           (list 'injected-route-failure)))))
+        (should-error (e-board-runtime-retire-attachment attachment)
+                      :type 'e-board-runtime-error))
+      (let ((source (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source)))
+        (let ((delivery-id
+               (car (e-board-runtime-producer-publication-pending-delivery-ids
+                     item))))
+          (should delivery-id)
+          (should (eq (e-board-runtime-attachment-state attachment) 'retiring))
+          (e-board-runtime--drain-pickups)
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup source delivery-id))
+                      'cancelled))
+          (should (eq (plist-get settled :status) 'cancelled))
+          (should (= (plist-get (e-board-runtime-unsettled-state)
+                                :producer-items)
+                     0))))
+      ;; The retry still uses the original exact authority after the late
+      ;; classifier page has settled its own producer record.
+      (e-board-runtime-retire-attachment attachment)
+      (should (eq (e-board-runtime-attachment-state attachment) 'dormant)))))
+
+(ert-deftest e-board-runtime-test-retirement-settles-only-owned-producer-turns ()
+  "Retirement settles one attachment's producer work without a board scan."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (first-harness (e-harness-create))
+           (second-harness (e-harness-create))
+           (binding (e-board-runtime-producer-bind 'tasks board))
+           (settled nil)
+           first second item)
+      (e-harness-create-session first-harness :id "first")
+      (e-harness-create-session second-harness :id "second")
+      (setq first
+            (e-board-runtime-attach
+             board first-harness "first" :participant-id "first"
+             :delivery-function (lambda (&rest _args) '(:accepted receipt)))
+            second
+            (e-board-runtime-attach
+             board second-harness "second" :participant-id "second"
+             :delivery-function (lambda (&rest _args) '(:accepted receipt))))
+      (e-board-registry-install-subscription
+       board "first" '(:tags (task)) :id "first-task")
+      (e-board-registry-install-subscription
+       board "second" '(:tags (task)) :id "second-task")
+      (setq item
+            (e-board-runtime-producer-publish-input
+             binding :tags '(task) :content "work"
+             :on-settle (lambda (&rest report) (setq settled report))))
+      (e-board-runtime-drain-producers)
+      (let* ((source (e-board-registry-board-source-board board))
+             (publication
+              (e-board-runtime-producer-publication-publication item)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source)))
+        (e-board-runtime--drain-pickups)
+        (let* ((deliveries
+                (e-board-runtime-producer-publication-pending-delivery-ids item))
+               (first-id
+                (cl-find-if
+                 (lambda (id)
+                   (equal (e-board-pickup-participant-id
+                           (e-board-pickup source id))
+                          "first"))
+                 deliveries))
+               (second-id
+                (cl-find-if
+                 (lambda (id)
+                   (equal (e-board-pickup-participant-id
+                           (e-board-pickup source id))
+                          "second"))
+                 deliveries))
+               (attempt (e-board-pickup-attempt
+                         (e-board-pickup source first-id))))
+          (should (eq (e-board-runtime-producer-publication-state item)
+                      'dispatched))
+          (should first-id)
+          (should second-id)
+          ;; Consume only the first endpoint, leaving a producer turn owned by
+          ;; that exact attachment while the second delivery stays accepted.
+          (e-board-runtime--handle-harness-event
+           first
+           (e-events-make
+            :type 'input-consumed :session-id "first" :turn-id "first-turn"
+            :payload (list :delivery-id first-id
+                           :endpoint-token
+                           (e-board-delivery-attempt-endpoint-token attempt)
+                           :endpoint-generation
+                           (e-board-delivery-attempt-composite-generation
+                            attempt))))
+          (should (eq (e-board-pickup-state (e-board-pickup source first-id))
+                      'consumed))
+          (e-board-runtime-retire-attachment first)
+          (should-not settled)
+          (should (= (plist-get (e-board-runtime-unsettled-state)
+                                :producer-items)
+                     1))
+          (should-not (gethash first-id e-board-runtime--producer-deliveries))
+          (should (eq (e-board-runtime-producer-delivery-attachment
+                       (gethash second-id e-board-runtime--producer-deliveries))
+                      second))
+          ;; A retained completion from the old turn cannot publish after its
+          ;; exact maps have been removed or alter the replacement lifetime.
+          (e-board-runtime--handle-harness-event
+           first
+           (e-events-make :type 'turn-finished :session-id "first"
+                          :turn-id "first-turn"))
+          (should (= (length
+                      (cl-remove-if-not
+                       (lambda (message)
+                         (eq (e-board-message-kind message) 'output))
+                       (e-board-messages source)))
+                     0))
+          (e-board-runtime-retire-attachment second)
+          (should (eq (plist-get settled :status) 'cancelled))
+          (should (= (plist-get (e-board-runtime-unsettled-state)
+                                :producer-items)
+                     0))
+          (should-not (e-board-runtime-producer-publication-pending-delivery-ids
+                       item))
+          (ignore publication))))))
+
+(ert-deftest e-board-runtime-test-retirement-settles-producer-ready-and-pending-pickups ()
+  "Retirement settles producer records for both ready and pending FIFO cells."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (binding nil)
+           (settled nil)
+           attachment first-item second-item)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :principal "owner")
+            binding (e-board-runtime-producer-bind 'producer board))
+      (setq first-item
+            (e-board-runtime-producer-publish-input
+             binding :to "participant" :content "first"
+             :on-settle (lambda (&rest report) (push report settled)))
+            second-item
+            (e-board-runtime-producer-publish-input
+             binding :to "participant" :content "second"
+             :on-settle (lambda (&rest report) (push report settled))))
+      (e-board-runtime-drain-producers)
+      (let ((source (e-board-registry-board-source-board board)))
+        (e-board-runtime--drain-input-routing
+         board (lambda () (e-board-drain-input-classifications source)))
+        (let* ((first-id
+                (car (e-board-runtime-producer-publication-pending-delivery-ids
+                      first-item)))
+               (second-id
+                (car (e-board-runtime-producer-publication-pending-delivery-ids
+                      second-item))))
+          (should (eq (e-board-pickup-state (e-board-pickup source first-id))
+                      'ready))
+          (should (eq (e-board-pickup-state (e-board-pickup source second-id))
+                      'pending))
+          (should (= (hash-table-count
+                      (e-board-runtime-attachment-producer-delivery-ids
+                       attachment))
+                     2))
+          ;; No pickup drain is needed: the terminal attachment owner cancels
+          ;; both exact FIFO states and closes their producer accounting.
+          (e-board-runtime-retire-attachment attachment)
+          (should (equal (sort (mapcar (lambda (report) (plist-get report :status))
+                                       settled)
+                              (lambda (left right)
+                                (string< (symbol-name left) (symbol-name right))))
+                         '(cancelled cancelled)))
+          (should (eq (e-board-pickup-state (e-board-pickup source first-id))
+                      'cancelled))
+          (should (eq (e-board-pickup-state (e-board-pickup source second-id))
+                      'cancelled))
+          (should (= (plist-get (e-board-runtime-unsettled-state)
+                                :producer-items)
+                     0))
+          (should-not e-board-runtime--pending-pickup-head)
+          (should-not
+           (e-board-runtime-producer-publication-pending-delivery-ids
+            first-item)))))))
+
+(ert-deftest e-board-runtime-test-retirement-settles-producer-inflight-states ()
+  "Retirement settles producer deliveries in delivering and accepted states."
+  (e-board-runtime-test--with-empty-state
+    (dolist (state '(delivering accepted))
+      (let* ((board (e-board-registry-create
+                     :id (format "board-%s" state) :principal "owner"))
+             (harness (e-harness-create))
+             (binding nil)
+             (settled nil)
+             attachment item)
+        (e-harness-create-session harness :id (format "session-%s" state))
+        (setq attachment
+              (e-board-runtime-attach
+               board harness (format "session-%s" state)
+               :participant-id "participant" :principal "owner")
+              binding (e-board-runtime-producer-bind state board)
+              item (e-board-runtime-producer-publish-input
+                    binding :to "participant" :content "inflight"
+                    :on-settle
+                    (lambda (&rest report) (setq settled report))))
+        (e-board-runtime-drain-producers)
+        (let ((source (e-board-registry-board-source-board board)))
+          (e-board-runtime--drain-input-routing
+           board (lambda () (e-board-drain-input-classifications source)))
+          (let* ((delivery-id
+                  (car (e-board-runtime-producer-publication-pending-delivery-ids
+                        item)))
+                 (pickup (e-board-pickup source delivery-id)))
+            (e-board-pickup-start-delivery
+             source delivery-id
+             (e-board-runtime-attachment-endpoint-token attachment)
+             (e-board-runtime--attachment-composite-generation attachment))
+            (when (eq state 'accepted)
+              (e-board-pickup-accept-delivery source delivery-id))
+            (e-board-runtime-retire-attachment attachment)
+            (should (eq (e-board-pickup-state pickup) 'uncertain))
+            (should (eq (plist-get settled :status) 'cancelled))
+            (should (= (plist-get (e-board-runtime-unsettled-state)
+                                  :producer-items)
+                       0))))))))
+
+(ert-deftest e-board-runtime-test-rebind-transfers-only-live-producer-pickups ()
+  "Rebind preserves pending producer pickups without copying terminal work."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           (binding nil)
+           (settled nil)
+           scheduled old new first-item second-item)
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (let ((e-board-runtime--pickup-drain-scheduled t))
+        (setq old
+              (e-board-runtime-attach
+               board old-harness "old" :participant-id "participant"
+               :principal "owner")
+              binding (e-board-runtime-producer-bind 'producer board))
+        (setq first-item
+              (e-board-runtime-producer-publish-input
+               binding :to "participant" :content "first"
+               :on-settle (lambda (&rest report) (setq settled report)))
+              second-item
+              (e-board-runtime-producer-publish-input
+               binding :to "participant" :content "second"))
+        (e-board-runtime-drain-producers)
+        (e-board-runtime--drain-input-routing
+         board (lambda ()
+                 (e-board-drain-input-classifications
+                  (e-board-registry-board-source-board board))))
+        (let* ((first-id
+                (car (e-board-runtime-producer-publication-pending-delivery-ids
+                      first-item)))
+               (second-id
+                (car (e-board-runtime-producer-publication-pending-delivery-ids
+                      second-item))))
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup
+                        (e-board-registry-board-source-board board) first-id))
+                      'ready))
+          (should (eq (e-board-pickup-state
+                       (e-board-pickup
+                        (e-board-registry-board-source-board board) second-id))
+                      'pending))
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (_seconds _repeat function &rest arguments)
+                       (push (lambda () (apply function arguments)) scheduled))))
+            (let ((request
+                   (e-board-runtime-rebind-start
+                    board "participant" new-harness "new" "owner")))
+              (while scheduled
+                (funcall (pop scheduled)))
+              (setq new (e-request-lifecycle-terminal-payload request))))
+          (should (e-board-runtime-attachment-p new))
+          (should (eq (e-board-runtime-attachment-state old) 'dormant))
+          (should (eq (e-board-runtime-producer-delivery-attachment
+                       (gethash first-id e-board-runtime--producer-deliveries))
+                      new))
+          (should (eq (e-board-runtime-producer-delivery-attachment
+                       (gethash second-id e-board-runtime--producer-deliveries))
+                      new))
+          (should-not
+           (gethash first-id
+                    (e-board-runtime-attachment-producer-delivery-ids old)))
+          (e-board-runtime-retire-attachment new)
+          (should (eq (plist-get settled :status) 'cancelled))
+          (should (= (plist-get (e-board-runtime-unsettled-state)
+                                :producer-items)
+                     0)))))))
+
+(ert-deftest e-board-runtime-test-retired-work-observer-cannot-recreate-mailbox ()
+  "A queued old Work callback cannot suppress or recreate replacement activity."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           scheduled old new old-handle new-handle)
+      (e-harness-create-session harness :id "session")
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (setq old
+              (e-board-runtime-attach
+               board harness "session" :participant-id "participant"))
+        (setq old-handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id "same-work" :execution 'cooperative :interactive-policy 'async
+                :runner (lambda (_handle _arguments _context) :deferred))
+               nil :context '(:session-id "session" :turn-id "old-turn")))
+        (funcall (e-harness-work-enrollment-function harness) old-handle nil)
+        (e-work-start-prepared old-handle)
+        (e-work-progress old-handle '(:step old))
+        (let ((old-drain (pop scheduled)))
+          (should (= (hash-table-count e-board-runtime--work-activity-mailboxes) 1))
+          (e-board-runtime-retire-attachment old)
+          (should-not e-board-runtime--pending-activity-head)
+          (should (= (hash-table-count e-board-runtime--work-activity-mailboxes)
+                     0))
+          ;; This is the retained producer callback, not a fresh scheduler
+          ;; request.  It is fenced by the drain generation.
+          (funcall old-drain)
+          (e-work-progress old-handle '(:step late))
+          (should-not e-board-runtime--pending-activity-head)
+          (setq new
+                (e-board-runtime-attach
+                 board harness "session" :participant-id "participant"))
+          (setq new-handle
+                (e-work-prepare
+                 (e-work-spec-create
+                  :id "same-work" :execution 'cooperative :interactive-policy 'async
+                  :runner (lambda (_handle _arguments _context) :deferred))
+                 nil :context '(:session-id "session" :turn-id "new-turn")))
+          (funcall (e-harness-work-enrollment-function harness) new-handle nil)
+          (e-work-start-prepared new-handle)
+          (e-work-progress new-handle '(:step new))
+          (let ((new-drain (pop scheduled)))
+            (should (= (hash-table-count e-board-runtime--work-activity-mailboxes) 1))
+            (funcall old-drain)
+            (should (= (hash-table-count e-board-runtime--work-activity-mailboxes) 1))
+            (funcall new-drain)
+          (should (= (hash-table-count e-board-runtime--work-activity-mailboxes)
+                     0)))
+          (e-board-runtime-retire-attachment new))
+        (e-work-cancel old-handle)
+        (e-work-cancel new-handle)))))
+
+(provide 'e-board-runtime-test)
+
+;;; e-board-runtime-test.el ends here

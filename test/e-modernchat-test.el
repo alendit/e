@@ -2569,6 +2569,77 @@ session and board binding without exposing a participant-added event."
             (should (eq (e-board-registry-board-state board) 'closed))))
       (e-harness-turn-state-reset-aggregate))))
 
+(ert-deftest e-chat-service-test-retirement-retries-after-runtime-owner-failure ()
+  "A failed runtime teardown remains discoverable until its retry succeeds."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--board-index
+         (avl-tree-create (lambda (left right)
+                            (string< (car left) (car right)))))
+        (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal))
+        (e-board-runtime--pending-activity-head nil)
+        (e-board-runtime--pending-activity-tail nil)
+        (e-board-runtime--pending-activity-set (make-hash-table :test 'equal))
+        (e-board-runtime--activity-drain-scheduled nil)
+        (e-board-runtime--activity-drain-generation 0)
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+    (e-harness-turn-state-reset-aggregate)
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (&rest _arguments) nil)))
+          (let* ((harness (e-harness-create :enabled-layer-ids nil))
+                 (binding (e-chat-service-create-board
+                           :harness harness :id "retry-retirement"))
+                 (board (e-chat-service-binding-board binding))
+                 (participant
+                  (e-board-runtime-attachment-participant
+                   (e-chat-service-binding-attachment binding)))
+                 (calls 0)
+                 (original (symbol-function 'e-board-runtime-retire-attachment)))
+            (cl-letf (((symbol-function 'e-board-runtime-retire-attachment)
+                       (lambda (attachment)
+                         (cl-incf calls)
+                         (if (= calls 1)
+                             (signal 'e-board-error
+                                     '("injected runtime owner failure"))
+                           (funcall original attachment)))))
+              (should-error (e-chat-service--retire-binding binding)
+                            :type 'e-board-error)
+              (should (eq (e-chat-service-binding-lifecycle-state binding)
+                          'retiring))
+              (should (eq (gethash "retry-retirement"
+                                   (gethash harness e-chat-service--bindings))
+                          binding))
+              (should (eq (gethash
+                           (e-board-runtime--attachment-key board participant)
+                           e-board-runtime--attachments)
+                          (e-chat-service-binding-attachment binding)))
+              (e-chat-service--retire-binding binding)
+              (should (= calls 2))
+              (should (eq (e-chat-service-binding-lifecycle-state binding)
+                          'retired))
+              (should-not (gethash harness e-chat-service--bindings))
+              (should-not
+               (gethash (e-board-runtime--attachment-key board participant)
+                        e-board-runtime--attachments)))))
+      (e-harness-turn-state-reset-aggregate))))
+
 (provide 'e-modernchat-test)
 
 ;;; e-modernchat-test.el ends here
