@@ -6,487 +6,594 @@
 
 In-review.
 
-The exact reviewed revision is
-=0f4bc1c652bcae325a7d01cfa3d29065705c9830=, compared with the pre-Feature 91
-baseline =b2c3f3f691b5cd97fdb208b4973f185ebd005e24=.  The worktree was clean
-before this review artifact was created.  This review found two unresolved
-=TODO Medium= API/behavior defects and one =TODO Low= evidence-accounting gap,
-so Feature 91 is not at fixed point and is not eligible for =Done=.
+The exact remediation candidate reviewed in this pass is
+=c55ffd5e4d77622cc5a55e8be09984c0d85b07af=.  Its review-remediation base is
+=ae978d2ee1317ece94d281bef8ed8d5cee77689f=, and the pre-Feature 91 behavior
+baseline remains =b2c3f3f691b5cd97fdb208b4973f185ebd005e24=.  The worktree was
+clean at entry.  The committed delta resolves all three findings from the first
+independent review, but this pass found one new =TODO Medium= lifecycle defect
+in the stale-binding drain branch.  The exact final actionable-finding count is
+therefore *1*, and Feature 91 has not reached fixed point.
 
-The mandatory sequencing gate remains closed: implementation or remediation in
-Features 87, 88, 90, or another feature must not resume until these findings are
-resolved, the corrected exact revision is independently rereviewed, and Feature
-91 is marked =Done= under the operator's status policy.  This reviewer did not
-edit =docs/feats/index.org=.
+=docs/feats/index.org= currently records Feature 91 as =In-review=.  That is the
+correct status while the new finding remains open.  The mandatory sequencing
+gate also remains closed: implementation or review remediation in Features 87,
+88, 90, or any other feature must not resume until Feature 91 reaches =Done=.
+This reviewer did not edit the index.
 
 * Review summary
 
-The physical decomposition is otherwise strong.  Chat presentation, session,
-harness/runtime, OpenAI, MCP, and base-capability modules have semantic owners;
-their load/call directions point toward lower contracts; foreign production
-private references are absent; the split tests preserve their historical test
-names and are independently discoverable; and the retained large roots have
-causal state/ordering reasons to remain colocated.  The context estimator has a
-single lower owner and the complete local load graph is acyclic.
+The remediation fixes the three previously reported contracts:
 
-Acceptance is blocked by two narrow but real contract failures:
+1. Both settlement follow-up receiver methods now carry the caller's exact
+   attached-turn port through authorization and through queue/publication.
+   A rejected stale port cannot borrow the active entry's replacement port, and
+   rejection occurs before either side effect.
+2. Public subscription and binding drains now return non-nil only while the
+   exact client/observer lease remains live and another page remains.  Callback
+   fault, detach, stale/cancelled receiver, unsubscribe, and board close all
+   terminate; healthy five-message/two-message-page fixtures return
+   =(t t nil)= for both public pumps.
+3. The local dependency evidence now defines an all-literal recursive scan,
+   includes all four optional local loads, and reproducibly reports 163 modules,
+   709 unique edges, and no cycle.
 
-1. A stale or rejected attached-turn port can enqueue and publish a follow-up by
-   silently borrowing the active entry's replacement port.
-2. A public chat-service drain can return non-nil after faulting and retiring its
-   subscription, so the documented synchronous =while= pattern can never make
-   progress.
+The broader physical decomposition remains sound.  Presentation, session,
+harness/runtime, OpenAI, MCP, base, and context owners retain the direction and
+lifetime conclusions from the first audit, and the full repository suite is
+green at this revision.
 
-The full repository suite still passes because neither edge condition has a
-regression test.  A separate evidence issue is that the Round 5 audit calls its
-707-edge scan complete, while a syntax-aware scan of all literal local
-=require= forms finds 709 acyclic edges.  This does not change the acyclicity
-result, but the documented count and scan scope need reconciliation.
+Fixed point is nevertheless blocked by the new stale-binding cleanup defect.
+When the binding's main observer is stale while its board remains active,
+=e-chat-service-drain-binding= calls a retirement helper whose old precondition
+was a non-live board.  It detaches the main client but leaves the binding in the
+harness/session catalog and leaves independent subscriber clients attached.
+The next binding lookup returns that detached object, and the next submit fails
+with =stale-requester= instead of rebuilding or otherwise presenting a coherent
+terminal state.
 
 No credentialed provider call was needed for this behavior-neutral topology
-review.  External provider capability is unconfirmed/not applicable, not
-evidence of Feature 91 behavior.
+review.  External OpenAI/MCP provider capability is unconfirmed/not applicable;
+it is not being counted as preservation evidence.
 
 * Scope reviewed
 
-** Exact history and contract
+** Exact history and authority
 
-The review inspected the exact source, tests, and diffs for this linear history:
+The first full audit inspected the accepted linear Feature 91 history through
+=0f4bc1c652bcae325a7d01cfa3d29065705c9830=.  This persistent reviewer then
+reviewed the committed remediation delta
+=ae978d2ee1317ece94d281bef8ed8d5cee77689f..c55ffd5e4d77622cc5a55e8be09984c0d85b07af=
+instead of trusting its implementation summary.  The delta contains exactly:
 
-- =229f29705e3bb314cf59c8b8c677ae587b7672c6=, implementation-plan start;
-- =67400aeed3807f26a019b0e3df3fb2c19d2c4edb=, presentation owners;
-- =408c3216beec75b896943a119fcc7f692e2e578a=, session/storage owners;
-- =18ddb78f288182f99a5a5d2964ce600396084084=, runtime-control owners;
-- =fd51e67500c8bdc35632ea0f7800c1bdedb94c86=, adapter/capability owners; and
-- =0f4bc1c652bcae325a7d01cfa3d29065705c9830=, residual and test topology.
+- =docs/feats/91-improve-modularization/plan.org=;
+- =docs/feats/91-improve-modularization/round-5-audit.org=;
+- =lisp/core/e-chat-service.el=;
+- =lisp/core/e-harness-turn.el=;
+- =test/e-harness-runtime-owner-test.el=; and
+- =test/e-modernchat-test.el=.
 
-The authority set was read completely before the final decision:
+The full authority set from the initial audit remains
 =AGENTS.md=, =docs/references/dev_work.org=, =docs/agents/review.org=,
 =docs/feats/index.org=, this feature's =plan.org= and five round audits,
-=docs/architecture.md=, and =docs/references/runtime_concepts.org=.  The last
-file is the selected vocabulary authority.
+=docs/architecture.md=, and =docs/references/runtime_concepts.org=.  The runtime
+concepts document remains the vocabulary authority.  This incremental pass
+reread the current review, the remediation diff, every changed source/test
+hunk, and the changed graph/status evidence; unaffected architecture cells were
+carried only after confirming that the delta does not touch them.
 
-The review evaluated =F91-GOAL=, =F91-OWNER=, =F91-PRESENTATION=,
+** Contracts and clusters
+
+The decision covers =F91-GOAL=, =F91-OWNER=, =F91-PRESENTATION=,
 =F91-SESSION=, =F91-RUNTIME=, =F91-OPENAI=, =F91-MCP=, =F91-BASE=,
-=F91-TOPOLOGY=, and =F91-PRESERVATION= rather than treating file size as the
-acceptance target.
+=F91-TOPOLOGY=, and =F91-PRESERVATION=.
 
-** Source and test clusters
+The underlying full review includes:
 
-The source pass covered:
+- the =e-chat= facade, its five presentation owners, chat service/session, and
+  Org Canvas/canvas consumers;
+- session aggregate/codec/catalog/storage plus metadata, identity,
+  provider-anchor, and board-policy value owners and their restart formats;
+- harness state/capability/activity/turn-state/context-runtime/turn, the
+  attached-turn port, and board registry/orchestration/runtime boundaries;
+- OpenAI, MCP, and base facade/owner graphs and supported substitutability;
+- context estimate/budget/lifetime ownership and the removed dependency cycle;
+- split owner/mechanism/composition tests, independent Eldev discovery,
+  historical name preservation, and forwarding/private-reference checks;
+- every Round 5 public seam, including the live attached-turn state seed; and
+- every production root over 2,500 lines and test root over 4,000 lines.
 
-- the =e-chat= facade, its surface/composer/transcript/activity/overview owners,
-  =e-chat-service=, chat-session attachment projection, and Org Canvas/canvas
-  consumers;
-- the session facade, aggregate, codec, catalog, storage, metadata, identity,
-  provider-anchor, and board-policy owners, including record/restart paths;
-- harness state, capability, activity, turn-state, context-runtime, turn, the
-  attached-turn port, board, board registry/orchestration, and board runtime;
-- OpenAI profile, two wire mappers, HTTP, WebSocket, decoder, diagnostics,
-  compaction, and facade composition;
-- MCP protocol, budget, stdio, HTTP, client, capability, and facade composition;
-- base file/bash owners and facade composition;
-- context estimate, budget, and lifetime ownership; and
-- the Round 5 default-harness, board-envelope, continuation, drain,
-  attachment-buffer, and session-tmp seams.
-
-The test pass covered direct owner/mechanism suites, public facade smoke roots,
-split composition suites, session restart/storage coverage, board/chat service
-coverage, =Eldev= discovery configuration, historical test-name preservation,
-and the only retained test root over 4,000 lines.
+The remediation-specific pass concentrated on exact receiver identity, drain
+terminal/progress semantics, teardown state after a terminal drain, and the
+require-graph definition/count.
 
 * What looks good
 
-- The chat facade composes five real presentation owners.  Transcript and
-  activity retain separate buffer-local state and communicate through semantic
-  projections.  Org Canvas consumes public attachment/component operations and
-  does not initialize chat-private registries.
-- Session state has a single loaded aggregate owner.  Codec and catalog are
-  value/projection owners, storage alone owns file/queue/controller/timer I/O,
-  and metadata, identity, provider-anchor, and board-routing policies are
-  stateless or narrowly process-local value owners.
-- Harness mutable clusters are explicit substates.  Board runtime no longer
-  imports harness, turn-state, or activity private representation; its intended
-  boundary is the concrete attached-turn port.
-- OpenAI, MCP, and base facades compose unequal owners without reverse facade
-  calls.  MCP capability does not depend on concrete HTTP state, both MCP
-  transports implement the supported list/call/refresh behavior, and Bash does
-  not use the file owner as a helper bag.
-- =e-context-estimate= is the single pure owner of the established UTF-8/
-  =prin1= estimate and ratio fallback.  Budget and lifetime depend downward on
-  it; lifetime no longer dynamically loads budget.
-- The board envelope is detached at the durable boundary; continuation
-  reconciliation retains one stable source-input key; the chat state snapshot
-  seeds from the live attached-turn projection before reconciling retained
-  terminal activity; and attachment-buffer/session-tmp operations have real
-  consumers.
-- No obsolete private-name compatibility aliases or duplicate production
-  implementations were found.  Expected errors remain owner-handled and
-  unexpected errors generally surface instead of being swallowed.
+- The attached-turn fix is direct rather than a compatibility shim.
+  =e-harness-attached-turn-port-follow-up= and
+  =e-harness-attached-turn-port-publish-follow-up= pass =:attached-turn-port=
+  at =lisp/core/e-harness-turn.el:177-212=.  The inner operations derive the
+  token from that supplied receiver and pass the same object to
+  =e-harness-turn--require-attached-port= at lines 333-385.  The authorized
+  object is then the queue port or publisher receiver; there is no replacement
+  fallback when a non-nil receiver is supplied.
+- The direct regression at
+  =test/e-harness-runtime-owner-test.el:193-252= installs an authorizing current
+  port and a rejecting stale receiver, asserts both errors before queue or
+  publisher effects, and also preserves both positive methods.
+- The drain result now has a real semantic precondition.  The lease predicate
+  at =lisp/core/e-chat-service.el:167-231= checks the registered board, exact
+  current client/observer, client generation and grant, observer state, and
+  ownership before progress is reported.  The public wrappers at lines
+  1382-1429 recheck liveness after the bounded operation.
+- The subscription retirement path is coherent: callback failure, detached or
+  stale client/observer, unsubscribe, and board close return nil and release the
+  subscription client where the active board still permits it.  Tests at
+  =test/e-modernchat-test.el:1428-1517= and 1562-1591 cover callback fault,
+  independent cursor isolation, detach, and unsubscribe.
+- Healthy bounded progress remains intact.  With page limit 2 and five pending
+  messages, both binding and subscription drains returned =(t t nil)=, projected
+  all five messages, and delivered event ids =m0= through =m4= in order.
+- The corrected graph definition at
+  =round-5-audit.org:267-290= is precise enough to reproduce independently: read
+  every =lisp/**/*.el= form with Emacs =read=, recursively inspect the complete
+  form tree, retain literal/quoted local =require= targets named by one of the
+  163 unique basenames, and deduplicate source/target pairs.  It explicitly
+  includes all four optional local edges and applies Tarjan SCC to the same set.
+- Unchanged owner conclusions remain strong: chat facade plus five owners;
+  session aggregate/codec/catalog/storage plus four value owners; distinct
+  harness substates; transport-independent MCP capability; separate OpenAI wire
+  and transport owners; separate base file/bash owners; and one lower pure
+  context estimator.
+- The public Round 5 board envelope, continuation reconciliation, default
+  harness spec, chat attachment buffer, session-tmp path, and live attached-turn
+  state seed still have concrete consumers and no private compatibility aliases.
 
 * Verification performed during this review pass
 
-** Repository state and static checks
+** Repository boundary and diff
 
-- =git rev-parse HEAD=: PASS,
-  =0f4bc1c652bcae325a7d01cfa3d29065705c9830=.
-- Entry =git status --short --branch=: PASS, clean
-  =## main...origin/main=.
-- =git diff --check b2c3f3f691b5cd97fdb208b4973f185ebd005e24..0f4bc1c652bcae325a7d01cfa3d29065705c9830=:
-  PASS, no output.
-- Foreign-private sweeps for chat, session, harness, OpenAI, MCP, and base owner
-  prefixes: PASS, no production cross-owner references.  Composed split suites
-  contain no extracted-owner private references.
-- Split roots do not require one another.  The OpenAI, harness, and chat smoke
-  roots contain 4, 3, and 4 substantive public tests respectively; none is a
-  forwarding-only test root.
-- Historical =ert-deftest= name comparison: OpenAI 165/165, chat presentation
-  159/159, session aggregate/board policy 7/7, and pre-split harness root 137/137
-  accounted for with no missing or duplicate historical name.
-- Syntax-aware source read of all =lisp/**/*.el= literal local =require= forms:
-  163 modules, 709 unique edges, all 163 nodes seen by topological traversal,
-  acyclic.  The four optional local edges are
-  =e-base-tools-bash -> e-session-tmp-resources=,
-  =e-elisp-job -> e-session-tmp-resources=,
-  =e-subagents-shell -> e-chat=, and
-  =e-task-queue-shell -> e-chat=.  See the Low finding for the 707/709 evidence
-  discrepancy.
-- Current size inventory: 90,579 production lines and 95,311 test/E2E lines.
-  The threshold dispositions are recorded below.
+#+begin_src sh
+git status --short --branch
+git rev-parse HEAD
+git diff --name-only ae978d2e..c55ffd5e
+git diff --check ae978d2e..c55ffd5e
+#+end_src
 
-** Tests and focused reproductions
+#+begin_example
+## main...origin/main
+c55ffd5e4d77622cc5a55e8be09984c0d85b07af
+docs/feats/91-improve-modularization/plan.org
+docs/feats/91-improve-modularization/round-5-audit.org
+lisp/core/e-chat-service.el
+lisp/core/e-harness-turn.el
+test/e-harness-runtime-owner-test.el
+test/e-modernchat-test.el
+git diff --check: no output
+#+end_example
 
-- =eldev test -B -f test/e-harness-runtime-owner-test.el=: PASS, 8/8 expected,
-  0 unexpected.  This also demonstrates that the current positive replacement
-  port test does not exercise a stale receiver.
-- =eldev test -B -f test/e-modernchat-test.el=: PASS, 36/36 expected,
-  0 unexpected.  Its faulted-observer case checks retirement/cursor isolation
-  but not the public drain return value.
-- =eldev test -B= inside the restricted sandbox: 2,560 tests, 6 unexpected,
-  7 skips.  All six failures were local HTTP fixture-socket tests (four MCP and
-  two OpenAI), so this run is not used as product evidence.
-- =eldev test -B= rerun outside the sandbox for local fixture sockets: PASS,
-  2,560 tests, 2,553 expected results, 0 unexpected, 7 documented skips,
-  40.677614 seconds.
-- Attached-port synthetic replacement reproduction through =eldev eval=:
-  the active entry held an authorizing =good= port while the called =stale= port
-  rejected every authorization.  Result:
+The entry worktree was clean.  After this audit, only this authorized
+=review.org= is modified and intentionally uncommitted.
 
-  #+begin_example
-  (:stale-authorized nil
-   :follow-up-result "01M18XFBTNGW7EEZSWR4HFQHPA"
-   :publish-result good
-   :publisher good
-   :queued 1)
-  #+end_example
+** Focused and full ERT
 
-  Direct authorization rejected the receiver, yet both mutating receiver
-  methods succeeded through the replacement port.
-- Faulted-drain reproduction through =eldev eval=: an initially active
-  subscription had one pending board message and a callback that signaled.
-  Result:
+#+begin_src sh
+eldev test -B -f test/e-harness-runtime-owner-test.el
+eldev test -B -f test/e-modernchat-test.el
+eldev test -B
+#+end_src
 
-  #+begin_example
-  (:result t :active nil
-   :state (faulted (error "subscriber failed"))
-   :cursor 0 :messages 1)
-  #+end_example
+#+begin_example
+Harness runtime owner: 9 tests, 9 expected, 0 unexpected.
+Modernchat/chat service: 38 tests, 38 expected, 0 unexpected.
+Full ERT: 2,563 tests, 2,556 expected, 0 unexpected, 7 skipped,
+41.829911 seconds.
+#+end_example
 
-  A second call has no path to advance the retired cursor, while the same
-  comparison continues to report more work.
+The full suite ran outside the restricted socket sandbox so its isolated MCP
+and OpenAI HTTP fixtures could bind local ports.  The seven skips are the five
+combined-process fresh-load assertions plus the existing optional Evil and
+Markdown cases; the corresponding isolated owner loads and recorded graphical
+evidence remain green.
 
-The Round 5 audit's exact-revision compilation, read/check-parens, 27-case
-isolated graphical, 485-case preservation, and bounded performance evidence was
-also inspected.  This review did not substitute those recorded results for the
-current full ERT run or the two new reproductions.
+** Exact receiver and drain reproductions
+
+The prior stale-port fixture was rerun in a fresh =eldev eval= process.  Its
+active entry retained an authorizing =good= port while both methods were called
+on a port whose authorizer always rejected:
+
+#+begin_example
+(:stale-authorizations 0
+ :follow-up-result e-harness-board-attachment-required
+ :after-follow-up-authorizations 1
+ :publish-result e-harness-board-attachment-required
+ :after-publish-authorizations 2
+ :publisher nil
+ :queued 0)
+#+end_example
+
+The prior callback-fault fixture now terminates:
+
+#+begin_example
+(:result nil :active nil
+ :state (faulted (error "subscriber failed"))
+ :cursor 0 :messages 1)
+#+end_example
+
+Independent fresh fixtures also exercised healthy multi-page delivery and
+terminal receiver states not isolated by a single committed test:
+
+#+begin_example
+(:binding-results (t t nil)
+ :subscription-results (t t nil)
+ :projected 5
+ :events ("m0" "m1" "m2" "m3" "m4"))
+
+(:stale-subscription (nil nil (cancelled nil))
+ :closing-subscription (nil nil (detached nil))
+ :detached-binding nil)
+
+(:board-state closing :result nil :cursor 0 :messages 1)
+#+end_example
+
+These results resolve the original termination finding.  The separate active-
+board stale-binding teardown reproduction under the new finding demonstrates
+why termination alone is not yet fixed point.
+
+** Require graph
+
+#+begin_src sh
+emacs --batch -Q -l /tmp/e-r5-require-scan.el
+find lisp -name '*.el' -print | sed 's#.*/##; s/\.el$//' | sort | uniq -d
+rg -n "\\(require 'e-(chat|session-tmp-resources) nil t\\)" lisp
+#+end_src
+
+#+begin_example
+MODULES 163
+EDGES 709
+CYCLES []
+No duplicate local basenames.
+Four optional local loads:
+  e-base-tools-bash -> e-session-tmp-resources
+  e-elisp-job -> e-session-tmp-resources
+  e-subagents-shell -> e-chat
+  e-task-queue-shell -> e-chat
+#+end_example
+
+The temporary file is only the raw execution artifact.  Reproducibility comes
+from the complete committed scan definition at =round-5-audit.org:267-290=;
+the reviewer independently reran that definition against this exact revision.
+
+** Preserved exact-revision evidence
+
+The remediation audit records additional current-revision gates: the 485-case
+selector passed with 483 expected and two existing skips; affected composition
+consumers passed 136/136; attached-turn consumers passed 166 expected with one
+fresh-load skip; changed production compiled without warnings; and read,
+check-parens, private-reference, duplicate-definition, whitespace, and bounded
+performance checks passed.  The initial independent audit also verified
+historical test-name preservation and independent discovery rather than relying
+on these summaries.  This pass used its own focused/full ERT and reproductions
+for the changed contracts.
 
 * UX and performance playthrough
 
-No live UX playthrough was required for this behavior-neutral topology review.
-The current Round 5 isolated graphical evidence covers 27/27 chat/workspace
-scenarios, and source/diff inspection confirms that the reviewed package changes
-ownership and composition rather than user-visible presentation.  The user's
-running Emacs was not queried, reloaded, signaled, or changed.
+No live UX playthrough was required or performed.  The delta changes
+behavior-neutral receiver/lifecycle boundaries, not rendering, focus, window
+geometry, keymaps, or buffer presentation.  The unchanged isolated graphical
+evidence remains 27/27, and the current bounded board-continuation performance
+fixture reports stable one-live-delivery/256-message behavior without a new
+scan or synchronous write.
 
-The retained performance evidence shows no structural regression from the
-decomposition.  The faulted-drain finding is nevertheless a performance and
-correctness defect: a consumer following the documented =while= contract can
-spin without progress after a callback error.  It must be fixed by termination
-semantics, not accepted as a timing variance.
+The newly found issue is a correctness and ownership-lifetime defect, not a
+timing judgment: after a terminal stale-binding drain, later service use returns
+a detached catalog object and fails authorization.  No amount of favorable
+timing evidence makes that state coherent.
 
 * Findings
 
-** TODO Medium: Stale attached-turn receiver bypasses its own authorization
+** DONE Medium: Stale attached-turn receiver bypassed its own authorization
+
+*** Problem
+
+At =0f4bc1c6=, the two port receiver methods discarded their receiver and the
+inner settlement operations rediscovered the active entry's port.  A rejected
+stale port could therefore queue through or publish with a valid replacement,
+violating the one-attachment receiver fence recorded by =F91-RUNTIME=.
+
+*** Change
+
+At =c55ffd5e4=, both wrappers pass =:attached-turn-port port=, both inner
+operations derive the token from that exact receiver, and
+=e-harness-turn--require-attached-port= authorizes and returns the supplied
+object.  Queueing uses that returned port and publication invokes its publisher.
+No replacement-port fallback or mutating side effect occurs after rejection.
+
+*** Evidence
+
+=test/e-harness-runtime-owner-test.el:193-252= proves both negative and positive
+paths.  The direct reproduction authorized the stale receiver twice, received
+two =e-harness-board-attachment-required= errors, recorded zero queued prompts,
+and invoked neither publisher.  The isolated owner suite passed 9/9 and full ERT
+passed.
+
+** DONE Medium: Faulted public drain reported work that could never progress
+
+*** Problem
+
+At =0f4bc1c6=, a callback fault retired its subscription without accepting the
+page, after which the public wrapper compared only the unchanged cursor with the
+board tail and returned =t=.  The documented synchronous =while= contract could
+spin forever.  Equivalent stale/detached/closing states were not represented in
+the public return precondition.
+
+*** Change
+
+At =c55ffd5e4=, the public drains require an active exact client/observer lease
+before invoking the bounded drain and recheck it before reporting another page.
+Subscription teardown records a terminal state and returns nil.  Binding,
+subscription, callback-fault, detach, stale/cancelled, unsubscribe, and closing
+fixtures all terminate, while healthy multi-page fixtures retain true progress.
+
+*** Evidence
+
+=test/e-modernchat-test.el:1428-1591= adds/strengthens callback, detach, stale,
+close, and unsubscribe assertions, including bounded =while= use.  The focused
+suite passed 38/38.  Independent fixtures returned nil for every requested
+terminal state and =(t t nil)= for each healthy three-page pump.  The original
+false-progress contract is resolved; the new binding-cleanup problem below is a
+distinct postcondition defect.
+
+** DONE Low: The documented complete local require count omitted two edges
+
+*** Problem
+
+The first Round 5 evidence called a 163-module/707-edge subset complete, while
+the initial independent recursive literal scan found 709 acyclic edges.  The
+two omitted edges were optional shell loads of =e-chat=.
+
+*** Change
+
+=plan.org:275-279= and =round-5-audit.org:267-290= now define the all-literal
+recursive edge set, include nested/conditional requires and all four optional
+local loads, explain the +2 correction, and report SCCs over the same edge set.
+
+*** Evidence
+
+The reviewer reran the recorded scanner at the exact revision: 163 modules,
+709 unique edges, =CYCLES []=.  A separate basename check found no duplicate
+module names, and direct source search found exactly the four documented
+optional local loads.  The count, scope, and acyclicity conclusion now agree.
+
+** TODO Medium: Stale active-board drain leaves a zombie binding and subscriber client
 
 *** Expected
 
-=plan.org:499-503= requires a public attached-turn port shaped around attachment
-authorization and concrete submit/steer/queue/abort/observation/output behavior.
-=round-3-audit.org:44,59,117,151-161= further records one port per attachment,
-stale-generation rejection, and mutation through that bound port.  The concrete
-receiver therefore must be the port authorized for every mutating port method.
+The drain's new terminal semantics must leave service-owned process state
+coherent.  =F91-GOAL= and =F91-RUNTIME= require a usable public composition and
+one correctly fenced owner/lifetime; AGENTS.md requires mutable state to have
+one owner and unexpected failures to surface at a boundary that can make the
+domain decision.  A terminal stale receiver may be repaired or invalidated, but
+later =ensure-binding=/submit must not receive a detached object still cataloged
+as live, and retiring a binding must not orphan its independent clients.
 
 *** Observed
 
-=lisp/core/e-harness-turn.el:177-210= implements
-=e-harness-attached-turn-port-follow-up= and
-=e-harness-attached-turn-port-publish-follow-up= by passing only the receiver's
-harness/session values.  The inner functions at
-=lisp/core/e-harness-turn.el:331-371= then call
-=e-harness-turn--require-attached-port= without that receiver.  The helper at
-=lisp/core/e-harness-turn.el:54-68= silently selects the active turn entry's
-current port and authorizes it instead.
+For an active board with a cancelled main observer,
+=e-chat-service-drain-binding= takes the new branch at
+=lisp/core/e-chat-service.el:1393-1398= and calls
+=e-chat-service--retire-binding=.  That helper, lines 233-251, marks subscription
+objects inactive, removes the binding only from the board-to-bindings map, and
+detaches only the main client.  It neither removes the harness/session entry nor
+detaches the independent subscription clients.  Because
+=e-chat-service-binding= at lines 284-292 defines liveness only by the still-
+active registered board, it returns the same retired binding.
 
-The focused reproduction above installed a valid current =good= port and called
-both methods on a =stale= port whose authorizer always rejects.  Follow-up still
-queued one item, and publish invoked the =good= publisher.  The existing direct
-test at =test/e-harness-runtime-owner-test.el:137-191= covers rejected submit and
-a positive publisher double, but not replacement/stale receiver fencing.
+A fresh synthetic fixture added one independent subscriber, cancelled only the
+main observer, drained once, looked up the binding, and submitted again:
 
-*** Why it matters
+#+begin_example
+(:drain nil
+ :same-binding t
+ :main-client-state detached
+ :main-client-current nil
+ :subscription-active nil
+ :subscriber-client-state active
+ :subscriber-client-current t
+ :submit
+ (e-board-registry-authorization-denied
+  "e board registry authorization denied: ... stale-requester"))
+#+end_example
 
-The port is an attachment-identity boundary, not a request to find any current
-port for the same harness/session.  Ignoring the receiver lets an old attachment
-mutate the replacement attachment's queue or publication lane.  It contradicts
-the claimed stale-generation fence and makes port implementations non-
-substitutable under their advertised precondition.
-
-*** Smallest corrective direction
-
-Thread the receiver port into the two inner follow-up operations and require
-=e-harness-turn--require-attached-port= to authorize that exact object/token,
-as submit, steer, queue, and abort already do.  Publish through the authorized
-receiver's publisher rather than a rediscovered port.  Add direct regressions
-with a valid current replacement and a rejected stale receiver, proving that
-both calls signal =e-harness-board-attachment-required= before queue or
-publisher side effects.  Rerun the direct owner, board/runtime/Bayesian, 485-case
-preservation, and full ERT gates.
-
-** TODO Medium: Faulted public drain reports work that can never progress
-
-*** Expected
-
-The Round 5 public API map and
-=lisp/core/e-chat-service.el:1316-1346= define one bounded synchronous drain:
-non-nil means another page remains, so embedding/performance consumers may call
-it in a =while= loop.  A call that retires its subscription must terminate that
-contract or signal a documented error; it cannot report progress that the same
-subscription is no longer allowed to perform.
-
-*** Observed
-
-=e-chat-service--drain-subscription= at
-=lisp/core/e-chat-service.el:632-663= retires a subscription when its callback
-signals and deliberately does not accept the page.  The public wrapper at
-=lisp/core/e-chat-service.el:1332-1346= then ignores
-=e-chat-service-subscription-active-p= and returns only whether the unchanged
-observer index is behind the board message count.  The reproduction returned
-=t= with =:active nil=, a faulted state, cursor 0, and one message.  Repeated
-calls cannot advance because the private drain is a no-op for an inactive
-subscription.
-
-The existing test at =test/e-modernchat-test.el:1428-1481= proves that a faulty
-subscriber is retired without advancing another subscriber, but it does not
-assert the public return.  Current =e-dev-perf= callers use the return value as
-the =while= condition.
+The new test at =test/e-modernchat-test.el:1519-1560= proves that the loop stops
+but does not assert catalog invalidation, independent-client release, or a usable
+subsequent binding.  Its close assertion also reuses the binding already retired
+by the stale-observer half, so the separate review fixture was needed to verify
+a live binding entering =closing=.
 
 *** Why it matters
 
-The new public seam has a false termination signal.  A synchronous shell,
-fixture, or performance runner following its documented contract can loop
-forever after a callback error, and the API gives no state change by which that
-loop could recover.
+The public drain now terminates, but it converts one stale presentation cursor
+into a broken session service object.  Normal later service calls reuse a client
+that the same retirement just detached and fail authorization.  Independent
+subscriber clients remain active in the board registry although their
+subscriptions were made inactive and removed from the service list.  That is a
+cross-owner lifetime leak and a recovery failure hidden by the green full suite.
 
 *** Smallest corrective direction
 
-Return non-nil only when the subscription remains active after the bounded
-drain and its cursor is behind.  Apply the corresponding liveness rule to the
-binding drain so both public pumps have the same terminal contract.  Add
-regressions for callback-faulted, detached, unsubscribed, and stale/closed
-inputs, including a bounded =while= consumer.  Rerun modernchat/chat-service,
-performance smoke, preservation, and full ERT gates.
-
-** TODO Low: The documented complete local require count omits two edges
-
-*** Expected
-
-=round-5-audit.org:247-262,496= and =plan.org:274-275= call the dependency scan
-complete and record 163 local modules with 707 local =require= edges.  A complete
-load graph must either include every literal local =require=, including an
-optional runtime load, or define and justify a narrower edge convention.
-
-*** Observed
-
-A syntax-aware Emacs reader scan over every =lisp/**/*.el= form at the exact
-revision found 163 local modules and 709 unique local edges.  Kahn traversal saw
-all 163 nodes, so the expanded graph remains acyclic.  The source contains four
-optional local loads, including the two presentation loads at
-=lisp/shells/e-subagents-shell.el:232= and
-=lisp/shells/e-task-queue-shell.el:201=.  The Round 5 artifact excludes optional
-external package features but does not define an exclusion for optional local
-features or explain the two-edge difference.
-
-*** Why it matters
-
-The architectural conclusion is still correct, but the evidence cannot be
-reproduced from its stated scope.  A later cycle could be hidden if local
-runtime loads are silently omitted.
-
-*** Smallest corrective direction
-
-Rerun and preserve the graph scan with an explicit edge definition.  Prefer all
-literal local =require= forms, which yields 709 and remains acyclic; otherwise
-document the excluded local edges and why they cannot participate in the load
-graph.  Correct the exact counts in =plan.org= and =round-5-audit.org= and keep
-the scanner/output available as reproducible evidence.
+Give the active-board stale-binding branch one coherent lifecycle outcome.
+Either rehabilitate/replace the service-owned observer without retiring the
+binding, or atomically invalidate the binding from every service catalog and
+release every owned subscription client so the next ensure operation can build
+a usable binding.  Preserve the durable board/session association and do not
+add a fallback or compatibility path.  Add a regression that cancels the main
+observer while the board is active, includes an independent subscriber, asserts
+the first drain returns nil, then proves catalog/client cleanup and a successful
+subsequent ensure/submit.  Keep the board-closing case independent.  Rerun the
+chat-service/board-runtime consumers, preservation selector, and full ERT.
 
 * Plan coverage
 
 | Contract | Review result | Exact evidence/remaining action |
 |----------+---------------+---------------------------------|
-| =F91-GOAL= | Partial; blocked | Most changes are now owner-local, but the attached-port and drain seams fail their advertised preconditions. Resolve both Medium findings. |
-| =F91-OWNER= | Met | Mutable production clusters and pure policies have one named owner/lifetime; no cross-owner private production reference was found. |
-| =F91-PRESENTATION= | Met | Facade plus five owners, separate transcript/activity state, public Org Canvas consumers, focused/direct and graphical evidence. |
-| =F91-SESSION= | Met | Aggregate/codec/catalog/storage plus four value owners; durable formats/replay remain green in full and focused evidence. |
-| =F91-RUNTIME= | Not met | Physical owner graph is correct, but two port mutations bypass the receiver and a public drain has nonterminating terminal semantics. |
-| =F91-OPENAI= | Met | Eight owner roles plus facade; no reverse/private edges; public and mechanism tests preserved. |
-| =F91-MCP= | Met | Protocol/client/stdio/HTTP/budget/capability graph is directional and supported operations are substitutable; socket-backed full tests pass outside the sandbox. |
-| =F91-BASE= | Met | File and Bash owners have distinct lifetimes/side effects; Bash has no file-owner dependency; facade/direct tests retained. |
-| =F91-TOPOLOGY= | Partial | Retained roots and split test topology are justified and the 709-edge graph is acyclic; correct the documented 707-edge evidence scope/count. |
-| =F91-PRESERVATION= | Met for repository-controlled behavior | Full 2,560-case ERT and focused suites pass; historical test names and current graphical evidence are intact. Live external provider capability is unconfirmed/not applicable. |
+| =F91-GOAL= | Partial; blocked | The bounded owner topology is materially improved, but a stale binding is returned as live and breaks the next public submit. Resolve the one Medium finding. |
+| =F91-OWNER= | Partial | The main binding/client teardown and independent subscriber-client lifetime diverge in the new active-board stale path. Other mutable/value owners remain correctly placed. |
+| =F91-PRESENTATION= | Met | Facade plus five presentation owners, distinct transcript/activity state, public Org Canvas consumers, and unchanged 27/27 graphical evidence. |
+| =F91-SESSION= | Met | Aggregate/codec/catalog/storage plus four value owners preserve durable formats and restart behavior; the new defect is process-local chat binding state. |
+| =F91-RUNTIME= | Partial; blocked | Exact attached-turn receiver fencing and drain termination are fixed, but stale binding invalidation/recovery is not coherent. |
+| =F91-OPENAI= | Met | Eight owner roles plus facade; no reverse/private edge or changed wire behavior. External live capability remains unconfirmed/not applicable. |
+| =F91-MCP= | Met | Protocol/client/stdio/HTTP/budget/capability graph remains directional and supported operations remain substitutable; local socket fixtures pass in full ERT. |
+| =F91-BASE= | Met | File and Bash owners retain distinct state/side-effect lifetimes and no Bash-to-file owner edge. |
+| =F91-TOPOLOGY= | Met | Every retained root has a causal disposition, split tests remain independently discovered, and the corrected 163/709 graph is reproducible and acyclic. |
+| =F91-PRESERVATION= | Partial; blocked | Full 2,563-case ERT and existing preservation evidence are green, but the new stale-binding recovery reproduction fails. External provider capability is not claimed. |
 
 * Large-root and test-topology disposition
 
-Every current production root over 2,500 lines and test root over 4,000 lines
-was inspected rather than accepted by size alone:
+The current exact revision has 90,676 production Lisp lines and 97,748
+test/E2E Lisp lines.  Every threshold root remains dispositioned:
 
 | Root | Lines | Review disposition |
 |------+-------+--------------------|
-| =lisp/core/e-board.el= | 3,569 | Retain one board sequence/admission/routing/pickup/settlement state machine; the detached journal envelope is a complete value boundary. |
+| =lisp/core/e-board.el= | 3,569 | Retain one board sequence/admission/routing/pickup/settlement state machine; the public detached envelope is its durable boundary. |
 | =lisp/shells/chat/e-chat-transcript.el= | 2,762 | Retain cohesive transcript marker/block/replay/navigation owner with direct tests. |
-| =lisp/core/e-board-runtime.el= | 2,749 | Retain attachment generation/mailbox/reconciliation/settlement adapter; fix the downstream port fence rather than split its atomic state. |
-| =lisp/core/e-session-aggregate.el= | 2,706 | Retain loaded semantic mutation/replay owner; independent metadata/identity/anchor/board policy values are already extracted. |
-| =lisp/shells/chat/e-chat-activity.el= | 2,633 | Retain one turn/redraw/activity registry owner, separate from transcript representation. |
-| =lisp/shells/chat/e-chat.el= | 2,607 | Retain shell command/mode/event composition facade over five owners; no buried second owner was found. |
-| =e2e/e-live-e2e-test.el= | 6,821 | Retain as one optional credentialed external-scenario/evidence harness, not an ordinary mixed-owner ERT mirror. |
+| =lisp/core/e-board-runtime.el= | 2,749 | Retain attachment generation/mailbox/reconciliation/settlement adapter; exact receiver fencing now passes. |
+| =lisp/core/e-session-aggregate.el= | 2,706 | Retain loaded mutation/replay owner; metadata, identity, anchor, and board-policy values are separate. |
+| =lisp/shells/chat/e-chat-activity.el= | 2,633 | Retain one turn/redraw/activity registry owner, separate from transcript state. |
+| =lisp/shells/chat/e-chat.el= | 2,607 | Retain shell command/mode/event composition facade over five presentation owners. |
+| =e2e/e-live-e2e-test.el= | 6,821 | Retain as the optional credentialed external scenario harness, not an ordinary mixed-owner ERT mirror. |
 
-All ordinary post-split composition roots are independently discovered and
-below the review thresholds.  Historical names are preserved, smoke roots are
-substantive, and composed suites do not import owner-private symbols.  No
-forwarding-only production owner or test root was found.
+No other production file exceeds 2,500 lines and no ordinary test file exceeds
+4,000 lines.  The OpenAI, harness, and chat split suites remain independently
+discoverable; historical test-name unions are preserved with the three current
+regressions additive; smoke roots contain substantive scenarios; no root merely
+forwards to another; and composed suites do not reference extracted-owner
+private symbols.
 
 * Architecture review
 
 ** Ownership, state, and side effects
 
-The decomposition generally follows the architecture rules.  Durable state
-remains session-owned; process-local board/harness state remains with its
-state-machine owner; request/transport state stays in adapters/Work; and
-buffer/window state stays in presentation owners.  Storage, provider/network,
-process, board-publication, and Emacs display side effects remain at the edges.
-The new session policies and context estimator are pure value owners.
+The accepted decomposition still places durable facts in session/board owners,
+process-local execution state in harness/board runtime, request/transport state
+in provider/MCP/Work adapters, and buffer/window state in presentation owners.
+Storage, provider/network, process, board publication, and display side effects
+remain at edges.  Session value policies and context estimation remain pure.
 
-The attached-turn finding is not a reason to introduce another abstraction.
-The concrete port is the correct owner boundary; its existing receiver identity
-must simply be enforced on every mutating method.  The drain finding likewise
-belongs in the current chat-service application boundary: termination must
-reflect the service-owned subscription state.
+The exact-port remediation is correctly owner-local: authorization happens
+before queue/publication and the same receiver owns the publisher.  Subscription
+drain teardown is likewise local and complete.  The remaining defect appears
+because =e-chat-service--retire-binding= was reused outside its former non-live-
+board lifecycle without expanding its catalog/client cleanup.  The harness map,
+main client, and independent clients then disagree about whether the same
+binding lifetime has ended.
 
 ** Dependency direction and interfaces
 
-The complete 709-edge local graph is acyclic.  Facades depend on their owners;
-owners do not call their facades.  MCP capability is transport-independent,
-session value owners do not depend on aggregate/storage, and context budget and
-lifetime point to the lower estimator.  The Round 5 seams are backed by real
-consumers and do not form a service locator or generic callback bag.
+The complete 709-edge local graph is acyclic.  Facades depend on owners; owners
+do not call their facades.  Session value owners do not depend on aggregate or
+storage, context lifetime points to the lower estimator, MCP capability is
+transport-independent, and Bash does not depend on the file owner.
 
-Interface width is otherwise consumer-shaped: board messages cross as detached
-envelopes; live attachments cross as buffer projections; temporary resource
-writers request a validated path; and synchronous chat consumers request one
-bounded drain.  The two Medium findings are precisely where implementation
-preconditions fail to match those narrow interface claims.
+The public seams remain narrow and consumer-shaped: detached board envelope,
+semantic continuation reconciliation, default harness projection, attachment
+live buffer, validated session-tmp path, exact attached-turn receiver, and one-
+page chat drains.  The stale-binding issue does not justify another generic
+abstraction.  It requires one explicit service lifecycle decision and matching
+cleanup/recovery postconditions.
 
-** Compatibility and legacy removal
+** Compatibility, errors, and legacy removal
 
-No new durable/wire format or provider behavior was found.  JSONL ordering,
-replay, checkpoint/index behavior, session identity/metadata, board journal,
-OpenAI/MCP wire behavior, and public command surfaces remain covered.  Removed
-private names have no compatibility promise, and no private aliases, fallback
-facades, duplicated estimators, or process-global adapter callbacks remain.
-Feature 87 remains the sole owner of future SQLite migration/cutover.
+No durable or wire format changed.  JSONL/index/checkpoint order, session
+identity/metadata/provider anchor, board journal, OpenAI/MCP request shapes,
+and public presentation commands remain covered.  Removed private names have no
+compatibility promise, and no private alias, replacement-port fallback,
+duplicated estimator/policy, or process-global adapter callback returned.
+
+Expected stale receiver conditions should terminate or rebuild at their owning
+application boundary.  The current subsequent =stale-requester= error is not a
+useful expected outcome: it is caused by returning an object already detached by
+the same service.  Unexpected errors elsewhere continue to surface normally.
 
 * Design self-check
 
-1. *Would the project be better off if work stopped here?*  The decomposition
-   is materially better, but work must not stop at this revision because two
-   new public/internal seams violate their own control/termination contracts.
-2. *What final direction does this move toward?*  Bounded semantic owners behind
-   stable application facades, with provider/storage/presentation variation at
-   explicit edges and no shared private representation.
-3. *Which decisions are stable, uncertain, or likely to change?*  Current
-   ownership, durable compatibility, and port/drain semantics are stable enough
-   to enforce directly.  SQLite, richer canvas state, permission policy, and a
-   generic shell lifecycle remain local Planned/unconfirmed work; no speculative
-   abstraction was added for them.
-4. *Who owns each behavior?*  The source maps each state and side effect to a
-   cohesive owner.  Harness turn owns attached execution; chat service owns
-   binding/subscription drains.  The findings require those owners to enforce
-   their declared semantics.
-5. *Does coupling increase or decrease?*  It decreases overall through private
-   edge removal and owner-local tests.  Rediscovering a replacement port from a
-   receiver method weakens that reduction and must be removed.
-6. *Did a dependency point the wrong way?*  No cycle or facade-to-owner reversal
-   remains in the 709-edge graph.  The 707-edge documentation must be corrected
-   so this conclusion stays reproducible.
-7. *Could side effects move outward?*  They are already at storage, provider,
-   process, board, and shell edges.  Follow-up authorization and drain
-   termination are owner policy, not side effects to move elsewhere.
-8. *What state was added or mutated?*  No durable state shape was added.  New
-   public operations expose existing process-local port, cursor, attachment,
-   and default/session-tmp behavior.  The port bug mutates the wrong attachment
-   lane; the drain bug fails to reflect retired cursor state.
-9. *What is the performance impact?*  No decomposition regression is established
-   by the bounded smoke/full tests.  A faulted public drain can nonterminate,
-   which is an unjustified regression in the new API and must be corrected.
-10. *Are abstractions/interfaces real and substitutable?*  The owner boundaries
-    are real, but the attached port and drain are not yet substitutable under
-    their documented preconditions.  No unsupported-operation interface was
-    found in OpenAI, MCP, or base owners.
+1. *If work stopped here, would the project be better off?*  The owner topology
+   and three remediated contracts are better, but the package must not stop here
+   because an active-board stale drain leaves a broken reusable binding.
+2. *What final direction does this move toward?*  Stable application facades
+   over bounded semantic owners, with storage/provider/presentation variation at
+   explicit edges and coherent owner-local lifetimes.
+3. *Which decisions are stable, uncertain, or likely to change?*  Current owner
+   boundaries, durable compatibility, exact receiver fencing, and bounded drain
+   semantics are stable.  SQLite, richer canvas state, permission policy, and
+   generic shell lifecycle remain local future work; no speculative extension
+   point is needed for this cleanup.
+4. *Who owns each behavior and why?*  Harness turn owns attached execution;
+   chat service owns binding/subscription presentation leases; board registry
+   owns concrete client/observer eligibility.  The unresolved postcondition is
+   chat service's responsibility because it initiates the retirement and owns
+   its catalogs.
+5. *Does coupling increase or decrease?*  Coupling decreases overall through
+   physical owners and public projections.  The stale path currently leaves two
+   service catalogs and registry client state coupled by inconsistent cleanup;
+   resolving that reduces coupling further.
+6. *Did a dependency point the wrong way?*  No load-cycle or facade reversal
+   remains.  The corrected graph includes all literal local requires and is
+   acyclic.  The finding is a lifetime/postcondition problem, not a load edge.
+7. *Could side effects move outward?*  File, network, process, board publication,
+   and display effects are already at their edges.  Detaching clients and
+   mutating service catalogs are teardown effects that must remain coordinated
+   by the chat application service.
+8. *What state was added or mutated?*  No durable state was added.  The delta
+   reads existing client/observer lease state and mutates existing process-local
+   binding/subscription state on retirement.  The unresolved branch ends only
+   part of that lifetime, leaving reconstructible but still-live registry state
+   behind.
+9. *What is the performance impact?*  Healthy drains still perform one bounded
+   page and the recorded performance fixture shows no repeated scan or
+   synchronous write.  The finding is correctness/resource lifetime, not an
+   accepted performance regression.
+10. *Are interfaces real and substitutable?*  Exact attached-turn receivers and
+    bounded drain results now satisfy their direct preconditions.  A retired
+    binding is not substitutable for a live binding even though the lookup API
+    currently returns it; that mismatch blocks acceptance.
 11. *What compatibility expectations apply?*  Public behavior and durable/wire
-    formats must remain stable; old private names need no shim.  Remediation
-    should only enforce the already-documented port/drain contracts.
+    formats remain stable; private names need no shim.  The fix should preserve
+    the durable board association and choose repair or complete invalidation,
+    not add a fallback path.
 12. *What legacy code can be removed now?*  The feature already removed private
     consumer reach-through, callback globals, duplicate estimators/policies, and
-    mixed mechanism copies.  No additional legacy path is required to fix these
-    findings.
-13. *Where are errors handled?*  Expected storage/provider/board errors remain
-    owner-handled and unexpected errors surface.  The drain correctly retires a
-    faulty callback but then misreports liveness; the port incorrectly avoids a
-    receiver authorization error.  Both should surface/terminate at the owner.
-14. *What tests prove the behavior independently?*  Direct owner/mechanism,
-    public composition, restart/storage, preservation, graphical, and full ERT
-    evidence is broad.  The two focused reproductions identify the missing
-    independent regressions needed before acceptance.
+    mixed mechanism copies.  If retirement is chosen, stale catalog entries and
+    orphan client leases must be removed rather than retained as compatibility.
+13. *Where are errors handled?*  Rejected ports now surface the attachment error
+    before mutation; callback/receiver terminal states stop their drains.
+    Returning a detached binding defers an expected lifecycle decision into a
+    later authorization failure, which must be corrected at chat-service
+    teardown/recovery.
+14. *What tests prove core behavior independently?*  Direct owner/mechanism,
+    public composition, restart/storage, exact 485-case preservation, 27-case
+    graphical, graph/private/duplicate scans, bounded performance, and full
+    2,563-case ERT evidence remain broad.  The new reproduction identifies the
+    missing independent regression: stale main-observer teardown followed by
+    catalog lookup/ensure, subscriber-client accounting, and successful submit.
 
 * Unresolved
 
-- The stale/rejected attached-turn receiver must be fenced for both follow-up
-  mutation methods.
-- Faulted/detached/stale chat-service drains must terminate consistently with
-  their documented return contract.
-- The complete local =require= scan scope/count must be made reproducible and
-  the 707/709 discrepancy corrected.
+- One =TODO Medium= remains: an active-board stale binding drain must not leave
+  the detached binding cataloged as live or orphan independent subscriber
+  clients.  Add the recovery/cleanup regression described above.
 - After remediation, this same independent reviewer must inspect the exact new
-  committed revision, rerun the focused reproductions/gates, update each finding
-  with resolution evidence, and decide whether fixed point is reached.
+  committed revision, rerun the focused teardown reproduction and proportionate
+  gates, update this finding with resolution evidence, and decide fixed point.
 
-Until then, keep Feature 91 =In-review= and keep the Feature 87/88/90 sequencing
-gate closed.
+Final actionable-finding count: *1*.  Keep Feature 91 =In-review= and keep the
+Feature 87/88/90/all-feature sequencing gate closed.
 
 * Live and restart note
 
-Repository-side validation was run outside the user's Emacs.  The user's
-running Emacs remains unchanged.  Because Feature 91 changes core/session/
-harness/provider module and record shapes, using the accepted behavior will
-require a full Emacs restart; =e-dev-reload= is not an appropriate substitute.
-Do not restart or reload while the review findings remain open.
+All validation was repository-side and isolated from the user's Emacs.  The
+running Emacs was not queried, reloaded, signaled, or changed.  Because Feature
+91 changes core/session/harness/provider module and record shapes, using an
+eventually accepted package requires a full Emacs restart; =e-dev-reload= is not
+an appropriate substitute.  Do not restart or reload while this review finding
+remains open.
