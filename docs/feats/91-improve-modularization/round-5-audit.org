@@ -6,9 +6,10 @@
 
 Round 5 was implemented from the clean exact baseline
 =fd51e67500c8bdc35632ea0f7800c1bdedb94c86=.  Parent review accepted the
-previous package after two correction passes; the current review remediation
-is the committed candidate pending independent re-review.  This file does not
-mark Feature 91 =Done=.
+previous package after two correction passes; the prior review remediation is
+committed and independently rereviewed.  The lifecycle correction below is the
+next exact candidate pending independent re-review.  This
+file does not mark Feature 91 =Done=.
 
 Round 5 covers the final residual-topology and test-topology review after the
 accepted presentation, session/storage, runtime-control, and adapter/capability
@@ -68,7 +69,12 @@ The user's running Emacs was not queried, reloaded, signaled, or changed.
   public drain operations return progress only while the exact board client
   and observer lease remains live and eligible; callback faults and stale,
   detached, unsubscribed, or closing receivers therefore terminate a bounded
-  pump.
+  pump.  A cancellable stale main observer on an otherwise active board is now
+  rehabilitated at its old cursor through one replacement observer while
+  retaining the main client, requester generation, runtime attachment, and
+  durable board identity.  Terminal binding retirement removes the
+  harness/session and board catalogs and releases every owned independent
+  subscriber client; it does not alter durable session/board association.
 - =lisp/core/e-harness-turn.el=: threads an explicit attached-turn receiver
   through settlement follow-up queueing and publication, so authorization and
   the publisher are applied to the caller's exact port rather than rediscovered
@@ -165,7 +171,10 @@ The user's running Emacs was not queried, reloaded, signaled, or changed.
   private paths to the semantic operations above.
 - =test/e-modernchat-test.el=: strengthens bounded drain regressions for
   callback-faulted, detached, stale, unsubscribed, and closing receivers while
-  retaining normal multi-page service coverage.
+  retaining normal multi-page service coverage.  The stale case now covers an
+  independent subscriber, catalog/lookup coherence, observer rehabilitation,
+  durable board identity, and successful subsequent submit; a separate close
+  fixture covers terminal release of both main and subscriber clients.
 
 No production implementation copy was added and no compatibility alias was
 added for a removed private name.
@@ -506,8 +515,8 @@ paths below are the exact evidence locations.
 
 | Command/purpose | Result |
 |-----------------+--------|
-| =eldev test -B= (current remediation tree, escalated only for isolated local fixture sockets) | PASS: 2,563 tests; 2,556 expected, 0 unexpected, 7 skips, 41.320096s; =/tmp/e-r5-full-review-remediation-escalated.log= (the unprivileged fixture attempt is recorded at =/tmp/e-r5-full-review-remediation.log= with six sandbox socket failures) |
-| Accepted 485-case preservation selector with chat/session/owner files (current remediation tree) | PASS: 485 tests; 483 expected, 0 unexpected, 2 existing skips, 12.043778s; =/tmp/e-r5-preservation-485-review-remediation.log= |
+| =eldev test -B= (current lifecycle remediation tree, escalated for fixture sockets) | PASS: 2,566 tests; 2,559 expected, 0 unexpected, 7 skips, 41.839371s; =/tmp/e-r5-lifecycle-full-ert-final5.log= (the final unprivileged attempt is =/tmp/e-r5-lifecycle-full-ert.log= with six sandbox socket failures) |
+| Accepted 485-case preservation selector with chat/session/owner files (current lifecycle remediation tree) | PASS: 485 tests; 483 expected, 0 unexpected, 2 existing skips, 11.576777s; =/tmp/e-r5-lifecycle-preservation-485-final4.log= |
 | Session aggregate/board-policy/codec/catalog/storage/facade/restart batch | PASS: 179 tests, 178 expected, 0 unexpected, 1 expected fresh-load skip; =/tmp/e-r5-correction-session-board-policy-final.log= |
 | Direct aggregate and board-policy suites | PASS: aggregate 4/4 and board-policy mechanism 3/3; =/tmp/e-r5-session-aggregate-direct-final.log= and =/tmp/e-r5-session-board-policy-direct-final.log= |
 | Board/runtime/consumer/private-ref migration batch | PASS: 325 tests, 324 expected, 0 unexpected, 1 existing Evil skip; =/tmp/e-r5-private-ref-migration-focused2.log= |
@@ -519,23 +528,25 @@ paths below are the exact evidence locations.
 | Final root/test-size inventory | PASS: only six retained production roots exceed 2,500 lines and only external =e2e/e-live-e2e-test.el= exceeds 4,000 test lines; every ordinary split composition root is 1,451 lines or smaller; =/tmp/e-r5-final-inventory.log= |
 | All isolated fresh-owner suites | PASS: 79/79; =/tmp/e-r5-fresh-owner-suites-correction-final2.log= |
 | Separate fresh facade operation loads (session/chat/harness/OpenAI/MCP/base) | PASS: isolated =eldev eval -R -s= processes kept facades unloaded where required and exercised representative public operations; =/tmp/e-r5-fresh-*-correction-final*.log= |
-| Affected production byte compilation with warnings surfaced | PASS: exit 0, all affected/new targets, no warnings/errors; =/tmp/e-r5-compile-correction-final.log= |
-| Direct current-buffer check-parens over every changed/new Lisp file | PASS: 67/67; =/tmp/e-r5-check-parens-board-policy-final4.log= |
-| Direct read parsing over every changed/new Lisp file | PASS: 67/67; =/tmp/e-r5-read-board-policy-final3.log= |
-| Complete all-literal local require graph/SCC scan | PASS: 163 local modules, 709 unique edges, =CYCLES []=; recursive syntax-aware definition includes four optional local loads; =/tmp/e-r5-require-all-literal-review-remediation.log= (scanner =/tmp/e-r5-require-scan.el=); prior 707-edge subset =/tmp/e-r5-static-final-correction.log= omitted the two optional =e-chat= shell edges |
-| Private/consumer/dependency migration scan | PASS: zero cross-owner production private refs, zero composed-owner private refs, and zero =e-session-board-policy--*= refs outside its direct owner suite; =/tmp/e-r5-private-production-correction-final.log=, =/tmp/e-r5-private-composed-correction-final.log=, and =/tmp/e-r5-session-policy-private-test-sweep.log= |
-| Duplicate function-definition scan | PASS: 0 duplicate function definitions; =/tmp/e-r5-duplicate-function-correction-final.log= |
-| New-file/changed-core trailing-blank scan | PASS: no trailing blanks across 70 paths; =/tmp/e-r5-whitespace-board-policy-final.log= |
-| Ordinary diff whitespace check | PASS: exit 0; =/tmp/e-r5-diff-check-final5.log= |
+| Affected production byte compilation with warnings surfaced | PASS: exit 0, all affected/new targets, no warnings/errors; lifecycle target =/tmp/e-r5-lifecycle-compile-final7.log= and prior all-target evidence =/tmp/e-r5-compile-correction-final.log= |
+| Direct current-buffer check-parens over every changed/new Lisp file | PASS: changed service/test files 2/2; =/tmp/e-r5-lifecycle-check-parens-final4.log=; prior all-tree 67/67 =/tmp/e-r5-check-parens-board-policy-final4.log= |
+| Direct read parsing over every changed/new Lisp file | PASS: changed service/test files 2/2; =/tmp/e-r5-lifecycle-read-final5.log=; prior all-tree 67/67 =/tmp/e-r5-read-board-policy-final3.log= |
+| Complete all-literal local require graph/SCC scan | PASS: 163 local modules, 709 unique edges, =CYCLES []=; recursive syntax-aware definition includes four optional local loads; current rerun =/tmp/e-r5-lifecycle-require-final3.log= (scanner =/tmp/e-r5-require-scan.el=); prior 707-edge subset =/tmp/e-r5-static-final-correction.log= omitted the two optional =e-chat= shell edges |
+| Private/consumer/dependency migration scan | PASS: no external production references to e-chat-service private symbols (including new repair/retirement helpers); prior accepted owner/private sweeps remain zero for all other families; =/tmp/e-r5-lifecycle-private-production-final3.log= and =/tmp/e-r5-private-production-correction-final.log= |
+| Duplicate function-definition scan | PASS: 0 duplicate function definitions; =/tmp/e-r5-lifecycle-duplicate-final3.log= |
+| New-file/changed-core trailing-blank scan | PASS: no trailing blanks in new/changed Lisp paths; =/tmp/e-r5-lifecycle-new-whitespace-final4.log= |
+| Ordinary diff whitespace check | PASS: exit 0; =/tmp/e-r5-lifecycle-diff-check-final8.log= |
 | Isolated graphical chat/workspace suite | PASS: 27/27, 0 unexpected, 13.365640s; =/tmp/e-r5-graphical-correction-final.log= |
-| Current attached-turn/drain remediation focus | PASS: 5/5 new and regression tests; =/tmp/e-r5-review-remediation-focus.log= |
+| Current attached-turn/drain remediation focus | PASS: prior 5/5 receiver/drain tests; =/tmp/e-r5-review-remediation-focus.log= |
 | Current attached-turn owner/board/Bayesian/tool consumers | PASS: 167 tests, 166 expected, 0 unexpected, 1 existing fresh-load skip; =/tmp/e-r5-attached-consumers-review-remediation.log= |
 | Current isolated harness owner contract | PASS: 9/9, including fresh load and exact receiver regression; =/tmp/e-r5-harness-runtime-owner-review-remediation.log= |
-| Current chat-service/Modernchat suite | PASS: 38/38; =/tmp/e-r5-modernchat-review-remediation.log= |
-| Current affected composition consumers | PASS: 136/136 across harness turn, board-runtime, and Modernchat/service composition files; =/tmp/e-r5-affected-composition-review-remediation.log= |
-| Current changed-production compilation | PASS: =eldev compile -F lisp/core/e-harness-turn.el lisp/core/e-chat-service.el= exit 0, no warnings/errors; =/tmp/e-r5-compile-review-remediation.log= |
-| Current changed-source read/check-parens | PASS: 4/4 read and 4/4 check-parens; =/tmp/e-r5-read-review-remediation.log= and =/tmp/e-r5-check-parens-review-remediation.log= |
-| Current private/duplicate/whitespace sweeps | PASS: zero extracted-owner cross-private refs, zero composed-owner private refs, zero former external private refs, zero board-policy refs outside its direct suite, zero duplicate definitions, no changed-path trailing blanks, and =git diff --check= exit 0; =/tmp/e-r5-private-duplicate-review.log=, =/tmp/e-r5-private-composed-review-remediation.log=, =/tmp/e-r5-session-policy-private-review-remediation.log=, =/tmp/e-r5-whitespace-review-remediation.log=, =/tmp/e-r5-diff-check-review-remediation.log= |
+| Current chat-service/Modernchat suite | PASS: 41/41, including stale-observer, detached-main, expired-cursor recovery, and independent close regressions; =/tmp/e-r5-lifecycle-focus-final3.log= |
+| Current affected composition consumers | PASS: board registry/runtime 103/103; downstream chat/starter/Org Canvas/surface 195 tests, 194 expected, 0 unexpected, 1 existing Evil skip; =/tmp/e-r5-lifecycle-board-final2.log= and =/tmp/e-r5-lifecycle-downstream-final2.log= |
+| Current lifecycle/hot-path performance smoke | PASS: existing =chat.board-continuation= scenario retained one live delivery and 256 snapshot messages across five samples, elapsed median 8.582ms (8.518--8.624ms), variance ratio 0.0124; =/tmp/e-r5-lifecycle-performance.log=; no extra scan or synchronous write observed |
+| Current changed-production compilation | PASS: =eldev compile -F lisp/core/e-chat-service.el= exit 0, no warnings/errors; =/tmp/e-r5-lifecycle-compile-final7.log= |
+| Current changed-source read/check-parens | PASS: read 2/2 and check-parens 2/2; =/tmp/e-r5-lifecycle-read-final5.log= and =/tmp/e-r5-lifecycle-check-parens-final4.log= |
+| Current private/duplicate/whitespace sweeps | PASS: no external e-chat-service private production refs, 0 duplicate definitions, no new/changed trailing blanks, and =git diff --check= exit 0; =/tmp/e-r5-lifecycle-private-production-final3.log=, =/tmp/e-r5-lifecycle-duplicate-final3.log=, =/tmp/e-r5-lifecycle-new-whitespace-final4.log=, =/tmp/e-r5-lifecycle-diff-check-final8.log= |
+| Current lifecycle focus | PASS: stale main observer + independent subscriber recovery 1/1, detached main-client recovery 1/1, expired-cursor retention-floor recovery 1/1, terminal close lease release 1/1, and idle-close regression 1/1; =/tmp/e-r5-lifecycle-focus-final3.log= |
 
 The full-suite's seven skips are =e-base-tools-owner-test-loads-without-facade=,
 =e-harness-runtime-owner-test-loads-without-facade=,
@@ -594,6 +605,61 @@ composition, exact 485-case, full ERT, compile, syntax, static, and bounded
 performance checks are complete for this remediation candidate.  No review
 artifact is edited in this remediation.
 
+** Current lifecycle remediation
+
+The independent review found that the earlier stale-drain terminal branch
+retired only the board catalog entry and main client.  On an active board that
+left a detached binding discoverable through the harness/session catalog and
+left independent subscription clients active after their subscriptions had
+been marked inactive.  The correction keeps the service binding when its main
+client is still an authorized current client and only its observer lease is
+cancelled, faulted, or expired: =e-chat-service-drain-binding= replaces that
+observer through the board-registry owner at the old =next-seq= cursor, updates
+the binding's observer field, and returns nil for the repair step.  If the
+authorized main client was detached, the same service operation installs one
+fresh client/requester and observer over that cursor before releasing the old
+client.  Both paths require the captured client role to remain equal to the
+board's current grant; revocation, role changes, and externally replaced leases
+are terminal rather than silently reattached.  The same repair guard is applied
+to an asynchronously scheduled main drain.  An expired cursor starts its
+replacement at the retained board boundary so it cannot cycle through an
+unrecoverable pre-retention position.  No runtime participant attachment or
+durable board/session association is recreated or changed.
+
+Other stale/terminal states remain terminal.  =e-chat-service--retire-binding=
+now removes an exact harness/session catalog entry, board binding entry, and
+board log-owner entry; marks each subscription detached and inactive; detaches
+each independent subscription client; cancels pending idle/drain timers; and
+detaches the main client.  It leaves durable session and board records intact.
+The close/idle path therefore has the same catalog and client postconditions,
+while active-board stale observer recovery preserves the existing process
+binding and all independent subscribers.
+
+The direct regression retains the historical
+=e-chat-service-test-drain-stops-for-stale-and-closing-receivers= name and now
+asserts one bounded nil result, a fresh active observer over the old cursor,
+the same live main client/requester and runtime binding, an active independent
+subscriber, all service catalogs, preserved board identity, and a successful
+public submit.  The separate
+=e-chat-service-test-close-board-releases-all-binding-leases= fixture proves
+terminal catalog removal and release of both client classes without reusing a
+binding already retired by a stale case.  Existing callback-fault, detached,
+unsubscribed, normal multi-page, and idle-close tests remain in place.  The
+additional =e-chat-service-test-detached-main-client-recovers-binding= case
+proves that an authorized externally detached main client is replaced without
+duplicating its runtime attachment or losing the independent subscriber.  The
+additional =e-chat-service-test-expired-main-observer-clamps-to-retention-floor=
+case proves that an expired receiver is repaired at the retained boundary
+without cycling, retiring the live binding, or losing the independent
+subscriber; it also retains successful public submit.
+
+Behavioral status for this correction is green on the focused lifecycle and
+chat-service suites; mechanism status is green for the owner-local repair and
+terminal-release boundaries, with parent and independent-review acceptance
+still pending.  Exact rerun commands and logs are listed in the validation
+table below.  No review artifact, index row, or architecture document is
+edited by this correction.
+
 * Performance, load, and I/O comparison
 
 The bounded performance command exercised 14 selected existing scenarios:
@@ -608,14 +674,16 @@ synchronous context builds in the status scenario, one pending refresh, zero
 pending UI work after settle, and one live board continuation delivery after
 history delivery.  No new repeated scan or synchronous write is observed.
 
-The current remediation also ran the existing =chat.board-continuation=
-scenario in an isolated batch process with one warmup and three measured
-samples.  The three samples were stable at one live delivery, 256 snapshot
-messages, and a median elapsed time of 8.617ms (8.566--8.633ms; variance
-ratio 0.0077); all compared metrics were =pass= or the expected elapsed-time
-=improvement=.  This confirms that the liveness check adds no repeated drain
-scan or synchronous write in the bounded subscriber path.  Evidence is
-=/tmp/e-r5-drain-performance-review-remediation.log=.
+The prior remediation ran the existing =chat.board-continuation= scenario in
+an isolated batch process with one warmup and three measured samples; its
+three-sample result is retained at
+=/tmp/e-r5-drain-performance-review-remediation.log=.  This lifecycle
+correction reran the same scenario with five samples: one live delivery and
+256 snapshot messages were stable, with an elapsed median of 8.582ms
+(8.518--8.624ms; variance ratio 0.0124), at
+=/tmp/e-r5-lifecycle-performance.log=.  No repeated drain scan or synchronous
+write is observed; the repair itself only installs one bounded replacement
+observer when a stale receiver is encountered.
 
 The all-default performance invocation was attempted first and stopped at the
 existing =session.replay-list= setup because it creates journal entries without
@@ -637,6 +705,13 @@ is unchanged.
   request shapes, error visibility, durable JSONL/index/checkpoint files,
   ordering, atomicity, retries, and cancellation are preserved by the focused
   and full suites.
+- The lifecycle correction changes only process-local chat binding/observer
+  recovery: active-board stale observer repair retains client generation when
+  possible, and an authorized detached-client repair changes only the main
+  client/requester lease; both retain runtime attachment, participant, cursor,
+  and durable board identity.  Terminal close removes process-local catalogs
+  and clients before registry close.  No durable record or board wire format
+  changes.
 - New semantic projections have no old private compatibility aliases.  The
   pure context estimator retains the prior 4.0 invalid-ratio fallback and
   calculation while changing only load topology.
@@ -722,20 +797,25 @@ open status transition.  Residual risks are:
     tests plus 3 direct board-policy mechanism tests, 79 direct OpenAI/harness
     mechanism tests, session/storage and
     transport mechanism suites, public facade batches, exact 485 selector,
-    current full 2,563-case ERT, isolated graphical gate, compile/read/check-parens,
+    current full 2,566-case ERT, isolated graphical gate, compile/read/check-parens,
     cycle/private/duplicate scans, and bounded performance evidence provide
     independent behavior and topology proof.
 
 * Evidence handoff
 
-The remediation is handed off as one exact committed candidate; the final
-revision is recorded by the independent review and feature closure.  Raw
+The prior remediation and this lifecycle correction are handed off as exact
+committed candidates in the review chain.  Raw
 validation logs are under =/tmp/e-r5-*=, with the primary final inputs at
 =/tmp/e-r5-static-final-correction.log=,
 =/tmp/e-r5-private-production-correction-final.log=,
 =/tmp/e-r5-full-review-remediation-escalated.log=,
 =/tmp/e-r5-preservation-485-review-remediation.log=,
-=/tmp/e-r5-require-all-literal-review-remediation.log=,
+=/tmp/e-r5-lifecycle-full-ert-final5.log=,
+=/tmp/e-r5-lifecycle-preservation-485-final4.log=,
+=/tmp/e-r5-lifecycle-focus-final3.log=,
+=/tmp/e-r5-lifecycle-board-final2.log=,
+=/tmp/e-r5-lifecycle-downstream-final2.log=,
+=/tmp/e-r5-lifecycle-require-final3.log=,
 =/tmp/e-r5-private-duplicate-review.log=,
 =/tmp/e-r5-drain-performance-review-remediation.log=,
 =/tmp/e-r5-graphical-correction-final.log=, and

@@ -230,25 +230,146 @@ the board tail."
      (t
       (list 'detached nil)))))
 
-(defun e-chat-service--retire-binding (binding)
-  "Retire BINDING's process-local presentation subscriptions."
-  (dolist (subscription (e-chat-service-binding-subscribers binding))
-    (setf (e-chat-service-subscription-active-p subscription) nil))
-  (setf (e-chat-service-binding-subscribers binding) nil)
-  (setf (e-chat-service-binding-observer-drain-scheduled binding) nil)
-  (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
-    (when (timerp timer) (cancel-timer timer))
-    (setf (e-chat-service-binding-idle-close-timer binding) nil))
+(defun e-chat-service--main-observer-repairable-p
+    (binding client observer)
+  "Return non-nil when BINDING's stale main receiver can be rehabilitated.
+An active current client needs only a replacement observer.  A detached client
+may be replaced together with its observer while the old principal remains
+authorized.  An expired cursor is replaced at the retained board boundary;
+revoked or externally replaced leases are terminal instead of being silently
+reattached through a different authorization context."
+  (let* ((board (and (e-chat-service-binding-p binding)
+                     (e-chat-service-binding-board binding)))
+         (source (and board (e-board-registry-board-source-board board)))
+         (client-id (and (e-board-registry-client-p client)
+                         (e-board-registry-client-id client)))
+         (observer-id (and (e-board-observer-p observer)
+                           (e-board-observer-id observer)))
+         (current-client (and board client-id
+                              (gethash client-id
+                                       (e-board-registry-board-clients board))))
+         (current-observer (and source observer-id
+                                (e-board-observer source observer-id))))
+    (and (e-chat-service--binding-live-p binding)
+         (or (null current-client) (eq current-client client))
+         (or (null (e-board-registry-client-principal client))
+             (eq (e-board-registry-principal-role
+                  board (e-board-registry-client-principal client))
+                 (e-board-registry-client-role client)))
+         (eq current-observer observer)
+         (equal (e-board-observer-client-id observer) client-id)
+         (= (or (e-board-observer-client-generation observer) 0)
+            (or (e-board-registry-client-generation client) 0))
+         (memq (e-board-observer-state observer)
+               '(cancelled faulted expired)))))
+
+(defun e-chat-service--repair-main-observer (binding client observer)
+  "Rehabilitate BINDING's stale main receiver while retaining its board lease.
+The old cursor's next sequence is retained so a cancelled receiver does not
+skip messages that were pending before rehabilitation.  An expired cursor is
+clamped to the board's retained boundary.  When the old client is still
+current, only its observer is replaced; when it was detached, the service
+installs a fresh authorized client and observer before releasing the old
+client.  Participant attachment and durable board association remain
+unchanged."
   (let* ((board (e-chat-service-binding-board binding))
-         (board-id (e-board-registry-board-id board)))
-    (puthash board-id
-             (delq binding (gethash board-id e-chat-service--board-bindings))
-             e-chat-service--board-bindings)
-    (ignore-errors
-      (e-board-registry-detach-client
-       board
-         (e-board-registry-client-id
-        (e-chat-service-binding-client binding))))))
+         (source (e-board-registry-board-source-board board))
+         (client-id (e-board-registry-client-id client))
+         (observer-id (e-board-observer-id observer))
+         (start-seq
+          (max (e-board-observer-next-seq observer)
+               (1- (e-board-retention-floor source))))
+         (current-client (gethash client-id
+                                  (e-board-registry-board-clients board)))
+         (replacement-client nil)
+         (replacement-requester nil)
+         replacement)
+    (if (and (eq current-client client)
+             (eq (e-board-registry-client-state client) 'active))
+        (setq replacement
+              (e-board-registry-replace-observer
+               board client-id observer-id
+               (copy-tree (e-board-observer-selector observer))
+               :start-seq start-seq))
+      (unwind-protect
+          (progn
+            (setq replacement-client
+                  (e-board-registry-attach-client
+                   board
+                   :author (e-board-registry-client-author client)
+                   :principal (e-board-registry-client-principal client)))
+            (setq replacement-requester
+                  (e-board-registry-client-requester-context
+                   board
+                   (e-board-registry-client-id replacement-client)))
+            (setq replacement
+                  (e-board-registry-install-observer
+                   board
+                   (e-board-registry-client-id replacement-client)
+                   (copy-tree (e-board-observer-selector observer))
+                   :start-seq start-seq))
+            (setf (e-chat-service-binding-client binding) replacement-client
+                  (e-chat-service-binding-requester binding)
+                  replacement-requester)
+            (setq replacement-client nil)
+            (ignore-errors
+              (e-board-registry-detach-client
+               board client-id)))
+        (when replacement-client
+          (ignore-errors
+            (e-board-registry-detach-client
+             board (e-board-registry-client-id replacement-client))))))
+    (setf (e-chat-service-binding-observer binding) replacement
+          (e-chat-service-binding-observer-drain-scheduled binding) nil)
+    ;; A cancelled observer may have been behind a board tail when its timer
+    ;; fired.  Keep eventual delivery alive after the lease replacement; the
+    ;; public bounded drain still returns nil for the repair step itself.
+    (when (e-chat-service--observer-drain-pending-p binding replacement)
+      (e-chat-service--schedule-observer-drain binding))
+    replacement))
+
+(defun e-chat-service--retire-binding (binding)
+  "Retire BINDING from every process-local catalog and release its leases.
+Durable session and board association remain intact; a later explicit ensure
+may restore them.  Binding retirement is terminal for every presentation
+client, so independent subscribers are released here instead of being left as
+orphaned board-registry clients."
+  (let* ((harness (e-chat-service-binding-harness binding))
+         (session-id (e-chat-service-binding-session-id binding))
+         (bindings (and harness (gethash harness e-chat-service--bindings)))
+         (board (e-chat-service-binding-board binding))
+         (board-id (and board (e-board-registry-board-id board))))
+    (dolist (subscription (copy-sequence
+                           (e-chat-service-binding-subscribers binding)))
+      ;; Do not call `e-chat-service--retire-subscription' here: its normal
+      ;; last-subscriber path schedules an idle close, while this binding is
+      ;; already undergoing terminal teardown.
+      (setf (e-chat-service-subscription-active-p subscription) nil
+            (e-chat-service-subscription-drain-scheduled subscription) nil
+            (e-chat-service-subscription-state subscription)
+            (list 'detached nil))
+      (when-let ((client (e-chat-service-subscription-client subscription)))
+        (ignore-errors
+          (e-board-registry-detach-client
+           board (e-board-registry-client-id client)))))
+    (setf (e-chat-service-binding-subscribers binding) nil
+          (e-chat-service-binding-observer-drain-scheduled binding) nil)
+    (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
+      (when (timerp timer) (cancel-timer timer))
+      (setf (e-chat-service-binding-idle-close-timer binding) nil))
+    (when (and bindings (eq (gethash session-id bindings) binding))
+      (remhash session-id bindings))
+    (when board-id
+      (puthash board-id
+               (delq binding (gethash board-id e-chat-service--board-bindings))
+               e-chat-service--board-bindings)
+      (when (eq (gethash board-id e-chat-service--board-log-owners)
+                binding)
+        (remhash board-id e-chat-service--board-log-owners))
+      (when-let ((client (e-chat-service-binding-client binding)))
+        (ignore-errors
+          (e-board-registry-detach-client
+           board (e-board-registry-client-id client)))))))
 
 (defun e-chat-service--discard-binding (binding)
   "Discard an unpublished BINDING and all of its owned runtime state.
@@ -734,23 +855,29 @@ so a sibling cannot settle a selected binding through a malformed projection."
   (if (not (e-chat-service--binding-live-p binding))
       (e-chat-service--retire-binding binding)
     (let* ((board (e-chat-service-binding-board binding))
-         (client (e-chat-service-binding-client binding))
-         (observer (e-chat-service-binding-observer binding))
-         (page (e-board-registry-prepare-observer-page
-                board (e-board-registry-client-id client)
-                (e-board-observer-id observer)
-                :limit e-chat-service-observer-page-limit)))
-    (dolist (message (plist-get page :messages))
-      (e-chat-service--projection-record
-       binding (e-chat-service--message-event binding message)))
-    (when-let ((receipt (plist-get page :receipt)))
-      (e-board-registry-accept-observer-page
-       board (e-board-registry-client-id client)
-       (e-board-observer-id observer) receipt)
-      (when (< (or (plist-get page :through-index) 0)
-               (e-board-message-count
-                (e-board-registry-board-source-board board)))
-        (e-chat-service--schedule-observer-drain binding))))))
+           (client (e-chat-service-binding-client binding))
+           (observer (e-chat-service-binding-observer binding)))
+      (if (not (e-chat-service--observer-drain-live-p
+                binding client observer))
+          (if (e-chat-service--main-observer-repairable-p
+               binding client observer)
+              (e-chat-service--repair-main-observer binding client observer)
+            (e-chat-service--retire-binding binding))
+        (let ((page (e-board-registry-prepare-observer-page
+                     board (e-board-registry-client-id client)
+                     (e-board-observer-id observer)
+                     :limit e-chat-service-observer-page-limit)))
+          (dolist (message (plist-get page :messages))
+            (e-chat-service--projection-record
+             binding (e-chat-service--message-event binding message)))
+          (when-let ((receipt (plist-get page :receipt)))
+            (e-board-registry-accept-observer-page
+             board (e-board-registry-client-id client)
+             (e-board-observer-id observer) receipt)
+            (when (< (or (plist-get page :through-index) 0)
+                     (e-board-message-count
+                      (e-board-registry-board-source-board board)))
+              (e-chat-service--schedule-observer-drain binding))))))))
 
 (defconst e-chat-service--board-role-root "owner"
   "Durable chat board role for the user-facing owning session.")
@@ -1393,8 +1520,11 @@ private to the service."
     (if (not (e-chat-service--observer-drain-live-p
               binding client observer))
         (progn
-          (when (e-chat-service--binding-live-p binding)
-            (e-chat-service--retire-binding binding))
+          (if (e-chat-service--main-observer-repairable-p
+               binding client observer)
+              (e-chat-service--repair-main-observer binding client observer)
+            (when (e-chat-service--binding-live-p binding)
+              (e-chat-service--retire-binding binding)))
           nil)
       (e-chat-service--drain-observer binding)
       (and (e-chat-service--observer-drain-live-p

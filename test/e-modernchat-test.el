@@ -1517,7 +1517,7 @@ session and board binding without exposing a participant-added event."
                'detached)))))))
 
 (ert-deftest e-chat-service-test-drain-stops-for-stale-and-closing-receivers ()
-  "Bounded pumps stop when their receiver is stale or its board is closing."
+  "A stale main receiver is repaired without retiring the board binding."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
         (e-board-registry--unsettled-pickup-count 0)
@@ -1535,29 +1535,220 @@ session and board binding without exposing a participant-added event."
            (board (e-chat-service-binding-board binding))
            (source (e-board-registry-board-source-board board))
            (observer (e-chat-service-binding-observer binding)))
-      (e-board-post-fact
-       source :id "stale-pending" :tags '(main) :content "stale"
-       :source-fact-key '(test stale 1))
-      ;; A cancelled source observer is a stale receiver, even though its
-      ;; cursor remains behind the board tail.
-      (e-board-set-observer-state source
-                                   (e-board-observer-id observer)
-                                   'cancelled)
-      (let ((calls 0))
-        (while (and (< calls 3)
-                    (progn
-                      (cl-incf calls)
-                      (e-chat-service-drain-binding binding))))
-        (should (= calls 1)))
-      (should-not
-       (e-chat-service--observer-drain-live-p
-        binding (e-chat-service-binding-client binding)
-        (e-chat-service-binding-observer binding)))
-      ;; Closing is also terminal for a binding pump; no board call is made
-      ;; merely because the pre-close cursor is behind retained messages.
-      (let ((e-board-registry-close-scheduler (lambda (_function) nil)))
-        (e-board-registry-close board)
-        (should-not (e-chat-service-drain-binding binding))))))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+        (let* ((subscription (e-chat-service-subscribe harness "main" #'ignore))
+               (old-client (e-chat-service-binding-client binding))
+               (old-requester (e-chat-service-binding-requester binding))
+               (old-attachment (e-chat-service-binding-attachment binding))
+               (old-observer observer)
+               (old-next-seq (e-board-observer-next-seq observer))
+               (subscriber-client
+                (e-chat-service-subscription-client subscription)))
+          (e-board-post-fact
+           source :id "stale-pending" :tags '(main) :content "stale"
+           :source-fact-key '(test stale 1))
+          ;; A cancelled source observer is a stale receiver, even though its
+          ;; cursor remains behind the board tail.  The service repairs this
+          ;; lease in place, retaining the runtime attachment and board id.
+          (e-board-set-observer-state source
+                                       (e-board-observer-id old-observer)
+                                       'cancelled)
+          (let ((calls 0))
+            (while (and (< calls 3)
+                        (progn
+                          (cl-incf calls)
+                          (e-chat-service-drain-binding binding))))
+            (should (= calls 1)))
+          (let* ((new-observer (e-chat-service-binding-observer binding))
+                 (main-client (e-chat-service-binding-client binding))
+                 (board-id (e-board-registry-board-id board))
+                 (stored-session (e-chat-service-session harness "main")))
+            (should (not (eq old-observer new-observer)))
+            (should (eq (e-board-observer-state old-observer) 'cancelled))
+            (should (eq (e-board-observer-state new-observer) 'active))
+            (should (= (e-board-observer-next-seq new-observer)
+                       old-next-seq))
+            (should (eq main-client old-client))
+            (should (eq (e-chat-service-binding-requester binding)
+                        old-requester))
+            (should (eq (e-chat-service-binding-attachment binding)
+                        old-attachment))
+            (should (eq (e-board-registry-client-state main-client) 'active))
+            (should (eq (gethash (e-board-registry-client-id main-client)
+                                 (e-board-registry-board-clients board))
+                        main-client))
+            (should (memq (e-board-observer-id new-observer)
+                          (e-board-registry-client-observer-ids main-client)))
+            (should (e-chat-service-subscription-active-p subscription))
+            (should (eq (e-board-registry-client-state subscriber-client)
+                        'active))
+            (should (eq (gethash
+                         (e-board-registry-client-id subscriber-client)
+                         (e-board-registry-board-clients board))
+                        subscriber-client))
+            (should (eq (gethash "main"
+                                 (gethash harness e-chat-service--bindings))
+                        binding))
+            (should (memq binding
+                          (gethash board-id e-chat-service--board-bindings)))
+            (should (eq (gethash board-id e-chat-service--board-log-owners)
+                        binding))
+            (should (eq (e-chat-service-binding harness "main") binding))
+            (should (eq (e-chat-service-ensure-binding harness "main")
+                        binding))
+            (should (equal (plist-get (plist-get stored-session
+                                                 :board-session-state)
+                                      :board-id)
+                           board-id))
+            (should (stringp
+                     (e-chat-service-submit-session
+                      harness "main" "recovered")))))))))
+
+(ert-deftest e-chat-service-test-detached-main-client-recovers-binding ()
+  "A detached main client is replaced without duplicating its runtime lease."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (board (e-chat-service-binding-board binding))
+           (source (e-board-registry-board-source-board board)))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+        (let* ((subscription (e-chat-service-subscribe harness "main" #'ignore))
+               (old-client (e-chat-service-binding-client binding))
+               (old-requester (e-chat-service-binding-requester binding))
+               (old-attachment (e-chat-service-binding-attachment binding))
+               (old-observer (e-chat-service-binding-observer binding))
+               (old-client-id (e-board-registry-client-id old-client)))
+          (e-board-post-fact
+           source :id "detached-pending" :tags '(main) :content "pending"
+           :source-fact-key '(test detached-main 1))
+          (e-board-registry-detach-client board old-client-id)
+          (should-not (e-chat-service-drain-binding binding))
+          (let ((new-client (e-chat-service-binding-client binding))
+                (new-observer (e-chat-service-binding-observer binding))
+                (board-id (e-board-registry-board-id board)))
+            (should (not (eq new-client old-client)))
+            (should (eq (e-board-registry-client-state old-client) 'detached))
+            (should (eq (e-board-registry-client-state new-client) 'active))
+            (should (eq (gethash (e-board-registry-client-id new-client)
+                                 (e-board-registry-board-clients board))
+                        new-client))
+            (should (not (eq (e-chat-service-binding-requester binding)
+                             old-requester)))
+            (should (eq (e-chat-service-binding-attachment binding)
+                        old-attachment))
+            (should (not (eq new-observer old-observer)))
+            (should (eq (e-board-observer-state new-observer) 'active))
+            (should (eq (e-board-observer-state old-observer) 'cancelled))
+            (should (e-chat-service-subscription-active-p subscription))
+            (should (eq (e-chat-service-binding harness "main") binding))
+            (should (memq binding
+                          (gethash board-id e-chat-service--board-bindings)))
+            (should (eq (e-chat-service-ensure-binding harness "main")
+                        binding))
+            (should (stringp
+                     (e-chat-service-submit-session
+                      harness "main" "recovered-after-detach")))))))))
+
+(ert-deftest e-chat-service-test-expired-main-observer-clamps-to-retention-floor ()
+  "An expired main cursor is repaired at the retained board boundary."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (board (e-chat-service-binding-board binding))
+           (source (e-board-registry-board-source-board board)))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+        (let* ((subscription (e-chat-service-subscribe harness "main" #'ignore))
+               (observer (e-chat-service-binding-observer binding)))
+          (dotimes (index 5)
+            (e-board-post-fact
+             source :id (format "retained-%d" index) :tags '(main)
+             :content "retained" :source-fact-key (list 'test 'retained index)))
+          (let ((floor (1- (e-board-next-seq source))))
+            (e-board-advance-retention-floor source floor)
+            (e-board-set-observer-state source
+                                         (e-board-observer-id observer)
+                                         'expired)
+            (should-not (e-chat-service-drain-binding binding))
+            (let ((replacement (e-chat-service-binding-observer binding)))
+              (should (not (eq replacement observer)))
+              (should (eq (e-board-observer-state replacement) 'active))
+              (should (>= (e-board-observer-next-seq replacement)
+                          (1- floor)))
+              (should (eq (e-chat-service-binding harness "main") binding))
+              (should (eq (e-chat-service-ensure-binding harness "main")
+                          binding))
+              (should (e-chat-service-subscription-active-p subscription))
+              (should (stringp
+                       (e-chat-service-submit-session
+                        harness "main" "retained-recovery"))))))))))
+
+(ert-deftest e-chat-service-test-close-board-releases-all-binding-leases ()
+  "Terminal board close removes catalogs and releases main/subscriber clients."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-registry-close-scheduler (lambda (_function) nil)))
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "close"))
+           (board (e-chat-service-binding-board binding))
+           (board-id (e-board-registry-board-id board)))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
+        (let* ((subscription (e-chat-service-subscribe harness "close" #'ignore))
+               (main-client (e-chat-service-binding-client binding))
+               (subscriber-client
+                (e-chat-service-subscription-client subscription)))
+          (e-chat-service-close-board binding)
+          (should (eq (e-board-registry-board-state board) 'closing))
+          (should-not (e-chat-service-binding harness "close"))
+          (should-not (memq binding
+                            (gethash board-id e-chat-service--board-bindings)))
+          (should-not (gethash board-id e-chat-service--board-log-owners))
+          (should-not (e-chat-service-subscription-active-p subscription))
+          (should (eq (car (e-chat-service-subscription-state subscription))
+                      'detached))
+          (should (eq (e-board-registry-client-state main-client) 'detached))
+          (should (eq (e-board-registry-client-state subscriber-client)
+                      'detached))
+          (should-not
+           (gethash (e-board-registry-client-id main-client)
+                    (e-board-registry-board-clients board)))
+          (should-not
+           (gethash (e-board-registry-client-id subscriber-client)
+                    (e-board-registry-board-clients board))))))))
 
 (ert-deftest e-chat-service-test-drain-unsubscribed-subscription-terminates ()
   "A bounded consumer cannot spin after its subscription is unsubscribed."

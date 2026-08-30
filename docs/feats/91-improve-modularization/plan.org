@@ -290,9 +290,10 @@ name-set comparisons against the pre-correction roots are recorded in
 Implementer evidence includes the focused owner/composition batches, the
 corrected direct context/session policy contracts, exact test-name preservation
 comparisons (OpenAI 126/126, harness 135/135, chat 157/157), and the full
-repository gates recorded in =round-5-audit.org= (current full ERT 2,563 tests,
-2,556 expected, 0 unexpected, 7 skips; graphical 27/27 from the unchanged
-presentation tree).  The aggregate's
+repository gates recorded in =round-5-audit.org= (current lifecycle rerun
+2,566 tests, 2,559 expected, 0 unexpected, 7 skips; graphical 27/27 from the
+unchanged presentation tree).
+The aggregate's
 three board-policy mechanism tests now live in =e-session-board-policy-test.el=
 with the historical 7-test name union preserved across the two direct suites.
 The 485-case selector and isolated graphical suite retain their existing
@@ -306,10 +307,16 @@ lifetimes, and restart policy.
 The prior parent rerun accepted F91-OWNER, F91-TOPOLOGY, and F91-PRESERVATION
 after two correction passes.  The current review remediation adds exact
 receiver fencing for settling follow-ups, liveness-aware bounded chat-service
-drains, and corrected reproducible dependency evidence; current parent and
-independent-review acceptance remains pending.  Focused remediation checks
-and the full deterministic gates pass on the remediation candidate; the isolated
-graphical result remains valid because presentation sources were unchanged.
+drains, and corrected reproducible dependency evidence.  The lifecycle
+correction rehabilitates stale main receiver state in place (or replaces a
+detached authorized main client plus its observer), while requiring the
+captured client role to remain the board's current grant, and makes terminal
+binding retirement remove every process-local catalog and owned subscriber client;
+current parent and independent-review acceptance remains pending.  Focused
+remediation checks and the full deterministic gates pass on the current tree;
+the isolated graphical result remains valid because presentation sources were
+unchanged.  The lifecycle correction's focused and full reruns are recorded in
+=round-5-audit.org=.
 Feature 91 stays =In-progress= and is not =Done=.  The
 running Emacs was not queried, reloaded, or otherwise changed; core/session/
 harness/provider source changes require a restart before use in an already
