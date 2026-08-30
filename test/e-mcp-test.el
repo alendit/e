@@ -1,5 +1,4 @@
 ;;; e-mcp-test.el --- Tests for MCP capability wrappers -*- lexical-binding: t; -*-
-
 ;; Copyright (C) 2026 Dimitri Vorona
 
 ;; Author: Dimitri Vorona
@@ -12,6 +11,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'e)
 (require 'e-backend)
 (require 'e-capabilities)
@@ -49,15 +49,37 @@
         :description (or description (format "Run %s." name))
         :inputSchema schema))
 
+(defun e-mcp-test--transport-args (args transport-function)
+  "Replace explicit transport option in ARGS with TRANSPORT-FUNCTION."
+  (let (result)
+    (while args
+      (let ((key (pop args))
+            (value (pop args)))
+        (unless (eq key :transport-function)
+          (setq result (append result (list key value))))))
+    (append result (list :transport-function transport-function))))
+
 (defmacro e-mcp-test--with-transport (transport &rest body)
   "Run BODY with fake MCP helper TRANSPORT and reset helper state."
   (declare (indent 1))
-  `(let ((e-mcp-helper-transport-function ,transport))
-     (unwind-protect
-         (progn
-           (e-mcp-reset)
-           ,@body)
-       (e-mcp-reset))))
+  `(let* ((transport-function ,transport)
+          (request-function (symbol-function 'e-mcp-stdio-request))
+          (request-start-function (symbol-function 'e-mcp-stdio-request-start)))
+     (cl-letf (((symbol-function 'e-mcp-stdio-request)
+                (lambda (op servers &rest args)
+                  (apply request-function op servers
+                         (e-mcp-test--transport-args
+                          args transport-function))))
+               ((symbol-function 'e-mcp-stdio-request-start)
+                (lambda (op servers args &rest options)
+                  (apply request-start-function op servers args
+                         (e-mcp-test--transport-args
+                          options transport-function)))))
+       (unwind-protect
+           (progn
+             (e-mcp-reset)
+             ,@body)
+         (e-mcp-reset)))))
 
 (ert-deftest e-mcp-test-server-validates-required-fields ()
   "MCP server specs reject empty ids and commands."
@@ -131,7 +153,7 @@
                     (e-mcp-list-tools servers))
                   :type 'e-request-blocking-call-in-hot-path)))
         (should (equal (cdr err)
-                       '(e-mcp--helper-request mcp-batch))))
+                       '(e-mcp-stdio-request mcp-batch))))
       (should (= calls 0)))))
 
 (ert-deftest e-mcp-test-sync-http-helpers-reject-hot-path ()
@@ -140,22 +162,22 @@
     (let ((post-error
            (should-error
             (e-request-with-hot-path 'mcp-http-batch
-              (e-mcp--http-post session "tools/list" nil))
+              (e-mcp-http--http-post session "tools/list" nil))
             :type 'e-request-blocking-call-in-hot-path)))
       (should (equal (cdr post-error)
-                     '(e-mcp--http-post mcp-http-batch))))
+                     '(e-mcp-http--http-post mcp-http-batch))))
     (let ((notify-error
            (should-error
             (e-request-with-hot-path 'mcp-http-notify
-              (e-mcp--http-notify session "notifications/initialized" nil))
+              (e-mcp-http--http-notify session "notifications/initialized" nil))
             :type 'e-request-blocking-call-in-hot-path)))
       (should (equal (cdr notify-error)
-                     '(e-mcp--http-notify mcp-http-notify))))))
+                     '(e-mcp-http--http-notify mcp-http-notify))))))
 
 (ert-deftest e-mcp-test-helper-start-rejects-when-backpressure-full ()
   "Async stdio MCP transport fails before fake helper transport when full."
   (let ((old-max e-mcp-max-concurrent-requests)
-        (old-count e-mcp--active-request-count)
+        (old-count e-mcp-transport--active-request-count)
         (calls 0))
     (unwind-protect
         (e-mcp-test--with-transport
@@ -163,62 +185,62 @@
               (setq calls (1+ calls))
               '(:ok t :result (:tools [])))
           (setq e-mcp-max-concurrent-requests 1)
-          (setq e-mcp--active-request-count 1)
+          (setq e-mcp-transport--active-request-count 1)
           (should-error
-           (e-mcp--helper-request-start
+           (e-mcp-stdio-request-start
             "list-tools"
             (list (e-mcp-test--server))
             nil)
            :type 'e-mcp-backpressure)
           (should (= calls 0))
-          (should (= e-mcp--active-request-count 1)))
+          (should (= e-mcp-transport--active-request-count 1)))
       (setq e-mcp-max-concurrent-requests old-max)
-      (setq e-mcp--active-request-count old-count))))
+      (setq e-mcp-transport--active-request-count old-count))))
 
 (ert-deftest e-mcp-test-helper-start-releases-backpressure-slot-on-cancel ()
   "Cancelling a queued stdio MCP transport request releases its slot."
   (let ((old-max e-mcp-max-concurrent-requests)
-        (old-count e-mcp--active-request-count)
+        (old-count e-mcp-transport--active-request-count)
         request)
     (unwind-protect
         (e-mcp-test--with-transport
             (lambda (_request)
               '(:ok t :result (:tools [])))
           (setq e-mcp-max-concurrent-requests 1)
-          (setq e-mcp--active-request-count 0)
+          (setq e-mcp-transport--active-request-count 0)
           (setq request
-                (e-mcp--helper-request-start
+                (e-mcp-stdio-request-start
                  "list-tools"
                  (list (e-mcp-test--server))
                  nil))
           (should (e-tools-request-p request))
-          (should (= e-mcp--active-request-count 1))
+          (should (= e-mcp-transport--active-request-count 1))
           (should (e-tools-cancel-request request))
-          (should (= e-mcp--active-request-count 0)))
+          (should (= e-mcp-transport--active-request-count 0)))
       (setq e-mcp-max-concurrent-requests old-max)
-      (setq e-mcp--active-request-count old-count))))
+      (setq e-mcp-transport--active-request-count old-count))))
 
 (ert-deftest e-mcp-test-http-post-start-rejects-when-backpressure-full ()
   "Async HTTP MCP transport fails before URL transport when full."
   (let ((old-max e-mcp-max-concurrent-requests)
-        (old-count e-mcp--active-request-count)
+        (old-count e-mcp-transport--active-request-count)
         (started nil)
         (session (list :url "http://127.0.0.1:1" :next-id 0)))
     (unwind-protect
         (progn
           (setq e-mcp-max-concurrent-requests 1)
-          (setq e-mcp--active-request-count 1)
+          (setq e-mcp-transport--active-request-count 1)
           (cl-letf (((symbol-function 'url-retrieve)
                      (lambda (&rest _args)
                        (setq started t)
                        (error "url-retrieve should not start"))))
             (should-error
-             (e-mcp--http-post-start session "tools/list" nil)
+             (e-mcp-http--http-post-start session "tools/list" nil)
              :type 'e-mcp-backpressure)
             (should-not started)
-            (should (= e-mcp--active-request-count 1))))
+            (should (= e-mcp-transport--active-request-count 1))))
       (setq e-mcp-max-concurrent-requests old-max)
-      (setq e-mcp--active-request-count old-count))))
+      (setq e-mcp-transport--active-request-count old-count))))
 
 (ert-deftest e-mcp-test-helper-request-rejects-malformed-response ()
   "Malformed helper responses signal a protocol error."
@@ -233,11 +255,11 @@
   (skip-unless (executable-find "tail"))
   (let ((server (e-mcp-test--server)))
     (unwind-protect
-        (cl-letf (((symbol-function 'e-mcp--helper-command)
+        (cl-letf (((symbol-function 'e-mcp-stdio--helper-command)
                    (lambda () '("tail" "-f" "/dev/null"))))
           (e-mcp-reset)
           (should-error
-           (e-mcp--helper-request "list-tools" (list server) :timeout 0.02)
+           (e-mcp-stdio-request "list-tools" (list server) :timeout 0.02)
            :type 'e-mcp-backend-timeout)
           (should (get 'e-mcp-backend-timeout 'e-tools-infrastructure-error)))
       (e-mcp-reset))))
@@ -304,7 +326,7 @@
            (tools (e-mcp-list-tools servers)))
       (should (equal (mapcar #'e-mcp-tool-server-id tools)
                      '("one" "two")))
-      (should (equal (mapcar #'e-mcp--generated-tool-name tools)
+      (should (equal (mapcar #'e-mcp-capability--generated-tool-name tools)
                      '("mcp__one__echo" "mcp__two__echo"))))))
 
 (ert-deftest e-mcp-test-generated-tool-maps-text-and-structured-results ()
@@ -689,7 +711,7 @@
                                               :tools)
                                    nil))
                    '("echo")))
-          (should-not (e-mcp--truthy-p
+          (should-not (e-mcp-protocol-truthy-p
                        (plist-get (plist-get (e-mcp-diagnostics) :stale)
                                   :stale))))
       (e-mcp-reset))))
@@ -867,7 +889,7 @@ echoed back on `tools/list' and `tools/call'."
               (accept-process-output nil 0.01)))
           (should-not failure)
           (should (equal result '(:refreshed t)))
-          (should (plist-get (e-mcp--http-session server) :initialized)))
+          (should (plist-get (e-mcp-http--http-session server) :initialized)))
       (e-mcp-reset)
       (when (process-live-p process)
         (kill-process process))
@@ -905,8 +927,8 @@ echoed back on `tools/list' and `tools/call'."
               (accept-process-output nil 0.01)))
           (should-not failure)
           (should (equal (mapcar #'e-mcp-tool-name result) '("echo")))
-          (should (eq (gethash (e-mcp--catalog-key (list server))
-                               e-mcp--catalog-cache)
+          (should (eq (gethash (e-mcp-client--catalog-key (list server))
+                               e-mcp-client--catalog-cache)
                       result)))
       (e-mcp-reset)
       (when (process-live-p process)
@@ -960,10 +982,10 @@ echoed back on `tools/list' and `tools/call'."
 (defun e-mcp-test--wait-for-catalog (servers)
   "Wait until SERVERS have a cached MCP catalog."
   (let ((deadline (+ (float-time) 1)))
-    (while (and (not (e-mcp--catalog-cached-p servers))
+    (while (and (not (e-mcp-client--catalog-cached-p servers))
                 (< (float-time) deadline))
       (accept-process-output nil 0.01))
-    (should (e-mcp--catalog-cached-p servers))))
+    (should (e-mcp-client--catalog-cached-p servers))))
 
 (ert-deftest e-mcp-test-eager-mode-registers-every-tool ()
   "With progressive disabled (the default), all tool schemas are registered."
@@ -1066,7 +1088,7 @@ echoed back on `tools/list' and `tools/call'."
       (should (string-match-p "# mcp__fixture__echo"
                               (e-tools-result-content-text
                                (plist-get result :content)))))
-    (should (equal (e-mcp--active-set harness "s1") '(("fixture" "echo"))))
+    (should (equal (e-mcp-capability--active-set harness "s1") '(("fixture" "echo"))))
     (let ((names (mapcar (lambda (d) (plist-get d :name))
                          (e-tools-definitions
                           (e-harness-tools harness "s1")))))
@@ -1078,8 +1100,8 @@ echoed back on `tools/list' and `tools/call'."
   (e-mcp-test--with-progressive-harness harness
     (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
     (e-harness-create-session harness :id "s1")
-    (e-mcp--activate harness "s1" "fixture" nil)
-    (should (equal (e-mcp--active-set harness "s1") '(("fixture" . t))))
+    (e-mcp-capability--activate harness "s1" "fixture" nil)
+    (should (equal (e-mcp-capability--active-set harness "s1") '(("fixture" . t))))
     (should-not (cl-remove-if-not
                  (lambda (d)
                    (string-prefix-p "mcp__" (plist-get d :name)))
@@ -1105,12 +1127,12 @@ echoed back on `tools/list' and `tools/call'."
     (unwind-protect
         (progn
           (e-harness-create-session harness :id "s1")
-          (e-mcp--activate harness "s1" "fixture" '("echo"))
+          (e-mcp-capability--activate harness "s1" "fixture" '("echo"))
           (let ((loaded-harness
                  (e-harness-create
                   :backend (e-backend-fake-create :items nil)
                   :sessions (e-session-persistent-store-create directory))))
-            (should (equal (e-mcp--active-set loaded-harness "s1")
+            (should (equal (e-mcp-capability--active-set loaded-harness "s1")
                            '(("fixture" "echo"))))))
       (delete-directory directory t))))
 
@@ -1165,8 +1187,8 @@ echoed back on `tools/list' and `tools/call'."
         (should-not failure)
         (should (equal (mapcar #'e-mcp-tool-name result) '("echo")))
         (should (= calls 1))
-        (should (eq (gethash (e-mcp--catalog-key servers)
-                             e-mcp--catalog-cache)
+        (should (eq (gethash (e-mcp-client--catalog-key servers)
+                             e-mcp-client--catalog-cache)
                     result))
         (should (equal (mapcar #'e-mcp-tool-name
                                (e-mcp-list-tools servers))
@@ -1213,10 +1235,10 @@ echoed back on `tools/list' and `tools/call'."
         ;; Strict discovery still propagates the broken server's error.
         (should-error (e-mcp-list-tools (list (e-mcp-test--broken-server)))
                       :type 'e-mcp-backend-error)
-        (let ((catalogs (e-mcp--catalogs-safe servers)))
+        (let ((catalogs (e-mcp-client-catalogs servers)))
           (should (= (length catalogs) 1))
           (should (equal (e-mcp-server-id (caar catalogs)) "fixture")))
-        (should (= (length (e-mcp--tools-safe servers)) 1))
+        (should (= (length (e-mcp-client-tools servers)) 1))
         (should warnings)))))
 
 (provide 'e-mcp-test)

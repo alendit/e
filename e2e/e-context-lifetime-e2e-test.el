@@ -864,10 +864,10 @@ inherited Responses items, rather than only the literal request body."
             (should (= request-count 4))
             (should (eq (plist-get capabilities :continuation)
                         expected-mode))
-            (should (equal (plist-get capabilities :observation-delivery)
-                           (if delivery
-                               e-openai--request-local-observation-delivery-map
-                             'inherited)))
+            (should (eq (plist-get capabilities :observation-delivery)
+                        (if delivery
+                            'request-local-replaceable
+                          'inherited)))
             (if delivery
                 (progn
                   (should (eq

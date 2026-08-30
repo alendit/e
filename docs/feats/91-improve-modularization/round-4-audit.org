@@ -1,0 +1,322 @@
+#+title: Feature 91 Round 4 Adapter and Capability Audit
+#+date: 2026-08-30
+#+startup: overview
+
+* Status and scope
+
+This is the accepted evidence for the adapter/capability round.  Parent
+acceptance was completed on 2026-08-30.  The worktree started at
+=18ddb78f288182f99a5a5d2964ce600396084084= and no commit was made.
+
+The package covers the OpenAI adapter, MCP client/capability family, and base
+file/bash capability family.  Feature 87 session/storage behavior, Features
+88 and 90 context/provider behavior, and the accepted presentation/runtime
+behavior are preservation baselines only.  No SQLite work, migration,
+cutover, new durable format, provider contract, or live Emacs reload was done.
+
+The behavioral result is green for the focused deterministic and fixture
+checks listed below.  No external provider evidence is required.  Mechanism
+progress is complete for this package: the three former monolithic roots now
+compose explicit owners, private names are owner-qualified, and the production
+dependency sweeps report no cross-owner private references.  This is not a
+claim of the final Feature 91 gate.
+
+* Responsibility, state, and lifetime inventory
+
+** OpenAI
+
+| Owner | Responsibility and current representation | State/lifetime and side effects | Dependencies and callers | Disposition |
+|-------+--------------------------------------------+---------------------------------+--------------------------+-------------|
+| =e-openai.el= | Stable public backend/harness facade and request-flow composition. | Request context is per request; WebSocket sessions are closure-owned per backend/session. Provider requests retain existing async/cancel/retry lifetime. | Stable =e-backend=, =e-harness=, =e-request=, =e-tools=, =e-work= plus all OpenAI owners. Called by provider registration, harness creation, tests, and E2E. | Retained as the composition root; moved policy, wire, transport, decoding, and diagnostics out. |
+| =e-openai-profile.el= | Provider profile, auth-file/token policy, identity, headers, reasoning, cache/context capability derivation. | Customs and provider profile data remain process configuration; auth is read at request setup and is not persisted by this round. | Diagnostics and =e-context-lifetime=; consumed by facade, wire owners, HTTP, WebSocket, compaction, harness/provider tests. | New cohesive profile/auth owner. |
+| =e-openai-responses.el= | OpenAI Responses input, continuation/current-state mapping, URL, cache/context and curation wire mapping. | Pure request values; no transport or persistent state. | Profile, diagnostics, stable tools/context contracts; consumed by facade, compaction, provider continuation, and mapping tests. | New protocol-variant owner; no Chat Completions branches. |
+| =e-openai-chat-completions.el= | Chat Completions message/tool mapping and URL. | Pure request values; no transport or persistent state. | Profile and stable tools; consumed by facade and mapping tests. | New protocol-variant owner; kept separate from Responses mapping. |
+| =e-openai-http.el= | =url.el= HTTP request lifecycle, cancellation, idle deadline, response status/retry metadata. | Request buffer/process lifetime; structured error envelope is private to this owner. | Profile, diagnostics, =e-backend=, =e-request=; facade and compaction consume semantic request/response operations. | New transport owner; removed public response constructor. |
+| =e-openai-websocket.el= | WebSocket connection/session reuse, request lifecycle, cancel/close, response framing. | Session/connection state is backend-local and process-lived until idle close or explicit close; no global callback slot. | Profile, diagnostics, decoder, =websocket= and =e-backend=; facade and E2E consume session operations. | New transport owner; completion status carries the existing response identity plus a bounded response-id field for composition. |
+| =e-openai-decoder.el= | Responses and Chat Completions stream/non-stream decoding to backend-neutral event items. | Stateless except diagnostics recording delegated to diagnostics; no request or aggregate mutation. | Diagnostics only among OpenAI owners; facade/WebSocket/tests consume semantic items. | New bounded decoding owner; representation helpers remain private. |
+| =e-openai-diagnostics.el= | Retry/error normalization, bounded previews, URL redaction, raw response tail and optional measurement. | Last diagnostic/raw-response state remains process-local, bounded by existing byte settings; no durable state. | Stable request/dev profiling contracts; facade, HTTP, decoder, WebSocket, and tests consume semantic diagnostics. | New diagnostics owner; old provider-private names removed. |
+| =e-openai-compaction.el= | Proven OpenAI Responses compact endpoint eligibility, request mapping, async/sync completion decoding. | Request lifetime; no new durable state or format. | Profile, Responses mapping, HTTP, diagnostics, backend; facade and compaction tests consume it. | New cohesive provider-compaction owner; unsupported profiles remain ineligible. |
+
+The OpenAI facade still owns the application-level choice between injected
+request functions, HTTP, and WebSocket.  Profile and protocol owners do not
+call the facade.  HTTP response records, WebSocket session records, and
+decoder implementation helpers are not exported as adapter contracts.
+
+** MCP
+
+| Owner | Responsibility and current representation | State/lifetime and side effects | Dependencies and callers | Disposition |
+|-------+--------------------------------------------+---------------------------------+--------------------------+-------------|
+| =e-mcp.el= | Public reset/diagnostics facade and composition root. | Resets each lower owner; no duplicate catalog/process state. | Protocol, budget, stdio, HTTP, client, capability; =e-mcp-codex=, layers, and tests use the facade. | Retained as facade only. |
+| =e-mcp-protocol.el= | Validated server/tool value structs, wire-tool conversion, JSON truthiness, transport classification. | Pure values; no process/network/catalog state. | =cl-lib= and =subr-x=; all MCP owners consume stable protocol values. | New stable protocol/value owner. |
+| =e-mcp-transport.el= | Bounded concurrent-request budget. | One process-local counter with explicit reserve/release/reset; no server or catalog meaning. | Stdio and HTTP transports plus tests. | New smallest owner for the shared transport bound. |
+| =e-mcp-stdio.el= | Node/helper-process lifecycle, JSONL requests, output/error collection, helper restart and diagnostics. | Helper process, stdout/stderr buffers, request ids, and diagnostics retain existing process lifetime. | Protocol and budget; client/facade/tests consume list/call/refresh operations. | New helper transport owner. An optional lexical =:transport-function= is an explicit test input, never global mutable adapter state. |
+| =e-mcp-http.el= | Streamable HTTP session/initialize/post/notification lifecycle, cancellation and response handling. | Session map and request processes retain existing server/process lifetime. | Protocol, budget, =url.el=, =e-request=, =e-tools=; client/facade/tests consume operations. | New HTTP transport owner. |
+| =e-mcp-client.el= | Remembered server identity, catalog cache/in-flight discovery, transport selection, list/call/refresh semantics. | Known servers and catalog/in-flight caches remain process-local; refresh/reset invalidate as before. | Protocol plus the two concrete transport operation contracts; capability, facade, layers, and tests consume client operations. | New client/catalog owner; no raw transport records escape. |
+| =e-mcp-capability.el= | Tool/resource/context registration, progressive disclosure, active-tool session state and work projection. | Capability/session state is stored through existing session APIs; generated resource/tool values are per registration. | Protocol/client and stable capability/context/store/work/session services. It does not require or call =e-mcp.el= or =e-mcp-http.el=. | New transport-independent composition owner. |
+
+MCP server transport classification is a protocol-value operation
+(=e-mcp-protocol-http-server-p=), not an HTTP-owner query.  Catalog composition
+uses client operations and does not inspect helper or HTTP session state.
+
+** Base capability
+
+| Owner | Responsibility and current representation | State/lifetime and side effects | Dependencies and callers | Disposition |
+|-------+--------------------------------------------+---------------------------------+--------------------------+-------------|
+| =e-base-tools.el= | Stable base facade composing file and bash registrations. | No owner state; lower owners retain their existing buffer/process lifetimes. | File and bash owners; layer/base capability consumers. | Retained as composition root. |
+| =e-base-tools-file.el= | File/resource read/write/edit/glob/search, live-buffer coherence and resource-sync projection. | Buffer-local/live-buffer state and file coherence remain in existing resource lifetime; file writes preserve conflict/atomic behavior. | Stable resources/search/request/tools/work contracts; =e-resource-toc= and base tests use semantic file operations. | New file/resource/coherence owner. |
+| =e-base-tools-bash.el= | Shell process runner, bounded output collector, progress and detached-work result shaping. | Process, collector, output-file, timer and progress state retain existing command lifetime. | Stable capabilities/request/tools/work only; base facade and tests consume bash registration. | New bash/process owner. Bash-local validation and truncation avoid a file-owner dependency. |
+
+* Actual runtime dependency graph
+
+The following is the graph after inspecting both =require= forms and calls to
+owner-qualified functions.  Facade edges point downward; no owner points back
+to its facade, and no callback/global registry hides a reverse edge.
+
+#+begin_example
+OpenAI:
+  profile -> diagnostics
+  responses -> profile, diagnostics
+  chat-completions -> profile
+  http -> profile, diagnostics
+  decoder -> diagnostics
+  websocket -> profile, diagnostics, decoder
+  compaction -> profile, responses, http, diagnostics
+  facade -> diagnostics, profile, responses, chat-completions, http,
+            decoder, websocket, compaction
+
+MCP:
+  transport -> protocol
+  stdio -> protocol, transport
+  http -> protocol, transport
+  client -> protocol, stdio, http
+  capability -> protocol, client
+  facade -> protocol, transport, stdio, http, client, capability
+
+Base:
+  facade -> file, bash
+#+end_example
+
+The owner graphs contain 14 OpenAI sibling edges plus 8 facade edges, 10 MCP
+sibling edges plus 6 facade edges (the facade's six required owners are
+listed explicitly above), and 2 base facade edges.  Every graph is acyclic.
+The capability-to-HTTP concrete edge and bash-to-file edge are absent.  MCP
+capability's declarations for existing =e-harness= and =e-session= public
+application services are downward service calls, not reverse edges to the MCP
+facade.
+
+The static production sweep in =/tmp/e-r4-static-final.log= reports empty
+sections for old moved names, owner-to-facade private names, OpenAI/MCP/Base
+cross-owner private names, the MCP capability HTTP edge, and the Base bash
+file-owner edge.  Duplicate operational definitions report =NONE= and the
+new-file trailing-whitespace section is empty.
+
+* Public and consumer-shaped API map
+
+| Semantic contract | Public operations retained/introduced | Real consumers |
+|-------------------+---------------------------------------+-----------------|
+| OpenAI facade | =e-openai-backend-create=, =e-openai-create-harness=, =e-openai-codex-backend-create=, =e-openai-codex-create-harness= | Provider registration, harness creation, E2E and composed provider tests. |
+| OpenAI profile/auth | =e-openai-provider-profile/name/base-url/model/wire-api=, profile capability/header operations, existing auth/custom variables | Facade, Responses/Chat mapping, HTTP/WebSocket, compaction, provider continuation and profile tests. |
+| OpenAI mapping | =e-openai-codex-request-body= and URL/input projections; =e-openai-chat-completion-request-body/url= | Facade request context, compaction where applicable, E2E and wire-shape tests. |
+| OpenAI transport | =e-openai-http-request/start= and semantic response accessors; =e-openai-websocket-session-create/request-start/session-close= | Facade, compaction, E2E fixtures and transport tests. The response struct constructor is private. |
+| OpenAI decoding/diagnostics | Existing parse-stream functions plus bounded decoder event/error projections and diagnostics normalization/bounds | Facade/WebSocket, backend error handling, provider tests and direct decoder/diagnostics contracts. |
+| MCP value/client | =e-mcp-server-create=, =e-mcp-tool-create=, =e-mcp-list-tools/start=, =e-mcp-call-tool/start=, =e-mcp-refresh/start= | MCP capability, facade, codex/layer consumers and transport/client tests. |
+| MCP transports | Stdio and HTTP list/call/refresh operations, reset/diagnostics; explicit lexical transport input only for deterministic tests | Client composition, helper/HTTP fixtures and direct transport tests. |
+| MCP capability | =e-capability-with-mcp-create= | MCP layer/codex registration and capability tests. |
+| Base file/bash | Existing file resource registration and bash registration operations through =e-base-tools= | Base capability/layer, =e-resource-toc=, file/bash and composed tests. |
+
+Representation-shaped constructors, raw response/session access, private
+record fields, and old monolith-private helpers are not part of the semantic
+map.  Existing public names and formats remain available; newly named owner
+operations are only used where a component or test has a real semantic need.
+
+* Former private consumers and migration dispositions
+
+| Former path/symbol family | Production consumers | Tests/other consumers | Disposition |
+|---------------------------+-----------------------+-----------------------+-------------|
+| =e-openai--*= and moved provider-private helpers | Root-only request composition retained under =e-openai--*=; moved helpers now use owner namespaces. | OpenAI mechanism assertions call only their same-owner private helpers; E2E/provider integration calls public semantic operations. | No compatibility aliases. External private references removed. |
+| =e-mcp--*= | Split among protocol, transport, stdio, HTTP, client, and capability namespaces. | MCP mechanism suite uses only the namespace of the mechanism under test; direct owner suite exercises public owner contracts. | No old private aliases. |
+| =e-mcp-helper-transport-function= | None after migration. | Tests pass an explicit lexical transport function into stdio operation calls. | Process-global callback removed; no callback slot or service locator remains. |
+| =e-base-tools--*= | File and bash helpers moved to their owner namespaces; resource TOC uses file semantic operations. | Base mechanism assertions remain same-owner; direct owner suite covers facade-independent behavior. | No old private aliases and no shared helper bag. |
+| HTTP response constructor and decoder event/error/effect helpers | No external production consumer. | Constructor/event detail assertions moved to owner-private mechanism tests; public decoder event projection covers composition. | Private or removed as appropriate; no forwarding-only public wrappers. |
+
+* Durable, wire, and restart equivalence
+
+No durable file, record schema, provider request contract, MCP wire format,
+base tool schema, ordering, atomic write, retry, cancellation, timeout,
+recovery, or error visibility was intentionally changed.  OpenAI mapping keeps
+Responses and Chat Completions as separate variant owners and preserves
+provider profile/auth selection.  MCP keeps helper-process and streamable HTTP
+session lifetimes and uses the same supported client operations.  Base file
+coherence and bash collector limits remain at their prior bounds.
+
+The WebSocket completion status includes a bounded response-id field so the
+facade/E2E composition can observe the existing response identity without a
+private session hook; existing callbacks ignore additional status fields.  The
+stdio transport seam accepts a lexical test function and strips it before wire
+arguments; normal runtime calls continue to use the real helper.  These are the
+only interface-shape exceptions from mechanical movement.  No compatibility
+bridge was added for removed private names.  A fresh Emacs process is required
+to use the changed core/provider definitions in an already running process;
+the user's running Emacs was not queried or reloaded.
+
+* Test topology and dispositions
+
+** Direct owner contracts
+
+- =test/e-openai-owner-test.el=: 7 tests load profile, Responses, Chat,
+  decoder, diagnostics, HTTP-private-envelope, and compaction owners without
+  loading =e-openai=.
+- =test/e-mcp-owner-test.el=: 4 tests load protocol, budget, and client/stdio
+  contracts without loading =e-mcp=; the client test supplies an explicit
+  transport-shaped result.
+- =test/e-base-tools-owner-test.el=: 3 tests load file/bash owners without
+  loading =e-base-tools= and cover path security and bounded bash output.
+
+The direct suites strengthen the owner boundary and are retained as the
+replacement for facade-only load checks.  Existing detailed mechanism tests
+remain in =e-openai-test.el=, =e-mcp-test.el=, and =e-base-tools-test.el= as
+facade/composed preservation suites; their private assertions are same-owner
+mechanism checks, not foreign-owner calls.  Cross-owner private production and
+external E2E references were removed.  No valuable test was deleted.
+
+** Focused and preservation results
+
+| Command/evidence | Result |
+|------------------|--------|
+| =eldev test -B -f test/e-openai-owner-test.el test/e-mcp-owner-test.el test/e-base-tools-owner-test.el= | 14/14, 0 unexpected; =/tmp/e-r4-owner-final.log=. |
+| =eldev test -B -f test/e-openai-test.el= (local fixture run outside sandbox) | 165/165, 0 unexpected; =/tmp/e-r4-openai-final.log=. |
+| =eldev test -B -f test/e-mcp-test.el= (local HTTP/helper fixtures outside sandbox) | 39/39, 0 unexpected; =/tmp/e-r4-mcp-final.log=. |
+| =eldev test -B -f test/e-base-tools-test.el= | 49/49, 0 unexpected; =/tmp/e-r4-base-final.log=. |
+| =eldev test -B -f test/e-loop-test.el= | 52/52, 0 unexpected; =/tmp/e-r4-loop-final.log=. |
+| =eldev test -B -f test/e-provider-continuation-integration-test.el= | 11/11, 0 unexpected; =/tmp/e-r4-provider-continuation-final.log=. |
+| Affected context/resource/MCP/harness consumer batch | 62/62, 0 unexpected; =/tmp/e-r4-consumer-final.log=. |
+| Recorded accepted 485-test selector, loaded from the prior exact name set and current relevant test files | 483 expected passes, 0 unexpected, 2 existing skips; =/tmp/e-r4-preservation-485-final.log=. Skips are =e-chat-surface-integration-test-evil-escape-routes-transcript-commands= and =e-chat-test-assistant-markdown-renders-with-text-properties=. |
+
+The 485-case selector is a presentation/workspace preservation gate and is
+recorded here to show no unrelated behavior drift; this round does not alter
+presentation code.  No graphical test was rerun because the round changes no
+graphical owner; the accepted isolated graphical baseline remains the prior
+27/27 gate and is not re-counted as new Round 4 evidence.
+
+** Compilation, loading, syntax, and static checks
+
+- Byte compilation of all 19 affected/new production modules completed with
+  no warnings in =/tmp/e-r4-compile-final.log=.
+- Direct =emacs -Q --batch= find-file/check-parens invocation passed all 30
+  changed/new source and test files in =/tmp/e-r4-check-parens-final.log=.
+- Fresh =eldev eval -R= loads exercised representative owner operations in
+  separate processes; every result reports the facade feature as nil in
+  =/tmp/e-r4-fresh-owner-final.log=.  The decoder, HTTP envelope, MCP value,
+  client, capability, file, and bash operations all completed.
+- =/tmp/e-r4-static-final.log= records zero old moved private/global callback
+  references, zero owner-to-facade private references, zero cross-owner
+  private references, no MCP capability-to-HTTP reference, no bash-to-file
+  reference, no new-file trailing whitespace, and =NONE= duplicate definitions.
+- =git diff --check= exited 0.
+- The bounded owner smoke in =/tmp/e-r4-perf-final.log= ran 1000 Responses
+  mappings in 0.00567s, 1000 Chat mappings in 0.00073s, 1000 MCP value
+  constructions in 0.00071s, and 1000 bash-tail bounds in 0.00087s.  Pure
+  mapping/client-value owners contain no synchronous write/process/network
+  calls in the scanned operations.  The extraction adds no new repeated
+  scans or synchronous writes; transport and file side effects remain at the
+  original boundaries.
+
+* Residual topology and risks
+
+| Cluster | Final disposition | Residual risk |
+|---------+-------------------+---------------|
+| OpenAI root and tests | Facade retained; eight owner modules and direct contract suite added. | Detailed facade suite still carries same-owner mechanism assertions; future rounds may further split it if a real test-owner seam emerges. |
+| MCP root and tests | Facade retained; protocol/budget/client/capability plus two transports and direct contracts added. | Client intentionally knows the two supported transport operation families; adding a third transport should extend the client composition map rather than expose transport state. |
+| Base root and tests | Facade retained; file and bash owners plus direct contracts added. | File and bash each retain small local validation/truncation helpers to avoid an accidental shared helper owner; behavior must stay byte/line-equivalent. |
+| External OpenAI E2E/provider consumers | Migrated to public profile/transport/decoder operations. | Provider capability remains unconfirmed by design; no external network evidence is required for this package. |
+| External MCP/resource consumers | Migrated to protocol/client/file semantic operations. | Real helper requires Node and local fixture permissions; fixture gates were run outside the sandbox. |
+| Running process/reload | Not touched. | Restart is required before the new core/provider definitions are active in an already running Emacs. |
+| Remaining large roots =e-board.el=, =e-context-lifetime.el=, =e-loop.el=, =e-tools.el=, =e-work.el= | Not changed; their accepted owner boundaries are residual Round 5 review scope. | Do not infer a need to split them from size alone. |
+
+* Mechanical-equivalence exceptions
+
+1. Moved private names are now owner-qualified and old private aliases do not
+   exist.  This is intentionally a source/topology change, not a public
+   compatibility change.
+2. =e-openai-websocket-request-start= completion status includes response id
+   for a public composition result; callers that do not need it retain their
+   previous behavior.
+3. MCP stdio test injection is an explicit lexical argument, stripped before
+   wire serialization; the former process-global callback variable is gone.
+4. Generated MCP struct constructors use the protocol-owner private namespace
+   so their ownership is mechanically visible.
+
+* Required design self-check
+
+1. *Would stopping here improve the project?*  Yes.  The three adapter roots
+   are bounded composition points, transport and protocol changes are local,
+   and fresh owner contracts catch accidental facade loading.
+2. *What final direction does this move toward?*  One semantic owner per
+   provider policy, protocol variant, transport, decoder, client, capability,
+   file, and process concern, with stable facades composing them.
+3. *Which decisions are uncertain or stable?*  Existing wire formats,
+   auth/retry behavior, helper/HTTP support, and tool schemas are stable.
+   Responses-vs-Chat variation and future transport replacement are real
+   variation points kept local; no speculative common adapter was added.
+4. *Who owns each behavior and why?*  The matrices above place profile policy
+   in profile, wire shape in its protocol owner, side effects in transport,
+   decoding in decoder, catalog semantics in client, composition in
+   capability, and file/process behavior in their respective base owners.
+5. *Coupling direction and interface width?*  Coupling is reduced from each
+   monolith to downward owner contracts.  Public operations are consumer-shaped;
+   raw records and implementation constructors remain private.
+6. *Did a dependency point the wrong way?*  No.  The MCP capability no longer
+   depends on concrete HTTP classification, and bash no longer depends on the
+   file owner.  No owner requires/calls its own facade.
+7. *Could side effects move outward?*  They already do: HTTP/WebSocket/helper
+   process and file writes stay in transport/resource owners; profile,
+   protocol, decoder, and client policy remain testable value operations.
+8. *What state was added or mutated?*  State was relocated, not expanded:
+   HTTP/WS/helper/session caches and process-local diagnostics keep their
+   existing lifetimes; protocol/mapping/decoder values are rebuildable and
+   stateless; file buffer coherence remains buffer/file scoped.
+9. *Performance impact?*  Pure mapping and value smoke timings are bounded,
+   and static scans show no new sync I/O in pure owners.  Existing cache,
+   async, retry, and collector bounds are retained; no extra repeated scan or
+   write was introduced.
+10. *Are abstractions semantically real and substitutable?*  Yes.  Responses
+    and Chat mappings are separate real protocols; MCP helper/HTTP expose only
+    list/call/refresh semantics both support; explicit test transport input
+    satisfies the same narrow stdio request result without implementing files.
+11. *What compatibility expectations apply?*  Existing public facade names,
+    request/response formats, errors, ordering, and tool schemas are retained.
+    Private names have no compatibility promise and were removed.  Core
+    definitions require restart rather than steady-state shims.
+12. *What legacy code can be removed now?*  Monolithic moved implementations,
+    old private prefixes, the MCP global transport callback, public raw HTTP
+    response construction, and duplicate facade bridges were removed.
+13. *Where are errors handled?*  Expected provider/MCP transport failures are
+    normalized at diagnostics/client boundaries while corrupt or unexpected
+    values signal visibly; file coherence and process errors retain their
+    existing top-level propagation.
+14. *What proves core behavior independently?*  The three direct owner suites
+    load and exercise owners without facades; focused facade/fixture suites
+    prove composition and preservation; fresh loads, check-parens, compile,
+    static sweeps, and the recorded 485 selector cover topology and regression
+    risks.  A future internal decomposition can satisfy the semantic owner
+    contracts without reproducing the moved private names.
+
+* Implementer handoff
+
+Changed source/test paths are the files named by =git status --short= at
+handoff: the reduced OpenAI/MCP/Base facades, eight OpenAI owners, six MCP
+owners plus capability/protocol/budget, two Base owners, migrated E2E and
+consumer tests, and three direct owner suites.  This audit is the detailed
+evidence location; all raw logs are under =/tmp/e-r4-*=.  No commit was made,
+and the running Emacs was left unchanged.
+
+* Parent acceptance
+
+Parent review independently inspected the require/call graphs, consumer maps,
+private-symbol sweeps, facade residuals, and public-symbol comparison.  The
+parent ran the owner files alone at 14/14 and the focused composed OpenAI, MCP,
+and base files alone at 253/253.  A combined diagnostic run also passed every
+composed test; only the three fresh-load assertions failed because loading all
+selected files had already loaded each facade before ERT execution.  The
+separate owner run proves the intended facade-independent load boundary.
+Round 4 is accepted.

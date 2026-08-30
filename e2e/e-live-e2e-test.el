@@ -86,8 +86,8 @@ never returned or recorded here."
 (defun e-live-e2e--responses-identity (profile)
   "Return the truthful Responses transport/requester pair for PROFILE."
   (if (eq (plist-get profile :responses-transport) 'websocket)
-      '("responses-websocket" . "e-openai-codex--websocket-request-start")
-    '("responses-http" . "e-openai-codex--http-request-start")))
+      '("responses-websocket" . "e-openai-websocket-request-start")
+    '("responses-http" . "e-openai-http-request-start")))
 
 (defun e-live-e2e--metadata-value (metadata key)
   "Return (PRESENT VALUE) for KEY in request METADATA or its diagnostics."
@@ -154,9 +154,9 @@ crossed the native requester."
          (requester
           (or (and requester-value (format "%s" requester-value))
               (if (equal transport "responses-websocket")
-                  "e-openai-codex--websocket-request-start"
+                  "e-openai-websocket-request-start"
                 (when (equal transport "responses-http")
-                  "e-openai-codex--http-request-start"))))
+                  "e-openai-http-request-start"))))
          (endpoint-value
           (cadr (e-live-e2e--metadata-value metadata :url)))
          (endpoint (or (e-live-e2e--identity-url endpoint-value)
@@ -1180,7 +1180,7 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
 (ert-deftest e-live-e2e-test-adoption-carrier-localizes-to-source-continuation ()
   "Only the linked ordinary result continuation can satisfy the carrier gate."
   (let* ((sentinel "ADOPTION-SOURCE")
-         (carrier-tool (e-openai-codex--context-curation-tool-definition))
+         (carrier-tool (e-openai-responses-context-curation-tool-definition))
          (call (list :type "function_call" :name "e2e_deterministic"
                      :call_id "ordinary-call"))
          (marker
@@ -2483,7 +2483,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             :base-url-identity "https://gateway.example"
             :endpoint-identity "https://gateway.example/responses"
             :transport "responses-http" :store-mode "json-false"
-            :native-requester "e-openai-codex--http-request-start"
+            :native-requester "e-openai-http-request-start"
             :model-id "gpt-5.6-sol"
             :material-request-shape ((:body-sha256 "body-1"))
             :prompt-layout-revision "layout-1"
@@ -2564,7 +2564,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             :base-url-identity "https://gateway.example"
             :endpoint-identity "https://gateway.example/responses"
             :transport "responses-http" :store-mode "json-false"
-            :native-requester "e-openai-codex--http-request-start"
+            :native-requester "e-openai-http-request-start"
             :model-id "gpt-5.6-sol"
             :material-request-shape ((:body-sha256 "erase-body-1"))
             :prompt-layout-revision "layout-1"
@@ -2695,7 +2695,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             :base-url-identity "https://gateway.example"
             :endpoint-identity "https://gateway.example/responses"
             :transport "responses-http" :store-mode "json-false"
-            :native-requester "e-openai-codex--http-request-start"
+            :native-requester "e-openai-http-request-start"
             :model-id "gpt-5.6-sol"
             :reasoning-effort "high" :reasoning-summary "auto"
             :material-request-shape ((:body-sha256 "body-1"))
@@ -3173,7 +3173,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                        "chatgpt-canonical-warm-prefix"))
         (should (equal (plist-get record :provider-id) "codex"))
         (should (equal (plist-get record :native-requester)
-                       "e-openai-codex--websocket-request-start"))
+                       "e-openai-websocket-request-start"))
         (should (equal (plist-get record :prompt-cache-key-derivation-revision)
                        "e-harness-prompt-cache-key-pcctx2"))
         (should (equal (plist-get record :total-input-tokens) 10))
@@ -3445,9 +3445,9 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
 (ert-deftest e-live-e2e-test-external-evidence-record-reports-profile-identity ()
   "External records distinguish Responses HTTP and WebSocket identities."
   (dolist (case
-           '((http "responses-http" "e-openai-codex--http-request-start")
+           '((http "responses-http" "e-openai-http-request-start")
              (websocket "responses-websocket"
-                         "e-openai-codex--websocket-request-start")))
+                         "e-openai-websocket-request-start")))
     (let* ((transport (nth 0 case))
            (body `(:model "gpt-5.6-sol"
                     :input [(:type "message" :role "user"
@@ -3498,11 +3498,11 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
            '((http url-retrieve "https://backend.example/v1/responses"
                    "wire-http-model" :json-false
                    "responses-http"
-                   "e-openai-codex--http-request-start")
+                   "e-openai-http-request-start")
              (websocket websocket "wss://backend.example/v1/responses"
                          "wire-websocket-model" t
                          "responses-websocket"
-                         "e-openai-codex--websocket-request-start")))
+                         "e-openai-websocket-request-start")))
     (pcase-let ((`(,profile-transport ,native-transport ,endpoint ,wire-model
                      ,wire-store ,transport ,requester)
                   case))
@@ -4039,43 +4039,53 @@ request-context boundary, while both transports capture handles from their
 native request starter.  The supplied capture lists are newest-first."
   (declare (indent 3))
   (let ((profile-var (make-symbol "profile"))
-        (original-context (make-symbol "original-context"))
         (original-http-start (make-symbol "original-http-start"))
         (original-websocket-start (make-symbol "original-websocket-start")))
     `(let ((,profile-var ,profile))
        (if (eq (plist-get ,profile-var :responses-transport) 'websocket)
-           (let ((,original-websocket-start
-                  (symbol-function 'e-openai-codex--websocket-request-start)))
+         (let ((,original-websocket-start
+                  (symbol-function 'e-openai-websocket-request-start)))
              (cl-letf
-                 (((symbol-function 'e-openai-codex--websocket-request-start)
+                 (((symbol-function 'e-openai-websocket-request-start)
                    (lambda (&rest args)
-                     (push (list :body
-                                 (copy-tree (plist-get args :body-data))
-                                 :full-body
-                                 (copy-tree (plist-get args :full-body-data))
-                                 :session (plist-get args :session))
-                           ,request-bodies)
-                     (let ((request
-                            (apply ,original-websocket-start args)))
+                     (let* ((entry
+                             (list :body
+                                   (copy-tree (plist-get args :body-data))
+                                   :full-body
+                                   (copy-tree (plist-get args :full-body-data))
+                                   :session (plist-get args :session)
+                                   :response-id nil))
+                            (original-on-complete
+                             (plist-get args :on-complete))
+                            (args (plist-put
+                                   (copy-sequence args)
+                                   :on-complete
+                                   (lambda (status)
+                                     (setf (plist-get entry :response-id)
+                                           (plist-get status :response-id))
+                                     (when original-on-complete
+                                       (funcall original-on-complete status))))))
+                       (push entry ,request-bodies)
+                       (let ((request
+                              (apply ,original-websocket-start args)))
                        (push request ,request-handles)
-                       request))))
+                         request)))))
                ,@body))
-         (let ((,original-context
-                (symbol-function 'e-openai--request-context))
-               (,original-http-start
-                (symbol-function 'e-openai-codex--http-request-start)))
+         (let ((,original-http-start
+                (symbol-function 'e-openai-http-request-start)))
            (cl-letf
-               (((symbol-function 'e-openai--request-context)
+               (((symbol-function 'e-openai-http-request-start)
                  (lambda (&rest args)
-                   (let ((context (apply ,original-context args)))
-                     (push (list :body
-                                 (copy-tree (plist-get context :body-data))
-                                 :full-body nil
-                                 :session nil)
-                           ,request-bodies)
-                     context)))
-                ((symbol-function 'e-openai-codex--http-request-start)
-                 (lambda (&rest args)
+                   (push (list :body
+                               (json-parse-string
+                                (or (plist-get args :body) "{}")
+                                :object-type 'plist
+                                :array-type 'vector
+                                :null-object nil
+                                :false-object :json-false)
+                               :full-body nil
+                               :session nil)
+                         ,request-bodies)
                    (let ((request (apply ,original-http-start args)))
                      (push request ,request-handles)
                      request))))
@@ -4158,13 +4168,13 @@ evidence record on every terminal path."
           :terminal-result terminal-result)))
      :thunk
      (lambda ()
-       (unless (eq (e-openai--provider-wire-api profile) 'responses)
+       (unless (eq (e-openai-provider-wire-api profile) 'responses)
          (setq terminal-result "configuration-unavailable")
          (ert-skip "The configured provider is not a Responses profile."))
        (let ((transport (or (plist-get profile :responses-transport) 'http)))
          (unless (fboundp (if (eq transport 'websocket)
-                              'e-openai-codex--websocket-request-start
-                            'e-openai-codex--http-request-start))
+                              'e-openai-websocket-request-start
+                            'e-openai-http-request-start))
            (setq terminal-result "configuration-unavailable")
            (ert-skip
             "The configured Responses transport starter is not loaded."))
@@ -4247,29 +4257,26 @@ evidence record on every terminal path."
           request-handles)
       (if (eq transport 'websocket)
           (cl-letf (((symbol-function
-                      'e-openai-codex--websocket-request-start)
+                      'e-openai-websocket-request-start)
                      (lambda (&rest _args)
                        (e-backend-request-create
                         :metadata '(:transport websocket)))))
             (e-live-e2e--with-responses-request-capture
                 profile request-bodies request-handles
-              (e-openai-codex--websocket-request-start
+              (e-openai-websocket-request-start
                :body-data body :full-body-data body :session 'session)))
-        (cl-letf (((symbol-function 'e-openai--request-context)
-                   (lambda (&rest _args)
-                     (list :body-data body :responses-transport 'http)))
-                  ((symbol-function 'e-openai-codex--http-request-start)
+        (cl-letf (((symbol-function 'e-openai-http-request-start)
                    (lambda (&rest _args)
                      (e-backend-request-create
                       :metadata '(:transport url-retrieve)))))
           (e-live-e2e--with-responses-request-capture
               profile request-bodies request-handles
-            (e-openai--request-context :messages nil :options nil)
-            (e-openai-codex--http-request-start
-             :url "https://capture.test" :body "{}"))))
+            (e-openai-http-request-start
+             :url "https://capture.test"
+             :body (json-encode body))))
       (should (= (length request-bodies) 1))
       (should (equal (plist-get (car request-bodies) :body) body))
-      (should (= (length request-handles) 1)))))
+      (should (= (length request-handles) 1))))))
 
 (ert-deftest e-live-e2e-test-basic-assistant-response ()
   "A first live prompt returns a concrete assistant message."
@@ -4463,7 +4470,7 @@ provider turn to settle without an implicit local deadline."
   (e-live-e2e--require-enabled)
   (let* ((provider-id e-openai-default-provider)
          (profile (e-openai-provider-profile provider-id)))
-    (unless (eq (e-openai--provider-wire-api profile) 'responses)
+    (unless (eq (e-openai-provider-wire-api profile) 'responses)
       (ert-skip "The configured provider is not a Responses profile."))
     (let* ((tool-name "e2e_deterministic")
            (raw-tool-output (format "LIVE-ADOPTION-%s"
@@ -4782,7 +4789,7 @@ and provider arguments stay local to the scenario gates."
   (e-live-e2e--require-enabled)
   (let* ((provider-id e-openai-default-provider)
          (profile (e-openai-provider-profile provider-id)))
-    (unless (eq (e-openai--provider-wire-api profile) 'responses)
+    (unless (eq (e-openai-provider-wire-api profile) 'responses)
       (ert-skip "The configured provider is not a Responses profile."))
     (let* ((tool-name "e2e_deterministic")
            (raw-tool-output (format "LIVE-ERASE-%s"
@@ -5430,7 +5437,7 @@ replay, where those same values are strings."
                (lambda (&rest _)
                  '(:name "Responses test" :wire-api responses
                    :responses-transport http)))
-              ((symbol-function 'e-openai--provider-wire-api)
+              ((symbol-function 'e-openai-provider-wire-api)
                (lambda (&rest _) 'responses))
               ((symbol-function 'e-live-e2e--make-harness)
                (lambda (&rest _)
@@ -5478,7 +5485,7 @@ replay, where those same values are strings."
                (lambda (&rest _)
                  '(:name "Responses test" :wire-api responses
                    :responses-transport http)))
-              ((symbol-function 'e-openai--provider-wire-api)
+              ((symbol-function 'e-openai-provider-wire-api)
                (lambda (&rest _) 'responses))
               ((symbol-function 'e-live-e2e--make-harness)
                (lambda (&rest _)
@@ -5601,12 +5608,12 @@ replay, where those same values are strings."
 
 (ert-deftest e-live-e2e-test-openai-codex-store-false-continues ()
   "ChatGPT Codex sends the inherited observation as a late developer frontier."
-  (unless (fboundp 'e-openai-codex--websocket-request-start)
+  (unless (fboundp 'e-openai-websocket-request-start)
     (ert-skip "The OpenAI Responses WebSocket adapter is not loaded."))
   (e-live-e2e--require-enabled)
     (let* ((provider-id e-openai-default-provider)
          (profile (e-openai-provider-profile provider-id)))
-    (unless (e-openai--builtin-codex-profile-p provider-id profile)
+    (unless (e-openai-profile-builtin-codex-p provider-id profile)
       (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
     (should (eq (plist-get profile :response-store) :json-false)))
   (let* ((old-marker "OBSERVATION-OLD")
@@ -5630,14 +5637,14 @@ replay, where those same values are strings."
              :context-providers (list provider))))))
     (e-live-e2e--with-harness (harness session-id :layers (list layer))
       (let ((original-start
-            (symbol-function 'e-openai-codex--websocket-request-start))
+            (symbol-function 'e-openai-websocket-request-start))
             request-bodies
             request-handles
             first-assistant
             first-durable-assistant
             second-assistant
             second-turn-id)
-        (cl-letf (((symbol-function 'e-openai-codex--websocket-request-start)
+        (cl-letf (((symbol-function 'e-openai-websocket-request-start)
                    (lambda (&rest args)
                      (push (copy-tree (plist-get args :body-data)) request-bodies)
                      (let ((request (apply original-start args)))
@@ -5800,16 +5807,16 @@ continuation and socket assertions used by the compatibility selector."
   (let* ((provider-id e-openai-default-provider)
          (profile (e-openai-provider-profile provider-id))
          (transport (or (plist-get profile :responses-transport) 'http)))
-    (unless (eq (e-openai--provider-wire-api profile) 'responses)
+    (unless (eq (e-openai-provider-wire-api profile) 'responses)
       (ert-skip "The configured provider is not a Responses profile."))
     (when chatgpt-only
-      (unless (e-openai--builtin-codex-profile-p provider-id profile)
+      (unless (e-openai-profile-builtin-codex-p provider-id profile)
         (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
       (should (eq (plist-get profile :response-store) :json-false))
       (should-not (plist-member profile :websocket-idle-close-seconds)))
     (unless (fboundp (if (eq transport 'websocket)
-                         'e-openai-codex--websocket-request-start
-                       'e-openai-codex--http-request-start))
+                         'e-openai-websocket-request-start
+                       'e-openai-http-request-start))
       (ert-skip "The configured Responses transport starter is not loaded."))
     (let* ((old-marker "LIVE-INITIAL-OBSERVATION")
            (new-marker "LIVE-CURRENT-OBSERVATION")
@@ -5846,7 +5853,6 @@ continuation and socket assertions used by the compatibility selector."
                  (deadline (+ started-at scenario-timeout))
                  request-bodies
                  request-handles
-                 completed-response-ids
                  captured-tool-sources
                  captured-curation-arguments
                  curation-record
@@ -5965,30 +5971,19 @@ continuation and socket assertions used by the compatibility selector."
                              (funcall original-prepare
                                       frame arguments response-entry-id
                                       bytes-per-token)))))
-                     (if (eq transport 'websocket)
-                         (let ((original-record
-                                (symbol-function
-                                 'e-openai-codex--websocket-session-record-response)))
-                           (cl-letf
-                               (((symbol-function
-                                  'e-openai-codex--websocket-session-record-response)
-                                 (lambda (session response-id properties)
-                                   (when (stringp response-id)
-                                     (push response-id completed-response-ids))
-                                   (funcall original-record
-                                            session response-id properties))))
-                             (e-live-e2e--with-responses-request-capture
-                                 profile request-bodies request-handles
-                               (run-prompts))))
-                       (e-live-e2e--with-responses-request-capture
-                           profile request-bodies request-handles
-                         (run-prompts))))))
+                     (e-live-e2e--with-responses-request-capture
+                         profile request-bodies request-handles
+                       (run-prompts))))
             (let* ((ordered-entries (reverse request-bodies))
                    (ordered-bodies
                     (mapcar (lambda (entry) (plist-get entry :body))
                             ordered-entries))
                    (ordered-handles (reverse request-handles))
-                   (response-ids (reverse completed-response-ids))
+                   (response-ids
+                    (delq nil
+                          (mapcar (lambda (entry)
+                                    (plist-get entry :response-id))
+                                  ordered-entries)))
                    (first-turn-bodies
                     (e-live-e2e--captured-bodies-between
                      request-bodies 0 tool-turn-start-count))
@@ -6370,7 +6365,7 @@ continuation and socket assertions used by the compatibility selector."
                (t
                 (ert-skip
                  "Cached-token usage was unavailable; external cache evidence is inconclusive.")))
-              )))))))))
+              ))))))))))
 
 (ert-deftest e-live-e2e-test-chatgpt-canonical-tool-heavy ()
   "A tool turn has an immediate continuation and a canonical next request."
@@ -6384,30 +6379,14 @@ continuation and socket assertions used by the compatibility selector."
   "The configured OpenAI provider accepts encrypted reasoning full replay."
   (e-live-e2e--require-enabled)
   (let ((profile (e-openai-provider-profile e-openai-default-provider)))
-    (unless (and (eq (e-openai--provider-wire-api profile) 'responses)
+    (unless (and (eq (e-openai-provider-wire-api profile) 'responses)
                  (eq (plist-get profile :response-store) :json-false))
       (ert-skip "The configured provider is not an unstored Responses backend.")))
   (e-live-e2e--with-harness
       (harness session-id :layers (list (e-live-e2e--tool-layer)))
-    (let ((original-context
-           (symbol-function 'e-openai--request-context))
-          (original-websocket-start
-           (symbol-function 'e-openai-codex--websocket-request-start))
-          websocket-session
-          request-bodies)
-      (cl-letf (((symbol-function 'e-openai--request-context)
-                 (lambda (&rest args)
-                   (let ((context (apply original-context args)))
-                     (when (eq (plist-get context :responses-transport) 'http)
-                       (push (copy-tree (plist-get context :body-data))
-                             request-bodies))
-                     context)))
-                ((symbol-function 'e-openai-codex--websocket-request-start)
-                 (lambda (&rest args)
-                   (setq websocket-session (plist-get args :session))
-                   (push (copy-tree (plist-get args :full-body-data))
-                         request-bodies)
-                   (apply original-websocket-start args))))
+    (let (request-bodies request-handles)
+      (e-live-e2e--with-responses-request-capture
+          profile request-bodies request-handles
         (e-board-e2e-prompt-batch
          harness session-id
          (concat
@@ -6437,13 +6416,15 @@ continuation and socket assertions used by the compatibility selector."
         ;; HTTP profiles without continuation already full-replay every turn.
         ;; For WebSocket profiles, deliberately discard the connection-local
         ;; anchor so the next live request must take the same full path.
-        (when websocket-session
-          (should (e-openai-codex--websocket-session-p websocket-session))
-          (e-openai-codex--websocket-session-close websocket-session))
+        (when-let ((websocket-session
+                    (plist-get (car (last request-bodies)) :session)))
+          (e-openai-websocket-session-close websocket-session))
         (e-board-e2e-prompt-batch
          harness session-id
          "Reply with exactly: FULL-REPLAY-ACCEPTED"))
-      (let* ((full-body (car request-bodies))
+      (let* ((first-entry (car (last request-bodies)))
+             (full-body (or (plist-get first-entry :full-body)
+                            (plist-get first-entry :body)))
              (input (append (plist-get full-body :input) nil))
              (reasoning
               (seq-find
@@ -6463,16 +6444,16 @@ WebSocket and socket-replacement assertions."
   (let* ((provider-id e-openai-default-provider)
          (profile (e-openai-provider-profile provider-id))
          (transport (or (plist-get profile :responses-transport) 'http)))
-    (unless (eq (e-openai--provider-wire-api profile) 'responses)
+    (unless (eq (e-openai-provider-wire-api profile) 'responses)
       (ert-skip "The configured provider is not a Responses profile."))
     (when chatgpt-only
-      (unless (e-openai--builtin-codex-profile-p provider-id profile)
+      (unless (e-openai-profile-builtin-codex-p provider-id profile)
         (ert-skip "The configured provider is not the exact built-in ChatGPT Codex profile."))
       (should (eq (plist-get profile :response-store) :json-false))
       (should (eq (plist-get profile :observation-delivery) 'inherited)))
     (unless (fboundp (if (eq transport 'websocket)
-                         'e-openai-codex--websocket-request-start
-                       'e-openai-codex--http-request-start))
+                         'e-openai-websocket-request-start
+                       'e-openai-http-request-start))
       (ert-skip "The configured Responses transport starter is not loaded."))
     (let* ((current-state "live state one")
            ;; OpenAI only caches prefixes of at least 1,024 tokens.  Keep this
@@ -6498,7 +6479,7 @@ WebSocket and socket-replacement assertions."
                :instructions stable-guidance
                :context-providers (list provider))))))
       (e-live-e2e--with-harness (harness session-id :layers (list layer))
-        (unless (e-openai--gpt56-or-later-p
+        (unless (e-openai-profile-model-gpt56-or-later-p
                  (plist-get (e-harness-display-options harness session-id)
                             :model))
           (ert-skip "The configured live model is older than GPT-5.6."))
@@ -6573,7 +6554,7 @@ WebSocket and socket-replacement assertions."
                (when (eq transport 'websocket)
                  (when-let ((session
                              (plist-get (car (last request-bodies)) :session)))
-                   (e-openai-codex--websocket-session-close session)))
+                   (e-openai-websocket-session-close session)))
                (setq latest-turn-start-count (length request-bodies))
                (setq current-state "live state three")
                (let ((latest-result

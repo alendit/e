@@ -58,23 +58,22 @@ on ownership and dependency evidence rather than size alone.
 - Product authority: this feature plan and the operator-approved project
   architecture guidance.
 - Owning contract: =F91-OWNER=.
-- Behavioral status: partial; Rounds 1-3 have accepted bounded owners and
-  preservation evidence, while the adapter/capability and final residual
-  topology rounds remain.
+- Behavioral status: partial; Rounds 1-4 have accepted bounded owners and
+  preservation evidence, while the final residual topology round remains.
 
 ** Contract and evidence matrix
 
 | Contract ID | Observable or owner-level invariant | Semantic owner | Lifetime, recovery, or bound | Implementation round | Named scenario | Evidence class | Status |
 |-------------+-------------------------------------+----------------+------------------------------+----------------------+----------------+----------------+--------|
-| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Partial: Rounds 1-3 accepted |
+| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Partial: Rounds 1-4 accepted |
 | =F91-PRESENTATION= | Chat and Org Canvas preserve public interaction while surface, composer, transcript, activity, and overview code and buffer-local state have explicit owners; external consumers use no chat-private symbols. | Chat presentation family | Buffer-local presentation state; reloadable shell modules. | 1 | =F91-S-PRESENTATION= | Deterministic repository and isolated graphical | Accepted |
 | =F91-SESSION= | Session aggregate operations preserve current durable records and restart behavior while codec/replay, checkpoint/catalog policy, and JSONL I/O are separate owner-shaped modules. | Session aggregate and current storage adapter | Existing durable lifetime and recovery; no migration or new format. | 2 | =F91-S-RESTART= | Deterministic repository | Accepted |
 | =F91-RUNTIME= | Board attachment and ordinary turns preserve admission, ordering, settlement, abort, and activity behavior through public attached-turn and harness-owner boundaries, without private callback mutation. | Harness application services and board runtime | Process-local turn/queue/activity state; existing durable session and board effects. | 3 | =F91-S-ATTACHED-TURN= | Deterministic repository | Accepted |
-| =F91-OPENAI= | Existing profiles, auth, wire mappings, transports, decoding, diagnostics, and compaction compose behind the unchanged OpenAI facade without cross-variant branches. | OpenAI backend adapter | Request/stream lifetime, cancellation, retry, and effective provider identity unchanged. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
-| =F91-MCP= | Helper-process and HTTP transports satisfy the same supported MCP client contract, while capability/tool/resource/context composition is transport-independent. | MCP client and capability composition | Existing connection/process lifetime and error behavior. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
-| =F91-BASE= | File/resource behavior and bash process/collector behavior compose into the unchanged base capability without sharing an accidental implementation owner. | Base capability components | Existing buffer/file coherence and process/collector lifetimes. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
+| =F91-OPENAI= | Existing profiles, auth, wire mappings, transports, decoding, diagnostics, and compaction compose behind the unchanged OpenAI facade without cross-variant branches. | OpenAI backend adapter | Request/stream lifetime, cancellation, retry, and effective provider identity unchanged. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
+| =F91-MCP= | Helper-process and HTTP transports satisfy the same supported MCP client contract, while capability/tool/resource/context composition is transport-independent. | MCP client and capability composition | Existing connection/process lifetime and error behavior. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
+| =F91-BASE= | File/resource behavior and bash process/collector behavior compose into the unchanged base capability without sharing an accidental implementation owner. | Base capability components | Existing buffer/file coherence and process/collector lifetimes. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
 | =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Pending |
-| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Partial: Rounds 1-3 accepted |
+| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Partial: Rounds 1-4 accepted |
 
 ** Scenario portfolio
 
@@ -207,6 +206,50 @@ the implementer's isolated owner run proves the skipped fresh-load contract.
 The running Emacs was left unchanged.  Core state-shape and attached-port
 changes require an Emacs restart before use in an already running process
 rather than a live reload.
+
+*** Round 4: adapter and capability family
+
+Accepted on 2026-08-30.  Parent review confirmed that the three runtime graphs
+are acyclic, owners do not call their facades, MCP capability does not depend
+on the concrete HTTP adapter, and bash does not depend on the file owner.
+
+Starting from =18ddb78f288182f99a5a5d2964ce600396084084=, the implementer
+split the OpenAI, MCP, and base capability roots while preserving their public
+facades and existing behavior.  OpenAI now composes profile/auth,
+Responses mapping, Chat Completions mapping, HTTP, WebSocket, decoder,
+diagnostics, and compaction owners from =e-openai.el=.  MCP now composes
+protocol/value, bounded transport budget, helper-process transport, streamable
+HTTP transport, client/catalog, and capability composition owners from
+=e-mcp.el=.  Base tools now compose file/resource/coherence/search and
+bash/process/collector owners from =e-base-tools.el=; the resource TOC uses
+the file owner’s semantic operations and bash has no file-owner dependency.
+
+The implementer removed the MCP process-global transport callback, retained
+only an explicit lexical test input, moved generated protocol constructors
+under the protocol owner, and removed old private-name compatibility paths.
+The actual production owner graphs are acyclic: 14 OpenAI sibling edges plus
+8 facade edges, 10 MCP sibling edges plus 6 facade edges, and 2 base facade
+edges.  Static evidence reports zero cross-owner private references, no
+owner-to-facade private references, no MCP capability-to-HTTP edge, no bash-
+to-file edge, no duplicate definitions, and no new-file trailing whitespace.
+
+Direct fresh-owner contracts pass 14/14.  Focused composed suites pass OpenAI
+165/165, MCP 39/39 with helper and HTTP fixtures, base 49/49, loop 52/52,
+provider continuation 11/11, and affected consumer tests 62/62.  The
+recorded 485-case preservation selector passes with 483 expected passes and
+two existing expected skips.  Byte compilation of 19 affected/new
+production modules is warning-free, 30 changed/new files pass direct
+check-parens, fresh owner loads keep each facade unloaded, and the bounded
+performance/I/O smoke is recorded under =/tmp/e-r4-perf-final.log=.
+
+Detailed responsibility/state/lifetime inventory, graph, consumer map,
+former-private dispositions, test topology, mechanical exceptions, risks,
+and all design self-check answers are in =round-4-audit.org=.  Parent review
+reran the owner suites alone at 14/14 and the focused composed suites alone at
+253/253.  A deliberately combined diagnostic run passed every composed test;
+only the three fresh-load assertions failed because that process had already
+loaded their facades.  The running Emacs was left unchanged; using the changed
+core/provider definitions requires a restart rather than a live reload.
 
 ** Initial residual-topology inventory
 

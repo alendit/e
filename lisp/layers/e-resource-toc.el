@@ -387,15 +387,15 @@ CONTENT-RESOLVER accepts WORK-ARGUMENTS and CONTEXT and returns a plist with
 (defun e-resource-toc--file-request (uri options context)
   "Return a stdin-backed TOC request for file URI using CONTEXT roots."
   (let* ((roots (e-resource-toc--workspace-roots context))
-         (path (e-base-tools--resource-path uri roots))
+         (path (e-base-tools-file-resource-path uri roots))
          (group (e-base-tools-file-buffer-coherence-group path (plist-get uri :uri)))
-         (buffer (e-base-tools--preferred-buffer-for-group group)))
+         (buffer (e-base-tools-file-preferred-buffer-for-group group)))
     (list :uri (plist-get uri :uri)
           :name path
           :content (if buffer
                        (with-current-buffer buffer
                          (buffer-substring-no-properties (point-min) (point-max)))
-                     (e-base-tools--file-disk-text path))
+                     (e-base-tools-file-disk-text path))
           :options options)))
 
 (defun e-resource-toc--file-method (context)

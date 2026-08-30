@@ -2060,9 +2060,9 @@
                                 (list
                                  :response-id "response-tool"
                                  :prompt-layout-revision
-                                 (e-openai-codex--prompt-layout-revision options)
+                                 (e-openai-responses-prompt-layout-revision options)
                                  :reasoning-identity
-                                 (e-openai-codex--reasoning-identity options))))
+                                 (e-openai-responses-reasoning-identity options))))
                  (funcall on-item '(:type done :reason tool-use)))
                 (2
                  (funcall on-item
@@ -2081,9 +2081,9 @@
                                 (list
                                  :response-id "response-curation"
                                  :prompt-layout-revision
-                                 (e-openai-codex--prompt-layout-revision options)
+                                 (e-openai-responses-prompt-layout-revision options)
                                  :reasoning-identity
-                                 (e-openai-codex--reasoning-identity options))))
+                                 (e-openai-responses-reasoning-identity options))))
                  (funcall on-item '(:type done :reason stop)))
                 (3
                  (funcall on-item
@@ -2767,10 +2767,10 @@ call; stateless fallback carries the complete call/result pair."
                                           :response-id
                                           "immediate-tool-anchor"
                                           :prompt-layout-revision
-                                          (e-openai-codex--prompt-layout-revision
+                                          (e-openai-responses-prompt-layout-revision
                                            options)
                                           :reasoning-identity
-                                          (e-openai-codex--reasoning-identity
+                                          (e-openai-responses-reasoning-identity
                                            options)))))
                         (funcall on-item
                                  '(:type tool-call
@@ -2876,10 +2876,10 @@ call; stateless fallback carries the complete call/result pair."
                                        (list
                                         :response-id "steering-anchor"
                                         :prompt-layout-revision
-                                        (e-openai-codex--prompt-layout-revision
+                                        (e-openai-responses-prompt-layout-revision
                                          options)
                                         :reasoning-identity
-                                        (e-openai-codex--reasoning-identity
+                                        (e-openai-responses-reasoning-identity
                                          options))))
                         (funcall on-item
                                  '(:type assistant-message :content "first"))
@@ -2973,10 +2973,10 @@ rely on `provider-request'."
                                      (list
                                       :response-id "sync-immediate-anchor"
                                       :prompt-layout-revision
-                                      (e-openai-codex--prompt-layout-revision
+                                      (e-openai-responses-prompt-layout-revision
                                        options)
                                       :reasoning-identity
-                                      (e-openai-codex--reasoning-identity
+                                      (e-openai-responses-reasoning-identity
                                        options))))
                       (funcall on-item
                                '(:type tool-call

@@ -854,7 +854,7 @@ covered by the adapter tests below."
                :responses-transport 'websocket
                :continuation t
                :requires-openai-auth t))
-             (cons 'openai (e-openai--builtin-openai-profile))))
+             (cons 'openai (cdr (assq 'openai e-openai-model-providers)))))
            (current-state "OBSERVATION-OLD")
            (dynamic-provider
             (e-context-provider-create
@@ -873,7 +873,7 @@ covered by the adapter tests below."
            (open-count 0)
            (send-count 0)
            (original-websocket-start
-            (symbol-function 'e-openai-codex--websocket-request-start))
+            (symbol-function 'e-openai-websocket-request-start))
            backend-requests
            sends
            on-message)
@@ -888,7 +888,7 @@ covered by the adapter tests below."
                    (list :tokens
                          (list :access_token
                                (e-provider-continuation-integration--jwt)))))
-                ((symbol-function 'e-openai-codex--websocket-request-start)
+                ((symbol-function 'e-openai-websocket-request-start)
                  (lambda (&rest args)
                    (let ((request (apply original-websocket-start args)))
                      (push request backend-requests)

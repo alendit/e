@@ -1,0 +1,1410 @@
+;;; e-base-tools-file.el --- Workspace file, resource, and coherence owner -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Concrete Pi-like base tools for workspace file and shell access.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'json)
+(require 'seq)
+(require 'subr-x)
+(require 'e-capabilities)
+(require 'e-operations)
+(require 'e-resource-coherence)
+(require 'e-resource-patterns)
+(require 'e-resource-query)
+(require 'e-request)
+(require 'e-resources)
+(require 'e-search-providers)
+(require 'e-tools)
+(require 'e-work)
+
+(defgroup e-base-tools nil
+  "Base filesystem and shell tools for e."
+  :group 'e)
+
+(define-error 'e-base-tools-read-invalid "Base read tool input is invalid")
+(define-error 'e-base-tools-path-outside-root
+  "Base file resource path escapes the configured root")
+(define-error 'e-base-tools-edit-invalid "Base edit tool input is invalid")
+(define-error 'e-base-tools-coherence-conflict
+  "Base file resource conflicts with a live Emacs buffer"
+  'e-resource-coherence-conflict)
+(define-error 'e-base-tools-missing-command
+  "Base file discovery command is not available")
+(define-error 'e-base-tools-process-failed
+  "Base file discovery command failed")
+
+(defconst e-base-tools-file--max-lines 1000
+  "Maximum text lines returned by base tools before truncation.")
+
+(defconst e-base-tools-file--max-bytes (* 8 1024)
+  "Maximum text bytes returned by base tools before truncation.")
+
+(defconst e-base-tools-file--replace-contents-max-secs 0.5
+  "Time budget for the diff in `e-base-tools-file--save-buffer-content-to-file'.
+Passed as `replace-buffer-contents' MAX-SECS.  Without a budget its Myers diff
+is superlinear and runs entirely in C -- uninterruptible by \\[keyboard-quit]
+or a timer -- so a large edit that differs throughout hangs Emacs at 100% CPU
+indefinitely.  Past this budget the call falls back to a plain delete+insert,
+which loses overlay anchoring but always terminates.")
+
+(defun e-base-tools-file--argument-string (arguments key)
+  "Return required string argument KEY from ARGUMENTS."
+  (let ((value (plist-get arguments key)))
+    (unless (stringp value)
+      (signal 'wrong-type-argument (list 'stringp key)))
+    value))
+
+(defun e-base-tools-file--root-list (directory)
+  "Return DIRECTORY as a normalized list of root directories.
+DIRECTORY may be a single directory string or a list of them; the first is the
+primary root used to resolve relative paths."
+  (mapcar (lambda (root) (file-name-as-directory (expand-file-name root)))
+          (if (listp directory) directory (list directory))))
+
+(defun e-base-tools-file--resolve-path (path directory)
+  "Resolve PATH against DIRECTORY.
+DIRECTORY is the primary root or a list of workspace roots whose first element
+is the primary root.  PATH resolves against the primary root, but is accepted
+when it falls within any of the roots, so absolute paths into a secondary
+workspace root are allowed."
+  (let* ((roots (e-base-tools-file--root-list directory))
+         (primary (car roots))
+         (absolute-path (expand-file-name path primary)))
+    (unless (cl-some (lambda (root) (file-in-directory-p absolute-path root))
+                     roots)
+      (signal 'e-base-tools-path-outside-root
+              (list (format "Path escapes workspace root: %s" path))))
+    absolute-path))
+
+(defun e-base-tools-file--canonical-file-name (path)
+  "Return a canonical comparison path for local PATH."
+  (file-truename (expand-file-name path)))
+
+(defun e-base-tools-file--buffer-visible-p (buffer)
+  "Return non-nil when BUFFER is visible in a live window."
+  (and (get-buffer-window buffer t) t))
+
+(defun e-base-tools-file--buffer-selected-window-p (buffer)
+  "Return non-nil when BUFFER is displayed in the selected window."
+  (and (selected-window)
+       (eq buffer (window-buffer (selected-window)))))
+
+(defun e-base-tools-file--buffer-file-matches-p (buffer file)
+  "Return non-nil when BUFFER visits FILE."
+  (with-current-buffer buffer
+    (and buffer-file-name
+         (equal (e-base-tools-file--canonical-file-name buffer-file-name)
+                (e-base-tools-file--canonical-file-name file)))))
+
+(defun e-base-tools-file-live-buffers (file)
+  "Return live Emacs buffers visiting local FILE."
+  (let (buffers)
+    (dolist (buffer (buffer-list))
+      (when (e-base-tools-file--buffer-file-matches-p buffer file)
+        (push buffer buffers)))
+    (nreverse buffers)))
+
+(defun e-base-tools-file--buffer-link-state (buffer)
+  "Return linked-resource state for BUFFER."
+  (with-current-buffer buffer
+    (list :name (buffer-name buffer)
+          :file buffer-file-name
+          :modified (buffer-modified-p buffer)
+          :visible (e-base-tools-file--buffer-visible-p buffer)
+          :selected-window (e-base-tools-file--buffer-selected-window-p buffer))))
+
+(defun e-base-tools-file-link-state (file)
+  "Return linked live-buffer state for local FILE."
+  (let ((group (e-base-tools-file-buffer-coherence-group file)))
+    (list :canonical (plist-get group :canonical-uri)
+          :file (plist-get (plist-get group :metadata) :file)
+          :buffers (mapcar (lambda (view)
+                             (copy-sequence (plist-get view :metadata)))
+                           (e-resource-coherence-views-by-kind
+                            group 'buffer)))))
+
+(defun e-base-tools-file--file-uri (file)
+  "Return canonical file URI for FILE."
+  (concat "file://" (e-base-tools-file--canonical-file-name file)))
+
+(defun e-base-tools-file--buffer-uri (buffer)
+  "Return buffer URI for BUFFER."
+  (concat "buffer://" (buffer-name buffer)))
+
+(defun e-base-tools-file--buffer-from-view (view)
+  "Return live buffer described by coherence VIEW, or nil."
+  (when-let ((name (plist-get (plist-get view :metadata) :name)))
+    (get-buffer name)))
+
+(defun e-base-tools-file--file-buffer-view-status (file buffer disk-content disk-error)
+  "Return coherence status for BUFFER visiting FILE."
+  (cond
+   ((with-current-buffer buffer (buffer-modified-p)) 'needs-save)
+   (disk-error 'unknown)
+   ((not (file-exists-p file)) 'missing)
+   ((equal (e-base-tools-file--buffer-content buffer) disk-content) 'coherent)
+   (t 'stale)))
+
+(defun e-base-tools-file--file-disk-view (file disk-error)
+  "Return a generic coherence view for disk FILE."
+  (e-resource-coherence-view-create
+   :uri (e-base-tools-file--file-uri file)
+   :canonical-uri (e-base-tools-file--file-uri file)
+   :label (e-base-tools-file--file-uri file)
+   :kind 'file
+   :role 'persisted
+   :status (cond (disk-error 'unknown)
+                 ((file-exists-p file) 'coherent)
+                 (t 'missing))
+   :modified nil
+   :live nil
+   :visible nil
+   :selected-window nil
+   :priority 0
+   :metadata (list :file file :disk-error disk-error)))
+
+(defun e-base-tools-file--file-buffer-view (file buffer disk-content disk-error)
+  "Return a generic coherence view for BUFFER visiting FILE."
+  (let ((metadata (e-base-tools-file--buffer-link-state buffer)))
+    (e-resource-coherence-view-create
+     :uri (e-base-tools-file--buffer-uri buffer)
+     :canonical-uri (e-base-tools-file--file-uri file)
+     :label (buffer-name buffer)
+     :kind 'buffer
+     :role 'live-view
+     :status (e-base-tools-file--file-buffer-view-status
+              file buffer disk-content disk-error)
+     :modified (plist-get metadata :modified)
+     :live t
+     :visible (plist-get metadata :visible)
+     :selected-window (plist-get metadata :selected-window)
+     :priority 100
+     :metadata metadata)))
+
+(defun e-base-tools-file-buffer-coherence-group (file &optional subject-uri)
+  "Return a generic coherence group for local FILE and its live buffer views."
+  (let* ((absolute-file (e-base-tools-file--canonical-file-name file))
+         (file-uri (e-base-tools-file--file-uri absolute-file))
+         (buffers (e-base-tools-file-live-buffers absolute-file))
+         disk-content
+         disk-error)
+    (condition-case err
+        (when (file-exists-p absolute-file)
+          (setq disk-content (e-base-tools-file-disk-text absolute-file)))
+      (error
+       (setq disk-error (error-message-string err))))
+    (e-resource-coherence-group-with-status
+     (e-resource-coherence-group-create
+      :canonical-uri file-uri
+      :subject-uri (or subject-uri file-uri)
+      :views (cons (e-base-tools-file--file-disk-view absolute-file disk-error)
+                   (mapcar (lambda (buffer)
+                             (e-base-tools-file--file-buffer-view
+                              absolute-file buffer disk-content disk-error))
+                           buffers))
+      :metadata (list :file absolute-file :disk-error disk-error)))))
+
+(defun e-base-tools-file--buffer-only-coherence-group (buffer)
+  "Return a generic coherence group for non-file-backed BUFFER."
+  (let ((uri (e-base-tools-file--buffer-uri buffer)))
+    (e-resource-coherence-group-with-status
+     (e-resource-coherence-group-create
+      :canonical-uri uri
+      :subject-uri uri
+      :views (list
+              (e-resource-coherence-view-create
+               :uri uri
+               :canonical-uri uri
+               :label (buffer-name buffer)
+               :kind 'buffer
+               :role 'live-view
+               :status 'coherent
+               :modified (with-current-buffer buffer (buffer-modified-p))
+               :live t
+               :visible (e-base-tools-file--buffer-visible-p buffer)
+               :selected-window (e-base-tools-file--buffer-selected-window-p buffer)
+               :priority 100
+               :metadata (e-base-tools-file--buffer-link-state buffer)))
+      :metadata (list :buffer (buffer-name buffer))))))
+
+(defun e-base-tools-file-buffer-coherence-provider (directory)
+  "Return a generic coherence provider for files rooted at DIRECTORY and buffers."
+  (e-resource-coherence-provider-create
+   :id 'local-file-backed-buffers
+   :schemes '("file" "buffer")
+   :handler
+   (lambda (uri)
+     (pcase (plist-get uri :scheme)
+       ("file"
+        (let ((file (e-base-tools-file-resource-path uri directory)))
+          (e-base-tools-file-buffer-coherence-group
+           file
+           (plist-get uri :uri))))
+       ("buffer"
+        (when-let ((buffer (get-buffer (plist-get uri :address))))
+          (with-current-buffer buffer
+            (if buffer-file-name
+                (e-base-tools-file-buffer-coherence-group
+                 buffer-file-name
+                 (plist-get uri :uri))
+              (e-base-tools-file--buffer-only-coherence-group buffer)))))))))
+
+(defun e-base-tools-file--sync-other-live-buffers (written-buffer buffers)
+  "Revert unmodified BUFFERS other than WRITTEN-BUFFER after a file save."
+  (let (synced)
+    (dolist (buffer buffers)
+      (when (and (buffer-live-p buffer)
+                 (not (eq buffer written-buffer)))
+        (with-current-buffer buffer
+          (unless (buffer-modified-p)
+            (revert-buffer :ignore-auto :noconfirm)
+            (push (e-base-tools-file--buffer-link-state buffer) synced)))))
+    (nreverse synced)))
+
+(defun e-base-tools-file--save-buffer-content-to-file (buffer content)
+  "Replace BUFFER contents with CONTENT and save its visited file.
+Saving is non-interactive: the file is written as UTF-8 without prompting to
+choose a coding system, which `save-buffer' would otherwise do when the
+buffer's detected coding cannot encode CONTENT."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t)
+          (require-final-newline nil)
+          (mode-require-final-newline nil)
+          (coding-system-for-write 'utf-8-unix)
+          (select-safe-coding-system-function nil))
+      (let ((source (generate-new-buffer " *e-base-tools-content*" t)))
+        (unwind-protect
+            (progn
+              (with-current-buffer source (insert content))
+              ;; Diff-based replacement preserves overlays/markers anchored to
+              ;; surviving text; a plain erase+insert slides every overlay to
+              ;; position 1.  Minor modes that persist overlay regions on
+              ;; `before-save-hook' (e.g. Simply Annotate serializes annotation
+              ;; threads from their overlays) would otherwise write collapsed
+              ;; (1 . 1) regions to disk.  MAX-SECS bounds the diff: past the
+              ;; budget it falls back to delete+insert (losing overlay
+              ;; anchoring) rather than hanging.  The bound is mandatory -- the
+              ;; diff runs in C and no timer or C-g can interrupt it, so a big
+              ;; edit that differs throughout would otherwise spin forever.
+              (replace-buffer-contents
+               source e-base-tools-file--replace-contents-max-secs))
+          (kill-buffer source)))
+      (save-buffer)
+      (e-base-tools-file--buffer-link-state buffer))))
+
+(defun e-base-tools-file--read-file-literally (path)
+  "Return literal contents of PATH."
+  (with-temp-buffer
+    (insert-file-contents-literally path)
+    (buffer-string)))
+
+(defun e-base-tools-file--decode-text (content)
+  "Decode literal file CONTENT as UTF-8 text."
+  (decode-coding-string content 'utf-8-unix t))
+
+(defun e-base-tools-file--binary-string-p (content)
+  "Return non-nil when CONTENT appears binary."
+  (or (string-search "\0" content)
+      (and (> (length content) 1)
+           (let ((first (aref content 0))
+                 (second (aref content 1)))
+             (or (and (= first #x89) (= second ?P))
+                 (and (= first #xff) (= second #xd8)))))))
+
+(defun e-base-tools-file--lines (content &optional drop-final-empty)
+  "Return CONTENT split into lines.
+When DROP-FINAL-EMPTY is non-nil, ignore a final empty line produced by a
+trailing newline."
+  (let ((lines (split-string content "\n")))
+    (if (and drop-final-empty
+             (string-suffix-p "\n" content)
+             lines
+             (equal (car (last lines)) ""))
+        (butlast lines)
+      lines)))
+
+(defun e-base-tools-file--join-lines-preserving-terminal-newline
+    (lines original-content)
+  "Join LINES and preserve ORIGINAL-CONTENT's terminal newline when possible."
+  (ignore original-content)
+  (mapconcat #'identity lines "\n"))
+
+(defun e-base-tools-file--truncate-head-lines (content total-lines start-line)
+  "Return CONTENT truncated from the head, with metadata.
+TOTAL-LINES is the full file line count.  START-LINE is 1-based."
+  (let* ((lines (e-base-tools-file--lines content))
+         (selected-count (length lines))
+         (line-truncated (> selected-count e-base-tools-file--max-lines))
+         (head-lines (if line-truncated
+                         (seq-take lines e-base-tools-file--max-lines)
+                       lines))
+         (head-content
+          (e-base-tools-file--join-lines-preserving-terminal-newline
+           head-lines content))
+         (byte-truncated nil))
+    (when (> (string-bytes head-content) e-base-tools-file--max-bytes)
+      (setq byte-truncated t)
+      (setq head-content
+            (decode-coding-string
+             (seq-take (encode-coding-string head-content 'utf-8)
+                       e-base-tools-file--max-bytes)
+             'utf-8 t))
+      (setq head-lines (e-base-tools-file--lines head-content t)))
+    (let* ((output-lines (max 1 (length (e-base-tools-file--lines head-content t))))
+           (end-line (+ start-line output-lines -1)))
+      (list :content head-content
+            :truncated (or line-truncated byte-truncated)
+            :truncated-by (cond (line-truncated 'lines)
+                                (byte-truncated 'bytes))
+            :output-lines output-lines
+            :end-line end-line
+            :next-offset (1+ end-line)
+            :total-lines total-lines))))
+
+(defun e-base-tools-file-disk-text (path)
+  "Return text contents of disk PATH or signal a clear read error."
+  (unless (file-readable-p path)
+    (signal 'e-base-tools-read-invalid
+            (list (format "File is not readable: %s" path))))
+  (unless (file-regular-p path)
+    (signal 'e-base-tools-read-invalid
+            (list (format "Path is not a regular file: %s" path))))
+  (let ((content (e-base-tools-file--read-file-literally path)))
+    (when (e-base-tools-file--binary-string-p content)
+      (signal 'e-base-tools-read-invalid
+              (list "The read tool is text-only in v1; binary and image files are not supported.")))
+    (e-base-tools-file--decode-text content)))
+
+(defun e-base-tools-file-preferred-buffer-for-group (group)
+  "Return preferred live buffer view from generic coherence GROUP, or nil."
+  (when-let ((view (e-resource-coherence-preferred-view
+                   (e-resource-coherence-views-by-kind group 'buffer)
+                   "live buffer view")))
+    (e-base-tools-file--buffer-from-view view)))
+
+(defun e-base-tools-file--signal-base-coherence-conflict (err)
+  "Signal ERR as a base-tools coherence conflict for compatibility."
+  (signal 'user-error (cdr err)))
+
+(defun e-base-tools-file--stale-buffer-views (group &optional except-uri)
+  "Return stale buffer views in GROUP, optionally excluding EXCEPT-URI."
+  (seq-filter
+   (lambda (view)
+     (and (eq (plist-get view :kind) 'buffer)
+          (eq (plist-get view :status) 'stale)
+          (not (equal (e-resource-coherence-view-uri view)
+                      except-uri))))
+   (e-resource-coherence-group-views group)))
+
+(defun e-base-tools-file--check-coherence-write-conflicts
+    (group subject-uri action)
+  "Signal if writing SUBJECT-URI with ACTION conflicts in GROUP."
+  (condition-case err
+      (e-resource-coherence-conflict-if-dirty group subject-uri action)
+    (e-resource-coherence-conflict
+     (e-base-tools-file--signal-base-coherence-conflict err)))
+  (when-let ((stale (e-base-tools-file--stale-buffer-views group subject-uri)))
+    (signal
+     'user-error
+     (list
+      (format
+       "Cannot %s %s directly because linked buffer(s) %s are stale. Reload or sync the stale buffer before mutating the file."
+       (or action "edit")
+       (or subject-uri
+           (plist-get group :subject-uri)
+           (plist-get group :canonical-uri)
+           "resource")
+       (e-resource-coherence-view-labels stale))))))
+
+(defun e-base-tools-file--file-text (path)
+  "Return coherent text contents of PATH.
+Live resource views visiting PATH win over disk so unsaved edits are visible
+through file:// reads."
+  (let* ((absolute-path (e-base-tools-file--canonical-file-name path))
+         (group (e-base-tools-file-buffer-coherence-group absolute-path)))
+    (if-let ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
+        (with-current-buffer buffer
+          (buffer-substring-no-properties (point-min) (point-max)))
+      (e-base-tools-file-disk-text absolute-path))))
+
+(defun e-base-tools-file--read-text (path offset limit)
+  "Read text PATH with 1-based OFFSET and optional LIMIT."
+  (let* ((content (e-base-tools-file--file-text path))
+         (lines (e-base-tools-file--lines content))
+         (total-lines (length lines))
+         (start-line (or offset 1))
+         (start-index (1- start-line)))
+    (when (>= start-index total-lines)
+      (signal 'e-base-tools-read-invalid
+              (list (format "Offset %s is beyond end of file (%s lines total)"
+                            start-line total-lines))))
+    (let* ((remaining (nthcdr start-index lines))
+           (selected-lines (if limit
+                               (seq-take remaining limit)
+                             remaining))
+           (selected-content
+            (e-base-tools-file--join-lines-preserving-terminal-newline
+             selected-lines content))
+           (limited-end (+ start-index (length selected-lines)))
+           (more-after-limit (and limit (< limited-end total-lines))))
+      (if limit
+          (if more-after-limit
+              (format "%s\n\n[%d more lines in file. Use offset=%d to continue.]"
+                      selected-content
+                      (- total-lines limited-end)
+                      (1+ limited-end))
+            selected-content)
+        (let ((truncation
+               (e-base-tools-file--truncate-head-lines
+                selected-content total-lines start-line)))
+          (if (plist-get truncation :truncated)
+              (format
+               "%s\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]"
+               (plist-get truncation :content)
+               start-line
+               (plist-get truncation :end-line)
+               total-lines
+               (plist-get truncation :next-offset))
+            (plist-get truncation :content)))))))
+
+(defun e-base-tools-file--range-number (range key)
+  "Return optional positive numeric KEY from RANGE."
+  (let ((value (plist-get range key)))
+    (when value
+      (unless (and (numberp value) (> value 0))
+        (signal 'wrong-type-argument (list 'positive-number-p key)))
+      value)))
+
+(defun e-base-tools-file--range-offset-limit (range)
+  "Return line offset and limit for structured RANGE."
+  (if (null range)
+      (list nil nil)
+    (let ((unit (plist-get range :unit))
+          (start (e-base-tools-file--range-number range :start)))
+      (unless start
+        (signal 'e-base-tools-read-invalid
+                '("range.start must be a positive number")))
+      (pcase unit
+        ("line"
+         (let ((end (e-base-tools-file--range-number range :end)))
+           (when (and end (< end start))
+             (signal 'e-base-tools-read-invalid
+                     '("range.end must be greater than or equal to range.start")))
+           (list start (and end (1+ (- end start))))))
+        ("offset"
+         (list start (e-base-tools-file--range-number range :limit)))
+        (_
+         (signal 'e-base-tools-read-invalid
+                 (list (format "Unsupported file range unit: %s" unit))))))))
+
+(defun e-base-tools-file-resource-path (uri directory)
+  "Resolve parsed file URI against DIRECTORY."
+  (e-base-tools-file--resolve-path (plist-get uri :address) directory))
+
+(defun e-base-tools-file--primary-root (directory)
+  "Return primary root from DIRECTORY."
+  (car (e-base-tools-file--root-list directory)))
+
+(defun e-base-tools-file--relative-to-root (path directory)
+  "Return PATH relative to DIRECTORY primary root."
+  (file-relative-name path (e-base-tools-file--primary-root directory)))
+
+(defun e-base-tools-file--file-resource-uri (path directory)
+  "Return file:// URI for PATH relative to DIRECTORY primary root."
+  (concat "file://" (e-base-tools-file--relative-to-root path directory)))
+
+(defun e-base-tools-file--clean-relative-path (path)
+  "Return PATH without fd's defensive leading ./ prefix."
+  (if (string-prefix-p "./" path)
+      (substring path 2)
+    path))
+
+(defun e-base-tools-file--file-discovery-limit (limit)
+  "Return normalized discovery LIMIT."
+  (cond
+   ((null limit) 100)
+   ((and (numberp limit) (> limit 0)) (truncate limit))
+   (t (signal 'wrong-type-argument (list 'positive-number-p limit)))))
+
+(defun e-base-tools-file--find-executable (name &optional alternates)
+  "Return executable NAME or one of ALTERNATES, or signal a clear error."
+  (or (executable-find name)
+      (cl-some #'executable-find alternates)
+      (signal 'e-base-tools-missing-command
+              (list (format "Missing executable: %s" name)))))
+
+(defun e-base-tools-file--reject-sync-in-hot-path (operation)
+  "Reject synchronous base-tool OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
+
+(defun e-base-tools-file--process-lines (program directory args &optional ok-statuses)
+  "Run PROGRAM in DIRECTORY with ARGS and return output lines.
+OK-STATUSES defaults to only zero."
+  (e-base-tools-file--reject-sync-in-hot-path
+   'e-base-tools-file--process-lines)
+  (let ((default-directory directory)
+        (accepted (or ok-statuses '(0))))
+    (with-temp-buffer
+      (let ((status (apply #'process-file program nil (list t t) nil args)))
+        (unless (member status accepted)
+          (signal 'e-base-tools-process-failed
+                  (list (format "%s failed with exit status %s: %s"
+                                program
+                                status
+                                (string-trim (buffer-string)))))))
+	      (split-string (buffer-string) "\n" t))))
+
+(defun e-base-tools-file--buffer-string (buffer)
+  "Return BUFFER contents, or an empty string when BUFFER is dead."
+  (if (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (buffer-string))
+    ""))
+
+(defun e-base-tools-file--buffer-lines (buffer)
+  "Return non-empty lines from BUFFER."
+  (split-string (e-base-tools-file--buffer-string buffer) "\n" t))
+
+(defun e-base-tools-file--file-scope-relative-path (uri directory)
+  "Return file URI scope as a path relative to DIRECTORY primary root."
+  (let ((relative (e-base-tools-file--relative-to-root
+                   (e-base-tools-file-resource-path uri directory)
+                   directory)))
+    (if (string= relative ".") "." relative)))
+
+(defun e-base-tools-file--file-result-name (path scope)
+  "Return display name for PATH relative to SCOPE when possible."
+  (if (and (file-directory-p scope)
+           (file-in-directory-p path scope))
+      (file-relative-name path scope)
+    (file-name-nondirectory path)))
+
+(defun e-base-tools-file--file-metadata (path &optional query-metadata)
+  "Return resource metadata for file PATH.
+When QUERY-METADATA is non-nil, include sortable timestamp metadata."
+  (let ((attributes (file-attributes path)))
+    (append (list :bytes (file-attribute-size attributes))
+            (when query-metadata
+              (list :updated-at
+                    (file-attribute-modification-time attributes))))))
+
+(defun e-base-tools-file--file-result (relative absolute scope &optional query-metadata)
+  "Return file resource result for RELATIVE ABSOLUTE under SCOPE.
+When QUERY-METADATA is non-nil, include sortable timestamp metadata."
+  (list :uri (concat "file://" relative)
+        :name (e-base-tools-file--file-result-name absolute scope)
+        :kind 'file
+        :metadata (e-base-tools-file--file-metadata absolute query-metadata)))
+
+(defun e-base-tools-file--file-query-field-functions ()
+  "Return file:// resource query field functions."
+  `(("name" . ,(lambda (resource) (plist-get resource :name)))
+    ("uri" . ,(lambda (resource) (plist-get resource :uri)))
+    ("updated-at" . ,(lambda (resource)
+                         (plist-get (plist-get resource :metadata) :updated-at)))))
+
+(defun e-base-tools-file--file-apply-query
+    (resources sort-by sort-order created-after created-before
+               updated-after updated-before)
+  "Apply file:// query controls to RESOURCES."
+  (e-resource-query-apply
+   resources
+   "file"
+   '("default" "name" "uri" "updated-at")
+   '("updated-at")
+   :sort-by sort-by
+   :sort-order sort-order
+   :created-after created-after
+   :created-before created-before
+   :updated-after updated-after
+   :updated-before updated-before
+   :field-functions (e-base-tools-file--file-query-field-functions)))
+
+(defun e-base-tools-file--file-glob-single-result
+    (scope scope-relative pattern case-sensitive &optional query-metadata)
+  "Return a single file glob result for SCOPE, or nil if it does not match."
+  (when (and (file-regular-p scope)
+             (e-resource-pattern-glob-match-p
+              pattern
+              (file-name-nondirectory scope-relative)
+              case-sensitive))
+    (e-base-tools-file--file-result scope-relative scope scope query-metadata)))
+
+(defun e-base-tools-file--file-glob-resource
+    (uri pattern limit case-sensitive directory &optional sort-by sort-order
+         created-after created-before updated-after updated-before)
+  "List file resources under parsed URI with PATTERN and LIMIT."
+  (let* ((primary (e-base-tools-file--primary-root directory))
+         (scope (e-base-tools-file-resource-path uri directory))
+         (scope-relative (e-base-tools-file--file-scope-relative-path uri directory))
+         (actual-pattern (or pattern "*"))
+         (fd-pattern (e-resource-pattern-glob-fd-candidate-pattern actual-pattern))
+         (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
+         (actual-limit (e-base-tools-file--file-discovery-limit limit))
+         (advanced (or sort-by sort-order created-after created-before
+                       updated-after updated-before))
+         (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
+    (e-resource-pattern-compile-glob actual-pattern)
+    (if (file-regular-p scope)
+        (let* ((resources (if-let ((single (e-base-tools-file--file-glob-single-result
+                                            scope
+                                            scope-relative
+                                            actual-pattern
+                                            actual-case-sensitive
+                                            advanced)))
+                              (list single)
+                            nil))
+               (queried (e-base-tools-file--file-apply-query
+                         resources sort-by sort-order created-after created-before
+                         updated-after updated-before)))
+          (list :resources (vconcat queried)
+                :truncated nil))
+      (let* ((lines (e-base-tools-file--process-lines
+                     (e-base-tools-file--find-executable "fd" '("fdfind"))
+                     primary
+                     (append
+                      (list "--glob"
+                            "--color" "never"
+                            "--base-directory" primary
+                            "--search-path" scope-relative
+                            "--type" "file")
+                      (unless advanced
+                        (list "--max-results" (number-to-string (1+ actual-limit))))
+                      (when fd-max-depth
+                        (list "--max-depth" (number-to-string fd-max-depth)))
+                      (list (if actual-case-sensitive
+                                "--case-sensitive"
+                              "--ignore-case"))
+                      (list fd-pattern))))
+             (filtered
+              (seq-filter
+               (lambda (relative)
+                 (let* ((relative (e-base-tools-file--clean-relative-path relative))
+                        (absolute (expand-file-name relative primary))
+                        (name (e-base-tools-file--file-result-name absolute scope)))
+                   (e-resource-pattern-glob-match-p
+                    actual-pattern
+                    name
+                    actual-case-sensitive)))
+               lines))
+             (resources
+              (mapcar
+               (lambda (relative)
+                 (let* ((relative (e-base-tools-file--clean-relative-path relative))
+                        (absolute (expand-file-name relative primary)))
+                   (e-base-tools-file--file-result relative absolute scope advanced)))
+               filtered))
+             (queried (e-base-tools-file--file-apply-query
+                       resources sort-by sort-order created-after created-before
+                       updated-after updated-before))
+             (truncated (> (length queried) actual-limit))
+             (selected (seq-take queried actual-limit)))
+        (list :resources (vconcat selected)
+	      :truncated truncated)))))
+
+(defun e-base-tools-file--file-glob-content
+    (lines primary scope pattern case-sensitive limit)
+  "Return file glob content from fd output LINES."
+  (let* ((filtered
+          (seq-filter
+           (lambda (relative)
+             (let* ((relative (e-base-tools-file--clean-relative-path relative))
+                    (absolute (expand-file-name relative primary))
+                    (name (e-base-tools-file--file-result-name absolute scope)))
+               (e-resource-pattern-glob-match-p pattern name case-sensitive)))
+           lines))
+         (truncated (> (length filtered) limit))
+         (selected (seq-take filtered limit)))
+    (list :resources
+          (vconcat
+           (mapcar
+            (lambda (relative)
+              (let* ((relative (e-base-tools-file--clean-relative-path relative))
+                     (absolute (expand-file-name relative primary))
+                     (attributes (file-attributes absolute)))
+                (list :uri (concat "file://" relative)
+                      :name (e-base-tools-file--file-result-name absolute scope)
+                      :kind 'file
+                      :metadata (list :bytes (file-attribute-size attributes)))))
+            selected))
+          :truncated truncated)))
+
+(defun e-base-tools-file--file-glob-work-command (directory work-arguments _context)
+  "Return process command for file glob WORK-ARGUMENTS rooted at DIRECTORY."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,pattern ,limit ,case-sensitive . ,query-arguments) arguments))
+      (let* ((primary (e-base-tools-file--primary-root directory))
+             (scope (e-base-tools-file-resource-path uri directory))
+             (scope-relative (e-base-tools-file--file-scope-relative-path
+                              uri directory))
+             (actual-pattern (or pattern "*"))
+             (fd-pattern (e-resource-pattern-glob-fd-candidate-pattern actual-pattern))
+             (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
+             (actual-limit (e-base-tools-file--file-discovery-limit limit))
+             (advanced (seq-some #'identity query-arguments))
+             (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
+             (metadata (list :operation 'glob :scheme "file")))
+        (e-resource-pattern-compile-glob actual-pattern)
+        (if (file-regular-p scope)
+            (list :immediate
+                  (list :resources
+                        (if-let ((single
+                                  (e-base-tools-file--file-glob-single-result
+                                   scope
+                                   scope-relative
+                                   actual-pattern
+                                   actual-case-sensitive
+                                   advanced)))
+                            (vector single)
+                          [])
+                        :truncated nil)
+                  :metadata metadata)
+          (if advanced
+              (list :immediate
+                    (apply #'e-base-tools-file--file-glob-resource
+                           uri pattern limit case-sensitive directory query-arguments)
+                    :metadata metadata)
+            (list :program (e-base-tools-file--find-executable "fd" '("fdfind"))
+                  :directory primary
+                  :args (append
+                         (list "--glob"
+                               "--color" "never"
+                               "--base-directory" primary
+                               "--search-path" scope-relative
+                               "--type" "file"
+                               "--max-results" (number-to-string
+                                                (1+ actual-limit)))
+                       (when fd-max-depth
+                         (list "--max-depth"
+                               (number-to-string fd-max-depth)))
+                       (list (if actual-case-sensitive
+                                 "--case-sensitive"
+                               "--ignore-case"))
+                         (list fd-pattern))
+                  :metadata metadata)))))))
+
+(defun e-base-tools-file--file-glob-work-result (directory raw work-arguments _context)
+  "Return file glob resource content from process RAW result."
+  (if (plist-member raw :resources)
+      raw
+    (let ((uri (plist-get work-arguments :uri))
+          (arguments (plist-get work-arguments :operation-arguments)))
+      (pcase-let ((`(,pattern ,limit ,case-sensitive . ,query-arguments) arguments))
+        (let* ((primary (e-base-tools-file--primary-root directory))
+               (scope (e-base-tools-file-resource-path uri directory))
+               (actual-pattern (or pattern "*"))
+               (actual-limit (e-base-tools-file--file-discovery-limit limit))
+               (actual-case-sensitive
+                (if (null case-sensitive) t case-sensitive)))
+          (if query-arguments
+              (apply #'e-base-tools-file--file-glob-resource
+                     uri pattern limit case-sensitive directory query-arguments)
+            (e-base-tools-file--file-glob-content
+             (plist-get raw :lines)
+             primary
+             scope
+             actual-pattern
+             actual-case-sensitive
+             actual-limit)))))))
+
+(defun e-base-tools-file--file-glob-work (directory)
+  "Return file glob work spec rooted at DIRECTORY."
+  (e-work-spec-create
+   :id "file_glob"
+   :description "Glob workspace file resources through fd."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'resources
+   :command (lambda (work-arguments context)
+              (e-base-tools-file--file-glob-work-command
+               directory work-arguments context))
+   :result-shaper (lambda (raw work-arguments context)
+                    (e-base-tools-file--file-glob-work-result
+                     directory raw work-arguments context))))
+
+(defun e-base-tools-file--rg-json-text (object)
+  "Return text value from rg JSON OBJECT."
+  (or (plist-get object :text)
+      (when-let ((bytes (plist-get object :bytes)))
+        (base64-decode-string bytes))))
+
+(defun e-base-tools-file--search-match-from-rg-json
+    (line directory scope glob-pattern query options)
+  "Return a ranked search match plist for rg JSON LINE, or nil."
+  (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
+         (type (plist-get object :type)))
+    (when (equal type "match")
+      (let* ((data (plist-get object :data))
+             (path (e-base-tools-file--rg-json-text (plist-get data :path)))
+             (line-text (string-remove-suffix
+                         "\n"
+                         (or (e-base-tools-file--rg-json-text
+                              (plist-get data :lines))
+                             "")))
+             (absolute (expand-file-name path (e-base-tools-file--primary-root directory)))
+             (name (e-base-tools-file--file-result-name absolute scope))
+             (uri (e-base-tools-file--file-resource-uri absolute directory)))
+        (when (or (null glob-pattern)
+                  (e-resource-pattern-glob-match-p glob-pattern name t))
+          (when-let ((score (e-resource-pattern-search-score
+                             line-text query options uri name)))
+            (list :uri uri
+                  :line (plist-get data :line_number)
+                  :column (plist-get score :column)
+                  :text line-text
+                  :score (plist-get score :score)
+                  :matched-terms (plist-get score :matched-terms))))))))
+
+
+(defun e-base-tools-file--file-search-one-advanced (resource query options directory)
+  "Return ranked search matches for RESOURCE using Emacs search."
+  (let* ((uri (plist-get resource :uri))
+         (relative (string-remove-prefix "file://" uri))
+         (path (expand-file-name relative (e-base-tools-file--primary-root directory))))
+    (when (file-regular-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (e-resource-pattern-search-matches-in-text
+         uri
+         (buffer-string)
+         query
+         options
+         (plist-get resource :name))))))
+
+(defun e-base-tools-file--file-search-advanced-p (options)
+  "Return non-nil when OPTIONS needs file resource enumeration."
+  (seq-some (lambda (key) (plist-member options key))
+            '(:multiline :multi-term :resource-sort-by :resource-sort-order :resource-limit
+              :created-after :created-before :updated-after :updated-before)))
+
+(defun e-base-tools-file--file-search-resource-advanced
+    (uri query options directory)
+  "Search file resources with resource-level controls in OPTIONS."
+  (let* ((resource-limit (e-resource-query-resource-limit
+                          (plist-get options :resource-limit)))
+         (resource-result (e-base-tools-file--file-glob-resource
+                           uri
+                           (plist-get options :glob)
+                           (or resource-limit most-positive-fixnum)
+                           t
+                           directory
+                           (plist-get options :resource-sort-by)
+                           (plist-get options :resource-sort-order)
+                           (plist-get options :created-after)
+                           (plist-get options :created-before)
+                           (plist-get options :updated-after)
+                           (plist-get options :updated-before)))
+         (resources (append (plist-get resource-result :resources) nil))
+         (actual-limit (e-resource-pattern-search-limit
+                        (plist-get options :limit)))
+         matches)
+    (dolist (resource resources)
+      (setq matches
+            (append matches
+                    (e-base-tools-file--file-search-one-advanced
+                     resource query options directory))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   matches (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
+
+(defun e-base-tools-file--file-search-request (uri query options directory)
+  "Return a search provider request plist for URI QUERY OPTIONS in DIRECTORY."
+  (list :scheme "file"
+        :uri (plist-get uri :uri)
+        :query query
+        :options options
+        :directory directory
+        :absolute-path (e-base-tools-file-resource-path uri directory)))
+
+(defun e-base-tools-file--file-search-provider-result (uri query options directory)
+  "Return a claiming provider's result for the file search, or nil.
+When a registered provider claims the request scope, run it and return its
+result plist; otherwise return nil so the caller runs the default backend."
+  (let ((request (e-base-tools-file--file-search-request uri query options directory)))
+    (when-let ((provider (e-search-providers-provider-for request)))
+      (e-search-providers-run provider request))))
+
+(defun e-base-tools-file--file-search-resource (uri query options directory)
+  "Search file resources under parsed URI for QUERY with OPTIONS."
+  (or (e-base-tools-file--file-search-provider-result uri query options directory)
+      (e-base-tools-file--file-search-resource-default uri query options directory)))
+
+(defun e-base-tools-file--file-search-resource-default (uri query options directory)
+  "Search file resources with the default rg/Emacs backend."
+  (if (or (> (length (e-resource-pattern-search-terms query)) 1)
+          (e-base-tools-file--file-search-advanced-p options))
+      (e-base-tools-file--file-search-resource-advanced uri query options directory)
+    (let* ((primary (e-base-tools-file--primary-root directory))
+         (scope (e-base-tools-file-resource-path uri directory))
+         (scope-relative (e-base-tools-file--file-scope-relative-path uri directory))
+         (glob-pattern (plist-get options :glob))
+         (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
+         (actual-limit (e-resource-pattern-search-limit
+                        (plist-get options :limit)))
+         (args (append
+                (list "--json"
+                      "--line-number"
+                      "--column"
+                      "--color" "never")
+                (unless (plist-get options :case-sensitive)
+                  (list "--ignore-case"))
+                (when (plist-get options :multiline)
+                  (list "--multiline"))
+                (list "-e" query-regexp scope-relative))))
+    (when glob-pattern
+      (e-resource-pattern-compile-glob glob-pattern))
+    (let ((lines (e-base-tools-file--process-lines
+                  (e-base-tools-file--find-executable "rg")
+                  primary
+                  args
+                  '(0 1)))
+          matches)
+      (dolist (line lines)
+        (when-let ((match (e-base-tools-file--search-match-from-rg-json
+                           line
+                           directory
+                           scope
+                           glob-pattern
+                           query
+                           options)))
+          (push match matches)))
+      (let ((ranked (e-resource-pattern-rank-search-matches
+                     (nreverse matches) (1+ actual-limit))))
+        (list :matches (vconcat (seq-take ranked actual-limit))
+              :truncated (> (length ranked) actual-limit)))))))
+
+(defun e-base-tools-file--file-search-content
+    (lines directory scope glob-pattern actual-limit query options)
+  "Return ranked file search content from rg JSON LINES."
+  (let (matches)
+    (dolist (line lines)
+      (when-let ((match (e-base-tools-file--search-match-from-rg-json
+                         line
+                         directory
+                         scope
+                         glob-pattern
+                         query
+                         options)))
+        (push match matches)))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   (nreverse matches) (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
+
+(defun e-base-tools-file--file-search-work-command (directory work-arguments _context)
+  "Return process command for file search WORK-ARGUMENTS rooted at DIRECTORY."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,query ,options) arguments))
+      (let* ((primary (e-base-tools-file--primary-root directory))
+             (scope (e-base-tools-file-resource-path uri directory))
+             (scope-relative (e-base-tools-file--file-scope-relative-path
+                              uri directory))
+             (glob-pattern (plist-get options :glob))
+             (actual-limit (e-resource-pattern-search-limit
+                            (plist-get options :limit)))
+             (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
+             (metadata (list :operation 'search :scheme "file"))
+             (provider-result
+              (e-base-tools-file--file-search-provider-result
+               uri query options directory))
+             (args (append
+                    (list "--json"
+                          "--line-number"
+                          "--column"
+                          "--color" "never")
+                    (unless (plist-get options :case-sensitive)
+                      (list "--ignore-case"))
+                    (when (plist-get options :multiline)
+                      (list "--multiline"))
+                    (list "-e" query-regexp scope-relative))))
+        (when glob-pattern
+          (e-resource-pattern-compile-glob glob-pattern))
+        (cond
+         (provider-result
+          (list :immediate provider-result :metadata metadata))
+         ((or (> (length (e-resource-pattern-search-terms query)) 1)
+              (e-base-tools-file--file-search-advanced-p options))
+          (list :immediate
+                (e-base-tools-file--file-search-resource-default
+                 uri query options directory)
+                :metadata metadata))
+         (t
+          (let ((collector
+                 (e-resource-pattern-search-collector-create
+                  :limit actual-limit
+                  :count 0
+                  :transform
+                  (lambda (line)
+                    (e-base-tools-file--search-match-from-rg-json
+                     line directory scope glob-pattern query options)))))
+            (list :program (e-base-tools-file--find-executable "rg")
+                  :directory primary
+                  :args args
+                  :ok-statuses '(0 1)
+                  :capture-output nil
+                  :state collector
+                  :on-output
+                  (lambda (_handle process chunk active-collector)
+                    (when (e-resource-pattern-search-collector-feed
+                           active-collector chunk)
+                      (when (process-live-p process)
+                        (kill-process process))))
+                  :finish-on-nonzero t
+                  :metadata metadata))))))))
+
+(defun e-base-tools-file--file-search-work-result
+    (_directory raw _work-arguments _context)
+  "Return file search resource content from process RAW result."
+  (if (plist-member raw :matches)
+      raw
+    (let ((collector (plist-get raw :state)))
+      (unless (or (eq (plist-get raw :status) 'ok)
+                  (e-resource-pattern-search-collector-truncated collector))
+        (signal 'e-base-tools-process-failed
+                (list (or (plist-get raw :suffix)
+                          (string-trim (or (plist-get raw :stderr) ""))))))
+      (e-resource-pattern-search-collector-result collector))))
+
+(defun e-base-tools-file--file-search-work (directory)
+  "Return file search work spec rooted at DIRECTORY."
+  (e-work-spec-create
+   :id "file_search"
+   :description "Search workspace file resources through rg."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'resources
+   :command (lambda (work-arguments context)
+              (e-base-tools-file--file-search-work-command
+               directory work-arguments context))
+   :result-shaper (lambda (raw work-arguments context)
+                    (e-base-tools-file--file-search-work-result
+                     directory raw work-arguments context))))
+
+(defun e-base-tools-file--write-file-resource (uri content directory)
+  "Write CONTENT to parsed file URI in DIRECTORY."
+  (let* ((path (plist-get uri :address))
+         (absolute-path (e-base-tools-file-resource-path uri directory))
+         (file-uri (e-base-tools-file--file-uri absolute-path))
+         (group (e-base-tools-file-buffer-coherence-group
+                 absolute-path
+                 (plist-get uri :uri))))
+    (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
+    (make-directory (file-name-directory absolute-path) t)
+    (if-let ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
+        (let* ((saved (e-base-tools-file--save-buffer-content-to-file buffer content))
+               (synced (e-base-tools-file--sync-other-live-buffers
+                        buffer
+                        (e-base-tools-file-live-buffers absolute-path))))
+          (format "Successfully wrote %d bytes to %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
+                  (string-bytes content)
+                  path
+                  (plist-get saved :name)
+                  (length synced)))
+      (let ((coding-system-for-write 'utf-8-unix))
+        (write-region content nil absolute-path nil 'silent))
+      (format "Successfully wrote %d bytes to %s"
+              (string-bytes content)
+              path))))
+
+(defun e-base-tools-file--edit-file-resource (uri edits directory)
+  "Apply exact EDITS to parsed file URI in DIRECTORY."
+  (let* ((path (plist-get uri :address))
+         (absolute-path (e-base-tools-file-resource-path uri directory))
+         (file-uri (e-base-tools-file--file-uri absolute-path))
+         (group (e-base-tools-file-buffer-coherence-group
+                 absolute-path
+                 (plist-get uri :uri))))
+    (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
+    (let* ((buffer (e-base-tools-file-preferred-buffer-for-group group))
+           (raw-content (e-base-tools-file--file-text absolute-path))
+           (line-ending (e-base-tools-file--line-ending raw-content))
+           (content (e-base-tools-file--normalize-line-endings raw-content))
+           (normalized-edits (e-base-tools-file--normalize-edits edits))
+           (new-content (e-base-tools-file--apply-edits content normalized-edits path))
+           (final-content
+            (e-base-tools-file--restore-line-endings new-content line-ending))
+           saved
+           synced)
+      (if buffer
+          (progn
+            (make-directory (file-name-directory absolute-path) t)
+            (setq saved (e-base-tools-file--save-buffer-content-to-file
+                         buffer final-content))
+            (setq synced (e-base-tools-file--sync-other-live-buffers
+                          buffer
+                          (e-base-tools-file-live-buffers absolute-path))))
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region final-content nil absolute-path nil 'silent)))
+      (list :message (if buffer
+                         (format "Successfully replaced %d block(s) in %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
+                                 (length normalized-edits)
+                                 path
+                                 (plist-get saved :name)
+                                 (length synced))
+                       (format "Successfully replaced %d block(s) in %s."
+                               (length normalized-edits)
+                               path))
+            :replacements (length normalized-edits)
+            :linked-buffers (when buffer
+                              (list :saved saved :synced synced))
+            :diff (e-base-tools-file--simple-diff content new-content)))))
+
+(defun e-base-tools-file--buffer-content (buffer)
+  "Return BUFFER contents without text properties."
+  (with-current-buffer buffer
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun e-base-tools-file--sync-status-group->result (group)
+  "Return model-facing sync status RESULT for generic coherence GROUP."
+  (let ((group (e-resource-coherence-group-with-status group)))
+    (append
+     (list :uri (plist-get group :subject-uri)
+           :canonical-uri (plist-get group :canonical-uri)
+           :status (plist-get group :status)
+           :views (e-resource-coherence-group-views group))
+     (when-let ((file (plist-get (plist-get group :metadata) :file)))
+       (list :file file
+             :disk-exists (file-exists-p file)
+             :disk-error (plist-get (plist-get group :metadata) :disk-error)
+             :buffers (mapcar (lambda (view)
+                                (append (copy-sequence
+                                         (plist-get view :metadata))
+                                        (list :status
+                                              (plist-get view :status))))
+                              (e-resource-coherence-views-by-kind
+                               group 'buffer)))))))
+
+(defun e-base-tools-file--sync-status-for-uri (uri directory)
+  "Return generic linked-resource coherence status for parsed URI in DIRECTORY."
+  (let ((registry (e-resource-coherence-registry-create)))
+    (e-resource-coherence-register
+     registry
+     (e-base-tools-file-buffer-coherence-provider directory))
+    (e-base-tools-file--sync-status-group->result
+     (e-resource-coherence-group registry (plist-get uri :uri)))))
+
+(defun e-base-tools-register-resource-sync-status (registry directory)
+  "Register a linked-resource coherence status tool in REGISTRY."
+  (e-tools-register
+   registry
+   :name "resource_sync_status"
+   :description "Report file-backed Emacs buffer coherence for a file:// or buffer:// URI."
+   :parameters '(:type "object"
+                 :properties (:uri (:type "string"))
+                 :required ["uri"])
+   :work
+   (e-tools-cheap-work
+    "tool.resource-sync-status"
+    (lambda (arguments)
+      (let* ((uri-text (e-base-tools-file--argument-string arguments :uri))
+             (uri (e-resources-parse-uri uri-text)))
+        (e-base-tools-file--sync-status-for-uri uri directory))))))
+
+(defun e-base-tools-file--file-read-method (directory)
+  "Return a file read resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-read
+   :description "Workspace text files."
+   :uri-patterns '("file://<path>")
+   :range-modes '("line" "offset")
+   :handler (lambda (uri range)
+              (pcase-let ((`(,offset ,limit)
+                           (e-base-tools-file--range-offset-limit range)))
+                (e-base-tools-file--read-text
+                 (e-base-tools-file-resource-path uri directory)
+                 offset
+                 limit)))))
+
+(defun e-base-tools-file--file-write-method (directory)
+  "Return a file write resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-write
+   :description "Workspace text files."
+   :uri-patterns '("file://<path>")
+   :handler (lambda (uri content)
+              (e-base-tools-file--write-file-resource uri content directory))))
+
+(defun e-base-tools-file--file-edit-method (directory)
+  "Return a file edit resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-edit
+   :description "Workspace text files. Preserves CRLF line endings when possible."
+   :uri-patterns '("file://<path>")
+   :handler (lambda (uri edits)
+              (e-base-tools-file--edit-file-resource uri edits directory))))
+
+(defun e-base-tools-file--file-glob-method (directory)
+  "Return a file glob resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-glob
+   :description "Workspace text files and directories."
+   :uri-patterns '("file://<path-or-directory>")
+   :handler (lambda (uri pattern limit case-sensitive sort-by sort-order
+                         created-after created-before updated-after updated-before)
+              (e-base-tools-file--file-glob-resource
+               uri pattern limit case-sensitive directory sort-by sort-order
+               created-after created-before updated-after updated-before))
+   :work (e-base-tools-file--file-glob-work directory)))
+
+(defun e-base-tools-file--file-search-method (directory)
+  "Return a file search resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-search
+   :description "Workspace text file content."
+   :uri-patterns '("file://<path-or-directory>")
+   :handler (lambda (uri query options)
+              (e-base-tools-file--file-search-resource
+               uri query options directory))
+   :work (e-base-tools-file--file-search-work directory)))
+
+
+(defun e-base-tools-register-file-read-resource (registry directory)
+  "Register read-only file resource methods in REGISTRY rooted at DIRECTORY."
+  (dolist (method (list (e-base-tools-file--file-read-method directory)
+                        (e-base-tools-file--file-glob-method directory)
+                        (e-base-tools-file--file-search-method directory)))
+    (e-resources-register registry method)))
+
+(defun e-base-tools-register-file-resource (registry directory)
+  "Register file resource methods in REGISTRY rooted at DIRECTORY."
+  (dolist (method (list (e-base-tools-file--file-read-method directory)
+                        (e-base-tools-file--file-write-method directory)
+                        (e-base-tools-file--file-edit-method directory)
+                        (e-base-tools-file--file-glob-method directory)
+                        (e-base-tools-file--file-search-method directory)))
+    (e-resources-register registry method)))
+
+(defun e-base-tools-file--line-ending (content)
+  "Return the dominant line ending in CONTENT."
+  (if (string-match-p "\r\n" content) "\r\n" "\n"))
+
+(defun e-base-tools-file--normalize-line-endings (content)
+  "Return CONTENT with CRLF line endings normalized to LF."
+  (replace-regexp-in-string "\r\n" "\n" content t t))
+
+(defun e-base-tools-file--restore-line-endings (content line-ending)
+  "Restore CONTENT to LINE-ENDING."
+  (if (equal line-ending "\r\n")
+      (replace-regexp-in-string "\n" "\r\n" content t t)
+    content))
+
+(defun e-base-tools-file--count-occurrences (content text)
+  "Return number of exact TEXT occurrences in CONTENT."
+  (let ((count 0)
+        (start 0))
+    (while (and (< start (length content))
+                (string-match (regexp-quote text) content start))
+      (setq count (1+ count))
+      (setq start (match-end 0)))
+    count))
+
+(defun e-base-tools-file--edit-field (edit key)
+  "Return string KEY from EDIT."
+  (let ((value (plist-get edit key)))
+    (unless (stringp value)
+      (signal 'wrong-type-argument (list 'stringp key)))
+    value))
+
+(defun e-base-tools-file--normalize-edits (edits)
+  "Return normalized EDITS for exact replacement."
+  (unless (and (listp edits) edits)
+    (signal 'e-base-tools-edit-invalid
+            '("edits must contain at least one replacement")))
+  (cl-loop for edit in edits
+           collect (let ((old-text (e-base-tools-file--edit-field edit :oldText))
+                         (new-text (e-base-tools-file--edit-field edit :newText)))
+                     (list :old-text (e-base-tools-file--normalize-line-endings old-text)
+                           :new-text (e-base-tools-file--normalize-line-endings new-text)))))
+
+(defun e-base-tools-file--apply-edits (content edits path)
+  "Apply exact EDITS to normalized CONTENT for PATH."
+  (let ((matches nil)
+        (index 0))
+    (dolist (edit edits)
+      (let ((old-text (plist-get edit :old-text)))
+        (when (string-empty-p old-text)
+          (signal 'e-base-tools-edit-invalid
+                  (list (format "edits[%d].oldText must not be empty in %s."
+                                index path))))
+        (let ((occurrences (e-base-tools-file--count-occurrences content old-text)))
+          (pcase occurrences
+            (0 (signal 'e-base-tools-edit-invalid
+                       (list (format "Could not find missing edits[%d] in %s. The oldText must match exactly including all whitespace and newlines."
+                                     index path))))
+            (1 (string-match (regexp-quote old-text) content)
+               (push (list :edit-index index
+                           :start (match-beginning 0)
+                           :end (match-end 0)
+                           :new-text (plist-get edit :new-text))
+                     matches))
+            (_ (signal 'e-base-tools-edit-invalid
+                       (list (format "Found %d occurrences of edits[%d] in %s. Each oldText must be unique. Please provide more context to make it unique."
+                                     occurrences index path)))))))
+      (setq index (1+ index)))
+    (setq matches (sort matches
+                        (lambda (left right)
+                          (< (plist-get left :start)
+                             (plist-get right :start)))))
+    (cl-loop for previous in matches
+             for current in (cdr matches)
+             when (> (plist-get previous :end) (plist-get current :start))
+             do (signal 'e-base-tools-edit-invalid
+                        (list (format "edits[%d] and edits[%d] overlap in %s. Merge them into one edit or target disjoint regions."
+                                      (plist-get previous :edit-index)
+                                      (plist-get current :edit-index)
+                                      path))))
+    (let ((new-content content))
+      (dolist (match (reverse matches))
+        (setq new-content
+              (concat (substring new-content 0 (plist-get match :start))
+                      (plist-get match :new-text)
+                      (substring new-content (plist-get match :end)))))
+      (when (equal content new-content)
+        (signal 'e-base-tools-edit-invalid
+                (list (format "No changes made to %s. The replacement produced identical content."
+                              path))))
+      new-content)))
+
+(defun e-base-tools-file--simple-diff (old-content new-content)
+  "Return a compact line diff between OLD-CONTENT and NEW-CONTENT."
+  (let ((old-lines (e-base-tools-file--lines old-content t))
+        (new-lines (e-base-tools-file--lines new-content t))
+        (output nil))
+    (while (or old-lines new-lines)
+      (let ((old-line (car old-lines))
+            (new-line (car new-lines)))
+        (cond
+         ((equal old-line new-line)
+          (push (concat " " old-line) output)
+          (setq old-lines (cdr old-lines))
+          (setq new-lines (cdr new-lines)))
+         (t
+          (when old-line
+            (push (concat "-" old-line) output)
+            (setq old-lines (cdr old-lines)))
+          (when new-line
+            (push (concat "+" new-line) output)
+            (setq new-lines (cdr new-lines)))))))
+    (mapconcat #'identity (nreverse output) "\n")))
+
+(provide 'e-base-tools-file)
+
+;;; e-base-tools-file.el ends here

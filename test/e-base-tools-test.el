@@ -135,10 +135,10 @@ sleep 5
                  (error "process-file should not run"))))
       (let ((err (should-error
                   (e-request-with-hot-path 'base-process-lines
-                    (e-base-tools--process-lines "fd" default-directory nil))
+                    (e-base-tools-file--process-lines "fd" default-directory nil))
                   :type 'e-request-blocking-call-in-hot-path)))
         (should (equal (cdr err)
-                       '(e-base-tools--process-lines base-process-lines))))
+                       '(e-base-tools-file--process-lines base-process-lines))))
       (should-not started))))
 
 (defun e-base-tools-test--wait-until (predicate &optional timeout)
@@ -1016,7 +1016,7 @@ content, and it must return in well under the wall-clock a full diff would take.
           (write-region original nil file nil 'silent)
           (setq buffer (find-file-noselect file))
           (let ((t0 (float-time)))
-            (e-base-tools--save-buffer-content-to-file buffer replacement)
+            (e-base-tools-file--save-buffer-content-to-file buffer replacement)
             (should (< (- (float-time) t0) 5.0)))
           ;; The bounded path must still write the exact requested content.
           (should (equal (with-current-buffer buffer (buffer-string)) replacement))
@@ -1216,11 +1216,11 @@ picker."
 
 (ert-deftest e-base-tools-test-bash-output-names-do-not-alias ()
   "Case-varying and long provider IDs produce distinct bounded output names."
-  (let ((upper (e-base-tools--bash-relative-name
+  (let ((upper (e-base-tools-bash--bash-relative-name
                 '(:turn-id "Turn" :tool-call (:id "Call"))))
-        (lower (e-base-tools--bash-relative-name
+        (lower (e-base-tools-bash--bash-relative-name
                 '(:turn-id "turn" :tool-call (:id "call"))))
-        (long (e-base-tools--bash-relative-name
+        (long (e-base-tools-bash--bash-relative-name
                (list :turn-id (make-string 300 ?t)
                      :tool-call (list :id (make-string 300 ?c))))))
     (should-not (equal upper lower))
@@ -1504,19 +1504,19 @@ picker."
 (ert-deftest e-base-tools-test-sync-bash-helper-rejects-hot-path ()
   "The synchronous bash helper fails before starting a shell command."
   (let (started)
-    (cl-letf (((symbol-function 'e-base-tools--run-shell-command-start)
+    (cl-letf (((symbol-function 'e-base-tools-bash--run-shell-command-start)
                (lambda (&rest _args)
                  (setq started t)
                  (error "shell command should not start"))))
       (let ((err (should-error
                   (e-request-with-hot-path 'base-sync-bash
-                    (e-base-tools--run-shell-command
+                    (e-base-tools-bash--run-shell-command
                      "printf done"
                      default-directory
                      nil))
                   :type 'e-request-blocking-call-in-hot-path)))
         (should (equal (cdr err)
-                       '(e-base-tools--run-shell-command base-sync-bash))))
+                       '(e-base-tools-bash--run-shell-command base-sync-bash))))
       (should-not started))))
 
 (ert-deftest e-base-tools-test-bash-publishes-streaming-progress ()
@@ -1561,7 +1561,7 @@ picker."
   "The native bash tool throttles progress without changing final output."
   (let* ((directory (make-temp-file "e-base-bash-progress-coalesce-" t))
          (registry (e-tools-registry-create))
-         (e-base-tools--bash-progress-interval 10)
+         (e-base-tools-bash--bash-progress-interval 10)
          result
          events)
     (unwind-protect

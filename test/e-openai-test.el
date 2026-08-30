@@ -100,14 +100,14 @@
           (put symbol 'customized-value nil)
           (put symbol 'theme-value nil)
           (let ((e-openai-websocket-idle-timeout-seconds nil))
-            (e-openai--migrate-websocket-idle-timeout-default)
+            (e-openai-profile--migrate-websocket-idle-timeout-default)
             (should (equal e-openai-websocket-idle-timeout-seconds 60)))
           (let ((e-openai-websocket-idle-timeout-seconds 180))
-            (e-openai--migrate-websocket-idle-timeout-default)
+            (e-openai-profile--migrate-websocket-idle-timeout-default)
             (should (equal e-openai-websocket-idle-timeout-seconds 60)))
           (put symbol 'saved-value '(nil))
           (let ((e-openai-websocket-idle-timeout-seconds nil))
-            (e-openai--migrate-websocket-idle-timeout-default)
+            (e-openai-profile--migrate-websocket-idle-timeout-default)
             (should-not e-openai-websocket-idle-timeout-seconds)))
       (put symbol 'saved-value saved)
       (put symbol 'customized-value customized)
@@ -129,11 +129,11 @@
           (put symbol 'customized-value nil)
           (put symbol 'theme-value nil)
           (let ((e-openai-request-timeout-seconds 180))
-            (e-openai--migrate-http-timeout-default)
+            (e-openai-profile--migrate-http-timeout-default)
             (should-not e-openai-request-timeout-seconds))
           (put symbol 'saved-value '(180))
           (let ((e-openai-request-timeout-seconds 180))
-            (e-openai--migrate-http-timeout-default)
+            (e-openai-profile--migrate-http-timeout-default)
             (should (= e-openai-request-timeout-seconds 180))))
       (put symbol 'saved-value saved)
       (put symbol 'customized-value customized)
@@ -266,7 +266,7 @@
 (ert-deftest e-openai-test-reasoning-summary-precedence-and-explicit-join ()
   "Request, profile, and adapter summary choices compose predictably."
   (let ((profile-options
-         (e-openai--harness-default-options
+         (e-openai-profile-harness-default-options
           '(:wire-api responses :reasoning-summary "detailed")
           "gpt-test")))
     (should (equal (plist-get profile-options :reasoning-summary)
@@ -692,8 +692,8 @@
                :messages ((:role system :content "stable policy")))
               (:kind current-state
                :messages ((:role system :content "SOURCE-TWO")))))))
-         (first (e-openai-codex--prompt-layout-revision first-options))
-         (second (e-openai-codex--prompt-layout-revision second-options)))
+         (first (e-openai-responses-prompt-layout-revision first-options))
+         (second (e-openai-responses-prompt-layout-revision second-options)))
     (should (equal first second))
     (should (equal
              (plist-get first :context-curation-revision-identity)
@@ -710,17 +710,17 @@
     (let ((e-context-budget-estimate-bytes-per-token 2.0))
       (should-not
        (equal first
-              (e-openai-codex--prompt-layout-revision first-options))))
+              (e-openai-responses-prompt-layout-revision first-options))))
     (let ((e-context-lifetime-curation-presentation-revision
            "context-curation-presentation-test-v2"))
       (should-not
        (equal first
-              (e-openai-codex--prompt-layout-revision first-options))))
+              (e-openai-responses-prompt-layout-revision first-options))))
     (let ((e-context-lifetime-curation-schema-revision
            "context-curate-test-v3"))
       (should-not
        (equal first
-              (e-openai-codex--prompt-layout-revision first-options))))
+              (e-openai-responses-prompt-layout-revision first-options))))
     (let* ((anchor
             (list :provider-id 'openai
                   :metadata (list :response-id "response-curation"
@@ -731,12 +731,12 @@
             (plist-put (copy-sequence first-options)
                        :provider-anchor anchor)))
       (should (equal
-               (e-openai-codex--continuation-response-id
+               (e-openai-responses--continuation-response-id
                 continuation-options)
                "response-curation"))
       (let ((e-context-budget-estimate-bytes-per-token 2.0))
         (should-not
-         (e-openai-codex--continuation-response-id
+         (e-openai-responses--continuation-response-id
           continuation-options))))))
 
 (ert-deftest e-openai-test-gpt56-continuation-reuses-carried-breakpoint ()
@@ -1042,20 +1042,20 @@
 (ert-deftest e-openai-test-profile-context-capabilities-are-conservative ()
   "Only an explicitly proven OpenAI profile gets replaceable delivery."
   (let ((replaceable
-         (e-openai--profile-context-capabilities
+         (e-openai-profile-context-capabilities
           '(:wire-api responses
             :continuation t
             :observation-delivery request-local-replaceable
             :prompt-cache-breakpoint-mode explicit)
           nil))
         (inherited
-         (e-openai--profile-context-capabilities
+         (e-openai-profile-context-capabilities
           '(:wire-api responses
             :continuation t
             :prompt-cache-breakpoint-mode explicit)
           nil))
         (chat
-         (e-openai--profile-context-capabilities
+         (e-openai-profile-context-capabilities
           '(:wire-api chat-completion :continuation t)
           nil)))
     (e-openai-test--assert-observation-delivery replaceable t)
@@ -1067,7 +1067,7 @@
 (ert-deftest e-openai-test-profile-context-capabilities-reject-unknown-delivery ()
   "A misspelled observation delivery never silently selects inherited mode."
   (should-error
-   (e-openai--profile-context-capabilities
+   (e-openai-profile-context-capabilities
     '(:wire-api responses
       :continuation t
       :observation-delivery request-local-replacable)
@@ -1079,35 +1079,35 @@
   (let* ((openai-profile (e-openai-provider-profile 'openai))
          (codex-profile (e-openai-provider-profile 'codex))
          (canonical-openai
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            openai-profile nil :provider 'openai :request-function nil))
          (canonical-codex
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            codex-profile nil :provider 'codex :request-function nil))
          (openai-endpoint-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            openai-profile nil
            :provider 'openai
            :base-url "https://gateway.example.test/v1"))
          (codex-endpoint-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            codex-profile nil
            :provider 'codex
            :base-url "https://gateway.example.test/codex"))
          (openai-request-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            openai-profile nil :provider 'openai :request-function #'ignore))
          (codex-request-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            codex-profile nil :provider 'codex :request-function #'ignore))
          (openai-transport-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            openai-profile '(:responses-transport http) :provider 'openai))
          (codex-transport-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            codex-profile '(:responses-transport http) :provider 'codex))
          (noncanonical-codex
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            (plist-put (copy-sequence codex-profile)
                       :name "Custom Codex")
            nil :provider 'codex))
@@ -1116,12 +1116,12 @@
            (plist-put (copy-sequence openai-profile)
                       :base-url "https://custom.example.test/v1")
            :observation-delivery 'request-local-replaceable))
-         (custom-proof (e-openai--profile-context-capabilities
+         (custom-proof (e-openai-profile-context-capabilities
                         custom-profile nil
                         :provider 'custom-proven
                         :request-function #'ignore))
          (custom-without-proof
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            (let ((copy (copy-sequence custom-profile)))
              (cl-remf copy :observation-delivery)
              copy)
@@ -1129,13 +1129,13 @@
            :provider 'custom-unproven
            :request-function #'ignore))
          (custom-endpoint-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            custom-profile nil
            :provider 'custom-proven
            :base-url "https://other.example.test/v1"
            :request-function #'ignore))
          (custom-transport-override
-          (e-openai--profile-context-capabilities
+          (e-openai-profile-context-capabilities
            custom-profile '(:responses-transport http)
            :provider 'custom-proven
            :request-function #'ignore)))
@@ -1158,9 +1158,16 @@
     (e-openai-test--assert-observation-delivery custom-without-proof nil)
     (should (eq (plist-get custom-without-proof :continuation) 'linear))
     ;; A named custom profile carries its own endpoint proof and may use the
-    ;; injected requester used by its conformance test.
-    (should (equal (plist-get custom-proof :observation-delivery)
-                   e-openai--request-local-observation-delivery-map))
+    ;; injected requester used by its conformance test.  Assert the stable
+    ;; kind-scoped semantic projection, not the profile owner's variable.
+    (should
+     (equal
+      (plist-get custom-proof :observation-delivery)
+      '((:kind current-state :mode request-local-replaceable)
+        (:kind dynamic-context :mode request-local-replaceable)
+        (:kind tool-result :mode inherited)
+        (:kind trace :mode inherited)
+        (:kind retrieved-excerpt :mode inherited))))
     (e-openai-test--assert-observation-delivery custom-proof t)
     (should (eq (plist-get custom-proof :continuation) 'linear))))
 
@@ -1226,7 +1233,7 @@
          (full
           (e-openai-codex-request-body
            :messages messages
-           :options (e-openai-codex--without-provider-anchor options)))
+           :options (e-openai-responses-options-without-provider-anchor options)))
          (stable-block
           (aref (plist-get (aref (plist-get full :input) 0) :content) 0)))
     (should (equal (plist-get incremental :previous_response_id) "resp-1"))
@@ -1303,7 +1310,7 @@
   (let* ((first-reasoning
           '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext-1"
             ;; This is the list representation produced for a JSON array by
-            ;; `e-openai-codex--parse-json'.
+            ;; `e-openai-decoder-parse-json'.
             :summary ((:type "summary_text" :text "first"))))
          (second-reasoning
           '(:type "reasoning" :id "rs-2" :encrypted_content "ciphertext-2"
@@ -1433,7 +1440,7 @@
                  :metadata
                  (list :response-id "resp-1"
                        :prompt-layout-revision
-                       (e-openai-codex--prompt-layout-revision options)))))
+                       (e-openai-responses-prompt-layout-revision options)))))
          (body (e-openai-codex-request-body
                 :messages '((:role user :content "new prompt"))
                 :options options)))
@@ -2116,7 +2123,7 @@
   "Reloaded built-in Codex profiles retain store=false and disable breakpoints."
   (should
    (equal
-    (e-openai--normalize-model-providers
+    (e-openai-profile--normalize-model-providers
      `((codex
         :name "ChatGPT Codex"
         :base-url ,(concat e-openai-codex-default-base-url "/codex")
@@ -2248,7 +2255,7 @@
              :responses-transport websocket
              :continuation t
              :requires-openai-auth t)))
-         (normalized (e-openai--normalize-model-providers providers))
+         (normalized (e-openai-profile--normalize-model-providers providers))
          (canonical (cdr (assq 'codex normalized)))
          (lookalike (cdr (assq 'codex-lookalike normalized))))
     (should-not (plist-member canonical :websocket-idle-close-seconds))
@@ -2663,7 +2670,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               (ignore url headers body)
               (cl-incf attempts)
               (if (= attempts 1)
-                  (e-openai--http-response-create
+                  (e-openai-http--response-create
                    :status 503
                    :retry-after 0.01
                    :body "{\"error\":{\"message\":\"Generation failed\"}}")
@@ -2832,15 +2839,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 (ert-deftest e-openai-test-debug-diagnostics-record-ignored-events ()
   "Debug diagnostics record raw response and ignored provider event summaries."
   (let ((e-openai-codex-debug t)
-        (e-openai-codex--last-diagnostics nil)
+        (e-openai-diagnostics--last-diagnostics nil)
         (stream "data: {\"type\":\"response.unknown\",\"item\":{\"type\":\"mystery\"}}\n\n\
 data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
     (should (equal (e-openai-codex-parse-stream stream)
                    '((:type done :reason stop))))
-    (should (equal (plist-get e-openai-codex--last-diagnostics :raw-response)
+    (should (equal (plist-get e-openai-diagnostics--last-diagnostics :raw-response)
                    stream))
     (should
-     (equal (plist-get e-openai-codex--last-diagnostics :events)
+     (equal (plist-get e-openai-diagnostics--last-diagnostics :events)
             '((:event-type "response.unknown"
                :item-type "mystery"
                :parsed-type nil)
@@ -2867,7 +2874,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
   "Debug raw payload retention keeps only the configured trailing byte budget."
   (let ((e-openai-codex-debug t)
         (e-openai-codex-raw-responses-max-bytes 128)
-        (e-openai-codex--last-diagnostics nil)
+        (e-openai-diagnostics--last-diagnostics nil)
         (buffer-name " *e-openai-codex-raw-responses-test*")
         (stream (concat (make-string 512 ?x) "END")))
     (when (get-buffer buffer-name)
@@ -2879,7 +2886,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             (with-current-buffer buffer-name
               (should (<= (string-bytes (buffer-string)) 128))
               (should (string-suffix-p "END\n" (buffer-string))))
-            (let ((raw (plist-get e-openai-codex--last-diagnostics
+            (let ((raw (plist-get e-openai-diagnostics--last-diagnostics
                                   :raw-response)))
               (should (<= (string-bytes raw) 128))
               (should (string-suffix-p "END" raw))))
@@ -2905,7 +2912,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             "{\"error\":{\"message\":\"Generation failed\",\"code\":\"server_error\"}}")))
          (content (plist-get item :content)))
     (should (equal content "server_error: Generation failed"))
-    (let ((details (e-openai--normalize-error-details
+    (let ((details (e-openai-diagnostics-normalize-error-details
                     content (plist-get item :payload) nil)))
       (should (eq (plist-get details :retryable) t))
       (should (eq (plist-get details :retry-reason) 'provider-unavailable)))))
@@ -2955,7 +2962,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (content (plist-get item :content)))
     (should (equal content
                    "server_error: The model failed to generate a response."))
-    (let ((details (e-openai--normalize-error-details
+    (let ((details (e-openai-diagnostics-normalize-error-details
                     content (plist-get item :payload) nil)))
       (should (eq (plist-get details :retryable) t))
       (should (eq (plist-get details :retry-reason) 'provider-unavailable)))))
@@ -2965,7 +2972,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
   (let* ((e-openai-diagnostic-string-max-bytes 32)
          (text (make-string 200 ?x))
          (message
-          (e-openai-codex--response-error-message
+          (e-openai-decoder--response-error-message
            `(:type "response.failed"
              :response (:error (:message ,text))))))
     (should (< (string-bytes message) 180))
@@ -2980,7 +2987,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (e-openai-diagnostic-result-max-bytes 220)
          (event `(:type "response.failed"
                   :unexpected ,(make-list 30 (make-string 100 ?z))))
-         (message (e-openai-codex--response-error-message event)))
+         (message (e-openai-decoder--response-error-message event)))
     (should (< (string-bytes message) 360))
     (should (string-match-p "OpenAI diagnostic" message))
     (should-not (string-match-p (make-string 80 ?z) message))))
@@ -3213,7 +3220,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                      (funcall callback nil))
                    buffer))))
       (let (response error)
-        (e-openai-codex--http-request-start
+        (e-openai-http-request-start
          :url "https://example.test/codex/responses"
          :headers '(("Authorization" . "Bearer test"))
          :body "{}"
@@ -3230,19 +3237,19 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
 (ert-deftest e-openai-test-sync-http-request-rejects-hot-path-before-start ()
   "The synchronous Codex HTTP wrapper fails before starting transport in hot paths."
   (let (started)
-    (cl-letf (((symbol-function 'e-openai-codex--http-request-start)
+    (cl-letf (((symbol-function 'e-openai-http-request-start)
                (lambda (&rest _args)
                  (setq started t)
                  (error "transport should not start"))))
       (let ((err (should-error
                   (e-request-with-hot-path 'openai-sync-http
-                    (e-openai-codex--http-request
+                    (e-openai-http-request
                      :url "https://example.test/codex/responses"
                      :headers nil
                      :body "{}"))
                   :type 'e-request-blocking-call-in-hot-path)))
         (should (equal (cdr err)
-                       '(e-openai-codex--http-request openai-sync-http))))
+                       '(e-openai-http-request openai-sync-http))))
       (should-not started))))
 
 (ert-deftest e-openai-test-sync-backend-stream-rejects-hot-path-before-request ()
@@ -3275,20 +3282,20 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                    (funcall callback '(:error (error http 503))))
                  buffer))))
     (let (response error)
-      (e-openai-codex--http-request-start
+      (e-openai-http-request-start
        :url "https://example.test/codex/responses"
        :headers '(("Authorization" . "Bearer test"))
        :body "{}"
        :on-complete (lambda (value) (setq response value))
        :on-error (lambda (err) (setq error err)))
       (should-not error)
-      (should (e-openai--http-response-p response))
+      (should (e-openai-http-response-p response))
       (let* ((item (car (e-openai--complete-response-items
                          response '(:wire-api responses))))
              (payload (plist-get item :payload)))
         (should (equal (plist-get item :content) "Generation failed"))
         (should (= (plist-get payload :status) 503))
-        (let ((details (e-openai--normalize-error-details
+        (let ((details (e-openai-diagnostics-normalize-error-details
                         (plist-get item :content) payload nil)))
           (should (eq (plist-get details :retryable) t))
           (should (eq (plist-get details :retry-reason)
@@ -3306,7 +3313,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                    (funcall callback '(:error (error http 429))))
                  buffer))))
     (let (response error)
-      (e-openai-codex--http-request-start
+      (e-openai-http-request-start
        :url "https://example.test/codex/responses"
        :headers '(("Authorization" . "Bearer test"))
        :body "{}"
@@ -3319,7 +3326,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
         (should (eq (plist-get item :type) 'backend-error))
         (should (= (plist-get payload :status) 429))
         (should (= (plist-get payload :retry-after) 7))
-        (let ((details (e-openai--normalize-error-details
+        (let ((details (e-openai-diagnostics-normalize-error-details
                         (plist-get item :content) payload nil)))
           (should (eq (plist-get details :retryable) t))
           (should (= (plist-get details :retry-after-seconds) 7))
@@ -3331,12 +3338,12 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                (encode-time (parse-time-string
                              "2026-07-03 08:20:00 +0000"))))
          (absolute
-          (e-openai--retry-after-from-text
+          (e-openai-diagnostics--retry-after-from-text
            (concat "429 rate limit. Limit resets at: "
                    "2026-07-03 08:23:02 UTC")
            now)))
     (should (= absolute 182.0))
-    (should (= (e-openai--retry-after-from-text
+    (should (= (e-openai-diagnostics--retry-after-from-text
                 "please retry after 2 minutes" now)
                120.0)))
   (dolist (case
@@ -3346,17 +3353,17 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
              ("stream ended prematurely" nil premature-stream)
              ("request failed" (:status 503) provider-unavailable)))
     (pcase-let ((`(,message ,payload ,reason) case))
-      (let ((details (e-openai--normalize-error-details message payload nil)))
+      (let ((details (e-openai-diagnostics-normalize-error-details message payload nil)))
         (should (eq (plist-get details :retryable) t))
         (should (eq (plist-get details :retry-reason) reason)))))
   (should-not
    (eq (plist-get
-        (e-openai--normalize-error-details "500: internal error" nil nil)
+        (e-openai-diagnostics-normalize-error-details "500: internal error" nil nil)
         :retryable)
        t))
   (should-not
    (eq (plist-get
-        (e-openai--normalize-error-details
+        (e-openai-diagnostics-normalize-error-details
          "invalid request" '(:status 400) nil)
         :retryable)
        t)))
@@ -3394,7 +3401,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                      (funcall callback nil))
                    buffer))))
       (let (response error)
-        (e-openai-codex--http-request-start
+        (e-openai-http-request-start
          :url "https://example.test/codex/responses"
          :headers `(("Authorization" . ,(string-to-multibyte "Bearer test"))
                     ("Content-Type" . "application/json"))
@@ -3419,7 +3426,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                  (setq buffer
                        (generate-new-buffer " *e-openai-test-http*"))
                  buffer)))
-      (e-openai-codex--http-request-start
+      (e-openai-http-request-start
        :url "https://example.test/codex/responses"
        :headers '(("Authorization" . "Bearer test"))
        :body "{}"
@@ -3444,7 +3451,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                  (setq buffer
                        (generate-new-buffer " *e-openai-test-http*"))
                  buffer)))
-      (e-openai-codex--http-request-start
+      (e-openai-http-request-start
        :url "https://example.test/codex/responses"
        :headers '(("Authorization" . "Bearer test"))
        :body "{}"
@@ -3516,7 +3523,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                           (set-process-query-on-exit-flag client nil)
                           (set-process-filter client #'serve-request))))
             (let ((port (process-contact server :service)))
-              (e-openai-codex--http-request-start
+              (e-openai-http-request-start
                :url (format "http://127.0.0.1:%s/responses" port)
                :headers '(("Content-Type" . "application/json"))
                :body "{}"
@@ -3546,7 +3553,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                (lambda (_url cb &rest _args)
                  (setq callback cb)
                  (generate-new-buffer " *e-openai-test-http*"))))
-      (e-openai-codex--http-request-start
+      (e-openai-http-request-start
        :url "https://example.test/codex/responses"
        :headers '(("Authorization" . "Bearer test"))
        :body "{}"
@@ -3937,7 +3944,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
 (ert-deftest e-openai-test-websocket-retains-only-latest-response ()
   "Only the latest completed response can authorize immediate continuation."
-  (let* ((session (e-openai-codex--websocket-session-create))
+  (let* ((session (e-openai-websocket-session-create))
          (url "wss://gateway.example.test/v1/responses")
          (headers nil)
          (response-index 0)
@@ -3968,7 +3975,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                (lambda (&rest _args) t)))
       (cl-labels
           ((start (body full)
-             (e-openai-codex--websocket-request-start
+             (e-openai-websocket-request-start
               :session session
               :url url
               :headers headers
@@ -3992,34 +3999,34 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                        "resp-1"))
         (should-not (plist-member (nth 2 sends) :previous_response_id))
         (should (equal
-                 (e-openai-codex--websocket-session-latest-response-id session)
+                 (e-openai-websocket--session-latest-response-id session)
                  "resp-3"))
         (should (equal
-                 (e-openai-codex--websocket-session-latest-response-properties
+                 (e-openai-websocket--session-latest-response-properties
                   session)
                  '(:model "gpt-test")))))))
 
 (ert-deftest e-openai-test-websocket-profile-idle-close-nil-does-not-schedule ()
   "A nil resolved idle policy retains the existing no-timer fallback."
-  (let ((session (e-openai-codex--websocket-session-create))
+  (let ((session (e-openai-websocket-session-create))
         scheduled)
-    (setf (e-openai-codex--websocket-session-websocket session) 'fake-websocket
-          (e-openai-codex--websocket-session-connection-id session) "e-ws-test")
+    (setf (e-openai-websocket--session-websocket session) 'fake-websocket
+          (e-openai-websocket--session-connection-id session) "e-ws-test")
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (&rest _args)
                  (setq scheduled t)
                  'fake-timer)))
-      (e-openai-codex--websocket-schedule-idle-close session nil))
+      (e-openai-websocket--schedule-idle-close session nil))
     (should-not scheduled)
     (should-not
-     (e-openai-codex--websocket-session-idle-timer session))))
+     (e-openai-websocket--session-idle-timer session))))
 
 (ert-deftest e-openai-test-websocket-profile-idle-close-explicit-zero-schedules-value ()
   "An explicit zero-second profile policy reaches the scheduler unchanged."
-  (let ((session (e-openai-codex--websocket-session-create))
+  (let ((session (e-openai-websocket-session-create))
         scheduled-seconds)
-    (setf (e-openai-codex--websocket-session-websocket session) 'fake-websocket
-          (e-openai-codex--websocket-session-connection-id session) "e-ws-test")
+    (setf (e-openai-websocket--session-websocket session) 'fake-websocket
+          (e-openai-websocket--session-connection-id session) "e-ws-test")
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (seconds _repeat _callback)
                  (setq scheduled-seconds seconds)
@@ -4027,9 +4034,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'timerp)
                (lambda (timer) (eq timer 'fake-timer)))
               ((symbol-function 'cancel-timer) #'ignore))
-      (e-openai-codex--websocket-schedule-idle-close session 0))
+      (e-openai-websocket--schedule-idle-close session 0))
     (should (= scheduled-seconds 0))
-    (should (eq (e-openai-codex--websocket-session-idle-timer session)
+    (should (eq (e-openai-websocket--session-idle-timer session)
                 'fake-timer))))
 
 (ert-deftest e-openai-test-websocket-terminal-and-transport-cleanup ()
@@ -4075,19 +4082,19 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (cl-labels
           ((empty-response-state-p (session)
              (and (null
-                   (e-openai-codex--websocket-session-latest-response-id
+                   (e-openai-websocket--session-latest-response-id
                     session))
                   (null
-                   (e-openai-codex--websocket-session-latest-response-properties
+                   (e-openai-websocket--session-latest-response-properties
                     session))))
            (prepare-session ()
-             (let ((session (e-openai-codex--websocket-session-create)))
-               (e-openai-codex--websocket-session-open session url headers)
-               (e-openai-codex--websocket-session-record-response
+             (let ((session (e-openai-websocket-session-create)))
+               (e-openai-websocket--session-open session url headers)
+               (e-openai-websocket--session-record-response
                 session "prior-response" '(:model "gpt-test"))
                session))
            (start (session on-item on-error)
-             (e-openai-codex--websocket-request-start
+             (e-openai-websocket-request-start
               :session session
               :url url
               :headers headers
@@ -4108,7 +4115,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                          #'ignore))))
           (should partial-item-seen)
           (should (equal
-                   (e-openai-codex--websocket-session-latest-response-id
+                   (e-openai-websocket--session-latest-response-id
                     session)
                    "prior-response"))
           (should (e-backend-cancel-request request))
@@ -4121,7 +4128,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                           (start session #'ignore #'ignore))))
           (should request)
           (should-not
-           (e-openai-codex--websocket-session-websocket session))
+           (e-openai-websocket--session-websocket session))
           (should (empty-response-state-p session)))
         ;; Transport failure follows the same close path before surfacing the
         ;; request error.
@@ -4134,7 +4141,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (should request)
           (should transport-error)
           (should-not
-           (e-openai-codex--websocket-session-websocket session))
+           (e-openai-websocket--session-websocket session))
           (should (empty-response-state-p session)))
         (should (= close-count 3))))))
 
@@ -4154,7 +4161,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          sends
          scheduled-seconds
          (close-count 0)
-         (session (e-openai-codex--websocket-session-create)))
+         (session (e-openai-websocket-session-create)))
     (cl-letf (((symbol-function 'websocket-open)
                (lambda (_url &rest args)
                  (setq on-message (plist-get args :on-message))
@@ -4207,10 +4214,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'cancel-timer) #'ignore))
       ;; A pre-existing clean anchor must survive the unrelated incomplete
       ;; request and remain usable by the immediately following request.
-      (e-openai-codex--websocket-session-open session url headers)
-      (e-openai-codex--websocket-session-record-response
+      (e-openai-websocket--session-open session url headers)
+      (e-openai-websocket--session-record-response
        session "resp-clean" '(:model "gpt-test"))
-      (e-openai-codex--websocket-request-start
+      (e-openai-websocket-request-start
        :session session
        :url url
        :headers headers
@@ -4227,15 +4234,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (should (= first-complete-count 1))
       (should-not first-error)
       (should-not
-       (e-openai-codex--websocket-session-active-request session))
+       (e-openai-websocket--session-active-request session))
       (should (equal (plist-get (car sends) :previous_response_id) nil))
       (should (equal
-               (e-openai-codex--websocket-session-latest-response-id session)
+               (e-openai-websocket--session-latest-response-id session)
                "resp-clean"))
       ;; The next request starts directly after incomplete settlement and
       ;; reuses the preserved clean anchor without a manual cancellation.
       (let* ((second-request
-              (e-openai-codex--websocket-request-start
+              (e-openai-websocket-request-start
                :session session
                :url url
                :headers headers
@@ -4264,11 +4271,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should (eq (plist-get diagnostics :websocket-request-mode)
                     'incremental))
         (should (equal
-                 (e-openai-codex--websocket-session-latest-response-id session)
+                 (e-openai-websocket--session-latest-response-id session)
                  "resp-followup")))
       (should-not
-       (e-openai-codex--websocket-session-active-request session))
-      (should (eq (e-openai-codex--websocket-session-websocket session)
+       (e-openai-websocket--session-active-request session))
+      (should (eq (e-openai-websocket--session-websocket session)
                   'fake-websocket))
       (should (= scheduled-seconds 17))
       (should (= close-count 0)))))
@@ -4377,9 +4384,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
            (list :model "gpt-test"
                  :tools (vector (list :name "inspect"
                                       :parameters second-parameters)))))
-      (should (e-openai-codex--json-value-equal-p first second))
+      (should (e-openai-websocket--json-value-equal-p first second))
       (puthash "additionalProperties" :json-false second-parameters)
-      (should-not (e-openai-codex--json-value-equal-p first second)))))
+      (should-not (e-openai-websocket--json-value-equal-p first second)))))
 
 (ert-deftest e-openai-test-websocket-recorded-property-snapshot-detaches-strings ()
   "Mutable request-property strings cannot mutate an anchor snapshot."
@@ -4388,7 +4395,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (model (copy-sequence "gpt-test"))
          (tool-name (copy-sequence "inspect"))
          (tools (vector (list :type "function" :name tool-name)))
-         (session (e-openai-codex--websocket-session-create))
+         (session (e-openai-websocket-session-create))
          (url "wss://gateway.example.test/v1/responses")
          (headers nil)
          sends
@@ -4417,7 +4424,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                  :response (:id "resp-two"
                                             :status "completed"))))))))
               ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
-      (e-openai-codex--websocket-request-start
+      (e-openai-websocket-request-start
        :session session
        :url url
        :headers headers
@@ -4441,13 +4448,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (aset model 0 ?Y)
       (aset tool-name 0 ?l)
       (let ((recorded
-             (e-openai-codex--websocket-session-latest-response-properties
+             (e-openai-websocket--session-latest-response-properties
               session)))
         (should (equal (plist-get recorded :model) "gpt-test"))
         (should (equal (plist-get (aref (plist-get recorded :tools) 0) :name)
                        "inspect")))
       (let* ((request
-              (e-openai-codex--websocket-request-start
+              (e-openai-websocket-request-start
                :session session
                :url url
                :headers headers
@@ -5265,7 +5272,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 (ert-deftest e-openai-test-context-curation-is-a-reserved-backend-effect ()
   "The Responses adapter decodes context-curate without making a tool call."
   (let ((item
-         (e-openai-codex--event-item
+         (e-openai-decoder--event-item
           '(:type "response.output_item.done"
             :item
             (:type "function_call"
@@ -5404,11 +5411,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :continuation nil
                  :requires-openai-auth nil)))
              captured-http captured-websocket request)
-        (cl-letf (((symbol-function 'e-openai-codex--http-request-start)
+        (cl-letf (((symbol-function 'e-openai-http-request-start)
                    (lambda (&rest arguments)
                      (setq captured-http (plist-get arguments :body))
                      (e-backend-request-create :cancel (lambda () t))))
-                  ((symbol-function 'e-openai-codex--websocket-request-start)
+                  ((symbol-function 'e-openai-websocket-request-start)
                    (lambda (&rest arguments)
                      (setq captured-websocket
                            (plist-get arguments :body-data))
@@ -5483,7 +5490,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 (ert-deftest e-openai-test-context-curation-carries-function-output-ack ()
   "A reserved Responses curation retains its opaque wire acknowledgement."
   (let* ((item
-          (e-openai-codex--event-item
+          (e-openai-decoder--event-item
            '(:type "response.output_item.done"
              :item
              (:type "function_call"
@@ -5557,7 +5564,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
 (ert-deftest e-openai-test-context-curation-full-replay-pair-is-not-anchored-call ()
   "Full replay restores the curation call/output pair; anchors send output only."
-  (let* ((effect (e-openai-codex--context-curation-effect
+  (let* ((effect (e-openai-decoder--context-curation-effect
                   '(:keep (1) :summaries nil :erase nil) "curation-call"))
          (replays (plist-get effect :provider-replay-items))
          (messages
@@ -5913,7 +5920,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
              "{\"object\":\"response.compaction\",\"output\":null}"
              "{\"object\":\"response.compaction\",\"output\":{}}"))
     (should-error
-     (e-openai--provider-compaction-decode response)
+     (e-openai-compaction--decode response)
      :type 'e-openai-provider-invalid)))
 
 (ert-deftest e-openai-test-provider-compaction-output-starts-a-fresh-chain ()
