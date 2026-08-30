@@ -164,6 +164,72 @@ only observes durable claim decisions."
                   (e-board-registry-board-id board)))
            (e-board-registry-missing nil)))))
 
+(defun e-chat-service--observer-drain-live-p (binding client observer)
+  "Return non-nil while CLIENT and OBSERVER can receive a page.
+This is the service's bounded receiver lease check.  It keeps a stale client,
+cancelled observer, revoked principal, closing board, or replaced observer
+from being treated as a live page pump merely because its old cursor is behind
+the board tail."
+  (let* ((board (and (e-chat-service-binding-p binding)
+                     (e-chat-service-binding-board binding)))
+         (source (and board (e-board-registry-board-source-board board)))
+         (client-id (and (e-board-registry-client-p client)
+                         (e-board-registry-client-id client)))
+         (observer-id (and (e-board-observer-p observer)
+                           (e-board-observer-id observer)))
+         (current-client (and board client-id
+                              (gethash client-id
+                                       (e-board-registry-board-clients board))))
+         (current-observer (and source observer-id
+                                (e-board-observer source observer-id))))
+    (and (e-chat-service--binding-live-p binding)
+         (eq current-client client)
+         (eq (e-board-registry-client-state client) 'active)
+         (or (null (e-board-registry-client-principal client))
+             (eq (e-board-registry-principal-role
+                  board (e-board-registry-client-principal client))
+                 (e-board-registry-client-role client)))
+         (eq current-observer observer)
+         (eq (e-board-observer-state observer) 'active)
+         (equal (e-board-observer-client-id observer) client-id)
+         (= (or (e-board-observer-client-generation observer) 0)
+            (or (e-board-registry-client-generation client) 0))
+         (memq observer-id (e-board-registry-client-observer-ids client)))))
+
+(defun e-chat-service--observer-drain-pending-p (binding observer)
+  "Return non-nil when OBSERVER's current board has an unaccepted page."
+  (let ((board (e-chat-service-binding-board binding)))
+    (< (e-board-observer-next-index observer)
+       (e-board-message-count
+        (e-board-registry-board-source-board board)))))
+
+(defun e-chat-service--observer-drain-retirement-state
+    (binding client observer)
+  "Return the terminal state for an ineligible observer receiver."
+  (let* ((board (and (e-chat-service-binding-p binding)
+                     (e-chat-service-binding-board binding)))
+         (source (and board (e-board-registry-board-source-board board)))
+         (client-id (and (e-board-registry-client-p client)
+                         (e-board-registry-client-id client)))
+         (observer-id (and (e-board-observer-p observer)
+                           (e-board-observer-id observer)))
+         (current-client (and board client-id
+                              (gethash client-id
+                                       (e-board-registry-board-clients board))))
+         (current-observer (and source observer-id
+                                (e-board-observer source observer-id))))
+    (cond
+     ((not (e-chat-service--binding-live-p binding))
+      (list 'detached nil))
+     ((not (eq current-client client))
+      (list 'detached nil))
+     ((not (eq current-observer observer))
+      (list 'stale nil))
+     ((not (eq (e-board-observer-state observer) 'active))
+      (list (e-board-observer-state observer) nil))
+     (t
+      (list 'detached nil)))))
+
 (defun e-chat-service--retire-binding (binding)
   "Retire BINDING's process-local presentation subscriptions."
   (dolist (subscription (e-chat-service-binding-subscribers binding))
@@ -1322,12 +1388,18 @@ leave page scheduling to the service.  The board observer and its cursor stay
 private to the service."
   (unless (e-chat-service-binding-p binding)
     (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
-  (e-chat-service--drain-observer binding)
-  (let* ((board (e-chat-service-binding-board binding))
-         (observer (e-chat-service-binding-observer binding)))
-    (< (e-board-observer-next-index observer)
-       (e-board-message-count
-        (e-board-registry-board-source-board board)))))
+  (let ((client (e-chat-service-binding-client binding))
+        (observer (e-chat-service-binding-observer binding)))
+    (if (not (e-chat-service--observer-drain-live-p
+              binding client observer))
+        (progn
+          (when (e-chat-service--binding-live-p binding)
+            (e-chat-service--retire-binding binding))
+          nil)
+      (e-chat-service--drain-observer binding)
+      (and (e-chat-service--observer-drain-live-p
+            binding client observer)
+           (e-chat-service--observer-drain-pending-p binding observer)))))
 
 (defun e-chat-service-drain-subscription (subscription)
   "Deliver one bounded pending page for SUBSCRIPTION.
@@ -1337,13 +1409,24 @@ implementation detail of the chat service."
   (unless (e-chat-service-subscription-p subscription)
     (signal 'wrong-type-argument
             (list 'e-chat-service-subscription-p subscription)))
-  (e-chat-service--drain-subscription subscription)
   (let* ((binding (e-chat-service-subscription-binding subscription))
-         (board (e-chat-service-binding-board binding))
+         (client (e-chat-service-subscription-client subscription))
          (observer (e-chat-service-subscription-observer subscription)))
-    (< (e-board-observer-next-index observer)
-       (e-board-message-count
-        (e-board-registry-board-source-board board)))))
+    (if (not (and (e-chat-service-subscription-active-p subscription)
+                  (e-chat-service--observer-drain-live-p
+                   binding client observer)))
+        (progn
+          (when (e-chat-service-subscription-active-p subscription)
+            (e-chat-service--retire-subscription
+             subscription
+             (e-chat-service--observer-drain-retirement-state
+              binding client observer)))
+          nil)
+      (e-chat-service--drain-subscription subscription)
+      (and (e-chat-service-subscription-active-p subscription)
+           (e-chat-service--observer-drain-live-p
+            binding client observer)
+           (e-chat-service--observer-drain-pending-p binding observer)))))
 
 (cl-defun e-chat-service-replace-selector
     (subscription selector &key start-seq)

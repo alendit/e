@@ -6,8 +6,9 @@
 
 Round 5 was implemented from the clean exact baseline
 =fd51e67500c8bdc35632ea0f7800c1bdedb94c86=.  Parent review accepted the
-package after two correction passes; independent final review remains.  This
-file does not mark Feature 91 =Done=.
+previous package after two correction passes; the current review remediation
+is the committed candidate pending independent re-review.  This file does not
+mark Feature 91 =Done=.
 
 Round 5 covers the final residual-topology and test-topology review after the
 accepted presentation, session/storage, runtime-control, and adapter/capability
@@ -32,8 +33,9 @@ Behavior and mechanism are reported separately:
   disposition.  The complete local require graph is cycle-free after moving
   the shared context estimator and extracting the session value policies.
   Public composition roots are split by scenario/change reason and exact
-  pre-correction test-name comparisons pass.  Parent review accepted the
-  resulting topology.
+  pre-correction test-name comparisons pass.  The current correction keeps
+  that topology while tightening attached receiver and drain liveness
+  boundaries; parent acceptance remains pending.
 
 The user's running Emacs was not queried, reloaded, signaled, or changed.
 
@@ -62,7 +64,15 @@ The user's running Emacs was not queried, reloaded, signaled, or changed.
   continuation guard and board orchestration remain service-private.  The
   service state snapshot
   seeds its active turn from the public attached-turn projection and then
-  reconciles retained board activity.
+  reconciles retained board activity.  The current correction makes both
+  public drain operations return progress only while the exact board client
+  and observer lease remains live and eligible; callback faults and stale,
+  detached, unsubscribed, or closing receivers therefore terminate a bounded
+  pump.
+- =lisp/core/e-harness-turn.el=: threads an explicit attached-turn receiver
+  through settlement follow-up queueing and publication, so authorization and
+  the publisher are applied to the caller's exact port rather than rediscovered
+  from a replacement active-turn entry.
 - =lisp/core/e-context-estimate.el=: new lower-level pure owner for the
   configured bytes/token ratio and exact UTF-8/ =prin1= value estimator.
 - =lisp/core/e-context-budget.el= and =e-context-lifetime.el=: use the one
@@ -112,6 +122,9 @@ The user's running Emacs was not queried, reloaded, signaled, or changed.
   scenarios.
 - =test/e-harness-runtime-mechanism-test.el=: receives the moved profiling
   mechanism assertions and now places its =provide= form after all tests.
+- =test/e-harness-runtime-owner-test.el=: adds direct exact-receiver fencing
+  regressions for follow-up queue and publication paths, including the
+  no-side-effect rejecting-stale-port case.
 - =test/e-harness-composition-test-support.el=: bounded shared fixture module
   for public harness composition suites.
 - =test/e-harness-capability-composition-test.el=,
@@ -150,6 +163,9 @@ The user's running Emacs was not queried, reloaded, signaled, or changed.
   =test/e-org-canvas-test.el=, =test/e-subagent-runner-test.el=, and
   =test/e-task-queue-test.el=: migrate consumers/fixtures from moved
   private paths to the semantic operations above.
+- =test/e-modernchat-test.el=: strengthens bounded drain regressions for
+  callback-faulted, detached, stale, unsubscribed, and closing receivers while
+  retaining normal multi-page service coverage.
 
 No production implementation copy was added and no compatibility alias was
 added for a removed private name.
@@ -248,18 +264,31 @@ owner.  No forwarding-only or helper-bag module was introduced.
 
 ** Complete local load graph
 
-A source scan of every =lisp/**/*.el= file found 163 local modules and 707
-local =require= edges.  Tarjan SCC analysis reports =CYCLES []=.  This scan
-includes the corrected context path and the four session value owners; before
-the correction, the dynamic =e-context-lifetime -> e-context-budget= load
-joined the context/budget/session cycle.  The estimator is a pure local
-operation with the same 4.0 fallback, so the higher-level budget owner is no
-longer loaded by the durable context owner.
+A syntax-aware source scan of every =lisp/**/*.el= file found 163 local
+modules and 709 unique local =require= edges.  Its reproducible definition is:
+read every source form with batch Emacs' =read=, recursively visit the complete
+form tree, and collect each form whose operator is =require= and whose second
+argument is a literal symbol or =(quote SYMBOL)= naming one of the 163 local
+basenames.  Deduplicate =(source,target)= pairs, so nested/conditional loads
+are included, including these four optional local loads:
+=e-base-tools-bash -> e-session-tmp-resources=, =e-elisp-job ->
+e-session-tmp-resources=, =e-subagents-shell -> e-chat=, and
+=e-task-queue-shell -> e-chat=.  The prior 707-edge report already represented
+the first two through its nested-load subset but omitted the two =e-chat=
+shell edges, so the net correction is +2.  Tarjan SCC analysis over that same
+edge set reports =CYCLES []=.  The scan includes the corrected context path and the
+four session value owners; the estimator remains pure and the higher-level
+budget owner is not loaded by the durable context owner.
 
-The complete corrected scan is in =/tmp/e-r5-static-final-correction.log=.
-External Emacs,
-third-party, and optional package features are not represented as local graph
-nodes; their side effects remain at their existing adapter/shell boundaries.
+The exact scanner source and output are preserved in
+=/tmp/e-r5-require-scan.el= and =/tmp/e-r5-require-all-literal-review-remediation.log=.
+The output used for this remediation is
+=/tmp/e-r5-require-all-literal-review-remediation.log=; the earlier final
+Round 5 output remains =/tmp/e-r5-require-all-literal-final.log= and
+the earlier 707-edge output remains =/tmp/e-r5-static-final-correction.log=
+for comparison.  External Emacs, third-party, and optional package features
+are not represented as local graph nodes; their side effects remain at their
+existing adapter/shell boundaries.
 
 ** Owner-family graph
 
@@ -477,8 +506,8 @@ paths below are the exact evidence locations.
 
 | Command/purpose | Result |
 |-----------------+--------|
-| =eldev test -B= (final full tree, escalated only for isolated local fixture sockets) | PASS: 2,560 tests; 2,553 expected, 0 unexpected, 7 skips, 42.154839s; =/tmp/e-r5-full-test-board-policy-final.log= |
-| Accepted 485-case preservation selector with chat/session/owner files | PASS: 485 tests; 483 expected, 0 unexpected, 2 existing skips, 11.923127s; =/tmp/e-r5-preservation-485-correction.log= |
+| =eldev test -B= (current remediation tree, escalated only for isolated local fixture sockets) | PASS: 2,563 tests; 2,556 expected, 0 unexpected, 7 skips, 41.320096s; =/tmp/e-r5-full-review-remediation-escalated.log= (the unprivileged fixture attempt is recorded at =/tmp/e-r5-full-review-remediation.log= with six sandbox socket failures) |
+| Accepted 485-case preservation selector with chat/session/owner files (current remediation tree) | PASS: 485 tests; 483 expected, 0 unexpected, 2 existing skips, 12.043778s; =/tmp/e-r5-preservation-485-review-remediation.log= |
 | Session aggregate/board-policy/codec/catalog/storage/facade/restart batch | PASS: 179 tests, 178 expected, 0 unexpected, 1 expected fresh-load skip; =/tmp/e-r5-correction-session-board-policy-final.log= |
 | Direct aggregate and board-policy suites | PASS: aggregate 4/4 and board-policy mechanism 3/3; =/tmp/e-r5-session-aggregate-direct-final.log= and =/tmp/e-r5-session-board-policy-direct-final.log= |
 | Board/runtime/consumer/private-ref migration batch | PASS: 325 tests, 324 expected, 0 unexpected, 1 existing Evil skip; =/tmp/e-r5-private-ref-migration-focused2.log= |
@@ -493,12 +522,20 @@ paths below are the exact evidence locations.
 | Affected production byte compilation with warnings surfaced | PASS: exit 0, all affected/new targets, no warnings/errors; =/tmp/e-r5-compile-correction-final.log= |
 | Direct current-buffer check-parens over every changed/new Lisp file | PASS: 67/67; =/tmp/e-r5-check-parens-board-policy-final4.log= |
 | Direct read parsing over every changed/new Lisp file | PASS: 67/67; =/tmp/e-r5-read-board-policy-final3.log= |
-| Complete local require graph/SCC scan | PASS: 163 local modules, 707 edges, =CYCLES []=; =/tmp/e-r5-static-final-correction.log= |
+| Complete all-literal local require graph/SCC scan | PASS: 163 local modules, 709 unique edges, =CYCLES []=; recursive syntax-aware definition includes four optional local loads; =/tmp/e-r5-require-all-literal-review-remediation.log= (scanner =/tmp/e-r5-require-scan.el=); prior 707-edge subset =/tmp/e-r5-static-final-correction.log= omitted the two optional =e-chat= shell edges |
 | Private/consumer/dependency migration scan | PASS: zero cross-owner production private refs, zero composed-owner private refs, and zero =e-session-board-policy--*= refs outside its direct owner suite; =/tmp/e-r5-private-production-correction-final.log=, =/tmp/e-r5-private-composed-correction-final.log=, and =/tmp/e-r5-session-policy-private-test-sweep.log= |
 | Duplicate function-definition scan | PASS: 0 duplicate function definitions; =/tmp/e-r5-duplicate-function-correction-final.log= |
 | New-file/changed-core trailing-blank scan | PASS: no trailing blanks across 70 paths; =/tmp/e-r5-whitespace-board-policy-final.log= |
 | Ordinary diff whitespace check | PASS: exit 0; =/tmp/e-r5-diff-check-final5.log= |
 | Isolated graphical chat/workspace suite | PASS: 27/27, 0 unexpected, 13.365640s; =/tmp/e-r5-graphical-correction-final.log= |
+| Current attached-turn/drain remediation focus | PASS: 5/5 new and regression tests; =/tmp/e-r5-review-remediation-focus.log= |
+| Current attached-turn owner/board/Bayesian/tool consumers | PASS: 167 tests, 166 expected, 0 unexpected, 1 existing fresh-load skip; =/tmp/e-r5-attached-consumers-review-remediation.log= |
+| Current isolated harness owner contract | PASS: 9/9, including fresh load and exact receiver regression; =/tmp/e-r5-harness-runtime-owner-review-remediation.log= |
+| Current chat-service/Modernchat suite | PASS: 38/38; =/tmp/e-r5-modernchat-review-remediation.log= |
+| Current affected composition consumers | PASS: 136/136 across harness turn, board-runtime, and Modernchat/service composition files; =/tmp/e-r5-affected-composition-review-remediation.log= |
+| Current changed-production compilation | PASS: =eldev compile -F lisp/core/e-harness-turn.el lisp/core/e-chat-service.el= exit 0, no warnings/errors; =/tmp/e-r5-compile-review-remediation.log= |
+| Current changed-source read/check-parens | PASS: 4/4 read and 4/4 check-parens; =/tmp/e-r5-read-review-remediation.log= and =/tmp/e-r5-check-parens-review-remediation.log= |
+| Current private/duplicate/whitespace sweeps | PASS: zero extracted-owner cross-private refs, zero composed-owner private refs, zero former external private refs, zero board-policy refs outside its direct suite, zero duplicate definitions, no changed-path trailing blanks, and =git diff --check= exit 0; =/tmp/e-r5-private-duplicate-review.log=, =/tmp/e-r5-private-composed-review-remediation.log=, =/tmp/e-r5-session-policy-private-review-remediation.log=, =/tmp/e-r5-whitespace-review-remediation.log=, =/tmp/e-r5-diff-check-review-remediation.log= |
 
 The full-suite's seven skips are =e-base-tools-owner-test-loads-without-facade=,
 =e-harness-runtime-owner-test-loads-without-facade=,
@@ -512,7 +549,7 @@ two skips are the same existing Evil and Markdown environment conditions.
 
 ** Parent acceptance rerun
 
-Parent review rejected the first Round 5 handoff because three ordinary
+The prior parent review rejected the first Round 5 handoff because three ordinary
 composition suites remained too large, the session aggregate still contained
 separable value policy, context-estimate ownership was duplicated, and the
 chat-service state snapshot had lost its live attached-turn seed.  It rejected
@@ -520,15 +557,42 @@ the corrected handoff once more because board-policy private mechanism tests
 still lived in the aggregate suite.  The same implementor corrected both
 packages before acceptance.
 
-The final parent rerun selected the context-estimate, session-policy,
+The prior parent rerun selected the context-estimate, session-policy,
 board-policy, aggregate, and chat-service suites together.  It passed 51
 expected tests with zero unexpected results and one expected combined-process
 fresh-load skip.  Parent inspection also confirmed that all historical test
 names remain present without duplicates, =e-session-board-policy--*= references
 occur only in its direct mechanism suite, the three former monolithic ordinary
 test roots are substantive smoke suites rather than forwarding loaders, and
-=git diff --check= is clean.  Parent review therefore accepts Round 5 for the
-independent final review baseline.
+=git diff --check= is clean.  That acceptance applies to the prior baseline,
+not the current remediation below.
+
+** Current review remediation
+
+The current review found that settlement follow-up wrappers could rediscover a
+replacement port instead of authorizing the caller's exact receiver, and that
+the two public chat-service drain wrappers could return non-nil after their
+receiver had faulted, detached, become stale, been unsubscribed, or entered
+board close.  The implementation now threads =:attached-turn-port= through
+both follow-up inner operations and checks the same receiver before queueing or
+publishing.  The drain wrappers share an explicit client/observer lease check;
+non-nil now means that exact receiver remains active/authorized and its cursor
+still has a page.  Direct regressions cover authorized replacement versus a
+rejecting stale port, no queue/publisher side effects on rejection, callback
+fault, detached/unsubscribed/stale/closing receivers, and bounded =while=
+consumers.  The existing active multi-page and live attached-turn state tests
+remain unchanged.
+
+The complete all-literal local require scan was also reproduced with a
+recursive syntax-tree traversal and corrected from the prior 707-edge subset
+to 709 unique edges.  Four optional local loads are present; the two omitted
+by the prior subset are =e-subagents-shell -> e-chat= and
+=e-task-queue-shell -> e-chat=.  The exact scan source/output and current
+focused evidence are listed in the validation table.  Current parent and
+independent-review acceptance remains pending; the focused owner, affected
+composition, exact 485-case, full ERT, compile, syntax, static, and bounded
+performance checks are complete for this remediation candidate.  No review
+artifact is edited in this remediation.
 
 * Performance, load, and I/O comparison
 
@@ -543,6 +607,15 @@ It reports =pass=6, =warning=0, =regression=0, =improvement=12, =noisy=1,
 synchronous context builds in the status scenario, one pending refresh, zero
 pending UI work after settle, and one live board continuation delivery after
 history delivery.  No new repeated scan or synchronous write is observed.
+
+The current remediation also ran the existing =chat.board-continuation=
+scenario in an isolated batch process with one warmup and three measured
+samples.  The three samples were stable at one live delivery, 256 snapshot
+messages, and a median elapsed time of 8.617ms (8.566--8.633ms; variance
+ratio 0.0077); all compared metrics were =pass= or the expected elapsed-time
+=improvement=.  This confirms that the liveness check adds no repeated drain
+scan or synchronous write in the bounded subscriber path.  Evidence is
+=/tmp/e-r5-drain-performance-review-remediation.log=.
 
 The all-default performance invocation was attempted first and stopped at the
 existing =session.replay-list= setup because it creates journal entries without
@@ -649,18 +722,21 @@ open status transition.  Residual risks are:
     tests plus 3 direct board-policy mechanism tests, 79 direct OpenAI/harness
     mechanism tests, session/storage and
     transport mechanism suites, public facade batches, exact 485 selector,
-    full 2,560-case ERT, isolated graphical gate, compile/read/check-parens,
+    current full 2,563-case ERT, isolated graphical gate, compile/read/check-parens,
     cycle/private/duplicate scans, and bounded performance evidence provide
     independent behavior and topology proof.
 
 * Evidence handoff
 
-The final worktree is intentionally uncommitted.  =git status --short= is the
-authoritative changed-path list; no commit or Git write was performed.  Raw
+The remediation is handed off as one exact committed candidate; the final
+revision is recorded by the independent review and feature closure.  Raw
 validation logs are under =/tmp/e-r5-*=, with the primary final inputs at
 =/tmp/e-r5-static-final-correction.log=,
 =/tmp/e-r5-private-production-correction-final.log=,
-=/tmp/e-r5-full-test-board-policy-final.log=,
-=/tmp/e-r5-preservation-485-correction.log=,
+=/tmp/e-r5-full-review-remediation-escalated.log=,
+=/tmp/e-r5-preservation-485-review-remediation.log=,
+=/tmp/e-r5-require-all-literal-review-remediation.log=,
+=/tmp/e-r5-private-duplicate-review.log=,
+=/tmp/e-r5-drain-performance-review-remediation.log=,
 =/tmp/e-r5-graphical-correction-final.log=, and
 =/tmp/e-r5-performance-correction-final.log=.

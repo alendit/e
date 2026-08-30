@@ -182,7 +182,8 @@ owned by the activity owner and can be passed to
    (e-harness-attached-turn-port-session-id port)
    prompt
    :references references
-   :metadata metadata))
+   :metadata metadata
+   :attached-turn-port port))
 
 (defun e-harness-attached-turn-port-queued-prompts (port)
   "Return the queued follow-ups visible through PORT."
@@ -207,7 +208,8 @@ owned by the activity owner and can be passed to
    prompt
    :references references
    :metadata metadata
-   :tags tags))
+   :tags tags
+   :attached-turn-port port))
 
 (defun e-harness-attached-turn-port-abort (port)
   "Abort PORT's active turn."
@@ -329,16 +331,22 @@ turn completion paths; the runner deliberately performs no separate work."
    :owner 'harness
     :runner (lambda (_handle _arguments _context) :deferred)))
 (cl-defun e-harness-attached-turn-follow-up
-    (harness session-id prompt &key references metadata)
+    (harness session-id prompt &key references metadata attached-turn-port)
   "Queue PROMPT as a follow-up during turn settlement, then return its id.
 This is valid from a `:turn-finished' hook, whose turn is already settling.  The
 queued prompt is picked up by the normal post-settlement drain
 (`e-harness-turn--drain-next-queued-prompt') that runs after the finished turn's
 hooks complete, so the drain path stays the single owner of turn scheduling."
   (let* ((entry (gethash session-id (e-harness-active-turns harness)))
-         (token (and (listp entry) (plist-get entry :endpoint-token)))
+         ;; A port receiver supplied by the adapter is authoritative for this
+         ;; operation.  Only the direct hook consumer path discovers the
+         ;; current port from the settling entry.
+         (token (if attached-turn-port
+                    (e-harness-attached-turn-port-attachment-token
+                     attached-turn-port)
+                  (and (listp entry) (plist-get entry :endpoint-token))))
          (port (e-harness-turn--require-attached-port
-                harness session-id token)))
+                harness session-id token attached-turn-port)))
     (setq metadata (plist-put (copy-sequence metadata)
                               :board-endpoint-token token))
     (unless (and (stringp prompt) (not (string-empty-p prompt)))
@@ -349,16 +357,22 @@ hooks complete, so the drain path stays the single owner of turn scheduling."
        harness session-id prompt references metadata port))))
 
 (cl-defun e-harness-attached-turn-publish-follow-up
-    (harness session-id prompt &key references metadata tags)
+    (harness session-id prompt &key references metadata tags attached-turn-port)
   "Publish PROMPT as an attached settlement follow-up with routing TAGS.
 This is the capability-facing continuation port for a `:turn-finished' hook.
   The harness verifies the settling attachment but does not own interaction
 routing.  Its runtime adapter must publish the follow-up through the owning
 board, whose delivery path later starts the new turn."
   (let* ((entry (gethash session-id (e-harness-active-turns harness)))
-         (token (and (listp entry) (plist-get entry :endpoint-token)))
+         ;; Keep a receiver passed through the attached-turn port all the way
+         ;; to authorization and publication.  The direct hook consumer may
+         ;; still use the current settling entry as its explicit boundary.
+         (token (if attached-turn-port
+                    (e-harness-attached-turn-port-attachment-token
+                     attached-turn-port)
+                  (and (listp entry) (plist-get entry :endpoint-token))))
          (port (e-harness-turn--require-attached-port
-                harness session-id token)))
+                harness session-id token attached-turn-port)))
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
   (unless (functionp

@@ -254,8 +254,9 @@ core/provider definitions requires a restart rather than a live reload.
 *** Round 5: residual topology and architecture evidence
 
 Implementer evidence on 2026-08-30 starts from the exact clean baseline
-=fd51e67500c8bdc35632ea0f7800c1bdedb94c86= and remains uncommitted for parent
-review.  The residual inventory in this plan is now resolved in
+=fd51e67500c8bdc35632ea0f7800c1bdedb94c86=.  The accepted Round 5 package and
+its review remediation are committed as exact independent-review candidates.
+The residual inventory in this plan is now resolved in
 =round-5-audit.org=.  The retained large roots have explicit causal
 colocation proofs; the accepted owner families and their direct tests are not
 reopened merely because their files remain large.
@@ -271,8 +272,11 @@ context-lifetime owner uses the shared pure
 budget owner.  The session aggregate's pure metadata, identity,
 provider-anchor, and board-routing policies are likewise separate owners;
 aggregate mutation and replay state remains in the aggregate.  These changes
-remove the only cycle found by the complete 163-module/707-edge local require
-scan and eliminate duplicated estimator/policy implementations.
+remove the only cycle found by the complete 163-module/709-edge local require
+scan and eliminate duplicated estimator/policy implementations.  The 709-edge
+count is the all-literal recursive scan: it includes nested/conditional
+requires and the four optional local loads, including the task-queue and
+subagents shell loads of =e-chat=.
 
 Public OpenAI, harness, and chat composition tests are now independently
 discovered scenario suites rather than large mixed-owner roots.  Small facade
@@ -286,8 +290,9 @@ name-set comparisons against the pre-correction roots are recorded in
 Implementer evidence includes the focused owner/composition batches, the
 corrected direct context/session policy contracts, exact test-name preservation
 comparisons (OpenAI 126/126, harness 135/135, chat 157/157), and the full
-repository gates recorded in =round-5-audit.org= (full ERT 2,560 tests,
-2,553 expected, 0 unexpected, 7 skips; graphical 27/27).  The aggregate's
+repository gates recorded in =round-5-audit.org= (current full ERT 2,563 tests,
+2,556 expected, 0 unexpected, 7 skips; graphical 27/27 from the unchanged
+presentation tree).  The aggregate's
 three board-policy mechanism tests now live in =e-session-board-policy-test.el=
 with the historical 7-test name union preserved across the two direct suites.
 The 485-case selector and isolated graphical suite retain their existing
@@ -298,15 +303,17 @@ recorded as an infeasible default scenario in the audit.  The repository
 architecture map now reflects the actual post-Round-4/5 facades, owners,
 lifetimes, and restart policy.
 
-Parent review accepted F91-OWNER, F91-TOPOLOGY, and F91-PRESERVATION after two
-correction passes.  It independently reran the new session policy, board-policy,
-aggregate, context-estimate, and chat-service state coverage (51 expected
-passes and one combined-process fresh-load skip), confirmed policy-private
-tests are confined to their direct owner suite, and passed =git diff --check=.
-Independent final review remains, so Feature 91 stays =In-progress= and is not
-=Done=.  The running Emacs was not queried,
-reloaded, or otherwise changed; core/session/harness/provider source changes
-require a restart before use in an already running process.
+The prior parent rerun accepted F91-OWNER, F91-TOPOLOGY, and F91-PRESERVATION
+after two correction passes.  The current review remediation adds exact
+receiver fencing for settling follow-ups, liveness-aware bounded chat-service
+drains, and corrected reproducible dependency evidence; current parent and
+independent-review acceptance remains pending.  Focused remediation checks
+and the full deterministic gates pass on the remediation candidate; the isolated
+graphical result remains valid because presentation sources were unchanged.
+Feature 91 stays =In-progress= and is not =Done=.  The
+running Emacs was not queried, reloaded, or otherwise changed; core/session/
+harness/provider source changes require a restart before use in an already
+running process.
 
 ** Initial residual-topology inventory
 

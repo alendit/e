@@ -190,6 +190,67 @@
                          '("reference"))))
       (e-harness-turn-state-remove-active-turn harness session-id entry))))
 
+(ert-deftest e-harness-runtime-owner-test-follow-up-port-authorizes-exact-receiver ()
+  "A settling follow-up cannot fall back to the active replacement port.
+
+The active entry deliberately retains GOOD while STALE rejects its own token.
+Both queue and publication must authorize the receiver supplied by the caller;
+neither operation may reach GOOD after STALE has been rejected."
+  (let* ((harness (e-harness-runtime-owner-test--harness))
+         (session-id (e-harness-runtime-owner-test--session harness))
+         (stale-authorized nil)
+         (stale-published nil)
+         (good-published nil)
+         (good
+          (e-harness-attached-turn-port-create
+           :harness harness :session-id session-id
+           :attachment-token 'good-token
+           :authorizer (lambda (&rest _args) t)
+           :follow-up-publisher
+           (lambda (&rest _args)
+             (setq good-published t)
+             :good)))
+         (stale
+          (e-harness-attached-turn-port-create
+           :harness harness :session-id session-id
+           :attachment-token 'stale-token
+           :authorizer
+           (lambda (&rest _args)
+             (setq stale-authorized t)
+             nil)
+           :follow-up-publisher
+           (lambda (&rest _args)
+             (setq stale-published t)
+             :stale)))
+         (entry (list :id "settling" :status 'done
+                      :endpoint-token 'good-token
+                      :attached-turn-port good)))
+    (unwind-protect
+        (progn
+          (e-harness-turn-state-put-active-turn harness session-id entry)
+          (should-error
+           (e-harness-attached-turn-port-follow-up stale "queued")
+           :type 'e-harness-board-attachment-required)
+          (should stale-authorized)
+          (should-not (e-harness-queued-prompts harness session-id))
+          (should-not good-published)
+          (should-not stale-published)
+          (should-error
+           (e-harness-attached-turn-port-publish-follow-up stale "published")
+           :type 'e-harness-board-attachment-required)
+          (should stale-authorized)
+          (should-not good-published)
+          (should-not stale-published)
+          (should (stringp
+                   (e-harness-attached-turn-port-follow-up good "accepted")))
+          (should (= (length (e-harness-queued-prompts harness session-id)) 1))
+          (should (eq
+                   (e-harness-attached-turn-port-publish-follow-up
+                    good "accepted-published")
+                   :good))
+          (should good-published))
+      (e-harness-turn-state-remove-active-turn harness session-id entry))))
+
 (ert-deftest e-harness-runtime-owner-test-attached-port-steer-queue-and-abort ()
   "Steering, queued follow-up, and abort use the same explicit port fence."
   (let* ((harness (e-harness-runtime-owner-test--harness))

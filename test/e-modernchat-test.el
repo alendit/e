@@ -1460,7 +1460,7 @@ session and board binding without exposing a participant-added event."
            (e-board-registry-board-source-board board)
            :id "fact" :tags '(main) :content "visible"
            :source-fact-key '(test fact 1))
-          (e-chat-service-drain-subscription bad)
+          (should-not (e-chat-service-drain-subscription bad))
           (e-chat-service-drain-subscription good)
           (should (eq (car (e-chat-service-subscription-state bad)) 'faulted))
           (should (= (e-board-observer-next-seq
@@ -1498,22 +1498,97 @@ session and board binding without exposing a participant-added event."
            (binding (e-chat-service-create-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding)))
       (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
-        (let* ((subscription
-                (e-chat-service-subscribe harness "main" #'ignore))
+          (let* ((subscription
+                  (e-chat-service-subscribe harness "main" #'ignore))
                (client-id
                 (e-board-registry-client-id
                  (e-chat-service-subscription-client subscription))))
+          (e-board-post-fact
+           (e-board-registry-board-source-board board)
+           :id "pending-before-detach" :tags '(main) :content "pending"
+           :source-fact-key '(test detached 1))
           (e-board-registry-detach-client board client-id)
-          (should-not
-           (condition-case nil
-               (progn (e-chat-service-drain-subscription subscription) nil)
-             (e-board-registry-client-missing t)))
+          (should-not (e-chat-service-drain-subscription subscription))
           (should-not (e-chat-service-subscription-active-p subscription))
           (should-not
            (memq subscription (e-chat-service-binding-subscribers binding)))
           (should
-           (eq (car (e-chat-service-subscription-state subscription))
+               (eq (car (e-chat-service-subscription-state subscription))
                'detached)))))))
+
+(ert-deftest e-chat-service-test-drain-stops-for-stale-and-closing-receivers ()
+  "Bounded pumps stop when their receiver is stale or its board is closing."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal)))
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (board (e-chat-service-binding-board binding))
+           (source (e-board-registry-board-source-board board))
+           (observer (e-chat-service-binding-observer binding)))
+      (e-board-post-fact
+       source :id "stale-pending" :tags '(main) :content "stale"
+       :source-fact-key '(test stale 1))
+      ;; A cancelled source observer is a stale receiver, even though its
+      ;; cursor remains behind the board tail.
+      (e-board-set-observer-state source
+                                   (e-board-observer-id observer)
+                                   'cancelled)
+      (let ((calls 0))
+        (while (and (< calls 3)
+                    (progn
+                      (cl-incf calls)
+                      (e-chat-service-drain-binding binding))))
+        (should (= calls 1)))
+      (should-not
+       (e-chat-service--observer-drain-live-p
+        binding (e-chat-service-binding-client binding)
+        (e-chat-service-binding-observer binding)))
+      ;; Closing is also terminal for a binding pump; no board call is made
+      ;; merely because the pre-close cursor is behind retained messages.
+      (let ((e-board-registry-close-scheduler (lambda (_function) nil)))
+        (e-board-registry-close board)
+        (should-not (e-chat-service-drain-binding binding))))))
+
+(ert-deftest e-chat-service-test-drain-unsubscribed-subscription-terminates ()
+  "A bounded consumer cannot spin after its subscription is unsubscribed."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal)))
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (board (e-chat-service-binding-board binding))
+           (subscription (e-chat-service-subscribe harness "main" #'ignore)))
+      (e-board-post-fact
+       (e-board-registry-board-source-board board)
+       :id "unsubscribed-pending" :tags '(main) :content "pending"
+       :source-fact-key '(test unsubscribed 1))
+      (e-chat-service-unsubscribe subscription)
+      (let ((calls 0))
+        (while (and (< calls 3)
+                    (progn
+                      (cl-incf calls)
+                      (e-chat-service-drain-subscription subscription))))
+        (should (= calls 1)))
+      (should-not (e-chat-service-subscription-active-p subscription)))))
 
 (ert-deftest e-chat-service-test-replay-is-bounded-board-derived-and-causal ()
   "Replay never reads private transcripts and keeps participant-local turns distinct."
