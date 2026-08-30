@@ -166,12 +166,22 @@
 (cl-defstruct (e-board-work
                 (:constructor e-board-work--create)
                 (:conc-name e-board-work-))
-  id handle metadata state terminal-seq terminal-payload)
+  id handle metadata state terminal-seq terminal-payload
+  publication-observer posted-event)
 
 (cl-defstruct (e-board-invocation
-                (:constructor e-board-invocation--create)
-                (:conc-name e-board-invocation-))
-  id work-id state effect-target activation-id)
+               (:constructor e-board-invocation--create)
+               (:conc-name e-board-invocation-))
+  id work-id state effect-target activation-id subscription-event)
+
+(cl-defstruct (e-board-work-admission
+               (:constructor e-board-work-admission--create)
+               (:conc-name e-board-work-admission-))
+  "Opaque exact identities for one staged board work admission.
+The runtime owns the transaction lifetime; the board fills WORK and INVOCATION
+with the objects it creates so an unwind can remove only this attempt without
+looking them up again by descriptive ids."
+  board handle work invocation invocation-id effect-target)
 
 (cl-defstruct (e-board-aggregation
                 (:constructor e-board-aggregation--create)
@@ -487,10 +497,44 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
              (e-board-event-message-count board))
     event))
 
+(defun e-board--remove-event-exact (board event)
+  "Remove the exact EVENT object from BOARD's in-memory event log.
+This inverse is used only while a staged admission is unwinding.  It never
+matches by event type or work id, so an admission rollback cannot remove an
+unrelated event that happens to use the same descriptive values."
+  (when event
+    (let ((cursor (e-board-events board))
+          previous
+          found)
+      (while (and cursor (not found))
+        (if (eq (car cursor) event)
+            (setq found cursor)
+          (setq previous cursor
+                cursor (cdr cursor))))
+      (when found
+        (if previous
+            (setcdr previous (cdr found))
+          (setf (e-board-events board) (cdr found)))
+        (when (eq (e-board-events-tail board) found)
+          (setf (e-board-events-tail board) previous))
+        (remhash (e-board-event-seq event)
+                 (e-board-event-message-count board))
+        t))))
+
 (defun e-board-events-after (board seq)
   "Return BOARD events whose sequence is strictly greater than SEQ."
   (cl-remove-if (lambda (event) (<= (e-board-event-seq event) seq))
                 (e-board-events board)))
+
+(cl-defun e-board-work-admission-token
+    (handle &key invocation-id effect-target)
+  "Create an opaque exact token for one staged HANDLE admission.
+The token is consumed by the board's enrollment operation and its exact abort
+inverse; callers must not inspect the board objects captured after staging."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (e-board-work-admission--create
+   :handle handle :invocation-id invocation-id :effect-target effect-target))
 
 (defvar e-board--processing-replay-p nil
   "Non-nil while restoring processing records without persistence notification.")
@@ -1342,6 +1386,23 @@ effect records and never synchronously enter a tool or harness callback."
   (when-let ((queue (gethash work-id index)))
     (e-board-id-queue-head queue)))
 
+(defun e-board--remove-indexed-work-subscription (index work-id subscription-id)
+  "Remove exact SUBSCRIPTION-ID from WORK-ID's local index.
+The index is process-local admission state, not durable history.  Rebuilding
+only this one bounded queue keeps rollback independent of unrelated board
+subscriptions and leaves an already-detached terminal-classification snapshot
+untouched."
+  (when-let ((queue (gethash work-id index)))
+    (let ((ids (e-board-id-queue-head queue))
+          kept)
+      (dolist (id ids)
+        (unless (equal id subscription-id)
+          (setq kept (append kept (list id)))))
+      (if kept
+          (setf (e-board-id-queue-head queue) kept
+                (e-board-id-queue-tail queue) (last kept))
+        (remhash work-id index)))))
+
 (defun e-board--schedule-terminal-classification (board)
   "Schedule BOARD's bounded terminal classifier once after settlement returns."
   (unless (e-board-terminal-classification-scheduled board)
@@ -1628,7 +1689,68 @@ cancellation boundary because its commit is no longer provably absent."
             (e-board-work-terminal-payload work) payload)
       (e-board--queue-terminal-classification board (e-board-work-id work)))))
 
-(cl-defun e-board-enroll-work (board handle &key metadata)
+(defun e-board--discard-work-admission (board admission)
+  "Discard the exact staged objects captured by ADMISSION.
+Only object identities recorded in the opaque token are removed.  Each inverse
+is isolated so a fault in one lower-owner cleanup cannot prevent the remaining
+exact cleanup, nor can it mask the initiating admission error."
+  (let ((work (e-board-work-admission-work admission))
+        (invocation (e-board-work-admission-invocation admission)))
+    (when (and (e-board-work-p work)
+               (eq (gethash (e-board-work-id work) (e-board-work-table board))
+                   work))
+      (remhash (e-board-work-id work) (e-board-work-table board)))
+    (when (and (e-board-invocation-p invocation)
+               (eq (gethash (e-board-invocation-id invocation)
+                            (e-board-invocations board))
+                   invocation))
+      (remhash (e-board-invocation-id invocation)
+               (e-board-invocations board))
+      (condition-case nil
+          (e-board--remove-indexed-work-subscription
+           (e-board-invocation-work-index board)
+           (e-board-invocation-work-id invocation)
+           (e-board-invocation-id invocation))
+        (error nil)))
+    ;; A publication observer is owner state on the prepared Work handle.
+    ;; Remove it only when the exact closure is still installed.  Keep going if
+    ;; an injected lower-owner fault signals after partially doing its inverse.
+    (when (and (e-board-work-p work)
+               (e-board-work-publication-observer work))
+      (condition-case nil
+          (e-work-remove-publication-observer
+           (e-board-work-handle work)
+           (e-board-work-publication-observer work))
+        (error nil)))
+    (when (e-board-work-p work)
+      (condition-case nil
+          (e-board--remove-event-exact
+           board (e-board-work-posted-event work))
+        (error nil)))
+    (when (e-board-invocation-p invocation)
+      (condition-case nil
+          (e-board--remove-event-exact
+           board (e-board-invocation-subscription-event invocation))
+        (error nil)))
+    admission))
+
+(cl-defun e-board-abort-work-enrollment (board admission)
+  "Abort the exact pre-run enrollment represented by ADMISSION.
+The token's board objects and event identities are authoritative.  A
+pre-existing or replacement relation is left in place; this is the narrow
+board-side inverse used by the runtime admission transaction, not a general
+work cancellation operation."
+  (unless (e-board-work-admission-p admission)
+    (signal 'wrong-type-argument
+            (list 'e-board-work-admission-p admission)))
+  (unless (or (null (e-board-work-admission-board admission))
+              (eq (e-board-work-admission-board admission) board))
+    (signal 'e-board-error (list "Admission token belongs to another board")))
+  (setf (e-board-work-admission-board admission) board)
+  (e-board--discard-work-admission board admission)
+  admission)
+
+(cl-defun e-board-enroll-work (board handle &key metadata admission)
   "Enroll prepared HANDLE in BOARD before its runner may start.
 The canonical work id is the handle id.  The dedicated observer is installed
 before runner entry so synchronous carriers cannot settle outside the log."
@@ -1636,20 +1758,44 @@ before runner entry so synchronous carriers cannot settle outside the log."
     (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
   (when (e-work-handle-started-p handle)
     (signal 'e-board-error (list "Cannot enroll started work" handle)))
-  (let ((id (e-work-handle-id handle)))
+  (let ((id (e-work-handle-id handle))
+        (admission (or admission
+                       (e-board-work-admission-token handle))))
+    (unless (e-board-work-admission-p admission)
+      (signal 'wrong-type-argument
+              (list 'e-board-work-admission-p admission)))
+    (when (and (e-board-work-admission-board admission)
+               (not (eq (e-board-work-admission-board admission) board)))
+      (signal 'e-board-error (list "Admission token belongs to another board")))
+    (when (and (e-board-work-admission-handle admission)
+               (not (eq (e-board-work-admission-handle admission) handle)))
+      (signal 'e-board-error (list "Admission token belongs to another handle")))
     (when (e-board-observed-work board id)
       (signal 'e-board-id-conflict (list id)))
-    (let ((work (e-board-work--create
-                 :id id :handle handle :metadata (copy-tree metadata)
-                 :state 'posted)))
-      (puthash id work (e-board-work-table board))
-      (e-board--append-event board 'posted
-                             (list :work-id id :metadata (copy-tree metadata)))
-      (e-work-install-publication-observer
-       handle
-       (lambda (_handle state payload)
-         (e-board--observe-work-terminal board work state payload)))
-      work)))
+    (let* ((work (e-board-work--create
+                  :id id :handle handle :metadata (copy-tree metadata)
+                  :state 'posted))
+           (observer
+            (lambda (_handle state payload)
+              (e-board--observe-work-terminal board work state payload))))
+      (setf (e-board-work-admission-board admission) board
+            (e-board-work-admission-handle admission) handle
+            (e-board-work-admission-work admission) work)
+      (setf (e-board-work-publication-observer work) observer)
+      (condition-case err
+          (progn
+            ;; Install the owner observer before publishing the board record so
+            ;; a carrier can never settle into an unobserved work entry.
+            (e-work-install-publication-observer handle observer)
+            (setf (e-board-work-posted-event work)
+                  (e-board--append-event
+                   board 'posted
+                   (list :work-id id :metadata (copy-tree metadata))))
+            (puthash id work (e-board-work-table board))
+            work)
+        (error
+         (e-board--discard-work-admission board admission)
+         (signal (car err) (cdr err)))))))
 
 (cl-defun e-board-subscribe-invocation (board work-id effect-target &key id)
   "Install one exact reply relation for BOARD WORK-ID.
@@ -1667,29 +1813,40 @@ target after the start stack unwinds."
     (let ((invocation (e-board-invocation--create
                        :id id :work-id work-id :state 'open
                        :effect-target effect-target)))
-      (puthash id invocation (e-board-invocations board))
-      (e-board--index-work-subscription (e-board-invocation-work-index board)
-                                        work-id id)
-      (e-board--append-event board 'subscription-added
-                             (list :subscription-id id :work-id work-id
-                                   :effect 'reply-to-invocation))
-      ;; Enrolling and subscribing can be separated by a caller transaction.
-      ;; If an already-terminal handle is intentionally subscribed, publish one
-      ;; frozen activation without scanning unrelated history.
-      (let ((work (e-board-observed-work board work-id)))
-        (when (e-board-work-terminal-seq work)
-          (e-board--queue-terminal-classification board work-id (list id))))
-      invocation)))
+      (condition-case err
+          (progn
+            (puthash id invocation (e-board-invocations board))
+            (e-board--index-work-subscription (e-board-invocation-work-index board)
+                                              work-id id)
+            (setf (e-board-invocation-subscription-event invocation)
+                  (e-board--append-event
+                   board 'subscription-added
+                   (list :subscription-id id :work-id work-id
+                         :effect 'reply-to-invocation)))
+            ;; Enrolling and subscribing can be separated by a caller
+            ;; transaction.  If an already-terminal handle is intentionally
+            ;; subscribed, publish one frozen activation without scanning
+            ;; unrelated history.
+            (let ((work (e-board-observed-work board work-id)))
+              (when (e-board-work-terminal-seq work)
+                (e-board--queue-terminal-classification board work-id (list id))))
+            invocation)
+        (error
+         (let ((admission
+                (e-board-work-admission--create
+                 :board board :invocation invocation)))
+           (e-board--discard-work-admission board admission))
+         (signal (car err) (cdr err)))))))
 
 (cl-defun e-board-enroll-invocation-work
-    (board handle invocation-id effect-target &key metadata)
+    (board handle invocation-id effect-target &key metadata admission)
   "Atomically enroll prepared HANDLE and its exact INVOCATION-ID relation.
 EFFECT-TARGET is owned by an injected runtime invocation service.  This
 convenience keeps required pre-run ordering at one application boundary without
 making `e-work' depend on board state or making the board retain loop closures."
-  ;; Validate every relation that can reject before `e-board-enroll-work'
-  ;; appends the operation record.  A cheap runner may settle immediately, so
-  ;; callers must never have to roll a visible enrollment back afterwards.
+  ;; Validate every relation that can reject before the staged operation
+  ;; appends either record.  A cheap runner may settle immediately, so callers
+  ;; must never have to roll a visible enrollment back afterwards.
   (unless (e-work-handle-p handle)
     (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
   (when (e-work-handle-started-p handle)
@@ -1700,10 +1857,67 @@ making `e-work' depend on board state or making the board retain loop closures."
     (signal 'e-board-error (list "Invocation effect target is required")))
   (when (e-board-invocation board invocation-id)
     (signal 'e-board-id-conflict (list invocation-id)))
-  (e-board-enroll-work board handle :metadata metadata)
-  (e-board-subscribe-invocation board (e-work-handle-id handle) effect-target
-                                 :id invocation-id)
-  handle)
+  (setq admission
+        (or admission
+            (e-board-work-admission-token
+             handle :invocation-id invocation-id :effect-target effect-target)))
+  (unless (e-board-work-admission-p admission)
+    (signal 'wrong-type-argument
+            (list 'e-board-work-admission-p admission)))
+  (when (and (e-board-work-admission-board admission)
+             (not (eq (e-board-work-admission-board admission) board)))
+    (signal 'e-board-error (list "Admission token belongs to another board")))
+  (when (and (e-board-work-admission-handle admission)
+             (not (eq (e-board-work-admission-handle admission) handle)))
+    (signal 'e-board-error (list "Admission token belongs to another handle")))
+  (when (and (e-board-work-admission-invocation-id admission)
+             (not (equal (e-board-work-admission-invocation-id admission)
+                         invocation-id)))
+    (signal 'e-board-error
+            (list "Admission token belongs to another invocation")))
+  (when (and (e-board-work-admission-effect-target admission)
+             (not (eq (e-board-work-admission-effect-target admission)
+                      effect-target)))
+    (signal 'e-board-error
+            (list "Admission token belongs to another effect target")))
+  (let* ((work-id (e-work-handle-id handle))
+         (work (e-board-work--create
+                :id work-id :handle handle :metadata (copy-tree metadata)
+                :state 'posted))
+         (observer
+          (lambda (_handle state payload)
+            (e-board--observe-work-terminal board work state payload)))
+         (invocation
+          (e-board-invocation--create
+           :id invocation-id :work-id work-id :state 'open
+           :effect-target effect-target)))
+    (setf (e-board-work-admission-board admission) board
+          (e-board-work-admission-handle admission) handle
+          (e-board-work-admission-work admission) work
+          (e-board-work-admission-invocation admission) invocation)
+    (setf (e-board-work-publication-observer work) observer)
+    (condition-case err
+        (progn
+          ;; This is one board-owned commit: no public composed helper is
+          ;; called between the work and its exact invocation relation.
+          (e-work-install-publication-observer handle observer)
+          (setf (e-board-work-posted-event work)
+                (e-board--append-event
+                 board 'posted
+                 (list :work-id work-id :metadata (copy-tree metadata))))
+          (puthash work-id work (e-board-work-table board))
+          (puthash invocation-id invocation (e-board-invocations board))
+          (e-board--index-work-subscription (e-board-invocation-work-index board)
+                                            work-id invocation-id)
+          (setf (e-board-invocation-subscription-event invocation)
+                (e-board--append-event
+                 board 'subscription-added
+                 (list :subscription-id invocation-id :work-id work-id
+                       :effect 'reply-to-invocation)))
+          handle)
+      (error
+       (e-board--discard-work-admission board admission)
+       (signal (car err) (cdr err))))))
 
 (defun e-board--active-participant-p (participant)
   "Return non-nil when PARTICIPANT can receive a new pickup."

@@ -948,3 +948,55 @@ no SCC.  Production compile, direct read/check-parens, private/duplicate/
 whitespace sweeps, fresh board/runtime operations, and the bounded performance
 smoke pass; exact logs and the sandbox socket-limited negative run are in
 =round-5-audit.org=. Parent and independent acceptance remain pending.
+
+*** Invocation-admission transaction remediation (current candidate)
+
+This continuation starts from clean exact baseline =4296b52d= (implementation
+baseline =7de3f980=).  It addresses the remaining TODO Medium in the runtime
+admission path; =review.org= and =index.org= remain untouched.  The user's
+running Emacs was not queried, reloaded, or changed.
+
+The runtime now treats prepared Work admission as one staged transaction.  It
+installs unique Work dispatcher/activity observers, registers the exact
+attachment-local invocation target and its unsettled-count ownership, and asks
+the board owner to commit the work/invocation relation.  The board returns no
+new durable format: an opaque =e-board-work-admission= token records exact
+object/event identities solely so the runtime can ask
+=e-board-abort-work-enrollment= to undo this attempt.  Rollback checks exact
+map values and observer closures, removes only this token's board objects and
+events, and isolates inverse failures so the initiating error remains visible.
+The target terminal transition removes the global slot and attachment index
+before the fallible unsettled notification and consumes its count token before
+notification, making reentrant/faulting cleanup idempotent.
+
+Changed implementation/test paths are =lisp/core/e-board.el=,
+=lisp/core/e-board-runtime.el=, =lisp/core/e-work.el=, and
+=test/e-board-runtime-test.el=, plus this plan, =round-5-audit.org=, and the
+architecture map.  Existing public behavior, event order on successful paths,
+durable board/session formats, and attachment/retry semantics remain unchanged.
+The candidate remains =In-progress= with parent and independent acceptance
+pending; behavioral gates are green separately from mechanism acceptance.
+
+Current evidence is recorded in the Round 5 audit.  The focused runtime owner
+suite is 95/95, board is 73/73, Work is 47/47, the combined affected batch is
+454 expected passes plus one existing fresh-load skip, the exact 485 selector is
+483 expected passes with two known skips, and fixture-enabled full ERT is
+2,596 expected passes with seven existing skips and no unexpected result.  The
+sandbox full ERT is retained as environment-limited evidence because six
+fixture-socket tests fail without the fixture environment.  Read/check-parens,
+compile, all-literal require/SCC (163 modules/709 edges, no cycles),
+cross-owner-private/duplicate (0/0), diff/whitespace, and bounded board-chat
+smoke checks pass.  No graphical rerun is required for this core/runtime-only
+change; the accepted presentation gate remains applicable unchanged.
+
+The follow-up authority correction adds a post-notification commit check to
+=e-board-runtime--register-invocation=: the target must still be present in
+both exact runtime indexes, retain its count token and open state, and belong
+to the exact current active attachment before enrollment can continue.  Two
+real-harness regressions cover non-signaling reentrant retirement from the
+private unsettled callback and the hook-list observer.  Both leave zero target,
+count, board relation, Work observer, and quiescence state; a fresh attachment
+then retries the same prepared Work successfully.  Fixture-enabled full ERT
+was rerun after this correction: 2,603 total, 2,596 expected, 0 unexpected,
+7 existing skips.  The candidate remains `In-progress` and acceptance remains
+pending.

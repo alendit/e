@@ -458,6 +458,17 @@ ordering after ownership has been established."
   (setf (e-work-handle-publication-observer handle) observer)
   handle)
 
+(defun e-work-remove-publication-observer (handle observer)
+  "Remove HANDLE's publication OBSERVER when it is still the exact observer.
+Return non-nil only when this call removed its own observer.  The identity
+check makes admission rollback preserve a later owner that has explicitly
+replaced the observer, rather than clearing state by handle id alone."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (when (eq (e-work-handle-publication-observer handle) observer)
+    (setf (e-work-handle-publication-observer handle) nil)
+    t))
+
 (defun e-work-install-activity-observer (handle observer)
   "Install HANDLE's dedicated bounded progress OBSERVER before it starts.
 The observer is the sole inline progress seam for board-enrolled work.  It may
@@ -472,6 +483,16 @@ hooks remain outside the carrier callback stack."
     (signal 'e-work-prepared-start-invalid (list handle)))
   (setf (e-work-handle-activity-observer handle) observer)
   handle)
+
+(defun e-work-remove-activity-observer (handle observer)
+  "Remove HANDLE's activity OBSERVER when it is still the exact observer.
+This is the inverse of `e-work-install-activity-observer' for owner-local
+admission transactions; unrelated or replacement observers remain untouched."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (when (eq (e-work-handle-activity-observer handle) observer)
+    (setf (e-work-handle-activity-observer handle) nil)
+    t))
 
 (defun e-work-install-hook-dispatcher (handle dispatcher policies)
   "Install DISPATCHER and complete hook POLICIES on prepared HANDLE.
@@ -506,6 +527,17 @@ cheap runner can settle; raw carrier work remains intentionally unclassified."
   (setf (e-work-handle-hook-dispatcher handle) dispatcher
         (e-work-handle-hook-policies handle) (copy-sequence policies))
   handle)
+
+(defun e-work-remove-hook-dispatcher (handle dispatcher)
+  "Remove HANDLE's DISPATCHER when it is still the exact dispatcher.
+Only the dispatcher and policies installed by this owner are cleared; a
+replacement dispatcher or a pre-existing owner remains authoritative."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (when (eq (e-work-handle-hook-dispatcher handle) dispatcher)
+    (setf (e-work-handle-hook-dispatcher handle) nil
+          (e-work-handle-hook-policies handle) nil)
+    t))
 
 (defun e-work--activity-observer (handle payload)
   "Notify HANDLE's dedicated bounded progress observer before general hooks."

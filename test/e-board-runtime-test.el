@@ -2556,6 +2556,492 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (should-not (e-work-handle-hook-dispatcher handle))
         (should-not (e-work-handle-started-p handle))))))
 
+(ert-deftest e-board-runtime-test-enrollment-rejects-non-signaling-private-reentrant-retirement ()
+  "A private observer cannot retire admission and return a stale target."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (enroll nil)
+           (retired nil)
+           condition)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "reentrant-private-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call")))
+            enroll (e-harness-work-enrollment-function harness))
+      ;; The callback runs after the +1 counter mutation but returns normally.
+      ;; The outer adjust therefore has a stale pre-notification value unless
+      ;; register-invocation checks exact target/count/attachment authority.
+      (let ((e-board-runtime--unsettled-change-function
+             (lambda (&rest _state)
+               (unless retired
+                 (setq retired t)
+                 (e-board-runtime-retire-attachment attachment)))))
+        (setq condition
+              (condition-case err
+                  (progn (funcall enroll handle #'ignore) nil)
+                (error err))))
+      (should retired)
+      (should condition)
+      (should (eq (car condition) 'e-board-runtime-error))
+      (should-not (gethash '("board" "participant" "turn" "call")
+                           e-board-runtime--invocations))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
+                 0))
+      (should (= (hash-table-count
+                  (e-board-runtime-attachment-invocation-targets attachment))
+                 0))
+      (should-not (e-board-runtime--current-active-attachment-p attachment))
+      (should (eq (e-board-runtime-attachment-state attachment) 'dormant))
+      (should-not e-board-runtime--quiescence-current)
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      ;; Retirement removed only the old exact attachment.  A fresh attachment
+      ;; can admit the same prepared Work without an orphaned target/relation.
+      (let ((replacement
+             (e-board-runtime-attach board harness "session"
+                                     :participant-id "participant")))
+        (should (funcall enroll handle #'ignore))
+        (should (e-board-observed-work source-board (e-work-handle-id handle)))
+        (should (e-board-invocation source-board '("turn" "call")))
+        (e-board-runtime-retire-attachment replacement)))))
+
+(ert-deftest e-board-runtime-test-enrollment-rejects-non-signaling-hook-list-reentrant-retirement ()
+  "A hook-list observer cannot retire admission and return a stale target."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (enroll nil)
+           (retired nil)
+           condition)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "reentrant-hook-list-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call")))
+            enroll (e-harness-work-enrollment-function harness))
+      (let ((e-board-runtime--unsettled-change-functions
+             (list
+              (lambda (&rest _state)
+                (unless retired
+                  (setq retired t)
+                  (e-board-runtime-retire-attachment attachment))))))
+        (setq condition
+              (condition-case err
+                  (progn (funcall enroll handle #'ignore) nil)
+                (error err))))
+      (should retired)
+      (should condition)
+      (should (eq (car condition) 'e-board-runtime-error))
+      (should-not (gethash '("board" "participant" "turn" "call")
+                           e-board-runtime--invocations))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
+                 0))
+      (should (= (hash-table-count
+                  (e-board-runtime-attachment-invocation-targets attachment))
+                 0))
+      (should-not (e-board-runtime--current-active-attachment-p attachment))
+      (should (eq (e-board-runtime-attachment-state attachment) 'dormant))
+      (should-not e-board-runtime--quiescence-current)
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      (let ((replacement
+             (e-board-runtime-attach board harness "session"
+                                     :participant-id "participant")))
+        (should (funcall enroll handle #'ignore))
+        (should (e-board-observed-work source-board (e-work-handle-id handle)))
+        (should (e-board-invocation source-board '("turn" "call")))
+        (e-board-runtime-retire-attachment replacement)))))
+
+(ert-deftest e-board-runtime-test-enrollment-rolls-back-private-notification-fault ()
+  "A private unsettled observer fault leaves actual enrollment retryable."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (enroll nil)
+           condition
+           (notifications 0))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board))
+      (setq handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "admission" :execution 'cheap :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (setq enroll (e-harness-work-enrollment-function harness))
+      (let ((e-board-runtime--unsettled-change-function
+             (lambda (&rest _state)
+               (cl-incf notifications)
+               (error (if (= notifications 1)
+                          "private admission notification"
+                        "rollback admission notification")))))
+        (setq condition
+              (condition-case err
+                  (progn (funcall enroll handle #'ignore) nil)
+                (error err))))
+      (should condition)
+      (should (equal (error-message-string condition)
+                     "private admission notification"))
+      (should (= notifications 2))
+      (should-not (gethash (list "board" "participant" "turn" "call")
+                           e-board-runtime--invocations))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      (should (= (hash-table-count
+                  (e-board-runtime-attachment-invocation-targets attachment))
+                 0))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      ;; The same prepared Work can be admitted after the observer is repaired;
+      ;; no orphan target or board relation needs attachment retirement first.
+      (let ((target (funcall enroll handle #'ignore)))
+        (should target)
+        (should (e-board-observed-work source-board (e-work-handle-id handle)))
+        (should (e-board-invocation source-board '("turn" "call"))))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-enrollment-rolls-back-postmutation-hook-fault ()
+  "A dispatcher installation fault after mutation removes that dispatcher."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (original (symbol-function 'e-work-install-hook-dispatcher)))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "postmutation-hook-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (cl-letf (((symbol-function 'e-work-install-hook-dispatcher)
+                 (lambda (&rest arguments)
+                   (prog1 (apply original arguments)
+                     (error "postmutation dispatcher admission")))))
+        (should-error
+         (funcall (e-harness-work-enrollment-function harness)
+                  handle #'ignore)
+         :type 'error))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-board-invocation source-board '("turn" "call")))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      (should (funcall (e-harness-work-enrollment-function harness)
+                       handle #'ignore))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-enrollment-rolls-back-postmutation-activity-fault ()
+  "An activity observer fault after mutation removes both Work hooks."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (original (symbol-function 'e-work-install-activity-observer)))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "postmutation-activity-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (cl-letf (((symbol-function 'e-work-install-activity-observer)
+                 (lambda (&rest arguments)
+                   (prog1 (apply original arguments)
+                     (error "postmutation activity admission")))))
+        (should-error
+         (funcall (e-harness-work-enrollment-function harness)
+                  handle #'ignore)
+         :type 'error))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-board-invocation source-board '("turn" "call")))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      (should (funcall (e-harness-work-enrollment-function harness)
+                       handle #'ignore))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-enrollment-rolls-back-postmutation-publication-fault ()
+  "A publication observer fault after mutation leaves no board relation."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (original (symbol-function 'e-work-install-publication-observer)))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "postmutation-publication-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (cl-letf (((symbol-function 'e-work-install-publication-observer)
+                 (lambda (&rest arguments)
+                   (prog1 (apply original arguments)
+                     (error "postmutation publication admission")))))
+        (should-error
+         (funcall (e-harness-work-enrollment-function harness)
+                  handle #'ignore)
+         :type 'error))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-board-invocation source-board '("turn" "call")))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      (should (funcall (e-harness-work-enrollment-function harness)
+                       handle #'ignore))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-enrollment-rolls-back-hook-list-notification-fault ()
+  "A hook-list observer fault rolls back hooks, target, and board state."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           condition)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "hook-list-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (let ((e-board-runtime--unsettled-change-functions
+             (list (lambda (&rest _state) (error "hook-list admission notification")))))
+        (should-error
+         (funcall (e-harness-work-enrollment-function harness)
+                  handle #'ignore)
+         :type 'error))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      (should (= (hash-table-count
+                  (e-board-runtime-attachment-invocation-targets attachment))
+                 0))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      (should (funcall (e-harness-work-enrollment-function harness)
+                       handle #'ignore))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-enrollment-rolls-back-board-postcommit-fault ()
+  "A board relation fault after its commit removes only this enrollment."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (original (symbol-function 'e-board-enroll-invocation-work)))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "board-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (cl-letf (((symbol-function 'e-board-enroll-invocation-work)
+                 (lambda (&rest arguments)
+                   (prog1 (apply original arguments)
+                     (error "board post-commit admission")))))
+        (should-error
+         (funcall (e-harness-work-enrollment-function harness)
+                  handle #'ignore)
+         :type 'error))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-board-invocation source-board '("turn" "call")))
+      (let ((events (e-board-events source-board)))
+        (should (= (length events) 1))
+        (should (eq (e-board-event-type (car events)) 'participant-added)))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      (should (= (hash-table-count
+                  (e-board-runtime-attachment-invocation-targets attachment))
+                 0))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      ;; The wrapper is gone, so retry uses the same intended target cleanly.
+      (should (funcall (e-harness-work-enrollment-function harness)
+                       handle #'ignore))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-enrollment-hook-install-fault-restores-dispatcher ()
+  "A later activity-hook fault removes the dispatcher installed earlier."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (source-board nil)
+           (original (symbol-function 'e-work-install-activity-observer)))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "hook-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (cl-letf (((symbol-function 'e-work-install-activity-observer)
+                 (lambda (&rest _arguments)
+                   (error "activity hook admission"))))
+        (should-error
+         (funcall (e-harness-work-enrollment-function harness)
+                  handle #'ignore)
+         :type 'error))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-work-handle-publication-observer handle))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      ;; Keep the original binding visible to make the test's intended seam
+      ;; explicit; the dynamic override above has already been restored.
+      (should (functionp original))
+      (should (funcall (e-harness-work-enrollment-function harness)
+                       handle #'ignore))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-enrollment-preserves-preexisting-target-and-hooks ()
+  "Admission failure never clears a target or hook owned by another attempt."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           (attachment nil)
+           (handle nil)
+           (dispatcher (lambda (&rest _arguments) nil))
+           (source-board nil)
+           preexisting-target)
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "preserve-admission" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (e-work-install-hook-dispatcher
+       handle dispatcher '(:cancel deferred :cleanup deferred :settle deferred))
+      (should-error
+       (funcall (e-harness-work-enrollment-function harness) handle #'ignore)
+       :type 'e-work-prepared-start-invalid)
+      (should (eq (e-work-handle-hook-dispatcher handle) dispatcher))
+      (e-work-remove-hook-dispatcher handle dispatcher)
+      (setq preexisting-target
+            (e-board-runtime--register-invocation
+             attachment "turn" "call" #'ignore))
+      (should-error
+       (funcall (e-harness-work-enrollment-function harness) handle #'ignore)
+       :type 'e-board-runtime-error)
+      (should (eq (gethash preexisting-target e-board-runtime--invocations)
+                  (gethash preexisting-target
+                           (e-board-runtime-attachment-invocation-targets
+                            attachment))))
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 1))
+      (should-not (e-work-handle-hook-dispatcher handle))
+      (should-not (e-work-handle-activity-observer handle))
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (e-board-runtime--drop-invocation preexisting-target)
+      (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
+      (e-board-runtime-retire-attachment attachment))))
+
 (ert-deftest e-board-runtime-test-enrollment-installs-bounded-activity-mailbox ()
   "Board enrollment captures progress before it schedules general hook work."
   (e-board-runtime-test--with-empty-state

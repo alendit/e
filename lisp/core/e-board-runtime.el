@@ -244,6 +244,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
   harness-id harness-object-generation endpoint-token state reconciliation
   identity-token
   owned-pickup-ids producer-delivery-ids producer-turn-keys activity-mailbox-keys
+  invocation-targets
   retirement-stage retirement-authorized-p retirement-work-authorized-p
   retirement-generation)
 
@@ -266,7 +267,13 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:constructor e-board-runtime-invocation--create)
                (:conc-name e-board-runtime-invocation-))
   target attachment attachment-generation endpoint-token composite-generation
-  callback state)
+  callback state counted-p)
+
+(cl-defstruct (e-board-runtime-work-hooks
+               (:constructor e-board-runtime-work-hooks--create)
+               (:conc-name e-board-runtime-work-hooks-))
+  "Exact Work hook identities installed by one runtime admission attempt."
+  dispatcher activity-observer)
 
 (defvar e-board-runtime--unsettled-control-count 0
   "Number of nonterminal board-runtime control requests.")
@@ -954,12 +961,27 @@ may re-enter runtime teardown.  A second transition therefore observes neither
 the live invocation nor an unsettled slot and cannot decrement the counter
 again.  Return non-nil only when this call owned the terminal transition."
   (when (eq (gethash target e-board-runtime--invocations) invocation)
-    (let ((from (e-board-runtime-invocation-state invocation)))
-      (setf (e-board-runtime-invocation-state invocation) state)
-      (remhash target e-board-runtime--invocations)
-      (when (memq from '(open applying))
-        (e-board-runtime--adjust-unsettled-count 'invocation -1))
-      t)))
+    (setf (e-board-runtime-invocation-state invocation) state)
+    ;; Remove the exact table slot and attachment index before any fallible
+    ;; notification.  A reentrant retirement therefore cannot find this
+    ;; invocation and decrement its count a second time.
+    (remhash target e-board-runtime--invocations)
+    (let ((attachment (e-board-runtime-invocation-attachment invocation)))
+      (when (and (e-board-runtime-attachment-p attachment)
+                 (eq (gethash target
+                              (e-board-runtime-attachment-invocation-targets
+                               attachment))
+                     invocation))
+        (remhash target
+                 (e-board-runtime-attachment-invocation-targets attachment))))
+    (when (e-board-runtime-invocation-counted-p invocation)
+      ;; Clear ownership before calling the fallible observer.  If that
+      ;; observer re-enters retirement, it sees neither the target nor a second
+      ;; count token; if the observer itself signals, the counter is already
+      ;; correct and a caller can preserve the initiating error.
+      (setf (e-board-runtime-invocation-counted-p invocation) nil)
+      (e-board-runtime--adjust-unsettled-count 'invocation -1))
+    t))
 
 (defun e-board-runtime--drop-invocation (target)
   "Remove TARGET and retire it from unsettled accounting when necessary."
@@ -1189,15 +1211,18 @@ interpret an old callback as a newly admitted delivery."
 
 (defun e-board-runtime--drop-attachment-invocations (attachment)
   "Retire exact invocation callbacks captured by ATTACHMENT."
-  (let (targets)
-    (maphash
-     (lambda (target invocation)
-       (when (eq (e-board-runtime-invocation-attachment invocation)
-                 attachment)
-         (push target targets)))
-     e-board-runtime--invocations)
-    (dolist (target targets)
-      (e-board-runtime--drop-invocation target))))
+  (let (entries)
+    (maphash (lambda (target invocation)
+               (push (cons target invocation) entries))
+             (e-board-runtime-attachment-invocation-targets attachment))
+    (dolist (entry entries)
+      ;; The exact value check preserves a replacement target should a caller
+      ;; have deliberately changed the attachment-local index while this
+      ;; bounded retirement was being staged.
+      (when (eq (gethash (car entry) e-board-runtime--invocations)
+                (cdr entry))
+        (e-board-runtime--drop-invocation (car entry))))
+    (clrhash (e-board-runtime-attachment-invocation-targets attachment))))
 
 (defun e-board-runtime-retire-attachment (attachment)
   "Idempotently retire exact ATTACHMENT and its runtime-owned board state.
@@ -1331,24 +1356,64 @@ endpoint by session identity."
   (unless (and turn-id tool-call-id (functionp callback))
     (signal 'e-board-runtime-error
             (list "Invocation requires turn id, tool call id, and callback")))
-  (let ((target (e-board-runtime--invocation-target
-                 attachment turn-id tool-call-id)))
+  (let* ((target (e-board-runtime--invocation-target
+                  attachment turn-id tool-call-id))
+         (invocation
+          (e-board-runtime-invocation--create
+           :target target
+           :attachment attachment
+           :attachment-generation
+           (e-board-runtime-attachment-generation attachment)
+           :endpoint-token
+           (copy-tree (e-board-runtime-attachment-endpoint-token attachment))
+           :composite-generation
+           (copy-tree (e-board-runtime--attachment-composite-generation attachment))
+           :callback callback
+           :state 'open
+           :counted-p t)))
     (when (gethash target e-board-runtime--invocations)
       (signal 'e-board-runtime-error (list "Invocation target already exists" target)))
-    (puthash target
-             (e-board-runtime-invocation--create
-              :target target
-              :attachment attachment
-              :attachment-generation (e-board-runtime-attachment-generation attachment)
-              :endpoint-token
-              (copy-tree (e-board-runtime-attachment-endpoint-token attachment))
-              :composite-generation
-              (copy-tree (e-board-runtime--attachment-composite-generation attachment))
-              :callback callback
-              :state 'open)
-             e-board-runtime--invocations)
-    (e-board-runtime--adjust-unsettled-count 'invocation 1)
-    target))
+    (puthash target invocation e-board-runtime--invocations)
+    (puthash target invocation
+             (e-board-runtime-attachment-invocation-targets attachment))
+    (condition-case err
+        (progn
+          ;; The counter token is owned before notification so a reentrant
+          ;; observer can retire this exact target.  The inverse below then
+          ;; observes the token as already consumed and never decrements twice.
+          (e-board-runtime--adjust-unsettled-count 'invocation 1)
+          ;; `--adjust-unsettled-count' returns the value it computed before
+          ;; notifying observers.  A non-signaling observer can nevertheless
+          ;; reenter retirement, remove this target, and return normally.  Do
+          ;; not let that stale target become board authority: admission is
+          ;; committed only while the exact invocation, its attachment-local
+          ;; index, its count token, and the current active attachment all
+          ;; still agree.
+          (unless (and
+                   (eq (gethash target e-board-runtime--invocations)
+                       invocation)
+                   (eq (gethash
+                        target
+                        (e-board-runtime-attachment-invocation-targets
+                         attachment))
+                       invocation)
+                   (e-board-runtime-invocation-counted-p invocation)
+                   (eq (e-board-runtime-invocation-state invocation) 'open)
+                   (e-board-runtime--current-active-attachment-p attachment))
+            (signal 'e-board-runtime-error
+                    (list "Invocation admission lost active authority"
+                          target)))
+          target)
+      (error
+       ;; `--adjust-unsettled-count' increments before calling either observer;
+       ;; its failure is therefore an admission failure, not a committed
+       ;; authority.  Remove only this object and preserve the first error even
+       ;; when rollback notification faults or re-enters runtime teardown.
+       (condition-case _rollback-error
+           (e-board-runtime--terminalize-invocation
+            target invocation 'cancelled)
+         (error nil))
+       (signal (car err) (cdr err))))))
 
 (defun e-board-runtime--apply-invocation-effect (_board target state payload)
   "Apply TARGET exactly once through its captured runtime invocation service."
@@ -1576,7 +1641,14 @@ will consume the mailbox under its own bounded drain."
 
 (defun e-board-runtime--install-work-hooks (attachment handle)
   "Install the private board-runtime hook classification on prepared HANDLE."
-  (let ((policies '(:cancel deferred :cleanup deferred :settle deferred)))
+  (let ((policies '(:cancel deferred :cleanup deferred :settle deferred))
+        ;; A fresh closure gives this admission a stable exact identity even
+        ;; when a prior owner used the same scheduler function symbol.
+        (dispatcher
+         (lambda (current-handle receipt thunk)
+           (e-board-runtime--schedule-deferred-hook
+            current-handle receipt thunk)))
+        activity-observer)
     (dolist (key '(:on-done :on-error :on-progress :on-event))
       (when (plist-get (e-work-handle-callbacks handle) key)
         (setq policies (plist-put policies key 'deferred))))
@@ -1585,12 +1657,42 @@ will consume the mailbox under its own bounded drain."
       ;; The board runtime therefore admits it only under the narrow inline
       ;; classification; a later async shaper will use a separate work unit.
       (setq policies (plist-put policies :result-shaper 'hard-bounded)))
-    (e-work-install-hook-dispatcher
-     handle #'e-board-runtime--schedule-deferred-hook policies)
-    (e-work-install-activity-observer
-     handle (lambda (current-handle payload)
-              (e-board-runtime--capture-work-activity
-               attachment current-handle payload)))))
+    (condition-case err
+        (progn
+          (e-work-install-hook-dispatcher
+           handle dispatcher policies)
+          (setq activity-observer
+                (lambda (current-handle payload)
+                  (e-board-runtime--capture-work-activity
+                   attachment current-handle payload)))
+          (e-work-install-activity-observer handle activity-observer)
+          (e-board-runtime-work-hooks--create
+           :dispatcher dispatcher
+           :activity-observer activity-observer))
+      (error
+       ;; Either installation can signal after mutating its handle.  Each
+       ;; inverse checks exact closure identity, so a pre-existing or reentrant
+       ;; replacement remains untouched; independent cleanup keeps one fault
+       ;; from masking the initiating error.
+       (condition-case _rollback-error
+           (e-work-remove-activity-observer handle activity-observer)
+         (error nil))
+       (condition-case _rollback-error
+           (e-work-remove-hook-dispatcher handle dispatcher)
+         (error nil))
+       (signal (car err) (cdr err))))))
+
+(defun e-board-runtime--uninstall-work-hooks (handle hooks)
+  "Remove exactly the Work hooks recorded in HOOKS, preserving replacements."
+  (when (e-board-runtime-work-hooks-p hooks)
+    (condition-case _rollback-error
+        (e-work-remove-activity-observer
+         handle (e-board-runtime-work-hooks-activity-observer hooks))
+      (error nil))
+    (condition-case _rollback-error
+        (e-work-remove-hook-dispatcher
+         handle (e-board-runtime-work-hooks-dispatcher hooks))
+      (error nil))))
 
 (defun e-board-runtime--pickup-queue-key (board pickup-id)
   "Return the process-local queue identity for BOARD's PICKUP-ID."
@@ -1706,21 +1808,55 @@ has no callback and is observed only."
                 (list :work-id (e-work-handle-id handle)
                       :session-id session-id
                       :turn-id turn-id)))
-      (e-board-runtime--install-work-hooks attachment handle)
-      (if callback
-          (let* ((tool-call-id (plist-get (plist-get context :tool-call) :id))
-                 (invocation-id (list turn-id tool-call-id))
-                 ;; Capturing this service first means an invalid tool-call
-                 ;; identity cannot leave an enrolled board operation behind.
-                 (target (e-board-runtime--register-invocation
-                          attachment turn-id tool-call-id callback)))
-          (condition-case err
-              (e-board-enroll-invocation-work
-               board handle invocation-id target :metadata metadata)
-            (error
-             (e-board-runtime--drop-invocation target)
-             (signal (car err) (cdr err)))))
-        (e-board-enroll-work board handle :metadata metadata)))))
+      (let* ((tool-call-id (and callback
+                                (plist-get (plist-get context :tool-call) :id)))
+             (invocation-id (and callback (list turn-id tool-call-id)))
+             hooks target admission result)
+        (condition-case err
+            (progn
+              ;; Work hooks, the runtime target/count, and the board relation
+              ;; are one admission transaction.  No runner can start until all
+              ;; three owners have returned successfully.
+              (setq hooks (e-board-runtime--install-work-hooks attachment handle))
+              (if callback
+                  (progn
+                    (setq target
+                          (e-board-runtime--register-invocation
+                           attachment turn-id tool-call-id callback))
+                    (setq admission
+                          (e-board-work-admission-token
+                           handle :invocation-id invocation-id
+                           :effect-target target))
+                    (setq result
+                          (e-board-enroll-invocation-work
+                           board handle invocation-id target
+                           :metadata metadata :admission admission)))
+                (setq admission (e-board-work-admission-token handle)
+                      result
+                      (e-board-enroll-work
+                       board handle :metadata metadata :admission admission)))
+              result)
+          (error
+           ;; Roll back in owner order.  Each inverse is exact and idempotent;
+           ;; a rollback notification may signal or re-enter, but it cannot
+           ;; remove a replacement target/observer and it cannot replace the
+           ;; original admission error.
+           (when admission
+             (condition-case _rollback-error
+                 (e-board-abort-work-enrollment board admission)
+               (error nil)))
+           (when target
+             (condition-case _rollback-error
+                 (when-let ((invocation
+                             (gethash target e-board-runtime--invocations)))
+                   (e-board-runtime--terminalize-invocation
+                    target invocation 'cancelled))
+               (error nil)))
+           (when hooks
+             (condition-case _rollback-error
+                 (e-board-runtime--uninstall-work-hooks handle hooks)
+               (error nil)))
+           (signal (car err) (cdr err))))))))
 
 (defun e-board-runtime--subscribe-aggregation
     (harness handles mode timeout callback invocation-context)
@@ -2432,6 +2568,7 @@ This operation never invokes an instance factory or loads dormant history."
           :producer-delivery-ids (make-hash-table :test 'equal)
           :producer-turn-keys (make-hash-table :test 'equal)
           :activity-mailbox-keys (make-hash-table :test 'equal)
+          :invocation-targets (make-hash-table :test 'equal)
           :retirement-stage 'live
           :retirement-authorized-p nil
           :retirement-work-authorized-p t

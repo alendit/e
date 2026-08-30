@@ -1386,3 +1386,215 @@ review rather than final completion.
 The implementation status is =In-progress= / pending parent and independent
 review; this continuation does not mark Feature 91 =Done= or alter the compact
 feature index.
+
+* Invocation-admission transaction remediation (current candidate)
+
+This continuation starts from the clean exact baseline =4296b52d= (implementation
+baseline =7de3f980=).  It addresses the remaining TODO Medium concerning a
+runtime invocation notification fault that could leave a target counted but
+without a board owner.  =review.org= and =index.org= were not edited.  The
+running Emacs was not queried, reloaded, or changed.
+
+Behavior and mechanism are reported separately: the direct and composed
+behavior gates are green, while this exact candidate remains pending
+parent and independent acceptance for the mechanism boundary.  No public
+command, successful event order, durable board/session format, or restart
+behavior changed.
+
+** Admission inventory and ownership matrix
+
+| Material cluster | Owner and representation | Lifetime and invariant | Boundary/disposition |
+|---+---+---+---|
+| Work hook classification | =e-work= handle's dispatcher, hook policies, activity observer, and publication observer; runtime admission token stores only exact installed closures | Prepared Work lifetime; no runner starts until hooks and board relation are accepted; inverse removes only an exact closure | =e-work= retains carrier state; three narrow exact removal operations added for owner-local rollback |
+| Invocation target | =e-board-runtime= global target table plus attachment-local target index; invocation record has endpoint/generation and a =counted-p= token | Process/attachment lifetime; exact target is removed from both indexes before fallible notification; count token is consumed once | Runtime owner retained; attachment index removes the old global scan from retirement |
+| Unsettled invocation count | =e-board-runtime= O(1) count and transition observers | Process lifetime; notification may signal or re-enter after the count mutation without creating a second decrement | Existing runtime counter retained; terminal transition is the sole decrement owner |
+| Board work relation | =e-board= work/invocation maps, local work-subscription index, and ordered event objects | Board lifetime; staged publication and subscription events are removable by object identity while no runner is admitted | Board owner retained; exact opaque admission token is the rollback contract |
+| Runtime admission composition | =e-board-runtime--enroll-work= | One pre-run transaction: Work hooks -> runtime target/count -> board relation; any error leaves no new authority and preserves the initiating error | Runtime application boundary strengthened; no generic callback/bag or ID rediscovery |
+
+The smallest complete boundary is the transaction itself: Work owns carrier
+hooks, runtime owns invocation identity/counting, and board owns work/relation
+records.  Moving any one map or count into a helper would split its state
+machine.  The new =e-board-work-admission= value is an opaque exact-identity
+token, not shared mutable domain state: it carries the board objects and event
+references created by one attempt solely for an inverse operation.
+
+** Actual dependency and call graph
+
+The runtime call path is now explicit:
+
+#+begin_example
+e-board-runtime--enroll-work
+  -> e-board-runtime--install-work-hooks -> e-work (public install/remove)
+  -> e-board-runtime--register-invocation -> e-board-runtime--adjust-unsettled-count
+  -> e-board-enroll-work or e-board-enroll-invocation-work
+       -> e-work (public publication observer)
+  [error] -> e-board-abort-work-enrollment (opaque exact token)
+         -> e-board-runtime--terminalize-invocation
+         -> e-board-runtime--uninstall-work-hooks
+#+end_example
+
+The board calls only the stable public Work observer operations; runtime calls
+only public board enrollment/token/abort operations.  No owner calls the
+facade, no reverse callback or service locator hides a dependency, and no
+foreign owner-private symbol was introduced.  The reproducible syntax-aware
+all-literal local require scan remains 163 modules and 709 unique edges with
+=CYCLES []=; output is =/tmp/f91-admission-require.log= and the scanner is
+=/private/tmp/e-r5-require-scan.el=.
+
+** Semantic API consumer map
+
+| Operation | Consumer | Contract shape |
+|---+---+---|
+| =e-board-work-admission-token= | Runtime admission composition; board enrollment helper | Opaque token for one prepared Work attempt; no caller reads board records |
+| =e-board-abort-work-enrollment= | Runtime error path | Exact token inverse; removes only token-owned objects/events and preserves replacements |
+| =e-work-remove-publication-observer= | Board admission inverse | Exact observer identity; no handle-id lookup |
+| =e-work-remove-activity-observer= | Runtime hook inverse | Exact observer identity; replacement observer remains installed |
+| =e-work-remove-hook-dispatcher= | Runtime hook inverse | Exact dispatcher identity and its policies; pre-existing/replacement dispatcher remains |
+| =e-board-runtime--terminalize-invocation= | Runtime registration rollback, apply, drop, attachment retirement | Private single-owner terminal transition; target/index/count are settled before notification |
+| =e-board-runtime-attachment-invocation-targets= | Runtime attachment retirement only | Private attachment-local ownership index; no external contract |
+
+The old rollback path's board-id/invocation-id rediscovery and broad
+sequence-based event deletion were removed.  The new inverse still verifies
+exact hash slots by key inside the owning board, but the runtime never obtains a
+replacement object by descriptive ID; it passes the token's exact objects.
+
+** Failure-boundary and rollback evidence
+
+| Boundary | Staged mutation | Exact inverse/postcondition |
+|---+---+---|
+| Work dispatcher installation | Unique dispatcher closure and policies on prepared handle | On pre/post-mutation signal, remove only that closure; a pre-existing or reentrant replacement survives |
+| Work activity observer installation | Unique attachment closure on prepared handle | On pre/post-mutation signal, remove activity observer and dispatcher independently |
+| Runtime target/index insertion | Global target table and attachment-local index | Target registration enters a count token; any count-notification signal invokes exact terminalization |
+| Unsettled transition callback | Count increment precedes callback; callback may signal/re-enter or return after retiring the attachment | The post-notification commit check requires exact global/local slots, open/count-owned invocation, and current active authority; failed checks invoke exact cleanup and surface a domain error |
+| Board publication observer | Exact observer on Work handle | Board admission token removes it by object identity even when installer signals after mutation |
+| Board posted/subscription relation | Work/invocation tables, work index, event references | Board-owned exact discard removes only token objects/events; participant history remains |
+| Later board/admission wrapper fault | Board function may have returned a committed relation before an outer wrapper signals | Runtime invokes token abort, then runtime target and Work-hook inverses; retry is clean |
+| Rollback notification fault/reentrancy | Inverse notification may signal or re-enter retirement | Each cleanup inverse is isolated; no double decrement, replacement removal, or error masking |
+
+The transaction deliberately catches errors only inside rollback inverses.  A
+normal admission or notification error remains visible to its initiating caller;
+cleanup faults cannot mask that first error, and a repeated attempt can finish
+from the exact remaining owner state.  The board's participant-added history
+from attachment setup is intentionally retained; only this admission's posted
+and subscription relations are removed.
+
+** Test topology and dispositions
+
+Owner mechanism assertions remain in =test/e-board-runtime-test.el= and lower
+owner behavior remains in =test/e-board-test.el= and =test/e-work-test.el=.
+No composed test was changed to inspect the new token or private maps.  The
+ten added runtime tests exercise real harness enrollment through
+=e-harness-work-enrollment-function=:
+
+- private unsettled callback fault with a different rollback-notification fault
+  and original-error precedence;
+- hook-list notification fault and clean retry;
+- dispatcher, activity-observer, and publication-observer faults after their
+  underlying lower-owner install has already mutated state;
+- board relation fault after successful board commit;
+- exact pre-existing dispatcher/target preservation; and
+- target, count, board relation, all Work observers, and attachment-local index
+  cleanup before retry; and
+- non-signaling reentrant retirement from both the private unsettled callback
+  and the hook-list observer, including fresh-attachment retry.
+
+Historical tests are =retain/strengthen=; no test was deleted or renamed.  The
+new inverse helpers are covered through owner behavior rather than a
+representation-only test.  The accepted graphical presentation gate is
+=N/A= for this core/runtime-only change: no presentation source or graphical
+fixture changed, so the prior accepted 27/27 gate remains the applicable
+baseline.
+
+** Exact validation evidence
+
+| Command/purpose | Result | Evidence |
+|---+---+---|
+| =eldev -s test -B -f test/e-board-runtime-test.el= | PASS: 95/95 | =/tmp/f91-admission-reentrant-runtime.log= |
+| =eldev -s test -B -f test/e-board-test.el= | PASS: 73/73 | =/tmp/f91-admission-board-ert2.log= |
+| =eldev -s test -B -f test/e-work-test.el= | PASS: 47/47 | =/tmp/f91-admission-work-ert2.log= |
+| Affected runtime/board/harness/composition batch (12 files) | PASS: 454 expected, 0 unexpected, 1 existing fresh-load skip; 455 discovered | =/tmp/f91-admission-reentrant-focused-batch.log= |
+| Exact accepted 485-case selector from =/private/tmp/e-terminal-preservation-selector.el= | PASS: 485 selected, 483 expected, 0 unexpected, 2 known skips | =/tmp/f91-admission-reentrant-preservation-485.log= |
+| Full =eldev test -B= in sandbox | Environment-limited: 2,603 total, 2,590 expected, 6 socket failures, 7 skips | =/tmp/f91-admission-reentrant-full-ert-sandbox.log= |
+| Fixture-enabled full =eldev test -B= | PASS: 2,603 total, 2,596 expected, 0 unexpected, 7 existing skips | =/tmp/f91-admission-reentrant-full-ert-fixtures.log= |
+| Production byte compile of changed owners | PASS: =e-work.el=, =e-board.el=, =e-board-runtime.el=; no warnings/errors | =/tmp/f91-admission-reentrant-compile.log= |
+| Direct read parse and current-buffer check-parens | PASS: 4/4 changed Lisp files for both checks | =/tmp/f91-admission-reentrant-read-check.log= |
+| =git diff --check= and explicit trailing-whitespace sweep | PASS: 0 findings | =/tmp/f91-admission-reentrant-diff-check.log= and =/tmp/f91-admission-reentrant-whitespace.log= |
+| All-literal local require/SCC scan | PASS: 163 modules, 709 edges, =CYCLES []= | =/tmp/f91-admission-reentrant-require.log= |
+| Cross-owner private and duplicate-definition sweep | PASS: 0 / 0 | =/tmp/f91-admission-reentrant-private-duplicate.log= |
+| Bounded board-chat hot-path smoke (3 runs) | PASS: 3/3; body 0.046--0.051s, real 1.65--1.68s | =/tmp/f91-admission-performance.log= |
+
+The previous accepted smoke was 1.04--1.12s real with 0.024--0.032s test
+body; the current absolute sample is still sub-two-second and was measured in
+a separate batch environment.  Admission adds one opaque token and one
+attachment-local hash insertion on the successful path; it adds no board-wide
+scan, synchronous write, or unbounded drain.  The old global invocation scan
+was removed from attachment retirement.
+
+** Residual topology, compatibility, and risks
+
+The final affected clusters remain cohesive: =e-work= owns carrier lifecycle,
+=e-board-runtime= owns attachment/invocation lifetime, and =e-board= owns
+board sequence/relation/history.  No new module, forwarding path, generic
+helper bag, or compatibility alias was added.  =e-board= and
+=e-board-runtime= record shapes gained process-local fields, so an already
+running Emacs requires a normal restart before these definitions are used;
+this worktree validation used fresh batch Emacs processes and left the user's
+process untouched.  Durable files, event order on successful paths, and public
+APIs remain compatible.
+
+Known limitations are the seven existing full-suite skips, the six expected
+sandbox fixture-socket failures in the negative run, absence of live provider
+evidence (not applicable to this behavior-neutral core change), and pending
+parent/independent review.  No graphical rerun was necessary because the
+presentation tree was not changed.
+
+** Current design self-check
+
+1. *Would stopping here improve the project?*  Yes.  A failed admission no
+   longer leaves an unreachable counted invocation, and the inverse is locally
+   retryable.
+2. *What final direction does this move toward?*  One owner per mutable
+   lifetime, with an application transaction composing narrow board, runtime,
+   and Work contracts.
+3. *What is uncertain versus stable?*  Public behavior, durable formats, and
+   successful event ordering are stable.  The token and attachment index are
+   process-local implementation choices, reversible within their owners.
+4. *Who owns each behavior and why?*  Work owns carrier hooks, runtime owns
+   invocation identity/count and attachment state, and board owns work/relation
+   history; each owns the corresponding inverse.
+5. *Does coupling increase or decrease?*  It decreases: rollback uses an
+   opaque exact token instead of cross-owner ID lookup or broad event scans.
+6. *Did a dependency point the wrong way?*  No.  Runtime uses public board and
+   Work operations; board uses public Work operations; the actual require graph
+   remains acyclic.
+7. *Could any side effect move outward?*  Board event/map mutation and Work
+   hook mutation stay with their owners; runtime retains only composition and
+   notification scheduling.
+8. *What state was added or mutated?*  One process-local admission token,
+   attachment invocation index, invocation count token, exact Work observer
+   inverses, and board event/object references; none are durable.
+9. *What is the performance impact?*  Successful admission adds bounded local
+   object/index work; retirement removes a global scan.  The three-run smoke is
+   sub-two-second with no new synchronous I/O.
+10. *Are the abstractions real and substitutable?*  Yes.  The token is a
+    concrete inverse protocol used by one runtime consumer, not a generic
+    service interface; exact Work inverses accept any matching owner closure.
+11. *What compatibility expectations apply?*  Public APIs, formats, and
+    successful event ordering remain unchanged; new process-local record fields
+    require restart and no private compatibility shim was added.
+12. *What legacy code can be removed now?*  The broad sequence-event rollback,
+    ID-based board relation rediscovery, and fixed-symbol dispatcher cleanup
+    path were removed; no obsolete public API wrapper remains.
+13. *Where are expected errors handled?*  Invalid admission and notification
+    errors surface to the initiating caller.  Rollback catches only inverse
+    failures so the first unexpected error remains authoritative; stale or
+    repeated terminalization is idempotent.
+14. *What tests prove the core behavior independently?*  The 95-case runtime
+    owner suite exercises every staged boundary, 73 board and 47 Work cases
+    cover lower-owner contracts, the 455-case affected batch covers composition,
+    the exact 485 selector and fixture-enabled 2,603-case ERT cover preservation,
+    and static/read/compile evidence covers topology.
+
+The candidate remains =In-progress= / pending parent and independent review;
+Feature 91 is not marked =Done= and the compact feature index remains
+unchanged.

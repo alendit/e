@@ -239,6 +239,16 @@ callback is therefore inert and cannot consume replacement work. Invocation
 effects use the same terminal-owner rule: the exact invocation is removed and
 accounted before fallible unsettled notifications, so a notification fault or
 reentrant attachment retirement cannot double-decrement it.
+Prepared Work admission is one staged runtime transaction.  The runtime first
+installs its exact Work dispatcher/activity observers, then admits the exact
+invocation target and unsettled-count token, and finally asks `e-board` to
+commit the work/invocation relation.  `e-board-work-admission-token` is an
+opaque board-owned inverse token: if a later step signals, the runtime passes
+that token back to `e-board-abort-work-enrollment`, which removes only the
+objects and event identities created by that attempt.  The inverse is
+idempotent and leaves pre-existing or replacement targets/observers untouched;
+the initiating error remains visible.  This process-local transaction does not
+alter durable board formats or event ordering on successful admissions.
 Ordinary-route retirement is owned by `e-board-retire-subscription-exact` in
 `e-board`: its board-monotonic lifetime token fences classifiers, prepared and
 queued effects, replay snapshots, quiet/lifetime/expiry callbacks, and same-id
