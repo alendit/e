@@ -902,3 +902,49 @@ later slices do not proceed.
     must not add broad condition handling or swallow unexpected failures.
 14. Owner-level tests prove behavior independently, while focused integration
     and graphical tests prove only the public composition among owners.
+
+*** Invocation, pickup, and grouped-classifier correction (current candidate)
+
+This continuation starts from exact clean baseline =51028359= (implementation
+baseline =05dccf82=). It is the next exact candidate pending independent
+review; =review.org= and =index.org= are untouched. It addresses the two
+deferred-lifetime findings without changing public commands, durable records,
+wire formats, or the user's running Emacs.
+
+=e-board-runtime= now owns invocation terminalization as one idempotent
+transition: it removes the exact target before unsettled notification and only
+the live/applying state decrements the count. Reentrant attachment retirement,
+repeated completion, and notification faults therefore leave a terminal object
+and a non-negative count while preserving error propagation.
+
+The runtime pickup scheduler captures a process-local generation in every
+scheduled callback. Attachment retirement removes only its exact queued FIFO
+cells, advances the generation, clears the scheduled receipt, and schedules
+remaining/new work under a fresh generation. A retained old callback is a
+no-op. Producer routing now retains causal delivery identity and settles a
+stale pickup directly rather than discovering a same-id replacement.
+
+=e-board= carries exact route objects through deferred input authorization,
+grouping, preparation, and atomic commit. Each route retains its subscription
+object/token and participant object; every later phase revalidates all routes,
+and a changed route fails the entire frozen pickup transaction. Committed
+pickups retain the participant lifetime needed by runtime stale-route fencing.
+
+Changed implementation/test paths are =lisp/core/e-board.el=,
+=lisp/core/e-board-runtime.el=, =test/e-board-test.el=, and
+=test/e-board-runtime-test.el=, plus this plan, the architecture map, and the
+Round 5 audit. Direct tests retain historical invocation/pickup behavior and
+add notification-fault, reentrant completion, scheduler-generation, exact
+authorize/group/prepare, and stale-producer replacement regressions. Focused
+and full-gate results are recorded in =round-5-audit.org= after rerun; Feature
+91 remains =In-progress= and acceptance remains pending.
+
+The current implementation evidence is now recorded: the board/registry/runtime
+owner batch is 195/195, downstream board/chat/canvas consumers are 209/209, the
+accepted preservation selector is 483/485 with two known skips, and fixture-
+enabled full ERT is 2,586/2,593 with seven known skips and no unexpected result.
+The reproducible local require scan is 163 modules/709 unique literal edges with
+no SCC.  Production compile, direct read/check-parens, private/duplicate/
+whitespace sweeps, fresh board/runtime operations, and the bounded performance
+smoke pass; exact logs and the sandbox socket-limited negative run are in
+=round-5-audit.org=. Parent and independent acceptance remain pending.

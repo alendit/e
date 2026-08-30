@@ -233,6 +233,9 @@ the board transcript.  Terminal events use their dedicated publisher below.")
 (defvar e-board-runtime--pickup-drain-scheduled nil
   "Non-nil while the runtime has one pickup-drain timer pending.")
 
+(defvar e-board-runtime--pickup-drain-generation 0
+  "Generation fencing scheduled pickup drains after attachment retirement.")
+
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
@@ -571,6 +574,18 @@ participant turns settle.  An unrouted input settles visibly as `unrouted'."
        (e-board-runtime-producer-delivery-item record)
        delivery-id status payload))))
 
+(defun e-board-runtime--settle-producer-delivery-id
+    (delivery-id status payload)
+  "Settle the exact producer DELIVERY-ID without resolving a replacement.
+This is used when a board pickup has reached a terminal route decision but its
+original runtime attachment is no longer current.  The producer delivery table
+is keyed by the causal delivery identity, so this operation never scans or
+rediscovers an attachment by participant id."
+  (when-let ((record (e-board-runtime--producer-delivery-record delivery-id)))
+    (e-board-runtime--producer-delivery-terminal
+     (e-board-runtime-producer-delivery-item record)
+     delivery-id status payload)))
+
 (defun e-board-runtime--settle-producer-turns-for-attachment (attachment)
   "Settle every producer turn key indexed by ATTACHMENT, bounded locally."
   (maphash
@@ -676,18 +691,39 @@ boundary.  The operation is bounded by OLD's attachment-local indexes."
               (copy-tree pickup-ids))
         (dolist (delivery-id pickup-ids)
           (let* ((pickup (e-board-pickup source delivery-id))
-                 (attachment (and pickup
-                                  (e-board-runtime--attachment-for-pickup
-                                   board pickup))))
+                 ;; The board pickup retains the exact participant lifetime
+                 ;; captured by grouped classification.  Only that lifetime
+                 ;; may resolve a runtime attachment; a same-id replacement is
+                 ;; deliberately treated as stale causal work.
+                 (route-current-p
+                  (and pickup
+                       (e-board-pickup-route-current-p source pickup)))
+                 (attachment
+                  (and route-current-p
+                       (e-board-runtime--attachment-for-pickup
+                        board pickup))))
             (e-board-runtime--remember-producer-delivery
              item delivery-id
-             ;; Routing can finish after terminal retirement has fenced the
-             ;; endpoint but before the exact route owner returns.  Retain the
-             ;; current object in that case so its producer slot is settled by
-             ;; the same attachment-local retirement pass; never rediscover a
-             ;; replacement after the maps have changed.
              (and (e-board-runtime--current-attachment-p attachment)
-                  attachment))))))))
+                  attachment))
+            ;; A routed pickup whose participant lifetime is already gone can
+            ;; never be delivered by this producer again.  Close the exact
+            ;; causal slot now; leaving a nil attachment record would strand
+            ;; producer accounting until an impossible future receipt.  The
+            ;; board pickup is settled here as well, rather than waiting for a
+            ;; runtime drain that may never run after the owning attachment was
+            ;; retired.  Only the ids in this routed transaction are touched.
+            (unless route-current-p
+              (when (and pickup
+                         (memq (e-board-pickup-state pickup) '(pending ready)))
+                (when-let ((next-id
+                            (e-board-fail-pickup
+                             source delivery-id 'participant-lifetime-changed)))
+                  (e-board-runtime--enqueue-pickups board (list next-id))))
+              (e-board-runtime--settle-producer-delivery-id
+               delivery-id 'cancelled
+               (list :reason 'participant-lifetime-changed
+                     :message-id message-id)))))))))
 
 (defun e-board-runtime--producer-delivery-terminal (item delivery-id status payload)
   "Record one producer ITEM DELIVERY-ID terminal STATUS and PAYLOAD."
@@ -910,12 +946,26 @@ retain the returned admission token and reopen it explicitly when appropriate."
               (e-board-runtime--adjust-unsettled-count 'control -1)))))
   request)
 
+(defun e-board-runtime--terminalize-invocation (target invocation state)
+  "Commit INVOCATION's terminal STATE exactly once for TARGET.
+  The table removal happens before unsettled notification because the
+  notification
+may re-enter runtime teardown.  A second transition therefore observes neither
+the live invocation nor an unsettled slot and cannot decrement the counter
+again.  Return non-nil only when this call owned the terminal transition."
+  (when (eq (gethash target e-board-runtime--invocations) invocation)
+    (let ((from (e-board-runtime-invocation-state invocation)))
+      (setf (e-board-runtime-invocation-state invocation) state)
+      (remhash target e-board-runtime--invocations)
+      (when (memq from '(open applying))
+        (e-board-runtime--adjust-unsettled-count 'invocation -1))
+      t)))
+
 (defun e-board-runtime--drop-invocation (target)
   "Remove TARGET and retire it from unsettled accounting when necessary."
   (when-let ((invocation (gethash target e-board-runtime--invocations)))
-    (when (memq (e-board-runtime-invocation-state invocation) '(open applying))
-      (e-board-runtime--adjust-unsettled-count 'invocation -1))
-    (remhash target e-board-runtime--invocations)))
+    (e-board-runtime--terminalize-invocation target invocation 'cancelled)
+    invocation))
 
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
@@ -997,11 +1047,13 @@ attachment before the transition began."
   "Return BOARD's current attachment for frozen PICKUP, if any.
 This lookup is one participant-local map operation; it never searches the
 board's global pickup table for an owner."
-  (when-let ((participant
-              (gethash (e-board-pickup-participant-id pickup)
-                       (e-board-registry-board-participants board))))
-    (gethash (e-board-runtime--attachment-key board participant)
-             e-board-runtime--attachments)))
+  (let ((source-board (e-board-registry-board-source-board board)))
+    (when (e-board-pickup-route-current-p source-board pickup)
+      (when-let ((participant
+                  (gethash (e-board-pickup-participant-id pickup)
+                           (e-board-registry-board-participants board))))
+        (gethash (e-board-runtime--attachment-key board participant)
+                 e-board-runtime--attachments)))))
 
 (defun e-board-runtime--index-attachment-pickup (attachment pickup-id)
   "Remember PICKUP-ID in ATTACHMENT's exact local ownership index."
@@ -1221,7 +1273,12 @@ attachment."
         (e-board-runtime--settle-producer-deliveries-for-attachment attachment))
       (when (e-board-runtime-attachment-retirement-authorized-p attachment)
         (e-board-runtime--retire-pickups-for-attachment attachment)
-        (e-board-runtime--drop-pending-pickups-for-attachment attachment))
+        (e-board-runtime--drop-pending-pickups-for-attachment attachment)
+        ;; The exact attachment queue cells are gone.  Fence the global
+        ;; scheduler receipt as well so a callback captured before retirement
+        ;; cannot later drain a replacement's queue, and ensure unrelated live
+        ;; queues receive a fresh callback under the new generation.
+        (e-board-runtime--fence-pickup-drain))
       (e-board-runtime--drop-attachment-activity attachment)
       (e-board-runtime--drop-attachment-invocations attachment)
       (when (e-board-runtime-attachment-retirement-authorized-p attachment)
@@ -1309,19 +1366,20 @@ endpoint by session identity."
                (equal (e-board-runtime-invocation-composite-generation invocation)
                       (e-board-runtime--attachment-composite-generation attachment))
                (e-board-runtime--current-attachment-p attachment))
-        (setf (e-board-runtime-invocation-state invocation) 'unavailable)
-        (e-board-runtime--adjust-unsettled-count 'invocation -1)
+        (e-board-runtime--terminalize-invocation
+         target invocation 'unavailable)
         (signal 'e-board-runtime-error
                 (list "Original invocation endpoint is unavailable" target)))
       (setf (e-board-runtime-invocation-state invocation) 'applying)
       (condition-case err
           (funcall (e-board-runtime-invocation-callback invocation) state payload)
         (error
-         (setf (e-board-runtime-invocation-state invocation) 'failed)
-         (e-board-runtime--adjust-unsettled-count 'invocation -1)
+         (e-board-runtime--terminalize-invocation target invocation 'failed)
          (signal (car err) (cdr err))))
-      (setf (e-board-runtime-invocation-state invocation) 'committed)
-      (e-board-runtime--adjust-unsettled-count 'invocation -1))))
+      ;; The callback may synchronously retire this exact attachment.  In that
+      ;; case retirement already owns the terminal transition and removed the
+      ;; table entry; the outer apply must not overwrite its state or count.
+      (e-board-runtime--terminalize-invocation target invocation 'committed))))
 
 (defun e-board-runtime--drain-deferred-hooks ()
   "Start one bounded page of deferred carrier hooks outside settlement.
@@ -1538,6 +1596,30 @@ will consume the mailbox under its own bounded drain."
   "Return the process-local queue identity for BOARD's PICKUP-ID."
   (list (e-board-registry-board-id board) pickup-id))
 
+(defun e-board-runtime--schedule-pickup-drain ()
+  "Schedule one generation-fenced bounded pickup drain.
+The callback captures the generation that admitted it.  Retirement advances the
+generation and clears the scheduled bit before scheduling any surviving queue,
+so an old callback is a no-op and cannot consume replacement work."
+  (unless e-board-runtime--pickup-drain-scheduled
+    (setq e-board-runtime--pickup-drain-scheduled t)
+    (let ((generation e-board-runtime--pickup-drain-generation))
+      (run-at-time
+       0 nil
+       (lambda ()
+         (when (= generation e-board-runtime--pickup-drain-generation)
+           (e-board-runtime--drain-pickups generation)))))))
+
+(defun e-board-runtime--fence-pickup-drain ()
+  "Invalidate queued pickup callbacks and reschedule the current queue.
+This is a global scheduler fence, not an owner lookup: the pending queue remains
+the authoritative FIFO while the generation makes every previously captured
+callback inert."
+  (cl-incf e-board-runtime--pickup-drain-generation)
+  (setq e-board-runtime--pickup-drain-scheduled nil)
+  (when e-board-runtime--pending-pickup-head
+    (e-board-runtime--schedule-pickup-drain)))
+
 (defun e-board-runtime--enqueue-pickups (board pickup-ids)
   "Enqueue BOARD PICKUP-IDS once; never deliver on an append/effect stack."
   (dolist (pickup-id pickup-ids)
@@ -1545,7 +1627,9 @@ will consume the mailbox under its own bounded drain."
                 (e-board-pickup
                  (e-board-registry-board-source-board board) pickup-id))
                (attachment
-                (e-board-runtime--attachment-for-pickup board pickup)))
+                (and (e-board-pickup-route-current-p
+                      (e-board-registry-board-source-board board) pickup)
+                     (e-board-runtime--attachment-for-pickup board pickup))))
       (e-board-runtime--index-attachment-pickup attachment pickup-id))
     (let ((key (e-board-runtime--pickup-queue-key board pickup-id)))
       (unless (gethash key e-board-runtime--pending-pickup-set)
@@ -1556,38 +1640,43 @@ will consume the mailbox under its own bounded drain."
             (setq e-board-runtime--pending-pickup-head cell))
           (setq e-board-runtime--pending-pickup-tail cell))
         (e-board-runtime--unsettled-changed))))
-  (unless e-board-runtime--pickup-drain-scheduled
-    (setq e-board-runtime--pickup-drain-scheduled t)
-    (run-at-time 0 nil #'e-board-runtime--drain-pickups)))
+  (e-board-runtime--schedule-pickup-drain))
 
-(defun e-board-runtime--drain-pickups ()
-  "Attempt one bounded FIFO page of previously frozen pickup envelopes."
-  (setq e-board-runtime--pickup-drain-scheduled nil)
-  (let ((processed 0)
-        (available-at-start 0)
-        (cursor e-board-runtime--pending-pickup-head))
-    (while (and cursor
-                (< available-at-start e-board-runtime-pickup-drain-limit))
-      (cl-incf available-at-start)
-      (setq cursor (cdr cursor)))
-    (while (and e-board-runtime--pending-pickup-head
-                (< processed available-at-start))
-      (let ((key (pop e-board-runtime--pending-pickup-head)))
-        (unless e-board-runtime--pending-pickup-head
-          (setq e-board-runtime--pending-pickup-tail nil))
-        (let ((counted (gethash key e-board-runtime--pending-pickup-set)))
-          (remhash key e-board-runtime--pending-pickup-set)
-          (when counted
-            (e-board-runtime--unsettled-changed)))
-        (cl-incf processed)
-        (let ((board (condition-case nil
-                         (e-board-registry-get (car key))
-                       (e-board-registry-missing nil))))
-          (when board
-            (e-board-runtime--deliver-pickups board (list (cadr key)))))))
-    (when e-board-runtime--pending-pickup-head
-      (setq e-board-runtime--pickup-drain-scheduled t)
-      (run-at-time 0 nil #'e-board-runtime--drain-pickups))))
+(defun e-board-runtime--drain-pickups (&optional generation)
+  "Attempt one bounded FIFO page of previously frozen pickup envelopes.
+When GENERATION is supplied it must still be current; a stale scheduled
+callback returns without changing the current scheduler authority.  Calls
+without it are direct owner drains and use the current generation."
+  (when (or (null generation)
+            (= generation e-board-runtime--pickup-drain-generation))
+    (let ((run-generation e-board-runtime--pickup-drain-generation))
+      (setq e-board-runtime--pickup-drain-scheduled nil)
+      (let ((processed 0)
+            (available-at-start 0)
+            (cursor e-board-runtime--pending-pickup-head))
+        (while (and cursor
+                    (< available-at-start e-board-runtime-pickup-drain-limit))
+          (cl-incf available-at-start)
+          (setq cursor (cdr cursor)))
+        (while (and (= run-generation e-board-runtime--pickup-drain-generation)
+                    e-board-runtime--pending-pickup-head
+                    (< processed available-at-start))
+          (let ((key (pop e-board-runtime--pending-pickup-head)))
+            (unless e-board-runtime--pending-pickup-head
+              (setq e-board-runtime--pending-pickup-tail nil))
+            (let ((counted (gethash key e-board-runtime--pending-pickup-set)))
+              (remhash key e-board-runtime--pending-pickup-set)
+              (when counted
+                (e-board-runtime--unsettled-changed)))
+            (cl-incf processed)
+            (let ((board (condition-case nil
+                             (e-board-registry-get (car key))
+                           (e-board-registry-missing nil))))
+              (when board
+                (e-board-runtime--deliver-pickups board (list (cadr key)))))))
+        (when (and (= run-generation e-board-runtime--pickup-drain-generation)
+                   e-board-runtime--pending-pickup-head)
+          (e-board-runtime--schedule-pickup-drain))))))
 
 (defun e-board-runtime--drain-input-routing (board drain)
   "Run BOARD's bounded classifier, then queue only its finalized pickups."
@@ -3051,21 +3140,42 @@ and pickup tombstones remain on the source board."
     (dolist (delivery-id pickup-ids)
       (when-let ((pickup (e-board-pickup source-board delivery-id)))
         (when (eq (e-board-pickup-state pickup) 'ready)
-          (let* ((participant-id (e-board-pickup-participant-id pickup))
-                 (participant
-                  (gethash participant-id
-                           (e-board-registry-board-participants board)))
-                 (authorization
-                  (e-board-registry-participant-delivery-authorization
-                   board (or participant participant-id)
-                   (e-board-pickup-requester-actor pickup)
-                   (e-board-pickup-addressed-p pickup))))
-            (pcase authorization
+          ;; A deferred classifier may have produced this pickup under a
+          ;; participant object that has since been removed/replaced.  Fence
+          ;; that exact causal route before any participant-id lookup; a
+          ;; replacement must never inherit the old delivery.
+          (if (not (e-board-pickup-route-current-p source-board pickup))
+              (progn
+                (when-let ((next-id
+                            (e-board-fail-pickup
+                             source-board delivery-id
+                             'participant-lifetime-changed)))
+                  (e-board-runtime--enqueue-pickups board (list next-id)))
+                (e-board-runtime--settle-producer-delivery-id
+                 delivery-id 'cancelled
+                 (list :reason 'participant-lifetime-changed)))
+            (let* ((participant-id (e-board-pickup-participant-id pickup))
+                   (participant
+                    (gethash participant-id
+                             (e-board-registry-board-participants board)))
+                   (authorization
+                    (e-board-registry-participant-delivery-authorization
+                     board (or participant participant-id)
+                     (e-board-pickup-requester-actor pickup)
+                     (e-board-pickup-addressed-p pickup))))
+              (pcase authorization
               ('revoked
                (when-let ((next-id
                            (e-board-fail-pickup
                             source-board delivery-id 'delivery-authorization-revoked)))
-                 (e-board-runtime--enqueue-pickups board (list next-id))))
+                 (e-board-runtime--enqueue-pickups board (list next-id)))
+               ;; Routing accepted this exact delivery, but authorization has
+               ;; since revoked it.  Settle the producer by delivery identity;
+               ;; resolving the participant again here could attach the old
+               ;; work to a same-id replacement.
+               (e-board-runtime--settle-producer-delivery-id
+                delivery-id 'cancelled
+                (list :reason 'delivery-authorization-revoked)))
               ('authorized
                ;; A classifier already queued before terminal retirement may
                ;; reach this bounded drain after the attachment has entered its
@@ -3175,7 +3285,7 @@ and pickup tombstones remain on the source board."
             ;; index entry.  The lookup is by this participant's exact map key,
             ;; never by a board-wide scan.
             (e-board-runtime--forget-terminal-pickup-for-board
-             board delivery-id))))))
+             board delivery-id)))))))
 
 (cl-defun e-board-runtime--post-client-input
     (board-or-id &key id author tags attributes to requester

@@ -1724,6 +1724,180 @@
                         'unrouted))
             (should-not (e-board-input-classifications board))))))))
 
+(ert-deftest e-board-test-grouped-classifier-retains-exact-authorized-route ()
+  "Grouped input routing keeps the authorize-time subscription and participant.
+
+Retiring the route after grouping must make the whole deferred transaction
+terminal.  A same-id replacement is future-only and cannot inherit the old
+classifier's bucket or pickup."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0))
+    (let (drains)
+      (let ((e-board-input-classification-drain-limit 1))
+        (let* ((board
+              (e-board-create
+               :id "board"
+               :input-classification-scheduler
+               (lambda (drain) (push drain drains))))
+             (participant
+              (e-board-add-participant
+               board :id "participant" :create-pickup-subscription-id "address"))
+             (old
+              (e-board-subscribe
+               board "participant" '(:tags (old)) :id "route"))
+             (publication
+              (e-board-post-input board :id "input" :tags '(old)))
+             record route bucket)
+        ;; The bounded scheduler lets the test stop at each owner phase.  The
+        ;; built-in address and the ordinary route consume the first two
+        ;; classifier units; the next unit enters authorize-pickups.
+        (while (and drains
+                    (not (eq (e-board-input-classification-phase
+                              (setq record (car (e-board-input-classifications board))))
+                             'authorize-pickups)))
+          (funcall (pop drains)))
+        (should record)
+        (funcall (pop drains))
+        (setq bucket
+              (gethash "participant"
+                       (e-board-input-classification-by-participant record))
+              route (car (e-board-subscription-bucket-routes bucket)))
+        (should (eq route
+                    (gethash "route"
+                             (e-board-input-classification-authorized-routes
+                              record))))
+        (should (eq (e-board-classification-route-subscription route) old))
+        (should (eq (e-board-classification-route-participant route)
+                    participant))
+        ;; Retirement/replacement happens after authorize+group, while the
+        ;; record is still held before prepare/commit.
+        (e-board-retire-subscription-exact board old)
+        (let ((replacement
+               (e-board-subscribe
+                board "participant" '(:tags (replacement)) :id "route")))
+          (while drains
+            (funcall (pop drains)))
+          (should (eq (e-board-message-routing-state
+                       (e-board-publication-message publication))
+                      'routing-failed))
+          (should (eq (e-board-message-unrouted-reason
+                       (e-board-publication-message publication))
+                      'subscription-lifetime-changed))
+          (should-not (e-board-publication-pickup-ids publication))
+          (should (eq (e-board-subscription-state replacement) 'active))
+          (should-not (e-board-input-classifications board))))))))
+
+(ert-deftest e-board-test-grouped-classifier-revalidates-after-prepare ()
+  "A route retired after prepare cannot commit its frozen pickup.
+
+The classifier is deliberately stopped between prepare and commit.  Replacing
+the subscription with the same durable id must not make the old prepared
+participant route current again."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        drains)
+    (let ((e-board-input-classification-drain-limit 1))
+      (let* ((board
+              (e-board-create
+               :id "board"
+               :input-classification-scheduler
+               (lambda (drain) (push drain drains))))
+             (participant
+              (e-board-add-participant
+               board :id "participant" :create-pickup-subscription-id "address"))
+             (old
+              (e-board-subscribe
+               board "participant" '(:tags (old)) :id "route"))
+             (publication
+              (e-board-post-input board :id "input" :tags '(old)))
+             record)
+        ;; Advance through selector matching and grouped authorization until
+        ;; the first participant bucket is ready to prepare.
+        (while (and drains
+                    (not (eq (e-board-input-classification-phase
+                              (setq record
+                                    (car (e-board-input-classifications board))))
+                             'prepare-pickups)))
+          (funcall (pop drains)))
+        (should record)
+        ;; One bounded unit prepares the exact participant pickup, but leaves
+        ;; the record at prepare-pickups with its cursor exhausted.
+        (funcall (pop drains))
+        (should (eq (e-board-input-classification-phase record)
+                    'prepare-pickups))
+        (should (= (length
+                    (e-board-input-classification-prepared-pickups record))
+                   1))
+        (e-board-retire-subscription-exact board old)
+        (let ((replacement
+               (e-board-subscribe
+                board "participant" '(:tags (replacement)) :id "route")))
+          (while drains
+            (funcall (pop drains)))
+          (should (eq (e-board-message-routing-state
+                       (e-board-publication-message publication))
+                      'routing-failed))
+          (should (eq (e-board-message-unrouted-reason
+                       (e-board-publication-message publication))
+                      'subscription-lifetime-changed))
+          (should-not (e-board-publication-pickup-ids publication))
+          (should (eq (e-board-subscription-state replacement) 'active))
+          (should (equal (e-board-participant-id participant) "participant"))
+          (should-not (e-board-input-classifications board)))))))
+
+(ert-deftest e-board-test-grouped-classifier-fences-authorize-time-retirement ()
+  "A route retired by its authorize hook cannot enter the grouped bucket.
+
+This exercises the narrow boundary between exact authorization and grouping:
+the hook may replace the same subscription id, but the captured old object
+remains terminal for the in-flight classifier."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        drains old replaced)
+    (let ((e-board-input-classification-drain-limit 1))
+      (let* ((board
+              (e-board-create
+               :id "board"
+               :classification-authorizer
+               (lambda (subscription _message phase)
+                 (when (and (eq phase 'pickup-finalization)
+                            (eq subscription old)
+                            (not replaced))
+                   (setq replaced t)
+                   (let ((hook-board
+                          (e-board-get
+                           (e-board-subscription-board-id subscription))))
+                     (e-board-retire-subscription-exact hook-board old)
+                     (setq replaced
+                           (e-board-subscribe
+                            hook-board "participant" '(:tags (replacement))
+                            :id "route"))))
+                 t)
+               :input-classification-scheduler
+               (lambda (drain) (push drain drains))))
+             (participant
+              (e-board-add-participant
+               board :id "participant" :create-pickup-subscription-id "address"))
+             (publication nil))
+        (setq old
+              (e-board-subscribe
+               board "participant" '(:tags (old)) :id "route")
+              publication
+              (e-board-post-input board :id "input" :tags '(old)))
+        (while drains
+          (funcall (pop drains)))
+        (should (eq (e-board-message-routing-state
+                     (e-board-publication-message publication))
+                    'routing-failed))
+        (should (eq (e-board-message-unrouted-reason
+                     (e-board-publication-message publication))
+                    'subscription-lifetime-changed))
+        (should-not (e-board-publication-pickup-ids publication))
+        (should (e-board-subscription-p replaced))
+        (should (eq (e-board-subscription-state replaced) 'active))
+        (should (equal (e-board-participant-id participant) "participant"))
+        (should-not (e-board-input-classifications board))))))
+
 (ert-deftest e-board-test-held-classifier-respects-later-effect-cancellation ()
   "A continuation cancelled before classification never prepares its effect."
   (let ((e-board--registry (make-hash-table :test 'equal))

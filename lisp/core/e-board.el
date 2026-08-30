@@ -151,6 +151,10 @@
                (:constructor e-board-pickup--create)
                (:conc-name e-board-pickup-))
   delivery-id board-id participant-id message-id subscription-ids
+  ;; This process-local route authority is retained solely to distinguish the
+  ;; participant lifetime that accepted the pickup from a same-id replacement.
+  ;; It is not part of the durable pickup envelope.
+  participant-lifetime
   event-seq-range mode requester-actor addressed-p cause-metadata content reference state
   attempt)
 
@@ -200,13 +204,23 @@
   message publication subscription-count index
   matches matches-tail post-subscriptions post-subscriptions-tail
   phase cursor by-participant participant-ids participant-ids-tail participant-count
+  ;; Routes captured after the deferred authorize phase.  The map is the
+  ;; classifier's causal hand-off: grouping must use this exact subscription
+  ;; object and participant object rather than resolving either by id later.
+  authorized-routes
   prepared-pickups prepared-pickups-tail pickup-ids pickup-ids-tail
   overflow-reason)
 
 (cl-defstruct (e-board-subscription-bucket
                (:constructor e-board-subscription-bucket--create)
                (:conc-name e-board-subscription-bucket-))
-  ids tail count)
+  ids tail count routes routes-tail)
+
+(cl-defstruct (e-board-classification-route
+               (:constructor e-board-classification-route--create)
+               (:conc-name e-board-classification-route-))
+  "Exact participant/subscription authority retained by one input classifier."
+  subscription subscription-token participant)
 
 (cl-defstruct (e-board-subscription-replay
                (:constructor e-board-subscription-replay--create)
@@ -869,6 +883,27 @@ at or after that sequence without advancing either observer cursor."
 (defun e-board-pickup (board delivery-id)
   "Return BOARD pickup DELIVERY-ID, or nil."
   (gethash delivery-id (e-board-pickups board)))
+
+(defun e-board-pickup-route-current-p (board pickup)
+  "Return non-nil when PICKUP retains its exact current participant lifetime.
+The route snapshot is process-local authority for deferred delivery: it keeps a
+retired or same-id replacement participant from inheriting an already-routed
+producer pickup.  A current participant without a runtime attachment remains a
+valid waiting route and may be delivered after a later attachment is admitted."
+  (when (and (e-board-p board)
+             (e-board-pickup-p pickup))
+    (let* ((participant (e-board-pickup-participant-lifetime pickup))
+           (participant-id (and participant
+                                (e-board-participant-id participant)))
+           (current (and participant-id
+                         (e-board-participant board participant-id))))
+      (and (eq current participant)
+           ;; During a controlled rebind the participant remains the exact
+           ;; current lifetime.  Terminal retirement removes it from the
+           ;; board map, so the identity check still fences old pickups while
+           ;; already-accepted work can drain through rebind.
+           (memq (e-board-participant-state participant)
+                 '(active detaching dormant stale))))))
 
 (defun e-board--pickup-queue (board participant-id)
   "Return PARTICIPANT-ID's ordered pickup identities on BOARD."
@@ -3320,44 +3355,156 @@ fact publications."
     (setf (e-board-input-classification-participant-ids-tail record) cell)
     (cl-incf (e-board-input-classification-participant-count record))))
 
-(defun e-board--classification-group-subscription (record subscription)
-  "Group one authorized SUBSCRIPTION into RECORD with fixed clause/fan-out caps."
-  (let* ((participant-id (e-board-subscription-participant-id subscription))
+(defun e-board--classification-route-current-p (board route)
+  "Return non-nil when ROUTE still owns its exact board lifetimes."
+  (let* ((subscription (e-board-classification-route-subscription route))
+         (subscription-token
+          (e-board-classification-route-subscription-token route))
+         (participant (e-board-classification-route-participant route))
+         (participant-id (and participant
+                              (e-board-participant-id participant)))
+         (current-subscription
+          (and subscription
+               (e-board-find-subscription
+                board (e-board-subscription-id subscription))))
+         (current-participant
+          (and participant-id
+               (e-board-participant board participant-id))))
+    (and (e-board-classification-route-p route)
+         (e-board-subscription-p subscription)
+         (e-board-participant-p participant)
+         (eq current-subscription subscription)
+         (equal (e-board-subscription-lifetime-token subscription)
+                subscription-token)
+         (equal (e-board-subscription-participant-id subscription)
+                participant-id)
+         (eq (e-board-subscription-state subscription) 'active)
+         (eq current-participant participant)
+         (memq (e-board-participant-state participant)
+               '(active dormant stale)))))
+
+(defun e-board--classification-capture-route (board subscription)
+  "Capture SUBSCRIPTION's exact participant lifetime for deferred routing.
+The participant lookup intentionally happens at authorize time.  A later
+group/prepare/commit phase may only validate this captured object; it must not
+rediscover a same-id participant that was admitted after authorization."
+  (let ((participant
+         (e-board-participant board
+                              (e-board-subscription-participant-id
+                               subscription))))
+    (when participant
+      (e-board-classification-route--create
+       :subscription subscription
+       :subscription-token
+       (copy-tree (e-board-subscription-lifetime-token subscription))
+       :participant participant))))
+
+(defun e-board--classification-bucket-current-p (board participant-id bucket)
+  "Return non-nil when BUCKET's exact route entries remain current."
+  (and (e-board-subscription-bucket-p bucket)
+       (e-board-subscription-bucket-routes bucket)
+       (cl-every
+        (lambda (route)
+          (and (equal participant-id
+                      (e-board-subscription-participant-id
+                       (e-board-classification-route-subscription route)))
+               (e-board--classification-route-current-p board route)))
+        (e-board-subscription-bucket-routes bucket))))
+
+(defun e-board--classification-routes-current-p (board record)
+  "Return non-nil when every grouped pickup route still owns its lifetimes."
+  (catch 'e-board-classification-route-invalid
+    (maphash
+     (lambda (participant-id bucket)
+       (unless (e-board--classification-bucket-current-p
+                board participant-id bucket)
+         (throw 'e-board-classification-route-invalid nil)))
+     (e-board-input-classification-by-participant record))
+    t))
+
+(defun e-board--classification-clear-prepared-pickups (record)
+  "Discard RECORD's uncommitted pickup set after a route lifetime change."
+  (setf (e-board-input-classification-prepared-pickups record) nil
+        (e-board-input-classification-prepared-pickups-tail record) nil
+        (e-board-input-classification-pickup-ids record) nil
+        (e-board-input-classification-pickup-ids-tail record) nil))
+
+(defun e-board--classification-group-subscription
+    (board record route)
+  "Group authorized ROUTE with exact participant/lifetime authority.
+ROUTE is captured by the authorize phase.  Keeping this function route-shaped
+prevents a grouped classifier from silently selecting a replacement object by
+the subscription or participant id."
+  (let* ((subscription
+          (e-board-classification-route-subscription route))
+         (participant-id
+          (and subscription
+               (e-board-subscription-participant-id subscription)))
          (table (e-board-input-classification-by-participant record))
          (bucket (gethash participant-id table)))
-    (unless bucket
-      (if (>= (e-board-input-classification-participant-count record)
-              e-board-input-fanout-limit)
-          (setf (e-board-input-classification-overflow-reason record)
-                'fanout-limit-exceeded)
-        (setq bucket (e-board-subscription-bucket--create :count 0))
-        (puthash participant-id bucket table)
-        (e-board--classification-append-participant record participant-id)))
-    (when bucket
-      (if (>= (e-board-subscription-bucket-count bucket)
-              e-board-pickup-subscription-limit)
-          (setf (e-board-input-classification-overflow-reason record)
-                'subscription-clause-limit-exceeded)
-        (let ((cell (list (e-board-subscription-id subscription))))
-          (if (e-board-subscription-bucket-tail bucket)
-              (setcdr (e-board-subscription-bucket-tail bucket) cell)
-            (setf (e-board-subscription-bucket-ids bucket) cell))
-          (setf (e-board-subscription-bucket-tail bucket) cell)
-          (cl-incf (e-board-subscription-bucket-count bucket)))))))
+    ;; The current subscription check alone is insufficient: membership may
+    ;; have been retired and replaced between selector matching and this
+    ;; deferred grouping phase.  Do not create a bucket without the exact
+    ;; participant object that authorized the route.
+    (unless (and route
+                 (eq route
+                     (gethash (e-board-subscription-id subscription)
+                              (e-board-input-classification-authorized-routes
+                               record)))
+                 (e-board--classification-route-current-p board route))
+      (setf (e-board-input-classification-overflow-reason record)
+            'subscription-lifetime-changed))
+    (unless (e-board-input-classification-overflow-reason record)
+      (unless bucket
+        (if (>= (e-board-input-classification-participant-count record)
+                e-board-input-fanout-limit)
+            (setf (e-board-input-classification-overflow-reason record)
+                  'fanout-limit-exceeded)
+          (setq bucket (e-board-subscription-bucket--create :count 0))
+          (puthash participant-id bucket table)
+          (e-board--classification-append-participant record participant-id)))
+      (when bucket
+        (if (>= (e-board-subscription-bucket-count bucket)
+                e-board-pickup-subscription-limit)
+            (setf (e-board-input-classification-overflow-reason record)
+                  'subscription-clause-limit-exceeded)
+          (let* ((route-cell (list route))
+                 (id-cell (list (e-board-subscription-id subscription))))
+            (if (e-board-subscription-bucket-tail bucket)
+                (setcdr (e-board-subscription-bucket-tail bucket) id-cell)
+              (setf (e-board-subscription-bucket-ids bucket) id-cell))
+            (setf (e-board-subscription-bucket-tail bucket) id-cell)
+            (if (e-board-subscription-bucket-routes-tail bucket)
+                (setcdr (e-board-subscription-bucket-routes-tail bucket)
+                        route-cell)
+              (setf (e-board-subscription-bucket-routes bucket) route-cell))
+            (setf (e-board-subscription-bucket-routes-tail bucket) route-cell)
+            (cl-incf (e-board-subscription-bucket-count bucket))))))))
 
 (defun e-board--classification-prepare-pickup (board record participant-id)
   "Prepare PARTICIPANT-ID's pickup off-registry for RECORD."
   (let* ((message (e-board-input-classification-message record))
          (bucket (gethash participant-id
                           (e-board-input-classification-by-participant record)))
-         (delivery-id (list (e-board-id board)
-                            (e-board-message-id message)
-                            participant-id))
+         (valid-p (e-board--classification-bucket-current-p
+                   board participant-id bucket)))
+    (if (not valid-p)
+        (progn
+          (setf (e-board-input-classification-overflow-reason record)
+                'subscription-lifetime-changed)
+          (e-board--classification-clear-prepared-pickups record))
+      (let* ((route (car (e-board-subscription-bucket-routes bucket)))
+             (participant
+              (e-board-classification-route-participant route))
+             (delivery-id (list (e-board-id board)
+                                (e-board-message-id message)
+                                participant-id))
          (pickup
           (e-board-pickup--create
            :delivery-id delivery-id :board-id (e-board-id board)
            :participant-id participant-id :message-id (e-board-message-id message)
            :subscription-ids (copy-sequence (e-board-subscription-bucket-ids bucket))
+           :participant-lifetime participant
            :event-seq-range (list (e-board-message-seq message)
                                   (e-board-message-seq message))
            :mode (e-board-message-mode message)
@@ -3369,17 +3516,20 @@ fact publications."
            :content (e-board--copy-envelope-value (e-board-message-content message))
            :reference
            (e-board--copy-envelope-value (e-board-message-reference message))))
-         (pickup-cell (list pickup))
-         (id-cell (list delivery-id)))
-    (if (e-board-input-classification-prepared-pickups-tail record)
-        (setcdr (e-board-input-classification-prepared-pickups-tail record)
-                pickup-cell)
-      (setf (e-board-input-classification-prepared-pickups record) pickup-cell))
-    (setf (e-board-input-classification-prepared-pickups-tail record) pickup-cell)
-    (if (e-board-input-classification-pickup-ids-tail record)
-        (setcdr (e-board-input-classification-pickup-ids-tail record) id-cell)
-      (setf (e-board-input-classification-pickup-ids record) id-cell))
-    (setf (e-board-input-classification-pickup-ids-tail record) id-cell)))
+           (pickup-cell (list pickup))
+           (id-cell (list delivery-id)))
+        (if (e-board-input-classification-prepared-pickups-tail record)
+            (setcdr (e-board-input-classification-prepared-pickups-tail record)
+                    pickup-cell)
+          (setf (e-board-input-classification-prepared-pickups record)
+                pickup-cell))
+        (setf (e-board-input-classification-prepared-pickups-tail record)
+              pickup-cell)
+        (if (e-board-input-classification-pickup-ids-tail record)
+            (setcdr (e-board-input-classification-pickup-ids-tail record)
+                    id-cell)
+          (setf (e-board-input-classification-pickup-ids record) id-cell))
+        (setf (e-board-input-classification-pickup-ids-tail record) id-cell)))))
 
 (defun e-board--classification-commit-routing (board record)
   "Atomically expose RECORD's fixed-cap pickup set and routing projection."
@@ -3388,6 +3538,20 @@ fact publications."
          (participant-ids (e-board-input-classification-participant-ids record))
          (pickup-ids (e-board-input-classification-pickup-ids record))
          (overflow (e-board-input-classification-overflow-reason record)))
+    ;; Revalidate immediately before the atomic pickup set becomes visible.  A
+    ;; subscription or participant may have retired after prepare-pickups;
+    ;; invalidating the whole transaction preserves fan-out atomicity and keeps
+    ;; a same-id replacement out of the old classifier.
+    (unless overflow
+      (unless (e-board--classification-routes-current-p board record)
+        (setq overflow 'subscription-lifetime-changed)
+        (setf (e-board-input-classification-overflow-reason record) overflow)
+        (e-board--classification-clear-prepared-pickups record)
+        (setq participant-ids nil
+              pickup-ids nil)))
+    (when overflow
+      (setq participant-ids nil
+            pickup-ids nil))
     (cond
      (overflow
       (setf (e-board-message-unrouted-reason message) overflow
@@ -3443,10 +3607,21 @@ fact publications."
              (when-let ((current
                          (e-board--classification-subscription-current-p
                           board subscription)))
-               (when (e-board--authorize-classification
-                      board current message 'pickup-finalization)
-                 (when (eq (e-board-message-kind message) 'input)
-                   (e-board--classification-group-subscription record current)))))
+               ;; Capture the participant object before invoking the external
+               ;; authorization hook.  If that hook retires or replaces the
+               ;; route, later phases retain this object and reject it rather
+               ;; than resolving a same-id replacement.
+               (let ((route
+                      (e-board--classification-capture-route board current)))
+                 (when (and route
+                            (e-board--authorize-classification
+                             board current message 'pickup-finalization))
+                   (puthash (e-board-subscription-id current) route
+                            (e-board-input-classification-authorized-routes
+                             record))
+                   (when (eq (e-board-message-kind message) 'input)
+                     (e-board--classification-group-subscription
+                      board record route))))))
          (if (eq (e-board-message-kind message) 'input)
              (setf (e-board-input-classification-phase record) 'prepare-pickups
                    (e-board-input-classification-cursor record)
@@ -3460,7 +3635,9 @@ fact publications."
        (if-let ((cursor (e-board-input-classification-cursor record)))
            (progn
              (setf (e-board-input-classification-cursor record) (cdr cursor))
-             (e-board--classification-prepare-pickup board record (car cursor)))
+             (unless (e-board-input-classification-overflow-reason record)
+               (e-board--classification-prepare-pickup
+                board record (car cursor))))
          (setf (e-board-input-classification-phase record) 'commit-routing))
        nil)
       ('commit-routing
@@ -3500,7 +3677,8 @@ the same bounded queue solely to classify explicit continuation subscriptions."
                 :message message
                 :subscription-count (e-board-subscription-count board)
                 :index 0 :publication publication
-                :matches nil :post-subscriptions nil))))
+                :matches nil :post-subscriptions nil
+                :authorized-routes (make-hash-table :test 'equal)))))
     (if (e-board-input-classification-tail board)
         (setcdr (e-board-input-classification-tail board) cell)
       (setf (e-board-input-classifications board) cell))

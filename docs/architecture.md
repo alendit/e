@@ -232,6 +232,13 @@ lookup. The retirement generation fences callbacks accepted before the
 transition; Work activity capture checks the current active attachment before
 mutating a mailbox, and a classifier page that arrives in the retirement
 window can cancel only that attachment's ready pickup.
+Pickup-drain callbacks also capture a runtime scheduler generation. Removing
+one attachment's FIFO cells advances that generation, clears the scheduled
+receipt, and schedules any surviving queue under a fresh receipt; an old
+callback is therefore inert and cannot consume replacement work. Invocation
+effects use the same terminal-owner rule: the exact invocation is removed and
+accounted before fallible unsettled notifications, so a notification fault or
+reentrant attachment retirement cannot double-decrement it.
 Ordinary-route retirement is owned by `e-board-retire-subscription-exact` in
 `e-board`: its board-monotonic lifetime token fences classifiers, prepared and
 queued effects, replay snapshots, quiet/lifetime/expiry callbacks, and same-id
@@ -239,6 +246,12 @@ replacement routes. `e-board-registry-retire-participant-exact` delegates to
 that operation before removing participant catalogs. The separate durable
 `e-board-registry-remove-participant` path remains for the established
 `participant-removed` event and inactive historical projection.
+Deferred input classification carries an exact subscription object/token and
+participant object from authorization through grouping, preparation, and the
+final atomic pickup commit. A route changed at any of those boundaries fails
+the whole frozen transaction; a committed pickup retains its participant
+lifetime so runtime routing can settle stale producer work by delivery identity
+without resolving a same-id replacement.
 `e-board-message-envelope` is the board-owned detached journal projection, and
 `e-chat-service-reconcile-board-continuation` is the chat-service application
 operation that replays terminal board continuations; neither exposes mutable

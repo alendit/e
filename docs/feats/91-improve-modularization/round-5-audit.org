@@ -1160,3 +1160,229 @@ This terminal-lifecycle continuation's exact current logs are
 =/private/tmp/e-terminal-read-final2.log=,
 =/private/tmp/e-terminal-check-parens-final2.log=, and
 =/private/tmp/e-terminal-performance-final.log=.
+
+* Invocation, pickup, and grouped-classifier correction (current candidate)
+
+This continuation starts from exact clean baseline =51028359= (implementation
+baseline =05dccf82=).  It is the next exact candidate pending independent review;
+=review.org= and =index.org= remain untouched.  The user's running Emacs was
+not queried, reloaded, or otherwise changed.
+
+The correction addresses =F91-OWNER= and =F91-RUNTIME= at the invocation,
+pickup-scheduler, grouped-classifier, and producer-lifetime boundaries, with
+=F91-TOPOLOGY= and =F91-PRESERVATION= evidence below.  =F91-GOAL= remains
+behavior-green but mechanism-pending until parent and independent review accept
+the exact candidate tree.
+
+** Responsibility, state, and lifetime matrix
+
+| Cluster | Single owner and state | Lifetime and invariant | Boundary/disposition |
+|---+---+---+---|
+| Invocation effects | =e-board-runtime= exact invocation table, captured attachment/generation, state =open/applying/terminal=, unsettled invocation count | Process/attachment lifetime; target is removed and counted before any fallible notification; callback reentrancy cannot double-terminalize | Retained runtime mechanism; =e-board-runtime--terminalize-invocation= is the only terminal transition |
+| Runtime pickup scheduler | =e-board-runtime= pending FIFO/set, scheduled receipt, monotonic pickup-drain generation | Process lifetime; one bounded page per receipt; retiring an attachment removes only its owned cells, fences the old receipt, and reschedules surviving cells under a fresh generation | Retained scheduler; generation is process-local and not durable |
+| Grouped classifier route | =e-board= frozen classification record, authorized route map, bucket route list | One deferred classification transaction; each route keeps exact subscription object/token and participant object from authorization through atomic commit | Board-owned classifier boundary; no replacement lookup by id |
+| Producer routing | =e-board-runtime= producer input/delivery records and attachment-local ownership indexes; =e-board= pickup retains participant lifetime | Process/producer item lifetime; stale route settlement uses delivery identity and never resolves a same-id replacement | Existing producer port strengthened; no board-global scan or duplicate record |
+| Board pickup/FIFO | =e-board= durable/process board message and pickup state; runtime owns attachment-local pickup index | Board lifetime for history and participant FIFO; terminal stale route fails only its causal pickup and leaves replacement routes untouched | Existing board state machine retained; =participant-lifetime= is process-local route authority only |
+
+No durable record, board file, public command, wire shape, or event ordering
+changed.  The new route and generation fields are derived/process-local and are
+recreated on restart.  A core record-shape change therefore requires a normal
+Emacs restart; no private compatibility alias was added.
+
+** Actual runtime dependency graph
+
+The relevant runtime edges remain directional:
+
+#+begin_example
+e-board-runtime -> e-board-registry -> e-board -> e-work
+e-board-runtime -> e-harness -> e-session (existing attachment contracts)
+e-board-runtime -> e-harness-instances/e-harness-registry/e-request
+e-board-registry -> e-board (existing registry projection contract)
+#+end_example
+
+The classifier now retains route values inside the board transaction and does
+not call runtime.  Runtime consumes only the public board pickup route-current
+operation and the detached pickup value.  There is no runtime-to-facade reverse
+edge, callback registry, service locator, or mutual owner pair.  The
+syntax-aware all-literal local require scan reports 163 modules, 709 unique
+edges, and =CYCLES []=; the reproducible scanner and full edge output are in
+=/tmp/e-r5-require-scan.el= and =/tmp/f91-r5-require-current.log=.
+
+The general extracted-owner private sweep reports zero external private
+production references and zero duplicate function definitions in
+=/tmp/f91-r5-private-current.log=.  The established board-core primitive calls
+from runtime/registry (for example the board's private pickup queue and event
+append helpers) predate this candidate and are retained as the existing
+board-core adapter edges; this audit does not misreport that narrower baseline
+as a new cross-owner extraction edge.  No such calls were added by this
+correction.
+
+** Semantic API consumer map
+
+| Operation | Consumer | Shape and reason |
+|---+---+---|
+| =e-board-runtime-retire-attachment= | chat service, board/application teardown | Exact attachment terminal operation; settles runtime-owned work and routes without id fallback |
+| =e-board-pickup-route-current-p= | runtime pickup routing and producer settlement | Boolean semantic lifetime check over one detached board pickup; prevents same-id replacement inheritance |
+| =e-board-runtime--terminalize-invocation= | runtime drop/apply/attachment retirement | Private single-owner transition; no public record/registry API |
+| =e-board-runtime--schedule/fence/drain-pickup= | runtime enqueue and exact attachment retirement | Private generation-fenced bounded scheduler; no caller receives scheduler state |
+| grouped classification phases | board's deferred classifier only | Private transaction operations consume exact route objects; no raw route/registry port is exported |
+| =e-board-runtime--settle-producer-delivery-id= | runtime stale route and revoked-route paths | Private causal delivery-id settlement; does not resolve participant or attachment |
+
+There are no forwarding aliases or representation-shaped public operations in
+this correction.  The only new public-looking board operation is the semantic
+route-current predicate required by the runtime adapter; it returns a boolean,
+not a participant, subscription, marker, registry, or mutable record.
+
+** Correction mechanics and exact phase evidence
+
+Invocation terminalization first verifies exact table ownership, sets terminal
+state, removes the target, and decrements only =open= or =applying=.  The
+unsettled notification runs after that transition, so a signaling hook leaves a
+terminal object and a retry cannot decrement again.  If an invocation callback
+retires its attachment, retirement owns the transition and the outer apply is
+an idempotent no-op; repeated completion reports the existing unknown-target
+error without changing accounting.
+
+Pickup scheduling captures the current generation in the timer closure.  A
+retirement that removes attachment-owned queue cells increments the generation,
+clears the scheduled bit, and schedules any remaining queue under the new
+generation.  A retained callback from the old generation returns before
+touching the queue.  If retirement occurs during a drain, the generation check
+stops the old page and the retirement fence owns the replacement scheduling.
+
+Grouped classification captures one exact route at authorization, stores it in
+the classification's authorized map and participant bucket, and copies its
+participant object into each prepared pickup.  Group, prepare, and commit each
+revalidate subscription object/token and participant identity.  A route retired
+after any of those phases changes the whole transaction to
+=subscription-lifetime-changed= before the pickup set becomes visible.  A
+committed stale pickup is failed and its producer record is settled directly by
+delivery id, whether or not a current attachment exists.
+
+** Test topology and dispositions
+
+The owner suites remain direct and mechanism-shaped: board routing/classifier
+assertions are in =test/e-board-test.el=, runtime invocation/scheduler/producer
+assertions are in =test/e-board-runtime-test.el=, and registry exact membership
+assertions remain in =test/e-board-registry-test.el=.  The existing public
+downstream suites retain composed behavior only; no private test migration or
+compatibility test was added.  New tests retain the historical public behavior
+and strengthen the owner mechanisms with:
+
+- notification-fault invocation retirement, reentrant apply/retirement, and
+  repeated completion;
+- retained old pickup callback versus fresh replacement generation, including
+  preservation of another live attachment's queue;
+- classifier retirement before grouping, after prepare, and at authorization
+  finalization with no replacement and with a same-id replacement; and
+- stale producer routing settlement by exact delivery identity, with and
+  without a same-id replacement attachment.
+
+No historical test names were deleted or renamed.  The added names are
+=e-board-runtime-test-invocation-terminalization-precedes-fallible-notify=,
+=e-board-runtime-test-reentrant-invocation-apply-retires-once=,
+=e-board-runtime-test-pickup-drain-fences-retained-old-callback=,
+=e-board-runtime-test-pickup-drain-fence-preserves-other-attachment=,
+=e-board-runtime-test-stale-routed-producer-never-reaches-replacement=,
+=e-board-test-grouped-classifier-retains-exact-authorized-route=,
+=e-board-test-grouped-classifier-revalidates-after-prepare=, and
+=e-board-test-grouped-classifier-fences-authorize-time-retirement=.
+
+Test dispositions are =retain/strengthen= for direct board/runtime suites,
+=retain= for existing composed board/chat/Modernchat/Org Canvas tests, and
+=N/A= for presentation graphical source: no presentation source changed.  The
+previous isolated graphical gate remains applicable on that explicit basis
+(27/27 at the accepted prior candidate); no graphical behavior or test fixture
+was touched here.
+
+** Exact current verification
+
+| Gate | Result | Evidence |
+|---+---+---|
+| Board/registry/runtime direct batch | PASS: 195/195, 0 unexpected | =/tmp/f91-r5-board-reg-runtime-current.log= |
+| Downstream board/chat/canvas/harness consumers | PASS: 209/209, 0 unexpected; two existing asynchronous task-queue timer diagnostics were printed after passing teardown | =/tmp/f91-r5-downstream-current.log= |
+| Accepted preservation selector | PASS: 485 selected, 483 expected, 0 unexpected, 2 skips | =/tmp/f91-r5-preservation-current2.log= |
+| Full ERT with fixture sockets | PASS: 2,593 total, 2,586 expected, 0 unexpected, 7 skips | =/tmp/f91-r5-full-ert-current-escalated.log= |
+| Sandboxed full ERT substitute | Environment-limited: 2,593 total, 6 socket failures only; retained as negative evidence, not acceptance | =/tmp/f91-r5-full-ert-current.log= |
+| Production compile | PASS: changed =e-board.el= and =e-board-runtime.el=; no warnings after docstring wrap | =/tmp/f91-r5-compile-current.log= |
+| Read/check-parens | PASS for both changed owners and both changed direct suites | =/tmp/f91-r5-syntax-current-final.log= |
+| Local require/SCC | PASS: 163 modules, 709 edges, =CYCLES []= | =/tmp/f91-r5-require-current.log= |
+| Private/duplicate sweep | PASS: extracted-owner cross-private 0; duplicate definitions 0 | =/tmp/f91-r5-private-current.log= |
+| Diff/explicit whitespace | PASS: =git diff --check= and changed-file trailing-blank sweep | =/tmp/f91-r5-diff-check-current-final.log=, =/tmp/f91-r5-whitespace-current-final.log= |
+| Fresh owner operations | PASS: direct board create and runtime attach/retire | =/tmp/f91-r5-fresh-board-current.log=, =/tmp/f91-r5-fresh-runtime-current.log= |
+| Bounded hot-path smoke | PASS: board chat end-to-end 3/3; real elapsed 1.04--1.12s, test body 0.024--0.032s | =/tmp/f91-r5-performance-current.log= |
+
+No new synchronous write, scan, or unbounded drain was introduced.  Route
+validation is bounded by the classifier's existing fanout/subscription caps;
+stale producer settlement is one delivery-record lookup; queue scheduling adds
+one generation comparison per callback.  The exact attachment FIFO indexes and
+existing bounded pages remain the performance authority.
+
+** Residual topology and risks
+
+The affected material clusters are now dispositioned as follows: invocation
+terminal ownership =retain/strengthen= in runtime; pickup scheduler
+=retain/strengthen= in runtime; grouped route lifetime =retain/strengthen= in
+board; producer stale settlement =retain/strengthen= in runtime; board sequence,
+message/pickup history, registry maps, and harness/session ports =retain= as
+cohesive established owners.  No new module or duplicate implementation was
+needed.  No public behavior or durable format exception was observed.
+
+Remaining risks are bounded to the known two optional preservation skips (Evil
+and Markdown), the existing task-queue timer diagnostics in the downstream
+batch, and absence of live external-provider evidence (not applicable to this
+behavior-neutral package).  Core record/process changes require restart for an
+already-running Emacs; the running process was left unchanged.  Parent and
+independent acceptance remain pending, so F91-GOAL is behavior-green for the
+focused/full deterministic gates but mechanism progress is candidate/pending
+review rather than final completion.
+
+** Required design self-check
+
+1. *Would stopping here improve the project?*  Yes: invocation accounting,
+   pickup liveness, and grouped route lifetime are now explicit owner
+   transitions rather than hidden retry hazards.
+2. *What final direction does this move toward?*  One exact owner per mutable
+   board/runtime concern, with application composition above directional board
+   contracts.
+3. *What is uncertain versus stable?*  Durable board/session formats, public
+   routing behavior, and event order are stable.  Process-local scheduler and
+   route fields are implementation choices local to their owners.
+4. *Who owns each behavior and why?*  Runtime owns invocation/pickup/producer
+   attachment lifetime; board owns classifier route and pickup history because
+   those state machines share bounded routing transactions.
+5. *Does coupling increase or decrease?*  It decreases: runtime receives a
+   boolean route semantic and delivery identity, while no owner receives the
+   other owner's mutable registry or plist.
+6. *Did a dependency point the wrong way?*  No; the current 163/709 literal
+   graph is acyclic and the correction adds no reverse owner edge.
+7. *Could any side effect move outward?*  Timer scheduling remains runtime
+   scheduler-owned, while board routing remains board-owned; neither callback
+   or notification is hidden in a generic service.
+8. *What state was added or mutated?*  Only process-local invocation terminal
+   ordering, pickup-drain generation, classification route objects, and pickup
+   participant lifetime; each has the owner/lifetime listed above.
+9. *What is the performance impact?*  The bounded smoke is stable at
+   1.04--1.12s real time; route and stale settlement are constant/local with
+   no new writes or global scans.
+10. *Are interfaces real and substitutable?*  Yes: runtime needs only the
+    boolean route-current semantic and causal delivery id; board does not need
+    an attachment implementation or producer callback.
+11. *What compatibility expectations apply?*  Public commands, buffers,
+    event ordering, and durable formats are unchanged; new process-local fields
+    take effect after restart and have no private compatibility aliases.
+12. *What legacy code can be removed now?*  No implementation copy was needed;
+    the correction removes the old boolean-only scheduler hazard and discarded
+    id-only route rediscovery rather than adding a bridge.
+13. *Where are expected errors handled?*  Expected stale/retired routes become
+    explicit board failure/producer cancellation; notification and callback
+    faults remain visible to their caller and do not corrupt terminal counts.
+14. *What proves core behavior independently?*  The direct 195-case owner
+    batch exercises exact transitions, the 209-case downstream batch and
+    485-case preservation selector cover composition, and the fixture-enabled
+    full 2,593-case ERT plus fresh-load/static/performance evidence cover the
+    repository boundary.
+
+The implementation status is =In-progress= / pending parent and independent
+review; this continuation does not mark Feature 91 =Done= or alter the compact
+feature index.
