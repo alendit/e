@@ -19,13 +19,26 @@
 (require 'e-harness)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-backend)
+(require 'e-session)
+
+(defun e-bayesian-reasoning-hook-test--append-message
+    (harness session-id turn-id message)
+  "Append MESSAGE through the session contract for a hook fixture.
+The turn owner adds the same turn identity before its public session append;
+this fixture does that explicitly so the test does not reach into turn state."
+  (let ((message (copy-sequence message)))
+    (when turn-id
+      (plist-put message :turn-id turn-id))
+    (e-session-append-message (e-harness-sessions harness) session-id message)))
 
 (cl-defun e-bayesian-reasoning-hook-test--queue-follow-up
     (harness session-id prompt &key references metadata tags)
   "Adapt the board publication port to the private queue for harness unit tests."
   (ignore tags)
-  (e-harness--request-attached-follow-up
-   harness session-id prompt :references references :metadata metadata))
+  (e-harness-attached-turn-port-follow-up
+   (plist-get (gethash session-id (e-harness-active-turns harness))
+              :attached-turn-port)
+   prompt :references references :metadata metadata))
 
 (defun e-bayesian-reasoning-hook-test--run-finished-hook (value context)
   "Run the stop hook with the settling board token production retains."
@@ -38,7 +51,10 @@
              (e-harness-active-turns harness))
     (e-harness-test--synthetic-token
      harness session-id e-harness-test--attachment-token)
-    (let ((e-harness--attached-follow-up-publisher
+    (plist-put (gethash session-id (e-harness-active-turns harness))
+               :attached-turn-port
+               (e-harness-test--attached-turn-port harness session-id))
+    (let ((e-harness-test--follow-up-publisher
            #'e-bayesian-reasoning-hook-test--queue-follow-up))
       (e-bayesian-reasoning--turn-finished-hook value context))))
 
@@ -463,7 +479,7 @@ unchanged."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
         (value '(:status done)))
     (e-harness-create-session harness :id "session-1")
-    (let* ((message (e-harness--append-message
+    (let* ((message (e-bayesian-reasoning-hook-test--append-message
                      harness "session-1" "turn-1"
                      (list :role 'assistant
                            :content
@@ -502,7 +518,7 @@ unchanged."
   "An invalid corrective reply is hidden and cannot erase the original."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
-    (let ((message (e-harness--append-message
+    (let ((message (e-bayesian-reasoning-hook-test--append-message
                     harness "session-1" "turn-1"
                     (list :role 'assistant
                           :content
@@ -517,10 +533,10 @@ unchanged."
       (let* ((metadata (plist-get
                         (car (e-harness-queued-prompts harness "session-1"))
                         :metadata))
-             (_prompt (e-harness--append-message
+             (_prompt (e-bayesian-reasoning-hook-test--append-message
                        harness "session-1" "turn-2"
                        (list :role 'user :content "corrective" :metadata metadata)))
-             (replacement (e-harness--append-message
+             (replacement (e-bayesian-reasoning-hook-test--append-message
                            harness "session-1" "turn-2"
                            (list :role 'assistant :content "revised reply"))))
       (e-bayesian-reasoning-hook-test--run-finished-hook
@@ -543,11 +559,11 @@ unchanged."
   "A successful private validation closes the audit without replacing chat."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness--append-message
+    (e-bayesian-reasoning-hook-test--append-message
      harness "session-1" "turn-1"
      '(:id "01KASKED" :role user :origin human :content "Why did errors rise?"))
     (let ((message
-           (e-harness--append-message
+           (e-bayesian-reasoning-hook-test--append-message
             harness "session-1" "turn-1"
             (list :role 'assistant
                   :content
@@ -562,12 +578,12 @@ unchanged."
                         (car (e-harness-queued-prompts harness "session-1"))
                         :metadata))
              (_prompt
-              (e-harness--append-message
+              (e-bayesian-reasoning-hook-test--append-message
                harness "session-1" "turn-2"
                (list :role 'user :origin 'harness
                      :content "corrective" :metadata metadata)))
              (replacement
-              (e-harness--append-message
+              (e-bayesian-reasoning-hook-test--append-message
                harness "session-1" "turn-2"
                (list
                 :role 'assistant
@@ -595,7 +611,7 @@ unchanged."
 
 (ert-deftest e-bayesian-reasoning-hook-test-attachment-repair-regression ()
   "An opaque citation cannot turn a source-backed answer into `I don't know'."
-  (let* ((e-harness--attached-follow-up-publisher
+  (let* ((e-harness-test--follow-up-publisher
           #'e-bayesian-reasoning-hook-test--queue-follow-up)
          (calls 0)
          (request-messages nil)

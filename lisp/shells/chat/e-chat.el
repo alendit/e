@@ -2214,7 +2214,7 @@ operation."
    (let* ((options (and e-chat-harness
                        e-chat-session-id
                        (ignore-errors
-                         (e-harness-turn-options
+                         (e-chat-service-session-options
                           e-chat-harness
                           e-chat-session-id))))
           (current (plist-get options :model)))
@@ -2232,7 +2232,7 @@ operation."
    (let* ((options (and e-chat-harness
                        e-chat-session-id
                        (ignore-errors
-                         (e-harness-turn-options
+                         (e-chat-service-session-options
                           e-chat-harness
                           e-chat-session-id))))
           (current (or (plist-get options :reasoning-effort) "")))

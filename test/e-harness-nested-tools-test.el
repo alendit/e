@@ -56,7 +56,7 @@
            :tools registry
            :tool-executor
            (lambda (call options context)
-             (e-harness--execute-nested-tool
+             (e-harness-turn--execute-nested-tool
               harness "session-1" "turn-1" registry call options context)))
      :on-done (lambda (value) (setq result value)))
     (let ((deadline (+ (float-time) 1)))
@@ -110,7 +110,7 @@
            :tools registry
            :tool-executor
            (lambda (call options context)
-             (e-harness--execute-nested-tool
+             (e-harness-turn--execute-nested-tool
               harness "session-1" "turn-1" registry call options context)))
      :on-done (lambda (value) (setq result value)))
     (let ((deadline (+ (float-time) 1)))

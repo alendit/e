@@ -197,9 +197,9 @@ covered by the adapter tests below."
     (setq harness-ref harness)
     (let ((e-context-lifetime-shadow-projection-enabled t)
           (original-frame
-           (symbol-function 'e-harness--lifetime-tool-observation-frame)))
+           (symbol-function 'e-harness-context-lifetime-tool-observation-frame)))
       (cl-letf (((symbol-function
-                  'e-harness--lifetime-tool-observation-frame)
+                  'e-harness-context-lifetime-tool-observation-frame)
                  (lambda (&rest args)
                    (let ((frame (apply original-frame args)))
                      (setq captured-tool-frame frame)
@@ -1191,7 +1191,7 @@ ordinary-turn anchor."
     (e-harness-activate-capability harness capability)
     (let ((original-body (symbol-function 'e-openai-codex-request-body))
           (original-frame
-           (symbol-function 'e-harness--lifetime-tool-observation-frame)))
+           (symbol-function 'e-harness-context-lifetime-tool-observation-frame)))
       (cl-letf (((symbol-function 'e-openai-codex-request-body)
                  (lambda (&rest args)
                    (let ((body (apply original-body args)))
@@ -1206,7 +1206,7 @@ ordinary-turn anchor."
                                                :body body))))
                      body)))
                 ((symbol-function
-                  'e-harness--lifetime-tool-observation-frame)
+                  'e-harness-context-lifetime-tool-observation-frame)
                  (lambda (&rest args)
                    (let ((frame (apply original-frame args)))
                      (setq captured-tool-frame frame)
@@ -1484,7 +1484,7 @@ ordinary-turn anchor."
               ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
       (e-board-e2e-reset-runtime)
       (e-chat-service-create-session :harness harness :id "session-one")
-      (e-harness--install-activity-sink
+      (e-harness-activity-subscribe
        harness (lambda (event) (push event events)) :session-id "session-one")
       (e-board-e2e-prompt-async harness "session-one" "recover once")
       (let ((result (e-board-e2e-wait-batch harness "session-one" 1.0)))

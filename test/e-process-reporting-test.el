@@ -86,11 +86,11 @@
 (ert-deftest e-process-reporting-test-capture-attaches-content-free-evidence-and-links ()
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'tool-started
        '(:id "failed-call" :name "bash"
          :arguments (:authorization "Bearer top-secret" :command "false")))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'tool-finished
        '(:tool-call (:id "failed-call" :name "bash")
          :result (:tool-call-id "failed-call" :name "bash" :status error
@@ -126,11 +126,11 @@
   "Positive action feedback retains the action identity and agent judgment."
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'action-started
        '(:action-call-id "action-1" :capability-id web :action fetch
          :arguments (:uri "https://example.test") :status started))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'action-finished
        '(:action-call-id "action-1" :capability-id web :action fetch
          :status ok :result (:content "done")))
@@ -217,7 +217,7 @@
 (ert-deftest e-process-reporting-test-request-shape-report-preserves-paired-measures ()
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'provider-request-started
        '(:provider-request-id "request-1"
          :provider-request-ordinal 1
@@ -286,7 +286,7 @@
   "Ordinary request events report that no counterfactual was recorded."
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'provider-request-started
        '(:provider-request-id "request-1"
          :provider-request-ordinal 1))
@@ -382,7 +382,7 @@
        :backend backend :tools registry
        :options (list :tools (e-tools-definitions registry))
        :on-event (lambda (type payload)
-                   (e-harness--emit-turn-event
+                   (e-harness-activity-emit-turn-event
                     harness "session-1" "turn-1" type payload))
        :append-message (lambda (message) (push message appended)))
       (let ((serialized
@@ -436,7 +436,7 @@
            :backend backend :tools registry
            :options (list :tools (e-tools-definitions registry))
            :on-event (lambda (type payload)
-                       (e-harness--emit-turn-event
+                       (e-harness-activity-emit-turn-event
                         harness "session-1" "turn-1" type payload))
            :append-message (lambda (message) (push message appended))))
         (let ((serialized
@@ -471,14 +471,14 @@
 (ert-deftest e-process-reporting-test-trigger-chain-preserves-nested-action ()
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'tool-started
        '(:id "run-1" :name "run_elisp_probe" :arguments nil))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'action-finished
        '(:action-call-id "action-1" :capability-id outer :action :run
          :parent-tool-call-id "run-1" :status ok))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'tool-finished
        '(:tool-call (:id "run-1" :name "run_elisp_probe")
          :result (:tool-call-id "run-1" :name "run_elisp_probe"
@@ -504,10 +504,10 @@
 (ert-deftest e-process-reporting-test-trigger-chain-keeps-running-parent-tool ()
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'tool-started
        '(:id "run-1" :name "run_elisp_probe" :arguments nil))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'action-finished
        '(:action-call-id "action-1" :capability-id outer :action :run
          :parent-tool-call-id "run-1" :status ok))
@@ -543,7 +543,7 @@
     (e-process-reporting-test--with-store (store directory)
       (let ((harness (e-process-reporting-test--harness store)))
         (dolist (event (butlast history))
-          (e-harness--emit-turn-event
+          (e-harness-activity-emit-turn-event
            harness "session-1" "turn-1" (car event) (cadr event)))
         (let* ((marker (e-process-reporting-test--call-action
                         harness :mark
@@ -555,10 +555,10 @@
 (ert-deftest e-process-reporting-test-completed-request-is-not-current ()
   (e-process-reporting-test--with-store (store directory)
     (let ((harness (e-process-reporting-test--harness store)))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'provider-request-started
        '(:provider-request-id "finished-request"))
-      (e-harness--emit-turn-event
+      (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'provider-request-finished
        '(:provider-request-id "finished-request" :status done))
       (let ((marker (e-process-reporting-test--call-action

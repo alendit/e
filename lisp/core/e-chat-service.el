@@ -1455,6 +1455,12 @@ values delivered by `e-chat-service-subscribe'."
   "Return SESSION-ID's private metadata through the board application seam."
   (e-session-get (e-harness-sessions harness) session-id))
 
+(defun e-chat-service-session-options (harness session-id)
+  "Return the effective option projection for SESSION-ID.
+Chat presentation controls use this service operation instead of depending on
+the harness context owner directly."
+  (e-harness-session-options harness session-id))
+
 (defun e-chat-service-session-store (harness)
   "Return HARNESS's private session store for controlled shell metadata work."
   (e-harness-sessions harness))

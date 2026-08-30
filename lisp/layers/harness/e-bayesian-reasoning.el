@@ -27,7 +27,7 @@
 (require 'e-structured-blocks)
 (require 'subr-x)
 
-(declare-function e-harness--publish-attached-follow-up "e-harness"
+(declare-function e-harness-attached-turn-publish-follow-up "e-harness-turn"
                   (harness session-id prompt &rest args))
 (declare-function e-harness-messages "e-harness" (harness session-id))
 (declare-function e-harness-session-activity-events "e-harness"
@@ -733,7 +733,8 @@ know this capability's marker grammar to render it."
   "Conditional `:turn-finished' hook enforcing the reasoning mark.
 Returns VALUE unchanged always -- the hook never rewrites the reply.  On a
 gated failure it requests exactly one corrective follow-up turn through
-`e-harness--publish-attached-follow-up', tagged so it does not recurse and so
+`e-harness-attached-turn-publish-follow-up', tagged so it does not recurse and
+so
 main chat observers do not project the private validation interaction.  The
 first attempt remains the visible answer.  The validation reply remains in the
 private transcript for audit but is hidden from ordinary transcript context.
@@ -794,13 +795,13 @@ Every performed check writes a durable hook-audit record."
         (if (not (memq outcome '(format-gap evidence-gap)))
             (e-bayesian-reasoning--record-audit
              harness session-id turn-id outcome details 'none)
-          (if (not (fboundp 'e-harness--publish-attached-follow-up))
+          (if (not (fboundp 'e-harness-attached-turn-publish-follow-up))
               (e-bayesian-reasoning--record-audit
                harness session-id turn-id 'verification-unavailable
                (append details (list :reason 'follow-up-unavailable)) 'unavailable)
             (condition-case err
                 (progn
-                  (e-harness--publish-attached-follow-up
+                  (e-harness-attached-turn-publish-follow-up
                    harness session-id
                    (e-bayesian-reasoning--follow-up-prompt
                     gap

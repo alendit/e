@@ -148,6 +148,13 @@ registers one or more methods in REGISTRY."
            (e-resources--compatible-arguments
             method operation handler arguments))))
 
+(defun e-resources-method-for-uri (registry operation uri)
+  "Return the registered method for OPERATION at URI.
+This bounded inspection operation lets an owner determine whether a resource
+operation has asynchronous Work support without reaching into registry lookup
+details."
+  (e-resources--method registry operation (e-resources-parse-uri uri)))
+
 (defun e-resources-read (registry uri &optional range)
   "Read URI from REGISTRY with optional RANGE."
   (e-resources-call registry e-operation-read uri range))

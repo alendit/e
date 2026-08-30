@@ -27,29 +27,17 @@
     (:symbol e-harness-abort :policy absent)
     (:symbol e-harness-subscribe :policy absent)
     (:symbol e-harness-unsubscribe :policy absent)
-    (:symbol e-harness--install-activity-sink :policy private
-             :owners ("lisp/core/e-board-runtime.el" "lisp/core/e-harness.el"))
-    (:symbol e-harness--remove-activity-sink :policy private
-             :owners ("lisp/core/e-board-runtime.el" "lisp/core/e-harness.el"))
-    (:symbol e-harness--request-attached-follow-up :policy private
-             :owners ("lisp/core/e-harness.el"
-                      "lisp/core/e-board-runtime.el"))
-    (:symbol e-harness--publish-attached-follow-up :policy private
-             :owners ("lisp/core/e-harness.el"
-                      "lisp/layers/harness/e-bayesian-reasoning.el"))
-    (:symbol e-harness--queue-attached-prompt :policy private
-             :owners ("lisp/core/e-harness.el"))
-    (:symbol e-harness--steer-attached-turn :policy private
-             :owners ("lisp/core/e-board-runtime.el" "lisp/core/e-harness.el"))
-    (:symbol e-harness--prompt-attached-batch :policy private
-             :owners ("lisp/core/e-harness.el"))
-    (:symbol e-harness--prompt-attached-async :policy private
-             :owners ("lisp/core/e-board-runtime.el" "lisp/core/e-harness.el"))
-    (:symbol e-harness--follow-up-attached-batch :policy private
-             :owners ("lisp/core/e-harness.el"))
-    (:symbol e-harness--abort-attached :policy private
-             :owners ("lisp/core/e-board-runtime.el" "lisp/core/e-harness.el")))
-  "Exact hard-cutover policy for retired roots and private survivor ports.")
+    (:symbol e-harness--install-activity-sink :policy absent)
+    (:symbol e-harness--remove-activity-sink :policy absent)
+    (:symbol e-harness--request-attached-follow-up :policy absent)
+    (:symbol e-harness--publish-attached-follow-up :policy absent)
+    (:symbol e-harness--queue-attached-prompt :policy absent)
+    (:symbol e-harness--steer-attached-turn :policy absent)
+    (:symbol e-harness--prompt-attached-batch :policy absent)
+    (:symbol e-harness--prompt-attached-async :policy absent)
+    (:symbol e-harness--follow-up-attached-batch :policy absent)
+    (:symbol e-harness--abort-attached :policy absent))
+  "Exact hard-cutover policy for retired roots and explicit public ports.")
 
 (defconst e-cutover-structure-test--forbidden-consumer-symbols
   '("e-harness-create-session"
@@ -58,6 +46,10 @@
     "e-harness-state"
     "e-harness-active-turns")
   "Private live-session symbols forbidden in public shells and producers.")
+
+(defconst e-cutover-structure-test--board-runtime-owner-prefixes
+  '("e-harness-turn-state" "e-harness-activity")
+  "Owner APIs that the board adapter must reach only through its turn port.")
 
 (defun e-cutover-structure-test--manifest-entries (policy)
   "Return retirement manifest entries having POLICY."
@@ -88,7 +80,7 @@
   (let ((harness (e-harness-create :enabled-layer-ids nil)))
     (e-harness-create-session harness :id "standalone-denied")
     (should-error
-     (e-harness--prompt-attached-async
+     (e-harness-attached-turn-submit
       harness "standalone-denied" "must fail" :attachment-token 'forged)
      :type 'e-harness-board-attachment-required)
     (should-not (plist-get (e-harness-state harness "standalone-denied")
@@ -124,6 +116,17 @@
   (should-not
    (e-cutover-structure-test--symbol-hits
     '("lisp/layers/chat/e-chat-session.el"))))
+
+(ert-deftest e-cutover-structure-test-board-runtime-uses-attached-turn-port ()
+  "Board routing does not reach turn-state or activity owner APIs directly."
+  (let ((source (e-cutover-structure-test--source
+                 "lisp/core/e-board-runtime.el")))
+    (dolist (prefix e-cutover-structure-test--board-runtime-owner-prefixes)
+      (should-not
+       (string-match-p
+        (concat "\\_<" (regexp-quote prefix)
+                "\\(?:-[[:alnum:]_]+\\)*\\_>")
+        source)))))
 
 (provide 'e-cutover-structure-test)
 

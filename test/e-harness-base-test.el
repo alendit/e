@@ -49,8 +49,8 @@
 (defun e-harness-base-test--emit-receipt
     (harness session-id turn-id call-id tool details-uri &optional purpose)
   "Append one compact receipt-producing TOOL-FINISHED activity event."
-  (let ((e-harness--trusted-tool-details-uri details-uri))
-    (e-harness--emit-turn-event
+  (let ((e-harness-activity-trusted-tool-details-uri details-uri))
+    (e-harness-activity-emit-turn-event
      harness session-id turn-id 'tool-finished
      (list :tool-call (list :id call-id
                             :name tool
@@ -426,7 +426,7 @@
                    (e-session-activity-events store session-id)))
                  (receipt-id (plist-get receipt-event :id)))
             (should (plist-get receipt-event :checkpoint-retain))
-            (e-harness--emit-turn-event
+            (e-harness-activity-emit-turn-event
              harness session-id "turn-nested" 'tool-finished
              (list :nested t
                    :tool-call (list :id "nested-call" :name "probe")

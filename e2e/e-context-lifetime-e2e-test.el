@@ -30,6 +30,13 @@
                                                  buffer-file-name)))
       nil nil t)
 
+(defun e-context-lifetime-e2e--provider-anchor-fingerprints (context)
+  "Return the semantic anchor projection carried by CONTEXT."
+  (plist-get
+   (plist-get (plist-get context :options)
+              :continuation-projection-identity)
+   :provider-anchor-fingerprints))
+
 (defun e-context-lifetime-e2e--sse (&rest events)
   "Return an SSE response containing JSON EVENTS."
   (mapconcat (lambda (event)
@@ -163,10 +170,9 @@ have a presentation-side attachment for the newly compacted session head."
                           (e-chat-service-binding-attachment binding))))
     (unless attachment
       (error "E2E session has no attached harness port: %s" session-id))
-    (e-harness--prompt-attached-batch
-     harness session-id prompt
-     :attachment-token
-     (e-board-runtime-attachment-endpoint-token attachment))))
+    (e-harness-attached-turn-port-submit-batch
+     (e-board-runtime-attachment-turn-port attachment)
+     prompt)))
 
 (defun e-context-lifetime-e2e--run-tool-observe-curate
     (&optional erase-p)
@@ -385,7 +391,7 @@ loop, session, and ordinary tool behavior remains production behavior."
     (e-harness-activate-capability harness capability)
     (let ((original-body (symbol-function 'e-openai-codex-request-body))
           (original-frame
-           (symbol-function 'e-harness--lifetime-tool-observation-frame)))
+           (symbol-function 'e-harness-context-lifetime-tool-observation-frame)))
       (cl-letf (((symbol-function 'e-openai-codex-request-body)
                  (lambda (&rest args)
                    (let ((body (apply original-body args)))
@@ -398,7 +404,7 @@ loop, session, and ordinary tool behavior remains production behavior."
                                                :body body))))
                      body)))
                 ((symbol-function
-                  'e-harness--lifetime-tool-observation-frame)
+                  'e-harness-context-lifetime-tool-observation-frame)
                  (lambda (&rest args)
                    (let ((frame (apply original-frame args)))
                      ;; Capture the core-produced frame, but return it
@@ -1490,7 +1496,7 @@ multi-tool turn and a deliberate portable generation boundary."
                       "resp-replaceable-seed"))
              (e-session-provider-anchors store session-id)))
            (before-stable
-            (e-harness--provider-anchor-fingerprints before-context))
+            (e-context-lifetime-e2e--provider-anchor-fingerprints before-context))
            (before-current
             (plist-get
              (plist-get (nth 1 initial-projections) :options)

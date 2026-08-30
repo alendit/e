@@ -33,7 +33,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
     (if read-only
         (e-emacs-tools-register-buffer-read-resource resources)
       (e-emacs-tools-register-buffer-resource resources))
-    (e-harness--register-resource-tools tools resources)
+    (e-harness-register-resource-tools tools resources)
     tools))
 
 (defun e-emacs-tools-test--run-elisp-result (registry code &optional context)

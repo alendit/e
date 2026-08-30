@@ -1051,6 +1051,11 @@ SUMMARY is optional and should stay compact and high value."
        (equal (plist-get value :name)
               (plist-get call :name))))
 
+(defun e-tools-result-for-call-p (value call)
+  "Return non-nil when structured VALUE is the result for CALL.
+This semantic predicate is the stable boundary for lifecycle/activity owners."
+  (e-tools--result-for-call-p value call))
+
 (defun e-tools--result (call status content &optional metadata)
   "Return a structured tool result for CALL with STATUS, CONTENT, and METADATA."
   (e-tools-result-create call status content metadata))
@@ -1223,6 +1228,10 @@ resource metadata."
                    (e-tools--nested-async-tool-result call tool))))))
           (quit (e-tools--error-result-from-condition call err))
           (error (e-tools--error-result-from-condition call err))))))))
+
+(defun e-tools-execute-nested-cheap-with-context (registry call context)
+  "Execute cheap nested CALL against REGISTRY with semantic CONTEXT."
+  (e-tools--execute-nested-cheap-with-context registry call context))
 
 (defun e-tools--reject-recursive-call (name options)
   "Signal when NAME recursively calls the current tool without OPTIONS opt-in."

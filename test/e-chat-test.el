@@ -1539,7 +1539,7 @@ selected/sibling isolation boundary."
                                      (e-source-directory)))
                   (buffer-string))))
     (dolist (forbidden '("e-openai-create-harness"
-                         "e-harness--turn-options"
+                         "e-harness-turn-options"
                          "e-session-display-title"
                          "e-session-list"
                          "e-session-activity-events"

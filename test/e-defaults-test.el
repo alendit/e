@@ -30,6 +30,13 @@
 (require 'e-shells)
 (require 'e-tools)
 
+(defun e-defaults-test--provider-anchor-fingerprints (context)
+  "Return the stable anchor projection exposed by CONTEXT's public identity."
+  (plist-get
+   (plist-get (plist-get context :options)
+              :continuation-projection-identity)
+   :provider-anchor-fingerprints))
+
 (defmacro e-defaults-test--with-empty-harness-registry (&rest body)
   "Run BODY with an isolated harness registry."
   (declare (indent 0) (debug t))
@@ -649,7 +656,7 @@
                  (context-before (e-harness-context
                                   harness session-id "turn-1"))
                  (fingerprints-before
-                  (e-harness--provider-anchor-fingerprints context-before))
+                  (e-defaults-test--provider-anchor-fingerprints context-before))
                  (tool-names-before
                   (mapcar (lambda (definition)
                             (plist-get definition :name))
@@ -663,7 +670,7 @@
             (let* ((context-after (e-harness-context
                                    harness session-id "turn-2"))
                    (fingerprints-after
-                    (e-harness--provider-anchor-fingerprints context-after))
+                    (e-defaults-test--provider-anchor-fingerprints context-after))
                    (tool-names-after
                     (mapcar (lambda (definition)
                               (plist-get definition :name))

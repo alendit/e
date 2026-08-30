@@ -192,7 +192,7 @@ is passed to config-aware shell layer factories."
   (e-harness-refresh-default-context-strategy harness)
   (when directory
     (setf (e-harness-default-project-root harness)
-          (e-harness--normalize-project-root directory)))
+          (e-harness-normalize-project-root directory)))
   (e-harness-set-layer-change-function harness nil)
   (e-harness-set-intrinsic-capabilities
    harness
@@ -201,7 +201,7 @@ is passed to config-aware shell layer factories."
    harness layer-ids directory)
   (e-harness-set-layer-change-function
    harness #'e-default-chat--record-layer-ids)
-  (e-harness--notify-layers-changed harness)
+  (e-harness-notify-layers-changed harness)
   harness)
 
 (defun e-default-harness-sync-from-factory (harness spec)
@@ -259,7 +259,7 @@ hold HARNESS."
    (append (e-default-chat--chat-session-capabilities)
            (e-default-debug--debug-capabilities)))
   (e-harness-set-layer-change-function harness nil)
-  (e-harness--notify-layers-changed harness)
+  (e-harness-notify-layers-changed harness)
   harness)
 
 (defun e-default-harness--effective-chat-spec ()
@@ -328,7 +328,7 @@ with an explicit unconfigured backend and no provider."
     (unless (e-harness-p harness)
       (signal 'wrong-type-argument (list 'e-harness-p harness)))
     (setf (e-harness-default-project-root harness)
-          (e-harness--normalize-project-root root))
+          (e-harness-normalize-project-root root))
     (e-harness-set-intrinsic-capabilities
      harness
      (e-default-chat--chat-session-capabilities))

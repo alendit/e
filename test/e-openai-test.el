@@ -2618,7 +2618,7 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
                   "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\",\"status\":\"in_progress\"}}\n\n"
                 "data: {\"type\":\"response.output_text.done\",\"text\":\"recovered\"}\n\n\
 data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))))))
-    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
+    (e-harness-activity-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 2.0)))
@@ -2669,7 +2669,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    :body "{\"error\":{\"message\":\"Generation failed\"}}")
                 "data: {\"type\":\"response.output_text.done\",\"text\":\"recovered\"}\n\n\
 data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))))))
-    (e-harness--install-activity-sink harness (lambda (event) (push event events)))
+    (e-harness-activity-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait-batch harness "session-1" 2.0)))
@@ -2907,7 +2907,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should (equal content "server_error: Generation failed"))
     (let ((details (e-openai--normalize-error-details
                     content (plist-get item :payload) nil)))
-      (should (e-harness--retryable-error-p details))
+      (should (eq (plist-get details :retryable) t))
       (should (eq (plist-get details :retry-reason) 'provider-unavailable)))))
 
 (ert-deftest e-openai-test-parse-html-error-response ()
@@ -2957,7 +2957,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    "server_error: The model failed to generate a response."))
     (let ((details (e-openai--normalize-error-details
                     content (plist-get item :payload) nil)))
-      (should (e-harness--retryable-error-p details))
+      (should (eq (plist-get details :retryable) t))
       (should (eq (plist-get details :retry-reason) 'provider-unavailable)))))
 
 (ert-deftest e-openai-test-response-error-message-bounds-large-message ()
@@ -3290,7 +3290,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
         (should (= (plist-get payload :status) 503))
         (let ((details (e-openai--normalize-error-details
                         (plist-get item :content) payload nil)))
-          (should (e-harness--retryable-error-p details))
+          (should (eq (plist-get details :retryable) t))
           (should (eq (plist-get details :retry-reason)
                       'provider-unavailable)))))))
 
@@ -3321,7 +3321,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
         (should (= (plist-get payload :retry-after) 7))
         (let ((details (e-openai--normalize-error-details
                         (plist-get item :content) payload nil)))
-          (should (e-harness--retryable-error-p details))
+          (should (eq (plist-get details :retryable) t))
           (should (= (plist-get details :retry-after-seconds) 7))
           (should (eq (plist-get details :retry-reason) 'rate-limit)))))))
 
@@ -3347,15 +3347,19 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
              ("request failed" (:status 503) provider-unavailable)))
     (pcase-let ((`(,message ,payload ,reason) case))
       (let ((details (e-openai--normalize-error-details message payload nil)))
-        (should (e-harness--retryable-error-p details))
+        (should (eq (plist-get details :retryable) t))
         (should (eq (plist-get details :retry-reason) reason)))))
   (should-not
-   (e-harness--retryable-error-p
-    (e-openai--normalize-error-details "500: internal error" nil nil)))
+   (eq (plist-get
+        (e-openai--normalize-error-details "500: internal error" nil nil)
+        :retryable)
+       t))
   (should-not
-   (e-harness--retryable-error-p
-    (e-openai--normalize-error-details
-     "invalid request" '(:status 400) nil))))
+   (eq (plist-get
+        (e-openai--normalize-error-details
+         "invalid request" '(:status 400) nil)
+        :retryable)
+       t)))
 
 (ert-deftest e-openai-test-default-http-request-start-normalizes-header-bytes ()
   "Multibyte ASCII headers must not make a Unicode request body invalid."

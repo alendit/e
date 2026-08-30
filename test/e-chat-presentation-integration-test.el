@@ -3301,7 +3301,7 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
               (lambda ()
                 (let ((entry (gethash e-chat-session-id
                                       (e-harness-active-turns harness))))
-                  (when-let ((item (car (e-harness--pending-steering-items
+                  (when-let ((item (car (e-harness-turn-state-pending-steering
                                          entry))))
                     (and (equal (plist-get item :prompt) "focus here")
                          (eq (plist-get (plist-get item :metadata)
@@ -4845,13 +4845,13 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
     (unwind-protect
         (with-current-buffer buffer
           (let ((store (e-harness-sessions e-chat-harness)))
-            (e-harness--emit-turn-event
+            (e-harness-activity-emit-turn-event
              e-chat-harness e-chat-session-id "turn-auto" 'compaction-started
              '(:reason auto))
             (e-session-append-compaction
              store e-chat-session-id "summary"
              :metadata '(:reason auto))
-            (e-harness--emit-turn-event
+            (e-harness-activity-emit-turn-event
              e-chat-harness e-chat-session-id "turn-auto" 'compaction-finished
              '(:compaction-id "compaction-auto" :reason auto))
             (should (e-chat-test--wait-until

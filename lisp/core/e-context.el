@@ -158,7 +158,7 @@ semantic boundary.  An empty result means that the request has no current
 state observation; it is distinct from a durable transcript message with the
 same content."
   (cl-loop for segment in (e-context-current-state-segments context)
-           append (mapcar #'e-context--backend-message
+           append (mapcar #'e-context-backend-message
                           (plist-get segment :messages))))
 
 (defun e-context-current-state-fingerprint (context)
@@ -233,7 +233,7 @@ backend-neutral messages that should appear before the session transcript."
                  (append prefix-segments (plist-get context :segments))))
     context))
 
-(defun e-context--backend-message (message)
+(defun e-context-backend-message (message)
   "Return MESSAGE without presentation/storage-only metadata."
   (let ((copy (copy-sequence message)))
     (cl-remf copy :created-at)
@@ -279,7 +279,7 @@ drop the unpaired tool-call so the transcript stays valid."
 
 (defun e-context--backend-messages (messages)
   "Return MESSAGES normalized for backend context."
-  (mapcar #'e-context--backend-message
+  (mapcar #'e-context-backend-message
           (e-context--drop-orphan-tool-calls messages)))
 
 (defun e-context--message-entry-message (entry)

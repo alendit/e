@@ -3690,7 +3690,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
 (ert-deftest e-live-e2e-test-prompt-batch-deadline-signals-typed-condition ()
   "A running turn that consumes the deadline becomes a typed timeout."
   (let* ((active-turns (make-hash-table :test #'equal))
-         (harness (e-harness--make :active-turns active-turns))
+         (harness (e-harness-state-create :active-turns active-turns))
         (clock '(0.0 11.0))
         condition)
     (puthash "session" '(:status running) active-turns)
@@ -4010,7 +4010,7 @@ is updated through BODY so an outer finalizer can observe later events."
               ,@(when events-var
                   `((,events-var nil)))
               (,subscription
-               (e-harness--install-activity-sink
+               (e-harness-activity-subscribe
                 ,harness
                 (lambda (event)
                   (push event ,events)
@@ -4028,7 +4028,7 @@ is updated through BODY so an outer finalizer can observe later events."
                         (append (e-harness-intrinsic-capabilities ,harness)
                                 (e-layer-capabilities layer))))))
                ,@body)
-           (ignore-errors (e-harness--remove-activity-sink ,harness ,subscription))
+           (ignore-errors (e-harness-activity-unsubscribe ,harness ,subscription))
            (ignore-errors (delete-directory ,root t)))))))
 
 (defmacro e-live-e2e--with-responses-request-capture
@@ -5373,11 +5373,11 @@ replay, where those same values are strings."
             (e-hooks-for-point
              (e-harness-hooks harness)
              :invocation-details)))
-          (let ((e-harness--trusted-tool-details-uri
+          (let ((e-harness-activity-trusted-tool-details-uri
                  "tmp://tool-invocations/test/call-1.json"))
             (cl-letf (((symbol-function 'e-session-tmp-reference-available-p)
                        (lambda (&rest _) t)))
-              (e-harness--emit-turn-event
+              (e-harness-activity-emit-turn-event
                harness session-id "turn-1" 'tool-finished
                '(:tool-call (:id "call-1" :name "probe"
                             :stated-purpose "Inspect the bounded result.")
@@ -5438,11 +5438,11 @@ replay, where those same values are strings."
                   :backend (e-backend-fake-create :items nil))))
               ((symbol-function 'e-board-e2e-create-session)
                (lambda (&rest _) "test-session"))
-              ((symbol-function 'e-harness--install-activity-sink)
+              ((symbol-function 'e-harness-activity-subscribe)
                (lambda (&rest _) 'test-subscription))
               ((symbol-function 'e-harness-set-intrinsic-capabilities)
                (lambda (&rest _) nil))
-              ((symbol-function 'e-harness--remove-activity-sink)
+              ((symbol-function 'e-harness-activity-unsubscribe)
                (lambda (&rest _) nil))
               ((symbol-function 'make-temp-file)
                (lambda (&rest _) "/private/tmp/e-adoption-runner-test"))
@@ -5488,11 +5488,11 @@ replay, where those same values are strings."
                (lambda (&rest _) (e-session-store-create)))
               ((symbol-function 'e-board-e2e-create-session)
                (lambda (&rest _) "test-session"))
-              ((symbol-function 'e-harness--install-activity-sink)
+              ((symbol-function 'e-harness-activity-subscribe)
                (lambda (&rest _) 'test-subscription))
               ((symbol-function 'e-harness-set-intrinsic-capabilities)
                (lambda (&rest _) nil))
-              ((symbol-function 'e-harness--remove-activity-sink)
+              ((symbol-function 'e-harness-activity-unsubscribe)
                (lambda (&rest _) nil))
               ((symbol-function 'make-temp-file)
                (lambda (&rest _) "/private/tmp/e-erase-runner-test"))

@@ -50,7 +50,7 @@
 (ert-deftest e-context-test-backend-message-strips-internal-provenance ()
   "Backend messages do not expose input origin or source descriptor metadata."
   (let ((message
-         (e-context--backend-message
+         (e-context-backend-message
           '(:role user
             :origin harness
             :board-output-sequence 7

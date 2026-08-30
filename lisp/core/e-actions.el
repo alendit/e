@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-harness-activity)
 (require 'e-session)
 (require 'e-telemetry)
 (require 'e-tools)
@@ -206,10 +207,11 @@
   (when (and (e-harness-p harness)
              (stringp session-id)
              (stringp turn-id)
-             (fboundp 'e-harness--emit-turn-event)
+             (fboundp 'e-harness-activity-emit-turn-event)
              (ignore-errors
                (e-session-get (e-harness-sessions harness) session-id)))
-    (e-harness--emit-turn-event harness session-id turn-id type payload)))
+    (e-harness-activity-emit-turn-event
+     harness session-id turn-id type payload)))
 
 (defun e-actions--error-payload-fields (err)
   "Return payload fields for ERR."

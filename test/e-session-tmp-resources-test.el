@@ -416,7 +416,7 @@ printf '%s\\n' notes/delayed.txt
          request)
     (unwind-protect
         (let ((exec-path (cons bin-dir exec-path)))
-          (e-harness--register-resource-tools tools resources)
+          (e-harness-register-resource-tools tools resources)
           (e-resources-write resources "tmp://notes/delayed.txt" "text")
           (e-request-with-blocking-primitive-guard
             (e-request-with-hot-path 'tmp-glob

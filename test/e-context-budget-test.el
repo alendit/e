@@ -56,8 +56,13 @@
     (e-session-append-activity-event
      store "sonnet-5-budget" "turn-1" 'token-usage
      '(:input-tokens 350000 :total-tokens 350100))
-    (should (e-harness--auto-compaction-needed-p
-             harness "sonnet-5-budget"))))
+    (let ((status (e-context-budget-status
+                   harness "sonnet-5-budget"
+                   :prefer-token-usage t
+                   :estimate-context nil)))
+      (should (> (plist-get status :used-tokens)
+                 (- (plist-get status :window)
+                    e-harness-auto-compaction-reserve-tokens))))))
 
 (ert-deftest e-context-budget-test-gpt-56-sol-window-enables-auto-compaction ()
   "GPT-5.6 Sol provider usage can cross the auto-compaction threshold."
@@ -72,8 +77,13 @@
     (e-session-append-activity-event
      store "gpt-56-budget" "turn-1" 'token-usage
      '(:input-tokens 340000 :total-tokens 340100))
-    (should (e-harness--auto-compaction-needed-p
-             harness "gpt-56-budget"))))
+    (let ((status (e-context-budget-status
+                   harness "gpt-56-budget"
+                   :prefer-token-usage t
+                   :estimate-context nil)))
+      (should (> (plist-get status :used-tokens)
+                 (- (plist-get status :window)
+                    e-harness-auto-compaction-reserve-tokens))))))
 
 (ert-deftest e-context-budget-test-used-tokens-prefers-fresh-provider-usage ()
   "Fresh provider token usage is used before estimating context."

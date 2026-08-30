@@ -1,0 +1,354 @@
+#+title: Feature 91 Round 3 Runtime-Control Audit
+#+startup: overview
+
+* Scope and status
+
+This is the accepted evidence for the Feature 91 Round 3 runtime-control
+family.  It covers =F91-OWNER=, =F91-RUNTIME=, =F91-TOPOLOGY=, and
+=F91-PRESERVATION=: the harness runtime owners, the board attached-turn
+boundary, their direct/composed tests, and the affected context/provider/chat
+consumers.  Parent acceptance was completed on 2026-08-30.
+
+The public harness facade remains =lisp/core/e-harness.el=.  The runtime
+implementation is now split into explicit state, capability, activity,
+turn-state, context-runtime, and turn-composition owners.  Board attachment
+uses one bound =e-harness-attached-turn-port= object; there is no process-wide
+attached callback slot.  The public behavior target is unchanged: turn and
+tool ordering, admission and settlement, abort/error visibility, context
+generation/provider anchors, activity persistence, board routing, and restart
+effects retain their accepted Feature 88/90 and Feature 91 Round 1/2
+contracts.
+
+No provider external evidence was required.  The running Emacs was not
+queried, reloaded, signaled, or otherwise changed.  Core state and attached
+port record-shape changes require a restart before an already-running process
+can use this source; no compatibility shim was added for that restart
+boundary.
+
+* Before/after responsibility inventory
+
+The inventory below records the material clusters inspected before edits.
+The representation and lifetime columns are intentional: the extracted
+modules do not merely rename functions while leaving a shared mutable bag in
+the facade.
+
+| Cluster | Before representation and callers | Owner after extraction | Smallest complete boundary and disposition |
+|---------+-----------------------------------+------------------------+---------------------------------------------|
+| Harness identity and substates | One =e-harness= struct carried capability caches, subscriber records, active turns, queues, provider candidates, and application callbacks; =e-harness.el= constructed and mutated all of them. | =e-harness-state.el= | Root identity retains backend/default/session/work and board ports.  Capability, activity, turn, and context substates are explicit records with existing process/session lifetimes.  Retain the public facade identity; move mutable cluster fields to named substates. |
+| Effective capabilities/layers/resources/tools | Capability/layer expansion, workspace roots, resource-operation tools, prompts, hooks, structured blocks, and effective-config cache were implemented in =e-harness.el= and consumed by defaults, context, chat, and tools. | =e-harness-capabilities.el= | Owns runtime config, enabled layers, intrinsic capabilities, effective cache, layer-change callback ownership, and all derivation/projection operations.  Retain semantic public operations; private derivation helpers use the owner namespace. |
+| Activity projection/recording | Event classification, safe payload projection, durable session activity append, index flush policy, and subscriber delivery were mixed with turn/context implementation. | =e-harness-activity.el= | Owns subscriber records, event class/type policy, bounded payload projection, durable append and index-flush decision.  Turn and actions submit semantic events; board/chat subscribe through public activity operations. |
+| Active turn and prompt queue | Active entry plists, queue lists/counts, steering input, aggregate unsettled counters, context-frame slots, and queue notifications were spread through the facade and board adapter. | =e-harness-turn-state.el= | Owns active-turn/queue maps, queue counts, pending-steering/context-frame/lifetime-generation installation, per-harness unsettled state, and the process aggregate observation.  It emits semantic activity events but does not schedule a provider. |
+| Context, compaction, lifetime, anchors | Context options, context-lifetime generation/curation, provider-anchor fingerprints/candidates, provider compaction, and auto-compaction decisions were in the harness monolith. | =e-harness-context-runtime.el= | Owns backend-neutral context/options projections, context-lifetime preflight/commit/projection values, provider-anchor selection and candidate state, provider compaction and auto-compaction policy.  The turn owner invokes those semantic policies and owns only the top-level scheduling/side-effect sequence. |
+| Turn submit/settle/reset/wait | Async/batch submission, backend streaming callbacks, retries, tool lifecycle, compaction entry points, abort, queue drain, reset, and wait were in =e-harness.el=. | =e-harness-turn.el= | Owns top-level turn side-effect composition, request/work handles, retries, settlement/error paths, compaction invocation, and the attached port methods.  It depends downward on state, activity, turn-state, capabilities, and context-runtime; it never calls the facade. |
+| Facade/lifecycle composition | The facade was a 4,800-line implementation root with direct private state and provider/board callback assumptions. | =e-harness.el= | Retains create/fork/session projections, runtime refresh, lifecycle composition, work/board port installation, and stable public names.  It no longer contains owner algorithms or private owner registries. |
+| Board attached execution | =e-board-runtime.el= called private harness submit/steer/queue/abort/activity/output functions and installed process-global callback adapters. | =e-board-runtime.el= plus =e-harness-attached-turn-port= | Board retains admission, routing, publication, reconciliation, and settlement.  Each attachment owns a bound port carrying harness/session/token and board-owned authorizer/follow-up publisher closures.  No global callback registry or harness-private call remains. |
+| Context budget and external consumers | Context budget and shells reached private harness options/backend/message/resource helpers; tests often froze the old monolith. | Existing owners plus narrow public projections | =e-context-budget= depends downward on context-runtime; chat service exposes session option projection; =e-context-backend-message= and =e-resources-method-for-uri= are stable core operations.  Consumer tests use public values or owner-local fixtures. |
+
+* State, buffer, and lifetime matrix
+
+| State | Owner | Representation | Lifetime and mutation rule |
+|-------+-------+----------------+---------------------------|
+| Backend/default/session identity | =e-harness-state= / facade | Root =e-harness= fields and =e-session-store= | Harness/process lifetime; durable session state remains session-owned.  Runtime refresh replaces only configuration fields and keeps sessions/substates. |
+| Runtime capability config and effective cache | =e-harness-capabilities= | =e-harness-capability-state= fields | Harness lifetime; cache is derived and invalidated on config/layer generation changes.  Callers receive copies where the value is retained. |
+| Activity subscriptions and durable projections | =e-harness-activity= | =e-harness-activity-state= subscriber list plus session activity records | Subscription follows harness lifetime and is removed explicitly; durable events retain session/restart lifetime.  Payloads are copied and bounded before subscribers/session append. |
+| Active turn and prompt queue | =e-harness-turn-state= and =e-harness-turn= | =e-harness-turn-state= maps and owner-created active entry/queue values | Process-local until settlement/reset; queue items preserve existing ordering and endpoint fences.  Only turn-state installs/removes active-entry state and updates unsettled counters. |
+| Context frame and lifetime generation on active entry | =e-harness-turn-state= | Owner setters for =:context-frame= and =:lifetime-generation= | Active-turn lifetime; context-runtime computes immutable frame values, turn-state installs them.  Context-runtime never mutates an active-entry plist. |
+| Provider compaction candidates | =e-harness-context-runtime= | =e-harness-context-state= candidate table | Harness/session process lifetime; candidates are validated against semantic fingerprints and consumed once. |
+| Prompt options, context, anchors | =e-harness-context-runtime= | Detached option/context/projection values and session durable anchor records | Request lifetime for projections; accepted provider anchor/compaction records retain existing session/restart lifetime. |
+| Work/request/timer handles | =e-harness-turn= | Existing =e-work-handle= and =e-backend-request= values in active entries | Request/turn lifetime; cancellation and terminal paths remain in the turn owner. |
+| Board attachment identity and subscriptions | =e-board-runtime= and bound port | Attachment records, endpoint token, port, activity subscription | Board membership/attachment lifetime; stale generations are rejected.  The port is explicit per attachment, not process-global. |
+
+* Actual dependency graph
+
+The graph was derived from source requires plus actual calls, not from
+requires alone.  The structural graph has nine runtime nodes and 22 directed
+owner edges; the edge count treats one owner-to-owner direction as one edge,
+not each call site.  Core/domain dependencies (session, context, loop,
+backend, tools, work, and board primitives) are omitted from this owner-only
+count.
+
+#+begin_example
+e-harness-state
+  ^
+  |  capability, activity, turn-state, context-runtime, turn, facade
+e-harness-capabilities <--- e-harness-context-runtime <--- e-harness-turn
+          ^                         ^       ^       ^             |
+          |                         |       |       |             v
+e-harness-activity <--- e-harness-turn-state <--------- e-harness
+          ^                         ^                         |
+          +-------------------------+-------------------------+
+                                   e-board-runtime
+#+end_example
+
+For an unambiguous adjacency list, the actual owner edges are:
+
+| Owner | Downward owner dependencies |
+|-------+----------------------------|
+| =e-harness-capabilities= | state |
+| =e-harness-activity= | state |
+| =e-harness-turn-state= | state, activity |
+| =e-harness-context-runtime= | state, capabilities, activity, turn-state |
+| =e-harness-turn= | state, capabilities, activity, turn-state, context-runtime |
+| =e-harness= | state, capabilities, activity, turn-state, context-runtime, turn |
+| =e-board-runtime= | facade public lifecycle/session projections and the bound turn port (active id/status, activity projection, submit/steer/queue/abort) |
+| =e-context-budget= | context-runtime |
+
+The facade is a composition root, not a dependency of an extracted owner.
+The board adapter's facade edge is limited to stable lifecycle/session
+operations; attached execution goes through the concrete port.  There are
+zero owner-to-facade reverse edges, zero mutual owner pairs, zero callback or
+service-locator reverse edges, and zero cross-owner private production refs.
+The source graph evidence is =/tmp/e-r3-runtime-graph-final.log= and the
+negative sweep is =/tmp/e-r3-static-sweep-port-boundary-final.log=.
+
+* Public semantic API consumer map
+
+The retained operations below each have a facade, embedding-shell,
+downstream-owner, or direct owner-contract consumer.  Representation-shaped
+record/registry/marker operations and forwarding-only aliases were not kept.
+
+| Owner/API family | Semantic operations retained | Consumers |
+|------------------+-----------------------------+-----------|
+| Capabilities | =e-harness-effective-capabilities=, =e-harness-effective-layer-ids=, =e-harness-effective-capability-config=, =e-harness-tools=, =e-harness-resources=, =e-harness-prompts=, =e-harness-hooks=, =e-harness-store=, workspace/project-root and layer mutation operations | Facade composition, context-runtime, defaults, chat service/shell, resource/tool construction, capability tests |
+| Activity | =e-harness-activity-subscribe/unsubscribe=, =e-harness-activity-emit=, =e-harness-activity-emit-turn-event=, =e-harness-activity-event-class/payload=, durable type classification | Turn-state/turn/actions, attached-turn observation port, chat/activity shells, audit and owner tests |
+| Turn-state | queue/active-turn identity and running projections, context-frame/lifetime-generation setters, queue enqueue/remove/discard, unsettled snapshots and change hook | Turn composition, attached-turn port implementation, facade state projection, direct owner tests |
+| Context-runtime | session/display/turn options, context construction, options-without-tools, provider compaction batch/start, context-lifetime preflight/commit/tool frame, provider-anchor candidate persistence | Turn composition, context budget, compaction/context-lifetime/provider tests, chat/org status projections, facade option commands |
+| Turn composition | ordinary tool lifecycle/compaction/reset/wait operations plus the concrete =e-harness-attached-turn-port-* operations | Facade command composition, board-runtime only for attached port, Bayesian continuation, harness/board/owner tests |
+| Attached-turn port | authorize, copied active id/status observation, final assistant output, bounded activity-event observation/stop, submit/batch, steer, queue/follow-up, queued prompts/discard, publish follow-up, abort | =e-board-runtime= attachment adapter and replacement/double owner tests.  It carries one bound harness/session/token and no unrelated board capability. |
+| Facade | create/fork/session/activity/state/lifecycle/runtime-refresh projections | Chat service/shell, defaults, board lifecycle, subagent/default consumers, composed tests |
+
+The public function count is deliberately not used as an acceptance target.
+The API map is consumer-shaped: owner-private helpers are namespaced with
+=e-harness-capabilities--=, =e-harness-activity--=,
+=e-harness-turn-state--=, =e-harness-context-runtime--=, or
+=e-harness-turn--= and are not imported by another owner.
+
+* Former private consumers and dispositions
+
+| Former consumer | Former reach-through | Disposition |
+|-----------------+---------------------+-------------|
+| =e-board-runtime.el= | Private attached submit/steer/queue/follow-up/abort, activity install/remove, final-output lookup, unsettled state, and two process-global callbacks | Replace with one attachment-bound port carrying copied active id/status and activity projections plus the control methods.  Board owns its authorizer and follow-up publication; no compatibility alias. |
+| =e-harness-test-support.el= | Private prompt/queue/steer/abort helpers and global callback fixture mutation | Replace with explicit synthetic port values and test-local publisher double.  Production callback slots deleted. |
+| =e-bayesian-reasoning.el= | Private attached follow-up publisher | Use public continuation operation; board-specific publication remains behind the bound port. |
+| =e-chat-service.el= and =e-chat.el= | Private harness turn options | Add/use =e-chat-service-session-options= as a shell-neutral semantic projection. |
+| =e-subagent-runner.el= | Private session-option setter | Use =e-harness-set-session-options= owned by context-runtime. |
+| defaults | Private root normalization/layer notification | Use capability-owner =e-harness-normalize-project-root= and =e-harness-notify-layers-changed=. |
+| context budget/compaction/provider tests | Private context/backend/resource helpers | Use public context-runtime projections, =e-context-backend-message=, and =e-resources-method-for-uri=; local test helpers cover only test setup. |
+| e2e support | Private harness constructor/provider fingerprint | Use =e-harness-state-create= for direct owner fixtures and public continuation projection identity. |
+| harness facade tests | Mixed private mechanism calls | Owner mechanisms moved to =e-harness-runtime-mechanism-test.el=; composed tests use facade/public observable state. |
+
+The only remaining extracted-owner private calls are in direct mechanism
+suites (=e-harness-runtime-mechanism-test.el= and the nested-tool mechanism
+suite), where the called symbol belongs to the owner under test.  The
+integration/composed private-reference sweep is empty.  The old private
+names in =e-cutover-structure-test.el= are negative-policy fixtures asserting
+that those symbols are absent, not calls or compatibility definitions.
+
+* Attached-turn scenario matrix
+
+| Scenario | Contract path | Evidence |
+|----------+---------------+----------|
+| Authorized async submit and final assistant output | Bound port token/authorizer, turn submit, wait, output projection | =e-harness-runtime-owner-test-attached-port-authorizes-submit-and-output=; board and chat preservation tests |
+| Unauthorized submit | Replacement port with rejected token fails before active state mutation | =e-harness-runtime-owner-test-attached-port-authorizes-submit-and-output= |
+| Steering active turn | Port steer stores pending semantic input and preserves active turn identity | =e-harness-runtime-owner-test-attached-port-steer-queue-and-abort=; composed harness/board tests |
+| Queued follow-up and ordering | Port queue/follow-up stores endpoint fence and queue order; turn owner drains after settlement | owner contract, board routing tests, exact preservation selector |
+| Capability settlement follow-up | Port publisher double receives prompt/references/metadata/tags | =e-harness-runtime-owner-test-attached-port-publishes-follow-up= and Bayesian suite |
+| Activity observation | Port binds subscription to its session, projects bounded payloads in the event envelope, and supports explicit stop | =e-harness-runtime-owner-test-activity-observation-is-filtered= and board attachment tests |
+| Abort/cancellation | Port abort cancels request/work, archives cancellation, and settles queue | owner contract, board runtime, chat preservation, graphical gates |
+| Backend error propagation | Batch port surfaces adapter error; active entry is no longer running | =e-harness-runtime-owner-test-attached-port-propagates-error= |
+| Board stale/revoked attachment | Board adapter revalidates current attachment/generation before delivery/publication | 69 board-runtime tests and graphical workspace tests |
+
+The board port is concrete rather than a generic callback record: it has
+bound harness/session/token fields and named semantic methods.  The only
+closures in its record are the attachment's authorizer and board-owned
+follow-up publisher; no process-global mutable callback is consulted.
+
+* Feature 88/90 preservation trace
+
+Feature 88 generational context, provider-anchor identity/invalidation,
+context-lifetime frame/curation ordering, and restart behavior are treated as
+frozen behavior.  Feature 90 activity/session-tmp/context projections and
+tool lifecycle are likewise consumed as contracts.  This round changes
+physical ownership and call paths only; it does not alter their schemas or
+policy.  Evidence includes the accepted 485-case selector, context-budget,
+compaction/defaults, provider-continuation, session-tmp, tool-invocation,
+activity, and graphical suites listed below.  No Feature 88 or Feature 90
+remediation was folded into this round.
+
+* Test topology and dispositions
+
+| Suite | Role | Disposition |
+|-------+------+-------------|
+| =test/e-harness-runtime-owner-test.el= | Direct fresh owner contracts for explicit substates, copied active id/status observations, bounded activity projections through the observing port, replacement attached port, authorization, submit/output, follow-up, steer/queue/abort, and error propagation | Add/strengthen; requires owner modules and passes standalone 8/8. |
+| =test/e-harness-runtime-mechanism-test.el= | Direct owner mechanism tests for context-lifetime, provider anchors/compaction, retries, activity, and turn behavior | Split/retain; 38/38 standalone.  Private calls are limited to mechanism ownership. |
+| =test/e-harness-test.el= | Facade/composed harness behavior and public session/activity/turn projections | Retain as facade suite; 175/175 and no extracted owner-private refs. |
+| =test/e-board-runtime-test.el= | Board routing/admission/publication/reconciliation and attached adapter behavior | Retain/strengthen through bound port; 69/69 within the final 272-test composed run. |
+| =test/e-harness-nested-tools-test.el= | Nested tool mechanism | Retain as a turn-owner mechanism suite; it uses only turn-owner private helpers and is not classified as integration. |
+| context/compaction/provider-continuation/session-tmp/tool suites | Feature 88/90 and session preservation contracts | Retain; consumers use public projections or owner-local fixtures. |
+| =test/e-chat-test.el= and presentation integration | Chat presentation/composed runtime behavior | Retain; owner-private mechanism assertions are absent from composed suites. |
+| cutover structure suite | Negative policy asserting obsolete private symbols are absent | Retain/strengthen; no compatibility alias. |
+
+The prior monolithic harness mechanism forms were not duplicated.  Valuable
+private assertions moved to the direct mechanism suite; facade tests retain
+only public observable behavior.  A different internal owner implementation
+can satisfy the direct owner contract without reproducing the old facade
+layout.
+
+* Validation evidence
+
+All commands were batch/repository-side and wrote only temporary logs or
+byte-compiled artifacts; no live Emacs operation was used.
+
+| Check | Exact result | Evidence |
+|-------+--------------+----------|
+| Direct runtime owner contract | PASS: 8/8, 0 unexpected | =/tmp/e-r3-port-boundary-owner-final2.log= |
+| Direct owner mechanism suite | PASS: 38/38, 0 unexpected | =/tmp/e-r3-port-boundary-mechanism-final.log= |
+| Facade harness suite | PASS: 175/175, 0 unexpected | =/tmp/e-r3-harness-facade-port-boundary-final.log= |
+| Final board/harness/Bayesian composed run | PASS: 272/272, 0 unexpected | =/tmp/e-r3-port-boundary-composed-final.log= |
+| Consolidated runtime/consumer batch | PASS: 681 expected passes, 2 expected skips, 0 unexpected in 683 tests | =/tmp/e-r3-runtime-consumer-batch-port-boundary-final.log= |
+| Exact accepted preservation selector | PASS: 483 expected passes, 2 expected skips, 0 unexpected in 485 tests | =/tmp/e-r3-preservation-485-port-boundary-final.log= |
+| Anthropic provider coverage | PASS: 53/53, 0 unexpected | =/tmp/e-r3-anthropic-final.log= |
+| OpenAI provider coverage | PASS: 165/165, 0 unexpected; isolated socket lane used approved escalation | =/tmp/e-r3-openai-final-escalated.log= |
+| Targeted byte compilation | PASS: exit 0, no warnings/errors | =/tmp/e-r3-compile-targeted-port-boundary-final2.log= |
+| Fresh direct owner operation load | PASS: =fresh-owner-operations-ok= with facade feature absent | =/tmp/e-r3-fresh-owner-operations-port-boundary-final3.log= |
+| Fresh composed facade operation load | PASS: =fresh-facade-operation-ok= | =/tmp/e-r3-fresh-facade-operation-port-boundary-final4.log= |
+| Context-lifetime E2E scenarios | PASS: 5/5, 0 unexpected; Feature 88 performance evidence emitted as expected | =/tmp/e-r3-context-lifetime-e2e-port-final.log= |
+| Static private/duplicate/dependency sweep | PASS: no board turn-state/activity refs, no facade-private production refs outside facade, no foreign owner-private production/composed refs, no callback remnants, no duplicate definitions | =/tmp/e-r3-static-sweep-port-boundary-final.log= |
+| Check-parens | PASS for every changed/new Lisp file, including the presentation integration file; direct current and HEAD find-file checks also pass | =/tmp/e-r3-check-parens-all-port-boundary-final.log=, =/tmp/e-r3-check-parens-current-direct-final.log=, =/tmp/e-r3-check-parens-head-direct-final.log= |
+| Read parsing | PASS for every changed/new Lisp file, including the integration file | =/tmp/e-r3-read-port-boundary-final.log= |
+| Isolated graphical chat/workspace gate | PASS: 27/27, 0 unexpected; only expected visual-fill-column fallback warnings | =/tmp/e-r3-graphical-port-boundary-final-escalated.log= |
+| New-file whitespace sweep | PASS: no trailing blank characters in new source/test/audit files | =/tmp/e-r3-new-file-whitespace-final2.log= |
+| Diff/whitespace check | PASS: =git diff --check= produced no output | =/tmp/e-r3-diff-check-final2.log= |
+
+The exact selector's two skips are the existing Markdown-dependent and
+Evil-dependent environment skips: =e-chat-test-assistant-markdown-renders-with-text-properties=
+and =e-chat-surface-integration-test-evil-escape-routes-transcript-commands=.
+The consolidated batch's second skip is the expected isolated fresh-owner
+test skip after the facade is already loaded; the owner suite's standalone
+run proves that contract separately.
+
+The direct =find-file= plus =check-parens= invocation passes for both the
+current presentation integration file and a temporary file reconstructed from
+HEAD.  The earlier failure log was produced by a flawed validation wrapper and
+is superseded by these direct checks; no check-parens exception remains.
+
+* Performance and I/O disposition
+
+No new synchronous writes or repeated scans were introduced.  Activity
+projection retains its existing bounded payload normalization and session
+append/index-flush points.  Turn-state active/queue/unsettled observations are
+hash/count operations; queue changes update owner-local counts once per
+transition.  Context/provider-anchor selection retains the existing cached
+candidate and durable session lookups.  The exact 485-case batch completed in
+12.174914 seconds and the final 683-test non-network batch in 12.102493
+seconds; these are bounded smoke timings, not a replacement for the future
+package performance gate.  The board graphical gate completed in 13.292358
+seconds.
+
+* Mechanical-equivalence and restart notes
+
+- Public command/mode names, session APIs, event order, JSON/durable shapes,
+  retry/cancellation/error behavior, provider option semantics, and board
+  publication/admission semantics have no intended change.
+- The root harness record now contains named owner substates and an immutable
+  process-local identity token.  The token prevents a mutable aggregate from
+  changing its =equal= hash identity while an attachment registry is live; it
+  is not durable or model-visible.
+- The attached port is a new internal/public adapter contract for board
+  consumers.  It carries the same endpoint token and calls the existing turn
+  composition paths, so no additional queue or persistence path exists.
+- Core record/substate changes require a restart under =AGENTS.md=.  No live
+  reload or compatibility alias was used.
+
+* Residual topology and risks
+
+| Root/cluster | Final disposition and residual risk |
+|--------------|-------------------------------------|
+| =e-harness.el= | Retained as a still-substantial application-service/lifecycle root.  Its remaining private state is pending runtime refresh and session metadata normalization; it owns composition and no extracted algorithm. |
+| =e-harness-turn.el= | Retained as the top-level side-effect composition owner.  It remains the largest new runtime owner because provider streaming, retries, tool lifecycle, compaction invocation sequencing, and settlement must preserve one ordering state machine.  Context/auto-compaction policy and mutable context-frame storage are separate. |
+| =e-board-runtime.el= | Retained as the board routing/admission/reconciliation owner.  The attached port also hides turn-state and activity-owner APIs behind copied semantic observations/projections; board-specific state and publication remain intentionally colocated. |
+| =e-context-budget.el= | Retained as a small domain owner with one-way dependency on context-runtime; hidden reverse declarations were removed. |
+| =e-tools.el=, =e-loop.el=, =e-work.el=, =e-context-lifetime.el= | Retained as cohesive core state machines/contracts.  Round 4/5 may refine them only with new ownership evidence. |
+| Provider adapters and base capabilities | Retained for Round 4; provider tests were rerun as preservation consumers only. |
+
+Unresolved architecture blockers: none found in the Round 3 scope.  Behavioral
+status and mechanism status remain separate: the behavior gates are green
+with the two documented expected skips, and the parent accepted this
+owner/dependency/test topology.  Final =F91-GOAL= acceptance remains pending
+on Rounds 4 and 5.
+
+* Feature 91 self-check
+
+1. If this package stopped here, the project is better off: harness and board
+   behavior remains green while runtime changes can be localized to named
+   owners and direct tests, with the previous private callback bridge removed.
+2. The work moves toward the final direction of stable application services,
+   explicit owner state, narrow adapter contracts, and acyclic module/test
+   topology.
+3. Stable decisions are the harness/session/board behavior and existing event
+   formats.  Uncertain decisions are limited to owner placement and the
+   attached adapter boundary; they are local in the new owner files and can
+   change without changing durable formats or shell behavior.
+4. Each extracted component has one primary reason to change: capability
+   derivation, activity recording, turn/queue state, context policy, or turn
+   side-effect composition.  The facade owns lifecycle and composition.
+5. Coupling is reduced: callers consume semantic projections and the concrete
+   attached port, while cross-owner private references and duplicate
+   operational copies are absent.
+6. Dependencies point downward from composition/policy toward state and core
+   contracts.  No owner depends on the facade; =e-context-budget= now points
+   to context-runtime rather than hiding a reverse budget/facade cycle.
+7. Side effects remain outward where their meaning is clear: provider
+   invocation/work/timers are in turn composition, durable activity append is
+   in activity, and board publication/attachment effects remain in board.
+8. Added state is process-local runtime state at the existing turn/harness
+   lifetime: named substates, queues, active entries, subscribers, and
+   provider candidates.  Durable session activity and context facts remain in
+   the session store.  No shared mutable record crosses activity/context/turn
+   owner boundaries without a semantic copy or setter.
+9. Performance stays bounded: queue/active observations are constant-time,
+   activity writes retain existing batching/flush points, and no new repeated
+   context or catalog scan is introduced.  Smoke timings and consumer gates
+   are recorded above.
+10. The attached-turn port is semantically real and substitution-tested: a
+    replacement port double authorizes, submits, observes, queues, steers,
+    publishes, aborts, and propagates errors without implementing board
+    internals.  Unsupported operations are not part of the port.
+11. Compatibility expectations are explicit: documented public APIs and
+    formats are preserved; private compatibility aliases and process-global
+    callbacks were removed.  Core shape changes require restart.
+12. Removed legacy code includes the monolithic harness implementations,
+    private attached callback slots, private board reach-through, and stale
+    private consumer/test bridges.  No duplicate turn/activity implementation
+    remains.
+13. Expected provider/attachment errors are handled at their existing
+    application boundaries and surfaced through the same conditions/events;
+    unexpected errors continue to signal rather than being swallowed.
+14. Direct owner contracts prove substates, activity observation, port
+    substitution, queue/turn transitions, and errors independently.  Composed
+    harness, board, preservation, provider, and graphical suites prove the
+    unchanged end-to-end behavior.  The test topology therefore changes with
+    the owner boundary rather than requiring unrelated test rewrites.
+
+* Parent acceptance
+
+Parent review initially rejected the implementer handoff because
+=e-board-runtime= still reached through the attached port into turn-state and
+activity-owner APIs.  The same persistent implementer corrected the boundary:
+active-turn observation now exposes only copied =:id= and =:status= values,
+activity observation supplies a bounded copied payload, and the full internal
+active-turn projector and a cosmetic unused-port payload bridge are absent.
+
+The parent independently inspected the final 22-edge graph and negative
+sweeps, reran the owner/cutover/board suites together, and observed 83 expected
+passes, zero unexpected results, and one expected skip because the fresh-owner
+contract intentionally skips after the combined process loads the facade.
+The standalone 8/8 owner evidence proves that fresh-load contract.  Round 3 is
+accepted.
+
+* Evidence and handoff
+
+The primary evidence files are this audit, =plan.org=' accepted-round section,
+=/tmp/e-r3-static-sweep-port-boundary-final.log=,
+=/tmp/e-r3-runtime-graph-final.log=, and the validation logs in the table
+above.

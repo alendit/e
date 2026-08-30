@@ -40,7 +40,7 @@ When READ-ONLY is non-nil, file resources only support reads."
     (if read-only
         (e-base-tools-register-file-read-resource resources directory)
       (e-base-tools-register-file-resource resources directory))
-    (e-harness--register-resource-tools tools resources)
+    (e-harness-register-resource-tools tools resources)
     tools))
 
 (defun e-base-tools-test--execute (registry name arguments)

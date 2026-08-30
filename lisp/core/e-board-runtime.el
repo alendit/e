@@ -219,7 +219,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
   board participant harness session-id delivery-function subscription activity-sequence generation
-  turn-activity turn-tags turn-delivery-ids instance-id instance-catalog-generation
+  turn-activity turn-tags turn-delivery-ids turn-port instance-id instance-catalog-generation
   harness-id harness-object-generation endpoint-token state reconciliation)
 
 (cl-defstruct (e-board-runtime-reconciliation
@@ -615,7 +615,7 @@ participant turns settle.  An unrouted input settles visibly as `unrouted'."
 
 (defconst e-board-runtime--quiescence-change-hooks
   '(e-board-runtime--unsettled-change-functions
-    e-harness--aggregate-unsettled-change-functions
+    e-harness-aggregate-unsettled-change-hook
     e-work--unsettled-change-functions
     e-board-registry--unsettled-change-functions
     e-session-storage-unsettled-change-hook
@@ -750,8 +750,12 @@ retain the returned admission token and reopen it explicitly when appropriate."
          (e-board-registry-participant-id participant)))
 
 (defun e-board-runtime--session-key (harness session-id)
-  "Return the concrete endpoint lookup key for HARNESS SESSION-ID."
-  (list harness session-id))
+  "Return the stable endpoint lookup key for HARNESS SESSION-ID.
+The aggregate is mutable, so using it directly as an `equal' hash key would
+make endpoint membership disappear when an owner updates its state.  The
+immutable identity token belongs to the harness aggregate and is distinct for
+each live harness object."
+  (list (e-harness-identity-token harness) session-id))
 
 (defun e-board-runtime--attachment-session-key (attachment)
   "Return ATTACHMENT's concrete reverse session identity."
@@ -812,9 +816,7 @@ board event."
            (participant (e-board-runtime-attachment-participant attachment))
            (harness (e-board-runtime-attachment-harness attachment))
            (session-id (e-board-runtime-attachment-session-id attachment)))
-      (when (e-board-runtime-attachment-subscription attachment)
-        (e-harness--remove-activity-sink
-         harness (e-board-runtime-attachment-subscription attachment)))
+      (e-board-runtime--unsubscribe-attachment-activity attachment)
       (dolist (table/key
                (list (cons e-board-runtime--attachments
                            (and participant
@@ -1207,9 +1209,9 @@ has no callback and is observed only."
 
 (defun e-board-runtime--publish-output (attachment turn-id)
   "Publish ATTACHMENT's final assistant message for TURN-ID exactly once."
-  (let* ((harness (e-board-runtime-attachment-harness attachment))
-         (session-id (e-board-runtime-attachment-session-id attachment))
-         (message (e-harness--turn-assistant-message harness session-id turn-id)))
+  (let ((message
+         (e-harness-attached-turn-port-assistant-message
+          (e-board-runtime-attachment-turn-port attachment) turn-id)))
     (when-let ((sequence (and message
                               (plist-get message :board-output-sequence))))
       (let* ((board (e-board-registry-board-source-board
@@ -1300,9 +1302,7 @@ these terminal states have no output to close the board-owned open projection."
        :activity-kind activity-kind
        :attributes
        (append
-        (copy-tree
-         (e-harness--durable-activity-payload
-          activity-kind (plist-get event :payload)))
+        (copy-tree (plist-get event :payload))
         (when-let ((source-event-id
                     (plist-get event :activity-entry-id)))
           (list :source-event-id source-event-id)))
@@ -1322,7 +1322,7 @@ only the generic status fields presentation consumers need."
                             :summary :pending-summary)
                when (plist-member payload key)
                append (list key (copy-tree (plist-get payload key))))
-    (copy-tree (e-harness--durable-activity-payload kind payload))))
+    (copy-tree payload)))
 
 (defun e-board-runtime--publish-harness-activity (attachment event)
   "Publish EVENT's bounded lifecycle edge without exposing its raw payload."
@@ -1642,25 +1642,26 @@ publishes an attachment."
   "Deliver PICKUP's MESSAGE through ATTACHMENT's harness session.
 An idle input starts one turn.  During an active turn, inject-mode enters the
 steering lane while queue-mode enters the later-turn inbox."
-  (let* ((harness (e-board-runtime-attachment-harness attachment))
-         (session-id (e-board-runtime-attachment-session-id attachment))
+  (let* ((attached-turn-port (e-board-runtime-attachment-turn-port
+                              attachment))
          (prompt (e-board-pickup-content pickup))
          (metadata (e-board-runtime--delivery-metadata pickup)))
     (unless (and (stringp prompt) (not (string-empty-p prompt)))
       (user-error "Board input content must be a non-empty string"))
-    (let ((active-turn (plist-get (e-harness-state harness session-id)
-                                  :active-turn)))
+    (let* ((active-observation (e-harness-attached-turn-port-active-turn
+                                attached-turn-port))
+           (active-turn
+            (and active-observation
+                 (eq (plist-get active-observation :status) 'running))))
       (pcase (e-board-pickup-mode pickup)
         ('queue
          (if active-turn
              (list :accepted
-                   (e-harness--request-attached-follow-up
-                    harness session-id prompt :metadata metadata))
+                   (e-harness-attached-turn-port-follow-up
+                    attached-turn-port prompt :metadata metadata))
            (let ((turn-id
-                  (e-harness--prompt-attached-async
-                   harness session-id prompt :metadata metadata
-                   :attachment-token
-                   (e-board-runtime-attachment-endpoint-token attachment))))
+                  (e-harness-attached-turn-port-submit
+                   attached-turn-port prompt :metadata metadata)))
              (puthash turn-id
                       (copy-tree
                        (plist-get (e-board-pickup-cause-metadata pickup)
@@ -1670,14 +1671,10 @@ steering lane while queue-mode enters the later-turn inbox."
         ('inject
          (let ((turn-id
                 (if active-turn
-                    (e-harness--steer-attached-turn
-                     harness session-id prompt :metadata metadata
-                     :attachment-token
-                     (e-board-runtime-attachment-endpoint-token attachment))
-                  (e-harness--prompt-attached-async
-                   harness session-id prompt :metadata metadata
-                   :attachment-token
-                   (e-board-runtime-attachment-endpoint-token attachment)))))
+                    (e-harness-attached-turn-port-steer
+                     attached-turn-port prompt :metadata metadata)
+                  (e-harness-attached-turn-port-submit
+                   attached-turn-port prompt :metadata metadata))))
            (puthash turn-id
                     (copy-tree
                      (plist-get (e-board-pickup-cause-metadata pickup)
@@ -1802,24 +1799,28 @@ This operation never invokes an instance factory or loads dormant history."
     (board participant harness session-id delivery-function generation
            &rest metadata)
   "Construct one immutable-generation attachment without registering it."
-  (e-board-runtime-attachment--create
-   :board board :participant participant :harness harness :session-id session-id
-   :activity-sequence 0 :generation generation :state 'active
-   :turn-activity (make-hash-table :test 'equal)
-   :turn-tags (make-hash-table :test 'equal)
-   :turn-delivery-ids (make-hash-table :test 'equal)
-   :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)
-   :instance-id (plist-get metadata :instance-id)
-   :instance-catalog-generation
-   (plist-get metadata :instance-catalog-generation)
-   :harness-id (plist-get metadata :harness-id)
-   :harness-object-generation
-   (plist-get metadata :harness-object-generation)
-   :endpoint-token
-   (or (plist-get metadata :endpoint-token)
-       (e-board-runtime-endpoint-token--create
-        :harness-id (list 'direct (e-session-generate-ulid))
-        :session-id session-id))))
+  (let ((attachment
+         (e-board-runtime-attachment--create
+          :board board :participant participant :harness harness :session-id session-id
+          :activity-sequence 0 :generation generation :state 'active
+          :turn-activity (make-hash-table :test 'equal)
+          :turn-tags (make-hash-table :test 'equal)
+          :turn-delivery-ids (make-hash-table :test 'equal)
+          :delivery-function (or delivery-function #'e-board-runtime--deliver-to-harness)
+          :instance-id (plist-get metadata :instance-id)
+          :instance-catalog-generation
+          (plist-get metadata :instance-catalog-generation)
+          :harness-id (plist-get metadata :harness-id)
+          :harness-object-generation
+          (plist-get metadata :harness-object-generation)
+          :endpoint-token
+          (or (plist-get metadata :endpoint-token)
+              (e-board-runtime-endpoint-token--create
+               :harness-id (list 'direct (e-session-generate-ulid))
+               :session-id session-id)))))
+    (setf (e-board-runtime-attachment-turn-port attachment)
+          (e-board-runtime--make-attached-turn-port attachment))
+    attachment))
 
 (defun e-board-runtime--configure-attachment (attachment)
   "Install the private board/harness ports required by ATTACHMENT."
@@ -1856,9 +1857,9 @@ This operation never invokes an instance factory or loads dormant history."
               (gethash endpoint-key e-board-runtime--endpoint-attachments))
       (signal 'e-board-runtime-session-busy (list session-key endpoint-key)))
     (setf (e-board-runtime-attachment-subscription attachment)
-          (e-harness--install-activity-sink
-           harness (lambda (event) (e-board-runtime--handle-harness-event attachment event))
-           :session-id session-id))
+          (e-harness-attached-turn-port-observe-activity
+           (e-board-runtime-attachment-turn-port attachment)
+           (lambda (event) (e-board-runtime--handle-harness-event attachment event))))
     (puthash key attachment e-board-runtime--attachments)
     (puthash session-key attachment e-board-runtime--session-attachments)
     (puthash endpoint-key attachment e-board-runtime--endpoint-attachments)
@@ -1920,8 +1921,7 @@ This operation never invokes an instance factory or loads dormant history."
       (signal 'e-board-runtime-error
               (list "Participant attachment changed during removal"
                     (e-board-registry-participant-id participant))))
-    (e-harness--remove-activity-sink
-     harness (e-board-runtime-attachment-subscription attachment))
+    (e-board-runtime--unsubscribe-attachment-activity attachment)
     (remhash (e-board-runtime--attachment-key board participant)
              e-board-runtime--attachments)
     (remhash (e-board-runtime--attachment-session-key attachment)
@@ -1962,17 +1962,14 @@ This operation never invokes an instance factory or loads dormant history."
     (condition-case condition
         (progn
           (setf (e-board-runtime-attachment-subscription attachment)
-                (e-harness--install-activity-sink
-                 harness
+                (e-harness-attached-turn-port-observe-activity
+                 (e-board-runtime-attachment-turn-port attachment)
                  (lambda (event)
-                   (e-board-runtime--handle-harness-event attachment event))
-                 :session-id session-id))
+                   (e-board-runtime--handle-harness-event attachment event))))
           (e-board-runtime--configure-attachment attachment)
           attachment)
       (error
-       (when (e-board-runtime-attachment-subscription attachment)
-         (e-harness--remove-activity-sink
-          harness (e-board-runtime-attachment-subscription attachment)))
+       (e-board-runtime--unsubscribe-attachment-activity attachment)
        (signal (car condition) (cdr condition))))))
 
 (defun e-board-runtime--finish-participant-rebind (reconciliation)
@@ -1996,8 +1993,7 @@ This operation never invokes an instance factory or loads dormant history."
                     (e-board-registry-participant-id participant))))
     (e-board-runtime--require-rebind-target-free new-harness new-session-id)
     (setq new (e-board-runtime--prepare-rebind-attachment reconciliation))
-    (e-harness--remove-activity-sink
-     old-harness (e-board-runtime-attachment-subscription old))
+    (e-board-runtime--unsubscribe-attachment-activity old)
     (remhash (e-board-runtime--attachment-session-key old)
              e-board-runtime--session-attachments)
     (remhash (e-board-runtime--session-key old-harness old-session-id)
@@ -2038,18 +2034,15 @@ This operation never invokes an instance factory or loads dormant history."
     (condition-case condition
         (progn
           (setf (e-board-runtime-attachment-subscription attachment)
-                (e-harness--install-activity-sink
-                 harness
+                (e-harness-attached-turn-port-observe-activity
+                 (e-board-runtime-attachment-turn-port attachment)
                  (lambda (event)
                    (when (e-board-runtime-attachment-participant attachment)
-                     (e-board-runtime--handle-harness-event attachment event)))
-                 :session-id session-id))
+                     (e-board-runtime--handle-harness-event attachment event)))))
           (e-board-runtime--configure-attachment attachment)
           attachment)
       (error
-       (when (e-board-runtime-attachment-subscription attachment)
-         (e-harness--remove-activity-sink
-          harness (e-board-runtime-attachment-subscription attachment)))
+       (e-board-runtime--unsubscribe-attachment-activity attachment)
        (signal (car condition) (cdr condition))))))
 
 (defun e-board-runtime--finish-participant-move (reconciliation)
@@ -2082,12 +2075,10 @@ This operation never invokes an instance factory or loads dormant history."
                source destination requester participant
                destination-participant-id))
       (error
-       (e-harness--remove-activity-sink
-        harness (e-board-runtime-attachment-subscription new))
+       (e-board-runtime--unsubscribe-attachment-activity new)
        (signal (car condition) (cdr condition))))
     (setf (e-board-runtime-attachment-participant new) moved-participant)
-    (e-harness--remove-activity-sink
-     harness (e-board-runtime-attachment-subscription old))
+    (e-board-runtime--unsubscribe-attachment-activity old)
     (remhash (e-board-runtime--attachment-key source participant)
              e-board-runtime--attachments)
     (remhash (e-board-runtime--attachment-session-key old)
@@ -2120,10 +2111,12 @@ membership operation after the old endpoint becomes quiescent."
          (source-board (e-board-registry-board-source-board board))
          (delivery-id (car (e-board--pickup-queue source-board participant-id)))
          (pickup (and delivery-id (e-board-pickup source-board delivery-id)))
-         (harness (e-board-runtime-attachment-harness attachment))
-         (session-id (e-board-runtime-attachment-session-id attachment))
-         (active-turn (plist-get (e-harness-state harness session-id)
-                                 :active-turn)))
+         (turn-port (e-board-runtime-attachment-turn-port attachment))
+         (active-observation
+          (e-harness-attached-turn-port-active-turn turn-port))
+         (active-turn (and active-observation
+                           (eq (plist-get active-observation :status) 'running)
+                           (plist-get active-observation :id))))
     (unless (e-board-runtime--current-attachment-p attachment)
       (signal 'e-board-runtime-error
               (list "Participant attachment changed during reconciliation"
@@ -2147,8 +2140,8 @@ membership operation after the old endpoint becomes quiescent."
        request (list :phase 'awaiting-active-turn :turn-id active-turn)))
      ((and pickup
            (eq (e-board-pickup-state pickup) 'cancelling)
-           (e-harness-discard-queued-board-input
-            harness session-id delivery-id
+           (e-harness-attached-turn-port-discard-queued-board-input
+            turn-port delivery-id
             (e-board-delivery-attempt-endpoint-token
              (e-board-pickup-attempt pickup))
             (e-board-delivery-attempt-composite-generation
@@ -2158,7 +2151,7 @@ membership operation after the old endpoint becomes quiescent."
       (e-request-progress
        request (list :phase 'discarding-session-inbox
                      :delivery-id delivery-id)))
-     ((e-harness-queued-prompts harness session-id)
+     ((e-harness-attached-turn-port-queued-prompts turn-port)
       (setf (e-board-runtime-reconciliation-state reconciliation) 'waiting)
       (e-request-progress request (list :phase 'awaiting-session-inbox)))
      (pickup
@@ -2193,10 +2186,12 @@ membership operation after the old endpoint becomes quiescent."
          (source-board (e-board-registry-board-source-board board))
          (delivery-id (car (e-board--pickup-queue source-board participant-id)))
          (pickup (and delivery-id (e-board-pickup source-board delivery-id)))
-         (harness (e-board-runtime-attachment-harness old))
-         (session-id (e-board-runtime-attachment-session-id old))
-         (active-turn (plist-get (e-harness-state harness session-id)
-                                 :active-turn)))
+         (turn-port (e-board-runtime-attachment-turn-port old))
+         (active-observation
+          (e-harness-attached-turn-port-active-turn turn-port))
+         (active-turn (and active-observation
+                           (eq (plist-get active-observation :status) 'running)
+                           (plist-get active-observation :id))))
     (unless (e-board-runtime--current-attachment-p old)
       (signal 'e-board-runtime-error
               (list "Participant attachment changed during rebind"
@@ -2215,8 +2210,8 @@ membership operation after the old endpoint becomes quiescent."
        request (list :phase 'awaiting-active-turn :turn-id active-turn)))
      ((and pickup
            (eq (e-board-pickup-state pickup) 'cancelling)
-           (e-harness-discard-queued-board-input
-            harness session-id delivery-id
+           (e-harness-attached-turn-port-discard-queued-board-input
+            turn-port delivery-id
             (e-board-delivery-attempt-endpoint-token
              (e-board-pickup-attempt pickup))
             (e-board-delivery-attempt-composite-generation
@@ -2226,7 +2221,7 @@ membership operation after the old endpoint becomes quiescent."
       (e-request-progress
        request (list :phase 'discarding-session-inbox
                      :delivery-id delivery-id)))
-     ((e-harness-queued-prompts harness session-id)
+     ((e-harness-attached-turn-port-queued-prompts turn-port)
       (setf (e-board-runtime-reconciliation-state reconciliation) 'waiting)
       (e-request-progress request (list :phase 'awaiting-session-inbox)))
      ((and pickup (eq (e-board-pickup-state pickup) 'cancelling))
@@ -2698,12 +2693,10 @@ the authority to continue its interaction through the board."
        :reference (copy-tree references)))))
 
 (defun e-board-runtime-attachment-active-turn (attachment)
-  "Return current ATTACHMENT's private execution turn projection, or nil."
+  "Return current ATTACHMENT's attached execution identity/status, or nil."
   (and (e-board-runtime--current-attachment-p attachment)
-       (copy-tree
-        (gethash (e-board-runtime-attachment-session-id attachment)
-                 (e-harness-active-turns
-                  (e-board-runtime-attachment-harness attachment))))))
+       (e-harness-attached-turn-port-active-turn
+        (e-board-runtime-attachment-turn-port attachment))))
 
 (defun e-board-runtime-attachment-active-turn-p (attachment)
   "Return non-nil when current ATTACHMENT owns a live harness turn."
@@ -2714,24 +2707,42 @@ the authority to continue its interaction through the board."
   (e-board-runtime--require-admission)
   (unless (e-board-runtime--current-attachment-p attachment)
     (signal 'e-board-runtime-error (list "Stale attachment" attachment)))
-  (e-harness--abort-attached
-   (e-board-runtime-attachment-harness attachment)
-   (e-board-runtime-attachment-session-id attachment)
-   (e-board-runtime-attachment-endpoint-token attachment)))
+  (e-harness-attached-turn-port-abort
+   (e-board-runtime-attachment-turn-port attachment)))
 
-(defun e-board-runtime--authorize-harness-port (harness session-id token)
-  "Return non-nil when TOKEN owns HARNESS SESSION-ID's current attachment."
-  (when-let ((attachment
-              (gethash (e-board-runtime--session-key harness session-id)
-                       e-board-runtime--endpoint-attachments)))
-    (and (e-board-runtime--current-attachment-p attachment)
-         (equal token (e-board-runtime-attachment-endpoint-token attachment)))))
+(defun e-board-runtime--make-attached-turn-port (attachment)
+  "Return the explicit harness port owned by ATTACHMENT.
+The closures capture one attachment identity and are passed to the harness at
+the call boundary.  No process-global callback or service lookup is involved;
+stale attachments therefore fail the same current-ownership check as board
+publication itself."
+  (e-harness-attached-turn-port-create
+   :harness (e-board-runtime-attachment-harness attachment)
+   :session-id (e-board-runtime-attachment-session-id attachment)
+   :attachment-token (e-board-runtime-attachment-endpoint-token attachment)
+   :authorizer
+   (lambda (harness session-id token)
+     (and (eq harness (e-board-runtime-attachment-harness attachment))
+          (equal session-id
+                 (e-board-runtime-attachment-session-id attachment))
+          (e-board-runtime--current-attachment-p attachment)
+          (eq (e-board-runtime-attachment-state attachment) 'active)
+          (equal token (e-board-runtime-attachment-endpoint-token attachment))))
+   :follow-up-publisher
+   (lambda (harness session-id prompt &rest args)
+     (unless (and (eq harness (e-board-runtime-attachment-harness attachment))
+                  (equal session-id
+                         (e-board-runtime-attachment-session-id attachment)))
+       (signal 'e-harness-board-attachment-required (list session-id)))
+     (apply #'e-board-runtime--publish-attached-follow-up
+            harness session-id prompt args))))
 
-(setq e-harness--attached-port-authorizer
-      #'e-board-runtime--authorize-harness-port)
-
-(setq e-harness--attached-follow-up-publisher
-      #'e-board-runtime--publish-attached-follow-up)
+(defun e-board-runtime--unsubscribe-attachment-activity (attachment)
+  "Remove ATTACHMENT's activity observer through its attached-turn port."
+  (when (e-board-runtime-attachment-subscription attachment)
+    (e-harness-attached-turn-port-stop-observing
+     (e-board-runtime-attachment-turn-port attachment)
+     (e-board-runtime-attachment-subscription attachment))))
 
 (provide 'e-board-runtime)
 

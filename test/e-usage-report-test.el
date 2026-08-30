@@ -57,7 +57,7 @@
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-activate-capability harness (e-usage-report-test--capability))
     (e-harness-create-session harness :id "session-1")
-    (e-harness--emit-turn-event
+    (e-harness-activity-emit-turn-event
      harness "session-1" "turn-1" 'tool-started
      '(:id "tool-call-1" :name "sample_tool"))
     (e-actions-call
@@ -74,7 +74,7 @@
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
     (e-harness-activate-capability harness (e-usage-report-test--capability))
     (e-harness-create-session harness :id "session-1")
-    (e-harness--emit-turn-event
+    (e-harness-activity-emit-turn-event
      harness "session-1" "turn-1" 'tool-started
      '(:id "tool-call-1" :name "sample_tool"))
     (e-actions-call

@@ -398,7 +398,7 @@ retry classifier sees the kind even when the message does not name it."
       (should (eq (plist-get item :type) 'backend-error))
       (should (string-match-p "overloaded_error" (plist-get item :content)))
       (let ((details (plist-get item :payload)))
-        (should (e-harness--retryable-error-p details))
+        (should (eq (plist-get details :retryable) t))
         (should (eq (plist-get details :retry-reason)
                     'provider-unavailable))))))
 
@@ -423,19 +423,19 @@ retry classifier sees the kind even when the message does not name it."
     (pcase-let ((`(,message ,payload ,reason) case))
       (let ((details (e-anthropic--normalize-error-details
                       message payload nil)))
-        (should (e-harness--retryable-error-p details))
+        (should (eq (plist-get details :retryable) t))
         (should (eq (plist-get details :retry-reason) reason)))))
   (let ((details
          (e-anthropic--normalize-error-details
           "Anthropic request timed out"
           nil
           '(e-anthropic-request-timeout "timed out"))))
-    (should (e-harness--retryable-error-p details))
+    (should (eq (plist-get details :retryable) t))
     (should (eq (plist-get details :retry-reason) 'timeout)))
-  (should-not
-   (e-harness--retryable-error-p
-    (e-anthropic--normalize-error-details
-     "invalid request" '(:status 400) nil))))
+  (let ((details
+         (e-anthropic--normalize-error-details
+          "invalid request" '(:status 400) nil)))
+    (should-not (eq (plist-get details :retryable) t))))
 
 (ert-deftest e-anthropic-test-parse-non-stream-html-error ()
   "A non-stream HTML error body becomes a single backend error item."

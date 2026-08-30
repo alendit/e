@@ -165,7 +165,7 @@ an explicit child harness or session policy always wins."
               (plist-put child-options key (plist-get parent-options key)))
         (setq changed t)))
     (when changed
-      (e-harness--set-session-options
+      (e-harness-set-session-options
        child-harness child-session-id child-options))))
 
 (defun e-subagent-direct-runner (child-harness child-session-id prompt

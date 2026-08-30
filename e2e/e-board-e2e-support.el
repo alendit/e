@@ -140,8 +140,8 @@
     ;; captured plist, just like `e-harness-wait-batch', and clear the slot only
     ;; if it still points to this entry.
     (when (and (eq (gethash session-id (e-harness-active-turns harness)) entry)
-               (not (e-harness--active-turn-running-p entry)))
-      (e-harness--remove-active-turn harness session-id entry))
+               (not (e-harness-turn-state-active-turn-running-p entry)))
+      (e-harness-turn-state-remove-active-turn harness session-id entry))
     entry))
 
 (defun e-board-e2e-prompt-batch (harness session-id prompt &optional timeout)

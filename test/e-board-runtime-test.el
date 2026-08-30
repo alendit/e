@@ -92,10 +92,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-board-registry--unsettled-generation 0)
           (e-board-registry--unsettled-change-function nil)
           (e-board-registry--unsettled-change-functions nil)
-          (e-harness--aggregate-active-turn-count 0)
-          (e-harness--aggregate-queued-input-count 0)
-          (e-harness--aggregate-unsettled-generation 0)
-          (e-harness--aggregate-unsettled-change-functions nil)
+          (e-harness-aggregate-unsettled-change-hook nil)
           (e-work--unsettled-count 0)
           (e-work--unsettled-generation 0)
           (e-work--unsettled-change-functions nil)
@@ -125,7 +122,10 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-harness-instance--defaults (make-hash-table :test 'equal))
           (e-harness-instance--session-stores (make-hash-table :test 'equal))
           (e-harness-instance--generation 0))
-       ,@body)))
+       (e-harness-turn-state-reset-aggregate)
+       (unwind-protect
+           (progn ,@body)
+         (e-harness-turn-state-reset-aggregate)))))
 
 (ert-deftest e-board-runtime-test-unsettled-queues-publish-owner-transitions ()
   "Runtime queue counts change with enqueue/pop rather than a later scan."
@@ -1875,9 +1875,11 @@ Tests that explicitly provide `:requester' retain that exact requester."
                               :turn-id "turn" :payload '(:secret "not-board-content")
                               :activity-entry-id "provider-event"
                               :board-activity-sequence 17)))
-          (e-board-runtime--handle-harness-event attachment event)
+          (e-harness-activity-emit
+           (e-board-runtime-attachment-harness attachment) event)
           ;; A durable event may be replayed after an interrupted publication.
-          (e-board-runtime--handle-harness-event attachment event))
+          (e-harness-activity-emit
+           (e-board-runtime-attachment-harness attachment) event))
         (let ((activity (car (last (e-board-messages source-board)))))
           (should (= (length (e-board-messages source-board)) 1))
           (should (eq (e-board-message-kind activity) 'activity))
@@ -1903,8 +1905,8 @@ Tests that explicitly provide `:requester' retain that exact requester."
       (let* ((attachment (e-board-runtime-attach
                           board harness "session" :participant-id participant))
              (source-board (e-board-registry-board-source-board board)))
-        (e-board-runtime--handle-harness-event
-         attachment
+        (e-harness-activity-emit
+         (e-board-runtime-attachment-harness attachment)
          (e-events-make
           :type 'turn-retrying :session-id "session" :turn-id "turn"
           :payload '(:error "503 upstream; token=secret-value"

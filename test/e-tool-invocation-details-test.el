@@ -694,7 +694,7 @@ ordinary tool implementation used by the test capability."
          (events nil))
     (unwind-protect
         (progn
-          (e-harness--install-activity-sink
+          (e-harness-activity-subscribe
            harness (lambda (event) (push event events)))
           (e-harness-create-session harness :id session-id)
           (e-harness-test-prompt-async harness session-id "cancel this")

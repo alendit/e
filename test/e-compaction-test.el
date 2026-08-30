@@ -20,6 +20,15 @@
 (require 'e-openai)
 (require 'e-session)
 
+(defun e-compaction-test--provider-anchor-fingerprints (context)
+  "Return the public continuation identity's stable anchor projection.
+Compaction tests consume the semantic context projection rather than the
+context owner's fingerprint implementation."
+  (plist-get
+   (plist-get (plist-get context :options)
+              :continuation-projection-identity)
+   :provider-anchor-fingerprints))
+
 (defun e-compaction-test--append-literal-v2-record
     (store session-id record)
   "Install literal version-2 RECORD as a test-only replay fixture.
@@ -624,7 +633,7 @@ later assistant/tool-call message instead of signalling no-boundary."
              (plist-get before :lifetime-generation)))
            (old-frame (plist-get before :lifetime-frame))
            (old-anchor-fingerprints
-            (e-harness--provider-anchor-fingerprints before)))
+            (e-compaction-test--provider-anchor-fingerprints before)))
       (e-session-append-message
        (e-harness-sessions harness) session-id
        '(:role user :content "durable before boundary"))
@@ -650,7 +659,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                (plist-get after :lifetime-generation)))
              (new-frame (plist-get after :lifetime-frame))
              (new-anchor-fingerprints
-              (e-harness--provider-anchor-fingerprints after)))
+              (e-compaction-test--provider-anchor-fingerprints after)))
         (should (string-prefix-p "generation:" new-generation))
         (should-not (equal old-generation new-generation))
         (should (e-context-lifetime-frame-p new-frame))
@@ -852,7 +861,7 @@ later assistant/tool-call message instead of signalling no-boundary."
              store "anchor-generation" 'fake
              :model nil
              :covered-entry-id (plist-get session :root-event-id)
-             :fingerprints (e-harness--provider-anchor-fingerprints before))))
+             :fingerprints (e-compaction-test--provider-anchor-fingerprints before))))
       (should anchor)
       (e-session-append-message store "anchor-generation"
                                 '(:role user :content "before anchor"))

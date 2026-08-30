@@ -14,12 +14,9 @@
 
 (require 'cl-lib)
 (require 'e-context)
+(require 'e-harness-context-runtime)
 (require 'e-session)
 
-(declare-function e-harness-context "e-harness")
-(declare-function e-harness-display-options "e-harness")
-(declare-function e-harness-sessions "e-harness")
-(declare-function e-harness-turn-options "e-harness")
 (declare-function e-session-latest-token-usage-event "e-session")
 
 (defgroup e-context-budget nil
