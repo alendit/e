@@ -34,11 +34,11 @@
 (declare-function e-chat-overview-prepare-unread-cache "e-chat-overview")
 (declare-function e-chat-surface-set-redraw-visible "e-chat-surface")
 (declare-function e-chat-service-binding-board "e-chat-service")
-(declare-function e-chat-service-binding-observer "e-chat-service")
 (declare-function e-chat-service-create-session "e-chat-service")
 (declare-function e-chat-service-messages "e-chat-service")
+(declare-function e-chat-service-drain-binding "e-chat-service")
+(declare-function e-chat-service-drain-subscription "e-chat-service")
 (declare-function e-chat-service-subscribe "e-chat-service")
-(declare-function e-chat-service-subscription-observer "e-chat-service")
 (declare-function e-chat-service-unsubscribe "e-chat-service")
 
 (defgroup e-dev-perf nil
@@ -891,10 +891,7 @@ artifacts under `e-dev-perf-run-directory'."
        :source-output-key (list 'perf session-id index)))
     ;; Keep setup cost out of the measured continuation.  This models a live
     ;; binding whose bounded presentation projection has already caught up.
-    (while (< (e-board-observer-next-index
-               (e-chat-service-binding-observer binding))
-              (e-board-message-count board))
-      (e-chat-service--drain-observer binding))
+    (while (e-chat-service-drain-binding binding))
     (list :harness harness :session-id session-id :binding binding :board board)))
 
 (defun e-dev-perf--chat-board-continuation-setup (scenario)
@@ -923,17 +920,14 @@ artifacts under `e-dev-perf-run-directory'."
              harness session-id
              (lambda (_event)
                (setq history-deliveries (1+ history-deliveries)))))
-      (while (< (e-board-observer-next-index
-                 (e-chat-service-subscription-observer subscription))
-                (e-board-message-count board))
-        (e-chat-service--drain-subscription subscription))
+      (while (e-chat-service-drain-subscription subscription))
       (let ((history-end history-deliveries))
         (e-board-post-output
          board :id (format "%s-live" session-id) :author "perf" :tags '(main)
          :content "live answer"
          :source-output-key
          (list 'perf session-id e-dev-perf--chat-board-history-size))
-        (e-chat-service--drain-subscription subscription)
+        (e-chat-service-drain-subscription subscription)
         (setq live-deliveries (- history-deliveries history-end)
               history-deliveries history-end)))
     (e-chat-service-unsubscribe subscription)

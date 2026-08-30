@@ -113,7 +113,7 @@ metadata belonging to an unloaded session."
                        (equal (plist-get candidate :uri)
                               (plist-get metadata :uri)))
                      (e-chat-session-attachments harness session-id))))
-          (e-chat-session--attachment-live-buffer attachment)))))
+          (e-chat-session-attachment-live-buffer attachment)))))
 
 (defun e-org-canvas--inside-heading-p ()
   "Return non-nil when point is in an Org heading or subtree."

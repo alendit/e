@@ -508,7 +508,7 @@ CONTENT-RESOLVER accepts WORK-ARGUMENTS and CONTEXT and returns a plist with
   (let* ((harness (e-resource-toc--context-harness context))
          (session-id (e-resource-toc--context-session-id context))
          (relative-name (plist-get uri :address))
-         (path (e-session-tmp--path harness session-id relative-name)))
+         (path (e-session-tmp-file-path harness session-id relative-name)))
     (list :uri (plist-get uri :uri)
           :file path
           :options options)))

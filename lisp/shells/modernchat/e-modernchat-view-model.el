@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'e-chat-service)
+(require 'e-chat-output-mode)
 (require 'e-harness)
 (require 'e-message-details)
 (require 'e-session)
@@ -197,7 +198,7 @@ capability-owned message details."
          (state (ignore-errors (e-chat-service-state harness session-id)))
          (active-turn-id (or (plist-get (plist-get state :active-turn) :id)
                              (plist-get state :active-turn)))
-         (output-mode (e-chat-service-output-mode harness session-id))
+         (output-mode (e-chat-output-mode-resolve harness session-id))
          (registry (ignore-errors
                      (e-chat-service-structured-blocks harness session-id)))
          (messages (e-modernchat-view-model--take-last

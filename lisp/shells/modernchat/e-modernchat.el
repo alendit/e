@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'e-chat-service)
+(require 'e-chat-output-mode)
 (require 'e-modernchat-view-model)
 (require 'e-shells)
 (require 'e-workspaces)
@@ -216,7 +217,7 @@
        (let* ((mode-text (e-modernchat--payload-field payload 'mode))
               (mode (and mode-text (not (string-empty-p mode-text))
                          (intern mode-text))))
-         (e-chat-service-set-output-mode
+         (e-chat-output-mode-session-set
           e-modernchat-harness e-modernchat-session-id mode)
          (e-modernchat--schedule-push)))
       (_

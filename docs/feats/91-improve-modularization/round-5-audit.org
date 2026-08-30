@@ -1,0 +1,666 @@
+#+title: Feature 91 Round 5 Residual Topology and Architecture Audit
+#+date: 2026-08-30
+#+startup: overview
+
+* Status and scope
+
+Round 5 was implemented from the clean exact baseline
+=fd51e67500c8bdc35632ea0f7800c1bdedb94c86=.  Parent review accepted the
+package after two correction passes; independent final review remains.  This
+file does not mark Feature 91 =Done=.
+
+Round 5 covers the final residual-topology and test-topology review after the
+accepted presentation, session/storage, runtime-control, and adapter/capability
+rounds.  It inventories every initial residual root, challenges retained large
+roots from first principles, corrects the remaining consumer-shaped internal
+edges, updates the repository architecture map, and runs the final repository
+gates.  No product feature, provider contract, durable format, public command,
+or live Emacs state was intentionally changed.  Feature 87 SQLite/migration/
+cutover remains =Planned=; Features 88 and 90 remain frozen preservation
+baselines.
+
+Behavior and mechanism are reported separately:
+
+- *Behavioral status*: repository behavior is green on the final full ERT,
+  focused preservation selector, affected owner/facade suites, and isolated
+  graphical suite.  The seven full-suite skips and two preservation-selector
+  skips are existing environment/fresh-load conditions listed below.  No live
+  provider call is required; provider capability is unconfirmed/not applicable
+  to this behavior-neutral package.
+- *Mechanism status*: all Round 5 residual production/test clusters have an
+  extracted-owner, already-accepted-owner, retained-causal, or not-applicable
+  disposition.  The complete local require graph is cycle-free after moving
+  the shared context estimator and extracting the session value policies.
+  Public composition roots are split by scenario/change reason and exact
+  pre-correction test-name comparisons pass.  Parent review accepted the
+  resulting topology.
+
+The user's running Emacs was not queried, reloaded, signaled, or changed.
+
+* Changed paths and boundary result
+
+** Production and documentation
+
+- =docs/architecture.md=: rewritten as a current-state architecture map with
+  the required overview, boundaries, repository mapping, components, flows,
+  public surfaces, extension points, testing, change management, and final
+  architecture discussion.  Facades, owner modules, state lifetimes,
+  side-effect edges, retained state machines, and restart policy now match the
+  source tree.
+- =docs/feats/91-improve-modularization/plan.org=: records Round 5 evidence,
+  updates the contract status without claiming parent acceptance, and replaces
+  the incomplete package-start residual dispositions with the evidence-backed
+  final disposition.
+- =lisp/core/e-board.el=: owns the detached public
+  =e-board-message-envelope= used when a board message crosses the durable
+  journal boundary; it leaves board structs and routing state private.
+- =lisp/core/e-chat-service.el=: adds the narrow public
+  =e-chat-service-drain-binding= and =e-chat-service-drain-subscription=
+  operations for bounded synchronous embedding/test pumps; observer cursors and
+  projection registries remain service-private.  It also exposes the semantic
+  =e-chat-service-reconcile-board-continuation= application operation; the
+  continuation guard and board orchestration remain service-private.  The
+  service state snapshot
+  seeds its active turn from the public attached-turn projection and then
+  reconciles retained board activity.
+- =lisp/core/e-context-estimate.el=: new lower-level pure owner for the
+  configured bytes/token ratio and exact UTF-8/ =prin1= value estimator.
+- =lisp/core/e-context-budget.el= and =e-context-lifetime.el=: use the one
+  estimator owner; the lifetime owner no longer dynamically loads the
+  higher-level budget owner.  The invalid-ratio fallback and byte/token
+  calculation remain unchanged.
+- =lisp/core/e-session-metadata.el=, =e-session-identity.el=,
+  =e-session-provider-anchor.el=, and =e-session-board-policy.el=: new pure
+  session value/policy owners for metadata schema/legacy normalization,
+  identity generation, anchor compatibility, and routing-policy validation;
+  aggregate mutation and association state remain in =e-session-aggregate=.
+- =lisp/defaults/e-default-harnesses.el=: exposes the semantic
+  =e-default-chat-harness-spec= projection used by debug/default consumers.
+- =lisp/dev/e-dev-perf.el=: uses the bounded chat-service drain operations and
+  no longer reads observer cursor or drain implementation fields.
+- =lisp/layers/chat/e-chat-session.el=: exposes
+  =e-chat-session-attachment-live-buffer= as the semantic live-buffer
+  projection used by canvas shells.
+- =lisp/layers/e-resource-toc.el=, =lisp/layers/org-canvas/e-org-canvas-capabilities.el=,
+  and =lisp/shells/e-canvas.el=: migrate to the public session-tmp and chat
+  attachment projections.
+- =lisp/shells/modernchat/e-modernchat.el= and
+  =lisp/shells/modernchat/e-modernchat-view-model.el=: consume the
+  layer-owned output-mode capability directly; the obsolete core service
+  forwarding dependency was removed.
+
+** Tests and test topology
+
+- =test/e-openai-mechanism-test.el=: new direct owner mechanism suite containing
+  the moved OpenAI profile, mapping, transport, decoder, diagnostics, and
+  compaction assertions.
+- =test/e-openai-request-composition-test.el=,
+  =e-openai-continuation-composition-test.el=,
+  =e-openai-stream-composition-test.el=,
+  =e-openai-chat-completion-composition-test.el=,
+  =e-openai-http-composition-test.el=,
+  =e-openai-websocket-composition-test.el=, and
+  =e-openai-compaction-composition-test.el=: public OpenAI composition
+  scenarios split by request/continuation/stream/variant/transport/compaction
+  reason; each loads the bounded shared fixture support.
+- =test/e-chat-facade-mechanism-test.el=: new direct chat-facade mechanism
+  suite containing the two moved profiling assertions; the large presentation
+  integration root no longer carries those mechanism checks.
+- =test/e-openai-test-support.el=: new bounded shared OpenAI test values/helpers.
+- =test/e-openai-test.el=: reduced to composed/public OpenAI behavior; no
+  OpenAI owner-private references remain; the root now contains four smoke
+  scenarios.
+- =test/e-harness-runtime-mechanism-test.el=: receives the moved profiling
+  mechanism assertions and now places its =provide= form after all tests.
+- =test/e-harness-composition-test-support.el=: bounded shared fixture module
+  for public harness composition suites.
+- =test/e-harness-capability-composition-test.el=,
+  =e-harness-resource-composition-test.el=,
+  =e-harness-turn-composition-test.el=,
+  =e-harness-tool-composition-test.el=,
+  =e-harness-context-composition-test.el=,
+  =e-harness-compaction-composition-test.el=, and
+  =e-harness-context-lifetime-composition-test.el=: public harness scenarios
+  split by capability/resource/turn/tool/context/compaction change reason.
+- =test/e-harness-test.el=: small facade smoke root; it no longer loads the
+  mechanism file as an in-file bridge.
+- =test/e-chat-surface-composition-test.el=,
+  =e-chat-composer-composition-test.el=,
+  =e-chat-transcript-composition-test.el=,
+  =e-chat-activity-composition-test.el=,
+  =e-chat-settlement-composition-test.el=, and
+  =e-chat-overview-composition-test.el=: public presentation composition
+  scenarios split by surface/composer/transcript/activity/settlement/overview
+  reason.  =e-chat-presentation-integration-test.el= is now a four-test facade
+  smoke root.
+- =test/e-openai-owner-test.el=, =test/e-mcp-owner-test.el=,
+  =test/e-base-tools-owner-test.el=: isolated fresh-load contracts explicitly
+  skip only when a combined process has already loaded the facade; standalone
+  owner runs remain the proof.
+- =test/e-session-board-policy-test.el=: new direct board-policy mechanism
+  suite; it owns the moved budget/depth/encoded-size assertions while retaining
+  their historical test names.
+- =test/e-nonblocking-sweep-test.el=: expected locations now follow the
+  accepted post-Round-4 owner topology.
+- =e2e/e-context-lifetime-e2e-test.el=: observes the semantic kind-scoped
+  delivery operation rather than a representation-specific capability plist.
+- =e2e/e-live-e2e-test.el=, =test/e-chat-starter-test.el=,
+  =test/e-chat-test-support.el=, =test/e-chat-test.el=,
+  =test/e-chat-surface-integration-test.el=, =test/e-modernchat-test.el=,
+  =test/e-org-canvas-test.el=, =test/e-subagent-runner-test.el=, and
+  =test/e-task-queue-test.el=: migrate consumers/fixtures from moved
+  private paths to the semantic operations above.
+
+No production implementation copy was added and no compatibility alias was
+added for a removed private name.
+
+* Priority inventory and residual dispositions
+
+The package-start source-size signal was rerun after Round 4.  Production roots
+above 2,500 lines were =e-session-aggregate.el= (3,634), =e-board.el= (3,536),
+=e-chat-transcript.el= (2,762), =e-board-runtime.el= (2,749),
+=e-chat-activity.el= (2,633), and =e-chat.el= (2,607).  Other explicitly
+reviewed roots include =e-context-lifetime.el= (1,915), =e-tools.el= (1,487),
+=e-work.el= (1,477), =e-loop.el= (1,328), =e-session.el= (1,107),
+=e-harness.el= (303), the accepted small OpenAI/MCP/base facades, and the
+Org Canvas/chat/session-tmp shells.  Test roots above 4,000 lines at package
+start were =e2e/e-live-e2e-test.el= (6,821), =test/e-openai-test.el= (4,551),
+=test/e-harness-test.el= (5,882), and
+=test/e-chat-presentation-integration-test.el= (5,867; 5,790 after the
+profiling-test move).  Smaller related roots were inspected because test
+ownership cannot be inferred from size.
+
+After correction, no ordinary split composition file exceeds 1,451 lines:
+OpenAI composition roots range from 80 to 1,250 lines, harness composition
+roots from 62 to 1,451 lines, and chat composition roots from 150 to 1,147
+lines.  The current =e-session-aggregate.el= is 2,706 lines after four pure
+policy owners were extracted, and =e-context-estimate.el= is 46 lines.  The
+6,821-line =e2e/e-live-e2e-test.el= is retained as an external scenario harness,
+not an ordinary mixed-owner ERT root.
+
+The required inventory is summarized here; detailed symbol evidence is in the
+static logs named in the validation section.
+
+| Root/cluster | Responsibility and representation | State owner and lifetime | Dependencies/callers and transaction invariant | Smallest plausible complete boundary | Final disposition |
+|--------------+-----------------------------------+--------------------------+------------------------------------------------+-----------------------------------------+--------------------|
+| =e-chat.el= (2,607) | Shell commands, modes/keymaps, facade composition, buffer-local harness/session attachment, event ordering | Chat buffer and paired-window lifetime; shell side effects | Five presentation owners, chat service, harness/session; one command/event pipeline must preserve buffer focus and render order | Surface, composer, transcript, activity, overview (already extracted) | Retain as public shell facade/composition root; no buried owner copy found |
+| =e-chat-transcript.el= (2,762) | Durable entries, structured blocks, replay, navigation, markers/bounds | Transcript buffer lifetime; marker/block ownership | Surface and semantic chat service; block insertion/projection order is one buffer transaction | Transcript owner (already extracted) | Retain cohesive owner; size is algorithm/state, not an unexamined root |
+| =e-chat-activity.el= (2,633) | Progress/reasoning/tool/action/transient activity and redraw scheduling | Buffer/turn lifetime; redraw work state | Semantic transcript projection and surface primitives; activity event order must remain one redraw transaction | Activity owner (already extracted) | Retain cohesive owner; direct owner suite and integration coverage retained |
+| Org Canvas shell/capabilities and tests | Canvas references, session/canvas commands, transient input and result presentation | Canvas buffer/workspace lifetime; durable intent through session | Public chat-session attachment and chat component APIs; canvas state must not initialize chat registries | Canvas-specific shell/capability boundary | Retain Canvas ownership; migrated private consumers to public projections |
+| =e-session.el= (1,107) | Public session application service and composition | Session-store lifetime; durable store/restart lifetime | Aggregate, codec, catalog, storage; mutation and replay ordering belong at facade/application boundary | Aggregate/codec/catalog/storage (already extracted) | Retain facade; no concrete I/O body remains in facade |
+| =e-session-aggregate.el= (2,706) | Loaded session state, derived fields, board journal, context projections, semantic mutations/replay | Durable session aggregate lifetime; no queue/controller state | Codec/domain values and board/context contracts; one loaded aggregate sequence must apply records atomically | Further mutation split would separate one schema/replay owner and duplicate index/sequence state; pure policy has no shared mutation | Retain aggregate mutation owner; metadata/identity/anchor/board policy extracted |
+| Session pure policy owners (375/99/140/435) | Metadata schema/legacy normalization; ID/ULID values; provider-anchor compatibility; board-policy validation/copy/normalization | Stateless value policies, with only process-local ULID generator state | Explicit values from facade/aggregate; no storage or aggregate mutation | One owner per independent pure policy and real consumer contract | Extracted; 5-test public/fresh policy suite plus 3-test direct board-policy mechanism suite |
+| Session tests (3,228) | Restart, record, catalog, storage, and facade contracts | Temporary persistent store/restart fixtures | Public restart suites plus direct owner mechanism suites | Aggregate/codec/catalog/storage direct suites | Retain/strengthen; current session batch is 179 tests with one expected fresh-load skip |
+| =e-harness.el= (303) | Public harness lifecycle/application composition | Harness process lifetime | Explicit runtime owners, session/context/backend/Work contracts; top-level lifecycle composition is the only remaining responsibility | Capabilities, activity, turn-state, context-runtime, turn (already extracted) | Retain as facade/composition authority |
+| =e-board-runtime.el= (2,749) | Attachment admission/reconciliation, endpoint generations, routing/activity mailboxes, settlement | Board attachment/process lifetime | Board registry and attached-turn port; admission/publication/settlement must update atomically | A separate observer would duplicate attachment generation/settlement state | Retain as cohesive board adapter; no direct harness private calls |
+| =e-board.el= (3,569 current) | Board sequence, participant admission, pickup, routing, publication, processing, activity, terminal aggregation | Process-local board lifetime | Registry/orchestration/runtime; routing and settlement share one sequence/admission transaction | Observer or routing subowner would split sequence and terminal state | Retain with causal colocation proof; detached journal envelopes are board-owned |
+| =e-context-lifetime.el= (1,889) | Generation/frame/curation provenance, bounded diagnostics, consume/erase transitions | Context frame/generation lifetime; durable generation records through session | Aggregate, loop, provider-neutral context; curation validation and consumption share one atomic frame contract | Budget helper cannot own frame semantics; pure estimate has no frame state and is shared by two consumers | Retain frame state machine; estimator extracted to =e-context-estimate= |
+| =e-loop.el= (1,328) | One backend/tool stream, event sequencing, immediate follow-up | One turn/request lifetime | Harness turn/context, backend, tools, Work; stream and follow-up identity/order are one state machine | Splitting stream callbacks from follow-up would duplicate turn identity and error settlement | Retain cohesive turn stream owner |
+| =e-tools.el= (1,487) | Model-facing tool registry/dispatch, request handles, structured results | Harness/turn and tool invocation lifetime | Capabilities and Work; dispatch/result settlement share request identity | Tool registry and result owner cannot separate without weakening cancellation/error ordering | Retain cohesive tool contract/dispatch owner |
+| =e-work.el= (1,477) | Common cheap/async/render lifecycle and status settlement | One Work item lifetime | Capabilities, tools, UI work, adapters; exactly-once lifecycle ordering is shared | Any subowner would split one lifecycle state machine | Retain cohesive lifecycle owner |
+| OpenAI facade/test roots | Public adapter composition and semantic scenario groups | Provider/request and fixture lifetimes | Profile, two wire owners, transports, decoder, diagnostics, compaction; request/stream event order | Existing eight accepted owners plus scenario suites | Facade smoke retained; 126 public tests split across eight composition roots; 39 mechanism tests direct |
+| MCP facade/test roots | Public composition plus protocol, client, stdio, HTTP, capability | Server/client/process lifetimes | Protocol -> transports/client -> capability; supported list/call/refresh contract | Existing accepted owners | Facade retained; transport/client mechanism assertions explicitly classified |
+| Base facade/test roots | Public file/bash capability composition | File/buffer and process/collector lifetimes | Unequal file and bash owners | Existing accepted file/bash owners | Facade retained; direct owner contracts retained |
+| =e2e/e-live-e2e-test.el= (6,821) | Optional credentialed end-to-end scenarios and evidence reporting | Isolated external scenario lifetime | Public facades and fake/optional provider setup; no owner-private dependency | Whole external scenario harness is one evidence transaction | Retain; not a production mirror and no relevant owner-private references |
+| =test/e-harness-test.el= (62) | Small facade smoke behavior | Isolated harness/session fixtures | Public harness/application services; no extracted-owner private references | Seven public scenario suites plus direct mechanism suite | Retain as smoke root; 3 tests; 135 public tests split across seven suites |
+| =test/e-chat-presentation-integration-test.el= (150) | Small chat facade smoke behavior | Isolated shell/frame/buffer lifetime | Public chat/component behavior and test-local helpers; no production owner-private references | Six public scenario suites plus direct component mechanisms | Retain as smoke root; 4 tests; 157 public tests split across six suites |
+| =test/e-chat-test.el= (3,005 current) and related shell tests | Chat facade/public command, service, board and session composition | Isolated buffer/service/board fixtures | Public chat service and component behavior; legacy same-facade/fixture assertions are confined to this smaller facade root | Further split only if a new complete facade mechanism boundary is justified | Retain; below the review size signal, with service drains, envelope projection, and continuation reconciliation on semantic public boundaries |
+
+The retained-root decisions are causal, not size exemptions.  Each retained
+root owns a state machine whose state and ordering cannot move to a separate
+module without a second sequence, admission, marker, lifecycle, or settlement
+owner.  No forwarding-only or helper-bag module was introduced.
+
+* State, lifetime, and side-effect map
+
+| State/side effect | Sole owner | Lifetime | Boundary/evidence |
+|-------------------+------------+----------+--------------------|
+| Loaded session mutation, board journal, context projections | =e-session-aggregate= | Durable session/restart | Semantic aggregate mutations and replay only; pure value policies and storage fields are absent |
+| Metadata schema, classification, validation, legacy normalization | =e-session-metadata= | Stateless/rebuildable value policy | Detached metadata values; no aggregate mutation |
+| Session/entry IDs and legacy identity backfill | =e-session-identity= | Process-local generator; durable IDs in records | Pure identity values; monotonic suffix state is local to generator |
+| Provider-anchor compatibility | =e-session-provider-anchor= | Stateless/rebuildable value policy | Explicit current path/fingerprint inputs; no aggregate lookup |
+| Board-routing policy value validation/copy/normalization | =e-session-board-policy= | Stateless/rebuildable value policy | Aggregate retains association/journal mutation; policy returns detached values |
+| JSONL/index/checkpoint files, queue/controller/outbox/retry | =e-session-storage= | Session-store/process lifetime | Physical I/O and atomic writes stay in the adapter |
+| Durable normalization and schema/value mapping | =e-session-codec= | Stateless/rebuildable | No aggregate/store mutation |
+| Catalog/checkpoint/recovery projection policy | =e-session-catalog= | Stateless/pure projection | Explicit input/output values only |
+| Harness identity and named runtime substates | =e-harness-state= | Process-local harness | No shared unstructured bag across owners |
+| Effective capability/layer/resource/tool derivation | =e-harness-capabilities= | Harness/session projection | Policy/derivation; capability side effects stay at capability boundary |
+| Activity classification, subscribers, durable projection | =e-harness-activity= | Harness/turn | Appends through session facade; no board-private callback |
+| Active turn, queue, steering and unsettled observations | =e-harness-turn-state= | Process-local turn/session | Queue identity and counts mutate only here |
+| Context lifetime, compaction, anchors and prompt options | =e-harness-context-runtime= | Turn/context | Provider-neutral policy; provider effects remain adapter side |
+| Submit/settle/abort/reset/wait and attached-turn composition | =e-harness-turn= | Turn/request | Application-service side effects and ordering boundary |
+| Board event sequence/admission/routing/settlement | =e-board= | Process-local board | Atomic board transaction |
+| Board durable message envelope | =e-board= | Detached value at the session-journal boundary | Public projection; message structs and routing state remain board-private |
+| Board attachment/reconciliation/mailboxes | =e-board-runtime= | Attachment/process | Atomic attachment settlement |
+| Terminal board-continuation reconciliation | =e-chat-service= | Binding/board process lifetime | Public application operation; guarded durable claim/queue ordering remains service-owned |
+| Context bytes/token ratio and value estimate | =e-context-estimate= | Stateless configuration/value contract | Exact UTF-8/ =prin1= estimate shared by budget and lifetime; 4.0 fallback |
+| Context generation/frame/curation | =e-context-lifetime= | Generation/frame | Pure validation plus explicit durable projection; consumes estimator |
+| One backend/tool stream | =e-loop= | Turn/request | Event ordering and follow-up settlement |
+| Tool requests/results | =e-tools= | Invocation/turn | Request handles and structured errors |
+| Work lifecycle | =e-work= | Work item | Exactly-once cheap/async/render transitions |
+| Chat windows/composer/transcript/activity/overview | Five presentation owners | Buffer/window/workspace | Buffer-local state and display side effects stay in shells |
+| Chat observer cursors/subscriptions | =e-chat-service= | Binding/subscription | Public bounded drain returns only progress; cursor remains private |
+| OpenAI auth/request/transport/decoder diagnostics | Accepted OpenAI owners | Profile/request/connection | No durable or harness state leakage |
+| MCP client/process/HTTP sessions | Accepted MCP owners | Client/server/process | Capability composition is transport-independent |
+| Base file coherence and bash collector | Accepted file/bash owners | Buffer/file and process | No file-owner dependency from bash |
+
+* Actual dependency graph
+
+** Complete local load graph
+
+A source scan of every =lisp/**/*.el= file found 163 local modules and 707
+local =require= edges.  Tarjan SCC analysis reports =CYCLES []=.  This scan
+includes the corrected context path and the four session value owners; before
+the correction, the dynamic =e-context-lifetime -> e-context-budget= load
+joined the context/budget/session cycle.  The estimator is a pure local
+operation with the same 4.0 fallback, so the higher-level budget owner is no
+longer loaded by the durable context owner.
+
+The complete corrected scan is in =/tmp/e-r5-static-final-correction.log=.
+External Emacs,
+third-party, and optional package features are not represented as local graph
+nodes; their side effects remain at their existing adapter/shell boundaries.
+
+** Owner-family graph
+
+The owner-qualified call/load direction is:
+
+#+begin_example
+Session:
+  e-session -> aggregate, metadata, identity, provider-anchor, board-policy,
+               codec, catalog, storage
+  aggregate -> metadata, identity, provider-anchor, board-policy, codec
+               (plus stable context/board domain contracts)
+  metadata -> (no aggregate/storage/facade)
+  identity -> (no aggregate/storage/facade)
+  provider-anchor -> (no aggregate/storage/facade)
+  board-policy -> codec, board (value validation only)
+  catalog -> codec
+  storage -> codec
+  no aggregate/metadata/identity/provider-anchor/board-policy/catalog/codec/
+       storage -> e-session facade
+
+Context estimate:
+  e-context-budget -> e-context-estimate
+  e-context-lifetime -> e-context-estimate
+  e-context-estimate -> (no higher-level context owner)
+
+Harness:
+  e-harness -> state, capabilities, activity, turn-state,
+               context-runtime, turn
+  capabilities -> state
+  activity -> state
+  turn-state -> state, activity
+  context-runtime -> state, capabilities, activity, turn-state
+  turn -> state, capabilities, activity, turn-state, context-runtime
+  no runtime owner -> e-harness facade
+
+Chat presentation:
+  e-chat -> surface, composer, transcript, activity, overview
+  composer -> surface, transcript
+  transcript -> surface
+  activity -> surface, transcript
+  overview -> surface, transcript
+  no presentation owner -> e-chat facade
+
+OpenAI:
+  facade -> diagnostics, profile, Responses, Chat Completions, HTTP,
+            decoder, WebSocket, compaction
+  Responses -> profile; Chat Completions -> profile
+  HTTP -> profile, diagnostics; decoder -> diagnostics
+  WebSocket -> profile, diagnostics, decoder
+  compaction -> profile, Responses, HTTP, diagnostics
+
+MCP:
+  facade -> protocol, transport, stdio, HTTP, client, capability
+  transport -> protocol; stdio -> protocol, transport
+  HTTP -> protocol, transport; client -> protocol, stdio, HTTP
+  capability -> protocol, client
+
+Base:
+  facade -> file, bash
+#+end_example
+
+The family edge counts from the same source scan are session 7, harness 19,
+chat 12, OpenAI 22, MCP 16, and base 2.  These are load edges; the
+owner-qualified application calls follow the same downward semantic direction.
+The attached-turn port is the only board-to-harness boundary and is consumed
+by board runtime without naming turn-state/activity owner APIs.  Overview
+selection returns intent to facade commands; it does not call the facade.
+
+** Private and duplicate sweeps
+
+The production namespace sweep in
+=/tmp/e-r5-private-production-correction-final.log= and the composed-suite
+sweep in =/tmp/e-r5-private-composed-correction-final.log= report:
+
+- =CROSS_OWNER_PRIVATE_PRODUCTION 0= across the accepted owner namespaces;
+- =COMPOSED_OWNER_PRIVATE_REFS= is zero across the split OpenAI, harness, and
+  chat public composition suites (including the three smoke roots);
+- moved service/default/session private names have zero external production
+  references; and
+- the removed harness callback names have zero references.
+
+Private names still present in direct mechanism suites are same-owner tests:
+OpenAI mechanism 68 references, harness runtime mechanism 78, session storage
+171, MCP mechanism 32, chat service mechanism 49 in =e-modernchat-test.el=,
+base 10, composer 66, transcript 51, and overview 11.  They test the owner
+whose private state they name and are not composed integration contracts.
+The old =e-session-tmp--*= and board/service fixture names remain only in
+their owning resource/application mechanisms; the migrated production
+consumers no longer import them.
+
+The corrected function-definition sweep in
+=/tmp/e-r5-duplicate-function-correction-final.log= reports
+=DUPLICATE_FUNCTION_DEFINITIONS 0=.  This scan distinguishes Lisp value
+bindings from function namespace sharing (for example a variable and function
+with the same public stem), so it does not report intentional Elisp namespace
+coexistence as duplicate operations.
+
+Independent negative checks are also green: production cross-owner private
+references are zero; extracted-owner private references in composed/facade
+integration roots are zero; transcript and activity own separate mutable
+buffer-local registries (no shared mutable activity record); and no
+representation-shaped transcript record/registry/marker port is consumed by
+the activity owner.  The public board envelope and continuation operations
+are detached semantic values/application services, not compatibility bridges.
+
+* Public and consumer-shaped API map
+
+| Semantic operation | Consumers | Representation deliberately hidden |
+|--------------------+-----------+-------------------------------------|
+| =e-chat-service-drain-binding= | =e-dev-perf=, synchronous service/chat fixtures | Observer cursor, board page receipt, registry tables |
+| =e-chat-service-drain-subscription= | =e-dev-perf= and bounded subscriber fixtures | Subscription observer cursor and drain scheduler |
+| =e-board-message-envelope= | Chat-service durable board journal projection and restart/task-queue fixtures | Board message struct, routing state, and mutable pickup tables |
+| =e-chat-service-reconcile-board-continuation= | Chat-service binding setup, Modernchat recovery, and task-queue restart fixture | Continuation claim guard, board run projection, and queue/retry ordering |
+| =e-chat-session-attachment-live-buffer= | =e-canvas=, Org Canvas capability | Attachment metadata/URI representation |
+| =e-session-tmp-file-path= | Resource TOC and existing resource consumers | Tmp root/lineage/path internals |
+| =e-default-chat-harness-spec= | Debug default inspection, E2E default setup | Default-spec registry implementation |
+| =e-context-estimate-effective-bytes-per-token= and =e-context-budget-value-token-estimate= | Context budget and context-lifetime owners | Configured ratio/UTF-8/ =prin1= estimator implementation |
+| =e-session-metadata-* policy operations= | Session facade, aggregate, metadata direct tests | Schema descriptors, legacy arrays, and validation internals |
+| =e-session-identity-generate-* values= | Session facade, aggregate, board/harness/session consumers | ULID counter/randomness and legacy backfill internals |
+| =e-session-provider-anchor-policy-* | Session facade/aggregate and provider-anchor direct tests | Path traversal and fingerprint comparison internals |
+| =e-session-board-routing-policy-* | Session facade/aggregate and board-policy direct tests | Budget walk, JSON shape, copying, and normalization internals |
+| Chat facade and five component operations | Chat, Org Canvas, starter, debug, canvas, presentation tests | Component registries, markers, redraw queues, private plists |
+| Session facade semantic mutations/replay | Harness, boards, context, chat, restart tests | JSONL paths, index slots, storage controller |
+| Harness turn and attached-turn port | Board runtime, chat service, harness clients | Turn-state table, activity records, callbacks |
+| OpenAI facade/profile/mapping/transport operations | Harness/provider continuation/E2E/tests | Raw response/session records and variant internals |
+| MCP client/capability operations | Codex layer, MCP capability, tests | Transport process/HTTP session state |
+| Base file/bash registrations | Resource and base capability consumers | File coherence tables and process collectors |
+
+No new public operation is a forwarding alias for a private function: the board
+envelope is a board-owned detached journal value, continuation reconciliation
+is a chat-service application operation, the two chat drains return bounded
+progress as a real consumer need, the attachment and default operations return
+stable semantic projections, the four session policy contracts return detached
+values, and all other operations are existing accepted facade/owner contracts.
+
+* Former private consumers and dispositions
+
+| Former private path | Former consumer(s) | Disposition |
+|---------------------+--------------------+-------------|
+| =e-chat-session--attachment-live-buffer= | Canvas and Org Canvas | Renamed to semantic =e-chat-session-attachment-live-buffer=; no compatibility alias |
+| =e-session-tmp--path= | Resource TOC | Migrated to =e-session-tmp-file-path=; owner-local path implementation retained |
+| =e-default-harness--effective-chat-spec= | Debug and live E2E setup | Renamed to =e-default-chat-harness-spec=; no old name |
+| =e-chat-service--drain-observer= and =--drain-subscription= | Dev performance and test pump code | Public bounded drain operations added; cursor/receiver implementation stays private |
+| =e-chat-service--board-envelope= | Chat service and task-queue fixtures | Removed; =e-board-message-envelope= is the board-owned detached journal projection |
+| =e-chat-service--reconcile-board-continuation= | Chat service and task-queue/Modernchat fixtures | Replaced by the semantic public =e-chat-service-reconcile-board-continuation= operation; no private compatibility alias |
+| Harness attached callback variables | Board runtime | No references remain; explicit attached-turn port owns attachment calls |
+| OpenAI moved private profile/transport/decoder/diagnostic tests | =e-openai-test.el= | Moved to =e-openai-mechanism-test.el=; composed file now public behavior |
+| Harness profiling private tests | =e-harness-test.el= | Moved to =e-harness-runtime-mechanism-test.el=; removed load bridge |
+| Context budget dynamic load from lifetime owner | =e-context-lifetime.el= | Removed; =e-context-estimate= now owns the shared ratio/value estimator and preserves behavior |
+| Aggregate metadata/identity/provider-anchor/board-policy implementations | =e-session-aggregate.el= and =e-session.el= | Extracted to four pure value owners; aggregate retains mutation/sequence/index state and facade calls narrow contracts |
+| Owner-private internals in direct storage/MCP/chat-service tests | Direct mechanism suites | Retained/explicitly classified as same-owner mechanism assertions; no production cross-owner use |
+
+* Test topology and dispositions
+
+** Direct owner/fresh-load suites
+
+The final isolated fresh-owner command loads each suite in a separate Eldev
+process.  The direct owner contracts currently pass 79/79 when the new
+session-policy (5) and context-estimate (4) suites are included.  The separate
+board-policy mechanism suite adds 3/3 direct mechanism passes:
+
+- session policy 5/5, context estimate 4/4, aggregate contract 6/6, codec 4/4,
+  catalog 6/6, storage contract 4/4;
+- chat surface 4/4, composer 4/4, transcript 5/5, activity 11/11, overview
+  4/4;
+- OpenAI owner 7/7, MCP owner 4/4, base owner 3/3, harness runtime owner 8/8.
+
+The fresh-load assertions intentionally skip when a combined process has
+already loaded a facade; the independent processes are the authoritative
+load-topology evidence.  The direct mechanism suites pass OpenAI 39/39 and
+harness runtime 40/40 after the final file-order correction
+(=/tmp/e-r5-harness-mechanism-final3.log=).  The session-policy fresh-load
+contract passes in its isolated process at =/tmp/e-r5-session-policy-final.log=;
+the combined session batch records its expected skip at
+=/tmp/e-r5-correction-session-board-policy-final.log=.
+
+** Facade and integration dispositions
+
+| Suite/root | Disposition |
+|------------|-------------|
+| =test/e-openai-test.el= (80, 4 tests) | Retain as a four-test public facade smoke root; 126 historical public tests are distributed across eight independently runnable composition suites; 39 mechanism tests remain direct |
+| OpenAI composition suites (209--1,250 lines) | Retain/strengthen: request (24), continuation (28), stream (26), Chat Completions (6), HTTP (7), WebSocket (20), and compaction (11) public scenarios; exact 126-name union preserved |
+| =test/e-harness-test.el= (62, 3 tests) | Retain as a three-test public facade smoke root; 135 historical public tests are distributed across seven composition suites; 40 mechanism tests remain direct |
+| Harness composition suites (337--1,451 lines) | Retain/strengthen: capability (19), resource (14), turn (29), tool (32), context (8), compaction (17), and context-lifetime (13) public scenarios; exact 135-name union preserved |
+| =test/e-chat-presentation-integration-test.el= (150, 4 tests) | Retain as a four-test public chat facade smoke root; 157 historical public tests are distributed across six composition suites | Retain/strengthen as semantic composition roots; exact 157-name union preserved |
+| Chat composition suites (739--1,147 lines) | Retain/strengthen: surface (27), composer (34), transcript (25), activity (28), settlement (15), and overview (24) public scenarios; no extracted-owner private refs |
+| =test/e-chat-facade-mechanism-test.el= | Add direct facade mechanism coverage for profiling; 2/2 and no composed-root private references |
+| =e2e/e-live-e2e-test.el= (6,821) | Retain as optional isolated external-evidence harness; no relevant owner-private refs |
+| =test/e-chat-test.el= and starter/surface shell suites | Retain public chat/service composition and stable buffer behavior; service drain fixtures now use semantic public drains where applicable |
+| =test/e-session-aggregate-test.el= (105) | Retain aggregate-only direct behavior (4 tests); no board-policy private references remain |
+| =test/e-session-board-policy-test.el= (151) | Retain/strengthen as the direct board-policy mechanism suite; the 3 moved historical budget/depth/encoded-size tests remain here |
+| =test/e-session-storage-test.el= | Retain as direct storage-owner mechanism suite; 171 same-owner private refs cover queue/controller/atomic-write details |
+| =test/e-mcp-test.el= | Retain as direct MCP transport/client/capability mechanism suite; 32 same-family owner refs are not composed API claims |
+| =test/e-modernchat-test.el= | Retain as shell-neutral chat-service mechanism/preservation suite; 49 same-service refs are isolated service state assertions |
+| =e-chat-service-state= live projection regression | Retain/strengthen: =e-chat-service-test-state-seeds-live-attached-turn-before-replay= proves a running attached turn is visible before any retained =turn-started= event; replay projection checks stub only lower-level durable/private readers |
+| Presentation owner mechanism suites | Retain/strengthen; private calls are confined to each owner namespace and public integration remains separate |
+| Existing e2e/board support | Retain as board-adapter mechanism support; board/service private fixture initialization does not enter production |
+
+No valuable behavior test was deleted.  Public test names were compared against
+the package-start roots: OpenAI 126/126, harness 135/135, and chat 157/157
+with no names missing or added.  The exact logs are
+=/tmp/e-r5-openai-test-name-compare-final.log=,
+=/tmp/e-r5-harness-test-name-compare-final.log=, and
+=/tmp/e-r5-chat-test-name-compare-final.log=.  Direct owner tests are additive
+and are not counted as moved historical names.  Mechanism tests were moved
+where a large facade mirror made ownership ambiguous; no forwarding test file
+was created.  The session aggregate root's 7/7 historical names are preserved
+across the 4-test aggregate suite and the 3-test board-policy mechanism suite;
+the exact comparison is =/tmp/e-r5-session-policy-name-compare-final.log=.
+
+* Validation evidence
+
+All commands were repository-side batch commands.  Logs are under =/tmp=;
+paths below are the exact evidence locations.
+
+| Command/purpose | Result |
+|-----------------+--------|
+| =eldev test -B= (final full tree, escalated only for isolated local fixture sockets) | PASS: 2,560 tests; 2,553 expected, 0 unexpected, 7 skips, 42.154839s; =/tmp/e-r5-full-test-board-policy-final.log= |
+| Accepted 485-case preservation selector with chat/session/owner files | PASS: 485 tests; 483 expected, 0 unexpected, 2 existing skips, 11.923127s; =/tmp/e-r5-preservation-485-correction.log= |
+| Session aggregate/board-policy/codec/catalog/storage/facade/restart batch | PASS: 179 tests, 178 expected, 0 unexpected, 1 expected fresh-load skip; =/tmp/e-r5-correction-session-board-policy-final.log= |
+| Direct aggregate and board-policy suites | PASS: aggregate 4/4 and board-policy mechanism 3/3; =/tmp/e-r5-session-aggregate-direct-final.log= and =/tmp/e-r5-session-board-policy-direct-final.log= |
+| Board/runtime/consumer/private-ref migration batch | PASS: 325 tests, 324 expected, 0 unexpected, 1 existing Evil skip; =/tmp/e-r5-private-ref-migration-focused2.log= |
+| Session storage plus OpenAI/harness/base mechanism batch | PASS: 198/198; =/tmp/e-r5-mechanism-correction-final2.log= |
+| Harness/base/loop/tools/consumer batch | PASS: prior focused batch remains green; final full ERT covers all affected groups; =/tmp/e-r5-harness-consumers.log= and =/tmp/e-r5-full-test-board-policy-final.log= |
+| MCP owner and composed transport fixtures | PASS: 43 tests, 42 expected, 0 unexpected, 1 existing fresh-load skip; =/tmp/e-r5-mcp-correction-escalated.log= |
+| Provider continuation plus Anthropic | PASS: 64/64; =/tmp/e-r5-provider-continuation.log= |
+| OpenAI, harness, and chat public composition suites | PASS: 418 tests, 417 expected, 0 unexpected, 1 existing Markdown skip; exact historical unions 126/126, 135/135, and 157/157; =/tmp/e-r5-composition-final-correction-escalated.log= plus name comparisons =/tmp/e-r5-openai-test-name-compare-final.log=, =/tmp/e-r5-harness-test-name-compare-final.log=, and =/tmp/e-r5-chat-test-name-compare-final.log= |
+| Final root/test-size inventory | PASS: only six retained production roots exceed 2,500 lines and only external =e2e/e-live-e2e-test.el= exceeds 4,000 test lines; every ordinary split composition root is 1,451 lines or smaller; =/tmp/e-r5-final-inventory.log= |
+| All isolated fresh-owner suites | PASS: 79/79; =/tmp/e-r5-fresh-owner-suites-correction-final2.log= |
+| Separate fresh facade operation loads (session/chat/harness/OpenAI/MCP/base) | PASS: isolated =eldev eval -R -s= processes kept facades unloaded where required and exercised representative public operations; =/tmp/e-r5-fresh-*-correction-final*.log= |
+| Affected production byte compilation with warnings surfaced | PASS: exit 0, all affected/new targets, no warnings/errors; =/tmp/e-r5-compile-correction-final.log= |
+| Direct current-buffer check-parens over every changed/new Lisp file | PASS: 67/67; =/tmp/e-r5-check-parens-board-policy-final4.log= |
+| Direct read parsing over every changed/new Lisp file | PASS: 67/67; =/tmp/e-r5-read-board-policy-final3.log= |
+| Complete local require graph/SCC scan | PASS: 163 local modules, 707 edges, =CYCLES []=; =/tmp/e-r5-static-final-correction.log= |
+| Private/consumer/dependency migration scan | PASS: zero cross-owner production private refs, zero composed-owner private refs, and zero =e-session-board-policy--*= refs outside its direct owner suite; =/tmp/e-r5-private-production-correction-final.log=, =/tmp/e-r5-private-composed-correction-final.log=, and =/tmp/e-r5-session-policy-private-test-sweep.log= |
+| Duplicate function-definition scan | PASS: 0 duplicate function definitions; =/tmp/e-r5-duplicate-function-correction-final.log= |
+| New-file/changed-core trailing-blank scan | PASS: no trailing blanks across 70 paths; =/tmp/e-r5-whitespace-board-policy-final.log= |
+| Ordinary diff whitespace check | PASS: exit 0; =/tmp/e-r5-diff-check-final5.log= |
+| Isolated graphical chat/workspace suite | PASS: 27/27, 0 unexpected, 13.365640s; =/tmp/e-r5-graphical-correction-final.log= |
+
+The full-suite's seven skips are =e-base-tools-owner-test-loads-without-facade=,
+=e-harness-runtime-owner-test-loads-without-facade=,
+=e-mcp-owner-test-loads-without-facade=,
+=e-openai-owner-test-loads-without-facade=,
+=e-session-policy-test-pure-owners-load-without-facade-or-aggregate= (all
+combined-process fresh-load assertions), the existing optional Evil test, and
+the existing optional Markdown text-property test.  The direct isolated owner
+suite proves all fresh-load contracts independently.  The accepted selector's
+two skips are the same existing Evil and Markdown environment conditions.
+
+** Parent acceptance rerun
+
+Parent review rejected the first Round 5 handoff because three ordinary
+composition suites remained too large, the session aggregate still contained
+separable value policy, context-estimate ownership was duplicated, and the
+chat-service state snapshot had lost its live attached-turn seed.  It rejected
+the corrected handoff once more because board-policy private mechanism tests
+still lived in the aggregate suite.  The same implementor corrected both
+packages before acceptance.
+
+The final parent rerun selected the context-estimate, session-policy,
+board-policy, aggregate, and chat-service suites together.  It passed 51
+expected tests with zero unexpected results and one expected combined-process
+fresh-load skip.  Parent inspection also confirmed that all historical test
+names remain present without duplicates, =e-session-board-policy--*= references
+occur only in its direct mechanism suite, the three former monolithic ordinary
+test roots are substantive smoke suites rather than forwarding loaders, and
+=git diff --check= is clean.  Parent review therefore accepts Round 5 for the
+independent final review baseline.
+
+* Performance, load, and I/O comparison
+
+The bounded performance command exercised 14 selected existing scenarios:
+session append/index and metadata, context fixture, fake turn, chat activity
+burst/final render/UI lifecycle/board continuation/unread/status, tool
+lifecycle, and cheap/render Work paths.  The report is
+=/tmp/e-r5-performance-correction-final.log= and profile output is under
+=/tmp/e-r5-profile/.
+It reports =pass=6, =warning=0, =regression=0, =improvement=12, =noisy=1,
+=skipped=58=.  Relevant invariants include zero unread catalog scans, zero
+synchronous context builds in the status scenario, one pending refresh, zero
+pending UI work after settle, and one live board continuation delivery after
+history delivery.  No new repeated scan or synchronous write is observed.
+
+The all-default performance invocation was attempted first and stopped at the
+existing =session.replay-list= setup because it creates journal entries without
+the checkpoint required by strict =e-session-load-session=:
+"Session resume checkpoint does not exist: session-replay".  This is not a
+Round 5 regression; the selected bounded replacement measured all relevant
+changed hot paths and is the stronger usable substitute.  The one noisy board
+continuation timing is retained as noise, not a regression.
+
+Pure owner load checks and mapping/value operations add no network, process,
+timer, or synchronous I/O path.  The only new synchronous operations are the
+explicitly requested bounded public chat drains, which perform one existing
+page and return whether another page remains; normal asynchronous scheduling
+is unchanged.
+
+* Compatibility and restart record
+
+- Public commands, modes, buffer names/behavior, event ordering, provider
+  request shapes, error visibility, durable JSONL/index/checkpoint files,
+  ordering, atomicity, retries, and cancellation are preserved by the focused
+  and full suites.
+- New semantic projections have no old private compatibility aliases.  The
+  pure context estimator retains the prior 4.0 invalid-ratio fallback and
+  calculation while changing only load topology.
+- Core/session/harness/provider/context record and owner changes require a
+  full Emacs restart under =AGENTS.md=; no live reload was attempted.  Shell,
+  capability, and default definitions may be explicitly reloaded by the user
+  later, but the running Emacs remains unchanged.
+- No durable migration, format bump, SQLite implementation, or provider call
+  was introduced.  Feature 87 remains the future owner of SQLite cutover.
+
+* Residual risks and blockers
+
+No implementation blocker was found.  Parent/reviewer acceptance is the only
+open status transition.  Residual risks are:
+
+- existing optional Evil/Markdown skips require their packages for stronger
+  graphical/text-property evidence;
+- the default performance replay scenario has a pre-existing missing-
+  checkpoint fixture and is documented rather than silently treated as pass;
+- same-owner private assertions remain in explicitly direct mechanism/support
+  suites (storage, MCP, chat service, board E2E support); they are not
+  production or large composed-root dependencies, but future test naming can
+  make those roles even more explicit;
+- live provider capability is unconfirmed/not applicable because no external
+  provider call is part of this behavior-neutral package; and
+- a core/session/harness/provider restart is needed before an already running
+  Emacs can use the new physical definitions.
+
+* Required design self-check
+
+1. *Would stopping here improve the project?*  Yes.  The final residual roots
+   now have evidence-backed dispositions, large mixed OpenAI/harness tests are
+   split into direct mechanisms and public composition, and the source graph
+   is cycle-free without changing product behavior.
+2. *What final direction does this move toward?*  One semantic owner per
+   established concern, with facades as application composition roots,
+   explicit state lifetimes, and narrow downstream contracts.
+3. *What is uncertain versus stable?*  Durable formats, public commands,
+   protocol behavior, and state-machine ordering are stable.  Future SQLite,
+   richer canvas artifacts, permission policy, and shell lifecycle are
+   explicitly Planned/unconfirmed; no speculative abstraction hides them.
+4. *Who owns each behavior and why?*  The matrices above place each state and
+   side effect in its semantic owner: aggregate, codec, storage, harness
+   substate, board, context lifetime, turn stream, Work, presentation owner,
+   provider, MCP transport/client, or base file/bash owner.
+5. *Does coupling increase or decrease?*  It decreases: private consumer edges
+   became semantic projections or direct owner tests, owner graphs are
+   directional, and the higher-level budget owner no longer loads from the
+   context owner.
+6. *Did a dependency point the wrong way?*  The final local graph has no SCC;
+   no owner calls its facade, no external chat/session/default consumer calls a
+   moved private operation, and context-lifetime no longer loads budget.
+7. *Could side effects move outward?*  Physical session I/O, provider/network
+   transport, process collection, board publication, and window/buffer effects
+   remain at storage, adapter, board, or shell edges.  Pure policy owners do
+   not acquire those effects.
+8. *What state was added or mutated?*  No durable state was added.  The chat
+   service adds only semantic bounded drain entry points over existing cursor
+   state; context-lifetime relocates a pure estimator implementation.  Existing
+   process, buffer, request, board, and durable lifetimes remain unchanged.
+9. *What is the performance impact?*  The selected 14-scenario smoke shows no
+   regression, no extra scan, and no new synchronous write; bounded drains do
+   one existing page.  The missing-checkpoint default replay scenario and one
+   noisy timing are recorded explicitly.
+10. *Are interfaces real and substitutable?*  Yes.  Drains return bounded
+    progress needed by synchronous consumers, attachment/default projections
+    return stable values, and accepted owner ports expose only supported
+    operations.  No generic callback bag, service locator, or unsupported
+    operation was introduced.
+11. *What compatibility expectations apply?*  Public behavior and all current
+    durable/wire formats remain compatible.  Private names have no compatibility
+    promise and old aliases were removed.  Core record/load changes require
+    restart rather than steady-state shims.
+12. *What legacy code can be removed now?*  The moved OpenAI/harness mechanism
+    copies in facade tests, external private consumers, dynamic budget load,
+    and private drain/attachment/default bridges were removed.  No duplicate
+    operational implementation was retained.
+13. *Where are errors handled?*  Existing owner boundaries retain expected
+    corrupt-tail, request, provider, board, file, and process error handling.
+    Unexpected errors continue to surface through application services or the
+    batch test harness; extraction added no swallowing fallback.
+14. *What proves core behavior independently?*  The 79 direct fresh-owner
+    tests plus 3 direct board-policy mechanism tests, 79 direct OpenAI/harness
+    mechanism tests, session/storage and
+    transport mechanism suites, public facade batches, exact 485 selector,
+    full 2,560-case ERT, isolated graphical gate, compile/read/check-parens,
+    cycle/private/duplicate scans, and bounded performance evidence provide
+    independent behavior and topology proof.
+
+* Evidence handoff
+
+The final worktree is intentionally uncommitted.  =git status --short= is the
+authoritative changed-path list; no commit or Git write was performed.  Raw
+validation logs are under =/tmp/e-r5-*=, with the primary final inputs at
+=/tmp/e-r5-static-final-correction.log=,
+=/tmp/e-r5-private-production-correction-final.log=,
+=/tmp/e-r5-full-test-board-policy-final.log=,
+=/tmp/e-r5-preservation-485-correction.log=,
+=/tmp/e-r5-graphical-correction-final.log=, and
+=/tmp/e-r5-performance-correction-final.log=.

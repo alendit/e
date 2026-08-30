@@ -115,7 +115,7 @@ Prefer an existing buffer; otherwise visit a file-backed canvas on
 demand."
   (when-let ((attachment (e-canvas--session-canvas-attachment
                           harness session-id)))
-    (or (e-chat-session--attachment-live-buffer attachment)
+    (or (e-chat-session-attachment-live-buffer attachment)
         (when-let ((file (plist-get attachment :file)))
           (and (file-readable-p file)
                (find-file-noselect file))))))
@@ -139,7 +139,7 @@ file-backed canvases resolve even without a recorded live buffer."
   "Return non-nil when SESSION's catalog canvas belongs to BUFFER."
   (when-let ((attachment
               (e-canvas--catalog-session-canvas-attachment session)))
-    (or (eq (e-chat-session--attachment-live-buffer attachment) buffer)
+    (or (eq (e-chat-session-attachment-live-buffer attachment) buffer)
         (equal (plist-get attachment :buffer-name) (buffer-name buffer))
         (equal (plist-get attachment :uri) (e-canvas--buffer-uri buffer)))))
 

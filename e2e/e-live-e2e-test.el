@@ -295,7 +295,7 @@ Signal nothing when unconfigured; callers skip in that case."
   "Return the configured default chat harness bound to session STORE.
 Resolves the same `:chat-default' factory the installation uses, so the live
 backend is whatever the configuration selected."
-  (let* ((spec (e-default-harness--effective-chat-spec))
+  (let* ((spec (e-default-chat-harness-spec))
          (factory (plist-get spec :factory)))
     (unless (functionp factory)
       (error "No :chat-default harness factory configured"))
@@ -5338,7 +5338,7 @@ replay, where those same values are strings."
   (let (factory-store)
     (cl-letf (((symbol-function 'e-live-e2e--require-enabled)
                (lambda () t))
-              ((symbol-function 'e-default-harness--effective-chat-spec)
+              ((symbol-function 'e-default-chat-harness-spec)
                (lambda ()
                  (list :factory
                        (lambda (&rest arguments)

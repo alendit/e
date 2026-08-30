@@ -18,11 +18,11 @@
 (require 'e-board-registry)
 (require 'e-board-runtime)
 (require 'e-board-orchestration)
-(require 'e-chat-output-mode)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
+(require 'e-session-board-policy)
 
 (defvar e-chat-default-harness-id)
 
@@ -93,12 +93,13 @@
                                 :status status)
                           (when error (list :error error))))))
 
-(defun e-chat-service--reconcile-board-continuation (binding)
-  "Publish each terminal continuation on BINDING's board exactly once.
+(defun e-chat-service-reconcile-board-continuation (board harness)
+  "Publish each terminal continuation on BOARD exactly once.
 The input key lives in the durable manifest and is reused after a crash between
-input publication and the acknowledgement fact."
-  (let* ((board (e-board-registry-board-source-board
-                 (e-chat-service-binding-board binding)))
+input publication and the acknowledgement fact.  HARNESS is the application
+service used for the queued continuation; it may be nil for a caller that
+only observes durable claim decisions."
+  (let* ((board (e-board-registry-board-source-board board))
          (board-id (e-board-id board)))
     (unless (gethash board-id e-chat-service--continuation-reconciling)
       (puthash board-id t e-chat-service--continuation-reconciling)
@@ -114,7 +115,7 @@ input publication and the acknowledgement fact."
                       (e-chat-service--publish-continuation-claim
                        board run-id key 'pending)
                       (e-chat-service-queue-session
-                       (e-chat-service-binding-harness binding)
+                       harness
                        (plist-get continuation :session-id)
                        (plist-get continuation :prompt)
                        :metadata (list :board-run-id run-id
@@ -131,41 +132,12 @@ input publication and the acknowledgement fact."
                   board run-id (plist-get continuation :publication-key) 'failed err)))))
         (remhash board-id e-chat-service--continuation-reconciling)))))
 
-(defun e-chat-service--board-envelope (message)
-  "Return MESSAGE's frozen durable board envelope."
-  (list :id (e-board-message-id message)
-        :kind (e-board-message-kind message)
-        :author (e-board-message-author message)
-        :requester-actor (e-board-message-requester-actor message)
-        :tags (copy-tree (e-board-message-tags message))
-        :attributes (copy-tree (e-board-message-attributes message))
-        :to (e-board-message-to message) :mode (e-board-message-mode message)
-        :content (e-board-message-content message)
-        :reference (copy-tree (e-board-message-reference message))
-        :source-input-key (copy-tree (e-board-message-source-input-key message))
-        :source-output-key (copy-tree (e-board-message-source-output-key message))
-        :reply-to-message-ids
-        (copy-tree (e-board-message-reply-to-message-ids message))
-        :caused-by-delivery-ids
-        (copy-tree (e-board-message-caused-by-delivery-ids message))
-        :source-activity-key
-        (copy-tree (e-board-message-source-activity-key message))
-        :source-fact-key (copy-tree (e-board-message-source-fact-key message))
-        :subject-participant-id (e-board-message-subject-participant-id message)
-        :source-turn-id (e-board-message-source-turn-id message)
-        :activity-kind (e-board-message-activity-kind message)
-        :created-at (e-board-message-created-at message)
-        :matching-participant-ids
-        (copy-tree (e-board-message-matching-participant-ids message))
-        :unrouted-reason (e-board-message-unrouted-reason message)
-        :routing-state (e-board-message-routing-state message)))
-
 (defun e-chat-service--persist-board-message (binding message)
   "Append MESSAGE once to BINDING's durable board log."
   (e-session-append-board-message
    (e-harness-sessions (e-chat-service-binding-harness binding))
    (e-chat-service-binding-session-id binding)
-   (e-chat-service--board-envelope message)))
+   (e-board-message-envelope message)))
 
 (defun e-chat-service--persist-board-processing-record (binding record _type)
   "Append immutable processing RECORD once to BINDING's durable board log."
@@ -744,7 +716,7 @@ resolved participant identity so restart never needs shell or caller policy."
                        :default-to default-to)))
     (unless (e-session-board-routing-policy-valid-p policy)
       (signal 'e-session-error (list "Invalid board routing policy" policy)))
-    (e-session-aggregate-board-routing-copy-value policy)))
+    (e-session-board-routing-policy-copy-value policy)))
 
 (defun e-chat-service--canonical-legacy-root-p (session association)
   "Return non-nil when SESSION has the established root identity defaults."
@@ -921,7 +893,7 @@ resolved participant identity so restart never needs shell or caller policy."
                 ;; retained history is never rescanned to fill a fixed-capacity
                 ;; projection.
                 (e-chat-service--seed-binding-projection binding)
-                (e-chat-service--reconcile-board-continuation binding)
+                (e-chat-service-reconcile-board-continuation board harness)
                 ;; These callbacks are installed only after all admission
                 ;; steps above succeed, keeping attachment failure cleanup
                 ;; independent of board notification publication.
@@ -943,7 +915,9 @@ resolved participant identity so restart never needs shell or caller policy."
                         (when-let ((owner (gethash
                                            (e-board-id source)
                                            e-chat-service--board-log-owners)))
-                          (e-chat-service--reconcile-board-continuation owner))))
+                          (e-chat-service-reconcile-board-continuation
+                           (e-chat-service-binding-board owner)
+                           (e-chat-service-binding-harness owner)))))
                 (setf (e-board-processing-record-notification-function source-board)
                       (lambda (source record type)
                         (when-let ((owner (gethash
@@ -1339,6 +1313,38 @@ FUNCTION."
     (e-chat-service--retire-subscription subscription))
   nil)
 
+(defun e-chat-service-drain-binding (binding)
+  "Deliver one bounded pending page for BINDING.
+
+Return non-nil when another page remains.  This deterministic pump is useful
+to synchronous embedding shells and performance fixtures; normal clients
+leave page scheduling to the service.  The board observer and its cursor stay
+private to the service."
+  (unless (e-chat-service-binding-p binding)
+    (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
+  (e-chat-service--drain-observer binding)
+  (let* ((board (e-chat-service-binding-board binding))
+         (observer (e-chat-service-binding-observer binding)))
+    (< (e-board-observer-next-index observer)
+       (e-board-message-count
+        (e-board-registry-board-source-board board)))))
+
+(defun e-chat-service-drain-subscription (subscription)
+  "Deliver one bounded pending page for SUBSCRIPTION.
+
+Return non-nil when another page remains.  Observer cursors remain an
+implementation detail of the chat service."
+  (unless (e-chat-service-subscription-p subscription)
+    (signal 'wrong-type-argument
+            (list 'e-chat-service-subscription-p subscription)))
+  (e-chat-service--drain-subscription subscription)
+  (let* ((binding (e-chat-service-subscription-binding subscription))
+         (board (e-chat-service-binding-board binding))
+         (observer (e-chat-service-subscription-observer subscription)))
+    (< (e-board-observer-next-index observer)
+       (e-board-message-count
+        (e-board-registry-board-source-board board)))))
+
 (cl-defun e-chat-service-replace-selector
     (subscription selector &key start-seq)
   "Replace SUBSCRIPTION's observer with SELECTOR and optional START-SEQ backfill."
@@ -1509,6 +1515,9 @@ identity so existing indexes remain readable without mutation."
   "Return SESSION-ID's bounded board-derived presentation state."
   (let* ((binding (e-chat-service--bind-session harness session-id))
          (activities (e-chat-service-activity-events harness session-id))
+         ;; Seed the public snapshot from the live attached-turn projection.
+         ;; Retained board activity below reconciles terminal state and covers
+         ;; restart/replay when no live attachment remains.
          (active-turn (e-chat-service--binding-active-turn binding)))
     (dolist (event activities)
       (pcase (plist-get event :event-type)
@@ -1610,14 +1619,6 @@ need to know a block kind or capability policy."
   (e-chat-service--bind-session harness session-id)
   (e-session-append-message
    (e-harness-sessions harness) session-id (copy-sequence message)))
-
-(defun e-chat-service-output-mode (harness session-id)
-  "Return effective assistant output mode for HARNESS SESSION-ID."
-  (e-chat-output-mode-resolve harness session-id))
-
-(defun e-chat-service-set-output-mode (harness session-id mode)
-  "Set assistant output MODE for HARNESS SESSION-ID."
-  (e-chat-output-mode-session-set harness session-id mode))
 
 (provide 'e-chat-service)
 

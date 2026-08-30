@@ -864,10 +864,15 @@ inherited Responses items, rather than only the literal request body."
             (should (= request-count 4))
             (should (eq (plist-get capabilities :continuation)
                         expected-mode))
-            (should (eq (plist-get capabilities :observation-delivery)
-                        (if delivery
-                            'request-local-replaceable
-                          'inherited)))
+            ;; The provider contract permits a kind-scoped delivery map;
+            ;; inspect the semantic kind used by this scenario rather than
+            ;; depending on the representation of that map.
+            (should (eq
+                     (e-backend-observation-delivery-for-kind
+                      capabilities 'current-state)
+                     (if delivery
+                         'request-local-replaceable
+                       'inherited)))
             (if delivery
                 (progn
                   (should (eq

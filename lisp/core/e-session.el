@@ -20,6 +20,10 @@
 (require 'e-session-aggregate)
 (require 'e-session-codec)
 (require 'e-session-catalog)
+(require 'e-session-board-policy)
+(require 'e-session-identity)
+(require 'e-session-metadata)
+(require 'e-session-provider-anchor)
 (require 'e-session-storage)
 
 (defvar e-session--load-in-progress nil
@@ -56,7 +60,7 @@ the storage owner's state representation."
       (let ((session
              (list :id id
                    :metadata
-                   (e-session-aggregate-normalize-metadata-for-replay
+                   (e-session-metadata-normalize-for-replay
                     (plist-get entry :metadata))
                    :session-events nil :messages nil :activity-events nil
                    :branch-summaries nil :current-branch nil :compactions nil
@@ -88,7 +92,7 @@ the storage owner's state representation."
 
 (defun e-session--normalize-index-json-entry (entry)
   "Return physical index ENTRY in semantic detached form."
-  (when (e-session-aggregate-keyword-plist-p entry)
+  (when (e-session-aggregate-keyword-plist-shape-p entry)
     (let ((result (copy-tree entry)))
       (let ((tail result))
         (while tail
@@ -113,11 +117,11 @@ the storage owner's state representation."
   (cond
    ((and (proper-list-p value)
          (seq-some (lambda (item)
-                     (and (e-session-aggregate-keyword-plist-p item)
+                     (and (e-session-aggregate-keyword-plist-shape-p item)
                           (plist-member item :id)))
                    value))
     (delq nil (mapcar #'e-session--normalize-index-json-entry value)))
-   ((e-session-aggregate-keyword-plist-p value)
+   ((e-session-aggregate-keyword-plist-shape-p value)
     (let (entries)
       (while value
         (let* ((key (pop value))
@@ -126,7 +130,7 @@ the storage owner's state representation."
                     ((keywordp key) (string-remove-prefix ":" (symbol-name key)))
                     ((symbolp key) (symbol-name key))
                     ((stringp key) key))))
-          (when (e-session-aggregate-keyword-plist-p entry)
+          (when (e-session-aggregate-keyword-plist-shape-p entry)
             (let ((entry (e-session--normalize-index-json-entry entry)))
               (unless (plist-get entry :id)
                 (plist-put entry :id id))
@@ -923,7 +927,7 @@ case so a freshly created direct JSONL store remains reopenable."
 
 (defun e-session-metadata-context-references (metadata owner)
   "Return OWNER's durable context references from METADATA."
-  (e-session-aggregate-metadata-context-references metadata owner))
+  (e-session-metadata-context-references-value metadata owner))
 
 (defun e-session-context-references (store session-id owner)
   "Return OWNER's durable context references."
@@ -989,15 +993,17 @@ case so a freshly created direct JSONL store remains reopenable."
     (store session-id anchor provider-id model fingerprints)
   "Return incompatibility reason for ANCHOR."
   (e-session--ensure-loaded store session-id)
-  (e-session-aggregate-provider-anchor-incompatibility-reason
-   store session-id anchor provider-id model fingerprints))
+  (e-session-provider-anchor-policy-incompatibility-reason
+   (e-session-aggregate-current-path store session-id)
+   anchor provider-id model fingerprints))
 
 (defun e-session-provider-anchor-compatible-p
     (store session-id anchor provider-id model fingerprints)
   "Return non-nil when ANCHOR is compatible."
   (e-session--ensure-loaded store session-id)
-  (e-session-aggregate-provider-anchor-compatible-p
-   store session-id anchor provider-id model fingerprints))
+  (e-session-provider-anchor-policy-compatible-p
+   (e-session-aggregate-current-path store session-id)
+   anchor provider-id model fingerprints))
 
 (defun e-session-board-association (session)
   "Return normalized board association from semantic SESSION."
@@ -1010,10 +1016,6 @@ case so a freshly created direct JSONL store remains reopenable."
 (defun e-session-board-routing-policy (session)
   "Return detached board routing policy from SESSION."
   (e-session-aggregate-board-routing-policy session))
-
-(defun e-session-board-routing-policy-valid-p (policy)
-  "Return non-nil when POLICY is a complete routing policy."
-  (e-session-aggregate-board-routing-policy-valid-p policy))
 
 (defun e-session-board-association-policy-present-p (association)
   "Return non-nil when ASSOCIATION carries routing policy."
@@ -1028,15 +1030,15 @@ case so a freshly created direct JSONL store remains reopenable."
 
 (defun e-session-generate-id ()
   "Return a new durable session id."
-  (e-session-aggregate-generate-id))
+  (e-session-identity-generate-id))
 
 (defun e-session-generate-ulid ()
   "Return a new ordered durable entry id."
-  (e-session-aggregate-generate-ulid))
+  (e-session-identity-generate-ulid))
 
 (defun e-session-metadata-key-state-class (key)
   "Return the state class declared for durable metadata KEY."
-  (e-session-aggregate-metadata-key-state-class key))
+  (e-session-metadata-policy-key-state-class key))
 
 (defun e-session-display-title (store session-id)
   "Return SESSION-ID's display title without replaying an index stub."

@@ -156,7 +156,7 @@ stand in for the pure curation preparation path."
   (let* ((store (e-session-store-create))
          (session-id "routing-policy")
          (policy (e-session-test--routing-policy))
-         (expected (e-session-aggregate-board-routing-copy-value policy))
+         (expected (e-session-board-routing-policy-copy-value policy))
          (returned nil))
     (e-session-create store :id session-id)
     (setq returned

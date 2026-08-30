@@ -12,12 +12,9 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-context-estimate)
 (require 'seq)
 (require 'subr-x)
-
-(declare-function e-context-budget-value-token-estimate
-                  "e-context-budget")
-(defvar e-context-budget-estimate-bytes-per-token)
 
 (define-error 'e-context-lifetime-error "Context lifetime error")
 (define-error 'e-context-lifetime-invalid-record
@@ -729,27 +726,6 @@ GENERATION-ID, and CONSUMER-REQUEST-ID bind the resulting frame."
    :observations
    (e-context-lifetime--segment-observations segments observation-delivery)))
 
-(defun e-context-lifetime--curation-estimator-ratio (&optional bytes-per-token)
-  "Return the effective curation estimator ratio.
-
-BYTES-PER-TOKEN overrides the configured ratio.
-
-Load the budget owner only when presentation is requested.  This keeps the
-existing `e-session' to `e-context-lifetime' load direction acyclic while
-sharing the established invalid-ratio fallback."
-  (require 'e-context-budget)
-  (let ((ratio (or bytes-per-token
-                   e-context-budget-estimate-bytes-per-token)))
-    (if (and (numberp ratio) (> ratio 0))
-        ratio
-      4.0)))
-
-(defun e-context-lifetime--curation-estimate (value bytes-per-token)
-  "Return the established approximate token estimate for source VALUE.
-BYTES-PER-TOKEN supplies the ratio."
-  (require 'e-context-budget)
-  (e-context-budget-value-token-estimate value bytes-per-token))
-
 (defun e-context-lifetime-curation-revision-identity
     (&optional bytes-per-token)
   "Return stable identity inputs for curation presentation and schema.
@@ -766,7 +742,7 @@ that an outer anchor or cache identity can fence later."
         :erasure-record-version
         e-context-lifetime-curation-erasure-record-version
         :estimate-bytes-per-token
-        (e-context-lifetime--curation-estimator-ratio bytes-per-token)
+        (e-context-estimate-effective-bytes-per-token bytes-per-token)
         :max-sources e-context-lifetime-curation-max-sources
         :max-record-bytes e-context-lifetime-curation-max-record-bytes))
 
@@ -790,7 +766,7 @@ BYTES-PER-TOKEN supplies the estimate ratio."
     (signal 'e-context-lifetime-invalid-record
             (list 'curation :frame-not-live
                   (e-context-lifetime-frame-id frame))))
-  (let ((ratio (e-context-lifetime--curation-estimator-ratio
+  (let ((ratio (e-context-estimate-effective-bytes-per-token
                 bytes-per-token))
         (label 0)
         result)
@@ -812,7 +788,7 @@ BYTES-PER-TOKEN supplies the estimate ratio."
                            kind (car items))))
                (source-label (setq label (1+ label)))
                (estimated-tokens
-                (e-context-lifetime--curation-estimate value ratio))
+                (e-context-budget-value-token-estimate value ratio))
                (tool-call-id
                 (and (equal kind "tool-result")
                      (e-context-lifetime--curation-tool-call-id

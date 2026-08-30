@@ -16,6 +16,10 @@
 (require 'cl-lib)
 (require 'e-context-lifetime)
 (require 'e-session-codec)
+(require 'e-session-board-policy)
+(require 'e-session-identity)
+(require 'e-session-metadata)
+(require 'e-session-provider-anchor)
 (require 'e-board)
 (require 'seq)
 (require 'subr-x)
@@ -141,148 +145,11 @@ application service."
     (:context-curation-packages . :context-curation-packages-tail))
   "Internal append-only list fields and their cached tail cells.")
 
-(defconst e-session-metadata-schema
-  '((:name
-     :owner session
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:model
-     :owner session
-     :state-class session-config
-     :lifetime durable
-     :indexed t
-     :legacy t)
-    (:project-root
-     :owner session
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:harness-instance-id
-     :owner chat
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:origin
-     :owner shell
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:source
-     :owner shell
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:source-reference
-     :owner shell
-     :state-class current-state-reference
-     :lifetime durable-reference
-     :indexed t)
-    (:context-references
-     :owner session
-     :state-class current-state-reference
-     :lifetime durable-reference
-     :indexed t)
-    (:org-canvas-ref
-     :owner org-canvas
-     :state-class current-state-reference
-     :lifetime durable-reference
-     :indexed t)
-    (:org-canvas
-     :owner org-canvas
-     :state-class current-state-reference
-     :lifetime durable-reference
-     :indexed t
-     :legacy t)
-    (:parent-session-id
-     :owner subagents
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:subagent-role
-     :owner subagents
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:subagent-label
-     :owner subagents
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:tmp-lineage-id
-     :owner subagents
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:task-queue-task-id
-     :owner task-queue
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:board-run-id
-     :owner board-orchestration
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:board-task-key
-     :owner board-orchestration
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:board-attempt
-     :owner board-orchestration
-     :state-class session-config
-     :lifetime durable
-     :indexed t)
-    (:mcp-active
-     :owner mcp
-     :state-class capability-state
-     :lifetime durable
-     :indexed t)
-    (:capability-state
-     :owner capabilities
-     :state-class capability-state
-     :lifetime durable
-     :indexed t))
-  "Allowed durable session metadata keys and their state ownership.")
-
-(defconst e-session-aggregate--presentation-metadata-keys
-  '(:e-chat-read-markers)
-  "Presentation-only metadata keys rejected on write and removed on replay.")
-
-(defconst e-session-aggregate--ulid-alphabet "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-  "Crockford Base32 alphabet used for ULID strings.")
-
-(defvar e-session-aggregate--last-ulid-milliseconds nil
-  "Last millisecond timestamp used by `e-session-aggregate-generate-ulid'.")
-
-(defvar e-session-aggregate--last-ulid-random nil
-  "Last 80-bit random suffix used by `e-session-aggregate-generate-ulid'.")
-
-(defun e-session-aggregate--metadata-descriptor (key)
-  "Return metadata schema descriptor for KEY."
-  (seq-find (lambda (descriptor)
-              (eq (car descriptor) key))
-            e-session-metadata-schema))
-
-(defun e-session-aggregate-metadata-key-state-class (key)
-  "Return the declared state class for durable metadata KEY."
-  (plist-get (cdr (e-session-aggregate--metadata-descriptor key)) :state-class))
-
-(defun e-session-aggregate--plist-remove (plist key)
-  "Return PLIST without KEY."
-  (let (result)
-    (while (consp plist)
-      (let ((current-key (pop plist)))
-        (when (consp plist)
-          (let ((value (pop plist)))
-            (unless (eq current-key key)
-              (push current-key result)
-              (push value result))))))
-    (nreverse result)))
-
 (defun e-session-aggregate-keyword-plist-shape-p (value)
-  "Return non-nil when VALUE has keyword plist shape."
+  "Return non-nil when aggregate VALUE has keyword plist shape.
+
+This shape predicate is deliberately local to aggregate record validation;
+metadata policy has its own contract in `e-session-metadata'."
   (and (proper-list-p value)
        (let ((tail value)
              (valid t))
@@ -294,278 +161,22 @@ application service."
            (setq tail (cddr tail)))
          valid)))
 
-(defun e-session-aggregate--metadata-owner-key (owner)
-  "Return stable keyword key for metadata OWNER."
-  (cond
-   ((keywordp owner) owner)
-   ((symbolp owner) (intern (concat ":" (symbol-name owner))))
-   ((stringp owner) (intern (concat ":" owner)))
-   (t (error "Metadata owner must be a keyword, symbol, or string: %S" owner))))
+(defun e-session-aggregate--plist-remove (plist key)
+  "Return aggregate-owned PLIST without KEY."
+  (let (result)
+    (while (consp plist)
+      (let ((current-key (pop plist)))
+        (when (consp plist)
+          (let ((value (pop plist)))
+            (unless (eq current-key key)
+              (push current-key result)
+              (push value result))))))
+    (nreverse result)))
 
-(defun e-session-aggregate--metadata-json-array-safe-value (value)
-  "Return VALUE with reference arrays encoded unambiguously for JSON.
-Keyword plists remain objects.  Other proper lists become vectors so the JSON
-writer cannot reinterpret a list of plists as one object."
-  (cond
-   ((vectorp value)
-    (vconcat (mapcar #'e-session-aggregate--metadata-json-array-safe-value value)))
-   ((e-session-aggregate-keyword-plist-shape-p value)
-    (let (result)
-      (while (consp value)
-        (let ((key (pop value)))
-          (when (consp value)
-            (push key result)
-            (push (e-session-aggregate--metadata-json-array-safe-value (pop value))
-                  result))))
-      (nreverse result)))
-   ((proper-list-p value)
-    (vconcat (mapcar #'e-session-aggregate--metadata-json-array-safe-value value)))
-   (t value)))
-
-(defun e-session-aggregate--metadata-public-value (value)
-  "Return persisted metadata VALUE in caller-facing Elisp shape."
-  (cond
-   ((vectorp value)
-    (mapcar #'e-session-aggregate--metadata-public-value value))
-   ((e-session-aggregate-keyword-plist-shape-p value)
-    (let (result)
-      (while (consp value)
-        (let ((key (pop value)))
-          (when (consp value)
-            (push key result)
-            (push (e-session-aggregate--metadata-public-value (pop value)) result))))
-      (nreverse result)))
-   ((proper-list-p value)
-    (mapcar #'e-session-aggregate--metadata-public-value value))
-   (t value)))
-
-(defun e-session-aggregate--metadata-validate-org-canvas-ref (value key)
-  "Validate Org Canvas metadata VALUE under KEY."
-  (unless (or (null value) (e-session-aggregate-keyword-plist-shape-p value))
-    (error "Session metadata %S must be a keyword plist" key))
-  (when (or (plist-member value :last-focus)
-            (plist-member value :last-scope))
-    (error "Session metadata %S must not contain volatile focus or scope" key)))
-
-(defun e-session-aggregate--metadata-validate-context-references (value)
-  "Validate durable current-state reference VALUE."
-  (unless (or (null value) (e-session-aggregate-keyword-plist-shape-p value))
-    (error "Session metadata :context-references must be an owner-keyed plist")))
-
-(defun e-session-aggregate--metadata-validate-capability-state (value)
-  "Validate durable capability-state VALUE."
-  (unless (or (null value) (e-session-aggregate-keyword-plist-shape-p value))
-    (error "Session metadata :capability-state must be an owner-keyed plist")))
-
-(defun e-session-aggregate--validate-metadata-value (key value)
-  "Validate durable session metadata KEY VALUE."
-  (pcase key
-    ((or :org-canvas :org-canvas-ref)
-     (e-session-aggregate--metadata-validate-org-canvas-ref value key))
-    (:context-references
-     (e-session-aggregate--metadata-validate-context-references value))
-    (:capability-state
-     (e-session-aggregate--metadata-validate-capability-state value))
-    (_ nil)))
-
-(defun e-session-aggregate--validate-metadata-class (metadata expected-class)
-  "Validate that METADATA only contains keys in EXPECTED-CLASS."
-  (let ((tail metadata))
-    (while (consp tail)
-      (let ((key (pop tail)))
-        (unless (consp tail)
-          (error "Session metadata has key %S without value" key))
-        (let* ((value (pop tail))
-               (descriptor (e-session-aggregate--metadata-descriptor key))
-               (state-class (plist-get (cdr descriptor) :state-class)))
-          (unless descriptor
-            (error "Session metadata key %S has no durable state schema" key))
-          (unless (eq state-class expected-class)
-            (error "Session metadata key %S is %S, not %S"
-                   key state-class expected-class))
-          (e-session-aggregate--validate-metadata-value key value)))))
-  metadata)
-
-(defun e-session-aggregate--validate-metadata (metadata)
-  "Validate durable session METADATA and return it."
-  (unless (or (null metadata) (e-session-aggregate-keyword-plist-shape-p metadata))
-    (error "Session metadata must be a keyword plist"))
-  (let ((tail metadata))
-    (while (consp tail)
-      (let* ((key (pop tail))
-             (value (pop tail))
-             (descriptor (e-session-aggregate--metadata-descriptor key)))
-        (when (memq key e-session-aggregate--presentation-metadata-keys)
-          (error "Session metadata key %S is presentation state" key))
-        (unless descriptor
-          (error "Session metadata key %S has no durable state schema" key))
-        (e-session-aggregate--validate-metadata-value key value))))
-  metadata)
-
-(defun e-session-aggregate--normalize-org-canvas-ref-for-replay (value)
-  "Return legacy Org Canvas VALUE without volatile focus fields."
-  (when value
-    (setq value (copy-sequence value))
-    (setq value (e-session-aggregate--plist-remove value :last-focus))
-    (setq value (e-session-aggregate--plist-remove value :last-scope)))
-  value)
-
-(defun e-session-aggregate--legacy-metadata-key (value)
-  "Return schema metadata key named by legacy VALUE."
-  (let ((name (cond
-               ((keywordp value)
-                (string-remove-prefix ":" (symbol-name value)))
-               ((symbolp value) (symbol-name value))
-               ((stringp value) (string-remove-prefix ":" value)))))
-    (when name
-      (seq-some (lambda (descriptor)
-                  (let ((key (car descriptor)))
-                    (and (string= name
-                                  (string-remove-prefix
-                                   ":" (symbol-name key)))
-                         key)))
-                e-session-metadata-schema))))
-
-(defun e-session-aggregate--normalize-legacy-metadata-array (metadata)
-  "Repair legacy JSON-array METADATA into a schema-keyed plist.
-This is only for replaying old persisted records that encoded metadata as
-arrays and sometimes inverted key/value pairs."
-  (if (or (null metadata)
-          (e-session-aggregate-keyword-plist-shape-p metadata)
-          (not (proper-list-p metadata)))
-      metadata
-    (let ((tail metadata)
-          result
-          repaired)
-      (while (consp tail)
-        (let* ((first (pop tail))
-               (second (and (consp tail) (pop tail)))
-               (first-key (e-session-aggregate--legacy-metadata-key first))
-               (second-key (e-session-aggregate--legacy-metadata-key second)))
-          (cond
-           ((and first-key (not second-key))
-            (setq result (plist-put result first-key second)
-                  repaired t))
-           ((and second-key (not first-key))
-            (setq result (plist-put result second-key first)
-                  repaired t)))))
-      (if repaired result metadata))))
-
-(defun e-session-aggregate-normalize-metadata-for-replay (metadata &optional legacy)
-  "Return replayed METADATA without known transient state."
-  (when (and legacy
-             (consp metadata)
-             (not (keywordp (car metadata))))
-    (setq metadata (e-session-aggregate--normalize-legacy-metadata-array metadata)))
-  (when metadata
-    (setq metadata (copy-sequence metadata))
-    (dolist (key e-session-aggregate--presentation-metadata-keys)
-      (setq metadata (e-session-aggregate--plist-remove metadata key)))
-    (when (plist-member metadata :org-canvas)
-      (setq metadata
-            (plist-put
-             metadata
-             :org-canvas
-             (e-session-aggregate--normalize-org-canvas-ref-for-replay
-              (plist-get metadata :org-canvas)))))
-    (when (plist-member metadata :org-canvas-ref)
-      (setq metadata
-            (plist-put
-             metadata
-             :org-canvas-ref
-             (e-session-aggregate--normalize-org-canvas-ref-for-replay
-              (plist-get metadata :org-canvas-ref))))))
-    ;; JSON arrays are read as lists by the codec.  Re-establish the
-    ;; aggregate's canonical vector representation for durable current-state
-    ;; reference arrays before a checkpoint projection crosses the JSON
-    ;; boundary again; otherwise a list of reference plists is encoded as one
-    ;; object and loses the established array shape.
-    (when (plist-member metadata :context-references)
-      (setq metadata
-            (plist-put
-             metadata
-             :context-references
-             (e-session-aggregate--metadata-json-array-safe-value
-              (plist-get metadata :context-references)))))
-  metadata)
 
 (defun e-session-aggregate--timestamp (&optional time)
   "Return TIME as a compact UTC timestamp."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
-
-(defun e-session-aggregate--id-timestamp (&optional time)
-  "Return TIME as a session-id timestamp."
-  (format-time-string "%Y%m%dT%H%M%S" time t))
-
-(defun e-session-aggregate--generate-id ()
-  "Generate a persistent session id."
-  (let* ((seed (format "%S" (list (current-time) (random) (emacs-pid)
-                                  (system-name))))
-         (suffix (substring (secure-hash 'sha1 seed) 0 12)))
-    (format "%s-%s" (e-session-aggregate--id-timestamp) suffix)))
-
-(defun e-session-aggregate-generate-id ()
-  "Return a fresh persistent session id without publishing it.
-Application services use this for admission preflight before session creation."
-  (e-session-aggregate--generate-id))
-
-(defun e-session-aggregate--ulid-encode (number length)
-  "Encode NUMBER as a Crockford Base32 string with LENGTH characters."
-  (let ((chars (make-string length ?0))
-        (index (1- length)))
-    (while (>= index 0)
-      (aset chars index (aref e-session-aggregate--ulid-alphabet (logand number 31)))
-      (setq number (ash number -5))
-      (setq index (1- index)))
-    chars))
-
-(defun e-session-aggregate--current-milliseconds ()
-  "Return current Unix time in milliseconds."
-  (floor (* 1000 (float-time))))
-
-(defun e-session-aggregate--random-80-bit ()
-  "Return a sufficiently random 80-bit integer."
-  (let* ((seed (format "%S" (list (current-time) (random t) (emacs-pid)
-                                  (system-name))))
-         (hex (substring (secure-hash 'sha1 seed) 0 20)))
-    (string-to-number hex 16)))
-
-(defun e-session-aggregate--ulid-from-parts (milliseconds random)
-  "Return a ULID from MILLISECONDS and 80-bit RANDOM suffix."
-  (concat (e-session-aggregate--ulid-encode milliseconds 10)
-          (e-session-aggregate--ulid-encode random 16)))
-
-(defun e-session-aggregate-generate-ulid ()
-  "Generate an opaque monotonic ULID string for durable session entries."
-  (let* ((milliseconds (e-session-aggregate--current-milliseconds))
-         (random (if (equal milliseconds e-session-aggregate--last-ulid-milliseconds)
-                     (1+ (or e-session-aggregate--last-ulid-random 0))
-                   (e-session-aggregate--random-80-bit)))
-         (random-limit (expt 2 80)))
-    (when (>= random random-limit)
-      (setq milliseconds (1+ milliseconds))
-      (setq random 0))
-    (setq e-session-aggregate--last-ulid-milliseconds milliseconds
-          e-session-aggregate--last-ulid-random random)
-    (e-session-aggregate--ulid-from-parts milliseconds random)))
-
-(defun e-session-aggregate--timestamp-milliseconds (timestamp)
-  "Return TIMESTAMP parsed as Unix milliseconds, or current milliseconds."
-  (condition-case nil
-      (if (stringp timestamp)
-          (floor (* 1000 (float-time (date-to-time timestamp))))
-        (e-session-aggregate--current-milliseconds))
-    (error (e-session-aggregate--current-milliseconds))))
-
-(defun e-session-aggregate--legacy-entry-id (session type ordinal timestamp)
-  "Return a stable backfilled id for legacy SESSION entry TYPE at ORDINAL."
-  (let* ((session-id (plist-get session :id))
-         (seed (format "%s:%s:%s:%s" session-id type ordinal timestamp))
-         (random (string-to-number (substring (secure-hash 'sha1 seed) 0 20)
-                                   16)))
-    (e-session-aggregate--ulid-from-parts
-     (e-session-aggregate--timestamp-milliseconds timestamp)
-     random)))
 
 (defun e-session-aggregate--next-sequence (store)
   "Return STORE's next mutation sequence."
@@ -774,9 +385,9 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
        entry :id
        (or (e-session-aggregate--entry-id-from-record record entry)
            (if record
-               (e-session-aggregate--legacy-entry-id
+               (e-session-identity-legacy-entry-id
                 session type (e-session-aggregate--next-entry-ordinal session) timestamp)
-             (e-session-aggregate-generate-ulid)))))
+             (e-session-identity-generate-ulid)))))
     (unless (plist-member entry :parent-id)
       (when-let ((parent-id
                   (or (e-session-aggregate--entry-parent-id-from-record record entry)
@@ -868,19 +479,6 @@ and RECORD supplies persisted identity fields during replay."
                 (equal (plist-get entry :parent-id) parent-id))
               (e-session-aggregate--entries store session-id)))
 
-(defun e-session-aggregate-keyword-plist-p (value)
-  "Return non-nil when VALUE is a proper plist with keyword keys."
-  (and (proper-list-p value)
-       (let ((tail value)
-             (valid t))
-         (while (and valid tail)
-           (if (and (consp tail)
-                    (keywordp (car tail))
-                    (consp (cdr tail)))
-               (setq tail (cddr tail))
-             (setq valid nil)))
-         (and valid (null tail)))))
-
 (defun e-session-aggregate-current-path (store session-id &optional head-id)
   "Return SESSION-ID current parent path ending at HEAD-ID or current head."
   (let* ((session (e-session-aggregate-get-live store session-id))
@@ -952,116 +550,6 @@ and RECORD supplies persisted identity fields during replay."
    (reverse (e-session-aggregate-compactions store session-id))))
 
 
-(defun e-session-aggregate--provider-anchor-dynamic-segment-p (segment)
-  "Return non-nil when SEGMENT is volatile current-state context."
-  (let ((kind (and (e-session-aggregate-keyword-plist-p segment)
-                   (plist-get segment :kind))))
-    (or (eq kind 'current-state)
-        (eq kind 'dynamic-context)
-        (equal kind "current-state")
-        (equal kind "dynamic-context"))))
-
-(defun e-session-aggregate--provider-anchor-segment-list-p (segments)
-  "Return non-nil when SEGMENTS is a list of segment plists."
-  (and (proper-list-p segments)
-       (cl-every (lambda (segment)
-                   (and (e-session-aggregate-keyword-plist-p segment)
-                        (plist-member segment :kind)))
-                 segments)))
-
-(defun e-session-aggregate--provider-anchor-stable-segments (fingerprints)
-  "Return provider-anchor hard-identity segments from FINGERPRINTS."
-  (let ((segments (and (e-session-aggregate-keyword-plist-p fingerprints)
-                       (plist-get fingerprints :segments))))
-    (cond
-     ((null segments) nil)
-     ((e-session-aggregate--provider-anchor-segment-list-p segments)
-      (cl-remove-if
-       #'e-session-aggregate--provider-anchor-dynamic-segment-p
-       segments))
-     (t (list :invalid-provider-anchor-segments)))))
-
-(defun e-session-aggregate-provider-anchor-incompatibility-reason
-    (store session-id anchor provider-id model fingerprints)
-  "Return why ANCHOR is not compatible, or nil when compatible."
-  (let* ((path (e-session-aggregate-current-path store session-id))
-         (path-ids (mapcar (lambda (entry) (plist-get entry :id)) path))
-         (anchor-id (plist-get anchor :id))
-         (covered-entry-id (plist-get anchor :covered-entry-id))
-         (anchor-fingerprints (plist-get anchor :fingerprints)))
-    (cond
-     ((not (eq (plist-get anchor :type) 'provider-anchor))
-      'invalid-anchor-type)
-     ((not (eq (plist-get anchor :provider-id) provider-id))
-      'provider-mismatch)
-     ((not (equal (plist-get anchor :model) model))
-      'model-mismatch)
-     ((not (equal (e-session-aggregate--provider-anchor-stable-segments
-                   anchor-fingerprints)
-                  (e-session-aggregate--provider-anchor-stable-segments
-                   fingerprints)))
-      'segment-fingerprint-mismatch)
-     ((and (or (plist-member anchor-fingerprints :observation-delivery)
-               (plist-member fingerprints :observation-delivery))
-           (not (equal (plist-get anchor-fingerprints :observation-delivery)
-                       (plist-get fingerprints :observation-delivery))))
-      'observation-delivery-changed)
-     ((and (or (plist-member anchor-fingerprints :current-state-fingerprint)
-               (plist-member fingerprints :current-state-fingerprint))
-           (not (equal
-                 (plist-get anchor-fingerprints :current-state-fingerprint)
-                 (plist-get fingerprints :current-state-fingerprint))))
-      'current-state-changed)
-     ((not (equal (plist-get anchor-fingerprints :active-layer-ids)
-                  (plist-get fingerprints :active-layer-ids)))
-      'active-layers-changed)
-     ((not (equal (plist-get anchor-fingerprints :tools)
-                  (plist-get fingerprints :tools)))
-      'tools-changed)
-     ((not (equal (plist-get anchor-fingerprints :reasoning)
-                  (plist-get fingerprints :reasoning)))
-      'reasoning-changed)
-     ((not (equal (plist-get anchor-fingerprints :provider-options)
-                  (plist-get fingerprints :provider-options)))
-      'provider-options-changed)
-     ((not (equal (plist-get anchor-fingerprints :compaction-boundary)
-                  (plist-get fingerprints :compaction-boundary)))
-      'compaction-boundary-changed)
-     ((not (equal (plist-get anchor-fingerprints :lifetime-generation)
-                  (plist-get fingerprints :lifetime-generation)))
-      'context-generation-changed)
-     ((and (or (plist-member anchor-fingerprints
-                            :context-curation-revision-identity)
-               (plist-member fingerprints
-                            :context-curation-revision-identity))
-           (not (equal
-                 (plist-get anchor-fingerprints
-                            :context-curation-revision-identity)
-                 (plist-get fingerprints
-                            :context-curation-revision-identity))))
-      'context-curation-revision-changed)
-     ((and (not (or (plist-member anchor-fingerprints :segments)
-                    (plist-member anchor-fingerprints :active-layer-ids)
-                    (plist-member anchor-fingerprints :tools)
-                    (plist-member anchor-fingerprints :reasoning)
-                    (plist-member anchor-fingerprints :provider-options)
-                    (plist-member anchor-fingerprints :compaction-boundary)
-                    (plist-member anchor-fingerprints :lifetime-generation)))
-           (not (equal anchor-fingerprints fingerprints)))
-      'fingerprint-mismatch)
-     ((not (member anchor-id path-ids))
-      'anchor-not-on-current-path)
-     ((not (member covered-entry-id path-ids))
-      'covered-entry-not-on-current-path)
-     (t nil))))
-
-(defun e-session-aggregate-provider-anchor-compatible-p
-    (store session-id anchor provider-id model fingerprints)
-  "Return non-nil when ANCHOR is compatible with current SESSION-ID state."
-  (null
-   (e-session-aggregate-provider-anchor-incompatibility-reason
-    store session-id anchor provider-id model fingerprints)))
-
 (defun e-session-aggregate-finalize-replayed-session (store session)
   "Restore replayed SESSION field ordering and derived metadata."
   (dolist (field e-session-aggregate--replay-list-fields)
@@ -1101,406 +589,6 @@ and RECORD supplies persisted identity fields during replay."
   '(:invalid-board-association t)
   "Bounded internal marker for a present malformed board association.")
 
-(define-error 'e-session-board-routing-invalid
-  "Invalid board routing policy value")
-
-(defconst e-session-aggregate--board-routing-policy-keys
-  '(:participant-id :pickup-selector :observer-selector :default-tags
-    :default-to)
-  "Complete durable fields for one board participant routing policy.")
-
-(defconst e-session-aggregate--board-routing-selector-keys
-  '(:kind :activity-kind :to :author :subject-participant-id :attributes
-    :tags :tags-all :tags-any)
-  "JSON-shaped declarative selector keys admitted to routing policy.")
-
-(defconst e-session-aggregate--board-routing-policy-node-budget 8192
-  "Maximum structural nodes admitted by a board routing policy.
-
-This is a domain budget for the declarative policy, not a nesting-depth cap.
-It is deliberately independent of `e-board' so session replay can account for
-the same bounded policy before encoding or mutation.  The representative
-board policies are far below this ceiling.")
-
-(defconst e-session-aggregate--board-routing-policy-byte-budget (* 64 1024)
-  "Maximum UTF-8 bytes accounted for by a board routing policy.
-
-The value follows the existing board metadata/attribute scale while keeping
-the session admission boundary independent of the board implementation.")
-
-(defconst e-session-aggregate--board-routing-policy-minimum-byte-budget 64
-  "Smallest useful encoded budget for a complete routing policy.
-
-Below this structural floor the policy can be rejected from the cheap
-pre-encoding walk without invoking the codec's JSON escaping path.")
-
-(defvar e-session-aggregate--board-routing-budget-visit-count 0
-  "Number of nodes visited by the most recent routing-policy budget walk.
-This is an internal diagnostic hook used by bounded-admission tests; callers
-must not use it as policy state.")
-
-(defun e-session-aggregate--board-routing-value-budget-valid-p
-    (value &optional preserve-counter ignore-byte-budget)
-  "Return non-nil when VALUE fits the routing-policy admission budget.
-
-Account iteratively so hostile deep or cyclic values are rejected before
-`json-encode' or session mutation.  In addition to string payloads, account
-symbol names, numeric spellings, and a small canonical structural overhead.
-This is a preflight estimate; the encoded policy receives an exact canonical
-UTF-8 byte check after its reversible attribute encoding."
-  (unless preserve-counter
-    (setq e-session-aggregate--board-routing-budget-visit-count 0))
-  (let ((pending (list (list :value value)))
-        (visiting (make-hash-table :test 'eq))
-        (nodes 0)
-        (bytes 0)
-        (valid t))
-    (while (and valid pending)
-      (let ((task (pop pending)))
-        (if (eq (car task) :leave)
-            (remhash (cdr task) visiting)
-          (let ((current (cadr task)))
-            (setq nodes (1+ nodes))
-            (cl-incf e-session-aggregate--board-routing-budget-visit-count)
-            (when (> nodes e-session-aggregate--board-routing-policy-node-budget)
-              (setq valid nil))
-            (cond
-             ((stringp current)
-              ;; Quotes are part of the JSON spelling; escapes are charged by
-              ;; the exact post-encoding check below.
-              (setq bytes (+ bytes 2 (string-bytes current))))
-             ((numberp current)
-              (setq bytes (+ bytes (string-bytes
-                                    (number-to-string current)))))
-             ((symbolp current)
-              (setq bytes (+ bytes 2 (string-bytes (symbol-name current)))))
-             ((null current)
-              (setq bytes (+ bytes 4)))
-             ((eq current t)
-              (setq bytes (+ bytes 4)))
-             ((or (vectorp current) (consp current))
-              (when (gethash current visiting)
-                (setq valid nil))
-              (unless (gethash current visiting)
-                (puthash current t visiting)
-                (push (cons :leave current) pending)
-                ;; Every container contributes delimiters.  Individual
-                ;; separators are charged by each child below conservatively
-                ;; through the node count and the final exact check.
-                (setq bytes (+ bytes 2))
-                (if (vectorp current)
-                    (let* ((count (length current))
-                           (remaining
-                            (- e-session-aggregate--board-routing-policy-node-budget
-                               nodes
-                               (length pending))))
-                      ;; Do not enqueue a caller-controlled vector wider than
-                      ;; the remaining structural allowance.  Reject before
-                      ;; allocating a task per element.
-                      (if (> count remaining)
-                          (setq valid nil)
-                        (let ((index (1- count)))
-                          (while (>= index 0)
-                            (push (list :value (aref current index)) pending)
-                            (setq index (1- index))))))
-                  (push (list :value (cdr current)) pending)
-                  (push (list :value (car current)) pending))))
-             (t
-              ;; Function objects, hash tables, buffers, markers, and other
-              ;; process-local objects are not durable selector data.
-              (setq valid nil)))
-            (when (and (not ignore-byte-budget)
-                       (> bytes e-session-aggregate--board-routing-policy-byte-budget))
-              (setq valid nil))))))
-    valid))
-
-(defun e-session-aggregate--board-routing-json-value-p (value &optional visiting)
-  "Return non-nil when VALUE is a finite JSON-shaped Lisp value.
-Functions, hash tables, and cyclic values are deliberately not durable board
-policy.  VISITING is the active identity set used to reject cycles without
-accepting an executable selector predicate by accident."
-  (let ((visiting (or visiting (make-hash-table :test 'eq)))
-        (leave-marker (make-symbol "routing-leave"))
-        (pending (list value))
-        (valid t))
-    ;; Keep this admission walk iterative.  A structural budget is useful
-    ;; only when a hostile but finite nested value cannot exhaust the Lisp
-    ;; evaluator before the budget is consulted.
-    (while (and valid pending)
-      (let ((current (pop pending)))
-        (if (and (consp current) (eq (car current) leave-marker))
-            (remhash (cdr current) visiting)
-          (cond
-           ((or (null current) (eq current t) (numberp current)
-                (stringp current)) nil)
-           ;; Symbols are data in selectors, even when their names are also
-           ;; callable functions.  Only executable objects/forms are rejected.
-           ((and (symbolp current) (not (keywordp current))) nil)
-           ((functionp current) (setq valid nil))
-           ((and (consp current) (memq (car current) '(lambda function)))
-            (setq valid nil))
-           ((or (vectorp current) (consp current))
-            (if (gethash current visiting)
-                (setq valid nil)
-              (puthash current t visiting)
-              (push (cons leave-marker current) pending)
-              (cond
-               ((vectorp current)
-                (let ((index (1- (length current))))
-                  (while (>= index 0)
-                    (push (aref current index) pending)
-                    (setq index (1- index)))))
-               ((e-session-aggregate-keyword-plist-shape-p current)
-                (let ((tail current))
-                  (while tail
-                    (pop tail)
-                    (push (pop tail) pending))))
-               ((proper-list-p current)
-                (dolist (item (reverse current))
-                  (push item pending)))
-               ((or (keywordp (car current))
-                    (stringp (car current)))
-                (push (cdr current) pending))
-               (t
-                (setq valid nil)))))
-           (t (setq valid nil))))))
-    valid))
-
-(defun e-session-aggregate--board-routing-json-byte-size (value)
-  "Return the canonical UTF-8 JSON byte size of finite VALUE.
-Container traversal is iterative so a policy below the structural node budget
-cannot overflow the Lisp evaluator merely while measuring its representation.
-Scalar values use Emacs's canonical JSON escaping; unsupported dotted pairs
-signal `e-session-board-routing-invalid'."
-  (let ((pending (list (list :value value)))
-        (visiting (make-hash-table :test 'eq))
-        (leave-marker (make-symbol "routing-json-leave"))
-        (bytes 0))
-    (while pending
-      (let ((task (pop pending)))
-        (if (eq (car task) leave-marker)
-            (remhash (cdr task) visiting)
-          (let ((current (cadr task)))
-            (cond
-             ((or (null current) (eq current t) (numberp current)
-                  (stringp current) (symbolp current))
-              (setq bytes (+ bytes
-                             (string-bytes (json-encode current)))))
-             ((or (vectorp current) (consp current))
-              (when (gethash current visiting)
-                (signal 'e-session-board-routing-invalid
-                        (list "Cyclic routing value" current)))
-              (puthash current t visiting)
-              (push (cons leave-marker current) pending)
-              (cond
-               ((vectorp current)
-                (let ((count (length current))
-                      (index (1- (length current))))
-                  (setq bytes (+ bytes 2 (max 0 (1- count))))
-                  (while (>= index 0)
-                    (push (list :value (aref current index)) pending)
-                    (setq index (1- index)))))
-               ((e-session-aggregate-keyword-plist-shape-p current)
-                (let ((tail current)
-                      (count 0))
-                  (while tail
-                    (setq count (1+ count))
-                    (push (list :value (pop tail)) pending)
-                    (push (list :value (pop tail)) pending))
-                  (setq bytes (+ bytes 2 count (max 0 (1- count))))))
-               ((proper-list-p current)
-                (let ((count (length current)))
-                  (setq bytes (+ bytes 2 (max 0 (1- count))))
-                  (dolist (item (reverse current))
-                    (push (list :value item) pending))))
-               (t
-                (signal 'e-session-board-routing-invalid
-                        (list "Unsupported dotted routing value" current)))))
-             (t
-              (signal 'e-session-board-routing-invalid
-                      (list "Unsupported routing value" current))))))))
-    bytes))
-
-(defun e-session-aggregate--board-routing-json-value-valid-p (value &optional budgeted-p)
-  "Return non-nil when VALUE is finite and encodable as JSON."
-  (and (or budgeted-p
-           (e-session-aggregate--board-routing-value-budget-valid-p value))
-       (e-session-aggregate--board-routing-json-value-p value)
-       (condition-case nil
-           (progn
-             ;; Measure the canonical spelling without recursively encoding
-             ;; the whole value.  Scalar `json-encode' calls retain exact
-             ;; escaping while containers are traversed iteratively.
-             (e-session-aggregate--board-routing-json-byte-size value)
-             t)
-         (error nil))))
-
-(defun e-session-aggregate--board-routing-tag-list-valid-p (value)
-  "Return non-nil when VALUE is a list of declarative tag atoms."
-  (and (proper-list-p value)
-       (cl-every
-        (lambda (tag)
-          (and (or (symbolp tag) (stringp tag))
-               (not (and (symbolp tag) (keywordp tag)))))
-        value)))
-
-(defun e-session-aggregate--board-routing-selector-valid-p
-    (selector &optional budgeted-p)
-  "Return non-nil when SELECTOR is declarative and JSON-shaped."
-  (and (or budgeted-p
-           (e-session-aggregate--board-routing-value-budget-valid-p selector))
-       (e-session-aggregate-keyword-plist-shape-p selector)
-       (let ((tail selector)
-             seen
-             (valid t))
-         (while (and valid tail)
-          (let ((key (pop tail))
-                (value (pop tail)))
-             (setq valid
-                   (and (memq key e-session-aggregate--board-routing-selector-keys)
-                        (not (memq key seen))
-                        (cond
-                         ((memq key '(:tags :tags-all :tags-any))
-                          (e-session-aggregate--board-routing-tag-list-valid-p value))
-                         ((memq key '(:kind :activity-kind))
-                          (or (symbolp value) (stringp value)))
-                         ((memq key '(:to :author :subject-participant-id))
-                          (stringp value))
-                         ((eq key :attributes)
-                          (and (e-board-selector-attributes-valid-p value)
-                               (e-session-aggregate--board-routing-json-value-valid-p
-                                value t)))
-                         (t nil))))
-             (push key seen)))
-         valid)))
-
-(defun e-session-aggregate--board-routing-policy-valid-p (policy)
-  "Return non-nil when POLICY has exactly the complete durable shape."
-  ;; Budget the complete caller value before any plist, selector, tag, or
-  ;; attribute grammar walk.  This is the admission cutoff for rejected input
-  ;; as well as accepted policy.
-  (and (>= e-session-aggregate--board-routing-policy-byte-budget
-           e-session-aggregate--board-routing-policy-minimum-byte-budget)
-       (e-session-aggregate--board-routing-value-budget-valid-p
-        policy nil t)
-       (e-session-aggregate-keyword-plist-shape-p policy)
-       (let ((tail policy)
-             seen
-             (valid t))
-         (while (and valid tail)
-           (let ((key (pop tail))
-                 (value (pop tail)))
-             (setq valid
-                   (and (memq key e-session-aggregate--board-routing-policy-keys)
-                        (not (memq key seen))
-                        (cond
-                         ((eq key :participant-id)
-                          (and (stringp value)
-                               (not (string-empty-p value))))
-                         ((memq key '(:pickup-selector :observer-selector))
-                          (e-session-aggregate--board-routing-selector-valid-p
-                           value t))
-                         ((eq key :default-tags)
-                          (e-session-aggregate--board-routing-tag-list-valid-p value))
-                         ((eq key :default-to)
-                          (or (null value) (stringp value)))
-                         (t nil))))
-             (push key seen)))
-         (and valid
-              (= (length seen) (length e-session-aggregate--board-routing-policy-keys))
-              (e-session-aggregate--board-routing-json-value-p policy)
-              ;; Attribute selectors are tagged reversibly for persistence;
-              ;; enforce the byte ceiling on that actual canonical form too.
-              (condition-case nil
-                  (<=
-                   (e-session-aggregate--board-routing-json-byte-size
-                   (e-session-codec-board-routing-policy-for-json policy))
-                   e-session-aggregate--board-routing-policy-byte-budget)
-                (error nil))))))
-
-(defun e-session-aggregate--normalize-board-routing-selector (selector)
-  "Return SELECTOR in the in-memory symbol form used by board matchers."
-  (let ((selector (e-session-aggregate-board-routing-copy-value selector)))
-    (dolist (key '(:kind :activity-kind))
-      (when (stringp (plist-get selector key))
-        (plist-put selector key (intern (plist-get selector key)))))
-    (dolist (key '(:tags :tags-all :tags-any))
-      (when (plist-member selector key)
-        (plist-put selector key
-                   (mapcar (lambda (tag)
-                             (if (stringp tag) (intern tag) tag))
-                           (plist-get selector key)))))
-      selector))
-
-(defun e-session-aggregate-board-routing-copy-value (value)
-  "Deep-copy JSON-shaped board routing VALUE, including strings.
-Use an explicit task stack so an admitted finite policy does not consume the
-Lisp call stack merely while detaching nested selector data.  Cycles signal the
-same invalid-policy condition as the admission walk."
-  (let ((pending (list (list :value value)))
-        (results nil)
-        (visiting (make-hash-table :test 'eq))
-        (leave-marker (make-symbol "routing-copy-leave")))
-    (while pending
-      (let ((task (pop pending)))
-        (pcase (car task)
-          (:leave
-           (remhash (cadr task) visiting))
-          (:assemble-vector
-           (let (items)
-             (dotimes (_ (cadr task))
-               (push (pop results) items))
-             (push (vconcat items) results)))
-          (:assemble-cons
-           (let ((cdr-value (pop results))
-                 (car-value (pop results)))
-             (push (cons car-value cdr-value) results)))
-          (:value
-           (let ((current (cadr task)))
-             (cond
-              ((stringp current)
-               (push (copy-sequence current) results))
-              ((or (null current) (eq current t) (numberp current)
-                   (symbolp current))
-               (push current results))
-              ((or (vectorp current) (consp current))
-               (when (gethash current visiting)
-                 (signal 'e-session-board-routing-invalid
-                         (list "Cyclic routing value" current)))
-               (puthash current t visiting)
-               (push (cons leave-marker current) pending)
-               (push (list :assemble-vector (length current)) pending)
-               (if (vectorp current)
-                   (let ((index (1- (length current))))
-                     (while (>= index 0)
-                       (push (list :value (aref current index)) pending)
-                       (setq index (1- index))))
-                 ;; A cons is always copied as its car/cdr pair.  This avoids
-                 ;; calling `proper-list-p' while traversing a deep value.
-                 (pop pending)
-                 (push (list :assemble-cons) pending)
-                 (push (list :value (cdr current)) pending)
-                 (push (list :value (car current)) pending)))
-              (t
-              (signal 'e-session-board-routing-invalid
-                       (list "Unsupported routing value" current)))))))))
-    (car results)))
-
-(defun e-session-aggregate--normalize-board-routing-policy (policy)
-  "Return detached POLICY with replayed tag/kind values normalized."
-  (when policy
-    (let ((policy (e-session-aggregate-board-routing-copy-value policy)))
-      (dolist (key '(:pickup-selector :observer-selector))
-        (plist-put policy key
-                   (e-session-aggregate--normalize-board-routing-selector
-                    (plist-get policy key))))
-      (when (plist-member policy :default-tags)
-        (plist-put policy :default-tags
-                   (mapcar (lambda (tag)
-                             (if (stringp tag) (intern tag) tag))
-                           (plist-get policy :default-tags))))
-      policy)))
-
 (defun e-session-aggregate--board-association-keys-valid-p (association)
   "Return non-nil when ASSOCIATION contains only its bounded unique keys."
   (let ((tail association)
@@ -1525,7 +613,7 @@ same invalid-policy condition as the admission walk."
            (member (plist-get association :association-role)
                    '("owner" "participant")))
        (or (not (plist-member association :routing-policy))
-           (e-session-aggregate--board-routing-policy-valid-p
+           (e-session-board-routing-policy-valid-p
             (plist-get association :routing-policy)))))
 
 (defun e-session-aggregate--normalize-board-association (association)
@@ -1534,7 +622,7 @@ same invalid-policy condition as the admission walk."
       (let ((normalized (copy-tree association)))
         (when (plist-member normalized :routing-policy)
           (plist-put normalized :routing-policy
-                     (e-session-aggregate--normalize-board-routing-policy
+                     (e-session-board-routing-policy-normalize
                       (plist-get normalized :routing-policy))))
         normalized)
     (copy-tree e-session-aggregate--invalid-board-association)))
@@ -1544,12 +632,8 @@ same invalid-policy condition as the admission walk."
   (when-let ((association (e-session-aggregate-board-association session)))
     (unless (e-session-aggregate-board-association-invalid-p association)
       (when (plist-member association :routing-policy)
-        (e-session-aggregate-board-routing-copy-value
+        (e-session-board-routing-policy-copy-value
          (plist-get association :routing-policy))))))
-
-(defun e-session-aggregate-board-routing-policy-valid-p (policy)
-  "Return non-nil when POLICY is a complete durable routing policy."
-  (e-session-aggregate--board-routing-policy-valid-p policy))
 
 (defun e-session-aggregate-board-association-policy-present-p (association)
   "Return non-nil when ASSOCIATION explicitly carries a routing policy."
@@ -1681,11 +765,11 @@ The optional DEFER-PERSISTENCE flag marks a private admission reservation for
 the application service.  This owner never publishes durable records; the
 composition root supplies the storage adapter after the semantic mutation has
 been accepted."
-  (setq id (or id (e-session-aggregate--generate-id)))
+  (setq id (or id (e-session-identity-generate-id)))
   (when (gethash id (e-session-store-sessions store))
     (signal 'e-session-duplicate (list id)))
-  (setq metadata (e-session-aggregate--validate-metadata
-                  (e-session-aggregate-normalize-metadata-for-replay metadata)))
+  (setq metadata (e-session-metadata-validate
+                  (e-session-metadata-normalize-for-replay metadata)))
   (let* ((timestamp (e-session-aggregate--timestamp))
          (session (list :id id
                         :metadata metadata
@@ -1747,7 +831,7 @@ or index entry is published by this function."
             (signal 'e-session-error
                     (list "Invalid board association role" association-role)))
           (when (and routing-policy
-                     (not (e-session-aggregate--board-routing-policy-valid-p
+                     (not (e-session-board-routing-policy-valid-p
                            routing-policy)))
             (signal 'e-session-board-routing-invalid
                     (list "Invalid board routing policy" routing-policy)))
@@ -1761,7 +845,7 @@ or index entry is published by this function."
             (when routing-policy
               (plist-put
                board-state :routing-policy
-               (e-session-aggregate--normalize-board-routing-policy routing-policy)))
+               (e-session-board-routing-policy-normalize routing-policy)))
             (plist-put session :board-session-state board-state)
             (let* ((session-id (plist-get session :id))
                    (state-record
@@ -2021,7 +1105,7 @@ persisted."
     (error "Board association identity must be strings: %S %S %S"
            session-id principal board-id))
   (when (and routing-policy
-             (not (e-session-aggregate--board-routing-policy-valid-p routing-policy)))
+             (not (e-session-board-routing-policy-valid-p routing-policy)))
     (error "Invalid board routing policy: %S" routing-policy))
   (let* ((session (e-session-aggregate-get-live store session-id))
          (had-state (plist-member session :board-session-state))
@@ -2035,7 +1119,7 @@ persisted."
       (setq board-state
             (plist-put
              board-state :routing-policy
-             (e-session-aggregate--normalize-board-routing-policy routing-policy))))
+                     (e-session-board-routing-policy-normalize routing-policy))))
     (let ((record
            (list :type "board-session-state" :session-id session-id
                  :board-state board-state :board-id board-id
@@ -2127,7 +1211,7 @@ fork's session name (otherwise it inherits the source name)."
            store
            (plist-get fork :id)
            (e-context-lifetime-generation-create
-            :id (format "generation:fork:%s" (e-session-aggregate-generate-ulid))
+            :id (format "generation:fork:%s" (e-session-identity-generate-ulid))
             :checkpoint portable-checkpoint
             :covered-session-boundary (plist-get last-seed :id))))
       (dolist (message messages)
@@ -2427,8 +1511,9 @@ consumer-bound frame at request construction time."
   "Return latest provider anchor compatible with SESSION-ID current path."
   (seq-find
    (lambda (anchor)
-     (e-session-aggregate-provider-anchor-compatible-p
-      store session-id anchor provider-id model fingerprints))
+     (e-session-provider-anchor-policy-compatible-p
+      (e-session-aggregate-current-path store session-id)
+      anchor provider-id model fingerprints))
    (reverse (e-session-aggregate-provider-anchors store session-id))))
 
 (defun e-session-aggregate-turn-options (store session-id)
@@ -2437,7 +1522,7 @@ consumer-bound frame at request construction time."
 
 (defun e-session-aggregate--replace-metadata (store session-id metadata)
   "Replace SESSION-ID METADATA in STORE after validation."
-  (let* ((metadata (e-session-aggregate--validate-metadata metadata))
+  (let* ((metadata (e-session-metadata-validate metadata))
          (session (e-session-aggregate-get-live store session-id))
          (timestamp (e-session-aggregate--timestamp))
          (event (e-session-aggregate--append-session-event
@@ -2468,32 +1553,22 @@ New code should prefer the narrower typed metadata helpers."
 
 (defun e-session-aggregate-set-session-config (store session-id config)
   "Merge durable session CONFIG into SESSION-ID metadata."
-  (e-session-aggregate--validate-metadata-class config 'session-config)
+  (e-session-metadata-validate-class config 'session-config)
   (let* ((session (e-session-aggregate-get-live store session-id))
          (metadata (e-session-aggregate--merge-metadata
                     (plist-get session :metadata)
                     config)))
     (e-session-aggregate--replace-metadata store session-id metadata)))
 
-(defun e-session-aggregate-metadata-context-references (metadata owner)
-  "Return current-state references for OWNER from session METADATA.
-This transcript-free reader accepts metadata from either a live session or a
-session catalog entry."
-  (let* ((references (plist-get metadata :context-references))
-         (owner-key (e-session-aggregate--metadata-owner-key owner)))
-    (copy-tree
-     (e-session-aggregate--metadata-public-value
-      (plist-get references owner-key)))))
-
 (defun e-session-aggregate-context-references (store session-id owner)
   "Return current-state references for OWNER in SESSION-ID."
-  (e-session-aggregate-metadata-context-references
+  (e-session-metadata-context-references-value
    (plist-get (e-session-aggregate-get-live store session-id) :metadata)
    owner))
 
 (defun e-session-aggregate-set-context-references (store session-id owner references)
   "Set durable current-state REFERENCES for OWNER in SESSION-ID."
-  (let* ((owner-key (e-session-aggregate--metadata-owner-key owner))
+  (let* ((owner-key (e-session-metadata-owner-key owner))
          (session (e-session-aggregate-get-live store session-id))
          (metadata (copy-sequence (plist-get session :metadata)))
          (all-references (copy-sequence
@@ -2501,7 +1576,7 @@ session catalog entry."
     (setq all-references
           (plist-put all-references
                      owner-key
-                     (e-session-aggregate--metadata-json-array-safe-value references)))
+                     (e-session-metadata-reference-value references)))
     (e-session-aggregate--replace-metadata
      store
      session-id
@@ -2510,7 +1585,7 @@ session catalog entry."
 
 (defun e-session-aggregate-set-context-reference (store session-id key reference)
   "Set durable current-state REFERENCE metadata KEY for SESSION-ID."
-  (e-session-aggregate--validate-metadata-class (list key reference)
+  (e-session-metadata-validate-class (list key reference)
                                       'current-state-reference)
   (let* ((session (e-session-aggregate-get-live store session-id))
          (metadata (e-session-aggregate--merge-metadata
@@ -2520,17 +1595,14 @@ session catalog entry."
 
 (defun e-session-aggregate-capability-state (store session-id capability-id)
   "Return durable capability state for CAPABILITY-ID in SESSION-ID."
-  (let* ((metadata (plist-get (e-session-aggregate-get-live store session-id) :metadata))
-         (state (plist-get metadata :capability-state))
-         (owner-key (e-session-aggregate--metadata-owner-key capability-id)))
-    (copy-tree
-     (e-session-aggregate--metadata-public-value
-      (plist-get state owner-key)))))
+  (e-session-metadata-capability-state-value
+   (plist-get (e-session-aggregate-get-live store session-id) :metadata)
+   capability-id))
 
 (cl-defun e-session-aggregate-set-capability-state
     (store session-id capability-id state &key version)
   "Set durable capability STATE for CAPABILITY-ID in SESSION-ID."
-  (let* ((owner-key (e-session-aggregate--metadata-owner-key capability-id))
+  (let* ((owner-key (e-session-metadata-owner-key capability-id))
          (session (e-session-aggregate-get-live store session-id))
          (metadata (copy-sequence (plist-get session :metadata)))
          (all-state (copy-sequence (plist-get metadata :capability-state)))
@@ -2799,7 +1871,7 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
 
 (defun e-session-aggregate--context-record-duplicate-key-p (record)
   "Return non-nil when semantic context RECORD repeats a keyword."
-  (when (e-session-aggregate-keyword-plist-p record)
+  (when (e-session-aggregate-keyword-plist-shape-p record)
     (let ((tail record)
           seen
           duplicate)
@@ -2814,7 +1886,7 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
 (defun e-session-aggregate--normalize-context-record-for-replay (type record)
   "Normalize the semantic TYPE marker in decoded context RECORD."
   (let ((copy (copy-tree record)))
-    (when (and (e-session-aggregate-keyword-plist-p copy)
+    (when (and (e-session-aggregate-keyword-plist-shape-p copy)
                (stringp (plist-get copy :type))
                (equal (plist-get copy :type) (symbol-name type)))
       (plist-put copy :type type))
@@ -2829,7 +1901,7 @@ record decoding remain in `e-session-codec'."
     (signal 'e-session-error
             (list "Context lifetime record has duplicate fields" type)))
   (condition-case error
-      (let* ((record-version (and (e-session-aggregate-keyword-plist-p record)
+      (let* ((record-version (and (e-session-aggregate-keyword-plist-shape-p record)
                                   (plist-get record :record-version)))
              (decoded
               (cond
@@ -2905,7 +1977,7 @@ record decoding remain in `e-session-codec'."
 This is the one Feature 88 package shape owned by the session boundary.  It is
 deliberately not a general transaction abstraction: the only allowed fields
 are the optional version-3 promotion and version-1 erasure components."
-  (unless (e-session-aggregate-keyword-plist-p package)
+  (unless (e-session-aggregate-keyword-plist-shape-p package)
     (signal 'e-session-error
             (list "Context curation package must be a keyword plist" package)))
   (when (e-session-aggregate--context-record-duplicate-key-p package)
@@ -3049,7 +2121,7 @@ not a retry for the selected path and remains a conflict."
 All semantic components are normalized and ownership-checked before the one
 package entry is installed.  A repeated exact package is idempotent; an entry
 with the same identity but different canonical components is rejected."
-  (unless (and (e-session-aggregate-keyword-plist-p record)
+    (unless (and (e-session-aggregate-keyword-plist-shape-p record)
                (not (e-session-aggregate--context-record-duplicate-key-p record)))
     (signal 'e-session-error
             (list "Invalid context curation package record")))
@@ -3359,8 +2431,8 @@ RECORD must already be detached by `e-session-codec-decode-record'."
       ("session"
        (e-session-aggregate--clear-board-journal store session-id)
        (let* ((metadata
-               (e-session-aggregate--validate-metadata
-                (e-session-aggregate-normalize-metadata-for-replay
+               (e-session-metadata-validate
+                (e-session-metadata-normalize-for-replay
                  (plist-get record :metadata) t)))
               (session
                (list :id session-id
@@ -3594,7 +2666,7 @@ RECORD must already be detached by `e-session-codec-decode-record'."
              (setq fields
                    (plist-put
                     fields :metadata
-                    (e-session-aggregate-normalize-metadata-for-replay
+                    (e-session-metadata-normalize-for-replay
                      (plist-get record :metadata) t))))
            (when (plist-member record :turn-options)
              (setq fields
@@ -3607,7 +2679,7 @@ RECORD must already be detached by `e-session-codec-decode-record'."
            (plist-put session :name (plist-get record :name)))
          (when (plist-member record :metadata)
            (plist-put session :metadata
-                      (e-session-aggregate-normalize-metadata-for-replay
+                      (e-session-metadata-normalize-for-replay
                        (plist-get record :metadata) t)))
          (when (plist-member record :turn-options)
            (plist-put session :turn-options

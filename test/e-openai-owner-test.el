@@ -22,6 +22,8 @@
 
 (ert-deftest e-openai-owner-test-loads-without-facade ()
   "The owner contracts are loadable without composing the provider facade."
+  (when (featurep 'e-openai)
+    (ert-skip "fresh-load contract is exercised in an isolated process"))
   (should-not (featurep 'e-openai))
   (dolist (function '(e-openai-provider-profile
                       e-openai-codex-request-body

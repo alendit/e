@@ -19,6 +19,9 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+(load (expand-file-name "../e2e/e-board-e2e-support.el"
+                       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 (require 'e-harness-instances)
 (require 'e-session)
 (require 'e-store)
@@ -59,14 +62,13 @@
          (e-board-runtime--admission-open-p t)
          (e-board-runtime--unsettled-producer-count 0)
          (e-board-runtime--unsettled-generation 0)
-         (e-chat-service--bindings
-          (make-hash-table :test 'eq :weakness 'key))
          (e-subagent--producer-bindings (make-hash-table :test 'equal))
          (e-subagent--configured-harnesses
           (make-hash-table :test 'eq :weakness 'key))
          (e-work--unsettled-count 0)
          (e-work--unsettled-generation 0)
          (e-work--unsettled-change-functions nil))
+     (e-board-e2e-reset-runtime)
      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) 'timer))
                ((symbol-function 'timerp) (lambda (value) (eq value 'timer)))
                ((symbol-function 'cancel-timer) #'ignore))
@@ -483,7 +485,7 @@ the harness."
          :subject-participant-id participant-id
          :source-turn-id "turn-visible"
          :source-output-key (list participant-id 1 1))
-        (e-chat-service--drain-observer binding)
+        (e-chat-service-drain-binding binding)
         (let ((raw (e-subagent-raw-read registry subagent-id 1)))
           (should (equal (plist-get raw :session-uri)
                          (format "session://e/sessions/%s/messages"

@@ -58,22 +58,22 @@ on ownership and dependency evidence rather than size alone.
 - Product authority: this feature plan and the operator-approved project
   architecture guidance.
 - Owning contract: =F91-OWNER=.
-- Behavioral status: partial; Rounds 1-4 have accepted bounded owners and
-  preservation evidence, while the final residual topology round remains.
+- Behavioral status: Rounds 1-5 have parent-accepted bounded owners and
+  preservation evidence; independent final review remains.
 
 ** Contract and evidence matrix
 
 | Contract ID | Observable or owner-level invariant | Semantic owner | Lifetime, recovery, or bound | Implementation round | Named scenario | Evidence class | Status |
 |-------------+-------------------------------------+----------------+------------------------------+----------------------+----------------+----------------+--------|
-| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Partial: Rounds 1-4 accepted |
+| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Parent accepted; independent final review pending |
 | =F91-PRESENTATION= | Chat and Org Canvas preserve public interaction while surface, composer, transcript, activity, and overview code and buffer-local state have explicit owners; external consumers use no chat-private symbols. | Chat presentation family | Buffer-local presentation state; reloadable shell modules. | 1 | =F91-S-PRESENTATION= | Deterministic repository and isolated graphical | Accepted |
 | =F91-SESSION= | Session aggregate operations preserve current durable records and restart behavior while codec/replay, checkpoint/catalog policy, and JSONL I/O are separate owner-shaped modules. | Session aggregate and current storage adapter | Existing durable lifetime and recovery; no migration or new format. | 2 | =F91-S-RESTART= | Deterministic repository | Accepted |
 | =F91-RUNTIME= | Board attachment and ordinary turns preserve admission, ordering, settlement, abort, and activity behavior through public attached-turn and harness-owner boundaries, without private callback mutation. | Harness application services and board runtime | Process-local turn/queue/activity state; existing durable session and board effects. | 3 | =F91-S-ATTACHED-TURN= | Deterministic repository | Accepted |
 | =F91-OPENAI= | Existing profiles, auth, wire mappings, transports, decoding, diagnostics, and compaction compose behind the unchanged OpenAI facade without cross-variant branches. | OpenAI backend adapter | Request/stream lifetime, cancellation, retry, and effective provider identity unchanged. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
 | =F91-MCP= | Helper-process and HTTP transports satisfy the same supported MCP client contract, while capability/tool/resource/context composition is transport-independent. | MCP client and capability composition | Existing connection/process lifetime and error behavior. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
 | =F91-BASE= | File/resource behavior and bash process/collector behavior compose into the unchanged base capability without sharing an accidental implementation owner. | Base capability components | Existing buffer/file coherence and process/collector lifetimes. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
-| =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Pending |
-| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Partial: Rounds 1-4 accepted |
+| =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Parent accepted; independent final review pending |
+| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Parent accepted; independent final review pending |
 
 ** Scenario portfolio
 
@@ -251,22 +251,87 @@ only the three fresh-load assertions failed because that process had already
 loaded their facades.  The running Emacs was left unchanged; using the changed
 core/provider definitions requires a restart rather than a live reload.
 
+*** Round 5: residual topology and architecture evidence
+
+Implementer evidence on 2026-08-30 starts from the exact clean baseline
+=fd51e67500c8bdc35632ea0f7800c1bdedb94c86= and remains uncommitted for parent
+review.  The residual inventory in this plan is now resolved in
+=round-5-audit.org=.  The retained large roots have explicit causal
+colocation proofs; the accepted owner families and their direct tests are not
+reopened merely because their files remain large.
+
+The round corrected the remaining consumer-shaped topology around the
+shell-neutral chat service: developer performance fixtures now use bounded
+public drain operations, canvas/resource/default consumers use semantic
+projections, board journal persistence uses the board-owned detached
+=e-board-message-envelope=, and terminal continuation replay uses the public
+=e-chat-service-reconcile-board-continuation= application operation.  The
+context-lifetime owner uses the shared pure
+=e-context-estimate= contract instead of dynamically loading the higher-level
+budget owner.  The session aggregate's pure metadata, identity,
+provider-anchor, and board-routing policies are likewise separate owners;
+aggregate mutation and replay state remains in the aggregate.  These changes
+remove the only cycle found by the complete 163-module/707-edge local require
+scan and eliminate duplicated estimator/policy implementations.
+
+Public OpenAI, harness, and chat composition tests are now independently
+discovered scenario suites rather than large mixed-owner roots.  Small facade
+smoke files remain, while request/continuation/stream/transport/compaction,
+harness capability/resource/turn/tool/context, and chat
+surface/composer/transcript/activity/settlement/overview suites own the public
+scenario groups.  Direct mechanism assertions remain in owner suites; exact
+name-set comparisons against the pre-correction roots are recorded in
+=round-5-audit.org=.
+
+Implementer evidence includes the focused owner/composition batches, the
+corrected direct context/session policy contracts, exact test-name preservation
+comparisons (OpenAI 126/126, harness 135/135, chat 157/157), and the full
+repository gates recorded in =round-5-audit.org= (full ERT 2,560 tests,
+2,553 expected, 0 unexpected, 7 skips; graphical 27/27).  The aggregate's
+three board-policy mechanism tests now live in =e-session-board-policy-test.el=
+with the historical 7-test name union preserved across the two direct suites.
+The 485-case selector and isolated graphical suite retain their existing
+environment skips; the full ERT and affected broad groups are rerun after the
+last correction.  The selected bounded performance smoke reports no new
+repeated scans or synchronous writes; one pre-existing replay fixture is
+recorded as an infeasible default scenario in the audit.  The repository
+architecture map now reflects the actual post-Round-4/5 facades, owners,
+lifetimes, and restart policy.
+
+Parent review accepted F91-OWNER, F91-TOPOLOGY, and F91-PRESERVATION after two
+correction passes.  It independently reran the new session policy, board-policy,
+aggregate, context-estimate, and chat-service state coverage (51 expected
+passes and one combined-process fresh-load skip), confirmed policy-private
+tests are confined to their direct owner suite, and passed =git diff --check=.
+Independent final review remains, so Feature 91 stays =In-progress= and is not
+=Done=.  The running Emacs was not queried,
+reloaded, or otherwise changed; core/session/harness/provider source changes
+require a restart before use in an already running process.
+
 ** Initial residual-topology inventory
 
-The implementer must refine this inventory before moving code and report every
-cluster's final disposition.  =Unknown= is deliberate at package start.
+The following was the package-start inventory.  Round 5's final dispositions
+are recorded in the last column and detailed in =round-5-audit.org=.
 
-| Root | Material responsibility clusters | Initial disposition |
+| Root | Material responsibility clusters | Parent-accepted Round 5 disposition |
 |------|----------------------------------|---------------------|
-| =e-chat.el= and =e-chat-test.el= | surface, composer/context editing, transcript/blocks/replay, activity, overview, facade composition | Unknown |
-| =e-org-canvas.el= and its tests | canvas/session commands, transient input, result/transcript presentation, chat component adaptation | Unknown |
-| =e-session.el= and =e-session-test.el= | aggregate/identity, typed mutation/query, record codec/replay, checkpoint/catalog, JSONL/index I/O, concrete metadata vocabulary | Unknown |
-| =e-harness.el= and =e-harness-test.el= | capability derivation, activity, active turn/queue, context/compaction/anchors, top-level turn orchestration, facade composition | Unknown |
-| =e-board-runtime.el= | board orchestration and the harness attached-turn adaptation | Unknown |
-| =e-openai.el= and =e-openai-test.el= | profiles/auth, two wire mappings, HTTP/WebSocket, decoding, diagnostics, compaction, facade composition | Unknown |
-| =e-mcp.el= and =e-mcp-test.el= | client semantics, helper transport, HTTP transport, catalog/tools/resources/context, capability composition | Unknown |
-| =e-base-tools.el= and =e-base-tools-test.el= | file/resource/coherence/search and bash process/stream collector | Unknown |
-| =e-board.el=, =e-context-lifetime.el=, =e-loop.el=, =e-tools.el=, and =e-work.el= | their currently cohesive domain/state-machine responsibilities and any plausible observer, lifecycle, routing, or dispatch subowner | Unknown |
+| =e-chat.el= and =e-chat-test.el= | surface, composer/context editing, transcript/blocks/replay, activity, overview, facade composition | Facade retained; five owners and matching direct tests already extracted; service projections corrected; composed roots retained for public behavior |
+| =e-org-canvas.el= and its tests | canvas/session commands, transient input, result/transcript presentation, chat component adaptation | Canvas ownership retained; public chat/session projections only; integration tests retained |
+| =e-session.el= and =e-session-test.el= | aggregate mutation/query, pure metadata/identity/anchor/board policy, record codec/replay, checkpoint/catalog, JSONL/index I/O | Facade plus aggregate/codec/catalog/storage and four pure policy owners; restart suites retained |
+| =e-harness.el= and =e-harness-test.el= | capability derivation, activity, active turn/queue, context/compaction/anchors, top-level turn orchestration, facade composition | Facade plus six runtime owners already extracted; mechanism assertions moved to direct suite |
+| =e-board-runtime.el= | board orchestration and the harness attached-turn adaptation | Retained cohesive board admission/reconciliation adapter; attached-turn port remains narrow |
+| =e-openai.el= and composition roots | profiles/auth, two wire mappings, HTTP/WebSocket, decoding, diagnostics, compaction, facade composition | Facade plus eight owners; public scenarios split into eight independently runnable suites and direct mechanism tests |
+| =e-mcp.el= and =e-mcp-test.el= | client semantics, helper transport, HTTP transport, catalog/tools/resources/context, capability composition | Facade plus protocol/transport/client/capability owners already extracted; mechanism portions explicitly classified |
+| =e-base-tools.el= and =e-base-tools-test.el= | file/resource/coherence/search and bash process/stream collector | Facade plus unequal file/bash owners already extracted; direct owner tests retained |
+| =e-board.el=, =e-context-lifetime.el=, =e-loop.el=, =e-tools.el=, and =e-work.el= | their currently cohesive domain/state-machine responsibilities and any plausible observer, lifecycle, routing, or dispatch subowner | Retained with causal atomicity proofs; pure context estimation is extracted to =e-context-estimate= and direct behavior rechecked |
+
+The package-start test-size signal is no longer the final topology: after the
+correction the ordinary OpenAI composition files are 80--1,250 lines, the
+harness composition files are 62--1,451 lines, and the chat composition files
+are 150--1,147 lines.  The optional external =e2e/e-live-e2e-test.el= remains
+an external scenario harness; it is not a mixed-owner ERT composition root.
+Exact resulting paths, line counts, and baseline-name comparisons are in the
+Round 5 audit.
 
 * Blocking prerequisite
 

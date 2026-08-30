@@ -14,14 +14,11 @@
 
 (require 'cl-lib)
 (require 'e-context)
+(require 'e-context-estimate)
 (require 'e-harness-context-runtime)
 (require 'e-session)
 
 (declare-function e-session-latest-token-usage-event "e-session")
-
-(defgroup e-context-budget nil
-  "Core context budget accounting for e sessions."
-  :group 'e)
 
 (defcustom e-context-budget-model-token-limits
   '(("claude-sonnet-5" . 364000)
@@ -46,26 +43,6 @@
   :type '(alist :key-type string :value-type integer)
   :group 'e-context-budget)
 
-(defcustom e-context-budget-estimate-bytes-per-token 4.0
-  "Approximate UTF-8 bytes per token for context-token estimates."
-  :type 'number
-  :group 'e-context-budget)
-
-(defun e-context-budget-value-token-estimate
-    (value &optional bytes-per-token)
-  "Return approximate token count for canonical model-facing VALUE.
-BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'.
-Invalid or non-positive ratios use the established 4.0 fallback.  VALUE is
-already the semantic value being estimated; callers that add presentation
-markers must invoke this helper before doing so."
-  (let* ((bytes (string-bytes (prin1-to-string value)))
-         (per-token (or bytes-per-token
-                        e-context-budget-estimate-bytes-per-token))
-         (per-token (if (and (numberp per-token) (> per-token 0))
-                        per-token
-                      4.0)))
-    (ceiling (/ bytes (float per-token)))))
-
 (defun e-context-budget-options-effort (options)
   "Return the reasoning-effort recorded in turn OPTIONS, or nil.
 OpenAI-style harnesses store it under `:reasoning-effort'; the native Anthropic
@@ -89,13 +66,9 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
   (let* ((options (plist-get context :options))
          (model-facing-context
           (list :messages (plist-get context :messages)
-                :tools (plist-get options :tools)))
-         (per-token (or bytes-per-token
-                        e-context-budget-estimate-bytes-per-token))
-         (per-token (if (and (numberp per-token) (> per-token 0))
-                        per-token
-                      4.0)))
-    (e-context-budget-value-token-estimate model-facing-context per-token)))
+                :tools (plist-get options :tools))))
+    (e-context-budget-value-token-estimate model-facing-context
+                                           bytes-per-token)))
 
 (defun e-context-budget--token-usage-input-tokens (usage)
   "Return input token count from provider-neutral USAGE."

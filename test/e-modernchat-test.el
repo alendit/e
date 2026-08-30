@@ -60,7 +60,7 @@
      board :id id :author "test" :tags '(main) :content content
      :source-output-key
      (list 'test session-id (e-board-message-count board)))
-    (e-chat-service--drain-observer binding)))
+    (e-chat-service-drain-binding binding)))
 
 (ert-deftest e-chat-service-test-board-output-identifies-terminal-presentation ()
   "A board output tells shells that the producing turn has already finished."
@@ -1460,8 +1460,8 @@ session and board binding without exposing a participant-added event."
            (e-board-registry-board-source-board board)
            :id "fact" :tags '(main) :content "visible"
            :source-fact-key '(test fact 1))
-          (e-chat-service--drain-subscription bad)
-          (e-chat-service--drain-subscription good)
+          (e-chat-service-drain-subscription bad)
+          (e-chat-service-drain-subscription good)
           (should (eq (car (e-chat-service-subscription-state bad)) 'faulted))
           (should (= (e-board-observer-next-seq
                       (e-chat-service-subscription-observer bad))
@@ -1477,7 +1477,7 @@ session and board binding without exposing a participant-added event."
            (e-board-registry-board-source-board board)
            :id "child" :tags '(subagent) :content "child activity"
            :source-fact-key '(test fact 2))
-          (e-chat-service--drain-subscription good)
+          (e-chat-service-drain-subscription good)
           (should (equal (plist-get (car good-events) :message-id) "child")))))))
 
 (ert-deftest e-chat-service-test-detached-subscriber-client-retires-cleanly ()
@@ -1506,7 +1506,7 @@ session and board binding without exposing a participant-added event."
           (e-board-registry-detach-client board client-id)
           (should-not
            (condition-case nil
-               (progn (e-chat-service--drain-subscription subscription) nil)
+               (progn (e-chat-service-drain-subscription subscription) nil)
              (e-board-registry-client-missing t)))
           (should-not (e-chat-service-subscription-active-p subscription))
           (should-not
@@ -1541,7 +1541,7 @@ session and board binding without exposing a participant-added event."
      board :id "answer" :author (format "participant:%s" participant)
      :subject-participant-id participant :source-turn-id "same-turn"
      :tags '(main) :content "answer" :source-output-key (list participant 1 1))
-    (e-chat-service--drain-observer binding)
+    (e-chat-service-drain-binding binding)
     (cl-letf (((symbol-function 'e-harness-messages)
                (lambda (&rest _) (error "private transcript read")))
               ((symbol-function 'e-session-activity-events)
@@ -1549,9 +1549,7 @@ session and board binding without exposing a participant-added event."
               ((symbol-function 'e-harness-state)
                (lambda (&rest _) (error "private state read")))
               ((symbol-function 'e-harness-queued-prompts)
-               (lambda (&rest _) (error "private queue read")))
-              ((symbol-function 'e-harness-active-turns)
-               (lambda (&rest _) (error "private active-turn read"))))
+               (lambda (&rest _) (error "private queue read"))))
       (let* ((messages (e-chat-service-messages harness "replay"))
              (activities (e-chat-service-activity-events harness "replay"))
              (first (car activities))
@@ -1573,6 +1571,28 @@ session and board binding without exposing a participant-added event."
                               :message-count)
                    1))))))
 
+(ert-deftest e-chat-service-test-state-seeds-live-attached-turn-before-replay ()
+  "A live attached turn is visible before any retained turn-started event."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session
+                   :harness harness :id "live-state"))
+         (session-id (plist-get session :id))
+         (binding (e-chat-service-binding harness session-id))
+         (attachment (e-chat-service-binding-attachment binding))
+         (entry (list :id "live-source-turn"
+                      :status 'running
+                      :attached-turn-port
+                      (e-board-runtime-attachment-turn-port attachment))))
+    (unwind-protect
+        (progn
+          (e-harness-turn-state-put-active-turn harness session-id entry)
+          (let* ((state (e-chat-service-state harness session-id))
+                 (active-turn (plist-get state :active-turn)))
+            (should (equal (plist-get active-turn :status) 'running))
+            (should (equal (nth 2 (plist-get active-turn :id))
+                           "live-source-turn"))))
+      (e-harness-turn-state-remove-active-turn harness session-id entry))))
+
 (ert-deftest e-chat-service-test-projection-ring-evicts-at-hard-cap ()
   "History/live overlap cannot grow one presentation projection without bound."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
@@ -1588,7 +1608,7 @@ session and board binding without exposing a participant-added event."
     (while (< (e-board-observer-next-index
                (e-chat-service-binding-observer binding))
               (e-board-message-count board))
-      (e-chat-service--drain-observer binding))
+      (e-chat-service-drain-binding binding))
     (let ((messages (e-chat-service-messages harness "bounded")))
       (should (= (length messages) e-chat-service-projection-capacity))
       (should (equal (plist-get (car messages) :id) "out-005"))
@@ -1617,12 +1637,12 @@ session and board binding without exposing a participant-added event."
         (should (= (e-board-observer-next-seq
                     (e-chat-service-subscription-observer subscription))
                    (e-chat-service-view-cursor view)))
-        (e-chat-service--drain-subscription subscription)
+        (e-chat-service-drain-subscription subscription)
         (should-not live-events)
         (e-board-post-output
          board :id "view-live" :author "test" :tags '(main)
          :content "live" :source-output-key '(test "view" 261))
-        (e-chat-service--drain-subscription subscription)
+        (e-chat-service-drain-subscription subscription)
         (should (equal (mapcar (lambda (event)
                                 (plist-get event :message-id))
                               live-events)
@@ -1712,7 +1732,7 @@ session and board binding without exposing a participant-added event."
             (should (= (length (e-session-board-messages
                                 loaded "persistent-board"))
                        1))
-            (e-chat-service--drain-observer restored)
+            (e-chat-service-drain-binding restored)
             (should (equal (e-board-registry-board-id
                             (e-chat-service-binding-board restored))
                            board-id))
@@ -1877,7 +1897,7 @@ session and board binding without exposing a participant-added event."
                                  :key #'e-board-message-kind)
                        2))
           (accept-process-output nil 0.01)))
-      (e-chat-service--drain-observer binding)
+      (e-chat-service-drain-binding binding)
       (let ((inputs (cl-remove-if-not
                      (lambda (message)
                        (eq (e-board-message-kind message) 'input))
@@ -1978,7 +1998,6 @@ session and board binding without exposing a participant-added event."
         (e-chat-service--continuation-reconciling (make-hash-table :test 'equal)))
     (let* ((runtime-board (e-board-registry-create :id "continuation-board" :principal "test"))
            (board (e-board-registry-board-source-board runtime-board))
-           (binding (e-chat-service--binding-create :harness 'test :board runtime-board))
            (queued nil)
            (attempts 0))
       (e-board-orchestration-publish-fact
@@ -2002,16 +2021,16 @@ session and board binding without exposing a participant-added event."
                      "continuation-message"))))
         ;; This call models recovery after a restart that found the terminal
         ;; report but no continuation acknowledgement.
-        (e-chat-service--reconcile-board-continuation binding)
+        (e-chat-service-reconcile-board-continuation runtime-board 'test)
         (should (eq (plist-get (plist-get (e-board-orchestration-run-projection
                                            board "run-1")
                                           :continuation)
                                :state)
                     'failed))
-        (e-chat-service--reconcile-board-continuation binding)
+        (e-chat-service-reconcile-board-continuation runtime-board 'test)
         ;; A later restart finds the published acknowledgement and does not
         ;; submit another input.
-        (e-chat-service--reconcile-board-continuation binding))
+        (e-chat-service-reconcile-board-continuation runtime-board 'test))
       (should (= attempts 2))
       (should (equal (car queued) (cadr queued)))
       (should (eq (plist-get (plist-get (e-board-orchestration-run-projection
@@ -2133,7 +2152,7 @@ session and board binding without exposing a participant-added event."
              '(:version 1 :type terminal-report :idempotency-key "report"
                :payload (:run-id "run-1" :task-key "task" :attempt 0
                          :status done :summary "done" :outputs [])))
-            (e-chat-service--reconcile-board-continuation binding)
+            (e-chat-service-reconcile-board-continuation runtime-board harness)
             (e-board-runtime--drain-input-routing
              runtime-board
              (lambda ()

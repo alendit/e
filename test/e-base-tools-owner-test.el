@@ -17,6 +17,8 @@
 
 (ert-deftest e-base-tools-owner-test-loads-without-facade ()
   "The file and bash owners load without the base-tools facade."
+  (when (featurep 'e-base-tools)
+    (ert-skip "fresh-load contract is exercised in an isolated process"))
   (should-not (featurep 'e-base-tools))
   (dolist (function '(e-base-tools-file-resource-path
                       e-base-tools-file-buffer-coherence-group

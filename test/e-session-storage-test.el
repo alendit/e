@@ -199,14 +199,14 @@ This is an owner-level routing assertion: it exercises the restored selector
 against real board messages instead of comparing only persisted plists."
   (let* ((board (e-board-create))
          (symbol-selector
-          (e-session-aggregate-board-routing-copy-value
+          (e-session-board-routing-policy-copy-value
            (plist-get policy :pickup-selector)))
          (string-selector
-          (e-session-aggregate-board-routing-copy-value symbol-selector))
+          (e-session-board-routing-policy-copy-value symbol-selector))
          (symbol-attributes
           (plist-get symbol-selector :attributes))
          (string-attributes
-          (e-session-aggregate-board-routing-copy-value symbol-attributes)))
+          (e-session-board-routing-policy-copy-value symbol-attributes)))
     (plist-put string-attributes :symbol "car")
     (plist-put string-selector :attributes string-attributes)
     (e-board-add-participant board :id "symbol-recipient"
@@ -222,7 +222,7 @@ against real board messages instead of comparing only persisted plists."
                  (e-board-drain-input-classifications board))))
       (dolist (case (list (list 'car "symbol-recipient")
                           (list "car" "string-recipient")))
-        (let* ((attributes (e-session-aggregate-board-routing-copy-value
+        (let* ((attributes (e-session-board-routing-policy-copy-value
                             symbol-attributes))
                (_ (plist-put attributes :symbol (car case)))
                (publication

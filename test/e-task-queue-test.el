@@ -875,7 +875,7 @@ without one there is nothing to analyze, so the task terminates."
                queue source :run-id "run-1" :task-key (car task) :attempt 0
                :prompt (cdr task)))
             (e-task-queue-test--await-durable queue)
-            (let ((journal (mapcar #'e-chat-service--board-envelope
+            (let ((journal (mapcar #'e-board-message-envelope
                                    (e-board-messages source))))
               ;; A fresh process reconstructs only durable journal and queue state.
               (setq e-board--registry (make-hash-table :test 'equal)
@@ -911,14 +911,13 @@ without one there is nothing to analyze, so the task terminates."
                 (let ((projection (e-board-orchestration-run-projection restored "run-1")))
                   (should (eq (plist-get projection :terminal-status) 'done))
                   (should (= (length (plist-get projection :reports)) 2)))
-                (let ((binding (e-chat-service--binding-create
-                                :harness nil :session-id "coordinator"
-                                :board restored-runtime))
-                      queued)
+                (let (queued)
                   (cl-letf (((symbol-function 'e-chat-service-queue-session)
                              (lambda (&rest arguments) (push arguments queued))))
-                    (e-chat-service--reconcile-board-continuation binding)
-                    (e-chat-service--reconcile-board-continuation binding))
+                    (e-chat-service-reconcile-board-continuation
+                     restored-runtime nil)
+                    (e-chat-service-reconcile-board-continuation
+                     restored-runtime nil))
                   (should (= (length queued) 1))
                   (should (equal (plist-get (nthcdr 3 (car queued)) :source-input-key)
                                  '("orchestration-continuation" "continuation-1" 0))))))

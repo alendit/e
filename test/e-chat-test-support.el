@@ -430,7 +430,7 @@ Production presentation never performs this compatibility translation."
       (while (< (e-board-observer-next-index
                  (e-chat-service-binding-observer binding))
                 (e-board-message-count board))
-        (e-chat-service--drain-observer binding)))
+        (e-chat-service-drain-binding binding)))
     envelopes))
 
 

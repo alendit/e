@@ -2,28 +2,29 @@
 
 ## Project Overview
 
-`e` is an Emacs-hosted agent runtime. Its purpose is to let agents run inside
-Emacs, inspect editor and project state, use explicit tools, and, when a
-capability allows it, modify buffers, files, or runtime configuration.
+`e` is an Emacs-hosted agent runtime. Agents run inside Emacs, inspect editor
+and project state, use explicit tools, and can modify buffers, files, or runtime
+configuration only when an active capability grants the relevant operation.
 
-The repository currently contains a usable chat-oriented runtime path: package
-startup, a provider-neutral harness core, JSONL-backed session persistence,
-capability-owned behavior bundles, layer presets, context assembly, a turn loop,
-resource-operation tools, OpenAI-like backend adapters, presentation shells, live
-reload support, and ERT coverage. Feature 88's current path adds consumer-bound
-ephemeral context frames, model-directed `context-curate`, exhaustive
-`keep`/`summaries`/`drop` dispositions, mandatory Responses reasoning
-summaries, version-3 durable curation records, and read-only version-2
-compatibility; external reasoning-summary, adoption, and cache evidence is
-current for the configured Responses HTTP profile at revision `01a8466a`, while
-the exact ChatGPT/WebSocket scope remains unconfirmed. Durable user data is primarily
-session state under the user's Emacs directory plus optional project-local
-capability configuration.
+The current implementation is a capability-first runtime with stable
+application facades: `e-harness` for lifecycle and turn policy, `e-session` for
+durable session state, provider/MCP/base facades for external adapters, and
+presentation shells such as `e-chat`. Facades compose owner modules; they do
+not make one owner’s private state into a shared internal API. JSONL session
+persistence, board routing, provider adapters, context lifetime, tools,
+resources, hooks, and shell rendering are implemented. Feature 91's accepted
+Round 1--4 boundaries are reflected in the source tree; the Round 5 audit
+records the residual-topology and test-topology evidence for this map.
 
-The architectural direction is capability-first. The harness owns lifecycle and
-runtime records, capabilities own named behavior contracts, layers package those
-capabilities, backend adapters own provider details, and shells own Emacs
-interaction mechanics.
+The durable vocabulary is defined by
+[`runtime_concepts.org`](references/runtime_concepts.org). In this document,
+a harness owns agent lifecycle and runtime policy, a session owns durable
+conversation and session facts, a turn is one active model/tool interaction, a
+capability contributes behavior, a layer packages capabilities, a tool is
+model-facing, a resource method serves a URI operation, a context provider
+supplies model context, a hook observes a lifecycle boundary, an action is a
+shell-facing capability operation, a shell owns Emacs presentation, and a
+backend adapter owns provider protocol and transport details.
 
 ## Table Of Contents
 
@@ -41,693 +42,406 @@ interaction mechanics.
 
 ## Architecture Overview
 
-The normal runtime path starts in `e.el`. Package startup extends `load-path`,
-loads the pure core, loads defaults, loads presentation shells, and then runs
-startup hooks. Defaults register known layer specs and a lazy `:chat-default`
-harness factory. Shells register manifests against the generic shell registry.
-
-The harness is the stable application service. It creates sessions, tracks
-active turns, stores explicit enabled layer ids and intrinsic capabilities,
-derives fresh effective capabilities for each session root, builds
-provider-neutral context, dispatches a backend turn through the loop, executes
-tools, persists durable records, and publishes events for presentation shells.
+Package startup begins at `e.el`. It loads the provider-neutral core, registers
+default harness/layer specifications, and registers shell manifests. A normal
+turn flows from a presentation shell through a capability action or application
+service into the harness, session/context/turn owners, and a backend adapter.
+The result returns as durable session records and semantic activity projections;
+shells render those projections into buffers.
 
 ```mermaid
-flowchart LR
-    User["Emacs user"] --> Shells["Presentation shells"]
-    Shells --> Actions["Capability actions"]
-    Actions --> Harness["Core harness"]
-    Defaults["Default harness and layer specs"] --> Harness
-    Layers["Layer presets"] --> Caps["Capabilities"]
-    Harness --> Layers
-    Harness --> Context["Context strategy"]
-    Caps --> Context
-    Context --> Loop["Agent loop"]
-    Loop --> Backend["Backend adapter"]
-    Loop --> Tools["Tool registry"]
-    Caps --> Tools
-    Tools --> Effects["Buffers, files, processes, web, elisp"]
-    Harness --> Store["Session store"]
-    Store --> Shells
+flowchart TD
+    Entry["e.el startup"] --> Core["core contracts"]
+    Entry --> Defaults["defaults and layers"]
+    Entry --> Shells["presentation shells"]
+    Shells --> Facades["application facades"]
+    Facades --> H["e-harness + runtime owners"]
+    H --> S["e-session facade"]
+    S --> SA["aggregate"]
+    S --> SC["codec"]
+    S --> SCat["catalog/checkpoint policy"]
+    S --> SS["JSONL storage adapter"]
+    H --> Ctx["context and loop"]
+    H --> Tools["tools and resources"]
+    H --> Backends["backend adapters"]
+    Backends --> OpenAI["OpenAI owners"]
+    Backends --> MCP["MCP client/transports"]
+    Shells --> Chat["e-chat facade"]
+    Chat --> Presentation["surface/composer/transcript/activity/overview"]
 ```
 
-The major runtime parts are:
+The runtime dependency direction is intentionally one-way within each family:
 
-- Core substrate: `e-core`, harness, sessions, context, events, resources, hooks,
-  tools, compaction, stores, and startup hooks.
-- Capability system: behavior contracts that contribute instructions, context
-  providers, tools, resources, hooks, actions, and configuration options.
-- Layer system: immutable registered presets over capability sets, defaults, and
-  presentation shell manifests.
-- Defaults: lazy harness factories and built-in layer specs.
-- Backend adapters: OpenAI-like provider profiles, request mapping, auth, SSE
-  parsing, timeout, and cancellation mechanics.
-- Presentation shells: chat, global starter, canvas, and layer-selection command
-  surfaces over harness and capability APIs.
-- Test/development support: Eldev/ERT tests and live Emacs reload helpers.
+- Core contracts do not load presentation shells, default factories, or provider
+  adapters.
+- The `e-harness` facade composes state, capability, activity, turn-state,
+  context-runtime, and turn owners. Those owners do not call `e-harness`.
+- The `e-session` facade applies aggregate mutations and supplies explicit
+  values to codec, catalog, and storage. Codec/catalog/storage do not mutate the
+  aggregate or call the facade. Pure metadata, identity, provider-anchor, and
+  board-routing policy values are owned by small session policy modules; the
+  aggregate owns only loaded session state and semantic mutation/replay.
+- The `e-chat` facade composes the five presentation owners. Component owners
+  use only lower semantic presentation operations and do not call the facade.
+- OpenAI, MCP, and base facades compose protocol/transport or file/process
+  owners. Concrete transport state does not become policy state.
 
 ## Boundaries And Invariants
 
-Confirmed current boundaries:
+The following are current boundaries, not a future proposal:
 
-- `lisp/core/e-core.el` loads only core runtime modules. It does not load
-  presentation shells, default harness factories, concrete provider adapters, or
-  layer implementation modules.
-- `e.el` is the package entry point. It loads core, defaults, shell modules, and
-  runs startup hooks, so package startup is intentionally broader than `e-core`.
-- `AGENTS.md` is the local architecture policy source. This document is the
-  current-state navigation map and review artifact.
-- Sessions are the durable runtime source of truth for messages, activity
-  events, session events, turn options, branch summaries, compactions, metadata,
-  and current branch state.
-- Buffers, files, processes, browser sessions, and provider connections remain
-  external state. Capabilities expose them through resources and tools rather
-  than making the harness own them.
-
-Invariants that should keep holding:
-
-- Harness code must stay independent from buffers, windows, keymaps, rendering,
-  provider auth, and concrete side effects.
-- Presentation shells host commands, keymaps, rendering, and Emacs interaction;
-  they must not own provider routing, session semantics, tool execution, or
-  durable runtime state.
-- Capabilities define semantic behavior. Layers activate capability sets but
-  should not own behavior or durable state.
-- Provider request shapes, auth files, headers, wire APIs, retries, streaming,
-  timeouts, and cancellation handles belong in backend adapters.
-- Context strategies build provider-neutral model input. They should not know
-  about UI rendering or provider-specific payloads.
-- Side effects cross the core boundary through resource methods, model-facing
-  tools, backend adapters, or presentation commands.
-- Expected domain errors should be handled where the owner has enough context;
-  unexpected errors should surface to the caller or shell.
+- `lisp/core/e-core.el` remains loadable without defaults, provider adapters, or
+  presentation shells. `e.el` is the broader package composition root.
+- A session is the durable source of truth for messages, activity facts, session
+  metadata, turn options, branch summaries, compaction records, context
+  projections, and current branch state. Presentation buffers and provider
+  connections are rebuildable runtime state.
+- Each mutable cluster has one owner and an explicit lifetime. Process-local
+  state belongs to the harness/board; durable state belongs to a session;
+  request and transport state belongs to a Work/request or adapter; buffer-local
+  state belongs to a shell owner.
+- Harness code does not depend on buffers, windows, keymaps, rendering, or
+  provider auth. Shells do not implement session mutation, provider routing,
+  tool execution, or durable replay.
+- Capability and layer code exposes semantic contributions. A layer is a
+  stateless preset and is not a second owner of capability state.
+- Provider request shapes, auth, retries, streaming, timeout, cancellation, and
+  response diagnostics stay behind backend adapters. Context policy emits
+  provider-neutral values.
+- Session JSONL file names, record spellings, ordering, queued-write semantics,
+  atomicity, retry behavior, recovery policy, and error conditions are current
+  compatibility requirements. Feature 87's future SQLite/migration/cutover
+  work remains Planned and is not implemented here.
+- Expected domain errors are handled by the owner with enough context.
+  Unexpected errors surface to the application service or shell.
+- Core/session/harness/provider and record-shape changes require a full Emacs
+  restart. Extension seams such as capability/layer definitions may use the
+  repository reload path when explicitly requested; repository validation does
+  not reload the user's running Emacs.
 
 ## Repository Mapping
 
 - `AGENTS.md`: durable project direction, architecture constraints, interactive
-  development rules, and review questions.
-- `README.org`: compact current architecture overview for users and maintainers.
-- `docs/architecture.md`: this current-state architecture map.
-- `docs/arch-align.md`: completed capability-first alignment plan and remaining
-  direction reference.
-- `docs/core.md`, `docs/M2.md`, `docs/mvp.md`, and matching `*-qa.md` files:
-  historical implementation and QA maps for delivered slices.
-- `docs/feats/`, `docs/bugs/`, and `docs/research/`: tracked work packages,
-  bug investigations, and research notes using repo-local conventions.
-- `e.el`: package entry point, load-path setup, package startup, public smoke
-  command, and `e-dev-reload` autoload.
-- `lisp/core/`: provider-neutral runtime substrate. This area owns contracts and
-  orchestration, and must stay free of presentation, defaults, and provider auth.
-- `lisp/defaults/`: built-in layer specs and lazy default harness assembly.
-- `lisp/layers/`: capability and layer implementations for base OS tools, live
-  Emacs tools, harness support, agent context, evidence retrieval, web access,
-  text-editing guidance, chat-session actions, and layer selection.
-- `lisp/adapters/openai/`: OpenAI-like backend adapter and provider profiles.
-- `lisp/shells/`: presentation shell manifests, commands, keymaps, buffers, and
-  rendering.
-- `lisp/dev/`: live Emacs reload helpers for interactive development.
-- `test/`: ERT coverage for core contracts, adapters, layers, tools, sessions,
-  defaults, and shells.
-- `Eldev`: Eldev configuration over the built-in ERT test runner.
-
-Dependency direction should remain visible in this layout: shells/defaults/adapters
-depend on core contracts; core contracts do not depend on shells/defaults/adapters.
-Layer directories may contain concrete tools because those tools are owned by the
-capability vocabulary that activates them.
+  development policy, and design self-check questions.
+- `README.org`: short user-facing architecture overview.
+- `docs/architecture.md`: this current-state map.
+- `docs/references/runtime_concepts.org`: terminology authority.
+- `docs/references/dev_work.org`: work-package and evidence conventions.
+- `docs/feats/91-improve-modularization/`: Feature 91 plan and round audits.
+- `e.el`: package entry point, load paths, startup, version/status, and reload
+  autoload.
+- `lisp/core/`: provider-neutral runtime, session, board, context, tool,
+  resource, hook, MCP, and harness contracts.
+- `lisp/defaults/`: lazy default harness and layer assembly.
+- `lisp/layers/`: capability implementations and layer presets.
+- `lisp/adapters/openai/`: OpenAI facade and provider owners.
+- `lisp/shells/`: shell manifests, commands, keymaps, buffers, and rendering.
+- `lisp/dev/`: development, profiling, and batch-support code.
+- `test/`: direct owner, mechanism, facade, restart, and integration tests.
+- `e2e/`: isolated graphical and optional credentialed end-to-end scenarios.
+- `Eldev`: project test and compilation configuration.
 
 ## Components
 
-### Core Entry And Startup
+### Entry, contracts, capabilities, and layers
 
-`e.el` owns package-level startup. It adds source subdirectories to `load-path`,
-requires the pure core, loads defaults and shell modules, runs `e-startup-run`,
-defines `e-version`, exposes `e-status`, and autoloads `e-dev-reload`.
+`e.el` owns package startup; `e-startup.el` owns startup hooks. Core contract
+modules define capabilities, actions, resource methods, tools, hooks, Work
+handles, requests, context providers, and backend requests. `e-layers.el` owns
+registered layer specifications and lazy factory resolution. Defaults register
+lazy `:chat-default` and `:debug-default` factories.
 
-`lisp/core/e-startup.el` owns the two startup hooks: `e-startup-layer-hook` and
-`e-startup-shell-hook`. Defaults register layer and harness specs on the layer
-hook; shells register manifests and refresh shell state on the shell hook.
+`lisp/core/e-capabilities.el`, `e-actions.el`, `e-resources.el`, `e-tools.el`,
+`e-hooks.el`, `e-work.el`, `e-request.el`, `lisp/layers/e-layers.el`, and
+`lisp/defaults/` are the primary paths. These modules hold contracts and
+contribution policy; side effects are performed by the selected tool, resource
+method, backend adapter, or shell command.
 
-This split keeps the core loadable without provider or presentation code while
-still allowing the package entry point to assemble a normal user-facing runtime.
+### Harness and runtime-control family
 
-### Core Harness
+`lisp/core/e-harness.el` is the stable harness facade and composition authority.
+Its owner modules are:
 
-`lisp/core/e-harness.el` is the main application service. It owns harness
-construction, active layer state, active-turn tracking, capability-derived tool,
-hook, store, and resource registries, session creation, event subscription,
-runtime event emission, context preparation, compaction, prompt submission,
-follow-up, abort, wait, reset, model/effort session options, and public session
-projections.
-
-The harness depends on core contracts: sessions, context strategies, tools,
-resources, hooks, capability config, layers, backend, loop, and stores. It does
-not know which shell requested a turn or which provider backs the LLM. Its side
-effects are delegated to session stores, backend request handles, tool request
-handles, and resource/tool implementations.
-
-Important source paths:
-
-- `lisp/core/e-harness.el`
-- `lisp/core/e-harness-registry.el`
-- `lisp/defaults/e-default-harnesses.el`
-- `test/e-harness-test.el`
-- `test/e-harness-registry-test.el`
-- `test/e-defaults-test.el`
-
-### Sessions And Durable State
-
-`lisp/core/e-session.el` owns durable runtime records. It supports in-memory
-stores and persistent stores rooted at `(locate-user-emacs-file "e/sessions/")`.
-Persistent sessions append JSONL records under `sessions/<id>.jsonl` and maintain
-an `index.json` for recent-session metadata. The index can be loaded eagerly
-while individual session transcripts are loaded on demand by
-`e-session-load-session`.
-
-Session records include `session`, `message`, `activity-event`, `session-info`,
-`messages-cleared`, `branch-summary`, `compaction`, and `current-branch`. Session
-identity uses generated ids and per-entry identity/parent links. Display titles
-prefer explicit names, then first user-message summaries, then untitled
-timestamps.
-
-Durable state follows a stability gradient. Stable session identity and config
-persist as typed session metadata. Transcript, replay, compaction, provider
-anchor, and audit evidence persist as append-only records. Current-state
-references persist only the stable handle needed to rebuild live context.
-Capability-owned state persists under owner-keyed capability state. Active
-runtime state, presentation state, focus, point, overlays, read markers, timers,
-request handles, retry counters, and rebuildable caches stay in the harness,
-shell, buffer, or request that owns them.
-The OpenAI Responses WebSocket adapter keeps only the latest immediate response
-availability and the general configurable idle policy as connection-local state;
-those values are rebuilt per socket, cleared by the owning close path, and never
-serialized into session JSONL.  Historical response graphs, eviction history,
-older-anchor diagnostics, and the Codex-specific idle override are not part of
-the current path.
-
-`e-session` owns the durable metadata schema and typed write paths for session
-config, current-state references, and capability state. Generic metadata writes
-remain a compatibility path and must reject unowned, presentation-only, or
-volatile state. Shells and layers can own presentation or live context, but they
-should persist only stable references or explicit user intent.
-
-Board-session association state is a bounded board id and principal plus an
-optional `owner`/`participant` association role. Chat service establishes the
-role for new associations and owns user-facing root classification; generic
-session root lineage remains a separate concern.  Role-absent legacy records
-use only the localized chat-service compatibility inference. At persistence
-ingress, `e-session` treats nested association-key presence as authoritative,
-normalizes the complete bounded shape, and maps malformed presence to a
-non-root internal marker without rewriting durable input; flat identity mirrors
-reconstruct legacy state only when the nested key is absent. The exact
-historical three-key triple-null nested/id/principal projection remains no
-association; null nested state with a non-null or omitted mirror is malformed.
-The index adapter
-preserves physical JSON null only until entry normalization so an empty nested
-object cannot alias the triple-null compatibility case; its parser sentinel is
-removed from all ordinary entry values before session construction.  JSONL and
-checkpoint parsing retain their ordinary semantics. Presentation surfaces that
-select chats consume the chat-service root catalog rather than reconstructing
-ownership.
-
-New board-backed chat associations also persist one complete routing policy in
-the existing board-session-state record: the resolved participant id, pickup
-selector, observer selector, default tags, and default target, including
-explicit nil values. `e-session` owns schema, detachment, replay, index, and
-checkpoint validation; its tagged routing-attribute codec preserves symbol
-versus string meaning through JSONL, index, checkpoint, and Node-writer
-rewrites. Admission is an iterative, cycle-safe JSON-shape check with the
-policy's UTF-8 and structural budgets applied before encoding or mutation;
-the UTF-8 budget follows the existing board metadata/attribute scale without
-coupling session code to `e-board`. `e-chat-service` prepares the policy and
-resolves `:self`; `e-board-registry` allocates participant ids. Restoration
-validates the policy before attachment, while a participant-role record
-without a complete policy fails closed rather than borrowing the `main` route.
-
-The current restored-participant candidate also keeps admission and selected
-settlement at their owning boundaries.  Session admission preflights the
-complete policy and the exact next controller command shape before exposing a
-binding; direct and queued stores publish the prepared pair only after
-validation, while a controller store retains one batch command.  Cleanup
-discards only retained, unacknowledged work owned by the failed admission and
-does not imply that acknowledged controller commands can be retracted.
-`e-chat-service` derives a process-local selected-owner fact from the binding
-and event subject, and `e-chat` renders sibling terminal rows without letting
-them settle selected progress, status, or composer state.  This is a current
-accepted boundary at implementation revision `c76b5d238601a6cac41efc898e56158428e62959`,
-independently reviewed with zero actionable findings in Review 003 (`7a8a2e34`).
-It is not a second settlement owner or a board-wide completion aggregator.
-
-The store is append-only evidence plus derived mutable projections. Future
-semantic state artifacts such as canvas revisions should not be hidden inside a
-presentation shell; they should be session records or separate resources with
-session-linked provenance.
-
-### Capabilities, Resources, Hooks, And Tools
-
-`lisp/core/e-capabilities.el` defines behavior contracts. A capability can
-contribute instructions, context providers, model-facing tools, resource methods,
-read-only `e://` resources, lifecycle hooks, shell-facing actions, configuration
-options, and capability-local defaults.
-
-Shell-facing actions are semantic operations for presentation shells and host
-Elisp. `e-actions-call` resolves an active capability action from the current
-harness/session context, validates descriptor-required arguments, injects
-harness/session state, and calls the action. Agents use it from `run_elisp`;
-actions do not get a separate generic model-facing tool.
-
-Resource operations are generic contracts over URI schemes. `e-resources`
-registers methods for operations such as `read`, `write`, and `edit`; the
-harness exposes a model-facing operation tool only when active capabilities
-provide at least one method for that operation. `e-store` exposes read-only
-capability resources under `e://<capability>/<path>`.
-
-`e-tools` owns backend-neutral function definitions, async tool execution,
-request handles, structured tool results, and resource-usage metadata. Tool
-lifecycle hooks are registered by capabilities through `e-hooks`, then invoked
-by the harness around tool execution. Unexpected hook errors fail the turn rather
-than silently removing protection.
-
-Important source paths:
-
-- `lisp/core/e-capabilities.el`
-- `lisp/core/e-actions.el`
-- `lisp/core/e-resources.el`
-- `lisp/core/e-store.el`
-- `lisp/core/e-tools.el`
-- `lisp/core/e-hooks.el`
-- `lisp/core/e-operations.el`
-- `test/e-capabilities-test.el`
-- `test/e-tools-test.el`
-- `test/e-resources-test.el`
-
-### Layers And Defaults
-
-Layers are stateless presets over capabilities. `lisp/layers/e-layers.el` owns
-known layer specs and factory resolution. `lisp/defaults/e-default-layers.el`
-registers built-in specs for `e`, `e-dev`, `agents-std-context`, `harness-base`,
-`os-base`, `emacs-base`, `web`, `text-editing`, `org-canvas`, and
-`project-local`. Each registered spec is a lazy `(:id :name :summary :feature
-:factory)` record; the layer's concrete feature module is required only when the
-layer is actually created.
-
-`lisp/defaults/e-default-harnesses.el` registers the lazy `:chat-default` harness
-factory. The default chat harness uses the Anthropic Messages provider path,
-persistent sessions, intrinsic `chat-session` capabilities, and default layer
-ids from `e-default-chat-layer-ids`. Runtime layer enable/disable operations
-mutate only the harness `enabled-layer-ids` list; effective layers and
-capabilities are rebuilt from registered layer specs using the session project
-root. The default harness sync path records explicit ids back to
-`e-default-chat-layer-ids` and rebuilds layer-owned presentation shells.
-
-#### Default Chat Layer Set
-
-`e-default-chat-layer-ids` is the source-of-truth preset attached to the default
-chat harness. It enables these registered layers in order:
-
-```
-agents-std-context  harness-base  e  os-base  emacs-base
-web  text-editing  org-canvas  project-local
-```
-
-The default chat harness additionally installs non-registered internal
-`chat-session` capabilities in its intrinsic capability set. They are always
-recreated by the factory/sync path and are excluded from the recorded
-`e-default-chat-layer-ids`.
-
-#### Registered Layers And Their Capabilities
-
-| Layer (`:id`) | Name | In default chat set | Capabilities defined (`:id`) |
-| --- | --- | --- | --- |
-| `e` | e | yes | `e-runtime-context`, `layer-selection`, `context-inspection`, `session-compaction` |
-| `e-dev` | e Dev | no | `context-inspection` |
-| `agents-std-context` | Agents Std Context | yes | `agents-std-context` |
-| `harness-base` | Harness Base | yes | `harness-base-context`, `session-tmp-resources`, `session-resources`, `tool-output-truncation` |
-| `os-base` | OS Base | yes | `base-guidance`, `file-handling`, `shell-process`, `output-style` |
-| `emacs-base` | Emacs Base | yes | `emacs-awareness`, `buffer-read`, `selection-context`, `buffer-edit`, `elisp-eval` |
-| `web` | Web | yes | `web` (Web Access) |
-| `text-editing` | Text Editing | yes | `annotations`, plus `annotation-tools` when the annotation backend is available |
-| `org-canvas` | Org Canvas | yes | `org-canvas` |
-| `project-local` | Project Local | yes | aggregate: discovered project `.e/layers/` capabilities plus a project guidance capability (varies per repository) |
-| `chat-session` | Chat Session | intrinsic only | `chat-session` |
-
-The `e` layer is where runtime self-management lives: layer selection, context
-inspection, runtime context, and the `session-compaction` action. `harness-base`
-supplies harness-owned support (the `tmp://` resources, read-only `session://`
-session resources, and tool-output truncation guards) and is not optional
-user-facing behavior. `os-base` and
-`emacs-base` are the execution surfaces (workspace files/shell and live Emacs
-buffers/elisp). `project-local` is an aggregate layer whose capabilities are
-discovered from the project root, so its concrete capability set is
-repository-dependent rather than fixed.
-
-#### Capabilities In Support And Self-Management Layers
-
-The main support/execution layers are defined in
-`lisp/layers/harness/e-harness-base.el`, `lisp/layers/base/e-base.el`,
-`lisp/layers/emacs/e-emacs-base.el`, and `lisp/layers/e-layer.el`. What each of
-their capabilities actually contributes:
-
-| Layer | Capability (`:id`) | Contributes |
+| Owner | Responsibility and state | Lifetime/side effects |
 | --- | --- | --- |
-| `harness-base` | `harness-base-context` | Instructions only (priority 240): the reasoning-message guidance. No tools/resources. |
-| `harness-base` | `session-tmp-resources` | Resource methods for the `tmp://` scheme (session-scoped read/write/edit of temporary text resources). |
-| `harness-base` | `session-resources` | Read-only resource methods for the `session://` scheme, with glob-first discovery across the built-in `e` session store and configured opt-in engines. |
-| `harness-base` | `tool-output-truncation` | A `:post-tool-call` hook (`50-tool-output-truncation`) that replaces oversized tool output with a bounded preview plus metadata. |
-| `os-base` | `base-guidance` | Instructions only (priority 230): use workspace file/shell tools; never traverse outside the project. No tools/resources. |
-| `os-base` | `file-handling` | `resource_sync_status` tool + read/write/edit `file://` resource methods, scoped to workspace roots. |
-| `os-base` | `shell-process` | The `bash` tool, rooted at the workspace directory. |
-| `os-base` | `output-style` | Instructions only (priority 260): the active output style's prose, configured via `e-capability-config` (`:style`). Inert when no style is selected. No tools/resources. |
-| `emacs-base` | `emacs-awareness` | Instructions (priority 300) + a context provider injecting visible-buffer context. No tools. |
-| `emacs-base` | `buffer-read` | `list_buffers` tool + read-only `buffer://` resource method. |
-| `emacs-base` | `selection-context` | Nothing yet — placeholder capability reserved for future selection context. |
-| `emacs-base` | `buffer-edit` | `save_buffer` tool + writable `buffer://` resource method (live buffer mutation). |
-| `emacs-base` | `elisp-eval` | The `run_elisp` tool for explicit Emacs Lisp evaluation, with context-bound `e-tools-call` and `e-actions-call` guidance. |
-| `e` | `session-compaction` | Action `:compact` for active-turn context compaction. |
+| `e-harness-state.el` | Harness identity and explicit substates | Process-local harness lifetime; no external I/O |
+| `e-harness-capabilities.el` | Effective layers, capabilities, tools, resources, hooks, prompts, and workspace derivation | Rebuilt per harness/session projection; loads layer factories |
+| `e-harness-activity.el` | Activity classification, bounded projection, subscribers, durable activity append | Harness lifetime; appends through the session facade |
+| `e-harness-turn-state.el` | Active-turn identity, prompt queue, steering/inbox and unsettled projections | Process-local turn/session lifetime; emits semantic activity |
+| `e-harness-context-runtime.el` | Context providers, generational lifetime, anchors, compaction policy, prompt options | Turn/context lifetime; calls context, loop, and Work contracts |
+| `e-harness-turn.el` | Submit, settle, retry, queue, attach, abort, reset, compact, and wait composition | Turn lifetime; owns provider/tool/request side effects at the application boundary |
 
-The contribution shape is consistent across the three layers: `*-context` /
-`*-guidance` / `*-awareness` capabilities carry only instructions or a read-only
-context provider; the remaining capabilities each own one cohesive
-tool-and/or-resource surface (file I/O, shell, buffer I/O, elisp). `harness-base`
-is the only one of the three that contributes a lifecycle hook, and
-`selection-context` is an intentional empty placeholder.
+No owner calls the facade or mutates a sibling's private representation. Board
+attachment uses the explicit attached-turn port implemented by `e-harness-turn`;
+`e-board-runtime` consumes only that port's authorization, submission,
+steering, queue, abort, activity-observation, and final-output semantics.
 
-The layer-selection capability and shell provide operator commands for enabling,
-disabling, and toggling registered layers without making the chat shell own
-layer state. Selection list entries report both `:enabled` (explicitly present
-in `enabled-layer-ids`) and `:active` (present in the dependency-expanded
-effective layer ids). Disabling an enabled layer that remains required removes
-only the explicit id; it stays active through dependency closure.
+### Session and durable storage family
 
-### Context And Compaction
+`lisp/core/e-session.el` is the stable session application facade. The physical
+and semantic owners are:
 
-`lisp/core/e-context.el` owns provider-neutral context assembly. The current
-strategy is `transcript-stack`, which builds messages from compacted session
-state and prepends capability-provided context/instructions by priority.
+| Owner | Responsibility and state | Lifetime/side effects |
+| --- | --- | --- |
+| `e-session-aggregate.el` | Loaded session/domain aggregate, identity/path references and derived fields, board journal, semantic mutations and replay application | Session lifetime; no file, queue, controller, or storage calls |
+| `e-session-metadata.el` | Durable metadata schema, classification, validation, and legacy normalization | Stateless value policy; no aggregate or persistence state |
+| `e-session-identity.el` | Session/entry IDs, monotonic ULIDs, and legacy entry-ID backfill | Process-local identity generator; no aggregate mutation |
+| `e-session-provider-anchor.el` | Provider-anchor compatibility over explicit path and fingerprint values | Stateless value policy; no aggregate or provider state |
+| `e-session-board-policy.el` | Declarative routing-policy validation, copying, normalization, and size bounds | Stateless value policy; aggregate retains association/journal mutation |
+| `e-session-codec.el` | Pure JSONL value/record encode, decode, normalization, and durable schema values | Stateless; no aggregate/store mutation |
+| `e-session-catalog.el` | Bounded index/checkpoint projections and recovery policy over explicit values | Stateless/pure projection; no file or storage calls |
+| `e-session-storage.el` | JSONL/index/checkpoint files, queue/controller/outbox, timers, atomic writes, retries, and adapter-owned state | Session-store lifetime; physical I/O and Node writer side effects |
 
-`lisp/core/e-compaction.el` prepares compaction boundaries and summary prompts.
-`e-harness-compact-session-start` runs interactive model-backed compaction
-through a Work-backed lifecycle; `e-harness-compact-session-batch` is reserved
-for tests and batch code. `e-chat-session` exposes compaction as a capability
-action and `e-chat` hosts it as a shell command.
+The facade coordinates semantic mutations and storage commits with explicit
+values. Aggregate replay applies decoded data; codec replay mapping itself is
+pure. The policy owners return detached values and do not own aggregate
+representation. The storage adapter sees an opaque owner key and semantic
+records, not aggregate internals. Durable session and board-association
+formats retain their existing ordering and restart behavior.
 
-Context providers are read-only. They may inspect session state, active
-attachments, visible buffers, AGENTS/skill files, or resources, but they should
-not perform provider-specific request shaping or concrete side effects.
+### Boards and retained core state machines
 
-#### Feature 88 context lifetime
+`lisp/core/e-board.el` is a cohesive process-local board state machine. One board
+owns event sequence, participant admission, routing, pickup, publication,
+subscriptions, processing records, activity, terminal classification, and
+aggregation because those transitions share atomic admission and settlement
+ordering. Splitting any one into a generic helper would either duplicate the
+sequence/admission state or break the transaction boundary.
 
-Feature 88 keeps the semantic body provider-neutral.  The lifetime core builds a
-consumer-bound ephemeral frame and its late source presentation; `e-session`
-owns the durable semantic path; and `e-harness` binds the still-live frame,
-prepares one curation, appends it before the next dispatch, and then consumes the
-frame.  New `context-promotion` records are version 3 and project to literal
-portable `(:role system :content VALUE)` messages.  Existing version-2 records
-remain read-only compatible.  See
-[`F88A4-CURATE`](feats/88-generational-context-ephemeral-frames/addendum4.org)
-and [`F88A3-SEM`](feats/88-generational-context-ephemeral-frames/addendum3.org).
+`e-board-runtime.el` is the board attachment adapter. It owns attachment
+admission/reconciliation, endpoint generations, producer/activity mailboxes,
+rebind/move/detach transitions, and delivery settlement because those values
+must change atomically with board admission and attachment settlement. Board
+routing/publication remains in `e-board`; harness execution remains behind the
+attached-turn port. `e-board-registry.el`, `e-board-orchestration.el`, and
+`e-board-orchestration-actions.el` provide narrower registry/application seams.
+`e-board-message-envelope` is the board-owned detached journal projection, and
+`e-chat-service-reconcile-board-continuation` is the chat-service application
+operation that replays terminal board continuations; neither exposes mutable
+board structs to unrelated consumers.
 
-The loop keeps ordinary tool lifecycle and the one matching immediate causal
-follow-up.  The OpenAI adapter owns only the `context-curate` wire carrier,
-opaque immediate acknowledgement, mandatory effective reasoning effort/summary,
-response availability, and provider cache evidence; labels, estimates,
-provenance, and frame identities do not cross the wire.  The strict curation
-carrier requires an exhaustive `keep`/`summaries`/`drop` partition, while
-returned reasoning summary text remains diagnostic only.  Canonical later
-requests contain durable session projection, selected curation messages, and
-the new frontier.  The external cache capability is current for the configured
-compatible Responses HTTP profile, independently of the still-unconfirmed
-ChatGPT/WebSocket-specific scope and deterministic semantic acceptance.
+`e-context-estimate.el` owns the configured bytes/token ratio and exact
+UTF-8/`prin1` value estimator used by both context-budget and
+context-lifetime. `e-context-lifetime.el` is a provider-neutral
+generation/frame/curation state machine. Its frame identity, source provenance,
+curation validation, size bounds, promotion/erasure records, and consumption
+transition form one atomic lifetime contract. `e-loop.el` owns one backend/tool
+turn stream and its immediate follow-up ordering. `e-tools.el` owns
+model-facing tool definitions, dispatch, request handles, and structured
+results. `e-work.el` owns the common async/cheap/render lifecycle. These roots
+are retained because no independent consumer-shaped boundary can separate
+their atomic state without creating a second lifecycle owner; the pure estimate
+contract is separate because it owns no frame state.
 
-A reserved-only curation response gets an audit-only session activity identity
-after pure preflight, while the E2E evidence boundary derives its identity from
-the captured material request rather than profile declarations.
+### Provider and external adapter families
 
-### Agent Loop And Backend Adapter
+#### OpenAI
 
-`lisp/core/e-loop.el` owns one turn. It receives backend-neutral messages, tools,
-options, and callbacks; streams assistant deltas and tool calls; executes tools;
-feeds tool results back into the message list; re-queries the backend when
-function calls require follow-up; and emits lifecycle events to the harness.
+`lisp/adapters/openai/e-openai.el` remains the public OpenAI facade. It composes
+profile/auth policy (`e-openai-profile`), separate Responses and Chat
+Completions mappings (`e-openai-responses`, `e-openai-chat-completions`), HTTP
+and WebSocket lifecycle (`e-openai-http`, `e-openai-websocket`), bounded
+response decoding (`e-openai-decoder`), diagnostics (`e-openai-diagnostics`),
+and provider compaction (`e-openai-compaction`). Protocol variation stays in
+its owner; provider identity, auth, request shape, retries, cancellation,
+stream ordering, and diagnostics remain unchanged.
 
-`lisp/core/e-backend.el` defines synchronous and asynchronous backend contracts
-plus cancellable request handles. The OpenAI adapter in `lisp/adapters/openai/`
-implements provider profiles, model/reasoning defaults, Codex auth-file loading,
-token-auth profiles, Responses and Chat Completions request mapping, SSE parsing,
-HTTP timeouts, raw diagnostics, and cancellable `url-retrieve` requests. Its
-Responses WebSocket path additionally owns the latest same-socket response ID
-needed for one immediate causal tool follow-up, bounded canonical retry on an
-unavailable response, and the general configurable idle policy. Historical
-response graphs, ledgers, eviction history, older-anchor diagnostics, and a
-Codex-specific idle override are removed. The `context-curate` wire carrier is
-the only active reserved carrier; its schema and revision identity come from
-core, while response IDs, request bodies, acknowledgements, and tool results
-remain adapter-private. Injected request functions remain queued-only
-cancellable test seams.
+#### MCP
 
-Adding a provider should be an adapter change. It should not require changing
-the chat shell, session store, or harness lifecycle policy.
+`e-mcp.el` is the public MCP composition root. `e-mcp-protocol.el` owns stable
+server/tool values and validation; `e-mcp-client.el` owns remembered servers,
+catalog cache, list/call/refresh semantics, and bounded discovery;
+`e-mcp-stdio.el` owns the helper process and framed transport;
+`e-mcp-http.el` owns streamable HTTP sessions and request lifecycle;
+`e-mcp-transport.el` owns the shared in-flight budget; and
+`e-mcp-capability.el` owns capability/tool/resource/context composition. Server
+transport classification is a protocol-value operation, not a concrete HTTP
+owner dependency. Client composition selects the appropriate supported
+transport; transport state does not leak into capability policy.
 
-### Execution Capabilities
+#### Base capability
 
-The base OS capabilities live under `lisp/layers/base/`. `os-base` packages
-`base-guidance`, `file-handling`, `shell-process`, and `output-style`.
-`file://` read/write/edit methods enforce the resource operation contracts.
-The `bash` tool runs process commands and streams output through a file-backed
-collector so large output can be represented by bounded previews plus `tmp://`
-resources when harness support is active.
+`lisp/layers/base/e-base-tools.el` composes two unequal owners:
+`e-base-tools-file.el` owns workspace path/security, file resources, coherence,
+glob/search, and file schemas; `e-base-tools-bash.el` owns shell process
+lifecycle, streaming collection, cancellation, progress, and bounded output.
+Bash validation/truncation is local to Bash; the file owner is not a helper
+module for process behavior. Their distinct state lifetimes and side effects
+remain separate behind the stable base-tools facade.
 
-The Emacs capabilities live under `lisp/layers/emacs/`. `emacs-base` packages
-awareness, buffer read/edit resources, elisp evaluation, and selection context.
-`buffer://` methods mutate live buffers; `save_buffer` is the explicit action
-that persists file-backed buffer contents.
+### Presentation family
 
-Harness support capabilities live under `lisp/layers/harness/`. They own
-session-scoped `tmp://` resources, read-only `session://` session projections,
-and tool-output truncation hooks.
+`lisp/shells/chat/e-chat.el` is the public chat shell/application facade. It
+owns chat mode/keymaps, commands, composition, buffer-local harness/session
+attachment, and shell-level event dispatch. The five component owners are:
 
-Optional capability layers include:
+| Owner | Responsibility and state | Lifetime/side effects |
+| --- | --- | --- |
+| `e-chat-surface.el` | Window membership, activation, fitting, splits, and surface-local state | Chat workspace/buffer lifetime; window/frame operations |
+| `e-chat-composer.el` | Editing, submission intent, inline completion, context references, composer-local state | Composer buffer lifetime; calls chat-session/service APIs |
+| `e-chat-transcript.el` | Entries, structured blocks, navigation, replay, markers, and transcript projection | Transcript buffer lifetime; owns block/bounds/marker mutation |
+| `e-chat-activity.el` | Progress, reasoning/tool/action/transient activity, redraw scheduling, and activity-local state | Buffer/turn lifetime; consumes semantic transcript projection |
+| `e-chat-overview.el` | Session rows, previews, read markers, unread cache, and overview commands | Overview/workspace lifetime; returns selection intent to the facade |
 
-- `agents-std-context`: AGENTS.md and configured filesystem skill context plus
-  skill resources.
-- `e`: runtime self-management commands such as layer selection and context
-  inspection.
-- `web`: `web_search`, `web_fetch`, `web_browser`, and web reference resources.
-- `text-editing`: progressive guidance resources for Simply Annotate workflows.
-- `evidence-retrieval`: read-only tools for durable session messages, activity
-  events, and individual tool results.
+The component owners expose only operations used by the facade, embedding shells,
+or a lower presentation owner. They do not call `e-chat` or foreign private
+symbols. `e-chat-session-attachment-live-buffer` is the semantic attachment
+projection used by canvas shells; `e-chat-service-drain-binding` and
+`e-chat-service-drain-subscription` provide deterministic bounded pumping for
+synchronous fixtures without exposing observer cursors.
 
-### Presentation Shells
-
-`lisp/shells/e-shells.el` defines the shell manifest registry. A manifest names
-a shell id, metadata, required/optional capabilities, commands, and keymaps. The
-registry is intentionally narrow: it is discovery, not a shell lifecycle or
-dependency-resolution framework.
-
-Current shells:
-
-- `e-chat`: session chat buffer, composer, rendering, block navigation, tool
-  output views, context preview, compaction command, overview/sidebar, resume,
-  switch, rename, model/effort commands, abort/reset, and source-reference
-  capture. It requires `chat-session` and talks to the harness through public
-  APIs and capability actions. Board projections include a process-local
-  selected-participant fact derived by `e-chat-service` from the attached
-  participant and each event subject. The shell renders observed sibling
-  messages and activity, but only selected-owned terminal output/activity
-  settles progress, status, or the composer; submit/steer remains derived from
-  the selected attachment's active state.
-- `e-chat-starter`: global one-shot contextual prompt shell over a chat session.
-- `e-canvas`: commands that create or attach live buffer/file context as
-  `chat-session` attachments, including a primary canvas attachment.
-- `e-layers-shell`: operator commands for known layer selection.
-
-Shell instances are implementation details. `e-chat` uses buffer-local state,
-markers, overlays, timers, and subscriptions to render a session, but those are
-not generic runtime state and should not become semantic owners.
-
-### Live Development
-
-`lisp/dev/e-dev.el` owns live reload support for this repository. Repo policy
-requires runtime-affecting changes to be reloaded into the user's running Emacs
-with `e-dev-reload` when available, then inspected with focused live probes.
-
-This reload helper is developer support rather than runtime policy. It is loaded
-through `e.el` and autoloaded for interactive use, not through the pure core.
+Other shells are `e-chat-starter` for one-shot prompts, `e-canvas` for context
+attachments and canvas selection, `e-layers-shell` for layer selection, and
+Org Canvas capabilities under `lisp/layers/org-canvas/`. Org Canvas owns its
+canvas references and commands; it does not initialize chat-private registries,
+progress, blocks, focus, or status state.
+The core `e-chat-service` owns board-backed chat bindings and subscriptions and
+returns detached message/activity/state projections to shells. Its bounded
+drains and terminal-continuation reconciliation are application operations;
+observer cursors, board envelopes, and binding registries remain private to
+their semantic owners.
 
 ## Data And Control Flow
 
-Normal chat turn:
+A normal turn has this shape:
 
 ```mermaid
 sequenceDiagram
-    participant User as Emacs user
-    participant Chat as Shell
-    participant Cap as chat-session
-    participant H as Harness
-    participant S as Session store
-    participant C as Context strategy
-    participant L as Loop
-    participant B as Backend adapter
-    participant T as Tool registry
-
-    User->>Chat: submit prompt
-    Chat->>Cap: submit action
-    Cap->>H: prompt async
-    H->>S: append user message
-    H->>C: build context
-    C->>S: read durable records
-    C-->>H: messages and options
-    H->>L: start turn
-    L->>B: stream request
-    B-->>L: deltas and tool calls
-    L->>T: execute tool call
+    participant U as Emacs user
+    participant P as shell/facade
+    participant H as harness owners
+    participant S as e-session facade
+    participant C as context runtime
+    participant L as e-loop
+    participant B as backend adapter
+    participant T as tools
+    U->>P: command or capability action
+    P->>H: semantic submit
+    H->>S: append semantic session mutation
+    H->>C: prepare provider-neutral context
+    C->>S: read durable projection
+    H->>L: start one turn
+    L->>B: backend-neutral request
+    B-->>L: stream items
+    L->>T: execute model-facing tool
     T-->>L: structured result
-    L-->>H: events and messages
-    H->>S: append durable records
-    H-->>Chat: render events/projections
+    L-->>H: activity and message events
+    H->>S: durable append/commit
+    H-->>P: semantic projection
+    P->>P: render buffer/window state
 ```
 
-Abort flow cancels what the harness currently owns. A queued turn cancels its
-timer; an active backend/tool request is asked to cancel through its request
-handle; an open tool call receives a durable cancelled tool result; the turn
-emits `turn-cancelled`.
+Queued input and steering remain ordered by `e-harness-turn-state` and
+`e-harness-turn`; board-attached input first crosses board admission and the
+attached-turn port, so board publication and selected settlement are not
+reimplemented in the shell. Session restart replays JSONL through codec,
+aggregate, catalog, and storage composition, rebuilding process-local board,
+turn, context, transport, and presentation state.
 
-Layer selection flow stays outside presentation semantics. A shell command calls
-the `layer-selection` capability action, which updates explicit enabled layer
-ids on the target harness. The default harness sync path records changes back to
-`e-default-chat-layer-ids` for the default chat harness and separately rebuilds
-layer-owned shell registrations. Model-facing tools, resources, prompts, hooks,
-stores, and context use fresh effective capabilities derived from the session
-project root, not from shell sync state.
-
-Live context attachment flow is durable current-state references, not transcript
-history. Canvas or file/buffer attachments are stored under the `chat-session`
-owner in session context references, and the `chat-session` context provider
-reads current live content on each turn. Unsaved live buffer contents win over
-disk reads.
-
-Tool output protection flow runs through hooks. Tool results are normalized into
-one structured result shape, post-tool hooks can replace large content with
-bounded previews and `tmp://` references, and durable activity payloads are
-compacted before being emitted and persisted.
+Context attachment is durable user intent plus a live projection: canvas and
+buffer attachments are stored as session metadata references, and the
+chat-session context provider reads current live content on the next turn.
+Unsaved live-buffer text wins over disk content. Tool output protection runs in
+hooks and may create bounded `tmp://` resources; the resource method owns that
+file/resource side effect.
 
 ## Public Surfaces
 
-The main public surfaces are:
+Stable public surfaces include:
 
-- Package entry: `(require 'e)`, `e-version`, `e-status`, and `e-dev-reload`.
-- Harness API: `e-harness-create`, session creation/list/projection accessors,
-  prompt/follow-up/abort/wait/reset/compact operations, model/effort session
-  options, layer activation, and event subscription.
-- Harness registry: named live harness instances and lazy factories through
-  `e-harness-registry-*`.
-- Session API: session creation, append/load/list, metadata, turn options,
-  branch summaries, compactions, current branch, and display titles.
-- Capability API: `e-capability-create`, contribution accessors, contribution
-  registration helpers, actions, config options, and skill construction helpers.
-- Resource/tool API: `e-operation-*`, `e-resources-*`, `e-store-*`,
-  `e-tools-*`, and `e-session-tmp-*`.
-- Layer API: layer specs, layer creation from registered specs, default layer
-  registration, id-based harness enable/disable/effective queries, and
-  layer-selection actions.
-- Backend API: `e-backend-*`, `e-openai-backend-create`,
-  `e-openai-create-harness`, and Codex compatibility wrappers.
-- Shell API: `e-shell-*`, `e-chat-shell`, `e-chat-starter-shell`,
-  `e-canvas-shell`, and `e-layers-shell`.
-- Interactive commands: chat session creation/resume/switch/overview/sidebar,
-  prompt submission, abort/reset, rename, model/effort, context preview,
-  compaction, response/block/tool-output navigation, canvas attachment, global
-  starter, and layer enable/disable/toggle.
-
-Exhaustive function inventories should stay in source and tests. Architecture
-depends on the ownership of these surfaces, not on duplicating every command name
-here.
+- `(require 'e)`, `e-version`, `e-status`, and the explicit development reload
+  command.
+- `e-harness-*` creation, session, prompt, follow-up, queue, steering, abort,
+  wait, reset, compaction, activity, layer, capability, and attached-turn-port
+  operations.
+- `e-session-*` creation, load/list, semantic mutations, metadata, branch,
+  compaction, current-branch, catalog, and storage-facing application services.
+- `e-capability-*`, `e-actions-*`, `e-resources-*`, `e-tools-*`, `e-work-*`,
+  `e-request-*`, `e-hooks-*`, and `e-session-tmp-*` contracts.
+- `e-backend-*` plus the OpenAI, MCP, and base-tools facades.
+- Shell manifests and public shell commands for chat, starter, canvas, layer
+  selection, session navigation, context preview, compaction, and block/tool
+  output navigation.
+- Narrow semantic projections used by downstream shells: effective default chat
+  harness spec, live attachment buffer, bounded chat-service event pumping,
+  board journal envelopes, bounded continuation reconciliation, and the
+  attached-turn port. Internal structs, registries, markers, queues,
+  provider sessions, and physical paths are not public contracts.
 
 ## Extension Points
 
-Established extension points are backend adapters, OpenAI-like provider profiles,
-context strategies, context providers, capabilities, layer presets, resource
-operation methods, `e://` resources, lifecycle hooks, model-facing tools,
-session stores, startup hooks, and presentation shell manifests.
+Established extension points have real consumers: backend adapters, OpenAI
+provider profiles, context strategies/providers, capabilities, layer presets,
+resource methods, `e://` resources, hooks, model-facing tools, session stores,
+startup hooks, shell manifests, and the attached-turn board port.
 
-Inferred but not yet mature extension points are richer context-state strategies,
-permission/audit policy, harness self-modification tools, and generic shell
-instance lifecycle. They should not receive broad abstractions until a second
-real implementation gives the contract stable semantics.
+Future or unconfirmed directions remain local and explicitly labeled: SQLite
+storage/migrations/cutover (Feature 87 Planned), first-class permission/audit
+policy, richer versioned canvas-state artifacts, harness self-modification
+tools, and a generic shell lifecycle. No broad abstraction is added until a
+second implementation gives one of those directions a stable semantic contract.
 
 ## Testing And Verification
 
-The project uses Eldev with Emacs' built-in ERT runner. The current tree has
-focused tests for package exposure, events, sessions, backend contracts, OpenAI
-mapping, context construction, compaction, capabilities, capability config,
-resources, stores, hooks, tools, base/Emacs/web/evidence capabilities, layers,
-defaults, harness behavior, registry behavior, loop behavior, chat-session
-actions, chat presentation, starter/canvas shells, and development reload.
+The project uses Eldev and built-in ERT. Direct owner suites cover session
+policy/aggregate/codec/catalog/storage, harness runtime owners, chat presentation
+owners, OpenAI owners, MCP transports/client/capability, and base file/bash
+owners. Public composition is split by semantic scenario families (request,
+continuation, stream, HTTP, WebSocket, and compaction; harness capability,
+resource, turn, tool, context, and compaction; chat surface, composer,
+transcript, activity, settlement, and overview). Small facade smoke roots and
+larger integration suites cover composition, public commands, restart/replay,
+board attachment, and graphical buffer behavior. Private mechanism assertions
+live in owner mechanism suites.
 
-Core behavior is testable with fake backends, injected transports, in-memory
-stores, temporary persistent stores, fake tools, and capability fixtures. Adapter
-tests cover provider request/stream mapping, concrete side effects, latest
-response availability, canonical retry cleanup, the general idle policy, and
-bounded diagnostics. The provider-continuation integration test composes the
-real harness, context, tool, anchor, renderer, and fake socket boundaries;
-credentialed Codex E2E remains an explicit fast gate for private endpoint and
-cache behavior; the configured Responses HTTP selectors currently provide
-identity-complete reasoning-summary, adoption, and warm-cache evidence at
-revision `01a8466a`, while the strict ChatGPT/WebSocket selectors remain
-separately unconfirmed.
-Shell tests should keep proving command wiring and rendering against harness
-events rather than reimplementing harness tests.
+Representative checks use fake backends, in-memory and temporary persistent
+stores, fake transports, deterministic board fixtures, bounded tool results,
+replacement attached-turn ports, and isolated graphical frames. The complete
+Round 5 command/results/evidence matrix is maintained in
+[`round-5-audit.org`](feats/91-improve-modularization/round-5-audit.org); the
+Round 1--4 boundaries and preservation evidence remain in their corresponding
+round audits. Credentialed provider calls are not required for this behavior-
+neutral architecture package, so live provider capability is unconfirmed/not
+applicable here.
 
-Runtime-facing changes still require focused live probes because batch-green
-Emacs Lisp does not prove the user's current Emacs process has the new
-definitions.  New core or backend-adapter behavior requires an Emacs restart;
-the running Emacs is not changed by repository-side validation.
+Repository-side compilation, check-parens, static dependency/private-symbol
+sweeps, restart/replay tests, and the isolated graphical suite do not inspect or
+reload the user's running Emacs. Core/session/harness/provider changes take
+effect after a restart; extension definitions can be explicitly reloaded by
+the user when desired.
 
 ## Change Management
 
-Update this document when any of these move: core/presentation boundary, default
-harness assembly, layer/capability ownership, context strategy contract, session
-record schema, tool lifecycle semantics, backend adapter contract, resource URI
-semantics, shell manifest shape, or public harness/session command surface.
+Update this document when a facade/owner boundary, dependency direction,
+state lifetime, durable record schema, tool/resource contract, backend contract,
+shell manifest, or public harness/session command changes. Link detailed
+behavior and acceptance evidence from the relevant Feature audit rather than
+copying every test case here. Keep future behavior labeled Planned or
+unconfirmed until source and focused tests establish it.
 
 ## Architecture Discussion
 
-Against the repo guidance, the current architecture is mostly aligned with the
-target decomposition:
+The current architecture has one owner per semantic concern. The facades are
+composition roots and public application services; extracted owners contain
+state and policy that can change independently. Physical storage and external
+transports are at side-effect edges, while aggregate/context/turn policy stays
+provider- and shell-neutral. The accepted Feature 91 decomposition therefore
+makes likely changes local without creating speculative adapter layers.
 
-- Ownership is clear in the main path. Harness owns lifecycle and runtime
-  records; sessions own durable state; capabilities own behavior; layers package
-  capabilities; adapters own provider and side-effect details; shells own Emacs
-  presentation.
-- Dependency direction is mostly correct. Core modules depend on stable local
-  contracts, while defaults, shells, layer implementations, and OpenAI adapters
-  depend outward on core contracts.
-- Side effects are largely outside the core. File, buffer, shell, web, elisp, and
-  provider operations sit behind tools/adapters/resource methods. Session
-  persistence is the core's intentional durable side effect.
-- Interfaces are now semantically real. The backend, session, tool, resource,
-  hook, capability, layer, context, harness, and shell-manifest contracts each
-  have current consumers and tests.
+The largest retained roots are retained for causal reasons, not because size is
+ignored: `e-board` must atomically sequence routing/admission/settlement;
+`e-board-runtime` must reconcile attachment state with board delivery;
+`e-context-lifetime` must validate and consume one frame contract;
+`e-loop` must order one stream/tool follow-up; `e-tools` must settle tool
+requests; `e-work` must own one lifecycle; and `e-chat` must compose shell
+commands with one buffer/window event ordering. The session aggregate similarly
+keeps loaded session mutation, board journal, context projections, and replay
+application together because they share one loaded session and sequence
+invariant. Pure metadata, identity, provider-anchor, and board-policy values
+are separate because they have no aggregate mutation state.
 
-Confirmed gaps:
-
-- Permission and audit policy are named in the architecture but not implemented
-  as a first-class capability/tool gate.
-- Canvas support is currently live context attachment plus shell commands, not a
-  separate versioned canvas-state context strategy.
-- Harness self-modification is still architectural direction, not an exposed
-  tool surface.
-- Shell manifests are discovery records only. Generic shell lifecycle,
-  capability matching, and shell-to-shell handoff are intentionally absent.
-- The synchronous backend helper still publishes a non-cancellable request
-  marker; the normal async `url-retrieve` path returns a cancellable request.
-
-Delta to the architectural vision:
-
-- The project has moved from scaffold toward a working capability-first runtime.
-  The OpenAI/Codex path, persistent sessions, context strategy, tool lifecycle,
-  default harness, shell manifests, live context attachments, web/text-editing
-  layers, and cancellation hooks are implemented.
-- The remaining vision work is not more generic structure by default. It is
-  concrete policy and state work: permission/audit records, richer context-state
-  artifacts, explicit self-modification tools, and only then broader shell
-  lifecycle semantics if multiple shells require the same contract.
+Remaining gaps are deliberately explicit: permission/audit policy is not a
+first-class gate, canvas has no independent versioned state strategy, shell
+lifecycle is still manifest discovery, and SQLite replacement is Planned. These
+gaps are cheaper to address after a concrete consumer requires them than by
+reintroducing generic shared state now.

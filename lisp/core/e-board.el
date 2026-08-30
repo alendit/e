@@ -777,6 +777,39 @@ at which point that page requires a fresh snapshot."
   "Return BOARD message MESSAGE-ID, or nil when it is not retained."
   (gethash message-id (e-board-message-table board)))
 
+(defun e-board-message-envelope (message)
+  "Return the frozen durable envelope for MESSAGE.
+
+The envelope is the board-owned interchange value used when a board journal
+is persisted or imported.  Callers receive detached values and do not need to
+know the message struct's storage representation."
+  (list :id (e-board-message-id message)
+        :kind (e-board-message-kind message)
+        :author (e-board-message-author message)
+        :requester-actor (e-board-message-requester-actor message)
+        :tags (copy-tree (e-board-message-tags message))
+        :attributes (copy-tree (e-board-message-attributes message))
+        :to (e-board-message-to message) :mode (e-board-message-mode message)
+        :content (e-board-message-content message)
+        :reference (copy-tree (e-board-message-reference message))
+        :source-input-key (copy-tree (e-board-message-source-input-key message))
+        :source-output-key (copy-tree (e-board-message-source-output-key message))
+        :reply-to-message-ids
+        (copy-tree (e-board-message-reply-to-message-ids message))
+        :caused-by-delivery-ids
+        (copy-tree (e-board-message-caused-by-delivery-ids message))
+        :source-activity-key
+        (copy-tree (e-board-message-source-activity-key message))
+        :source-fact-key (copy-tree (e-board-message-source-fact-key message))
+        :subject-participant-id (e-board-message-subject-participant-id message)
+        :source-turn-id (e-board-message-source-turn-id message)
+        :activity-kind (e-board-message-activity-kind message)
+        :created-at (e-board-message-created-at message)
+        :matching-participant-ids
+        (copy-tree (e-board-message-matching-participant-ids message))
+        :unrouted-reason (e-board-message-unrouted-reason message)
+        :routing-state (e-board-message-routing-state message)))
+
 (cl-defun e-board-observer-recent-messages
     (board observer-id &key kinds (limit 32) before-seq)
   "Return OBSERVER-ID's newest matching BOARD messages in ascending order.

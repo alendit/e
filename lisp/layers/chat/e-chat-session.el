@@ -308,8 +308,12 @@ attachment."
   (when (string-prefix-p "buffer://" uri)
     (substring uri (length "buffer://"))))
 
-(defun e-chat-session--attachment-live-buffer (attachment)
-  "Return a live Emacs buffer for ATTACHMENT when available."
+(defun e-chat-session-attachment-live-buffer (attachment)
+  "Return a live Emacs buffer for ATTACHMENT when available.
+
+This is the consumer-shaped projection for shells that need to display or
+compare an attachment without depending on the chat-session metadata
+representation."
   (or (when-let ((buffer-name (plist-get attachment :buffer-name)))
         (get-buffer buffer-name))
       (when-let ((buffer-name (e-chat-session--uri-buffer-name
@@ -325,7 +329,7 @@ Open Emacs buffers win over disk contents so unsaved canvas edits are included
 in the next turn's context."
   (let ((uri (plist-get attachment :uri)))
     (cond
-     ((when-let ((buffer (e-chat-session--attachment-live-buffer attachment)))
+     ((when-let ((buffer (e-chat-session-attachment-live-buffer attachment)))
         (with-current-buffer buffer
           (buffer-substring-no-properties (point-min) (point-max)))))
      ((when-let ((file (e-chat-session--uri-file-name uri)))

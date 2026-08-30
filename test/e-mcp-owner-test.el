@@ -32,6 +32,8 @@
 
 (ert-deftest e-mcp-owner-test-loads-without-facade ()
   "MCP owners are loadable without the facade composition root."
+  (when (featurep 'e-mcp)
+    (ert-skip "fresh-load contract is exercised in an isolated process"))
   (should-not (featurep 'e-mcp))
   (dolist (function '(e-mcp-server-create
                       e-mcp-tool-create

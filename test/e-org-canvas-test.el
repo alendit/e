@@ -93,7 +93,7 @@
     (while (< (e-board-observer-next-index
                (e-chat-service-binding-observer binding))
               (e-board-message-count board))
-      (e-chat-service--drain-observer binding))))
+      (e-chat-service-drain-binding binding))))
 
 (defun e-org-canvas-test--org-file (directory name)
   "Create an Org file NAME in DIRECTORY and return its path."

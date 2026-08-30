@@ -262,8 +262,12 @@ hold HARNESS."
   (e-harness-notify-layers-changed harness)
   harness)
 
-(defun e-default-harness--effective-chat-spec ()
-  "Return the effective default chat harness spec."
+(defun e-default-chat-harness-spec ()
+  "Return the effective default chat harness specification.
+
+Startup and integration consumers use this semantic projection to resolve
+the configured chat factory without depending on the default-spec registry's
+private representation."
   (cl-find-if
    (lambda (spec)
      (eq (plist-get spec :id) :chat-default))
@@ -271,7 +275,7 @@ hold HARNESS."
 
 (defun e-default-debug--custom-chat-spec-p ()
   "Return non-nil when the effective chat default uses a custom spec factory."
-  (let ((factory (plist-get (e-default-harness--effective-chat-spec) :factory)))
+  (let ((factory (plist-get (e-default-chat-harness-spec) :factory)))
     (and factory
          (not (eq factory 'e-default-chat-harness-create)))))
 

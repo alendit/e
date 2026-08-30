@@ -3,6 +3,9 @@
 (load (expand-file-name "e-chat-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
+(load (expand-file-name
+       "../e2e/e-board-e2e-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 
 (ert-deftest e-chat-test-open-captures-current-workspace ()
@@ -705,10 +708,8 @@ test covers only the chat presentation subscription's redundant callbacks."
         (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
         (e-board-runtime--pickup-drain-scheduled nil)
         (e-board-runtime--admission-open-p t)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
         root-buffer)
+    (e-board-e2e-reset-runtime)
     (unwind-protect
         (let* ((store (e-session-persistent-store-create directory))
                (harness (e-harness-create
@@ -798,10 +799,6 @@ test covers only the chat presentation subscription's redundant callbacks."
                 e-board-registry--board-index
                 (avl-tree-create (lambda (left right)
                                    (string< (car left) (car right))))
-                e-chat-service--bindings
-                (make-hash-table :test 'eq :weakness 'key)
-                e-chat-service--board-bindings (make-hash-table :test 'equal)
-                e-chat-service--board-log-owners (make-hash-table :test 'equal)
                 e-board-runtime--attachments (make-hash-table :test 'equal)
                 e-board-runtime--session-attachments (make-hash-table :test 'equal)
                 e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)
@@ -897,7 +894,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                 ;; rows.  Replay may already have a legitimate outer
                 ;; `:ended-at`; snapshot it rather than mistaking that
                 ;; restored fact for sibling settlement.
-                (e-chat-service--drain-subscription e-chat--event-subscription)
+                (e-chat-service-drain-subscription e-chat--event-subscription)
                 (e-ui-work-with-batch-drain
                   (e-ui-work-drain-batch :buffer root-buffer))
                 (let* ((selected-before
@@ -970,7 +967,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                  :source-activity-key '(routing sibling-empty 1))
                 ;; Exercise the real subscription observer and shell callback;
                 ;; do not bypass selection with a directly synthesized event.
-                (e-chat-service--drain-subscription e-chat--event-subscription)
+                (e-chat-service-drain-subscription e-chat--event-subscription)
                 (e-ui-work-with-batch-drain
                   (e-ui-work-drain-batch :buffer root-buffer))
                 (should (string-match-p "Observed sibling answer"
@@ -1020,7 +1017,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                         :attributes '(:status finished)
                         :reply-to-message-ids (list restarted-main-input)
                         :source-activity-key '(routing root-summary 1))
-                (e-chat-service--drain-subscription e-chat--event-subscription)
+                (e-chat-service-drain-subscription e-chat--event-subscription)
                 (e-ui-work-with-batch-drain
                   (e-ui-work-drain-batch :buffer root-buffer))
                 (remhash root-id (e-harness-active-turns restarted))
@@ -1058,11 +1055,9 @@ selected/sibling isolation boundary."
         (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
         (e-board-runtime--pickup-drain-scheduled nil)
         (e-board-runtime--admission-open-p t)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
         (store (e-session-persistent-store-create directory))
         live-buffer replay-buffer)
+    (e-board-e2e-reset-runtime)
     (unwind-protect
         (let* ((harness (e-harness-create
                          :sessions store :enabled-layer-ids nil))
@@ -1091,7 +1086,7 @@ selected/sibling isolation boundary."
                 (e-chat-service-submit-session
                  harness session-id "ordinary input"))
           (with-current-buffer live-buffer
-            (e-chat-service--drain-subscription e-chat--event-subscription)
+            (e-chat-service-drain-subscription e-chat--event-subscription)
             (e-ui-work-with-batch-drain
              (e-ui-work-drain-batch :buffer live-buffer))
             (goto-char (point-min))
@@ -1132,7 +1127,7 @@ selected/sibling isolation boundary."
                       :source-activity-key '(f009-cancel 1 1)))))
             (ignore _message))
           (with-current-buffer live-buffer
-            (e-chat-service--drain-subscription e-chat--event-subscription)
+            (e-chat-service-drain-subscription e-chat--event-subscription)
             (e-ui-work-with-batch-drain
               (e-ui-work-drain-batch :buffer live-buffer))
             ;; Sibling rendering remains visible under an isolated semantic
@@ -1165,11 +1160,7 @@ selected/sibling isolation boundary."
                 e-board-runtime--pending-pickup-head nil
                 e-board-runtime--pending-pickup-tail nil
                 e-board-runtime--pending-pickup-set (make-hash-table :test 'equal)
-                e-board-runtime--pickup-drain-scheduled nil
-                e-chat-service--bindings
-                (make-hash-table :test 'eq :weakness 'key)
-                e-chat-service--board-bindings (make-hash-table :test 'equal)
-                e-chat-service--board-log-owners (make-hash-table :test 'equal))
+                e-board-runtime--pickup-drain-scheduled nil)
           (let* ((loaded (e-session-persistent-store-create directory))
                  (restarted (e-harness-create
                              :sessions loaded :enabled-layer-ids nil))
