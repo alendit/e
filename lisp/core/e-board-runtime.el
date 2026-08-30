@@ -802,9 +802,180 @@ each live harness object."
              attachment)
          (eq (gethash (e-board-runtime--session-key
                        (e-board-runtime-attachment-harness attachment)
-                       (e-board-runtime-attachment-session-id attachment))
+                      (e-board-runtime-attachment-session-id attachment))
                       e-board-runtime--endpoint-attachments)
              attachment))))
+
+(defun e-board-runtime--retire-pickups-for-attachment (attachment)
+  "Settle every nonterminal pickup owned by ATTACHMENT's participant.
+Pending and ready records are cancelled; an in-flight or accepted record is
+tombstoned as uncertain because its old endpoint is no longer available for a
+consumption receipt.  No successor is enqueued: terminal attachment cleanup
+owns the complete participant FIFO."
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (source-board (e-board-registry-board-source-board board))
+         (participant
+          (e-board-runtime-attachment-participant attachment))
+         (participant-id (and participant
+                              (e-board-registry-participant-id participant))))
+    (when participant-id
+      (dolist (delivery-id
+               (copy-sequence (e-board--pickup-queue source-board participant-id)))
+        (when-let ((pickup (e-board-pickup source-board delivery-id)))
+          (pcase (e-board-pickup-state pickup)
+            ((or 'pending 'ready)
+             (e-board-cancel-pickup
+              source-board delivery-id 'attachment-retired))
+            ((or 'delivering 'accepted 'cancelling)
+             (e-board-pickup-mark-uncertain
+              source-board delivery-id 'attachment-retired))))))))
+
+(defun e-board-runtime--drop-pending-pickups-for-attachment (attachment)
+  "Remove queued runtime pickup callbacks belonging to ATTACHMENT.
+The source-board pickup tombstones are authoritative; this process-local queue
+must also forget their identities so a later replacement attachment cannot
+interpret an old callback as a newly admitted delivery."
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (board-id (e-board-registry-board-id board))
+         (source-board (e-board-registry-board-source-board board))
+         (participant
+          (e-board-runtime-attachment-participant attachment))
+         (participant-id (and participant
+                              (e-board-registry-participant-id participant)))
+         (cursor e-board-runtime--pending-pickup-head)
+         previous)
+    (while cursor
+      (let* ((next (cdr cursor))
+             (key (car cursor))
+             (pickup (and (equal (car-safe key) board-id)
+                          (e-board-pickup source-board (cadr key))))
+             (drop-p (and pickup
+                          (equal (e-board-pickup-participant-id pickup)
+                                 participant-id))))
+        (if drop-p
+            (progn
+              (if previous
+                  (setcdr previous next)
+                (setq e-board-runtime--pending-pickup-head next))
+              (when (eq cursor e-board-runtime--pending-pickup-tail)
+                (setq e-board-runtime--pending-pickup-tail previous))
+              (when (gethash key e-board-runtime--pending-pickup-set)
+                (remhash key e-board-runtime--pending-pickup-set)
+                (e-board-runtime--unsettled-changed)))
+          (setq previous cursor))
+        (setq cursor next)))
+    (unless e-board-runtime--pending-pickup-head
+      (setq e-board-runtime--pending-pickup-tail nil))))
+
+(defun e-board-runtime--drop-attachment-activity (attachment)
+  "Drop pending activity mailboxes and callbacks belonging to ATTACHMENT."
+  (let (mailbox-ids)
+    (maphash
+     (lambda (mailbox-id mailbox)
+       (when (eq (plist-get mailbox :attachment) attachment)
+         (push mailbox-id mailbox-ids)))
+     e-board-runtime--work-activity-mailboxes)
+    (dolist (mailbox-id mailbox-ids)
+      (remhash mailbox-id e-board-runtime--work-activity-mailboxes)
+      (let ((cursor e-board-runtime--pending-activity-head)
+            previous)
+        (while cursor
+          (let ((next (cdr cursor)))
+            (if (equal (car cursor) mailbox-id)
+                (progn
+                  (if previous
+                      (setcdr previous next)
+                    (setq e-board-runtime--pending-activity-head next))
+                  (when (eq cursor e-board-runtime--pending-activity-tail)
+                    (setq e-board-runtime--pending-activity-tail previous))
+                  (remhash mailbox-id e-board-runtime--pending-activity-set)
+                  (e-board-runtime--unsettled-changed))
+              (setq previous cursor))
+            (setq cursor next))))
+    (unless e-board-runtime--pending-activity-head
+      (setq e-board-runtime--pending-activity-tail nil)))))
+
+(defun e-board-runtime--drop-attachment-invocations (attachment)
+  "Retire exact invocation callbacks captured by ATTACHMENT."
+  (let (targets)
+    (maphash
+     (lambda (target invocation)
+       (when (eq (e-board-runtime-invocation-attachment invocation)
+                 attachment)
+         (push target targets)))
+     e-board-runtime--invocations)
+    (dolist (target targets)
+      (e-board-runtime--drop-invocation target))))
+
+(defun e-board-runtime-retire-attachment (attachment)
+  "Idempotently retire exact ATTACHMENT and its runtime-owned board state.
+Chat/application services use this terminal operation after releasing their
+presentation leases.  Runtime ownership alone removes exact attachment maps,
+settles the participant FIFO, drops activity/invocation callbacks, and retires
+the participant's ordinary routes through the board-registry owner.  A held
+board object is valid while active, closing, or closed; durable session and
+board association are deliberately untouched so a later public ensure can
+rebuild an attachment.  Replacement attachments or leases are never removed."
+  (unless (e-board-runtime-attachment-p attachment)
+    (signal 'wrong-type-argument
+            (list 'e-board-runtime-attachment-p attachment)))
+  (let* ((board (e-board-runtime-attachment-board attachment))
+         (participant (e-board-runtime-attachment-participant attachment))
+         (already-retired
+          (eq (e-board-runtime-attachment-state attachment) 'dormant))
+         (attachment-key
+          (and participant
+               (e-board-runtime--attachment-key board participant)))
+         (session-key (e-board-runtime--attachment-session-key attachment))
+         (endpoint-key
+          (e-board-runtime--session-key
+           (e-board-runtime-attachment-harness attachment)
+           (e-board-runtime-attachment-session-id attachment)))
+         ;; A rebind/move may leave this object holding the same participant
+         ;; while a newer attachment owns the live maps.  Only their exact
+         ;; triple authorizes participant/FIFO retirement.
+         (owns-runtime-p
+          (and attachment-key
+               (eq (gethash attachment-key e-board-runtime--attachments)
+                   attachment)
+               (eq (gethash session-key e-board-runtime--session-attachments)
+                   attachment)
+               (eq (gethash endpoint-key e-board-runtime--endpoint-attachments)
+                   attachment)))
+         (reconciliation
+          (e-board-runtime-attachment-reconciliation attachment)))
+    (when reconciliation
+      (setf (e-board-runtime-reconciliation-state reconciliation) 'cancelled
+            (e-board-runtime-reconciliation-scheduled reconciliation) nil
+            (e-board-runtime-attachment-reconciliation attachment) nil)
+      (unless (e-request-terminal-p
+               (e-board-runtime-reconciliation-request reconciliation))
+        (e-request-fail
+         (e-board-runtime-reconciliation-request reconciliation)
+         (list 'e-board-runtime-attachment-retired))))
+    (e-board-runtime--unsubscribe-attachment-activity attachment)
+    (when owns-runtime-p
+      (e-board-runtime--retire-pickups-for-attachment attachment)
+      (e-board-runtime--drop-pending-pickups-for-attachment attachment))
+    (e-board-runtime--drop-attachment-activity attachment)
+    (e-board-runtime--drop-attachment-invocations attachment)
+    (dolist (table/key
+             (list (cons e-board-runtime--attachments attachment-key)
+                   (cons e-board-runtime--session-attachments session-key)
+                   (cons e-board-runtime--endpoint-attachments endpoint-key)))
+      (when (eq (gethash (cdr table/key) (car table/key)) attachment)
+        (remhash (cdr table/key) (car table/key))))
+    (when (and participant owns-runtime-p)
+      (e-board-registry-retire-participant-exact board participant))
+    (setf (e-board-runtime-attachment-subscription attachment) nil
+          (e-board-runtime-attachment-state attachment) 'dormant
+          (e-board-runtime-attachment-reconciliation attachment) nil)
+    (clrhash (e-board-runtime-attachment-turn-activity attachment))
+    (clrhash (e-board-runtime-attachment-turn-tags attachment))
+    (clrhash (e-board-runtime-attachment-turn-delivery-ids attachment))
+    (unless already-retired
+      (cl-incf (e-board-runtime-attachment-generation attachment)))
+    attachment))
 
 (defun e-board-runtime-abort-new-attachment (attachment)
   "Discard unpublished ATTACHMENT after an admission failure.

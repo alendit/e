@@ -215,6 +215,14 @@ must change atomically with board admission and attachment settlement. Board
 routing/publication remains in `e-board`; harness execution remains behind the
 attached-turn port. `e-board-registry.el`, `e-board-orchestration.el`, and
 `e-board-orchestration-actions.el` provide narrower registry/application seams.
+Terminal attachment cleanup has one explicit owner operation,
+`e-board-runtime-retire-attachment`: it accepts the exact attachment object,
+fences all board/participant and session/endpoint maps, settles that
+attachment's FIFO/activity/invocation work, and retires its participant routes
+through the registry owner. `e-chat-service` coordinates its presentation
+clients and calls this operation; it never reaches into runtime maps. The
+operation accepts a held board while active, closing, or closed, while durable
+session/board association remains available for a later public re-ensure.
 `e-board-message-envelope` is the board-owned detached journal projection, and
 `e-chat-service-reconcile-board-continuation` is the chat-service application
 operation that replays terminal board continuations; neither exposes mutable

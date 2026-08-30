@@ -54,7 +54,8 @@
   harness session-id board client requester attachment observer subscribers
   observer-drain-scheduled pending-input-head pending-input-tail turn-map
   input-sequence default-tags default-to idle-close-timer
-  message-projection activity-projection)
+  message-projection activity-projection lifecycle-generation
+  observer-drain-timer lifecycle-state)
 
 (cl-defstruct (e-chat-service-projection
                (:constructor e-chat-service--projection-create))
@@ -62,7 +63,8 @@
 
 (cl-defstruct (e-chat-service-subscription
                (:constructor e-chat-service--subscription-create))
-  binding function active-p client observer drain-scheduled state)
+  binding function active-p client observer drain-scheduled state drain-timer
+  lifecycle-generation)
 
 (cl-defstruct (e-chat-service-view
                (:constructor e-chat-service--view-create))
@@ -157,6 +159,7 @@ only observes durable claim decisions."
   (let ((board (and (e-chat-service-binding-p binding)
                     (e-chat-service-binding-board binding))))
     (and board
+         (not (eq (e-chat-service-binding-lifecycle-state binding) 'retired))
          (eq (e-board-registry-board-state board) 'active)
          (condition-case nil
              (eq board
@@ -312,13 +315,9 @@ unchanged."
                   (e-chat-service-binding-requester binding)
                   replacement-requester)
             (setq replacement-client nil)
-            (ignore-errors
-              (e-board-registry-detach-client
-               board client-id)))
+            (e-board-registry-detach-client-exact board client))
         (when replacement-client
-          (ignore-errors
-            (e-board-registry-detach-client
-             board (e-board-registry-client-id replacement-client))))))
+          (e-board-registry-detach-client-exact board replacement-client))))
     (setf (e-chat-service-binding-observer binding) replacement
           (e-chat-service-binding-observer-drain-scheduled binding) nil)
     ;; A cancelled observer may have been behind a board tail when its timer
@@ -334,42 +333,68 @@ Durable session and board association remain intact; a later explicit ensure
 may restore them.  Binding retirement is terminal for every presentation
 client, so independent subscribers are released here instead of being left as
 orphaned board-registry clients."
-  (let* ((harness (e-chat-service-binding-harness binding))
-         (session-id (e-chat-service-binding-session-id binding))
-         (bindings (and harness (gethash harness e-chat-service--bindings)))
-         (board (e-chat-service-binding-board binding))
-         (board-id (and board (e-board-registry-board-id board))))
-    (dolist (subscription (copy-sequence
-                           (e-chat-service-binding-subscribers binding)))
-      ;; Do not call `e-chat-service--retire-subscription' here: its normal
-      ;; last-subscriber path schedules an idle close, while this binding is
-      ;; already undergoing terminal teardown.
-      (setf (e-chat-service-subscription-active-p subscription) nil
-            (e-chat-service-subscription-drain-scheduled subscription) nil
-            (e-chat-service-subscription-state subscription)
-            (list 'detached nil))
-      (when-let ((client (e-chat-service-subscription-client subscription)))
-        (ignore-errors
-          (e-board-registry-detach-client
-           board (e-board-registry-client-id client)))))
-    (setf (e-chat-service-binding-subscribers binding) nil
-          (e-chat-service-binding-observer-drain-scheduled binding) nil)
-    (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
-      (when (timerp timer) (cancel-timer timer))
-      (setf (e-chat-service-binding-idle-close-timer binding) nil))
-    (when (and bindings (eq (gethash session-id bindings) binding))
-      (remhash session-id bindings))
-    (when board-id
-      (puthash board-id
-               (delq binding (gethash board-id e-chat-service--board-bindings))
-               e-chat-service--board-bindings)
-      (when (eq (gethash board-id e-chat-service--board-log-owners)
-                binding)
-        (remhash board-id e-chat-service--board-log-owners))
-      (when-let ((client (e-chat-service-binding-client binding)))
-        (ignore-errors
-          (e-board-registry-detach-client
-           board (e-board-registry-client-id client)))))))
+  (when (e-chat-service-binding-p binding)
+    (let* ((harness (e-chat-service-binding-harness binding))
+           (session-id (e-chat-service-binding-session-id binding))
+           (bindings (and harness (gethash harness e-chat-service--bindings)))
+           (board (e-chat-service-binding-board binding))
+           (board-id (and board (e-board-registry-board-id board)))
+           (already-retired
+            (eq (e-chat-service-binding-lifecycle-state binding) 'retired)))
+      ;; Invalidate every queued service callback before releasing any owned
+      ;; lease.  The generation remains on the object so callbacks retained by
+      ;; an embedding shell can prove they are stale without consulting a
+      ;; process-global registry.
+      (unless already-retired
+        (setf (e-chat-service-binding-lifecycle-state binding) 'retired)
+        (cl-incf (e-chat-service-binding-lifecycle-generation binding)))
+      (when-let ((timer (e-chat-service-binding-observer-drain-timer binding)))
+        (when (timerp timer) (cancel-timer timer))
+        (setf (e-chat-service-binding-observer-drain-timer binding) nil))
+      (setf (e-chat-service-binding-observer-drain-scheduled binding) nil)
+      (dolist (subscription (copy-sequence
+                             (e-chat-service-binding-subscribers binding)))
+        ;; Do not call `e-chat-service--retire-subscription' here: its normal
+        ;; last-subscriber path schedules an idle close, while this binding is
+        ;; already undergoing terminal teardown.
+        (setf (e-chat-service-subscription-active-p subscription) nil
+              (e-chat-service-subscription-drain-scheduled subscription) nil
+              (e-chat-service-subscription-state subscription)
+              (list 'detached nil))
+        (cl-incf (e-chat-service-subscription-lifecycle-generation
+                  subscription))
+        (when-let ((timer (e-chat-service-subscription-drain-timer
+                           subscription)))
+          (when (timerp timer) (cancel-timer timer))
+          (setf (e-chat-service-subscription-drain-timer subscription) nil))
+        (when-let ((client (e-chat-service-subscription-client subscription)))
+          (e-board-registry-detach-client-exact board client)))
+      (setf (e-chat-service-binding-subscribers binding) nil)
+      (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
+        (when (timerp timer) (cancel-timer timer))
+        (setf (e-chat-service-binding-idle-close-timer binding) nil))
+      ;; The runtime owner, not this service, owns attachment/session/endpoint
+      ;; catalogs, participant routes, and ordinary board subscriptions.
+      ;; Retain the attachment object so a repeated call is idempotent.
+      (when-let ((attachment (e-chat-service-binding-attachment binding)))
+        (e-board-runtime-retire-attachment attachment))
+      (when (and bindings (eq (gethash session-id bindings) binding))
+        (remhash session-id bindings)
+        (when (= (hash-table-count bindings) 0)
+          (remhash harness e-chat-service--bindings)))
+      (when board-id
+        (let ((remaining (delq binding
+                              (gethash board-id
+                                       e-chat-service--board-bindings))))
+          (if remaining
+              (puthash board-id remaining e-chat-service--board-bindings)
+            (remhash board-id e-chat-service--board-bindings)))
+        (when (eq (gethash board-id e-chat-service--board-log-owners)
+                  binding)
+          (remhash board-id e-chat-service--board-log-owners))
+        (when-let ((client (e-chat-service-binding-client binding)))
+          (e-board-registry-detach-client-exact board client)))
+      binding)))
 
 (defun e-chat-service--discard-binding (binding)
   "Discard an unpublished BINDING and all of its owned runtime state.
@@ -384,22 +409,47 @@ removal: it emits no board removal event and removes the binding from every
            (bindings (e-chat-service--harness-bindings harness))
            (attachment (e-chat-service-binding-attachment binding))
            (client (e-chat-service-binding-client binding)))
+      ;; Admission callbacks may already be queued even though this binding
+      ;; was never published.  Retire the generation before releasing any
+      ;; partially admitted lease so those callbacks cannot run the normal
+      ;; repair path against an unpublished object.
+      (unless (eq (e-chat-service-binding-lifecycle-state binding) 'retired)
+        (setf (e-chat-service-binding-lifecycle-state binding) 'retired)
+        (cl-incf (e-chat-service-binding-lifecycle-generation binding)))
       (dolist (subscription (e-chat-service-binding-subscribers binding))
-        (setf (e-chat-service-subscription-active-p subscription) nil))
+        (setf (e-chat-service-subscription-active-p subscription) nil)
+        (cl-incf (e-chat-service-subscription-lifecycle-generation
+                  subscription))
+        (when-let ((timer (e-chat-service-subscription-drain-timer
+                           subscription)))
+          (when (timerp timer) (cancel-timer timer))
+          (setf (e-chat-service-subscription-drain-timer subscription) nil))
+        (when-let ((subscription-client
+                    (e-chat-service-subscription-client subscription)))
+          (e-board-registry-detach-client-exact board subscription-client)))
       (setf (e-chat-service-binding-subscribers binding) nil)
+      (when-let ((timer (e-chat-service-binding-observer-drain-timer binding)))
+        (when (timerp timer) (cancel-timer timer))
+        (setf (e-chat-service-binding-observer-drain-timer binding) nil))
+      (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
+        (when (timerp timer) (cancel-timer timer))
+        (setf (e-chat-service-binding-idle-close-timer binding) nil))
+      (setf (e-chat-service-binding-observer-drain-scheduled binding) nil)
       (when (eq (gethash session-id bindings) binding)
-        (remhash session-id bindings))
-      (puthash board-id
-               (delq binding (gethash board-id e-chat-service--board-bindings))
-               e-chat-service--board-bindings)
+        (remhash session-id bindings)
+        (when (= (hash-table-count bindings) 0)
+          (remhash harness e-chat-service--bindings)))
+      (let ((remaining (delq binding
+                            (gethash board-id e-chat-service--board-bindings))))
+        (if remaining
+            (puthash board-id remaining e-chat-service--board-bindings)
+          (remhash board-id e-chat-service--board-bindings)))
       (when (eq (gethash board-id e-chat-service--board-log-owners) binding)
         (remhash board-id e-chat-service--board-log-owners))
       (when attachment
         (ignore-errors (e-board-runtime-abort-new-attachment attachment)))
       (when client
-        (ignore-errors
-          (e-board-registry-detach-client
-           board (e-board-registry-client-id client))))
+        (e-board-registry-detach-client-exact board client))
       t)))
 
 (defun e-chat-service-binding (harness session-id)
@@ -436,7 +486,10 @@ removal: it emits no board removal event and removes the binding from every
     (setf (e-chat-service-binding-idle-close-timer binding) nil)))
 
 (defun e-chat-service-close-board (binding)
-  "Retire all process-local clients and begin async close of BINDING's board."
+  "Retire all process-local clients and begin or reuse close of BINDING's board.
+The service owns presentation teardown; the registry owns the asynchronous
+board close.  Repeated calls while closing return the existing lifecycle
+request, while a completed close is already terminal and returns nil."
   (unless (e-chat-service-binding-p binding)
     (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
   (let* ((board (e-chat-service-binding-board binding))
@@ -446,7 +499,13 @@ removal: it emits no board removal event and removes the binding from every
       (e-chat-service--retire-binding current))
     (remhash board-id e-chat-service--board-bindings)
     (remhash board-id e-chat-service--board-log-owners)
-    (e-board-registry-close board)))
+    (pcase (e-board-registry-board-state board)
+      ('active (e-board-registry-close board))
+      ('closing
+       (when-let ((operation
+                   (e-board-registry-board-close-operation board)))
+         (e-board-registry-close-operation-request operation)))
+      ('closed nil))))
 
 (defun e-chat-service-reset-session (harness session-id)
   "Reset SESSION-ID's transcript and bounded board presentation projection."
@@ -472,17 +531,26 @@ removal: it emits no board removal event and removes the binding from every
 (defun e-chat-service--schedule-idle-close (binding)
   "Schedule registry-owned board cleanup after BINDING becomes idle."
   (e-chat-service--cancel-idle-close binding)
-  (setf (e-chat-service-binding-idle-close-timer binding)
-        (run-at-time
-         (max 0 e-chat-service-idle-close-delay) nil
-         (lambda ()
-           (setf (e-chat-service-binding-idle-close-timer binding) nil)
-           (let* ((board (e-chat-service-binding-board binding))
-                  (board-id (e-board-registry-board-id board)))
-             (when (and (eq (e-board-registry-board-state board) 'active)
-                        (not (e-chat-service--board-has-active-subscriber-p
-                              board-id)))
-               (e-chat-service-close-board binding)))))))
+  (let ((generation
+         (or (e-chat-service-binding-lifecycle-generation binding) 0)))
+    (setf (e-chat-service-binding-idle-close-timer binding)
+          (run-at-time
+           (max 0 e-chat-service-idle-close-delay) nil
+           (lambda ()
+             (when (= generation
+                      (or (e-chat-service-binding-lifecycle-generation binding)
+                          0))
+               (setf (e-chat-service-binding-idle-close-timer binding) nil)
+               (let* ((board (e-chat-service-binding-board binding))
+                      (board-id (e-board-registry-board-id board)))
+                 (if (not (e-chat-service--binding-live-p binding))
+                     ;; An external close can win the race with this timer;
+                     ;; run the same exact terminal cleanup instead of
+                     ;; leaving a stale service catalog behind.
+                     (e-chat-service--retire-binding binding)
+                   (when (not (e-chat-service--board-has-active-subscriber-p
+                               board-id))
+                     (e-chat-service-close-board binding))))))))))
 
 (defun e-chat-service--enqueue-pending-input (binding message-id)
   "Append MESSAGE-ID to BINDING's uncorrelated input FIFO."
@@ -783,42 +851,102 @@ so a sibling cannot settle a selected binding through a malformed projection."
             (funcall (e-chat-service-subscription-function subscription) event)
           (error nil))))))
 
+(defun e-chat-service--observer-drain-callback (binding generation)
+  "Run BINDING's deferred drain only for its captured GENERATION."
+  (when (= generation
+           (or (e-chat-service-binding-lifecycle-generation binding) 0))
+    (setf (e-chat-service-binding-observer-drain-scheduled binding) nil
+          (e-chat-service-binding-observer-drain-timer binding) nil)
+    (if (and (e-chat-service--binding-live-p binding)
+             (let ((bindings
+                    (gethash (e-chat-service-binding-harness binding)
+                             e-chat-service--bindings)))
+               (and bindings
+                    (eq (gethash (e-chat-service-binding-session-id binding)
+                                 bindings)
+                        binding))))
+        (e-chat-service--drain-observer binding)
+      ;; A board can enter closing/closed independently of the service.  The
+      ;; queued observer callback is still the service's owner-local chance to
+      ;; release all exact leases and runtime attachment state.
+      (e-chat-service--retire-binding binding))))
+
+(defun e-chat-service--subscription-drain-callback
+    (subscription binding-generation subscription-generation)
+  "Run SUBSCRIPTION's deferred drain for its captured generations."
+  (let ((binding (e-chat-service-subscription-binding subscription)))
+    (when (and (= binding-generation
+                  (or (e-chat-service-binding-lifecycle-generation binding) 0))
+               (= subscription-generation
+                  (or (e-chat-service-subscription-lifecycle-generation
+                       subscription)
+                      0)))
+      (setf (e-chat-service-subscription-drain-scheduled subscription) nil
+            (e-chat-service-subscription-drain-timer subscription) nil)
+      (if (and (e-chat-service-subscription-active-p subscription)
+               (not (eq (e-chat-service-binding-lifecycle-state binding)
+                         'retired))
+               (memq subscription
+                     (e-chat-service-binding-subscribers binding)))
+          (if (e-chat-service--binding-live-p binding)
+              (e-chat-service--drain-subscription subscription)
+            ;; An external board close is a terminal binding event even when
+            ;; no main observer callback happened to run first.
+            (e-chat-service--retire-binding binding))))))
+
 (defun e-chat-service--schedule-observer-drain (binding)
   "Schedule one later bounded observer drain for BINDING."
   (when (and (e-chat-service--binding-live-p binding)
              (not (e-chat-service-binding-observer-drain-scheduled binding)))
-    (setf (e-chat-service-binding-observer-drain-scheduled binding) t)
-    (run-at-time 0 nil #'e-chat-service--drain-observer binding)))
+    (let ((generation
+           (or (e-chat-service-binding-lifecycle-generation binding) 0)))
+      (setf (e-chat-service-binding-observer-drain-scheduled binding) t
+            (e-chat-service-binding-observer-drain-timer binding)
+            (run-at-time 0 nil #'e-chat-service--observer-drain-callback
+                         binding generation)))))
 
 (defun e-chat-service--schedule-subscription-drain (subscription)
-  "Schedule one bounded independent observer drain for SUBSCRIPTION."
-  (when (and (e-chat-service-subscription-active-p subscription)
-             (not (e-chat-service-subscription-drain-scheduled subscription)))
-    (setf (e-chat-service-subscription-drain-scheduled subscription) t)
-    (run-at-time 0 nil #'e-chat-service--drain-subscription subscription)))
+  "Schedule one later bounded independent observer drain for SUBSCRIPTION."
+  (let* ((binding (e-chat-service-subscription-binding subscription))
+         (binding-generation
+          (or (e-chat-service-binding-lifecycle-generation binding) 0))
+         (subscription-generation
+          (or (e-chat-service-subscription-lifecycle-generation subscription)
+              0)))
+    (when (and (e-chat-service-subscription-active-p subscription)
+               (not (e-chat-service-subscription-drain-scheduled subscription)))
+      (setf (e-chat-service-subscription-drain-scheduled subscription) t
+            (e-chat-service-subscription-drain-timer subscription)
+            (run-at-time 0 nil #'e-chat-service--subscription-drain-callback
+                         subscription binding-generation
+                         subscription-generation)))))
 
 (defun e-chat-service--retire-subscription (subscription &optional state)
   "Release SUBSCRIPTION's presentation lease and record optional STATE."
-  (setf (e-chat-service-subscription-active-p subscription) nil
-        (e-chat-service-subscription-drain-scheduled subscription) nil)
-  (when state
-    (setf (e-chat-service-subscription-state subscription) state))
   (let ((binding (e-chat-service-subscription-binding subscription)))
+    (setf (e-chat-service-subscription-active-p subscription) nil
+          (e-chat-service-subscription-drain-scheduled subscription) nil)
+    (cl-incf (e-chat-service-subscription-lifecycle-generation subscription))
+    (when-let ((timer (e-chat-service-subscription-drain-timer subscription)))
+      (when (timerp timer) (cancel-timer timer))
+      (setf (e-chat-service-subscription-drain-timer subscription) nil))
+    (when state
+      (setf (e-chat-service-subscription-state subscription) state))
     (setf (e-chat-service-binding-subscribers binding)
           (delq subscription
                 (e-chat-service-binding-subscribers binding)))
     (when-let ((client (e-chat-service-subscription-client subscription)))
-      (ignore-errors
-        (e-board-registry-detach-client
-         (e-chat-service-binding-board binding)
-         (e-board-registry-client-id client))))
-    (unless (cl-some #'e-chat-service-subscription-active-p
-                     (e-chat-service-binding-subscribers binding))
-      (e-chat-service--schedule-idle-close binding))))
+      (e-board-registry-detach-client-exact
+       (e-chat-service-binding-board binding) client))
+    (unless (eq (e-chat-service-binding-lifecycle-state binding) 'retired)
+      (unless (cl-some #'e-chat-service-subscription-active-p
+                       (e-chat-service-binding-subscribers binding))
+        (e-chat-service--schedule-idle-close binding)))))
 
 (defun e-chat-service--drain-subscription (subscription)
   "Deliver and accept one independent observer page for SUBSCRIPTION."
-  (setf (e-chat-service-subscription-drain-scheduled subscription) nil)
+  (setf (e-chat-service-subscription-drain-scheduled subscription) nil
+        (e-chat-service-subscription-drain-timer subscription) nil)
   (when (e-chat-service-subscription-active-p subscription)
     (condition-case err
         (let* ((binding (e-chat-service-subscription-binding subscription))
@@ -851,7 +979,8 @@ so a sibling cannot settle a selected binding through a malformed projection."
 
 (defun e-chat-service--drain-observer (binding)
   "Accept and translate one bounded live observer page for BINDING."
-  (setf (e-chat-service-binding-observer-drain-scheduled binding) nil)
+  (setf (e-chat-service-binding-observer-drain-scheduled binding) nil
+        (e-chat-service-binding-observer-drain-timer binding) nil)
   (if (not (e-chat-service--binding-live-p binding))
       (e-chat-service--retire-binding binding)
     (let* ((board (e-chat-service-binding-board binding))
@@ -1069,7 +1198,10 @@ resolved participant identity so restart never needs shell or caller policy."
                        :input-sequence 0 :default-tags (copy-tree default-tags)
                        :default-to default-to
                        :message-projection (e-chat-service--make-projection)
-                       :activity-projection (e-chat-service--make-projection)))
+                       :activity-projection (e-chat-service--make-projection)
+                       :lifecycle-generation 0
+                       :observer-drain-timer nil
+                       :lifecycle-state 'active))
                 (puthash session-id binding
                          (e-chat-service--harness-bindings harness))
                 (puthash (e-board-registry-board-id board)
@@ -1129,10 +1261,13 @@ resolved participant identity so restart never needs shell or caller policy."
                      (board-id (e-board-registry-board-id board)))
                  (when (eq (gethash session-id bindings) binding)
                    (remhash session-id bindings))
-                 (puthash board-id
-                          (delq binding (gethash board-id
-                                                 e-chat-service--board-bindings))
-                          e-chat-service--board-bindings)
+                 (let ((remaining
+                        (delq binding
+                              (gethash board-id
+                                       e-chat-service--board-bindings))))
+                   (if remaining
+                       (puthash board-id remaining e-chat-service--board-bindings)
+                     (remhash board-id e-chat-service--board-bindings)))
                  (when (eq (gethash board-id e-chat-service--board-log-owners)
                            binding)
                    (remhash board-id e-chat-service--board-log-owners))))
@@ -1145,9 +1280,7 @@ resolved participant identity so restart never needs shell or caller policy."
                (ignore-errors
                  (e-board-runtime-abort-new-attachment attachment)))
              (when client
-               (ignore-errors
-                 (e-board-registry-detach-client
-                  board (e-board-registry-client-id client))))
+               (e-board-registry-detach-client-exact board client))
              (signal (car error) (cdr error))))))))
 
 (defun e-chat-service--bind-session (harness session-id)
@@ -1468,7 +1601,8 @@ LIMIT defaults to the registry's fixed page bound."
                     :history-before-seq history-before-seq))
          (subscription (e-chat-service--subscription-create
                         :binding binding :function function :active-p t
-                        :client client :observer observer :state 'active)))
+                        :client client :observer observer :state 'active
+                        :drain-timer nil :lifecycle-generation 0)))
     (e-chat-service--cancel-idle-close binding)
     (setf (e-chat-service-binding-subscribers binding)
           (cons subscription (e-chat-service-binding-subscribers binding)))
@@ -1523,8 +1657,7 @@ private to the service."
           (if (e-chat-service--main-observer-repairable-p
                binding client observer)
               (e-chat-service--repair-main-observer binding client observer)
-            (when (e-chat-service--binding-live-p binding)
-              (e-chat-service--retire-binding binding)))
+            (e-chat-service--retire-binding binding))
           nil)
       (e-chat-service--drain-observer binding)
       (and (e-chat-service--observer-drain-live-p
@@ -1547,10 +1680,12 @@ implementation detail of the chat service."
                    binding client observer)))
         (progn
           (when (e-chat-service-subscription-active-p subscription)
-            (e-chat-service--retire-subscription
-             subscription
-             (e-chat-service--observer-drain-retirement-state
-              binding client observer)))
+            (if (not (e-chat-service--binding-live-p binding))
+                (e-chat-service--retire-binding binding)
+              (e-chat-service--retire-subscription
+               subscription
+               (e-chat-service--observer-drain-retirement-state
+                binding client observer))))
           nil)
       (e-chat-service--drain-subscription subscription)
       (and (e-chat-service-subscription-active-p subscription)

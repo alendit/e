@@ -611,30 +611,66 @@ LIMIT plus one candidates, rather than materializing the full registry list."
                 board (e-board-registry-client-principal client))
                (e-board-registry-client-role client)))))
 
+(defun e-board-registry--detach-client-object (board client)
+  "Detach the exact current CLIENT object from BOARD.
+The caller has already established object and generation ownership.  This
+helper also removes empty principal catalog entries so a terminal lease does
+not leave a nil-valued registry key behind."
+  (dolist (observer-id (e-board-registry-client-observer-ids client))
+    (when-let ((observer (e-board-observer
+                          (e-board-registry-board-source-board board)
+                          observer-id)))
+      (when (memq (e-board-observer-state observer) '(active muted))
+        (e-board-set-observer-state
+         (e-board-registry-board-source-board board) observer-id 'cancelled))))
+  (let ((client-id (e-board-registry-client-id client)))
+    (setf (e-board-registry-client-observer-ids client) nil
+          (e-board-registry-client-state client) 'detached)
+    (when-let ((principal (e-board-registry-client-principal client)))
+      (let ((remaining
+             (delete client-id
+                     (gethash principal
+                              (e-board-registry-board-principal-clients board)))))
+        (if remaining
+            (puthash principal remaining
+                     (e-board-registry-board-principal-clients board))
+          (remhash principal
+                   (e-board-registry-board-principal-clients board)))))
+    (remhash client-id (e-board-registry-board-clients board)))
+  client)
+
 (defun e-board-registry-detach-client (board-or-id client-id)
-  "Detach CLIENT-ID from active BOARD-OR-ID and release its observers."
+  "Detach CLIENT-ID from active BOARD-OR-ID and release its observers.
+This id-based compatibility operation resolves the current client first;
+owner teardown that retained a client object must use
+`e-board-registry-detach-client-exact' so a replacement generation is never
+detached accidentally."
   (let* ((board (e-board-registry--require-active board-or-id))
-         (clients (e-board-registry-board-clients board))
-         (client (gethash client-id clients)))
+         (client (gethash client-id
+                          (e-board-registry-board-clients board))))
     (when client
-      (dolist (observer-id (e-board-registry-client-observer-ids client))
-        (when-let ((observer (e-board-observer
-                              (e-board-registry-board-source-board board)
-                              observer-id)))
-          (when (memq (e-board-observer-state observer) '(active muted))
-            (e-board-set-observer-state
-             (e-board-registry-board-source-board board) observer-id 'cancelled))))
-      (setf (e-board-registry-client-observer-ids client) nil)
-      (setf (e-board-registry-client-state client) 'detached)
-      (when-let ((principal (e-board-registry-client-principal client)))
-        (puthash principal
-                 (delete client-id
-                         (gethash
-                          principal
-                          (e-board-registry-board-principal-clients board)))
-                 (e-board-registry-board-principal-clients board)))
-      (remhash client-id clients))
-    client))
+      (e-board-registry--detach-client-object board client))))
+
+(defun e-board-registry-detach-client-exact (board-or-id client)
+  "Detach exactly CLIENT from BOARD-OR-ID, or do nothing if it was replaced.
+CLIENT object identity and its current generation fence the operation.  A
+board object may be supplied after it entered `closing' or `closed'; this is a
+terminal owner operation and therefore does not reopen board admission."
+  (unless (e-board-registry-client-p client)
+    (signal 'wrong-type-argument
+            (list 'e-board-registry-client-p client)))
+  (let* ((board (if (e-board-registry-board-p board-or-id)
+                    board-or-id
+                  (e-board-registry--resolve board-or-id)))
+         (client-id (e-board-registry-client-id client))
+         (current (gethash client-id
+                           (e-board-registry-board-clients board)))
+         (generation (gethash client-id
+                              (e-board-registry-board-client-generations board))))
+    (when (and (eq current client)
+               (= (e-board-registry-client-generation client)
+                  (or generation 0)))
+      (e-board-registry--detach-client-object board client))))
 
 (defun e-board-registry-client-requester-context (board-or-id client-id)
   "Capture active CLIENT-ID as a generation-fenced requester context."
@@ -1065,6 +1101,73 @@ missing current principal grant."
      source-board 'participant-removed (list :participant-id participant-id))
     participant))
 
+(defun e-board-registry-retire-participant-exact (board-or-id participant)
+  "Retire exactly PARTICIPANT and all of its source-board routes.
+This terminal process-local operation accepts an already-held BOARD object
+while it is active, closing, or closed.  It removes only the exact registry
+participant and source participant objects, disables and deindexes their
+ordinary subscriptions, and emits no participant-removal event; callers that
+need the durable participant lifecycle must use
+`e-board-registry-remove-participant'.  Returning nil means the participant
+was already replaced or absent."
+  (unless (e-board-registry-participant-p participant)
+    (signal 'wrong-type-argument
+            (list 'e-board-registry-participant-p participant)))
+  (let* ((board (if (e-board-registry-board-p board-or-id)
+                    board-or-id
+                  (e-board-registry--resolve board-or-id)))
+         (participant-id (e-board-registry-participant-id participant))
+         (participants (e-board-registry-board-participants board))
+         (current (gethash participant-id participants))
+         (source-board (e-board-registry-board-source-board board))
+         (source-participant
+          (e-board-registry-participant-source-participant participant))
+         (source-current
+          (and source-participant
+               (e-board-participant source-board
+                                    (e-board-participant-id
+                                     source-participant))))
+         (owned-p (and (or (null current) (eq current participant))
+                       (or (null source-current)
+                           (eq source-current source-participant)))))
+    (when owned-p
+      (when (eq current participant)
+        (remhash participant-id participants))
+      (when source-current
+        (dolist (subscription
+                 (copy-sequence (e-board-subscriptions source-board)))
+          (when (equal (e-board-subscription-participant-id subscription)
+                       participant-id)
+            (dolist (timer (list (e-board-subscription-readiness-timer
+                                  subscription)
+                                 (e-board-subscription-lifetime-timer
+                                  subscription)))
+              (when (timerp timer)
+                (cancel-timer timer)))
+            (setf (e-board-subscription-state subscription) 'cancelled
+                  (e-board-subscription-readiness-timer subscription) nil
+                  (e-board-subscription-lifetime-timer subscription) nil
+                  (e-board-subscription-accumulator subscription) nil
+                  (e-board-subscription-readiness-generation subscription)
+                  (1+ (or (e-board-subscription-readiness-generation
+                           subscription)
+                          0))
+                  (e-board-subscription-lifetime-generation subscription)
+                  (1+ (or (e-board-subscription-lifetime-generation
+                           subscription)
+                          0)))
+            (when (eq (e-board-find-subscription
+                       source-board (e-board-subscription-id subscription))
+                      subscription)
+              (remhash (e-board-subscription-id subscription)
+                       (e-board-subscription-id-table source-board)))))
+        (remhash (e-board-participant-id source-participant)
+                 (e-board-participants source-board))
+        (setf (e-board-participant-state source-participant) 'removed))
+      (setf (e-board-registry-participant-publication-pending participant)
+            nil)
+      participant)))
+
 (defun e-board-registry-move-participant
     (source-board-or-id destination-board-or-id requester participant-or-id
                         destination-participant-id)
@@ -1228,11 +1331,15 @@ only the board-local replacement identity."
         (setf (e-board-registry-client-observer-ids client) nil
               (e-board-registry-client-state client) 'detached)
         (when principal
-          (puthash principal
-                   (delete client-id
-                           (gethash principal
-                                    (e-board-registry-board-principal-clients board)))
-                   (e-board-registry-board-principal-clients board)))
+          (let ((remaining
+                 (delete client-id
+                         (gethash principal
+                                  (e-board-registry-board-principal-clients board)))))
+            (if remaining
+                (puthash principal remaining
+                         (e-board-registry-board-principal-clients board))
+              (remhash principal
+                       (e-board-registry-board-principal-clients board)))))
         (remhash client-id (e-board-registry-board-clients board))
         (setf (e-board-registry-close-operation-current-client operation) nil))
       t))))

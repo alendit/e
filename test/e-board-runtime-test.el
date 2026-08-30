@@ -2479,6 +2479,85 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (should (equal (mapcar #'e-board-message-source-output-key messages)
                          '(("participant" 1 1) ("participant" 2 1)))))))))
 
+(ert-deftest e-board-runtime-test-retire-attachment-releases-exact-runtime-life ()
+  "Terminal attachment retirement removes routes and permits later re-ensure."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (source nil)
+           (attachment nil)
+           (ordinary nil))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach
+             board harness "session" :participant-id "participant"
+             :principal "owner"))
+      (setq source (e-board-registry-board-source-board board)
+            ordinary (e-board-registry-install-subscription
+                      board (e-board-runtime-attachment-participant attachment)
+                      '(:tags (ordinary))))
+      (should (gethash
+               (e-board-runtime--session-key harness "session")
+               e-board-runtime--session-attachments))
+      (e-board-runtime-retire-attachment attachment)
+      (should (eq (e-board-runtime-attachment-state attachment) 'dormant))
+      (should-not (gethash
+                   (e-board-runtime--session-key harness "session")
+                   e-board-runtime--session-attachments))
+      (should-not (gethash
+                   (e-board-runtime--session-key harness "session")
+                   e-board-runtime--endpoint-attachments))
+      (should-not (gethash "participant"
+                           (e-board-registry-board-participants board)))
+      (should-not (e-board-participant source "participant"))
+      (should (eq (e-board-subscription-state ordinary) 'cancelled))
+      (should-not (e-board-find-subscription source
+                                              (e-board-subscription-id ordinary)))
+      ;; Repeated terminal calls are no-ops, and the same durable session and
+      ;; participant identity may be admitted again while the board remains
+      ;; active.
+      (e-board-runtime-retire-attachment attachment)
+      (let ((replacement
+             (e-board-runtime-attach
+              board harness "session" :participant-id "participant"
+              :principal "owner")))
+        (should (e-board-runtime--current-attachment-p replacement))
+        (should (not (eq replacement attachment)))))))
+
+(ert-deftest e-board-runtime-test-retire-stale-attachment-preserves-replacement ()
+  "Retiring an old rebind attachment cannot remove the replacement lease."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           scheduled)
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (let* ((old (e-board-runtime-attach
+                   board old-harness "old" :participant-id "participant"))
+             (request nil)
+             new)
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_seconds _repeat function &rest arguments)
+                     (push (lambda () (apply function arguments)) scheduled))))
+          (setq request
+                (e-board-runtime-rebind-start
+                 board "participant" new-harness "new" "owner"))
+          (while scheduled
+            (funcall (pop scheduled))))
+        (setq new (e-request-lifecycle-terminal-payload request))
+        (should (e-board-runtime-attachment-p new))
+        (should (eq (e-board-runtime-attachment-state old) 'dormant))
+        (e-board-runtime-retire-attachment old)
+        (should (e-board-runtime--current-attachment-p new))
+        (should (eq (gethash
+                     (e-board-runtime--attachment-key
+                      board (e-board-runtime-attachment-participant new))
+                     e-board-runtime--attachments)
+                    new))
+        (should (e-board-participant
+                 (e-board-registry-board-source-board board) "participant"))))))
+
 (provide 'e-board-runtime-test)
 
 ;;; e-board-runtime-test.el ends here

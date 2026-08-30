@@ -383,6 +383,29 @@
         (should (= (e-board-registry-client-generation replacement) 2))
         (should (eq (e-board-registry-client-state replacement) 'active))))))
 
+(ert-deftest e-board-registry-test-exact-detach-does-not-remove-replacement ()
+  "A terminal lease releases only its exact client generation."
+  (e-board-registry-test--with-empty-registries
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (first (e-board-registry-attach-client
+                   board :id "lease" :principal "owner")))
+      (e-board-registry-detach-client-exact board first)
+      (let ((replacement (e-board-registry-attach-client
+                          board :id "lease" :principal "owner")))
+        (should (= (e-board-registry-client-generation replacement) 2))
+        (should-not (e-board-registry-detach-client-exact board first))
+        (should (eq (gethash "lease"
+                             (e-board-registry-board-clients board))
+                    replacement))
+        (should (member "lease"
+                        (gethash "owner"
+                                 (e-board-registry-board-principal-clients
+                                  board))))
+        (e-board-registry-detach-client-exact board replacement)
+        (should-not (gethash "owner"
+                             (e-board-registry-board-principal-clients
+                              board)))))))
+
 (ert-deftest e-board-registry-test-requester-context-is-generation-fenced ()
   "A requester context authenticates only its captured active client generation."
   (e-board-registry-test--with-empty-registries

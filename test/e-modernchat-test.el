@@ -1708,7 +1708,7 @@ session and board binding without exposing a participant-added event."
 
 (ert-deftest e-chat-service-test-close-board-releases-all-binding-leases ()
   "Terminal board close removes catalogs and releases main/subscriber clients."
-  (let ((e-board--registry (make-hash-table :test 'equal))
+  (let* ((e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
         (e-board-registry--unsettled-pickup-count 0)
         (e-board-registry--unsettled-effect-count 0)
@@ -1721,7 +1721,10 @@ session and board binding without exposing a participant-added event."
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
         (e-chat-service--board-log-owners (make-hash-table :test 'equal))
-        (e-board-registry-close-scheduler (lambda (_function) nil)))
+        close-callbacks
+        (e-board-registry-close-scheduler
+         (lambda (function)
+           (push function close-callbacks))))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
            (binding (e-chat-service-create-board :harness harness :id "close"))
            (board (e-chat-service-binding-board binding))
@@ -1748,7 +1751,20 @@ session and board binding without exposing a participant-added event."
                     (e-board-registry-board-clients board)))
           (should-not
            (gethash (e-board-registry-client-id subscriber-client)
-                    (e-board-registry-board-clients board))))))))
+                    (e-board-registry-board-clients board)))
+          (while close-callbacks
+            (funcall (pop close-callbacks)))
+          (should (eq (e-board-registry-board-state board) 'closed))
+          ;; A completed service close retains the durable association but
+          ;; releases the process-local board.  Public ensure must rebuild a
+          ;; fresh board/runtime binding instead of leaking session-busy.
+          (let ((replacement
+                 (e-chat-service-ensure-binding harness "close")))
+            (should (e-chat-service-binding-p replacement))
+            (should (not (eq replacement binding)))
+            (should (stringp
+                     (e-chat-service-submit-session
+                      harness "close" "after-completed-close")))))))))
 
 (ert-deftest e-chat-service-test-drain-unsubscribed-subscription-terminates ()
   "A bounded consumer cannot spin after its subscription is unsubscribed."
@@ -2251,6 +2267,307 @@ session and board binding without exposing a participant-added event."
       (should (eq (e-board-registry-board-state board) 'closed))
       (should-error (e-board-registry-get board-id)
                     :type 'e-board-registry-missing))))
+
+(ert-deftest e-chat-service-test-terminal-binding-retirement-matrix ()
+  "Terminal chat binding paths release runtime life and permit recovery."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board--id-sequence 0)
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--board-index
+         (avl-tree-create (lambda (left right)
+                            (string< (car left) (car right)))))
+        (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-registry--unsettled-change-function nil)
+        (e-board-registry--unsettled-change-functions nil)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal))
+        (e-board-runtime--pending-activity-head nil)
+        (e-board-runtime--pending-activity-tail nil)
+        (e-board-runtime--pending-activity-set (make-hash-table :test 'equal))
+        (e-board-runtime--activity-drain-scheduled nil)
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--admission-open-p t)
+        (e-board-runtime--admission-epoch 0)
+        (e-board-runtime--unsettled-control-count 0)
+        (e-board-runtime--unsettled-invocation-count 0)
+        (e-board-runtime--unsettled-deferred-hook-count 0)
+        (e-board-runtime--unsettled-producer-count 0)
+        (e-board-runtime--unsettled-generation 0)
+        (e-board-runtime--unsettled-change-function nil)
+        (e-board-runtime--unsettled-change-functions nil)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-chat-service--continuation-reconciling (make-hash-table :test 'equal))
+        close-callbacks)
+    (e-harness-turn-state-reset-aggregate)
+    (unwind-protect
+        (let ((e-board-registry-close-scheduler
+               (lambda (function)
+                 (push function close-callbacks))))
+          (dolist (case '(muted revoked replaced external-closing))
+            (let* ((session-id (format "terminal-%s" case))
+                   (harness (e-harness-create :enabled-layer-ids nil))
+                   binding board source subscription main-client participant
+                   subscriber-client ordinary replacement-client principal)
+              (cl-letf (((symbol-function 'run-at-time)
+                         (lambda (&rest _arguments) nil)))
+                (setq binding
+                      (e-chat-service-create-board
+                       :harness harness :id session-id)
+                      board (e-chat-service-binding-board binding)
+                      source (e-board-registry-board-source-board board)
+                      main-client (e-chat-service-binding-client binding)
+                      participant
+                      (e-board-runtime-attachment-participant
+                       (e-chat-service-binding-attachment binding))
+                      principal
+                      (e-board-registry-client-principal main-client)
+                      subscription
+                      (e-chat-service-subscribe harness session-id #'ignore)
+                      subscriber-client
+                      (e-chat-service-subscription-client subscription)
+                      ordinary
+                      (e-board-registry-install-subscription
+                       board participant '(:tags (ordinary)))))
+                (pcase case
+                  ('muted
+                   (e-board-set-observer-state
+                    source
+                    (e-board-observer-id
+                     (e-chat-service-binding-observer binding))
+                    'muted))
+                  ('revoked
+                   (e-board-registry-authorize-principal
+                    board principal "terminal-admin" 'owner)
+                   (e-board-registry-revoke-principal
+                    board "terminal-admin" principal)
+                   (while (e-board-registry-board-client-revocation-head board)
+                     (e-board-registry--drain-client-revocations board)))
+                  ('replaced
+                   (e-board-registry-detach-client
+                    board (e-board-registry-client-id main-client))
+                   (setq replacement-client
+                         (e-board-registry-attach-client
+                          board :id (e-board-registry-client-id main-client)
+                          :principal principal)))
+                  ('external-closing
+                   (e-board-registry-close board)))
+                (should-not (e-chat-service-drain-binding binding))
+                (e-chat-service--retire-binding binding)
+                (should (eq (e-chat-service-binding-lifecycle-state binding)
+                            'retired))
+                (should-not
+                 (and (gethash harness e-chat-service--bindings)
+                      (gethash session-id
+                               (gethash harness e-chat-service--bindings))))
+                (should-not (gethash harness e-chat-service--bindings))
+                (should-not
+                 (gethash (e-board-registry-board-id board)
+                          e-chat-service--board-bindings))
+                (should-not
+                 (gethash (e-board-registry-board-id board)
+                          e-chat-service--board-log-owners))
+                (should-not
+                 (gethash (e-board-runtime--session-key harness session-id)
+                          e-board-runtime--session-attachments))
+                (should-not
+                 (gethash (e-board-runtime--session-key harness session-id)
+                          e-board-runtime--endpoint-attachments))
+                (if (eq case 'replaced)
+                    (should (eq (gethash (e-board-registry-client-id main-client)
+                                         (e-board-registry-board-clients board))
+                                replacement-client))
+                  (should-not
+                   (gethash (e-board-registry-client-id main-client)
+                            (e-board-registry-board-clients board))))
+                (should (eq (e-board-registry-client-state main-client)
+                            'detached))
+                (should-not
+                 (gethash (e-board-registry-participant-id participant)
+                          (e-board-registry-board-participants board)))
+                (should-not
+                 (e-board-participant source
+                                      (e-board-registry-participant-id
+                                       participant)))
+                (should (eq (e-board-subscription-state ordinary) 'cancelled))
+                (should-not
+                 (e-board-find-subscription
+                  source (e-board-subscription-id ordinary)))
+                (should-not (e-chat-service-subscription-active-p subscription))
+                (should (eq (e-board-registry-client-state subscriber-client)
+                            'detached))
+                (should-not
+                 (gethash (e-board-registry-client-id subscriber-client)
+                          (e-board-registry-board-clients board)))
+                (when (eq case 'replaced)
+                  (should (eq (e-board-registry-client-state replacement-client)
+                              'active))
+                  (should (eq (gethash (e-board-registry-client-id
+                                       replacement-client)
+                                      (e-board-registry-board-clients board))
+                                 replacement-client)))
+                (when (eq case 'external-closing)
+                  (while close-callbacks
+                    (funcall (pop close-callbacks)))
+                  (should (eq (e-board-registry-board-state board) 'closed)))
+                (when (eq case 'revoked)
+                  (e-board-registry-authorize-principal
+                   board "terminal-admin" principal 'owner))
+                (let ((restored
+                       (e-chat-service-ensure-binding harness session-id)))
+                  (should (e-chat-service-binding-p restored))
+                  (should (not (eq restored binding)))
+                  (should (stringp
+                           (e-chat-service-submit-session
+                            harness session-id "after-terminal-retirement")))))))
+      (e-harness-turn-state-reset-aggregate))))
+
+(ert-deftest e-chat-service-test-retired-drain-callback-cannot-resurrect-binding ()
+  "A callback queued before terminal retirement cannot revive its leases."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--board-index
+         (avl-tree-create (lambda (left right)
+                            (string< (car left) (car right)))))
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        callbacks)
+    (let* ((harness (e-harness-create :enabled-layer-ids nil))
+           (binding nil)
+           (board nil))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (cons function arguments) callbacks)
+                   nil)))
+        (setq binding (e-chat-service-create-board
+                       :harness harness :id "queued-retirement")
+              board (e-chat-service-binding-board binding))
+        (e-chat-service-subscribe harness "queued-retirement" #'ignore)
+        (e-board-post-fact
+         (e-board-registry-board-source-board board)
+         :id "queued" :tags '(main) :content "queued"
+         :source-fact-key '(terminal queued 1))
+        (should callbacks)
+        (e-chat-service--retire-binding binding)
+        (dolist (callback callbacks)
+          (apply (car callback) (cdr callback)))
+        (should-not
+         (and (gethash harness e-chat-service--bindings)
+              (gethash "queued-retirement"
+                       (gethash harness e-chat-service--bindings))))
+        (should-not
+         (gethash (e-board-runtime--session-key harness "queued-retirement")
+                  e-board-runtime--session-attachments))
+        (should (eq (e-chat-service-binding-lifecycle-state binding)
+                    'retired))))))
+
+(ert-deftest e-chat-service-test-external-close-queued-observer-retires-binding ()
+  "An observer callback retires its binding when the board closes externally."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--board-index
+         (avl-tree-create (lambda (left right)
+                            (string< (car left) (car right)))))
+        (e-board-registry--id-sequence 0)
+        (e-board-registry--unsettled-pickup-count 0)
+        (e-board-registry--unsettled-effect-count 0)
+        (e-board-registry--unsettled-routing-count 0)
+        (e-board-registry--unsettled-generation 0)
+        (e-board-registry--unsettled-change-function nil)
+        (e-board-registry--unsettled-change-functions nil)
+        (e-board-runtime--attachments (make-hash-table :test 'equal))
+        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
+        (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal))
+        (e-board-runtime--pending-activity-head nil)
+        (e-board-runtime--pending-activity-tail nil)
+        (e-board-runtime--pending-activity-set (make-hash-table :test 'equal))
+        (e-board-runtime--pending-pickup-head nil)
+        (e-board-runtime--pending-pickup-tail nil)
+        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
+        (e-board-runtime--admission-open-p t)
+        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings (make-hash-table :test 'equal))
+        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        callbacks close-callbacks)
+    (e-harness-turn-state-reset-aggregate)
+    (unwind-protect
+        (let ((e-board-registry-close-scheduler
+               (lambda (function)
+                 (push function close-callbacks))))
+          (let* ((harness (e-harness-create :enabled-layer-ids nil))
+                 (binding nil)
+                 (board nil)
+                 (source nil)
+                 (main-client nil)
+                 (participant nil))
+            (cl-letf (((symbol-function 'run-at-time)
+                       (lambda (_seconds _repeat function &rest arguments)
+                         (push (cons function arguments) callbacks)
+                         nil)))
+              (setq binding (e-chat-service-create-board
+                             :harness harness :id "external-close-callback")
+                    board (e-chat-service-binding-board binding)
+                    source (e-board-registry-board-source-board board)
+                    main-client (e-chat-service-binding-client binding)
+                    participant
+                    (e-board-runtime-attachment-participant
+                     (e-chat-service-binding-attachment binding)))
+              (e-board-post-fact
+               source :id "external-close" :tags '(main)
+               :content "close" :source-fact-key '(terminal 1 0))
+              (should callbacks)
+              ;; Close is owned by the registry; the queued service observer
+              ;; must still perform the same exact lease cleanup before the
+              ;; registry's bounded close callback finishes the board.
+              (e-board-registry-close board)
+              (dolist (callback (copy-sequence callbacks))
+                (apply (car callback) (cdr callback)))
+              (should (eq (e-chat-service-binding-lifecycle-state binding)
+                          'retired))
+              (should-not
+               (and (gethash harness e-chat-service--bindings)
+                    (gethash "external-close-callback"
+                             (gethash harness e-chat-service--bindings))))
+              (should-not
+               (gethash (e-board-runtime--session-key
+                         harness "external-close-callback")
+                        e-board-runtime--session-attachments))
+              (should-not
+               (gethash (e-board-runtime--attachment-key board participant)
+                        e-board-runtime--attachments))
+              (should-not
+               (gethash (e-board-registry-client-id main-client)
+                        (e-board-registry-board-clients board)))
+              (should-not
+               (gethash (e-board-registry-participant-id participant)
+                        (e-board-registry-board-participants board))))
+            (while close-callbacks
+              (funcall (pop close-callbacks)))
+            (should (eq (e-board-registry-board-state board) 'closed))))
+      (e-harness-turn-state-reset-aggregate))))
 
 (provide 'e-modernchat-test)
 
