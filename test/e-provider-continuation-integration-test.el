@@ -160,7 +160,7 @@ covered by the adapter tests below."
                  (setq curations-at-later-request
                        (copy-tree
                         (mapcar
-                         #'e-session--context-record
+                         #'e-session-aggregate-context-record
                          (e-session-context-promotions
                           (e-harness-sessions harness-ref)
                           "ephemeral-anchor-session"))))

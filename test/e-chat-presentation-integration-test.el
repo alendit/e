@@ -4557,12 +4557,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-token-usage-before-compaction-uses-context-estimate ()
   "After compaction, stale provider usage does not hide compacted context size."
-  (let* ((timestamps '("2026-05-25T10:00:00Z"
-                       "2026-05-25T10:00:01Z"
-                       "2026-05-25T10:00:02Z"
-                       "2026-05-25T10:00:03Z"
-                       "2026-05-25T10:00:04Z"))
-         (store (e-session-store-create))
+  (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
@@ -4576,36 +4571,32 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (setq-local e-chat-harness harness)
       (setq-local e-chat-session-id "chat-compacted-usage")
       (e-chat-surface-set-redraw-visible t)
-      (cl-letf (((symbol-function 'e-session--timestamp)
-                 (lambda (&optional _time)
-                   (prog1 (car timestamps)
-                     (setq timestamps (cdr timestamps))))))
-        (e-chat-test--create-session store :id e-chat-session-id)
-        (e-session-append-message
-         store
-         e-chat-session-id
-         (list :id "old"
-               :role 'user
-               :content (make-string 1000 ?x)))
-        (e-session-append-message
-         store
-         e-chat-session-id
-         '(:id "kept" :role user :content "kept suffix"))
-        (e-session-append-activity-event
-         store
-         e-chat-session-id
-         "turn-1"
-         'token-usage
-         '(:input-tokens 202598
-           :cached-input-tokens 7552
-           :output-tokens 419
-           :reasoning-output-tokens 139
-           :total-tokens 203017))
-        (e-session-append-compaction
-         store
-         e-chat-session-id
-         "summary"
-         :first-kept-entry-id "kept"))
+      (e-chat-test--create-session store :id e-chat-session-id)
+      (e-session-append-message
+       store
+       e-chat-session-id
+       (list :id "old"
+             :role 'user
+             :content (make-string 1000 ?x)))
+      (e-session-append-message
+       store
+       e-chat-session-id
+       '(:id "kept" :role user :content "kept suffix"))
+      (e-session-append-activity-event
+       store
+       e-chat-session-id
+       "turn-1"
+       'token-usage
+       '(:input-tokens 202598
+         :cached-input-tokens 7552
+         :output-tokens 419
+         :reasoning-output-tokens 139
+         :total-tokens 203017))
+      (e-session-append-compaction
+       store
+       e-chat-session-id
+       "summary"
+       :first-kept-entry-id "kept")
       (e-chat-surface-set-status "idle" t)
       (e-ui-work-with-batch-drain
         (e-ui-work-drain-batch :buffer (current-buffer)
@@ -4727,11 +4718,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-compaction-finished-refreshes-context-estimate ()
   "Finished compactions immediately refresh stale context estimates."
-  (let* ((timestamps '("2026-05-25T10:00:00Z"
-                       "2026-05-25T10:00:01Z"
-                       "2026-05-25T10:00:02Z"
-                       "2026-05-25T10:00:03Z"))
-         (store (e-session-store-create))
+  (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
@@ -4744,42 +4731,38 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-surface-set-redraw-visible t)
-          (cl-letf (((symbol-function 'e-session--timestamp)
-                     (lambda (&optional _time)
-                       (prog1 (car timestamps)
-                         (setq timestamps (cdr timestamps))))))
-            (e-session-append-message
+          (e-session-append-message
+           store
+           e-chat-session-id
+           (list :id "old"
+                 :role 'user
+                 :content (make-string 1000 ?x)))
+          (e-session-append-message
+           store
+           e-chat-session-id
+           '(:id "kept" :role user :content "kept suffix"))
+          (e-chat-surface-set-status "idle" t)
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'chat-mode-line-status))
+          (should (string-match-p "~[0-9]+ pct" mode-name))
+          (let ((before mode-name))
+            (e-session-append-compaction
              store
              e-chat-session-id
-             (list :id "old"
-                   :role 'user
-                   :content (make-string 1000 ?x)))
-            (e-session-append-message
-             store
-             e-chat-session-id
-             '(:id "kept" :role user :content "kept suffix"))
-            (e-chat-surface-set-status "idle" t)
+             "summary"
+             :first-kept-entry-id "kept")
+            (e-chat-render-event
+             (e-events-make :type 'compaction-finished
+                            :session-id e-chat-session-id
+                            :turn-id "turn-compact"
+                            :payload '(:compaction-id "compaction-1"
+                                       :first-kept-entry-id "kept")))
             (e-ui-work-with-batch-drain
               (e-ui-work-drain-batch :buffer (current-buffer)
                                      :owner 'chat-mode-line-status))
             (should (string-match-p "~[0-9]+ pct" mode-name))
-            (let ((before mode-name))
-              (e-session-append-compaction
-               store
-               e-chat-session-id
-               "summary"
-               :first-kept-entry-id "kept")
-              (e-chat-render-event
-               (e-events-make :type 'compaction-finished
-                              :session-id e-chat-session-id
-                              :turn-id "turn-compact"
-                              :payload '(:compaction-id "compaction-1"
-                                         :first-kept-entry-id "kept")))
-              (e-ui-work-with-batch-drain
-                (e-ui-work-drain-batch :buffer (current-buffer)
-                                       :owner 'chat-mode-line-status))
-              (should (string-match-p "~[0-9]+ pct" mode-name))
-              (should-not (equal mode-name before)))))
+            (should-not (equal mode-name before))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

@@ -465,7 +465,7 @@
                             :metadata '(:parent-session-id "root"
                                         :subagent-role "tool-user"))
           (let* ((store (e-session-persistent-index-store-create directory))
-                 (worker (e-session--peek-session store "worker"))
+                 (worker (e-session-aggregate-peek-session store "worker"))
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)

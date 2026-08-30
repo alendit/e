@@ -945,9 +945,9 @@ PROMPT forces completion even when only one/default instance exists."
   (when (and (e-harness-p harness) session-id)
     (let* ((store (e-chat-service-session-store harness))
            (session (ignore-errors
-                      (e-session--peek-session store session-id))))
+                      (e-session-aggregate-peek-session store session-id))))
       (when (and session
-                 (e-session--persistent-p store)
+                 (e-session-persistent-p store)
                  (not (plist-get session :loaded)))
         session))))
 

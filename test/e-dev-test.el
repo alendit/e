@@ -254,7 +254,7 @@
                             :metadata '(:parent-session-id "root"
                                         :subagent-role "tool-user"))
           (let* ((store (e-session-persistent-index-store-create directory))
-                 (worker (e-session--peek-session store "worker"))
+                 (worker (e-session-aggregate-peek-session store "worker"))
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
@@ -275,7 +275,7 @@
             (e-dev-reload default-directory)
             (should (eq (e-harness-registry-get :chat-default) harness))
             (should (eq (e-harness-sessions harness) store))
-            (should (eq (e-session--peek-session store "worker") worker))
+            (should (eq (e-session-aggregate-peek-session store "worker") worker))
             (should (equal
                      (mapcar (lambda (session) (plist-get session :id))
                              (e-harness-root-session-list harness))

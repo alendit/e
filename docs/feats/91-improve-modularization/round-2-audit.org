@@ -1,0 +1,343 @@
+#+title: Feature 91 Round 2 Session and Storage Audit
+#+startup: overview
+
+* Scope and status
+
+This is the implementation audit for the Feature 91 Round 2 session/storage
+family.  It covers =F91-OWNER=, =F91-SESSION=, =F91-TOPOLOGY=, and
+=F91-PRESERVATION=.  The implementer left the work uncommitted.  Parent review
+accepted the round on 2026-08-30 after requiring and verifying an acyclic
+runtime graph, storage-owned physical state, pure codec/catalog boundaries,
+and application-service replay/persistence composition.  The running Emacs
+was not queried, reloaded, signaled, or changed.
+
+The stable =e-session.el= facade remains the application-service composition
+root.  The session aggregate, pure durable codec, pure catalog projection
+policy, and current JSONL storage adapter now have separate reasons to change
+and one-way runtime dependencies.  Feature 87 remains =Planned=: no SQLite
+schema, migration, cutover, new durable format, or replacement persistence
+implementation was introduced here.
+
+The intended public behavior is unchanged: documented =e-session-*= APIs,
+session values, JSONL/index/checkpoint names and fields, record ordering,
+atomic writes, queue/controller retry behavior, recovery errors, lazy and
+chunked replay, and restart lifetime remain the preservation contract.
+
+* Responsibility, state, and lifetime matrix
+
+| Cluster | Semantic owner | Representation and state | Lifetime | Boundary/disposition |
+|---------+----------------+--------------------------+----------+----------------------|
+| Session identity and domain aggregate | =lisp/core/e-session-aggregate.el= | =e-session-store= owns session identity, metadata/configuration, loaded session values, entry indexes, board journals, identity/path/head semantics, derived counts/markers, typed mutations, admission state, and replay application | Process/store and loaded-session lifetime; durable facts retain the existing journal/index/checkpoint lifetime | Retain as one aggregate owner.  Its store has no queue, timer, controller, outbox, checkpoint-dirty, or physical-write fields.  The remaining path/configuration slots are the established public store shape and are read as registration input by the composition root. |
+| Durable mapping and replay decode | =lisp/core/e-session-codec.el= | Stateless JSONL/index value mapping, symbol/array normalization, board association mapping, fixed context record-version/type dispatch, and detached record decode | Call lifetime only; no aggregate/store registry or mutable durable state | Retain as the pure codec owner.  =e-session-codec-replay-record= returns detached semantic data; it never mutates an aggregate. |
+| Catalog/checkpoint/recovery policy | =lisp/core/e-session-catalog.el= | Pure index entry, sort, bounded checkpoint manifest/record selection, checkpoint validation, and recovery projection policy over explicit values | Projection call lifetime; derived durable projections keep existing restart lifetime when written by the application/storage composition | Retain as the catalog owner.  It performs no file I/O, storage calls, aggregate mutation, or physical recovery side effect. |
+| Current physical storage adapter | =lisp/core/e-session-storage.el= | Explicit =e-session-storage-state= owns directory references supplied at registration, JSONL append, index/checkpoint publication, queue/timer/generation/sequence state, dirty-session state, Node controller/outbox/retry/ack state, atomic writes, and unsettled durability counters | Process/store lifetime for adapter state; files preserve existing durable lifetime | Retain as the single Feature 87-facing storage direction.  The current direct/queued/Node JSONL paths are one adapter implementation.  Raw path, record, queue-entry, command, marker, and controller helpers are private. |
+| Application replay and mutation composition | =lisp/core/e-session.el= | Transient load/replay coordination, semantic-to-wire pairing, aggregate/catalog/storage projection joins, and stable public names | Facade call/load lifetime; store and file lifetimes remain those above | Retain as an application service, not a forwarding-only split.  It is the only owner that sequences physical read, codec decode, aggregate apply, catalog projection, and storage publication. |
+| External session consumers | harness, compaction, chat service/shells, board runtime, defaults, dev performance, resources, migration tool | Consumer-specific harness, context, board, presentation, and measurement state; no session queue/index/controller registry | Existing consumer/runtime lifetimes | Retain their semantic ownership.  Production reach-through now uses facade or narrow owner operations; no foreign owner-private reference remains. |
+
+No generic internal bag or shared mutable session record was added.  Storage
+receives an opaque application key and owns its own nested state.  Catalog and
+codec receive detached values.  The aggregate is the only owner that mutates
+loaded session values and replay-derived fields.
+
+* Actual dependency and call graph
+
+The final owner runtime graph is:
+
+#+begin_example
+e-session facade -> aggregate, codec, catalog, storage
+aggregate        -> codec
+codec            -> e-context-lifetime (stable domain contract)
+catalog          -> codec
+storage          -> codec
+#+end_example
+
+There are no owner-to-facade calls and no mutual owner pair.  The graph above
+is the actual call graph, not only the =require= graph: aggregate calls codec
+only for the canonical board-routing wire-size copy and JSON-null handling;
+catalog calls codec for detached record mapping; storage calls codec for
+physical wire mapping and line parsing; and the facade composes all other
+joins.  No declaration, callback slot, process-global registry, or service
+locator hides a reverse edge.
+
+The application sequence for a normal mutation is:
+
+#+begin_example
+facade -> aggregate semantic mutation
+       -> codec record-for-entry
+       -> storage prepare/commit-mutation
+       -> catalog + aggregate detached projections
+       -> storage publish-projections at the existing barrier
+#+end_example
+
+Replay is similarly one-way: storage reads a detached physical value; the
+facade asks codec to decode it; the facade passes semantic data to
+=e-session-aggregate-apply-record=; aggregate state changes happen only there.
+The codec does not call replay callbacks and the storage/catalog owners never
+inspect an aggregate plist.
+
+Evidence: =/tmp/e-session-final-audit-sweep-v4.log= (owner edge counts, zero
+foreign private refs, zero facade-private refs, and zero duplicate owner
+definitions).  The fresh owner probes in
+=/tmp/e-session-fresh-owner-loads-round2-final.log= independently exercise the
+same load direction.
+
+* Owner-shaped contracts and Feature 87 replacement trace
+
+The aggregate contract is semantic: create/get/list/fork, typed mutation and
+replay application, identity/path/navigation, context/board/provider
+projections, and admission state.  It does not expose a storage controller or
+physical writer operation.
+
+The codec contract is pure: detached record/index encode/decode, JSON-line
+parsing, fixed durable normalization, and =replay-record= returning semantic
+data.  It has no store argument and no state mutation.
+
+The catalog contract is pure and bounded: index entry/sort, checkpoint
+manifest/JSON projection, retained records, and checkpoint validity.  It does
+not read or write files.
+
+The storage contract is the single current adapter direction selected for the
+later Feature 87 replacement: registration, bounded session header/reference,
+resume checkpoint and journal reads, typed =prepare-mutation= and
+=commit-mutation=, admission publication/abort, detached projection
+publication, queue flush/finalize, and bounded durability status.  Generic raw
+=append-record=, path, index-slot, checkpoint-slot, command, and controller
+operations are private storage mechanisms.
+
+Replacing the current JSONL adapter later therefore changes the storage owner
+and its adapter tests while preserving aggregate semantic mutation, codec
+values, catalog policy, and facade application service.  No expected-revision,
+SQLite, migration, or unsupported-operation semantics were invented in this
+round.
+
+Deterministic schema/type handling is fixed in the codec and context domain
+contracts before replay: record versions and known context types are dispatched
+by explicit code, not a load-order-sensitive registration hook.
+
+* Public semantic API consumer map
+
+The candidate inventory is in =/tmp/e-session-public-consumers-round2-final.txt=
+and the owner-specific inventories are in =/tmp/e-session-aggregate-consumers-final.txt=,
+=/tmp/e-session-codec-consumers-final.txt=, =/tmp/e-session-catalog-consumers-final.txt=,
+and =/tmp/e-session-storage-consumers-final.txt=.  Counting ordinary
+owner-prefixed definitions after private cleanup gives aggregate 91, codec 12,
+catalog 5, and storage 33 (141 total).  This is an inventory signal, not an
+arbitrary target; every retained operation below has a facade, downstream
+owner, configuration, or direct owner contract consumer.
+
+| Owner surface | Retained semantic operations and real consumers |
+|---------------+-----------------------------------------------|
+| Aggregate | Facade composition consumes identity/create/admission, semantic mutations, replay apply, path/navigation, context/provider/board queries, and index/list projections.  Harness and compaction consume context record projections; chat service consumes board-routing value/policy operations.  Aggregate direct contracts consume only its own private mechanism helpers. |
+| Codec | Facade consumes detached decode/line parsing; aggregate consumes the stable routing wire copy; catalog consumes entry-to-record mapping; storage consumes wire encode/index/line parsing; direct codec tests prove detached replay. |
+| Catalog | Facade consumes checkpoint validity/manifest/JSON/index/sort projections.  Its path, retained-record, and record-assembly helpers are private and are tested only in the catalog suite. |
+| Storage | Facade and migration consume registration, header/reference, resume/journal reads, typed commit/preflight, admission, projection publication, finalize/enable, queue flush, checkpoint dirty/clean, and durability health.  The board runtime observes the stable unsettled hook through the facade; storage mechanism tests alone inspect queue/controller state. |
+| Facade | Existing application callers consume stable =e-session-*= names.  No extracted owner calls back into the facade. |
+
+Representation-only helpers removed or privatized include aggregate registry
+accessors, list-field replacement, replay prepend/normalization, root-id and
+turn-option helpers, board-journal/freeze/dedup helpers, context ownership and
+component helpers, catalog path/record assembly helpers, codec nested
+normalizers, and storage queue/controller/physical primitives.  There are no
+private compatibility aliases for their former names.
+
+Two historical public names remain deliberately: =e-session-persistence-unsettled-state=
+is the facade health hook consumed by board runtime quiescence, and
+=e-session-persistence-unavailable= is the established persistence error
+condition.  They are narrow public compatibility contracts, not storage-owner
+aliases or a competing storage port.
+
+* Former private consumers and dispositions
+
+| Former consumer/cluster | Former reach-through | Current disposition |
+|-------------------------+----------------------+---------------------|
+| =lisp/core/e-board-runtime.el= | Session persistence unsettled state and private lifecycle assumptions | Uses the stable facade health projection/hook and aggregate board/session operations; retain board settlement behavior. |
+| =lisp/core/e-chat-service.el= | Session persistence and board-routing implementation details | Uses =e-session= public board/admission operations and the semantic aggregate routing value operation; retain shell-neutral service ownership. |
+| =lisp/core/e-compaction.el= | Journal/context records and old persistence helpers | Uses facade context projections and semantic append operations; its test fixture uses public codec mapping and no owner-private symbol. |
+| =lisp/core/e-harness.el= | Write-index and session context internals | Uses facade session operations and public durability/index boundaries; harness lifecycle remains harness-owned. |
+| =lisp/defaults/e-default-harnesses.el= | Direct persistence constructor/enable implementation | Uses facade enable/create behavior; retain default harness persistence. |
+| =lisp/dev/e-dev-perf.el= | Direct writer/index implementation | Measures the public storage projection boundary; retain performance scenarios. |
+| =lisp/shells/chat/e-chat.el=, =e-chat-overview.el= | Persistent session lookup and unloaded-session metadata | Use the established session aggregate semantic lookup/index projection; no private owner reach-through. |
+| =tools/migrate-session-checkpoints.el= | Physical session path/checkpoint/index and unload internals | Uses session ids, resume presence, detached index entry, unload/migrate, and refresh-index facade operations. |
+| Facade and consumer tests | Old monolithic persistence names and representation assertions | Public record/output/restart tests remain in =e-session-test.el= and consumer suites; owner mechanism assertions live only in owner suites. |
+| Deleted =lisp/core/e-session-persistence.el= | Complete duplicate JSONL/index/queue/controller implementation | Delete; one implementation remains in =e-session-storage.el=. |
+| Deleted =test/e-session-persistence-test.el= | Monolithic mechanism mirror | Delete; assertions were retained or strengthened by aggregate, codec, catalog, and storage owner suites. |
+
+Negative checks are independent of the test pass counts: production has zero
+cross-owner private references; composed/integration tests have zero
+owner-private references; no storage state field contains aggregate session
+records; no old persistence implementation remains; and no private
+compatibility bridge remains.
+
+* Durable format and restart-equivalence record
+
+- Each session remains a newline-delimited UTF-8 JSONL journal named
+  =<session-id>.jsonl=.  The derived =index.json= and per-session
+  =<session-id>.checkpoint.json= names and JSON fields are unchanged.
+- Existing record types, metadata keys, symbol/array normalization, context
+  versions, board envelopes, parent/head ordering, index ordering, and
+  checkpoint version remain unchanged.  New writes remain v3-only where that
+  was already the current behavior; legacy replay handling remains read-only.
+- Direct and queued appends retain record order, generation/sequence
+  ordering, critical-before-derived index ordering, retry/dedup behavior, and
+  the existing Node writer protocol.  Atomic temporary-file replacement and
+  controller acknowledgements remain in storage.
+- Malformed/truncated-tail, missing/invalid checkpoint, invalid schema,
+  admission, and controller errors remain surfaced at the existing boundaries;
+  unexpected errors are not swallowed.  Lazy index stubs, cooperative chunked
+  replay, and explicit checkpoint migration retain their prior lifetime and
+  performance semantics.
+- Restart coverage includes chat messages, board identity/messages,
+  context generations/promotions/curation, metadata/schema, catalog/index and
+  checkpoint recovery, queue/controller retry, and corrupt-tail behavior.
+
+* Test topology and dispositions
+
+| Suite | Role and disposition |
+|-------+----------------------|
+| =test/e-session-aggregate-contract-test.el= | Retain/strengthen direct fresh-owner load, identity, semantic mutation, replay application, detached board values, and reset contracts.  Requires aggregate only. |
+| =test/e-session-aggregate-test.el= | Retain direct aggregate path, incremental derived-state, and routing-budget mechanisms.  Private calls are aggregate-private only; facade/persistence tests were moved out. |
+| =test/e-session-codec-test.el= | Retain/strengthen pure normalization, deterministic schema, JSON array mapping, and decode-without-apply contracts.  Private calls are codec-private only. |
+| =test/e-session-catalog-test.el= | Retain direct bounded checkpoint/path/record/index policy tests.  Private path/record helpers are catalog-private only. |
+| =test/e-session-storage-contract-test.el= | Retain direct opaque-owner replacement-double contracts.  It proves storage can register, commit a typed value, and atomically write a checkpoint without aggregate/facade state. |
+| =test/e-session-storage-test.el= | Retain/strengthen queue, retry, checkpoint, controller, atomicity, corrupt-tail, and admission mechanism tests.  Only this storage owner suite inspects queue/controller private state. |
+| =test/e-session-test.el= and =test/e-session-restart-integration-test.el= | Retain facade/composed/restart behavior.  Four historical aggregate-prefixed test identities were retained for the preservation selector after moving them to the facade suite; they use public facade behavior and no owner-private symbols. |
+| affected board/chat/harness/compaction/subagent/task-queue/resource suites | Retain public consumer behavior; replace old persistence reach-through and remove owner-private integration assertions. |
+| Old persistence suite | Delete; no copied replacement. |
+
+* Validation evidence
+
+| Check | Exact result | Evidence |
+|-------+--------------+----------|
+| Direct owner contracts/mechanisms | PASS: 61/61, 0 unexpected | =/tmp/e-session-owner-direct-round2-final5.log= |
+| Facade and restart contracts | PASS: 99/99, 0 unexpected | =/tmp/e-session-facade-round2-final7.log= |
+| Exact selected preservation set | PASS: 483 expected passes, 2 expected skips, 0 unexpected in 485 tests | =/tmp/e-session-preservation-485-round2-final4.log= |
+| Affected consumer batch | PASS: 451/451, 0 unexpected | =/tmp/e-session-consumers-round2-final5.log= |
+| Performance unit scenarios | PASS: 17/17; append/index, replay/list, and metadata/state scenarios show no new repeated scan or synchronous-write signal | =/tmp/e-session-perf-round2.log=, =/tmp/e-session-perf-scenarios-round2.log= |
+| Production byte compilation with warnings | PASS; no warnings/errors | =/tmp/e-session-eldev-compile-round2-final6.log= |
+| Check-parens/read parsing | PASS for changed/new owner, facade, consumer, tool, and test files | =/tmp/e-session-check-parens-round2-final7.log= |
+| Fresh direct owner operations | PASS: aggregate/codec/catalog/storage load without facade; aggregate appends one message; no forbidden owner is loaded | =/tmp/e-session-fresh-owner-loads-round2-final.log= |
+| Fresh facade operation | PASS: facade composes all owners, creates a session, and appends/reads a message | =/tmp/e-session-fresh-facade-operation-round2-final.log= |
+| Private/duplicate/dependency sweep | PASS: zero cross-owner private production refs, zero owner-private composed refs, zero facade-private owner refs, zero duplicate definitions; graph edges are one-way | =/tmp/e-session-final-audit-sweep-v4.log= |
+| Diff whitespace check | PASS: =git diff --check= clean | =/tmp/e-session-diff-check-round2-final4.log= |
+| Graphical chat/workspace gate | PASS: 27/27, 0 unexpected; representative settled/provider states visually inspected | =/tmp/e-session-graphical-round2-final2-escalated.log=; captures in =/tmp/e-session-graphical-shots-final2= |
+
+The preservation skips are the two existing environment-dependent tests:
+=e-chat-surface-integration-test-evil-escape-routes-transcript-commands= and
+=e-chat-test-assistant-markdown-renders-with-text-properties=.  The graphical
+runner required the bounded escalated private test daemon because the sandbox
+cannot bind its socket; it only wrote temporary test artifacts and did not
+touch the user's Emacs.
+
+The principal commands were:
+
+#+begin_example
+eldev test --omit-backtraces -f test/e-session-aggregate-contract-test.el -f test/e-session-aggregate-test.el -f test/e-session-codec-test.el -f test/e-session-catalog-test.el -f test/e-session-storage-contract-test.el -f test/e-session-storage-test.el
+eldev test --omit-backtraces -f test/e-session-test.el -f test/e-session-restart-integration-test.el
+eldev compile -W lisp/core/e-session.el lisp/core/e-session-aggregate.el lisp/core/e-session-codec.el lisp/core/e-session-catalog.el lisp/core/e-session-storage.el lisp/core/e-board-runtime.el lisp/core/e-chat-service.el lisp/core/e-compaction.el lisp/core/e-harness.el lisp/defaults/e-default-harnesses.el lisp/dev/e-dev-perf.el lisp/shells/chat/e-chat.el lisp/shells/chat/e-chat-overview.el
+git diff --check
+bash e2e/run-graphical-tests.sh
+#+end_example
+
+The exact preservation selector was generated from the accepted 485-case
+baseline output and is retained in the raw command/log history under
+=/tmp/e-session-preservation-485-round2-final4.log=.  All raw logs stay under
+=/tmp=; no whole-repository suite was run.
+
+* Changed paths and residual topology
+
+| Disposition | Paths |
+|-------------+-------|
+| New owner modules | =lisp/core/e-session-aggregate.el=, =e-session-codec.el=, =e-session-catalog.el=, =e-session-storage.el= |
+| Retained/reduced facade | =lisp/core/e-session.el= |
+| Removed obsolete roots | =lisp/core/e-session-persistence.el=, =test/e-session-persistence-test.el= |
+| Migrated production consumers | =lisp/core/e-board-runtime.el=, =e-chat-service.el=, =e-compaction.el=, =e-harness.el=, =lisp/defaults/e-default-harnesses.el=, =lisp/dev/e-dev-perf.el=, =lisp/shells/chat/e-chat.el=, =e-chat-overview.el=, =tools/migrate-session-checkpoints.el= |
+| Owner/direct tests | =test/e-session-aggregate-contract-test.el=, =e-session-aggregate-test.el=, =e-session-codec-test.el=, =e-session-catalog-test.el=, =e-session-storage-contract-test.el=, =e-session-storage-test.el= |
+| Facade/consumer tests | =test/e-session-test.el=, =e-modernchat-test.el=, =e-compaction-test.el=, =e-session-resources-test.el=, =e-harness-test.el=, =e-process-reporting-test.el=, =e-defaults-test.el=, =e-dev-test.el=, =e-board-runtime-test.el=, =e-chat-session-test.el=, =e-provider-continuation-integration-test.el=, and the affected board/chat/task-queue/subagent suites |
+
+Residual large roots are intentional.  =e-session.el= remains the application
+service and stable facade; it is not an implementation copy.  The aggregate
+remains one cohesive semantic root because its identity, path, derived state,
+board, context, and typed mutation transitions share one reason to change.
+The storage owner remains one adapter because direct/queued/Node append,
+checkpoint, retry, and atomicity policy share one physical durability reason to
+change.  The codec and catalog are smaller pure boundaries.  Further splitting
+would be a new scope unless it creates a real independent owner contract.
+
+Known risk is limited to the future Feature 87 adapter replacement and the
+external Node writer process boundary; both are explicit and covered by
+bounded tests.  There is no known behavioral blocker.  Parent architectural
+acceptance is intentionally still pending.
+
+* F91-GOAL status
+
+- Behavioral status: PASS for available repository evidence: the exact 485-case
+  preservation selector has 483 expected passes, two expected environment
+  skips, and zero unexpected; direct owners are 61/61; facade/restart is
+  99/99; affected consumers are 451/451; and isolated graphical behavior is
+  27/27.
+- Mechanism progress: complete for this uncommitted Round 2 worktree: four
+  owner modules, acyclic runtime graph, storage-owned physical state,
+  pure codec/catalog boundaries, migrated consumers, removed persistence copy,
+  direct replacement contracts, test-topology correction, fresh-load probes,
+  compilation, static negative checks, and audit are present.  Parent
+  acceptance remains pending and the Feature 91 plan remains non-=Done=.
+
+* Mechanical-equivalence exceptions
+
+The deliberate internal exceptions are owner file extraction, private namespace
+renames, explicit facade load/replay ordering, storage-owned nested adapter
+state, pure codec replay return values followed by aggregate application, and
+movement of queue/restart mechanism tests by semantic owner.  Four historical
+test identities remain in the facade file solely to preserve the accepted
+preservation selector.  There is no public command/API argument, durable field,
+file name, ordering, atomicity rule, recovery error, or write mode change.
+
+* Design self-check
+
+1. If this package stopped here, the project is better: session meaning,
+   mapping, recovery policy, and physical durability have explicit owners,
+   direct contracts, and preservation evidence.
+2. It moves directly toward Feature 87's local storage replacement and later
+   Feature 91 runtime/adapter rounds.
+3. Durable formats and public behavior are stable.  The current JSONL adapter
+   is the only intentionally replaceable decision; uncertain SQLite details
+   remain local to the planned future adapter with no speculative registry.
+4. Aggregate owns session meaning and transitions; codec owns wire mapping;
+   catalog owns bounded recovery projection; storage owns physical durability;
+   facade owns application composition.  Each has one primary reason to change.
+5. Coupling is reduced: raw persistence reach-through and representation-only
+   owner helpers are gone or private, and the retained boundaries are semantic.
+6. Dependencies flow from facade/consumers to stable owner contracts; the
+   aggregate-to-codec edge is downward and no owner points to the facade,
+   storage, catalog, provider, UI, or transport in reverse.
+7. File, timer, process, queue, retry, and atomic-rename effects remain in
+   storage; catalog is value-only; aggregate does not perform I/O.
+8. Aggregate state is process/store/session-local; storage queue/controller
+   state is adapter/store-local; durable files retain restart lifetime; no
+   shared mutable record or generic bag was added.
+9. No intended runtime work was added.  Existing incremental derived fields,
+   bounded checkpoint selection, queue ordering, retry/dedup, and chunked replay
+   remain; performance scenarios show no repeated scans or synchronous-write
+   regression.
+10. The abstractions are real and substitutable: the opaque-owner storage
+    contract double commits typed values without aggregate or JSONL internals,
+    while the current adapter retains all old preconditions and error behavior.
+11. Compatibility applies to documented facade APIs and durable files.  Private
+    names have no compatibility promise; obsolete persistence paths were deleted.
+12. Removed now: the monolithic persistence module/test mirror, duplicate
+    operational copies, foreign private reach-through, raw controller/index
+    calls from consumers, and forwarding-only private bridges.
+13. Expected malformed-tail, checkpoint, schema, controller, and admission
+    errors remain at their owning boundary; unexpected errors surface through
+    the facade or test process.
+14. Direct owner tests prove each pure/stateful owner independently; facade,
+    restart, consumer, and graphical suites prove composition.  An alternate
+    implementation satisfying these contracts can replace an owner without
+    rewriting unrelated tests.
+
+* Acceptance note
+
+Parent review accepted Round 2 on 2026-08-30.  Feature 91 remains
+=In-progress=: the runtime-control, adapter/capability, residual-topology,
+architecture-documentation, full repository, and independent fixed-point
+review gates are still pending.

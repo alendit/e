@@ -65,15 +65,15 @@ on ownership and dependency evidence rather than size alone.
 
 | Contract ID | Observable or owner-level invariant | Semantic owner | Lifetime, recovery, or bound | Implementation round | Named scenario | Evidence class | Status |
 |-------------+-------------------------------------+----------------+------------------------------+----------------------+----------------+----------------+--------|
-| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Partial: Round 1 accepted |
+| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Partial: Rounds 1-2 accepted |
 | =F91-PRESENTATION= | Chat and Org Canvas preserve public interaction while surface, composer, transcript, activity, and overview code and buffer-local state have explicit owners; external consumers use no chat-private symbols. | Chat presentation family | Buffer-local presentation state; reloadable shell modules. | 1 | =F91-S-PRESENTATION= | Deterministic repository and isolated graphical | Accepted |
-| =F91-SESSION= | Session aggregate operations preserve current durable records and restart behavior while codec/replay, checkpoint/catalog policy, and JSONL I/O are separate owner-shaped modules. | Session aggregate and current storage adapter | Existing durable lifetime and recovery; no migration or new format. | 2 | =F91-S-RESTART= | Deterministic repository | Pending |
+| =F91-SESSION= | Session aggregate operations preserve current durable records and restart behavior while codec/replay, checkpoint/catalog policy, and JSONL I/O are separate owner-shaped modules. | Session aggregate and current storage adapter | Existing durable lifetime and recovery; no migration or new format. | 2 | =F91-S-RESTART= | Deterministic repository | Accepted |
 | =F91-RUNTIME= | Board attachment and ordinary turns preserve admission, ordering, settlement, abort, and activity behavior through public attached-turn and harness-owner boundaries, without private callback mutation. | Harness application services and board runtime | Process-local turn/queue/activity state; existing durable session and board effects. | 3 | =F91-S-ATTACHED-TURN= | Deterministic repository | Pending |
 | =F91-OPENAI= | Existing profiles, auth, wire mappings, transports, decoding, diagnostics, and compaction compose behind the unchanged OpenAI facade without cross-variant branches. | OpenAI backend adapter | Request/stream lifetime, cancellation, retry, and effective provider identity unchanged. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
 | =F91-MCP= | Helper-process and HTTP transports satisfy the same supported MCP client contract, while capability/tool/resource/context composition is transport-independent. | MCP client and capability composition | Existing connection/process lifetime and error behavior. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
 | =F91-BASE= | File/resource behavior and bash process/collector behavior compose into the unchanged base capability without sharing an accidental implementation owner. | Base capability components | Existing buffer/file coherence and process/collector lifetimes. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Pending |
 | =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Pending |
-| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Partial: Round 1 accepted |
+| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Partial: Rounds 1-2 accepted |
 
 ** Scenario portfolio
 
@@ -137,6 +137,30 @@ external-consumer suites, compilation, fresh owner loads, static dependency
 sweeps, and 27-case isolated graphical gate pass.  The detailed evidence and
 residual-risk record is in =round-1-audit.org=.  The running Emacs was left
 unchanged.
+
+*** Round 2: session and storage family
+
+Accepted on 2026-08-30.  The session family is implemented behind the stable
+=e-session.el= facade.  The aggregate/identity/semantic-mutation owner is
+=e-session-aggregate.el=; deterministic durable normalization and replay are
+in =e-session-codec.el=; checkpoint/catalog projection and recovery policy are
+in =e-session-catalog.el=; and the current JSONL/index/queued/Node adapter is
+in =e-session-storage.el=.  The obsolete monolithic persistence module and
+its mechanism suite are deleted.  Feature 87 remains =Planned=: this round
+adds no SQLite schema, migration, cutover, or new durable format.
+
+The direct owner contracts/mechanisms pass 61/61 and the facade/restart
+contracts pass 99/99.  The exact selected 485-case preservation set passes
+with 483 expected passes and two existing expected skips, the affected
+consumer batch passes 451/451, and the isolated graphical gate passes 27/27.
+Focused session/board/harness/subagent/task-queue/chat/consumer/performance
+checks, fresh owner/facade loads, byte compilation, syntax parsing, and
+private/dependency sweeps are recorded in =round-2-audit.org=.  The corrected
+test topology keeps owner mechanisms in direct suites and composed/restart
+behavior in the facade suite.  Parent review independently confirmed the
+one-way runtime graph and storage-state lifetime.  The running Emacs was left
+unchanged; using these core record/boundary changes immediately requires a
+restart rather than a live reload.
 
 ** Initial residual-topology inventory
 

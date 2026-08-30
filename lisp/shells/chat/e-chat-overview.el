@@ -691,8 +691,8 @@ adds its display name to the row."
       (let* ((store (e-chat-service-session-store harness))
              (stored-session
               (ignore-errors
-                (e-session--peek-session store (plist-get session :id)))))
-        (unless (and (e-session--persistent-p store)
+                (e-session-aggregate-peek-session store (plist-get session :id)))))
+        (unless (and (e-session-persistent-p store)
                      (not (plist-get stored-session :loaded)))
           (copy-sequence (plist-get stored-session :messages))))))
 

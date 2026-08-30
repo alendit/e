@@ -618,7 +618,7 @@ participant turns settle.  An unrouted input settles visibly as `unrouted'."
     e-harness--aggregate-unsettled-change-functions
     e-work--unsettled-change-functions
     e-board-registry--unsettled-change-functions
-    e-session--unsettled-change-functions
+    e-session-storage-unsettled-change-hook
     e-task-queue--unsettled-change-functions)
   "Owner-transition hooks observed by controlled quiescence requests.")
 
@@ -1584,7 +1584,7 @@ publishes an attachment."
     ;; For a predicted id, keep the query useful even before the runtime
     ;; session exists: an explicit duplicate is still an admission conflict.
     (when (and (not require-session)
-               (gethash session-id (e-session-store-sessions store)))
+               (e-session-session-present-p store session-id))
       (signal 'e-session-duplicate (list session-id)))
     t))
 

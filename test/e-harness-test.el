@@ -1676,7 +1676,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
           (let ((disk
                  (with-temp-buffer
                    (insert-file-contents
-                    (e-session--session-file store "session-1"))
+                    (e-session-storage-session-reference store "session-1"))
                    (buffer-string))))
             (should (string-match-p "REDACTED" disk))
             (should-not
@@ -1809,7 +1809,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                  (journal
                   (with-temp-buffer
                     (insert-file-contents
-                     (e-session--session-file store "session-1"))
+                     (e-session-storage-session-reference store "session-1"))
                     (buffer-string)))
                  (projected (plist-get payload :diagnostics)))
             (should started)
@@ -5102,8 +5102,8 @@ Return request options, persisted anchors, and the final context."
                    :sessions store))
          (write-count 0))
     (e-harness-create-session harness :id "session-1")
-    (cl-letf (((symbol-function 'e-session--write-index)
-               (lambda (_store)
+    (cl-letf (((symbol-function 'e-session-storage-publish-projections)
+               (lambda (&rest _)
                  (setq write-count (1+ write-count)))))
       (e-harness--emit-turn-event harness "session-1" "turn-1"
                                   'provider-request-started

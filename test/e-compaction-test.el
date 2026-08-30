@@ -34,9 +34,13 @@ that same value into the fixture store."
                       :parent-id (plist-get session :current-head-id)
                       :timestamp "2026-08-24T00:00:00Z"
                       :context-record
-                      (e-session--context-record-for-json record))))
-    (e-session--append-record-now store session-id entry)
-    (e-session--replay-record store entry)
+                      (plist-get
+                       (e-session-codec-record-for-json
+                        (list :context-record record))
+                       :context-record))))
+    (e-session-storage-commit-mutation store session-id entry)
+    (e-session-aggregate-apply-record
+     store (e-session-codec-replay-record entry))
     record))
 
 (ert-deftest e-compaction-test-prepare-chooses-user-boundary ()
@@ -578,7 +582,7 @@ later assistant/tool-call message instead of signalling no-boundary."
            (entry
             (e-compaction-apply-portable-boundary
              store session-id application))
-           (record (e-session--context-record entry)))
+           (record (e-session-aggregate-context-record entry)))
       (should (string-prefix-p "generation:" (plist-get record :id)))
       (should (equal (plist-get record :covered-session-boundary)
                      (plist-get (e-session-entry-by-id

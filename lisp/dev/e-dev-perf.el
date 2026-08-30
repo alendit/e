@@ -721,14 +721,9 @@ artifacts under `e-dev-perf-run-directory'."
      (let ((index-writes 0)
            metrics)
        (e-session-create store :id "session-append")
-       (cl-letf (((symbol-function 'e-session--write-index)
-                  (lambda (store-arg)
-                    (setq index-writes (1+ index-writes))
-                    (let ((file (e-session-store-index-file store-arg)))
-                      (when file
-                        (make-directory (file-name-directory file) t)
-                        (with-temp-file file
-                          (insert "[]\n")))))))
+       (cl-letf (((symbol-function 'e-session-storage-publish-projections)
+                  (lambda (&rest _)
+                    (setq index-writes (1+ index-writes)))))
          (setq metrics
                (e-dev-perf--profile-spans
                 (lambda ()
@@ -774,14 +769,9 @@ artifacts under `e-dev-perf-run-directory'."
      (let ((index-writes 0)
            metrics)
        (e-session-create store :id "session-state")
-       (cl-letf (((symbol-function 'e-session--write-index)
-                  (lambda (store-arg)
-                    (setq index-writes (1+ index-writes))
-                    (let ((file (e-session-store-index-file store-arg)))
-                      (when file
-                        (make-directory (file-name-directory file) t)
-                        (with-temp-file file
-                          (insert "[]\n")))))))
+       (cl-letf (((symbol-function 'e-session-storage-publish-projections)
+                  (lambda (&rest _)
+                    (setq index-writes (1+ index-writes)))))
          (setq metrics
                (e-dev-perf--profile-spans
                 (lambda ()

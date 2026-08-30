@@ -426,7 +426,7 @@
            store session-id 'chat-session
            '(:attachments
              ((:uri "file://old.org" :label "old" :canvas t))))
-          (e-session--write-session-checkpoint-now store session-id)
+          (e-session-migrate-session-checkpoint store session-id)
           (dolist (file (list journal checkpoint))
             (with-temp-buffer
               (insert-file-contents file)

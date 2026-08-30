@@ -23,7 +23,6 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
-(require 'e-session-persistence)
 
 (defvar e-chat-default-harness-id)
 
@@ -745,7 +744,7 @@ resolved participant identity so restart never needs shell or caller policy."
                        :default-to default-to)))
     (unless (e-session-board-routing-policy-valid-p policy)
       (signal 'e-session-error (list "Invalid board routing policy" policy)))
-    (e-session--board-routing-copy-value policy)))
+    (e-session-aggregate-board-routing-copy-value policy)))
 
 (defun e-chat-service--canonical-legacy-root-p (session association)
   "Return non-nil when SESSION has the established root identity defaults."
@@ -1029,11 +1028,11 @@ resolved participant identity so restart never needs shell or caller policy."
 (defun e-chat-service--persist-board-state
     (store session-id principal board-id role &optional routing-policy)
   "Persist board identity, chat ROLE, and ROUTING-POLICY through STORE."
-  (if-let ((controller (e-session-store-persistence-controller store)))
-      (e-session-persistence-declare-board-state
-       controller session-id principal board-id role routing-policy)
-    (e-session-declare-board-state
-     store session-id principal board-id role routing-policy)))
+  ;; Session composition owns the aggregate-to-storage transition.  Keeping
+  ;; this call at the facade boundary prevents the chat service from reaching
+  ;; into the storage controller's projection details.
+  (e-session-declare-board-state
+   store session-id principal board-id role routing-policy))
 
 (cl-defun e-chat-service-create-board (&key harness metadata id)
   "Create a top-level board with one main participant and return its binding."

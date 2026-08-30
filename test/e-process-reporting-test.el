@@ -309,7 +309,7 @@
            (reports (e-session-process-reports store "session-1"))
            (disk (with-temp-buffer
                    (insert-file-contents
-                    (e-session--session-file store "session-1"))
+                    (e-session-storage-session-reference store "session-1"))
                    (buffer-string))))
       (should (= (length reports) 1))
       (should (equal (plist-get (car reports) :id) (plist-get marker :id)))
@@ -462,7 +462,7 @@
              :estimation-method "api_key=hidden-key estimate"))
       (let ((disk (with-temp-buffer
                     (insert-file-contents
-                     (e-session--session-file store "session-1"))
+                     (e-session-storage-session-reference store "session-1"))
                     (buffer-string))))
         (should (string-match-p "REDACTED" disk))
         (should-not (string-match-p

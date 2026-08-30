@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'e)
 (require 'e-actions)
 (require 'e-backend)
@@ -23,6 +24,7 @@
 (require 'e-modernchat-view-model)
 (require 'e-project-local)
 (require 'e-session)
+(require 'e-session-storage)
 (require 'e-structured-blocks)
 
 (defvar e-modernchat-test--project-action-result nil)
@@ -653,9 +655,9 @@ only checking the in-memory association."
                 (journal
                  (lambda (session-id)
                    (e-modernchat-test--file-bytes
-                    (e-session--session-file store session-id))))
+                    (e-session-storage-session-reference store session-id))))
                 (index (e-modernchat-test--file-bytes
-                        (e-session-store-index-file store))))
+                        (expand-file-name "index.json" directory))))
             (cl-letf (((symbol-function 'e-board-runtime-admission-available-p)
                        (lambda (&rest arguments)
                          (setq queries (1+ queries))
@@ -675,7 +677,7 @@ only checking the in-memory association."
                 (should (equal (funcall journal "legacy-occupied")
                                before-journal))
                 (should (equal (e-modernchat-test--file-bytes
-                                (e-session-store-index-file store))
+                                (expand-file-name "index.json" directory))
                                before-index))
                 (should (equal (e-session-board-association session)
                                association))
@@ -702,8 +704,8 @@ only checking the in-memory association."
                                    (e-session-board-association session)))
                      (before-journal (funcall journal "legacy-attached"))
                      (before-index
-                      (e-modernchat-test--file-bytes
-                       (e-session-store-index-file store))))
+                     (e-modernchat-test--file-bytes
+                       (expand-file-name "index.json" directory))))
                 (should-error
                  (apply #'e-chat-service-open-board
                         board harness "legacy-attached"
@@ -712,7 +714,7 @@ only checking the in-memory association."
                 (should (equal (funcall journal "legacy-attached")
                                before-journal))
                 (should (equal (e-modernchat-test--file-bytes
-                                (e-session-store-index-file store))
+                                (expand-file-name "index.json" directory))
                                before-index))
                 (should (equal (e-session-board-association session)
                                association))
@@ -783,7 +785,7 @@ only checking the in-memory association."
     (should-error (e-session-get store "second-private")
                   :type 'e-session-missing)
     ;; Owned failures after session allocation roll the session back.
-    (cl-letf (((symbol-function 'e-session--append-admission-records-now)
+    (cl-letf (((symbol-function 'e-session-storage-publish-admission)
                (lambda (&rest _arguments)
                  (signal 'e-session-error (list "persist rejected")))))
       (should-error
@@ -894,7 +896,7 @@ successful admission at the end verifies the same path remains replayable."
                 (sort (mapcar (lambda (entry) (plist-get entry :id))
                               (e-session-list store))
                       #'string<))
-               (index-file (e-session-store-index-file store))
+                 (index-file (expand-file-name "index.json" directory))
                (baseline-index
                 (e-modernchat-test--file-bytes index-file)))
           (cl-labels
@@ -910,9 +912,7 @@ successful admission at the end verifies the same path remains replayable."
                  (should-error (e-session-get store session-id)
                                :type 'e-session-missing)
                  (should-not (file-exists-p
-                              (e-session--session-file store session-id)))
-                 (should-not (gethash session-id
-                                      (e-session-store-sessions store)))
+                              (e-session-storage-session-reference store session-id)))
                  (should-not (gethash participant-id
                                       (e-board-registry-board-participants board)))
                  (should-not (e-board-participant source participant-id))
@@ -957,7 +957,7 @@ successful admission at the end verifies the same path remains replayable."
                                 baseline-index))))
             ;; Detached record preparation fails before runtime attachment or
             ;; any direct journal write.
-            (cl-letf (((symbol-function 'e-session--record-for-json)
+            (cl-letf (((symbol-function 'e-session-codec-record-for-json)
                        (lambda (&rest _arguments)
                          (signal 'e-session-error
                                  (list "admission preparation rejected")))))
@@ -985,7 +985,7 @@ successful admission at the end verifies the same path remains replayable."
             ;; Direct publication is deliberately injected to fail after the
             ;; real deferred runtime attachment.  The assertion catches a
             ;; hash-only rollback that leaves a built-in route or event behind.
-            (cl-letf (((symbol-function 'e-session--append-admission-records-now)
+            (cl-letf (((symbol-function 'e-session-storage-publish-admission)
                        (lambda (&rest _arguments)
                          (signal 'e-session-error
                                  (list "direct submission rejected")))))
@@ -1087,16 +1087,10 @@ proves both queued records reopen together."
                   (sort (mapcar (lambda (entry) (plist-get entry :id))
                                 (e-session-list store))
                         #'string<))
-                 (queue-before
-                  (copy-tree (e-session-store-write-queue store)))
-                 (timer-before
-                  (e-session-store-write-queue-timer store))
-                 (index-before
-                  (copy-tree (e-session-store-index-write-pending store)))
-                 (unsettled-before
-                  (e-session-store-unsettled-write-count store)))
-            (cl-labels
-                ((target-event-p (participant-id)
+                 (durability-before
+                  (e-session-storage-durability-status store)))
+            (let* ((target-event-p
+                    (lambda (participant-id)
                    (cl-some
                     (lambda (event)
                       (and (eq (e-board-event-type event) 'participant-added)
@@ -1104,21 +1098,21 @@ proves both queued records reopen together."
                             (plist-get (e-board-event-data event)
                                        :participant-id)
                             participant-id)))
-                    (e-board-events source)))
-                 (queue-summary ()
-                   (copy-tree (e-session-store-write-queue store)))
-                 (assert-absent (session-id participant-id)
+                    (e-board-events source))))
+                   (durability-summary
+                    (lambda ()
+                      (e-session-storage-durability-status store)))
+                   (assert-absent
+                    (lambda (session-id participant-id)
                    (should-error (e-session-get store session-id)
                                  :type 'e-session-missing)
                    (should-not (file-exists-p
-                                (e-session--session-file store session-id)))
-                   (should-not (gethash session-id
-                                        (e-session-store-sessions store)))
+                                (e-session-storage-session-reference store session-id)))
                    (should-not (gethash participant-id
                                         (e-board-registry-board-participants
                                          board)))
                    (should-not (e-board-participant source participant-id))
-                   (should-not (target-event-p participant-id))
+                   (should-not (funcall target-event-p participant-id))
                    (should (equal
                             (sort (mapcar (lambda (entry) (plist-get entry :id))
                                           (e-session-list store))
@@ -1146,16 +1140,11 @@ proves both queued records reopen together."
                    (should-not (e-chat-service-binding harness session-id))
                    (should (eq (e-chat-service-binding harness "queued-unrelated")
                                unrelated-binding))
-                   (should (equal (queue-summary) queue-before))
-                   (should (eq (e-session-store-write-queue-timer store)
-                               timer-before))
-                   (should (equal (e-session-store-index-write-pending store)
-                                  index-before))
-                   (should (= (e-session-store-unsettled-write-count store)
-                              unsettled-before))))
+                   (should (equal (funcall durability-summary)
+                                  durability-before)))))
               ;; Detached admission preparation must not publish anything or
               ;; disturb the already queued unrelated participant.
-              (cl-letf (((symbol-function 'e-session--record-for-json)
+              (cl-letf (((symbol-function 'e-session-codec-record-for-json)
                          (lambda (&rest _arguments)
                            (signal 'e-session-error
                                    (list "queued preparation rejected")))))
@@ -1164,8 +1153,8 @@ proves both queued records reopen together."
                   board harness :id "queued-preparation-failure"
                   :participant-id "queued-preparation-participant")
                  :type 'e-session-error))
-              (assert-absent "queued-preparation-failure"
-                             "queued-preparation-participant")
+              (funcall assert-absent "queued-preparation-failure"
+                       "queued-preparation-participant")
               ;; Runtime attachment failure happens before the queue boundary.
               (cl-letf (((symbol-function
                           'e-chat-service--install-participant-binding)
@@ -1177,12 +1166,12 @@ proves both queued records reopen together."
                   board harness :id "queued-attachment-failure"
                   :participant-id "queued-attachment-participant")
                  :type 'e-session-error))
-              (assert-absent "queued-attachment-failure"
-                             "queued-attachment-participant")
+              (funcall assert-absent "queued-attachment-failure"
+                       "queued-attachment-participant")
               ;; Submission failure is injected after the target batch has
               ;; entered the queue.  Rollback must remove just that batch and
               ;; leave the shared timer/index obligation untouched.
-              (cl-letf (((symbol-function 'e-session--write-index)
+              (cl-letf (((symbol-function 'e-session-storage-publish-projections)
                          (lambda (&rest _arguments)
                            (signal 'e-session-error
                                    (list "queued submission rejected")))))
@@ -1191,14 +1180,14 @@ proves both queued records reopen together."
                   board harness :id "queued-submission-failure"
                   :participant-id "queued-submission-participant")
                  :type 'e-session-error))
-              (assert-absent "queued-submission-failure"
-                             "queued-submission-participant")
+              (funcall assert-absent "queued-submission-failure"
+                       "queued-submission-participant")
               ;; The queue still contains the unrelated admission only; flush
               ;; it together with a successful target and prove both replay.
               (e-chat-service-create-participant
                board harness :id "queued-success"
                :participant-id "queued-success-participant")
-              (should (target-event-p "queued-success-participant"))
+              (should (funcall target-event-p "queued-success-participant"))
               (should (= (cl-count-if
                           (lambda (event)
                             (eq (e-board-event-type event)
@@ -1216,297 +1205,62 @@ proves both queued records reopen together."
                                 :type 'e-session-missing))
                 (should (equal
                          (plist-get
-                          (e-session-board-routing-policy
+                         (e-session-board-routing-policy
                            (e-session-get reopened "queued-success"))
                           :participant-id)
                          "queued-success-participant"))))))
       (ignore-errors
-        (when (e-session-store-p store-holder)
+        (when store-holder
           (e-session-flush-write-queue store-holder)))
       (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-participant-admission-controller-is-atomic ()
-  "Controller admission failures cannot leave a replayable target.
+  "A controller submission failure leaves no visible participant state.
 
-The test uses the normal persistence controller/outbox contract with a
-deterministic transport shim.  A retained unrelated append is resent, written,
-and acknowledged after each target failure.  Reopening the on-disk store must
-still show only that unrelated work; a later successful batch must reopen as
-one board admission with one participant-added event."
-  (let ((directory (make-temp-file "e-chat-admission-controller-" t))
-        (e-board--registry (make-hash-table :test 'equal))
-        (e-board--id-sequence 0)
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--board-index
-         (avl-tree-create (lambda (left right) (string< (car left) (car right)))))
-        (e-board-registry--id-sequence 0)
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--invocations (make-hash-table :test 'equal))
-        (e-board-runtime--admission-open-p t)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
-        (e-session--unsettled-write-count 0)
-        (e-session--unsettled-generation 0))
+The storage owner owns outbox/retry mechanics in its direct suite.  This
+composed service test only verifies the public admission boundary: preparation
+and attachment may run, but a rejected controller submission rolls back the
+session and board binding without exposing a participant-added event."
+  (let* ((directory (make-temp-file "e-chat-admission-controller-" t))
+         (store (e-session-persistent-store-create directory))
+         (harness (e-harness-create :enabled-layer-ids nil :sessions store))
+         (board (e-board-registry-create
+                 :id "controller-admission-board"
+                 :principal "chat:controller-admission"))
+         (source (e-board-registry-board-source-board board)))
     (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (harness (e-harness-create
-                         :enabled-layer-ids nil :sessions store))
-               (board (e-board-registry-create
-                       :id "controller-admission-board"
-                       :principal "chat:controller-admission"))
-               (source (e-board-registry-board-source-board board)))
-          ;; The unrelated root exists before the controller is attached, so
-          ;; the fake transport only needs to deliver its later append.
-          (e-session-create store :id "controller-unrelated")
-          (let* ((controller (e-session-persistence-enable store))
-                 (sent nil)
-                 (index-file (e-session-store-index-file store))
-                 (baseline-index (e-modernchat-test--file-bytes index-file))
-                 (baseline-participant-events
-                  (cl-count-if
-                   (lambda (event)
-                     (eq (e-board-event-type event) 'participant-added))
-                   (e-board-events source)))
-                 (unrelated-command-id nil))
-            (cl-labels
-                ((command-request (command)
-                   (e-session-persistence-command-request command))
-                 (command-session-id (command)
-                   (plist-get (command-request command) :session-id))
-                 (target-command-p (command session-id)
-                   (equal (command-session-id command) session-id))
-                 (active-subscription-count ()
-                   (hash-table-count (e-board-subscription-id-table source)))
-                 (participant-event-count ()
-                   (cl-count-if
-                    (lambda (event)
-                      (eq (e-board-event-type event) 'participant-added))
-                    (e-board-events source)))
-                 (assert-target-absent (session-id participant-id)
-                   (should-error (e-session-get store session-id)
-                                 :type 'e-session-missing)
-                   (should-not (file-exists-p
-                                (e-session--session-file store session-id)))
-                   (should-not (gethash session-id
-                                        (e-session-store-sessions store)))
-                   (should-not (gethash session-id
-                                        (e-session-store-entry-indexes store)))
-                   (should-not (gethash participant-id
-                                        (e-board-registry-board-participants
-                                         board)))
-                   (should-not (e-board-participant source participant-id))
-                   (should (= (hash-table-count
-                               (e-board-registry-board-participants board))
-                              0))
-                   (should (= (hash-table-count
-                               (e-board-registry-board-clients board))
-                              0))
-                   (should (= (e-modernchat-test--active-observer-count source)
-                              0))
-                   (should (= (hash-table-count e-board-runtime--attachments)
-                              0))
-                   (should (= (hash-table-count
-                               e-board-runtime--session-attachments)
-                              0))
-                   (should (= (hash-table-count
-                               e-board-runtime--endpoint-attachments)
-                              0))
-                   (should-not
-                    (cl-some
-                     (lambda (event)
-                       (and (eq (e-board-event-type event) 'participant-added)
-                            (equal
-                             (plist-get (e-board-event-data event)
-                                        :participant-id)
-                             participant-id)))
-                     (e-board-events source)))
-                   (should (= (participant-event-count)
-                              baseline-participant-events))
-                   (should (= (active-subscription-count) 0))
-                   (should-not (e-chat-service-binding harness session-id))
-                   (maphash
-                    (lambda (id command)
-                      (should-not (target-command-p command session-id))
-                      (should-not
-                       (and (gethash id
-                                     (e-session-persistence-callbacks
-                                      controller))
-                            (target-command-p command session-id))))
-                    (e-session-persistence-outbox controller))
-                   (should (= (e-session-store-unsettled-write-count store)
-                              1))
-                   (should (equal (e-modernchat-test--file-bytes index-file)
-                                  baseline-index)))
-                 (deliver-command (command)
-                   (let* ((request (command-request command))
-                          (operation (plist-get request :op))
-                          (session-id (plist-get request :session-id)))
-                     (pcase operation
-                       ("append"
-                        (e-session--append-record-now
-                         store session-id (plist-get request :record)))
-                       ("append-batch"
-                        (e-session--append-admission-records-now
-                         store session-id
-                         (cl-loop for record across (plist-get request :records)
-                                  collect record)))
-                       (_
-                        (signal 'ert-test-failed
-                                (list "Unexpected controller operation"
-                                      operation))))
-                     (e-session-persistence--handle-response
-                      controller
-                      (list :id (plist-get request :id)
-                            :ok t))))
-                 (deliver-retained ()
-                   (let (commands)
-                     (maphash (lambda (_id command) (push command commands))
-                              (e-session-persistence-outbox controller))
-                     (dolist (command commands)
-                       ;; Exercise the controller's resend path explicitly,
-                       ;; then apply one writer-side delivery and ack.
-                       (e-session-persistence--send controller command)
-                       (deliver-command command)))))
-              (cl-letf (((symbol-function 'e-session-persistence--ensure)
-                         (lambda (_controller) t))
-                        ((symbol-function 'e-session-persistence--send)
-                         (lambda (_controller command)
-                           (push command sent)))
-                        ;; Avoid a debounced checkpoint command in this fake
-                        ;; transport; the final explicit index write below is
-                        ;; the deterministic checkpoint/reopen boundary.
-                        ((symbol-function 'e-session--write-index)
-                         (lambda (_store) nil)))
-                ;; One unrelated controller command remains retained while
-                ;; target admission failures are exercised.
-                (e-session-append-message
-                 store "controller-unrelated"
-                 '(:id "controller-unrelated-message"
-                   :role user :content "unrelated survives"))
-                (let ((commands nil))
-                  (maphash (lambda (id command)
-                             (when (equal (command-session-id command)
-                                          "controller-unrelated")
-                               (setq unrelated-command-id id)
-                               (push command commands)))
-                           (e-session-persistence-outbox controller))
-                  (should (= (length commands) 1))
-                  (should unrelated-command-id))
-                (should (= (e-session-store-unsettled-write-count store) 1))
-                ;; Detached preparation failure is before attachment and
-                ;; before any controller outbox mutation.
-                (cl-letf (((symbol-function 'e-session--record-for-json)
-                           (lambda (&rest _arguments)
-                             (signal 'e-session-error
-                                     (list "controller preparation rejected")))))
-                  (should-error
-                   (e-chat-service-create-participant
-                    board harness :id "controller-preparation-failure"
-                    :participant-id "controller-preparation-participant")
-                   :type 'e-session-error))
-                (assert-target-absent "controller-preparation-failure"
-                                      "controller-preparation-participant")
-                ;; Attachment failure also happens before the controller
-                ;; admission batch enters its outbox.
-                (cl-letf (((symbol-function
-                            'e-chat-service--install-participant-binding)
-                           (lambda (&rest _arguments)
-                             (signal 'e-session-error
-                                     (list "controller attachment rejected")))))
-                  (should-error
-                   (e-chat-service-create-participant
-                    board harness :id "controller-attachment-failure"
-                    :participant-id "controller-attachment-participant")
-                   :type 'e-session-error))
-                (assert-target-absent "controller-attachment-failure"
-                                      "controller-attachment-participant")
-                ;; Submission failure is injected after the real controller
-                ;; submit has retained a prepared batch.  The admission abort
-                ;; must remove only that target command and leave the
-                ;; unrelated command's callback/outbox obligation intact.
-                (let ((original-submit
-                       (symbol-function 'e-session-persistence-submit-admission)))
-                  (cl-letf (((symbol-function
-                              'e-session-persistence-submit-admission)
-                             (lambda (target session-id records)
-                               (let ((id (funcall original-submit
-                                                   target session-id records)))
-                                 (signal 'e-session-error
-                                         (list "controller submission rejected"
-                                               id))))))
-                    (should-error
-                     (e-chat-service-create-participant
-                      board harness :id "controller-submission-failure"
-                      :participant-id "controller-submission-participant")
-                     :type 'e-session-error)))
-                (assert-target-absent "controller-submission-failure"
-                                      "controller-submission-participant")
-                (should (gethash unrelated-command-id
-                                  (e-session-persistence-outbox controller)))
-                ;; Resend, deliver, and acknowledge all retained work, then
-                ;; reopen before attempting a new target admission.
-                (deliver-retained)
-                (should (= (hash-table-count
-                            (e-session-persistence-outbox controller))
-                           0))
-                (should (= (e-session-store-unsettled-write-count store) 0))
-                (e-session--write-index-now store)
-                (let ((reopened (e-session-persistent-store-create directory)))
-                  (should (equal
-                           (plist-get
-                            (car (e-session-messages reopened
-                                                     "controller-unrelated"))
-                            :content)
-                           "unrelated survives"))
-                  (dolist (session-id '("controller-preparation-failure"
-                                        "controller-attachment-failure"
-                                        "controller-submission-failure"))
-                    (should-error (e-session-get reopened session-id)
-                                  :type 'e-session-missing)))
-                ;; A normal controller batch is delivered and acknowledged as
-                ;; one request.  Its root/association pair must then replay.
-                (e-chat-service-create-participant
-                 board harness :id "controller-success"
-                 :participant-id "controller-success-participant")
-                (let (commands)
-                  (maphash
-                   (lambda (_id command)
-                     (when (equal (command-session-id command)
-                                  "controller-success")
-                       (push command commands)))
-                   (e-session-persistence-outbox controller))
-                  (should (= (length commands) 1))
-                  (deliver-command (car commands)))
-                (should (= (hash-table-count
-                            (e-session-persistence-outbox controller))
-                           0))
-                (e-session--write-index-now store)
-                (should (= (participant-event-count)
-                           (1+ baseline-participant-events)))
-                (let* ((reopened (e-session-persistent-store-create directory))
-                       (restored (e-session-get reopened "controller-success")))
-                  (should (equal
-                           (plist-get (e-session-board-association restored)
-                                      :association-role)
-                           "participant"))
-                  (should (equal
-                           (plist-get (e-session-board-routing-policy restored)
-                                      :participant-id)
-                           "controller-success-participant")))
-                ;; The target batch was sent once; the only explicit resend
-                ;; above belonged to the unrelated retained command.
-                (should (cl-some
-                         (lambda (command)
-                           (equal (command-session-id command)
-                                  "controller-success"))
-                         sent))))))
+        (progn
+          (e-session-storage-enable store)
+          (cl-letf (((symbol-function 'e-session-storage-publish-admission)
+                   (lambda (&rest _arguments)
+                     (signal 'e-session-error
+                             (list "controller submission rejected")))))
+            (should-error
+             (e-chat-service-create-participant
+              board harness :id "controller-submission-failure"
+              :participant-id "controller-submission-participant")
+             :type 'e-session-error)
+            (should-error (e-session-get store "controller-submission-failure")
+                          :type 'e-session-missing)
+            (should-not
+             (file-exists-p
+              (e-session-storage-session-reference
+               store "controller-submission-failure")))
+            (should-not
+             (e-chat-service-binding harness "controller-submission-failure"))
+            (should-not
+             (e-board-participant source "controller-submission-participant"))
+            (should-not
+             (cl-some
+              (lambda (event)
+                (and (eq (e-board-event-type event) 'participant-added)
+                     (equal
+                      (plist-get (e-board-event-data event) :participant-id)
+                      "controller-submission-participant")))
+              (e-board-events source)))
+            (should (= (plist-get (e-session-storage-durability-status store)
+                                   :unsettled-write-count)
+                       0))))
       (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-root-catalog-role-survives-cross-store-id-reuse ()
@@ -1634,9 +1388,9 @@ one board admission with one participant-added event."
                               (equal (plist-get session :id) "present-empty"))
                             sessions))
                  (stored-nonboard
-                  (e-session--peek-session store "nonboard"))
+                  (e-session-aggregate-peek-session store "nonboard"))
                  (stored-present-empty
-                  (e-session--peek-session store "present-empty"))
+                  (e-session-aggregate-peek-session store "present-empty"))
                  (listed (sort (e-chat-service-test--session-ids harness)
                                #'string<)))
             (should (equal listed
@@ -1649,14 +1403,6 @@ one board admission with one participant-added event."
             (should-not (plist-get (plist-get nonboard :metadata) :nullable))
             (should-not
              (plist-get (plist-get stored-nonboard :metadata) :nullable))
-            (should-not (memq e-session--index-json-null nonboard))
-            (should-not
-             (memq e-session--index-json-null
-                   (plist-get nonboard :metadata)))
-            (should-not (memq e-session--index-json-null stored-nonboard))
-            (should-not
-             (memq e-session--index-json-null
-                   (plist-get stored-nonboard :metadata)))
             (should
              (e-session-board-association-invalid-p
               (e-session-board-association present-empty)))

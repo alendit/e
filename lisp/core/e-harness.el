@@ -35,6 +35,7 @@
 (require 'e-telemetry)
 (require 'e-tools)
 (require 'e-work)
+(require 'seq)
 (require 'subr-x)
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
@@ -1443,7 +1444,7 @@ fields outside that error contract."
                     :write-index nil
                     :checkpoint-retain checkpoint-retain)))
        (when (e-harness--activity-index-flush-event-p type)
-         (e-session--write-index store))
+         (e-session-refresh-index store))
        event))))
 
 (defun e-harness--emit-turn-event (harness session-id turn-id type payload)
@@ -1729,8 +1730,11 @@ The session must currently have a running active turn."
 The endpoint token authorizes one process-local delivery attempt.  It remains
 available to the delivery and receipt paths, but must not enter transcript or
 activity persistence."
-  (e-session--plist-remove
-   (copy-sequence metadata) :board-endpoint-token))
+  (let ((result nil))
+    (dolist (cell (seq-partition (copy-sequence metadata) 2))
+      (unless (eq (car cell) :board-endpoint-token)
+        (setq result (append result cell))))
+    result))
 
 (defun e-harness--pending-steering-items (entry)
   "Return pending steering items from active turn ENTRY."
@@ -2329,7 +2333,7 @@ provider failure only discards acceleration and never changes session state."
     (condition-case _error
         (let* ((generation
                 (e-context-lifetime-generation-from-record
-                 (e-session--context-record portable-generation)))
+                 (e-session-aggregate-context-record portable-generation)))
                (context
                 (e-harness--provider-compaction-context
                  harness session-id generation))
@@ -2355,7 +2359,7 @@ provider failure only discards acceleration and never changes session state."
     (condition-case _error
         (let* ((generation
                 (e-context-lifetime-generation-from-record
-                 (e-session--context-record portable-generation)))
+                 (e-session-aggregate-context-record portable-generation)))
                (context
                 (e-harness--provider-compaction-context
                  harness session-id generation))
@@ -2501,7 +2505,7 @@ provider failure only discards acceleration and never changes session state."
                      (and portable-generation
                           (e-context-lifetime-generation-id
                            (e-context-lifetime-generation-from-record
-                            (e-session--context-record portable-generation))))
+                            (e-session-aggregate-context-record portable-generation))))
                      :reason (plist-get (plist-get record :metadata) :reason)
                      :first-kept-entry-id
                      (plist-get record :first-kept-entry-id)
@@ -2632,7 +2636,7 @@ also emitting the normal compaction failure event."
                             (and portable-generation
                                  (e-context-lifetime-generation-id
                                   (e-context-lifetime-generation-from-record
-                                   (e-session--context-record
+                                   (e-session-aggregate-context-record
                                     portable-generation))))
                             :reason
                             (plist-get (plist-get record :metadata) :reason)

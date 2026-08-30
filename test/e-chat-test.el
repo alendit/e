@@ -2058,29 +2058,25 @@ selected/sibling isolation boundary."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
-         (timestamps '("2026-05-22T10:00:00Z"
-                       "2026-05-22T10:00:01Z"
-                       "2026-05-22T10:00:02Z"
-                       "2026-05-22T10:00:03Z")))
+                   (e-harness-create :backend backend :sessions store))))
     (unwind-protect
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (cl-letf (((symbol-function 'e-session--timestamp)
-                       (lambda (&optional _time)
-                         (prog1 (car timestamps)
-                           (setq timestamps (cdr timestamps))))))
-              (e-chat-test--create-session store :id "older-session"
-                                :metadata '(:name "Alpha old"))
-              (e-session-append-message
-               store "older-session"
-               '(:id "older-message" :role user :content "older prompt"))
-              (e-chat-test--create-session store :id "newer-session"
-                                :metadata '(:name "Zulu newest"))
-              (e-session-append-message
-               store "newer-session"
-               '(:id "newer-message" :role user :content "newer prompt")))
+            (e-chat-test--create-session store :id "older-session"
+                              :metadata '(:name "Alpha old"))
+            (e-session-append-message
+             store "older-session"
+             '(:id "older-message" :role user
+               :created-at "2026-05-22T10:00:01Z"
+               :content "older prompt"))
+            (e-chat-test--create-session store :id "newer-session"
+                              :metadata '(:name "Zulu newest"))
+            (e-session-append-message
+             store "newer-session"
+             '(:id "newer-message" :role user
+               :created-at "2026-05-22T10:00:03Z"
+               :content "newer prompt"))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
                          (let* ((metadata (completion-metadata

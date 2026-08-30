@@ -435,7 +435,7 @@ cache counters, runtime frames, and diagnostics."
                 (mapcar
                  (lambda (entry)
                    (when (eq (plist-get entry :type) 'context-promotion)
-                     (let ((record (e-session--context-record entry)))
+                     (let ((record (e-session-aggregate-context-record entry)))
                        (when (and (equal (plist-get record :record-version)
                                          e-context-lifetime-record-version)
                                   (member (plist-get record :id)

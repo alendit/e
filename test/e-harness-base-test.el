@@ -383,7 +383,7 @@
           (e-harness-base-test--emit-receipt
            harness session-id "turn-checkpoint" "call-checkpoint" "probe"
            "tmp://details/checkpoint.json")
-          (e-session--write-session-checkpoint-now store session-id)
+          (e-session-migrate-session-checkpoint store session-id)
           (let* ((reopened-store (e-session-persistent-store-create directory))
                  (reopened (e-harness-create
                             :backend (e-backend-fake-create :items nil)
@@ -437,25 +437,14 @@
               (e-session-append-activity-event
                store session-id (format "turn-%d" index)
                'tool-progress (list :index index)))
-            (let* ((records (e-session--checkpoint-records store session-id))
-                   (activity-records
-                    (seq-filter
-                     (lambda (record)
-                       (equal (plist-get record :type) "activity-event"))
-                     records))
+            (let* ((manifest
+                    (e-session-checkpoint-manifest store session-id))
                    (retained-ids
-                    (mapcar (lambda (record) (plist-get record :id))
-                            activity-records)))
-              (should (= (length activity-records) 65))
+                    (append (plist-get manifest :entry-ids) nil)))
+              (should (= (length retained-ids) 65))
               (should (member receipt-id retained-ids))
-              (should-not
-               (seq-find
-                (lambda (record)
-                  (equal (plist-get (plist-get record :payload)
-                                    :tool-call)
-                         '(:id "nested-call" :name "probe")))
-                activity-records)))
-            (e-session--write-session-checkpoint-now store session-id)
+              (should-not (member "nested-call" retained-ids)))
+            (e-session-migrate-session-checkpoint store session-id)
             (let* ((reopened-store (e-session-persistent-store-create directory))
                    (reopened (e-harness-create
                               :backend (e-backend-fake-create :items nil)
@@ -497,16 +486,18 @@
             (e-session-append-compaction
              store session-id "compacted"
              :first-kept-entry-id (plist-get boundary :id)))
-          (let* ((records (e-session--checkpoint-records store session-id))
-                 (receipt-record
-                  (seq-find
-                   (lambda (record)
-                     (and (equal (plist-get record :type) "activity-event")
-                          (plist-get record :checkpoint-retain)))
-                   records)))
-            (should receipt-record)
-            (should (plist-get receipt-record :checkpoint-retain)))
-          (e-session--write-session-checkpoint-now store session-id)
+          (let ((manifest
+                 (e-session-checkpoint-manifest store session-id)))
+            (should (member
+                     (plist-get
+                      (seq-find
+                       (lambda (entry)
+                         (equal (plist-get entry :event-type)
+                                'tool-finished))
+                       (e-session-activity-events store session-id))
+                      :id)
+                     (append (plist-get manifest :entry-ids) nil))))
+          (e-session-migrate-session-checkpoint store session-id)
           (let* ((reopened-store (e-session-persistent-store-create directory))
                  (reopened (e-harness-create
                             :backend (e-backend-fake-create :items nil)
