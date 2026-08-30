@@ -249,6 +249,21 @@ objects and event identities created by that attempt.  The inverse is
 idempotent and leaves pre-existing or replacement targets/observers untouched;
 the initiating error remains visible.  This process-local transaction does not
 alter durable board formats or event ordering on successful admissions.
+The board's event and work-index owners acquire exact cell receipts before
+their first observable list, map, head, link, tail, or count mutation.  Each
+receipt records object-identity neighbours and resumable forward/inverse
+stages; inverses repair the captured successor and preserve monotonic event
+sequence values without scanning or deleting an equal-key replacement.  The
+same rule covers terminal-classifier and aggregation-deadline queues.  A
+direct board API registers an unfinished admission in the board-local pending
+catalog, while a runtime composition registers its opaque admission in a
+runtime catalog indexed by exact source board and attachment.  Both catalogs
+retain retry authority when a lower-owner inverse signals, and related new
+mutations recover the captured token before proceeding.  Aggregation admission
+tokens additionally capture the exact aggregation map, work indexes,
+subscription event, classifier/deadline receipts, timer, and prepared
+activation; runtime postchecks reject a reentrant or replacement-invalidated
+lease and abort only that exact token.
 Ordinary-route retirement is owned by `e-board-retire-subscription-exact` in
 `e-board`: its board-monotonic lifetime token fences classifiers, prepared and
 queued effects, replay snapshots, quiet/lifetime/expiry callbacks, and same-id

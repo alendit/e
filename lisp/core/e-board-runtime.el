@@ -143,6 +143,27 @@ Operations accepted before this commit may continue to completion."
 (defvar e-board-runtime--invocations (make-hash-table :test 'equal)
   "Exact invocation effect targets owned by their original attachment.")
 
+(defvar e-board-runtime--pending-admissions (make-hash-table :test 'eq)
+  "Exact cross-owner board admissions awaiting commit or inverse cleanup.")
+
+(defvar e-board-runtime--pending-admissions-by-board
+  (make-hash-table :test 'eq)
+  "Exact pending-admission records bucketed by their source board.
+
+The admission object remains the primary key.  This secondary owner-local
+index makes board retirement and re-ensure consult only the affected board's
+records; they never scan the process-wide catalog or reconstruct an admission
+from descriptive ids.")
+
+(defvar e-board-runtime--pending-admissions-by-attachment
+  (make-hash-table :test 'eq)
+  "Exact pending-admission records bucketed by captured attachment object.
+
+This secondary index is only a retirement fence: an attachment can disappear
+from the live runtime maps while its transaction record remains here.  The
+record object is still the admission authority; the index avoids searching the
+process-wide catalog when that captured lifetime is fenced.")
+
 (defvar e-board-runtime--producer-bindings (make-hash-table :test 'equal)
   "Current runtime-scoped trusted producer bindings by producer id.")
 
@@ -245,7 +266,6 @@ the board transcript.  Terminal events use their dedicated publisher below.")
   identity-token
   owned-pickup-ids producer-delivery-ids producer-turn-keys activity-mailbox-keys
   invocation-targets
-  pending-board-admissions
   retirement-stage retirement-authorized-p retirement-work-authorized-p
   retirement-generation)
 
@@ -279,6 +299,16 @@ The descriptive target is deliberately carried with the invocation object;
 callers must pass this lease through board staging and later effects rather
 than resolving a potentially newer invocation by an equal target key."
   target invocation)
+
+(cl-defstruct (e-board-runtime-pending-admission
+               (:constructor e-board-runtime-pending-admission--create)
+               (:conc-name e-board-runtime-pending-admission-))
+  "Exact runtime-owned lifetime for one cross-owner board admission.
+
+The catalog entry deliberately outlives the captured attachment object.  It
+remains the recovery authority when a reentrant board callback retires or
+replaces that attachment while the lower-owner call is still on the stack."
+  board attachment admission generation in-flight-p cancel-requested-p)
 
 (cl-defstruct (e-board-runtime-work-hooks
                (:constructor e-board-runtime-work-hooks--create)
@@ -1038,50 +1068,171 @@ still prevents completion.  No id-based reconstruction or replacement lookup
 is attempted."
   (condition-case _first-error
       (progn
-        (e-board-abort-work-enrollment board admission)
+        (if (e-board-work-admission-p admission)
+            (e-board-abort-work-enrollment board admission)
+          (e-board-abort-aggregation-admission board admission))
         t)
     (error
      (condition-case _retry-error
          (progn
-           (e-board-abort-work-enrollment board admission)
+           (if (e-board-work-admission-p admission)
+               (e-board-abort-work-enrollment board admission)
+             (e-board-abort-aggregation-admission board admission))
            t)
        (error nil)))))
 
+(defun e-board-runtime--pending-admission-board (board)
+  "Return the source board used as the pending-admission catalog key.
+
+Runtime attachments retain the registry board while board admissions operate on
+its source board.  Normalize both callers to one exact owner key so retirement
+and re-ensure reach the same catalog bucket without a process-wide scan."
+  (if (e-board-registry-board-p board)
+      (e-board-registry-board-source-board board)
+    board))
+
 (defun e-board-runtime--remember-board-admission
-    (attachment board admission)
-  "Retain an exact unfinished BOARD ADMISSION on ATTACHMENT.
+    (attachment board admission &optional in-flight-p)
+  "Retain exact BOARD ADMISSION in the runtime-owned recovery catalog.
 
-This is a bounded owner-local recovery slot for the rare case where both
-attempts at a lower-owner inverse signal.  The admission token, not a
-descriptive id, remains the only retry authority; later enrollment or
-attachment retirement must settle it before proceeding."
+The record is keyed by the opaque admission object, not by ATTACHMENT or an
+id.  ATTACHMENT is only provenance for replacement fencing and may become
+dormant while this record remains reachable."
+  (setq board (e-board-runtime--pending-admission-board board))
   (when (and (e-board-runtime-attachment-p attachment)
-             (e-board-work-admission-p admission))
-    (unless (cl-some (lambda (entry)
-                       (eq (cdr entry) admission))
-                     (e-board-runtime-attachment-pending-board-admissions
-                      attachment))
-      (push (cons board admission)
-            (e-board-runtime-attachment-pending-board-admissions attachment)))))
+             (or (e-board-work-admission-p admission)
+                 (e-board-aggregation-admission-p admission)))
+    (let ((record (gethash admission e-board-runtime--pending-admissions)))
+      (if record
+          (progn
+            ;; The captured attachment and source board are part of the exact
+            ;; transaction identity.  Never silently transfer a pending token
+            ;; to a replacement object merely because a caller has re-ensured
+            ;; the same descriptive participant/session id.
+            (unless (and (eq (e-board-runtime-pending-admission-board record)
+                             board)
+                         (eq (e-board-runtime-pending-admission-attachment record)
+                             attachment))
+              (signal 'e-board-runtime-error
+                      (list "Pending admission identity changed" admission)))
+            (setf (e-board-runtime-pending-admission-in-flight-p record)
+                  in-flight-p))
+        (setq record
+              (e-board-runtime-pending-admission--create
+               :board board :attachment attachment :admission admission
+               :generation (e-board-runtime-attachment-generation attachment)
+               :in-flight-p in-flight-p))
+        (puthash admission record e-board-runtime--pending-admissions)
+        (let ((bucket
+               (or (gethash board e-board-runtime--pending-admissions-by-board)
+                   (puthash board (make-hash-table :test 'eq)
+                            e-board-runtime--pending-admissions-by-board))))
+          (puthash admission record bucket))
+        (let ((bucket
+               (or (gethash attachment
+                            e-board-runtime--pending-admissions-by-attachment)
+                   (puthash attachment (make-hash-table :test 'eq)
+                            e-board-runtime--pending-admissions-by-attachment))))
+          (puthash admission record bucket)))
+      record)))
 
-(defun e-board-runtime--retry-pending-board-admissions (attachment)
-  "Retry exact unfinished board admissions retained on ATTACHMENT.
-Signal a bounded domain error if one is still incomplete; never proceed with a
-new admission or route teardown while its exact lower-owner state is pending."
-  (when (e-board-runtime-attachment-pending-board-admissions attachment)
-    (let (remaining failed)
-      (dolist (entry
-               (e-board-runtime-attachment-pending-board-admissions attachment))
-        (if (e-board-runtime--abort-board-admission (car entry) (cdr entry))
-            nil
-          (push entry remaining)
-          (unless failed
-            (setq failed t))))
-      (setf (e-board-runtime-attachment-pending-board-admissions attachment)
-            (nreverse remaining))
-      (when failed
+(defun e-board-runtime--complete-board-admission (admission)
+  "Forget exact ADMISSION after its board inverse or commit completes."
+  (when (or (e-board-work-admission-p admission)
+            (e-board-aggregation-admission-p admission))
+    (when-let ((record (gethash admission e-board-runtime--pending-admissions)))
+      (let* ((board (e-board-runtime-pending-admission-board record))
+             (board-bucket (and board
+                                (gethash board
+                                         e-board-runtime--pending-admissions-by-board)))
+             (attachment (e-board-runtime-pending-admission-attachment record))
+             (attachment-bucket
+              (and attachment
+                   (gethash attachment
+                            e-board-runtime--pending-admissions-by-attachment))))
+        (remhash admission e-board-runtime--pending-admissions)
+        (when board-bucket
+          (remhash admission board-bucket)
+          (when (= (hash-table-count board-bucket) 0)
+            (remhash board e-board-runtime--pending-admissions-by-board)))
+        (when attachment-bucket
+          (remhash admission attachment-bucket)
+          (when (= (hash-table-count attachment-bucket) 0)
+            (remhash attachment e-board-runtime--pending-admissions-by-attachment))))))
+  admission)
+
+(defun e-board-runtime--finish-board-admission-attempt (admission)
+  "Mark ADMISSION's current stack frame complete without forgetting it yet."
+  (when-let ((record (and (or (e-board-work-admission-p admission)
+                              (e-board-aggregation-admission-p admission))
+                          (gethash admission
+                                   e-board-runtime--pending-admissions))))
+    (setf (e-board-runtime-pending-admission-in-flight-p record) nil)
+    record))
+
+(defun e-board-runtime--fence-pending-board-admissions (attachment)
+  "Mark ATTACHMENT's in-flight admissions as cancellation-requested.
+
+Reentrant retirement must not recursively mutate a board admission that is on
+the current call stack.  The admission record remains in the catalog; the
+outer owner postcheck observes the fence and executes its exact inverse."
+  (when (e-board-runtime-attachment-p attachment)
+    (when-let ((bucket
+                (gethash attachment
+                         e-board-runtime--pending-admissions-by-attachment)))
+      (maphash
+       (lambda (_admission record)
+         (setf (e-board-runtime-pending-admission-cancel-requested-p record)
+               t))
+       bucket))))
+
+(defun e-board-runtime--retry-pending-board-admissions
+    (&optional attachment board allow-fenced-in-flight)
+  "Retry exact pending board admissions for ATTACHMENT or BOARD.
+
+An in-flight admission is fenced rather than recursively aborted.  A later
+public operation sees the still-reachable record and must wait for the owning
+call to unwind; completed records are removed by exact object identity."
+    (let* ((board (e-board-runtime--pending-admission-board
+                   (or board
+                       (and (e-board-runtime-attachment-p attachment)
+                            (e-board-runtime-attachment-board attachment)))))
+         (bucket (and board
+                      (gethash board
+                               e-board-runtime--pending-admissions-by-board)))
+         (attachment-bucket
+          (and attachment
+               (gethash attachment
+                        e-board-runtime--pending-admissions-by-attachment)))
+         records)
+    ;; The board bucket is an exact local index.  When no board or attachment
+    ;; was supplied there is no safe authority to retry; callers must resolve a
+    ;; board before asking for recovery.
+    (if attachment
+        (when attachment-bucket
+          (maphash (lambda (_admission record) (push record records))
+                   attachment-bucket))
+      (when bucket
+        (maphash (lambda (_admission record) (push record records)) bucket)))
+    (dolist (record records)
+      (cond
+       ((and (e-board-runtime-pending-admission-in-flight-p record)
+             allow-fenced-in-flight
+             (e-board-runtime-pending-admission-cancel-requested-p record))
+        ;; The exact owner is unwinding on this same stack.  Its postcheck will
+        ;; abort the token; retirement only fences the record here.
+        nil)
+       ((e-board-runtime-pending-admission-in-flight-p record)
         (signal 'e-board-runtime-error
-                (list "Pending board admission cleanup remains incomplete"))))))
+                (list "Board admission is still in flight" record)))
+       ((not (e-board-runtime--abort-board-admission
+              (e-board-runtime-pending-admission-board record)
+              (e-board-runtime-pending-admission-admission record)))
+        (signal 'e-board-runtime-error
+                (list "Pending board admission cleanup remains incomplete" record)))
+       (t
+        (e-board-runtime--complete-board-admission
+         (e-board-runtime-pending-admission-admission record)))))))
 
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
@@ -1343,9 +1494,12 @@ attachment."
   (unless (e-board-runtime-attachment-p attachment)
     (signal 'wrong-type-argument
             (list 'e-board-runtime-attachment-p attachment)))
-  ;; Complete any exact board admission retained after a prior bounded
-  ;; rollback failure before tearing down this attachment's authority.
-  (e-board-runtime--retry-pending-board-admissions attachment)
+  ;; A reentrant retirement can occur while a board admission is still on the
+  ;; stack.  Fence that exact record first; the outer admission postcheck will
+  ;; perform its inverse.  Non-reentrant records are retried now, before any
+  ;; attachment-owned route state is mutated.
+  (e-board-runtime--fence-pending-board-admissions attachment)
+  (e-board-runtime--retry-pending-board-admissions attachment nil t)
   (let* ((board (e-board-runtime-attachment-board attachment))
          (participant (e-board-runtime-attachment-participant attachment))
          (stage (e-board-runtime-attachment-retirement-stage attachment))
@@ -1916,8 +2070,8 @@ has no callback and is observed only."
            (metadata (e-work-handle-metadata handle)))
       ;; A prior admission may have preserved its exact board token after two
       ;; lower-owner inverse faults.  Finish that transaction before allowing a
-      ;; new Work relation to be staged on the same attachment.
-      (e-board-runtime--retry-pending-board-admissions attachment)
+      ;; new Work relation to be staged on the same board.
+      (e-board-runtime--retry-pending-board-admissions nil board)
       ;; Every participant activity is correlated by source turn.  Reject an
       ;; invalid handle before installing observers or enrolling board work so
       ;; the defect surfaces on the initiating call instead of a later timer.
@@ -1945,12 +2099,19 @@ has no callback and is observed only."
                           (e-board-work-admission-token
                            handle :invocation-id invocation-id
                            :effect-target lease))
+                    ;; Install runtime recovery authority before entering the
+                    ;; reentrant board stage.  The captured attachment may be
+                    ;; retired before this call returns.
+                    (e-board-runtime--remember-board-admission
+                     attachment board admission t)
                     (setq result
                           (e-board-enroll-invocation-work
                            board handle invocation-id lease
                            :metadata metadata :admission admission)))
-                (setq admission (e-board-work-admission-token handle)
-                      result
+                (setq admission (e-board-work-admission-token handle))
+                (e-board-runtime--remember-board-admission
+                 attachment board admission t)
+                (setq result
                       (e-board-enroll-work
                        board handle :metadata metadata :admission admission)))
               (when (and callback
@@ -1961,6 +2122,17 @@ has no callback and is observed only."
                 ;; authority.
                 (signal 'e-board-runtime-error
                         (list "Invocation lease lost after board admission")))
+              (when (and admission
+                         (not (e-board-work-admission-current-p admission)))
+                ;; The no-callback turn path has no invocation lease to use as
+                ;; its postcondition.  The board token is the exact authority:
+                ;; a non-signaling reentrant retirement must not let this stack
+                ;; return a stale Work relation after it has been removed.
+                (signal 'e-board-runtime-error
+                        (list "Work admission lost active authority" admission)))
+              (when admission
+                (e-board-runtime--finish-board-admission-attempt admission)
+                (e-board-runtime--complete-board-admission admission))
               result)
           (error
            ;; Roll back in owner order.  Each inverse is exact and idempotent;
@@ -1968,12 +2140,15 @@ has no callback and is observed only."
            ;; remove a replacement target/observer and it cannot replace the
            ;; original admission error.
            (when admission
+             (e-board-runtime--finish-board-admission-attempt admission)
              (unless (e-board-runtime--abort-board-admission board admission)
                ;; Keep the exact token reachable if both bounded inverse
                ;; attempts fail.  A subsequent enrollment or attachment
                ;; retirement retries it before mutating the same owner again.
                (e-board-runtime--remember-board-admission
-                attachment board admission)))
+                attachment board admission))
+             (when (and (e-board-work-admission-cleanup-complete-p admission))
+               (e-board-runtime--complete-board-admission admission)))
            (when lease
              (condition-case _rollback-error
                  (e-board-runtime--drop-invocation lease)
@@ -1990,23 +2165,59 @@ has no callback and is observed only."
   (when-let* ((session-id (plist-get invocation-context :session-id))
               (attachment (gethash (e-board-runtime--session-key harness session-id)
                                    e-board-runtime--endpoint-attachments)))
-    (let* ((board (e-board-registry-board-source-board
+      (let* ((board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
            (call (plist-get invocation-context :tool-call))
            (turn-id (plist-get invocation-context :turn-id))
            (invocation-id (list turn-id (plist-get call :id)))
+           ;; Resolve unfinished exact inverses before registering another
+           ;; aggregation lease on the same source board.
+           (_pending (e-board-runtime--retry-pending-board-admissions
+                      nil board))
            (lease (e-board-runtime--register-invocation
                     attachment turn-id (plist-get call :id)
                     (lambda (_state reason) (funcall callback reason))))
+           (admission (e-board-aggregation-admission-token board))
            aggregation)
+      (e-board-runtime--remember-board-admission
+       attachment board admission t)
       (condition-case err
           (setq aggregation
                 (e-board-subscribe-aggregation
                  board (mapcar #'e-work-handle-id handles) mode lease
-                 :id invocation-id :timeout timeout))
+                 :id invocation-id :timeout timeout
+                 :admission admission))
         (error
-         (e-board-runtime--drop-invocation lease)
+         (e-board-runtime--finish-board-admission-attempt admission)
+         (unless (e-board-runtime--abort-board-admission board admission)
+           ;; Keep this exact aggregation token independently of the
+           ;; attachment when lower-owner cleanup remains pending.
+           (e-board-runtime--remember-board-admission
+            attachment board admission))
+         (when (e-board-aggregation-admission--cleanup-complete-p admission)
+           (e-board-runtime--complete-board-admission admission))
+         (condition-case _drop-error
+             (e-board-runtime--drop-invocation lease)
+           (error nil))
          (signal (car err) (cdr err))))
+      ;; Board composition is an exact second lease consumer.  A reentrant
+      ;; retirement can invalidate either lease while the board call returns;
+      ;; never hand a cancellation closure a stale aggregation authority.
+      (unless (and (e-board-runtime--invocation-lease-current-p lease)
+                   (e-board-aggregation-admission-current-p admission))
+        (e-board-runtime--finish-board-admission-attempt admission)
+        (unless (e-board-runtime--abort-board-admission board admission)
+          (e-board-runtime--remember-board-admission
+           attachment board admission))
+        (when (e-board-aggregation-admission--cleanup-complete-p admission)
+          (e-board-runtime--complete-board-admission admission))
+        (condition-case _drop-error
+            (e-board-runtime--drop-invocation lease)
+          (error nil))
+        (signal 'e-board-runtime-error
+                (list "Aggregation admission lost active authority" invocation-id)))
+      (e-board-runtime--finish-board-admission-attempt admission)
+      (e-board-runtime--complete-board-admission admission)
       (lambda ()
         (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))
         (e-board-runtime--drop-invocation lease)))))
@@ -2605,7 +2816,13 @@ When omitted, the conservative idle-only harness delivery port is used."
               (gethash endpoint-key e-board-runtime--endpoint-attachments))
       (signal 'e-board-runtime-session-busy (list session-key))))
   (let* ((board (e-board-runtime--active-board board-or-id))
+         (source-board (e-board-registry-board-source-board board))
          participant attachment)
+    ;; A previous exact work admission may outlive its captured attachment.
+    ;; Re-ensure cannot publish a replacement endpoint around that unfinished
+    ;; board inverse; retry the same token before creating new participant
+    ;; authority.
+    (e-board-runtime--retry-pending-board-admissions nil source-board t)
     (condition-case error
         (progn
           (setq participant
@@ -2695,7 +2912,6 @@ This operation never invokes an instance factory or loads dormant history."
           :producer-turn-keys (make-hash-table :test 'equal)
           :activity-mailbox-keys (make-hash-table :test 'equal)
           :invocation-targets (make-hash-table :test 'equal)
-          :pending-board-admissions nil
           :retirement-stage 'live
           :retirement-authorized-p nil
           :retirement-work-authorized-p t

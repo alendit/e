@@ -58,22 +58,24 @@ on ownership and dependency evidence rather than size alone.
 - Product authority: this feature plan and the operator-approved project
   architecture guidance.
 - Owning contract: =F91-OWNER=.
-- Behavioral status: Rounds 1-5 have parent-accepted bounded owners and
-  preservation evidence; independent final review remains.
+- Behavioral status: Rounds 1-4 remain accepted preservation baselines; the
+  current Round 5 receipt/admission correction is behavior-green but its
+  mechanism and topology acceptance remain pending parent and independent
+  review.
 
 ** Contract and evidence matrix
 
 | Contract ID | Observable or owner-level invariant | Semantic owner | Lifetime, recovery, or bound | Implementation round | Named scenario | Evidence class | Status |
 |-------------+-------------------------------------+----------------+------------------------------+----------------------+----------------+----------------+--------|
-| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Parent accepted; independent final review pending |
+| =F91-OWNER= | Each selected responsibility has one cohesive physical owner, a narrow consumer-shaped boundary, and no duplicate operational copy in its former root. | Architecture of the selected owner family | State remains at its existing smallest correct lifetime; extraction adds no recovery path. | All | =F91-S-FRESH-OWNER= | Deterministic repository | Current receipt candidate; parent and independent acceptance pending |
 | =F91-PRESENTATION= | Chat and Org Canvas preserve public interaction while surface, composer, transcript, activity, and overview code and buffer-local state have explicit owners; external consumers use no chat-private symbols. | Chat presentation family | Buffer-local presentation state; reloadable shell modules. | 1 | =F91-S-PRESENTATION= | Deterministic repository and isolated graphical | Accepted |
 | =F91-SESSION= | Session aggregate operations preserve current durable records and restart behavior while codec/replay, checkpoint/catalog policy, and JSONL I/O are separate owner-shaped modules. | Session aggregate and current storage adapter | Existing durable lifetime and recovery; no migration or new format. | 2 | =F91-S-RESTART= | Deterministic repository | Accepted |
 | =F91-RUNTIME= | Board attachment and ordinary turns preserve admission, ordering, settlement, abort, and activity behavior through public attached-turn and harness-owner boundaries, without private callback mutation. | Harness application services and board runtime | Process-local turn/queue/activity state; existing durable session and board effects. | 3 | =F91-S-ATTACHED-TURN= | Deterministic repository | Accepted |
 | =F91-OPENAI= | Existing profiles, auth, wire mappings, transports, decoding, diagnostics, and compaction compose behind the unchanged OpenAI facade without cross-variant branches. | OpenAI backend adapter | Request/stream lifetime, cancellation, retry, and effective provider identity unchanged. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
 | =F91-MCP= | Helper-process and HTTP transports satisfy the same supported MCP client contract, while capability/tool/resource/context composition is transport-independent. | MCP client and capability composition | Existing connection/process lifetime and error behavior. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
 | =F91-BASE= | File/resource behavior and bash process/collector behavior compose into the unchanged base capability without sharing an accidental implementation owner. | Base capability components | Existing buffer/file coherence and process/collector lifetimes. | 4 | =F91-S-ADAPTERS= | Deterministic repository | Accepted |
-| =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Parent accepted; independent final review pending |
-| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Parent accepted; independent final review pending |
+| =F91-TOPOLOGY= | Every material responsibility in each affected root is extracted, retained with a causal colocation proof, or justified not applicable; source and test topology agree. | Feature 91 architecture review | Package lifetime; required unknowns block completion. | 5 | =F91-S-RESIDUAL= | Deterministic source and test evidence | Current receipt candidate; parent and independent acceptance pending |
+| =F91-PRESERVATION= | Public commands, durable formats, event order, provider request semantics, error visibility, load order, and relevant hot paths do not regress. | Existing semantic owners | Baseline compatibility only; no private compatibility shims. | All | All scenarios | Deterministic repository and observational performance | Behavior-green candidate; parent and independent acceptance pending |
 
 ** Scenario portfolio
 
@@ -1052,3 +1054,61 @@ remains =In-progress=; no status index or completion claim was changed.
 Final current-tree evidence is 485/485 selected with two known skips and
 fixture-enabled full ERT 2,614 total, 2,607 expected, 0 unexpected, and seven
 existing skips; parent and independent acceptance remain pending.
+
+*** Round 5 exact board receipt/admission correction (current candidate)
+
+This continuation starts from clean exact baseline =525dc09d8a8cca8e45581da06a09defd7d19030d= (reviewed implementation =ddbb87fc=).  It addresses the six remaining board/runtime admission findings from the independent review.  =review.org= and =index.org= remain untouched; the user's running Emacs was not queried, reloaded, signaled, or changed.
+
+The final owner boundary is now explicit.  =e-board= owns event-log cells,
+work-subscription index queues, terminal-classifier and aggregation-deadline
+queues, board-local pending direct admissions, and aggregation/work admission
+receipts.  =e-board-runtime= owns the runtime pending-admission catalog,
+attachment/invocation authority, and cross-owner composition.  =e-work= keeps
+carrier observer and hook identity.  An event or index receipt is acquired
+before its first observable map/list/head/link/tail/count mutation and stores
+exact object neighbours plus resumable forward/inverse stages.  The inverse
+repairs only captured cells and preserves monotonic event sequence allocation.
+Aggregation admission captures its exact map, index/event/classifier/deadline
+receipts, timer, and prepared activation.  Runtime admission records are
+indexed by exact source board and attachment and remain recoverable if a
+lower-owner inverse signals; a reentrant or replacement-invalidated postcheck
+aborts only the captured token.
+
+The public behavior contract is unchanged: successful event ordering, FIFO
+routing, atomic fanout, replacement fencing, error precedence, cancellation,
+quiescence, and durable formats remain as before.  Process-local receipt,
+node-index, and admission fields change core record shapes, so a normal Emacs
+restart is required before using this tree; no live reload or compatibility
+shim is used.  The direct test topology now has =test/e-board-test.el= as the
+board owner suite, =test/e-board-runtime-test.el= as the runtime owner/runtime
+lifecycle suite, and =test/e-board-runtime-admission-test.el= as the
+substantive cross-owner admission suite, with the bounded fixture support in
+=test/e-board-runtime-test-support.el=.  Historical runtime test names compare
+as baseline 100, final 101, missing 0; the one added name is the replacement
+aggregation lease regression.
+
+Current evidence for this candidate:
+
+- Direct board/runtime/admission ERT: 195/195 expected, 0 unexpected.
+- Affected 14-file board/runtime/Work/harness/chat batch: 430 discovered,
+  429 expected, 0 unexpected, 1 existing fresh-load skip.
+- Accepted preservation selector: 485 selected, 483 expected, 0 unexpected,
+  2 known graphical/text-property skips.
+- Fixture-enabled full =eldev test -B=: 2,631 total, 2,624 expected,
+  0 unexpected, 7 existing skips.  The sandbox run remains an environment-
+  limited negative probe because fixture-socket tests cannot start there.
+- Forced byte compilation of both changed production modules and direct
+  read/check-parens of all six changed/new Lisp files pass with no warnings.
+- All-literal local require scan: 163 modules, 709 unique edges, =CYCLES []=.
+  Cross-owner private production references and duplicate definitions are
+  both 0; test-private references occur only in the direct owner suites.
+- Git diff and explicit tracked/untracked changed-file whitespace checks pass.
+- Fresh board operation leaves zero events, next sequence 1, and zero pending
+  admissions; fresh runtime attach/retire reaches =dormant= and =done=.
+- Three-run bounded owner smoke passes (real 0.36s, 0.31s, 0.32s).
+
+Evidence logs are under =/tmp/f91-r5-receipt-*=; the reproducible graph
+definition/output is =/private/tmp/e-r5-require-scan.el= and
+=/tmp/f91-r5-receipt-require-final.log=.  The candidate is behavior-green,
+but mechanism acceptance remains pending parent and independent review;
+Feature 91 remains =In-progress= and is not =Done=.

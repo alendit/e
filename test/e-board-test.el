@@ -1178,6 +1178,601 @@
       (should (equal (e-board-id-queue-head replacement) '("new")))
       (should (e-board-index-receipt--removed-p receipt)))))
 
+(ert-deftest e-board-test-admission-event-authority-precedes-first-mutation ()
+  "A malformed tail is rejected before an append can mutate the event list."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "event-authority"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "event-authority-work" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) :done))
+             nil))
+           (admission (e-board-work-admission-token handle))
+           (stale-cell (list 'stale-event)))
+      ;; This is the only state in which the append tail has no receipt
+      ;; authority.  The guard must run before the new receipt is registered or
+      ;; any live list cell is changed.
+      (setf (e-board-events board) stale-cell
+            (e-board-events-tail board) nil)
+      (should-error (e-board--append-event board 'posted nil admission))
+      (should (eq (e-board-events board) stale-cell))
+      (should (= (hash-table-count (e-board-event-node-index board)) 0))
+      ;; No sequence is allocated for a precondition failure; once an append
+      ;; starts, all later attempts still use the board's monotonic allocator.
+      (should (= (e-board-next-seq board) 0))
+      (should-not (e-board-work-admission-event-receipts admission))
+      (setf (e-board-events board) nil)
+      (should (e-board-event-p
+               (e-board--append-event board 'posted nil admission)))
+      (should (= (length (e-board-work-admission-event-receipts admission)) 1)))))
+
+(ert-deftest e-board-test-admission-event-receipts-abort-in-either-order ()
+  "Two exact event tokens can abort in either order without losing the tail."
+  (e-board-test--with-empty-registry
+    (dolist (order '((0 1) (1 0)))
+      (let* ((board (e-board-create :id (format "event-order-%S" order)))
+             (first-handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id (format "event-first-%S" order) :execution 'cheap
+                :interactive-policy 'cheap :runner #'ignore)
+               nil))
+             (second-handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id (format "event-second-%S" order) :execution 'cheap
+                :interactive-policy 'cheap :runner #'ignore)
+               nil))
+             (first-admission (e-board-work-admission-token first-handle))
+             (second-admission (e-board-work-admission-token second-handle)))
+        (e-board--append-event board 'staged-first nil first-admission)
+        (e-board--append-event board 'unrelated nil)
+        (e-board--append-event board 'staged-second nil second-admission)
+        (let ((receipts (vector
+                         (car (e-board-work-admission-event-receipts
+                               first-admission))
+                         (car (e-board-work-admission-event-receipts
+                               second-admission)))))
+          (dolist (index order)
+            (e-board--remove-event-receipt-exact (aref receipts index))))
+        (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                       '(unrelated)))
+        (should (eq (e-board-events-tail board)
+                    (e-board-events board)))
+        (should (= (hash-table-count (e-board-event-node-index board)) 1))
+        (should (= (gethash 2 (e-board-event-message-count board)) 0))
+        ;; Repeated inverse calls are no-ops after exact acknowledgement.
+        (dolist (admission (list first-admission second-admission))
+          (e-board--remove-event-receipt-exact
+           (car (e-board-work-admission-event-receipts admission))))))))
+
+(ert-deftest e-board-test-admission-event-receipt-rejects-detached-predecessor ()
+  "A detached predecessor cell cannot authorize a successful inverse."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "event-detached-predecessor"))
+           (first-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "event-detached-first" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (second-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "event-detached-second" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (first-admission (e-board-work-admission-token first-handle))
+           (second-admission (e-board-work-admission-token second-handle)))
+      (e-board--append-event board 'first nil first-admission)
+      (e-board--append-event board 'second nil second-admission)
+      (let* ((first-receipt (car (e-board-work-admission-event-receipts
+                                  first-admission)))
+             (second-receipt (car (e-board-work-admission-event-receipts
+                                   second-admission)))
+             (first-cell (e-board-event-receipt--cell first-receipt))
+             (second-cell (e-board-event-receipt--cell second-receipt)))
+        (setcdr first-cell nil)
+        (should-error (e-board--remove-event-receipt-exact second-receipt))
+        (should-not (e-board-event-receipt--removed-p second-receipt))
+        ;; Restore the exact link, then the normal inverse can proceed.
+        (setcdr first-cell second-cell)
+        (e-board--remove-event-receipt-exact second-receipt)
+        (e-board--remove-event-receipt-exact first-receipt)
+        (should-not (e-board-events board))))))
+
+(ert-deftest e-board-test-admission-event-receipt-resumes-after-link-ack-gap ()
+  "A link installed before neighbour acknowledgement remains resumable."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "event-link-gap"))
+           (first-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "event-link-gap-first" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (second-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "event-link-gap-second" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (first-admission (e-board-work-admission-token first-handle))
+           (second-admission (e-board-work-admission-token second-handle)))
+      (e-board--append-event board 'first nil first-admission)
+      (e-board--append-event board 'second nil second-admission)
+      (let* ((first-receipt (car (e-board-work-admission-event-receipts
+                                  first-admission)))
+             (second-receipt (car (e-board-work-admission-event-receipts
+                                   second-admission))))
+        ;; Model the interruption immediately after the raw cdr link: the
+        ;; second receipt is physically present, but its linked bit and the
+        ;; predecessor's next-node acknowledgement have not landed yet.
+        (setf (e-board-event-receipt--linked-p second-receipt) nil
+              (e-board-event-receipt--forward-stage second-receipt) 'linked
+              (e-board-event-receipt--next-node first-receipt) nil)
+        (e-board--remove-event-receipt-exact second-receipt)
+        (e-board--remove-event-receipt-exact first-receipt)
+        (should-not (e-board-events board))))))
+
+(ert-deftest e-board-test-admission-index-authority-precedes-first-mutation ()
+  "A malformed queue tail is rejected before index insertion can mutate it."
+  (e-board-test--with-empty-registry
+    (let* ((index (make-hash-table :test 'equal))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "index-authority-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (admission (e-board-work-admission-token handle))
+           (queue (e-board-id-queue--create
+                   :node-index (make-hash-table :test 'eq)))
+           (stale-cell (list "stale")))
+      (setf (e-board-id-queue-head queue) stale-cell
+            (e-board-id-queue-tail queue) nil)
+      (puthash "work" queue index)
+      (should-error
+       (e-board--index-work-subscription index "work" "first" admission))
+      (should (eq (gethash "work" index) queue))
+      (should (eq (e-board-id-queue-head queue) stale-cell))
+      (should (= (hash-table-count (e-board-id-queue-node-index queue)) 0))
+      (setf (e-board-id-queue-head queue) nil)
+      (should (e-board-index-receipt-p
+               (e-board--index-work-subscription
+                index "work" "first" admission)))
+      (should (equal
+               (e-board--indexed-work-subscriptions index "work")
+               '("first"))))))
+
+(ert-deftest e-board-test-admission-index-receipts-abort-in-either-order ()
+  "Queue-cell inverses preserve FIFO and exact tail authority in either order."
+  (e-board-test--with-empty-registry
+    (dolist (order '((0 1) (1 0)))
+      (let* ((index (make-hash-table :test 'equal))
+             (first-handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id (format "index-first-%S" order) :execution 'cheap
+                :interactive-policy 'cheap :runner #'ignore)
+               nil))
+             (second-handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id (format "index-second-%S" order) :execution 'cheap
+                :interactive-policy 'cheap :runner #'ignore)
+               nil))
+             (first-admission (e-board-work-admission-token first-handle))
+             (second-admission (e-board-work-admission-token second-handle))
+             (first-receipt
+              (e-board--index-work-subscription
+               index "work" "first" first-admission))
+             (_unrelated
+              (e-board--index-work-subscription index "work" "unrelated"))
+             (second-receipt
+              (e-board--index-work-subscription
+               index "work" "second" second-admission)))
+        (let ((receipts (vector first-receipt second-receipt)))
+          (dolist (index order)
+            (e-board--remove-indexed-work-subscription (aref receipts index))))
+        (should (equal (e-board--indexed-work-subscriptions index "work")
+                       '("unrelated")))
+        (let ((queue (gethash "work" index)))
+          (should (eq (e-board-id-queue-head queue)
+                      (e-board-id-queue-tail queue)))
+          (should (= (hash-table-count
+                      (e-board-id-queue-node-index queue))
+                     1)))
+        (e-board--remove-indexed-work-subscription first-receipt)
+        (e-board--remove-indexed-work-subscription second-receipt)))))
+
+(ert-deftest e-board-test-admission-index-receipt-rejects-detached-predecessor ()
+  "A detached queue predecessor cannot authorize a successful inverse."
+  (e-board-test--with-empty-registry
+    (let* ((index (make-hash-table :test 'equal))
+           (first-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "index-detached-first" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (second-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "index-detached-second" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (first-admission (e-board-work-admission-token first-handle))
+           (second-admission (e-board-work-admission-token second-handle))
+           (first-receipt
+            (e-board--index-work-subscription
+             index "work" "first" first-admission))
+           (second-receipt
+            (e-board--index-work-subscription
+             index "work" "second" second-admission))
+           (first-cell (e-board-index-receipt--cell first-receipt))
+           (second-cell (e-board-index-receipt--cell second-receipt)))
+      (setcdr first-cell nil)
+      (should-error (e-board--remove-indexed-work-subscription second-receipt))
+      (should-not (e-board-index-receipt--removed-p second-receipt))
+      (setcdr first-cell second-cell)
+      (e-board--remove-indexed-work-subscription second-receipt)
+      (e-board--remove-indexed-work-subscription first-receipt)
+      (should-not (gethash "work" index)))))
+
+(ert-deftest e-board-test-admission-index-receipt-resumes-after-link-ack-gap ()
+  "A queue link installed before neighbour acknowledgement is resumable."
+  (e-board-test--with-empty-registry
+    (let* ((index (make-hash-table :test 'equal))
+           (first-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "index-link-gap-first" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (second-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "index-link-gap-second" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (first-admission (e-board-work-admission-token first-handle))
+           (second-admission (e-board-work-admission-token second-handle))
+           (first-receipt
+            (e-board--index-work-subscription
+             index "work" "first" first-admission))
+           (second-receipt
+            (e-board--index-work-subscription
+             index "work" "second" second-admission)))
+      ;; Simulate a fault between raw setcdr and the receipt neighbour ack.
+      (setf (e-board-index-receipt--linked-p second-receipt) nil
+            (e-board-index-receipt--forward-stage second-receipt) 'linked
+            (e-board-index-receipt--next-node first-receipt) nil)
+      (e-board--remove-indexed-work-subscription second-receipt)
+      (e-board--remove-indexed-work-subscription first-receipt)
+      (should-not (gethash "work" index)))))
+
+(ert-deftest e-board-test-direct-admission-pending-recovery-preserves-primary-error ()
+  "An omitted admission token remains board-reachable across inverse failure."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "direct-pending"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "direct-pending-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (append-original (symbol-function 'e-board--append-event))
+           (remove-original (symbol-function 'e-board--remove-event-receipt-exact))
+           primary)
+      (cl-letf (((symbol-function 'e-board--append-event)
+                 (lambda (&rest arguments)
+                   (prog1 (apply append-original arguments)
+                     (when (eq (nth 1 arguments) 'posted)
+                       (error "direct admission primary")))))
+                ((symbol-function 'e-board--remove-event-receipt-exact)
+                 (lambda (_receipt)
+                   (error "direct admission cleanup"))))
+        (setq primary
+              (condition-case error
+                  (progn (e-board-enroll-work board handle) nil)
+                (error error))))
+      (should primary)
+      (should (equal (error-message-string primary)
+                     "direct admission primary"))
+      (should (= (e-board-pending-admission-count board) 1))
+      (should (= (length (e-board-events board)) 1))
+      ;; The board's exact pending catalog is consulted before the retry.  It
+      ;; removes the same event/observer and only then allows a fresh attempt.
+      (e-board-enroll-work board handle)
+      (should (= (e-board-pending-admission-count board) 0))
+      (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                     '(posted)))
+      (should (eq (symbol-function 'e-board--remove-event-receipt-exact)
+                  remove-original)))))
+
+(ert-deftest e-board-test-direct-invocation-admission-pending-recovery ()
+  "A direct invocation subscription retains its exact cleanup authority."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "direct-invocation-pending"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "direct-invocation-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (append-original (symbol-function 'e-board--append-event))
+           (remove-original
+            (symbol-function 'e-board--remove-indexed-work-subscription))
+           primary)
+      (e-board-enroll-work board handle)
+      (cl-letf (((symbol-function 'e-board--append-event)
+                 (lambda (&rest arguments)
+                   (prog1 (apply append-original arguments)
+                     (when (eq (nth 1 arguments) 'subscription-added)
+                       (error "direct invocation primary")))))
+                ((symbol-function 'e-board--remove-indexed-work-subscription)
+                 (lambda (_receipt)
+                   (error "direct invocation cleanup"))))
+        (setq primary
+              (condition-case error
+                  (progn
+                    (e-board-subscribe-invocation
+                     board (e-work-handle-id handle) '(target) :id "call")
+                    nil)
+                (error error))))
+      (should primary)
+      (should (equal (error-message-string primary)
+                     "direct invocation primary"))
+      (should (= (e-board-pending-admission-count board) 1))
+      (should (e-board-invocation board "call"))
+      (should (equal
+               (e-board--indexed-work-subscriptions
+                (e-board-invocation-work-index board)
+                (e-work-handle-id handle))
+               '("call")))
+      ;; The next public call first retries the board-owned token.  It removes
+      ;; the old exact invocation/index/event and only then admits the retry.
+      (e-board-subscribe-invocation
+       board (e-work-handle-id handle) '(retry-target) :id "call")
+      (should (= (e-board-pending-admission-count board) 0))
+      (should (equal
+               (e-board-invocation-effect-target
+                (e-board-invocation board "call"))
+               '(retry-target)))
+      (should (eq (symbol-function 'e-board--remove-indexed-work-subscription)
+                  remove-original)))))
+
+(ert-deftest e-board-test-direct-combined-admission-pending-recovery ()
+  "Combined direct enrollment retains both exact event inverses on failure."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "direct-combined-pending"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "direct-combined-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (append-original (symbol-function 'e-board--append-event))
+           (remove-original (symbol-function 'e-board--remove-event-receipt-exact))
+           primary)
+      (cl-letf (((symbol-function 'e-board--append-event)
+                 (lambda (&rest arguments)
+                   (prog1 (apply append-original arguments)
+                     (when (eq (nth 1 arguments) 'subscription-added)
+                       (error "direct combined primary")))))
+                ((symbol-function 'e-board--remove-event-receipt-exact)
+                 (lambda (_receipt)
+                   (error "direct combined cleanup"))))
+        (setq primary
+              (condition-case error
+                  (progn
+                    (e-board-enroll-invocation-work
+                     board handle "call" '(target))
+                    nil)
+                (error error))))
+      (should primary)
+      (should (equal (error-message-string primary)
+                     "direct combined primary"))
+      (should (= (e-board-pending-admission-count board) 1))
+      (should (e-board-observed-work board (e-work-handle-id handle)))
+      (should (e-board-invocation board "call"))
+      ;; Public retry recovers the same combined token before creating a new
+      ;; Work/invocation pair; no duplicate event or index remains.
+      (e-board-enroll-invocation-work board handle "call" '(retry-target))
+      (should (= (e-board-pending-admission-count board) 0))
+      (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                     '(posted subscription-added)))
+      (should (eq (symbol-function 'e-board--remove-event-receipt-exact)
+                  remove-original)))))
+
+(ert-deftest e-board-test-direct-aggregation-admission-pending-recovery ()
+  "A direct aggregation admission keeps its exact inverse after a fault."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "direct-aggregation-pending"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "direct-aggregation-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (append-original (symbol-function 'e-board--append-event))
+           (remove-original
+            (symbol-function 'e-board--remove-indexed-work-subscription))
+           primary)
+      (e-board-enroll-work board handle)
+      (cl-letf (((symbol-function 'e-board--append-event)
+                 (lambda (&rest arguments)
+                   (prog1 (apply append-original arguments)
+                     (when (eq (nth 1 arguments) 'subscription-added)
+                       (error "direct aggregation primary")))))
+                ((symbol-function 'e-board--remove-indexed-work-subscription)
+                 (lambda (_receipt)
+                   (error "direct aggregation cleanup"))))
+        (setq primary
+              (condition-case error
+                  (progn
+                    (e-board-subscribe-aggregation
+                     board (list (e-work-handle-id handle)) 'all '(target)
+                     :id "aggregation")
+                    nil)
+                (error error))))
+      (should primary)
+      (should (equal (error-message-string primary)
+                     "direct aggregation primary"))
+      (should (= (e-board-pending-admission-count board) 1))
+      (should (e-board-aggregation board "aggregation"))
+      (should (equal
+               (e-board--indexed-work-subscriptions
+                (e-board-aggregation-work-index board)
+                (e-work-handle-id handle))
+               '("aggregation")))
+      ;; The next public aggregation call retries the same exact token before
+      ;; installing its replacement projection.
+      (e-board-subscribe-aggregation
+       board (list (e-work-handle-id handle)) 'all '(retry-target)
+       :id "aggregation")
+      (should (= (e-board-pending-admission-count board) 0))
+      (should (equal
+               (e-board-aggregation-effect-target
+                (e-board-aggregation board "aggregation"))
+               '(retry-target)))
+      (should (eq (symbol-function 'e-board--remove-indexed-work-subscription)
+                  remove-original)))))
+
+(ert-deftest e-board-test-aggregation-admission-abort-removes-exact-projection ()
+  "Aggregation abort removes only its map, index, event, and timer projection."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "aggregation-admission"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "aggregation-source" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (admission (e-board-aggregation-admission-token board)))
+      (e-board-enroll-work board handle)
+      (let ((aggregation
+             (e-board-subscribe-aggregation
+              board (list (e-work-handle-id handle)) 'all (list 'target)
+              :id "aggregation" :timeout 30 :admission admission)))
+        (should (e-board-aggregation-admission-current-p admission))
+        (should (eq (gethash "aggregation" (e-board-aggregations board))
+                    aggregation))
+        (e-board-abort-aggregation-admission board admission)
+        (should-not (e-board-aggregation board "aggregation"))
+        (should-not
+         (e-board--indexed-work-subscriptions
+          (e-board-aggregation-work-index board)
+          (e-work-handle-id handle)))
+        (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                       '(posted)))
+        (should (e-board-aggregation-admission--aborted-p admission))
+        (should (e-board-aggregation-admission--cleanup-complete-p admission))))))
+
+(ert-deftest e-board-test-aggregation-admission-captures-precommit-activation-event ()
+  "A pre-commit ready activation is removed by its exact admission receipt."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "aggregation-precommit-activation"))
+           (admission (e-board-aggregation-admission-token board))
+           (append-original (symbol-function 'e-board--append-event)))
+      (cl-letf (((symbol-function 'e-board--append-event)
+                 (lambda (&rest arguments)
+                   (prog1 (apply append-original arguments)
+                     (when (eq (nth 1 arguments) 'activation-prepared)
+                       (error "activation publication fault"))))))
+        (should-error
+         (e-board-subscribe-aggregation
+          board nil 'all-terminal '(target)
+          :id "precommit-activation" :admission admission)))
+      (should-not (e-board-aggregation board "precommit-activation"))
+      (should-not (e-board-events board))
+      (should (= (hash-table-count (e-board-activations board)) 0))
+      (should (e-board-aggregation-admission--aborted-p admission))
+      (should (e-board-aggregation-admission--cleanup-complete-p admission)))))
+
+(ert-deftest e-board-test-aggregation-admission-deadline-inverse-settles-routing-once ()
+  "An exact queued deadline abort clears its routing count idempotently."
+  (e-board-test--with-empty-registry
+    (let (timer-callback deadline-drain)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (setq timer-callback
+                         (lambda () (apply function arguments)))
+                   'test-timer))
+                ((symbol-function 'cancel-timer)
+                 (lambda (_timer) nil)))
+        (let* ((board
+                (e-board-create
+                 :id "aggregation-deadline-receipt"
+                 :aggregation-deadline-scheduler
+                 (lambda (drain) (setq deadline-drain drain))))
+               (handle
+                (e-work-prepare
+                 (e-work-spec-create
+                  :id "deadline-source" :execution 'cooperative
+                  :interactive-policy 'async
+                  :runner (lambda (_handle _arguments _context) :deferred))
+                 nil))
+               (admission (e-board-aggregation-admission-token board)))
+          (e-board-enroll-work board handle)
+          (e-board-subscribe-aggregation
+           board (list (e-work-handle-id handle)) 'all '(target)
+           :id "deadline-aggregation" :timeout 1 :admission admission)
+          (funcall timer-callback)
+          (should deadline-drain)
+          (should (= (plist-get (e-board-unsettled-state board) :routing) 1))
+          (e-board-abort-aggregation-admission board admission)
+          (should (= (plist-get (e-board-unsettled-state board) :routing) 0))
+          (should (= (hash-table-count
+                      (e-board-aggregation-deadline-node-index board))
+                     0))
+          ;; Both an explicit repeated abort and a callback captured before
+          ;; retirement are no-ops; neither can decrement routing twice.
+          (e-board-abort-aggregation-admission board admission)
+          (funcall deadline-drain)
+          (should (= (plist-get (e-board-unsettled-state board) :routing) 0)))))))
+
+(ert-deftest e-board-test-aggregation-admission-abort-removes-queued-classifier ()
+  "Abort fences and removes an exact ready-classifier record immediately."
+  (e-board-test--with-empty-registry
+    (let (classifiers)
+      (let* ((board
+              (e-board-create
+               :id "aggregation-classifier-admission"
+               :terminal-classification-scheduler
+               (lambda (drain) (push drain classifiers))))
+             (handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id "classifier-source" :execution 'cheap
+                :interactive-policy 'cheap :runner #'ignore)
+               nil))
+             (admission (e-board-aggregation-admission-token board)))
+        (e-board-enroll-work board handle)
+        (e-board--observe-work-terminal
+         board (e-board-observed-work board (e-work-handle-id handle))
+         'finished "done")
+        ;; Clear the source work's own empty classifier page first.
+        (e-board-drain-terminal-classifications board)
+        (let ((aggregation
+               (e-board-subscribe-aggregation
+                board (list (e-work-handle-id handle)) 'all '(target)
+                :id "classifier-aggregation" :admission admission)))
+          (should aggregation)
+          (should (= (plist-get (e-board-unsettled-state board) :routing) 1))
+          (should (e-board-terminal-classifications board))
+          (e-board-abort-aggregation-admission board admission)
+          (should (= (plist-get (e-board-unsettled-state board) :routing) 0))
+          (should-not (e-board-terminal-classifications board))
+          (should-not (e-board-aggregation board "classifier-aggregation"))
+          ;; The scheduled callback is harmless after exact removal and cannot
+          ;; settle a replacement aggregation with the same descriptive id.
+          (dolist (drain classifiers) (funcall drain))
+          (should-not (e-board-aggregation board "classifier-aggregation")))))))
+
 (ert-deftest e-board-test-aggregation-replies-after-all-observed-work-settles ()
   "Ordered aggregation waits for every watched terminal board fact."
   (e-board-test--with-empty-registry
