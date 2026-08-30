@@ -195,45 +195,77 @@ Tests that explicitly provide `:requester' retain that exact requester."
             (should (= (plist-get (e-board-runtime-unsettled-state)
                                   :control-requests)
                        0))))
-        (let ((target
+        (let ((lease
                (e-board-runtime--register-invocation
                 attachment "turn" "call"
                 (lambda (state _payload) (setq callback-state state)))))
           (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
                      1))
-          (e-board-runtime--apply-invocation-effect board target 'completed nil)
+          (e-board-runtime--apply-invocation-effect board lease 'completed nil)
           (should (eq callback-state 'completed))
           (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
                      0))
           (should-error
            (e-board-runtime--apply-invocation-effect
-            board target 'completed nil)
+            board lease 'completed nil)
            :type 'e-board-runtime-error)
           (should (= (plist-get (e-board-runtime-unsettled-state) :invocations)
                      0)))))))
+
+(ert-deftest e-board-runtime-test-stale-invocation-lease-cannot-apply-replacement ()
+  "An old opaque lease cannot resolve or mutate an equal-key replacement."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           old new old-lease new-lease calls)
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (setq old (e-board-runtime-attach
+                 board old-harness "old" :participant-id "participant")
+            old-lease
+            (e-board-runtime--register-invocation
+             old "turn" "call" (lambda (&rest _args) (cl-incf calls))))
+      (e-board-runtime-retire-attachment old)
+      (setq new (e-board-runtime-attach
+                 board new-harness "new" :participant-id "participant")
+            new-lease
+            (e-board-runtime--register-invocation
+             new "turn" "call" (lambda (&rest _args) (cl-incf calls))))
+      (should-error
+       (e-board-runtime--apply-invocation-effect board old-lease 'finished nil)
+       :type 'e-board-runtime-error)
+      (should (= (or calls 0) 0))
+      (should (e-board-runtime--invocation-lease-current-p new-lease))
+      (should (= e-board-runtime--unsettled-invocation-count 1))
+      (e-board-runtime--drop-invocation new-lease)
+      (e-board-runtime-retire-attachment new))))
 
 (ert-deftest e-board-runtime-test-invocation-terminalization-precedes-fallible-notify ()
   "A notification fault cannot leave an invocation available for a second decrement."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
            (harness (e-harness-create))
-           target invocation)
+           lease invocation)
       (e-harness-create-session harness :id "session")
       (let ((attachment
              (e-board-runtime-attach
               board harness "session" :participant-id "participant")))
-        (setq target
+        (setq lease
               (e-board-runtime--register-invocation
                attachment "turn" "call" #'ignore)
-              invocation (gethash target e-board-runtime--invocations)
+              invocation
+              (e-board-runtime-invocation-lease--invocation lease)
               e-board-runtime--unsettled-change-function
               (lambda (&rest _state) (error "notification fault")))
-        (should-error (e-board-runtime--drop-invocation target))
+        (should-error (e-board-runtime--drop-invocation lease))
         (should (eq (e-board-runtime-invocation-state invocation) 'cancelled))
-        (should-not (gethash target e-board-runtime--invocations))
+        (should-not
+         (gethash (e-board-runtime-invocation-lease--target lease)
+                  e-board-runtime--invocations))
         (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
         ;; A retry is an idempotent no-op even though the notification raised.
-        (should-not (e-board-runtime--drop-invocation target))
+        (should-not (e-board-runtime--drop-invocation lease))
         (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
         (e-board-runtime-retire-attachment attachment)))))
 
@@ -242,24 +274,27 @@ Tests that explicitly provide `:requester' retain that exact requester."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
            (harness (e-harness-create))
-           target invocation)
+           lease invocation)
       (e-harness-create-session harness :id "session")
       (let ((attachment
              (e-board-runtime-attach
               board harness "session" :participant-id "participant")))
-        (setq target
+        (setq lease
               (e-board-runtime--register-invocation
                attachment "turn" "call"
                (lambda (_state _payload)
                  (e-board-runtime-retire-attachment attachment)))
-              invocation (gethash target e-board-runtime--invocations))
-        (e-board-runtime--apply-invocation-effect board target 'finished nil)
+              invocation
+              (e-board-runtime-invocation-lease--invocation lease))
+        (e-board-runtime--apply-invocation-effect board lease 'finished nil)
         (should (eq (e-board-runtime-invocation-state invocation) 'cancelled))
-        (should-not (gethash target e-board-runtime--invocations))
+        (should-not
+         (gethash (e-board-runtime-invocation-lease--target lease)
+                  e-board-runtime--invocations))
         (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
         (should (eq (e-board-runtime-attachment-retirement-stage attachment) 'done))
         (should-error
-         (e-board-runtime--apply-invocation-effect board target 'finished nil)
+         (e-board-runtime--apply-invocation-effect board lease 'finished nil)
          :type 'e-board-runtime-error)))))
 
 (ert-deftest e-board-runtime-test-pickup-drain-fences-retained-old-callback ()
@@ -2468,17 +2503,20 @@ Tests that explicitly provide `:requester' retain that exact requester."
         (e-work-start-prepared handle)
         (e-board-drain-terminal-classifications source-board)
         (let* ((invocation (e-board-invocation source-board '("turn" "call")))
-               (target (e-board-invocation-effect-target invocation))
+               (lease (e-board-invocation-effect-target invocation))
                ;; Terminal runtime invocation entries are removed before
                ;; notification, so retain the exact object for state evidence.
-               (runtime-invocation (gethash target e-board-runtime--invocations)))
+               (runtime-invocation
+                (e-board-runtime-invocation-lease--invocation lease)))
           (e-harness-registry-clear-instance :live)
           (e-board-drain-effects source-board)
           (should (= calls 0))
           (should (eq (e-board-invocation-state invocation) 'failed))
           (should (eq (e-board-runtime-invocation-state runtime-invocation)
                       'unavailable))
-          (should-not (gethash target e-board-runtime--invocations)))))))
+          (should-not
+           (gethash (e-board-runtime-invocation-lease--target lease)
+                    e-board-runtime--invocations)))))))
 
 (ert-deftest e-board-runtime-test-await-aggregation-uses-opaque-target ()
   "Await completion uses the captured awaiting call rather than a board closure."
@@ -2903,6 +2941,227 @@ Tests that explicitly provide `:requester' retain that exact requester."
                        handle #'ignore))
       (e-board-runtime-retire-attachment attachment))))
 
+(ert-deftest e-board-runtime-test-enrollment-board-stage-signal-preserves-replacement ()
+  "A board-stage signal cannot cancel a same-key replacement invocation."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           old new new-lease handle entered)
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (setq old (e-board-runtime-attach
+                 board old-harness "old" :participant-id "participant")
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "board-stage-signal" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "old" :turn-id "turn" :tool-call (:id "call"))))
+      (let ((original (symbol-function 'e-board-enroll-invocation-work)))
+        (cl-letf (((symbol-function 'e-board-enroll-invocation-work)
+                   (lambda (&rest arguments)
+                     (prog1 (apply original arguments)
+                       (unless entered
+                         (setq entered t)
+                         (e-board-runtime-retire-attachment old)
+                         (setq new (e-board-runtime-attach
+                                     board new-harness "new"
+                                     :participant-id "participant")
+                               new-lease
+                               (e-board-runtime--register-invocation
+                                new "turn" "call" #'ignore))
+                         (error "board stage replacement signal"))))))
+          (should-error
+           (funcall (e-harness-work-enrollment-function old-harness)
+                    handle #'ignore))))
+      (should entered)
+      (should new-lease)
+      (should (e-board-runtime--invocation-lease-current-p new-lease))
+      (should (= e-board-runtime--unsettled-invocation-count 1))
+      (should-not (e-board-observed-work
+                   (e-board-registry-board-source-board board)
+                   (e-work-handle-id handle)))
+      (should-not (e-work-handle-publication-observer handle))
+      (e-board-runtime--drop-invocation new-lease)
+      (e-board-runtime-retire-attachment new))))
+
+(ert-deftest e-board-runtime-test-enrollment-board-stage-return-preserves-replacement ()
+  "A board-stage return after replacement cannot commit stale Work authority."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (old-harness (e-harness-create))
+           (new-harness (e-harness-create))
+           old new new-lease handle entered condition)
+      (e-harness-create-session old-harness :id "old")
+      (e-harness-create-session new-harness :id "new")
+      (setq old (e-board-runtime-attach
+                 board old-harness "old" :participant-id "participant")
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "board-stage-return" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "old" :turn-id "turn" :tool-call (:id "call"))))
+      (let ((original (symbol-function 'e-board-enroll-invocation-work)))
+        (cl-letf (((symbol-function 'e-board-enroll-invocation-work)
+                   (lambda (&rest arguments)
+                     (prog1 (apply original arguments)
+                       (unless entered
+                         (setq entered t)
+                         (e-board-runtime-retire-attachment old)
+                         (setq new (e-board-runtime-attach
+                                     board new-harness "new"
+                                     :participant-id "participant")
+                               new-lease
+                               (e-board-runtime--register-invocation
+                                new "turn" "call" #'ignore)))))))
+          (setq condition
+                (condition-case err
+                    (progn
+                      (funcall (e-harness-work-enrollment-function old-harness)
+                               handle #'ignore)
+                      nil)
+                  (error err)))))
+      (should entered)
+      (should (eq (car condition) 'e-board-runtime-error))
+      (should (e-board-runtime--invocation-lease-current-p new-lease))
+      (should (= e-board-runtime--unsettled-invocation-count 1))
+      (should-not (e-board-observed-work
+                   (e-board-registry-board-source-board board)
+                   (e-work-handle-id handle)))
+      (should-not (e-work-handle-publication-observer handle))
+      (e-board-runtime--drop-invocation new-lease)
+      (e-board-runtime-retire-attachment new))))
+
+(ert-deftest e-board-runtime-test-enrollment-retries-index-inverse-in-outer-transaction ()
+  "A transient exact index inverse fault is retried without duplicating admission."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           attachment handle source-board
+           (original-enroll (symbol-function 'e-board-enroll-invocation-work))
+           (original-remove (symbol-function
+                             'e-board--remove-indexed-work-subscription))
+           (index-failed t))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "index-inverse-runtime" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (cl-letf (((symbol-function 'e-board-enroll-invocation-work)
+                 (lambda (&rest arguments)
+                   (prog1 (apply original-enroll arguments)
+                     (error "primary board admission"))))
+                ((symbol-function 'e-board--remove-indexed-work-subscription)
+                 (lambda (receipt)
+                   (if index-failed
+                       (progn
+                         (setq index-failed nil)
+                         (error "transient index inverse"))
+                     (funcall original-remove receipt)))))
+        (should-error
+         (funcall (e-harness-work-enrollment-function harness)
+                  handle #'ignore)))
+      ;; The runtime retried the same admission token after the injected
+      ;; before-mutation inverse failure, so the worktree is clean and a
+      ;; second public enrollment has no duplicate index cell.
+      (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should-not (e-board-invocation source-board '("turn" "call")))
+      (should-not (e-board--indexed-work-subscriptions
+                   (e-board-invocation-work-index source-board)
+                   (e-work-handle-id handle)))
+      (should-not (e-work-handle-publication-observer handle))
+      (should (= e-board-runtime--unsettled-invocation-count 0))
+      (should (funcall (e-harness-work-enrollment-function harness)
+                       handle #'ignore))
+      (should (equal
+               (e-board--indexed-work-subscriptions
+                (e-board-invocation-work-index source-board)
+                (e-work-handle-id handle))
+               '(("turn" "call"))))
+      (e-board-runtime-retire-attachment attachment))))
+
+(ert-deftest e-board-runtime-test-retains-pending-admission-after-persistent-index-fault ()
+  "A repeated lower-owner inverse fault remains recoverable by exact token."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create))
+           attachment handle source-board condition
+           (original-enroll (symbol-function 'e-board-enroll-invocation-work))
+           (original-remove (symbol-function
+                             'e-board--remove-indexed-work-subscription))
+           (inverse-faults 0))
+      (e-harness-create-session harness :id "session")
+      (setq attachment
+            (e-board-runtime-attach board harness "session"
+                                    :participant-id "participant")
+            source-board (e-board-registry-board-source-board board)
+            handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "persistent-index-inverse" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) "done"))
+             nil :context
+             '(:session-id "session" :turn-id "turn"
+               :tool-call (:id "call"))))
+      (cl-letf (((symbol-function 'e-board-enroll-invocation-work)
+                 (lambda (&rest arguments)
+                   (prog1 (apply original-enroll arguments)
+                     (error "persistent primary"))))
+                ((symbol-function 'e-board--remove-indexed-work-subscription)
+                 (lambda (_receipt)
+                   (cl-incf inverse-faults)
+                   (error "persistent index inverse"))))
+        (setq condition
+              (condition-case err
+                  (progn
+                    (funcall (e-harness-work-enrollment-function harness)
+                             handle #'ignore)
+                    nil)
+                (error err))))
+      (should (equal (error-message-string condition) "persistent primary"))
+      (should (= inverse-faults 2))
+      ;; The board relation and its exact token are retained rather than being
+      ;; replaced by a descriptive-id retry or falsely reported as cleaned.
+      (should (= (length
+                  (e-board-runtime-attachment-pending-board-admissions
+                   attachment))
+                 1))
+      (should (e-board-observed-work source-board (e-work-handle-id handle)))
+      (should (e-board-invocation source-board '("turn" "call")))
+      (should (e-work-handle-publication-observer handle))
+      (should (= e-board-runtime--unsettled-invocation-count 0))
+      ;; Once the lower owner is available again, the retained exact token is
+      ;; retired before the new admission is staged and no duplicate remains.
+      (cl-letf (((symbol-function 'e-board--remove-indexed-work-subscription)
+                 (lambda (receipt) (funcall original-remove receipt))))
+        (should (funcall (e-harness-work-enrollment-function harness)
+                         handle #'ignore)))
+      (should-not
+       (e-board-runtime-attachment-pending-board-admissions attachment))
+      (should (= (length
+                  (e-board--indexed-work-subscriptions
+                   (e-board-invocation-work-index source-board)
+                   (e-work-handle-id handle)))
+                 1))
+      (should (= e-board-runtime--unsettled-invocation-count 1))
+      (e-board-runtime-retire-attachment attachment))))
+
 (ert-deftest e-board-runtime-test-enrollment-rolls-back-board-postcommit-fault ()
   "A board relation fault after its commit removes only this enrollment."
   (e-board-runtime-test--with-empty-state
@@ -3002,7 +3261,7 @@ Tests that explicitly provide `:requester' retain that exact requester."
            (handle nil)
            (dispatcher (lambda (&rest _arguments) nil))
            (source-board nil)
-           preexisting-target)
+           preexisting-lease)
       (e-harness-create-session harness :id "session")
       (setq attachment
             (e-board-runtime-attach board harness "session"
@@ -3024,21 +3283,24 @@ Tests that explicitly provide `:requester' retain that exact requester."
        :type 'e-work-prepared-start-invalid)
       (should (eq (e-work-handle-hook-dispatcher handle) dispatcher))
       (e-work-remove-hook-dispatcher handle dispatcher)
-      (setq preexisting-target
+      (setq preexisting-lease
             (e-board-runtime--register-invocation
              attachment "turn" "call" #'ignore))
       (should-error
        (funcall (e-harness-work-enrollment-function harness) handle #'ignore)
        :type 'e-board-runtime-error)
-      (should (eq (gethash preexisting-target e-board-runtime--invocations)
-                  (gethash preexisting-target
+      (should (eq (gethash
+                   (e-board-runtime-invocation-lease--target preexisting-lease)
+                   e-board-runtime--invocations)
+                  (gethash (e-board-runtime-invocation-lease--target
+                            preexisting-lease)
                            (e-board-runtime-attachment-invocation-targets
                             attachment))))
       (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 1))
       (should-not (e-work-handle-hook-dispatcher handle))
       (should-not (e-work-handle-activity-observer handle))
       (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
-      (e-board-runtime--drop-invocation preexisting-target)
+      (e-board-runtime--drop-invocation preexisting-lease)
       (should (= (plist-get (e-board-runtime-unsettled-state) :invocations) 0))
       (e-board-runtime-retire-attachment attachment))))
 

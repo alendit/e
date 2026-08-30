@@ -1000,3 +1000,55 @@ then retries the same prepared Work successfully.  Fixture-enabled full ERT
 was rerun after this correction: 2,603 total, 2,596 expected, 0 unexpected,
 7 existing skips.  The candidate remains `In-progress` and acceptance remains
 pending.
+
+*** Exact admission-lease correction (current candidate)
+
+This continuation starts from clean exact baseline =88c66e7c= (implementation
+baseline =a816f066=) and addresses the three remaining admission-transaction
+findings.  =review.org= and =index.org= remain untouched, and the user's
+running Emacs was not queried, reloaded, or changed.
+
+Runtime invocation admission now returns an opaque exact
+=e-board-runtime-invocation-lease= carrying the captured invocation object and
+target.  The lease is the board effect target and is required by apply/drop;
+those operations never rediscover an equal target or cancel a replacement.
+After every count notification and board stage, the exact global and
+attachment-local slots, count token, open state, and current active attachment
+are revalidated.  Board-stage signaling and non-signaling same-key replacement
+are covered through real harness enrollment.
+
+Board admission tokens now retain exact append-cell and work-index-cell
+receipts.  =e-board--append-event= and =e-board--index-work-subscription= record
+the receipt before returning, so a wrapper that signals after mutation cannot
+hide a posted or subscription-added event.  The inverses unlink only the
+captured cell, preserve monotonic event sequence allocation, fence a replaced
+index queue, and remain retryable when an inverse signals before mutation.
+The runtime performs one bounded retry of the same board token in its outer
+rollback while preserving the initiating error.  No compatibility alias,
+id-based fallback, global scan, or durable format change was added.
+
+Changed paths for this candidate are =lisp/core/e-board.el=,
+=lisp/core/e-board-runtime.el=, =test/e-board-test.el=,
+=test/e-board-runtime-test.el=, =test/e-work-test.el=, and this plan/audit.
+The Work implementation is unchanged; its direct owner suite now also records
+the exact identity inverse contract.  Focused behavior is green; mechanism
+acceptance remains pending parent and independent review.  Current focused
+counts are board 78/78, runtime 100/100, Work 48/48, and the affected 12-file
+batch 466 total with 465 expected passes, 0 unexpected, and one existing
+fresh-load skip.  The final source sweep also keeps attachment retirement from
+clearing a reentrant same-key replacement invocation.  Fresh evidence is
+recorded under =/tmp/f91-r8-*= and the appended Round 5 audit section.  The
+persistent lower-owner inverse witness retains the exact admission token and
+recovers on a later enrollment; it passes as part of the 100-test runtime
+owner suite.
+
+The existing Feature 91 contracts remain the relevant IDs: =F91-OWNER= for
+single-owner admission state and inverses, =F91-PRESENTATION= as an unaffected
+preservation baseline, =F91-TOPOLOGY= for the runtime/board/Work boundary and
+owner-pure tests, and =F91-PRESERVATION= for unchanged public behavior, event
+ordering, formats, error visibility, and restart semantics.  The candidate
+remains =In-progress=; no status index or completion claim was changed.
+
+Final current-tree evidence is 485/485 selected with two known skips and
+fixture-enabled full ERT 2,614 total, 2,607 expected, 0 unexpected, and seven
+existing skips; parent and independent acceptance remain pending.

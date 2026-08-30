@@ -46,6 +46,16 @@
                (:conc-name e-board-event-))
   seq type data)
 
+(cl-defstruct (e-board-event-receipt
+               (:constructor e-board-event-receipt--create)
+               (:conc-name e-board-event-receipt--))
+  "Exact owner receipt for one staged event append.
+
+The linked-list cell and its predecessor are captured before any caller can
+observe a post-mutation append failure.  Rollback therefore removes this event
+by object identity without scanning or matching descriptive data."
+  board event cell previous removed-p)
+
 (cl-defstruct (e-board-participant
                (:constructor e-board-participant--create)
                (:conc-name e-board-participant-))
@@ -179,9 +189,10 @@
                (:conc-name e-board-work-admission-))
   "Opaque exact identities for one staged board work admission.
 The runtime owns the transaction lifetime; the board fills WORK and INVOCATION
-with the objects it creates so an unwind can remove only this attempt without
-looking them up again by descriptive ids."
-  board handle work invocation invocation-id effect-target)
+  with the objects it creates so an unwind can remove only this attempt without
+  looking them up again by descriptive ids."
+  board handle work invocation invocation-id effect-target
+  event-receipts index-receipts)
 
 (cl-defstruct (e-board-aggregation
                 (:constructor e-board-aggregation--create)
@@ -207,6 +218,12 @@ looking them up again by descriptive ids."
                (:constructor e-board-id-queue--create)
                (:conc-name e-board-id-queue-))
   head tail)
+
+(cl-defstruct (e-board-index-receipt
+               (:constructor e-board-index-receipt--create)
+               (:conc-name e-board-index-receipt--))
+  "Exact owner receipt for one staged work-subscription index cell."
+  index work-id subscription-id queue cell previous removed-p)
 
 (cl-defstruct (e-board-input-classification
                (:constructor e-board-input-classification--create)
@@ -482,44 +499,71 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
     (when register (e-board-register board))
     board))
 
-(defun e-board--append-event (board type data)
-  "Append TYPE with DATA to BOARD's ordered event log and return the event."
+(defun e-board--append-event (board type data &optional admission)
+  "Append TYPE with DATA to BOARD's ordered event log and return the event.
+
+When ADMISSION is an exact work-admission token, capture the newly linked cell
+before returning.  This makes the receipt available even when an outer wrapper
+signals after this function has already mutated the event log."
   (let ((event (e-board-event--create
                 :seq (cl-incf (e-board-next-seq board))
                 :type type
                 :data data)))
-    (let ((cell (list event)))
+    (let ((previous (e-board-events-tail board))
+          (cell (list event)))
       (if (e-board-events-tail board)
           (setcdr (e-board-events-tail board) cell)
         (setf (e-board-events board) cell))
-      (setf (e-board-events-tail board) cell))
+      (setf (e-board-events-tail board) cell)
+      (when (e-board-work-admission-p admission)
+        (push (e-board-event-receipt--create
+               :board board :event event :cell cell :previous previous)
+              (e-board-work-admission-event-receipts admission))))
     (puthash (e-board-event-seq event) (e-board-message-count board)
              (e-board-event-message-count board))
     event))
 
-(defun e-board--remove-event-exact (board event)
-  "Remove the exact EVENT object from BOARD's in-memory event log.
-This inverse is used only while a staged admission is unwinding.  It never
-matches by event type or work id, so an admission rollback cannot remove an
-unrelated event that happens to use the same descriptive values."
-  (when event
-    (let ((cursor (e-board-events board))
-          previous
-          found)
-      (while (and cursor (not found))
-        (if (eq (car cursor) event)
-            (setq found cursor)
-          (setq previous cursor
-                cursor (cdr cursor))))
-      (when found
-        (if previous
-            (setcdr previous (cdr found))
-          (setf (e-board-events board) (cdr found)))
-        (when (eq (e-board-events-tail board) found)
+(defun e-board--remove-event-receipt-exact (receipt)
+  "Remove the exact staged event captured by RECEIPT.
+
+The inverse is constant-time for the append-only event list.  A receipt that
+was already acknowledged is idempotent.  If its predecessor/link no longer
+matches, signal rather than scanning or deleting a replacement event; the
+receipt remains available for an explicit retry."
+  (when (e-board-event-receipt-p receipt)
+    (unless (e-board-event-receipt--removed-p receipt)
+      (let* ((board (e-board-event-receipt--board receipt))
+             (cell (e-board-event-receipt--cell receipt))
+             (previous (e-board-event-receipt--previous receipt))
+             (linked-p
+              (cond
+               ((and previous
+                     (eq (cdr previous) cell))
+                (setcdr previous (cdr cell))
+                t)
+               ((and (null previous)
+                     (eq (e-board-events board) cell))
+                (setf (e-board-events board) (cdr cell))
+                t)
+               ;; A different exact owner may have already removed the cell
+               ;; from a replacement queue.  Do not touch that replacement.
+               ((and (not (eq (e-board-events-tail board) cell))
+                     (not (eq (e-board-events board) cell)))
+                nil)
+               (t nil))))
+        (unless linked-p
+          (signal 'e-board-error
+                  (list "Event admission receipt is no longer current"
+                        (and (e-board-event-receipt--event receipt)
+                             (e-board-event-seq
+                              (e-board-event-receipt--event receipt))))))
+        (when (eq (e-board-events-tail board) cell)
           (setf (e-board-events-tail board) previous))
-        (remhash (e-board-event-seq event)
+        (remhash (e-board-event-seq
+                  (e-board-event-receipt--event receipt))
                  (e-board-event-message-count board))
-        t))))
+        (setf (e-board-event-receipt--removed-p receipt) t)))
+    t))
 
 (defun e-board-events-after (board seq)
   "Return BOARD events whose sequence is strictly greater than SEQ."
@@ -1371,37 +1415,74 @@ effect records and never synchronously enter a tool or harness callback."
     (when (e-board-pending-effects board)
       (e-board--schedule-effect-drain board))))
 
-(defun e-board--index-work-subscription (index work-id subscription-id)
-  "Add SUBSCRIPTION-ID to WORK-ID's exact INDEX without scanning its peers."
+(defun e-board--index-work-subscription
+    (index work-id subscription-id &optional admission)
+  "Add SUBSCRIPTION-ID to WORK-ID's exact INDEX without scanning its peers.
+When ADMISSION is supplied, return and retain an exact inverse receipt before
+the caller can report a post-mutation failure."
   (let* ((queue (or (gethash work-id index)
                     (puthash work-id (e-board-id-queue--create) index)))
+         (previous (e-board-id-queue-tail queue))
          (cell (list subscription-id)))
-    (if-let ((tail (e-board-id-queue-tail queue)))
-        (setcdr tail cell)
+    (if previous
+        (setcdr previous cell)
       (setf (e-board-id-queue-head queue) cell))
-    (setf (e-board-id-queue-tail queue) cell)))
+    (setf (e-board-id-queue-tail queue) cell)
+    (when (e-board-work-admission-p admission)
+      (let ((receipt
+             (e-board-index-receipt--create
+              :index index :work-id work-id :subscription-id subscription-id
+              :queue queue :cell cell :previous previous)))
+        (push receipt (e-board-work-admission-index-receipts admission))
+        receipt))))
 
 (defun e-board--indexed-work-subscriptions (index work-id)
   "Return WORK-ID's stable subscription-id sequence from INDEX."
   (when-let ((queue (gethash work-id index)))
     (e-board-id-queue-head queue)))
 
-(defun e-board--remove-indexed-work-subscription (index work-id subscription-id)
-  "Remove exact SUBSCRIPTION-ID from WORK-ID's local index.
-The index is process-local admission state, not durable history.  Rebuilding
-only this one bounded queue keeps rollback independent of unrelated board
-subscriptions and leaves an already-detached terminal-classification snapshot
-untouched."
-  (when-let ((queue (gethash work-id index)))
-    (let ((ids (e-board-id-queue-head queue))
-          kept)
-      (dolist (id ids)
-        (unless (equal id subscription-id)
-          (setq kept (append kept (list id)))))
-      (if kept
-          (setf (e-board-id-queue-head queue) kept
-                (e-board-id-queue-tail queue) (last kept))
-        (remhash work-id index)))))
+(defun e-board--remove-indexed-work-subscription (receipt)
+  "Remove the exact indexed work cell captured by RECEIPT.
+
+The inverse never searches by descriptive ids.  If the index key now names a
+different queue, the old queue is no longer authoritative and is acknowledged
+without touching the replacement.  A current queue with an unexpected link
+signals while retaining RECEIPT for retry."
+  (when (e-board-index-receipt-p receipt)
+    (unless (e-board-index-receipt--removed-p receipt)
+      (let* ((index (e-board-index-receipt--index receipt))
+             (work-id (e-board-index-receipt--work-id receipt))
+             (queue (e-board-index-receipt--queue receipt))
+             (cell (e-board-index-receipt--cell receipt))
+             (previous (e-board-index-receipt--previous receipt))
+             (current (gethash work-id index)))
+        (cond
+         ((not (eq current queue))
+          ;; The owner-local key was replaced or detached.  The old queue is
+          ;; not a live authority, so acknowledge without removing the new
+          ;; queue or performing an id-only fallback.
+          (setf (e-board-index-receipt--removed-p receipt) t))
+         ((and previous (eq (cdr previous) cell))
+          (setcdr previous (cdr cell))
+          (when (eq (e-board-id-queue-tail queue) cell)
+            (setf (e-board-id-queue-tail queue) previous))
+          (when (null (e-board-id-queue-head queue))
+            (remhash work-id index))
+          (setf (e-board-index-receipt--removed-p receipt) t))
+         ((and (null previous)
+               (eq (e-board-id-queue-head queue) cell))
+          (setf (e-board-id-queue-head queue) (cdr cell))
+          (when (eq (e-board-id-queue-tail queue) cell)
+            (setf (e-board-id-queue-tail queue) nil))
+          (when (null (e-board-id-queue-head queue))
+            (remhash work-id index))
+          (setf (e-board-index-receipt--removed-p receipt) t))
+         (t
+          (signal 'e-board-error
+                  (list "Work index admission receipt is no longer current"
+                        work-id
+                        (e-board-index-receipt--subscription-id receipt)))))))
+    t))
 
 (defun e-board--schedule-terminal-classification (board)
   "Schedule BOARD's bounded terminal classifier once after settlement returns."
@@ -1691,47 +1772,67 @@ cancellation boundary because its commit is no longer provably absent."
 
 (defun e-board--discard-work-admission (board admission)
   "Discard the exact staged objects captured by ADMISSION.
-Only object identities recorded in the opaque token are removed.  Each inverse
-is isolated so a fault in one lower-owner cleanup cannot prevent the remaining
-exact cleanup, nor can it mask the initiating admission error."
+Only identities recorded in the opaque token are removed.  Index and event
+receipts are acknowledged before their owning table entries disappear, so a
+lower-owner inverse that signals before mutation leaves the same token
+retryable.  A fault after mutation is still surfaced, but the exact receipt is
+already terminal and later abort is idempotent."
   (let ((work (e-board-work-admission-work admission))
-        (invocation (e-board-work-admission-invocation admission)))
-    (when (and (e-board-work-p work)
-               (eq (gethash (e-board-work-id work) (e-board-work-table board))
-                   work))
-      (remhash (e-board-work-id work) (e-board-work-table board)))
-    (when (and (e-board-invocation-p invocation)
-               (eq (gethash (e-board-invocation-id invocation)
-                            (e-board-invocations board))
-                   invocation))
-      (remhash (e-board-invocation-id invocation)
-               (e-board-invocations board))
-      (condition-case nil
-          (e-board--remove-indexed-work-subscription
-           (e-board-invocation-work-index board)
-           (e-board-invocation-work-id invocation)
-           (e-board-invocation-id invocation))
-        (error nil)))
-    ;; A publication observer is owner state on the prepared Work handle.
-    ;; Remove it only when the exact closure is still installed.  Keep going if
-    ;; an injected lower-owner fault signals after partially doing its inverse.
-    (when (and (e-board-work-p work)
-               (e-board-work-publication-observer work))
-      (condition-case nil
-          (e-work-remove-publication-observer
-           (e-board-work-handle work)
-           (e-board-work-publication-observer work))
-        (error nil)))
-    (when (e-board-work-p work)
-      (condition-case nil
-          (e-board--remove-event-exact
-           board (e-board-work-posted-event work))
-        (error nil)))
-    (when (e-board-invocation-p invocation)
-      (condition-case nil
-          (e-board--remove-event-exact
-           board (e-board-invocation-subscription-event invocation))
-        (error nil)))
+        (invocation (e-board-work-admission-invocation admission))
+        (cleanup-error nil)
+        (incomplete nil))
+    ;; Index cells are the sole retry authority for invocation relations.  Do
+    ;; this before removing the invocation map, and never reconstruct a cell by
+    ;; descriptive ids.
+    (dolist (receipt (e-board-work-admission-index-receipts admission))
+      (unless (e-board-index-receipt--removed-p receipt)
+        (condition-case err
+            (e-board--remove-indexed-work-subscription receipt)
+          (error
+           (unless cleanup-error
+             (setq cleanup-error err))))
+        (unless (e-board-index-receipt--removed-p receipt)
+          (setq incomplete t))))
+    ;; Event cells are likewise exact and append-only.  Receipts are pushed in
+    ;; append order, so newest-first inverse preserves predecessor links.
+    (dolist (receipt (e-board-work-admission-event-receipts admission))
+      (unless (e-board-event-receipt--removed-p receipt)
+        (condition-case err
+            (e-board--remove-event-receipt-exact receipt)
+          (error
+           (unless cleanup-error
+             (setq cleanup-error err))))
+        (unless (e-board-event-receipt--removed-p receipt)
+          (setq incomplete t))))
+    ;; Do not make a partially unwound admission look complete.  Keeping the
+    ;; exact maps/observer makes an explicit repeated abort able to finish the
+    ;; lower-owner inverse without touching a replacement.
+    (unless incomplete
+      (when (and (e-board-work-p work)
+                 (eq (gethash (e-board-work-id work) (e-board-work-table board))
+                     work))
+        (remhash (e-board-work-id work) (e-board-work-table board)))
+      (when (and (e-board-invocation-p invocation)
+                 (eq (gethash (e-board-invocation-id invocation)
+                              (e-board-invocations board))
+                     invocation))
+        (remhash (e-board-invocation-id invocation)
+                 (e-board-invocations board)))
+      ;; A publication observer is owner state on the prepared Work handle.
+      ;; The identity inverse preserves any observer installed by a different
+      ;; admission attempt.  These operations are normally infallible, but a
+      ;; lower-owner fault remains visible rather than being swallowed.
+      (when (and (e-board-work-p work)
+                 (e-board-work-publication-observer work))
+        (condition-case err
+            (e-work-remove-publication-observer
+             (e-board-work-handle work)
+             (e-board-work-publication-observer work))
+          (error
+           (unless cleanup-error
+             (setq cleanup-error err))))))
+    (when cleanup-error
+      (signal (car cleanup-error) (cdr cleanup-error)))
     admission))
 
 (cl-defun e-board-abort-work-enrollment (board admission)
@@ -1790,7 +1891,8 @@ before runner entry so synchronous carriers cannot settle outside the log."
             (setf (e-board-work-posted-event work)
                   (e-board--append-event
                    board 'posted
-                   (list :work-id id :metadata (copy-tree metadata))))
+                   (list :work-id id :metadata (copy-tree metadata))
+                   admission))
             (puthash id work (e-board-work-table board))
             work)
         (error
@@ -1810,19 +1912,23 @@ target after the start stack unwinds."
   (let ((id (or id (e-board--next-id board 'invocation))))
     (when (e-board-invocation board id)
       (signal 'e-board-id-conflict (list id)))
-    (let ((invocation (e-board-invocation--create
-                       :id id :work-id work-id :state 'open
-                       :effect-target effect-target)))
+    (let* ((invocation (e-board-invocation--create
+                        :id id :work-id work-id :state 'open
+                        :effect-target effect-target))
+           (admission
+            (e-board-work-admission--create
+             :board board :invocation invocation)))
       (condition-case err
           (progn
             (puthash id invocation (e-board-invocations board))
             (e-board--index-work-subscription (e-board-invocation-work-index board)
-                                              work-id id)
+                                              work-id id admission)
             (setf (e-board-invocation-subscription-event invocation)
                   (e-board--append-event
                    board 'subscription-added
                    (list :subscription-id id :work-id work-id
-                         :effect 'reply-to-invocation)))
+                         :effect 'reply-to-invocation)
+                   admission))
             ;; Enrolling and subscribing can be separated by a caller
             ;; transaction.  If an already-terminal handle is intentionally
             ;; subscribed, publish one frozen activation without scanning
@@ -1832,10 +1938,9 @@ target after the start stack unwinds."
                 (e-board--queue-terminal-classification board work-id (list id))))
             invocation)
         (error
-         (let ((admission
-                (e-board-work-admission--create
-                 :board board :invocation invocation)))
-           (e-board--discard-work-admission board admission))
+         (condition-case _cleanup-error
+             (e-board--discard-work-admission board admission)
+           (error nil))
          (signal (car err) (cdr err)))))))
 
 (cl-defun e-board-enroll-invocation-work
@@ -1904,19 +2009,23 @@ making `e-work' depend on board state or making the board retain loop closures."
           (setf (e-board-work-posted-event work)
                 (e-board--append-event
                  board 'posted
-                 (list :work-id work-id :metadata (copy-tree metadata))))
+                 (list :work-id work-id :metadata (copy-tree metadata))
+                 admission))
           (puthash work-id work (e-board-work-table board))
           (puthash invocation-id invocation (e-board-invocations board))
           (e-board--index-work-subscription (e-board-invocation-work-index board)
-                                            work-id invocation-id)
+                                            work-id invocation-id admission)
           (setf (e-board-invocation-subscription-event invocation)
                 (e-board--append-event
                  board 'subscription-added
                  (list :subscription-id invocation-id :work-id work-id
-                       :effect 'reply-to-invocation)))
+                       :effect 'reply-to-invocation)
+                 admission))
           handle)
       (error
-       (e-board--discard-work-admission board admission)
+       (condition-case _cleanup-error
+           (e-board--discard-work-admission board admission)
+         (error nil))
        (signal (car err) (cdr err))))))
 
 (defun e-board--active-participant-p (participant)

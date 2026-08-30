@@ -998,6 +998,186 @@
                        '(posted subscription-added finished activation-prepared
                                  activation-applying effect-committed)))))))
 
+(ert-deftest e-board-test-admission-event-receipts-remove-postmutation-events ()
+  "A posted append that signals after mutation leaves an exact rollback receipt."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "posted-receipt"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "posted-receipt-work" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) :done))
+             nil))
+           (admission (e-board-work-admission-token handle))
+           (original (symbol-function 'e-board--append-event)))
+      (cl-letf (((symbol-function 'e-board--append-event)
+                 (lambda (&rest arguments)
+                   (let ((event (apply original arguments)))
+                     (if (eq (nth 1 arguments) 'posted)
+                         (error "posted append postmutation")
+                       event)))))
+        (should-error
+         (e-board-enroll-work board handle :admission admission)))
+      (let ((receipts (e-board-work-admission-event-receipts admission)))
+        (should (= (length receipts) 1))
+        (should (e-board-event-receipt--removed-p (car receipts))))
+      (should-not (e-board-events board))
+      (should-not (e-board-observed-work board (e-work-handle-id handle)))
+      (should (= (e-board-next-seq board) 1))
+      ;; Sequence allocation is monotonic even when the exact event cell is
+      ;; removed; a retry creates one fresh posted record rather than a ghost.
+      (e-board-enroll-work board handle)
+      (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                     '(posted)))
+      (should (= (e-board-next-seq board) 2)))))
+
+(ert-deftest e-board-test-admission-event-receipt-removes-postmutation-subscription ()
+  "A subscription append signal cannot leave an invocation event ghost."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "subscription-receipt"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "subscription-receipt-work" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) :done))
+             nil))
+           (target (list 'target))
+           (admission (e-board-work-admission-token
+                       handle :invocation-id "call"
+                       :effect-target target))
+           (original (symbol-function 'e-board--append-event)))
+      (cl-letf (((symbol-function 'e-board--append-event)
+                 (lambda (&rest arguments)
+                   (let ((event (apply original arguments)))
+                     (if (eq (nth 1 arguments) 'subscription-added)
+                         (error "subscription append postmutation")
+                       event)))))
+        (should-error
+         (e-board-enroll-invocation-work
+          board handle "call" target :admission admission)))
+      (should (= (length (e-board-work-admission-event-receipts admission)) 2))
+      (should (cl-every
+               #'e-board-event-receipt--removed-p
+               (e-board-work-admission-event-receipts admission)))
+      (should-not (e-board-events board))
+      (should-not (e-board-observed-work board (e-work-handle-id handle)))
+      (should-not (e-board-invocation board "call"))
+      (should-not (e-board--indexed-work-subscriptions
+                   (e-board-invocation-work-index board)
+                   (e-work-handle-id handle)))
+      (should (= (e-board-next-seq board) 2))
+      (e-board-enroll-invocation-work board handle "call" target)
+      (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                     '(posted subscription-added))))))
+
+(ert-deftest e-board-test-admission-event-receipts-remove-interleaved-events ()
+  "Exact event receipts preserve unrelated and interleaved event cells."
+  (e-board-test--with-empty-registry
+    (let* ((board (e-board-create :id "event-receipt"))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "event-receipt-work" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) :done))
+             nil))
+           (admission (e-board-work-admission-token handle)))
+      (e-board--append-event board 'staged-one nil admission)
+      (e-board--append-event board 'unrelated nil)
+      (e-board--append-event board 'staged-two nil admission)
+      (dolist (receipt (e-board-work-admission-event-receipts admission))
+        (e-board--remove-event-receipt-exact receipt))
+      (should (equal (mapcar #'e-board-event-type (e-board-events board))
+                     '(unrelated)))
+      (should (= (e-board-next-seq board) 3))
+      (should (= (gethash 2 (e-board-event-message-count board)) 0)))))
+
+(ert-deftest e-board-test-admission-index-receipts-retry-and-preserve-replacement ()
+  "Exact index inverse faults retain retry authority and fence replacements."
+  (e-board-test--with-empty-registry
+    (dolist (failure-mode '(before after))
+      (let* ((board (e-board-create :id (format "index-receipt-%s" failure-mode)))
+             (handle
+              (e-work-prepare
+               (e-work-spec-create
+                :id (format "index-receipt-work-%s" failure-mode)
+                :execution 'cheap :interactive-policy 'cheap
+                :runner (lambda (_arguments _context) :done))
+               nil))
+             (effect (list 'lease failure-mode))
+             (admission (e-board-work-admission-token
+                         handle :invocation-id "call"
+                         :effect-target effect))
+             (original (symbol-function 'e-board--remove-indexed-work-subscription))
+             failed)
+        (e-board-enroll-invocation-work
+         board handle "call" effect
+         :admission admission)
+        (setq failed t)
+        (cl-letf (((symbol-function 'e-board--remove-indexed-work-subscription)
+                   (lambda (receipt)
+                     (if failed
+                         (progn
+                           (setq failed nil)
+                           (if (eq failure-mode 'before)
+                               (error "index inverse before mutation")
+                             (prog1 (funcall original receipt)
+                               (error "index inverse after mutation"))))
+                       (funcall original receipt)))))
+          (should-error (e-board-abort-work-enrollment board admission)))
+        (if (eq failure-mode 'before)
+            (progn
+              ;; The sole invocation map and its exact queue remain until the
+              ;; inverse is retried; the event receipts may already be gone.
+              (should (e-board-invocation board "call"))
+              (should (equal
+                       (e-board--indexed-work-subscriptions
+                        (e-board-invocation-work-index board)
+                        (e-work-handle-id handle))
+                       '("call")))
+              (e-board-abort-work-enrollment board admission))
+          (should-not (e-board-invocation board "call"))
+          (should-not (e-board--indexed-work-subscriptions
+                       (e-board-invocation-work-index board)
+                       (e-work-handle-id handle)))
+          (e-board-abort-work-enrollment board admission))
+        (should-not (e-board-observed-work board (e-work-handle-id handle)))
+        (should-not (e-board-events board))
+        ;; A successful retry has no duplicate invocation index or stale event.
+        (e-board-enroll-invocation-work
+         board handle "call" (list 'retry failure-mode))
+        (should (equal
+                 (e-board--indexed-work-subscriptions
+                  (e-board-invocation-work-index board)
+                  (e-work-handle-id handle))
+                 '("call")))))))
+
+(ert-deftest e-board-test-admission-index-receipt-preserves-replacement-queue ()
+  "A stale exact index receipt cannot remove a same-key replacement queue."
+  (e-board-test--with-empty-registry
+    (let* ((index (make-hash-table :test 'equal))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "index-replacement-work" :execution 'cheap
+              :interactive-policy 'cheap
+              :runner (lambda (_arguments _context) :done))
+             nil))
+           (admission (e-board-work-admission-token handle))
+           (receipt (e-board--index-work-subscription
+                     index "work" "old" admission))
+           (replacement (e-board-id-queue--create))
+           (cell (list "new")))
+      (setf (e-board-id-queue-head replacement) cell
+            (e-board-id-queue-tail replacement) cell)
+      (puthash "work" replacement index)
+      (e-board--remove-indexed-work-subscription receipt)
+      (should (eq (gethash "work" index) replacement))
+      (should (equal (e-board-id-queue-head replacement) '("new")))
+      (should (e-board-index-receipt--removed-p receipt)))))
+
 (ert-deftest e-board-test-aggregation-replies-after-all-observed-work-settles ()
   "Ordered aggregation waits for every watched terminal board fact."
   (e-board-test--with-empty-registry

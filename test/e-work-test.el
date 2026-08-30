@@ -121,6 +121,38 @@
     (should-error (e-work-start-prepared handle)
                   :type 'e-work-prepared-start-invalid)))
 
+(ert-deftest e-work-test-exact-owner-hook-inverses-preserve-replacements ()
+  "Owner-specific hook inverses remove only the exact installed identity."
+  (let* ((handle
+          (e-work-prepare
+           (e-work-spec-create
+            :id "exact-hook-inverses" :execution 'cheap
+            :interactive-policy 'cheap
+            :runner (lambda (_arguments _context) :done))
+           nil))
+         (publication-a (lambda (&rest _arguments) nil))
+         (publication-b (lambda (&rest _arguments) nil))
+         (activity-a (lambda (&rest _arguments) nil))
+         (activity-b (lambda (&rest _arguments) nil))
+         (dispatcher-a (lambda (&rest _arguments) nil))
+         (dispatcher-b (lambda (&rest _arguments) nil)))
+    (e-work-install-publication-observer handle publication-a)
+    (should-not (e-work-remove-publication-observer handle publication-b))
+    (should (eq (e-work-handle-publication-observer handle) publication-a))
+    (should (e-work-remove-publication-observer handle publication-a))
+    (e-work-install-activity-observer handle activity-a)
+    (should-not (e-work-remove-activity-observer handle activity-b))
+    (should (eq (e-work-handle-activity-observer handle) activity-a))
+    (should (e-work-remove-activity-observer handle activity-a))
+    (e-work-install-hook-dispatcher handle dispatcher-a nil)
+    (should-not (e-work-remove-hook-dispatcher handle dispatcher-b))
+    (should (eq (e-work-handle-hook-dispatcher handle) dispatcher-a))
+    (should (e-work-remove-hook-dispatcher handle dispatcher-a))
+    (should-not (e-work-handle-publication-observer handle))
+    (should-not (e-work-handle-activity-observer handle))
+    (should-not (e-work-handle-hook-dispatcher handle))
+    (e-work-cancel handle)))
+
 (ert-deftest e-work-test-publication-observer-precedes-cleanup-and-callbacks ()
   "The dedicated publication observer sees terminal work first."
   (let (events)

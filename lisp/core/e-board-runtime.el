@@ -245,6 +245,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
   identity-token
   owned-pickup-ids producer-delivery-ids producer-turn-keys activity-mailbox-keys
   invocation-targets
+  pending-board-admissions
   retirement-stage retirement-authorized-p retirement-work-authorized-p
   retirement-generation)
 
@@ -268,6 +269,16 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:conc-name e-board-runtime-invocation-))
   target attachment attachment-generation endpoint-token composite-generation
   callback state counted-p)
+
+(cl-defstruct (e-board-runtime-invocation-lease
+               (:constructor e-board-runtime-invocation-lease--create)
+               (:conc-name e-board-runtime-invocation-lease--))
+  "Opaque exact authority for one runtime invocation admission.
+
+The descriptive target is deliberately carried with the invocation object;
+callers must pass this lease through board staging and later effects rather
+than resolving a potentially newer invocation by an equal target key."
+  target invocation)
 
 (cl-defstruct (e-board-runtime-work-hooks
                (:constructor e-board-runtime-work-hooks--create)
@@ -983,11 +994,94 @@ again.  Return non-nil only when this call owned the terminal transition."
       (e-board-runtime--adjust-unsettled-count 'invocation -1))
     t))
 
-(defun e-board-runtime--drop-invocation (target)
-  "Remove TARGET and retire it from unsettled accounting when necessary."
-  (when-let ((invocation (gethash target e-board-runtime--invocations)))
-    (e-board-runtime--terminalize-invocation target invocation 'cancelled)
-    invocation))
+(defun e-board-runtime--invocation-lease-current-p (lease)
+  "Return non-nil when LEASE still owns its exact live invocation authority.
+
+This check is intentionally composed from object identities and owner-local
+state.  Equal target values are not sufficient: a same-key replacement must
+remain untouched when an older admission resumes after reentrant retirement."
+  (when (e-board-runtime-invocation-lease-p lease)
+    (let* ((target (e-board-runtime-invocation-lease--target lease))
+           (invocation (e-board-runtime-invocation-lease--invocation lease))
+           (attachment (and (e-board-runtime-invocation-p invocation)
+                            (e-board-runtime-invocation-attachment invocation))))
+      (and (e-board-runtime-invocation-p invocation)
+           (e-board-runtime-attachment-p attachment)
+           (eq (gethash target e-board-runtime--invocations) invocation)
+           (eq (gethash
+                target
+                (e-board-runtime-attachment-invocation-targets attachment))
+               invocation)
+           (e-board-runtime-invocation-counted-p invocation)
+           (eq (e-board-runtime-invocation-state invocation) 'open)
+           (e-board-runtime--current-active-attachment-p attachment)))))
+
+(defun e-board-runtime--drop-invocation (lease)
+  "Remove exact LEASE and retire it from unsettled accounting when necessary.
+An equal target held by a replacement is never rediscovered or removed."
+  (when (e-board-runtime-invocation-lease-p lease)
+    (let ((target (e-board-runtime-invocation-lease--target lease))
+          (invocation (e-board-runtime-invocation-lease--invocation lease)))
+      (when (and (e-board-runtime-invocation-p invocation)
+                 (eq (gethash target e-board-runtime--invocations)
+                     invocation))
+        (e-board-runtime--terminalize-invocation target invocation 'cancelled)
+        invocation))))
+
+(defun e-board-runtime--abort-board-admission (board admission)
+  "Abort ADMISSION with one bounded exact retry after a lower-owner fault.
+
+The board token retains its receipts when an inverse signals before mutation.
+The runtime therefore retries the same token once inside the initiating
+transaction, preserving the initiating error if a second lower-owner failure
+still prevents completion.  No id-based reconstruction or replacement lookup
+is attempted."
+  (condition-case _first-error
+      (progn
+        (e-board-abort-work-enrollment board admission)
+        t)
+    (error
+     (condition-case _retry-error
+         (progn
+           (e-board-abort-work-enrollment board admission)
+           t)
+       (error nil)))))
+
+(defun e-board-runtime--remember-board-admission
+    (attachment board admission)
+  "Retain an exact unfinished BOARD ADMISSION on ATTACHMENT.
+
+This is a bounded owner-local recovery slot for the rare case where both
+attempts at a lower-owner inverse signal.  The admission token, not a
+descriptive id, remains the only retry authority; later enrollment or
+attachment retirement must settle it before proceeding."
+  (when (and (e-board-runtime-attachment-p attachment)
+             (e-board-work-admission-p admission))
+    (unless (cl-some (lambda (entry)
+                       (eq (cdr entry) admission))
+                     (e-board-runtime-attachment-pending-board-admissions
+                      attachment))
+      (push (cons board admission)
+            (e-board-runtime-attachment-pending-board-admissions attachment)))))
+
+(defun e-board-runtime--retry-pending-board-admissions (attachment)
+  "Retry exact unfinished board admissions retained on ATTACHMENT.
+Signal a bounded domain error if one is still incomplete; never proceed with a
+new admission or route teardown while its exact lower-owner state is pending."
+  (when (e-board-runtime-attachment-pending-board-admissions attachment)
+    (let (remaining failed)
+      (dolist (entry
+               (e-board-runtime-attachment-pending-board-admissions attachment))
+        (if (e-board-runtime--abort-board-admission (car entry) (cdr entry))
+            nil
+          (push entry remaining)
+          (unless failed
+            (setq failed t))))
+      (setf (e-board-runtime-attachment-pending-board-admissions attachment)
+            (nreverse remaining))
+      (when failed
+        (signal 'e-board-runtime-error
+                (list "Pending board admission cleanup remains incomplete"))))))
 
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
@@ -1221,8 +1315,19 @@ interpret an old callback as a newly admitted delivery."
       ;; bounded retirement was being staged.
       (when (eq (gethash (car entry) e-board-runtime--invocations)
                 (cdr entry))
-        (e-board-runtime--drop-invocation (car entry))))
-    (clrhash (e-board-runtime-attachment-invocation-targets attachment))))
+        (e-board-runtime--drop-invocation
+         (e-board-runtime-invocation-lease--create
+          :target (car entry) :invocation (cdr entry)))))
+    ;; Do not clear the whole local index: a reentrant terminal observer may
+    ;; have installed an equal-key replacement in this attachment between the
+    ;; captured entry and the inverse.  Remove only the exact old object and
+    ;; leave replacement authority intact.
+    (dolist (entry entries)
+      (when (eq (gethash (car entry)
+                         (e-board-runtime-attachment-invocation-targets attachment))
+                (cdr entry))
+        (remhash (car entry)
+                 (e-board-runtime-attachment-invocation-targets attachment))))))
 
 (defun e-board-runtime-retire-attachment (attachment)
   "Idempotently retire exact ATTACHMENT and its runtime-owned board state.
@@ -1238,6 +1343,9 @@ attachment."
   (unless (e-board-runtime-attachment-p attachment)
     (signal 'wrong-type-argument
             (list 'e-board-runtime-attachment-p attachment)))
+  ;; Complete any exact board admission retained after a prior bounded
+  ;; rollback failure before tearing down this attachment's authority.
+  (e-board-runtime--retry-pending-board-admissions attachment)
   (let* ((board (e-board-runtime-attachment-board attachment))
          (participant (e-board-runtime-attachment-participant attachment))
          (stage (e-board-runtime-attachment-retirement-stage attachment))
@@ -1370,7 +1478,10 @@ endpoint by session identity."
            (copy-tree (e-board-runtime--attachment-composite-generation attachment))
            :callback callback
            :state 'open
-           :counted-p t)))
+           :counted-p t))
+         (lease
+          (e-board-runtime-invocation-lease--create
+           :target target :invocation invocation)))
     (when (gethash target e-board-runtime--invocations)
       (signal 'e-board-runtime-error (list "Invocation target already exists" target)))
     (puthash target invocation e-board-runtime--invocations)
@@ -1389,21 +1500,11 @@ endpoint by session identity."
           ;; committed only while the exact invocation, its attachment-local
           ;; index, its count token, and the current active attachment all
           ;; still agree.
-          (unless (and
-                   (eq (gethash target e-board-runtime--invocations)
-                       invocation)
-                   (eq (gethash
-                        target
-                        (e-board-runtime-attachment-invocation-targets
-                         attachment))
-                       invocation)
-                   (e-board-runtime-invocation-counted-p invocation)
-                   (eq (e-board-runtime-invocation-state invocation) 'open)
-                   (e-board-runtime--current-active-attachment-p attachment))
+          (unless (e-board-runtime--invocation-lease-current-p lease)
             (signal 'e-board-runtime-error
                     (list "Invocation admission lost active authority"
                           target)))
-          target)
+          lease)
       (error
        ;; `--adjust-unsettled-count' increments before calling either observer;
        ;; its failure is therefore an admission failure, not a committed
@@ -1415,36 +1516,49 @@ endpoint by session identity."
          (error nil))
        (signal (car err) (cdr err))))))
 
-(defun e-board-runtime--apply-invocation-effect (_board target state payload)
-  "Apply TARGET exactly once through its captured runtime invocation service."
-  (let ((invocation (gethash target e-board-runtime--invocations)))
-    (unless invocation
-      (signal 'e-board-runtime-error (list "Unknown invocation target" target)))
+(defun e-board-runtime--apply-invocation-effect (_board lease state payload)
+  "Apply exact LEASE once through its captured runtime invocation service.
+The board supplies the opaque lease returned by admission; this operation never
+looks up an equal target to discover a newer invocation."
+  (unless (e-board-runtime-invocation-lease-p lease)
+    (signal 'e-board-runtime-error (list "Unknown invocation lease" lease)))
+  (let* ((target (e-board-runtime-invocation-lease--target lease))
+         (invocation (e-board-runtime-invocation-lease--invocation lease))
+         (attachment (and (e-board-runtime-invocation-p invocation)
+                          (e-board-runtime-invocation-attachment invocation))))
+    (unless (and (e-board-runtime-invocation-p invocation)
+                 (e-board-runtime-attachment-p attachment)
+                 (eq (gethash target e-board-runtime--invocations) invocation)
+                 (eq (gethash
+                      target
+                      (e-board-runtime-attachment-invocation-targets attachment))
+                     invocation))
+      (signal 'e-board-runtime-error
+              (list "Unknown or replaced invocation lease" target)))
     (unless (eq (e-board-runtime-invocation-state invocation) 'open)
       (signal 'e-board-runtime-error (list "Invocation target is not open" target)))
-    (let ((attachment (e-board-runtime-invocation-attachment invocation)))
-      (unless (and
-               (= (e-board-runtime-invocation-attachment-generation invocation)
-                  (e-board-runtime-attachment-generation attachment))
-               (equal (e-board-runtime-invocation-endpoint-token invocation)
-                      (e-board-runtime-attachment-endpoint-token attachment))
-               (equal (e-board-runtime-invocation-composite-generation invocation)
-                      (e-board-runtime--attachment-composite-generation attachment))
-               (e-board-runtime--current-attachment-p attachment))
-        (e-board-runtime--terminalize-invocation
-         target invocation 'unavailable)
-        (signal 'e-board-runtime-error
-                (list "Original invocation endpoint is unavailable" target)))
-      (setf (e-board-runtime-invocation-state invocation) 'applying)
-      (condition-case err
-          (funcall (e-board-runtime-invocation-callback invocation) state payload)
-        (error
-         (e-board-runtime--terminalize-invocation target invocation 'failed)
-         (signal (car err) (cdr err))))
-      ;; The callback may synchronously retire this exact attachment.  In that
-      ;; case retirement already owns the terminal transition and removed the
-      ;; table entry; the outer apply must not overwrite its state or count.
-      (e-board-runtime--terminalize-invocation target invocation 'committed))))
+    (unless (and
+             (= (e-board-runtime-invocation-attachment-generation invocation)
+                (e-board-runtime-attachment-generation attachment))
+             (equal (e-board-runtime-invocation-endpoint-token invocation)
+                    (e-board-runtime-attachment-endpoint-token attachment))
+             (equal (e-board-runtime-invocation-composite-generation invocation)
+                    (e-board-runtime--attachment-composite-generation attachment))
+             (e-board-runtime--current-attachment-p attachment))
+      (e-board-runtime--terminalize-invocation
+       target invocation 'unavailable)
+      (signal 'e-board-runtime-error
+              (list "Original invocation endpoint is unavailable" target)))
+    (setf (e-board-runtime-invocation-state invocation) 'applying)
+    (condition-case err
+        (funcall (e-board-runtime-invocation-callback invocation) state payload)
+      (error
+       (e-board-runtime--terminalize-invocation target invocation 'failed)
+       (signal (car err) (cdr err))))
+    ;; The callback may synchronously retire this exact attachment.  In that
+    ;; case retirement already owns the terminal transition and removed the
+    ;; table entry; the outer apply must not overwrite its state or count.
+    (e-board-runtime--terminalize-invocation target invocation 'committed)))
 
 (defun e-board-runtime--drain-deferred-hooks ()
   "Start one bounded page of deferred carrier hooks outside settlement.
@@ -1800,6 +1914,10 @@ has no callback and is observed only."
            (board (e-board-registry-board-source-board
                    (e-board-runtime-attachment-board attachment)))
            (metadata (e-work-handle-metadata handle)))
+      ;; A prior admission may have preserved its exact board token after two
+      ;; lower-owner inverse faults.  Finish that transaction before allowing a
+      ;; new Work relation to be staged on the same attachment.
+      (e-board-runtime--retry-pending-board-admissions attachment)
       ;; Every participant activity is correlated by source turn.  Reject an
       ;; invalid handle before installing observers or enrolling board work so
       ;; the defect surfaces on the initiating call instead of a later timer.
@@ -1811,7 +1929,7 @@ has no callback and is observed only."
       (let* ((tool-call-id (and callback
                                 (plist-get (plist-get context :tool-call) :id)))
              (invocation-id (and callback (list turn-id tool-call-id)))
-             hooks target admission result)
+             hooks lease admission result)
         (condition-case err
             (progn
               ;; Work hooks, the runtime target/count, and the board relation
@@ -1820,21 +1938,29 @@ has no callback and is observed only."
               (setq hooks (e-board-runtime--install-work-hooks attachment handle))
               (if callback
                   (progn
-                    (setq target
+                    (setq lease
                           (e-board-runtime--register-invocation
                            attachment turn-id tool-call-id callback))
                     (setq admission
                           (e-board-work-admission-token
                            handle :invocation-id invocation-id
-                           :effect-target target))
+                           :effect-target lease))
                     (setq result
                           (e-board-enroll-invocation-work
-                           board handle invocation-id target
+                           board handle invocation-id lease
                            :metadata metadata :admission admission)))
                 (setq admission (e-board-work-admission-token handle)
                       result
                       (e-board-enroll-work
                        board handle :metadata metadata :admission admission)))
+              (when (and callback
+                         (not (e-board-runtime--invocation-lease-current-p lease)))
+                ;; A board publication callback may have retired this exact
+                ;; admission and installed an equal-key replacement before
+                ;; returning.  Do not report success or bind Work to the new
+                ;; authority.
+                (signal 'e-board-runtime-error
+                        (list "Invocation lease lost after board admission")))
               result)
           (error
            ;; Roll back in owner order.  Each inverse is exact and idempotent;
@@ -1842,15 +1968,15 @@ has no callback and is observed only."
            ;; remove a replacement target/observer and it cannot replace the
            ;; original admission error.
            (when admission
+             (unless (e-board-runtime--abort-board-admission board admission)
+               ;; Keep the exact token reachable if both bounded inverse
+               ;; attempts fail.  A subsequent enrollment or attachment
+               ;; retirement retries it before mutating the same owner again.
+               (e-board-runtime--remember-board-admission
+                attachment board admission)))
+           (when lease
              (condition-case _rollback-error
-                 (e-board-abort-work-enrollment board admission)
-               (error nil)))
-           (when target
-             (condition-case _rollback-error
-                 (when-let ((invocation
-                             (gethash target e-board-runtime--invocations)))
-                   (e-board-runtime--terminalize-invocation
-                    target invocation 'cancelled))
+                 (e-board-runtime--drop-invocation lease)
                (error nil)))
            (when hooks
              (condition-case _rollback-error
@@ -1869,21 +1995,21 @@ has no callback and is observed only."
            (call (plist-get invocation-context :tool-call))
            (turn-id (plist-get invocation-context :turn-id))
            (invocation-id (list turn-id (plist-get call :id)))
-           (target (e-board-runtime--register-invocation
+           (lease (e-board-runtime--register-invocation
                     attachment turn-id (plist-get call :id)
                     (lambda (_state reason) (funcall callback reason))))
            aggregation)
       (condition-case err
           (setq aggregation
                 (e-board-subscribe-aggregation
-                 board (mapcar #'e-work-handle-id handles) mode target
+                 board (mapcar #'e-work-handle-id handles) mode lease
                  :id invocation-id :timeout timeout))
         (error
-         (e-board-runtime--drop-invocation target)
+         (e-board-runtime--drop-invocation lease)
          (signal (car err) (cdr err))))
       (lambda ()
         (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))
-        (e-board-runtime--drop-invocation target)))))
+        (e-board-runtime--drop-invocation lease)))))
 
 (defun e-board-runtime--publish-output (attachment turn-id)
   "Publish ATTACHMENT's final assistant message for TURN-ID exactly once."
@@ -2569,6 +2695,7 @@ This operation never invokes an instance factory or loads dormant history."
           :producer-turn-keys (make-hash-table :test 'equal)
           :activity-mailbox-keys (make-hash-table :test 'equal)
           :invocation-targets (make-hash-table :test 'equal)
+          :pending-board-admissions nil
           :retirement-stage 'live
           :retirement-authorized-p nil
           :retirement-work-authorized-p t

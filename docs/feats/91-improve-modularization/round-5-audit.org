@@ -1598,3 +1598,182 @@ presentation tree was not changed.
 The candidate remains =In-progress= / pending parent and independent review;
 Feature 91 is not marked =Done= and the compact feature index remains
 unchanged.
+
+* Exact admission-lease correction (current candidate)
+
+This candidate starts from clean exact baseline =88c66e7c= (implementation
+baseline =a816f066=).  It addresses the remaining admission-transaction
+findings without changing =review.org= or =index.org=.  The running Emacs was
+not queried, reloaded, or changed.
+
+** Responsibility, state, and lifetime matrix
+
+| Owner | State and representation | Lifetime and invariant |
+|---+---+---|
+| =e-board-runtime= | =e-board-runtime-invocation-lease= captures one exact target and invocation object; global invocation table and attachment-local invocation index retain the same object; the invocation carries one count token. | One prepared Work admission through terminalization; equal target replacement never satisfies the old lease, and count/index/table transition is exactly once. |
+| =e-board= event log | =e-board-event-receipt= captures the exact append cons cell, predecessor, event object, and monotonic sequence. | One staged board admission; inverse removes only its captured cell and message-count entry, preserving sequence allocation and unrelated events. |
+| =e-board= work index | =e-board-index-receipt= captures one exact queue, queue cell, predecessor, and subscription value. | One staged board admission; inverse removes only the captured relation, acknowledges a detached/replaced queue, and retains the receipt when an inverse signals before mutation. |
+| =e-board= admission | =e-board-work-admission= is the opaque transaction token carrying exact work/invocation objects plus event/index receipt lists. | Runtime/board admission transaction; maps are removed only after exact index/event inverses acknowledge completion. |
+| =e-work= | Publication, activity, and dispatcher closures remain owner state and are removed by exact function identity. | Prepared Work handle; a replacement observer/dispatcher is never cleared by an old admission. |
+
+No durable record, board format, event ordering on successful paths, or public
+command/mode contract changed.  The new structs and token fields are process
+local; an already running Emacs needs a normal restart before using these
+record definitions.
+
+** Actual dependency graph and admission flow
+
+#+begin_example
+e-board-runtime--enroll-work
+  -> e-work (install/remove exact hooks)
+  -> e-board-runtime (register/validate/terminalize exact lease)
+  -> e-board (enroll/abort opaque admission)
+       -> e-work (publication observer)
+       -> e-board (exact event and index receipts)
+#+end_example
+
+The board receives only an opaque runtime effect target and exact board token;
+it never inspects runtime lease fields.  Runtime never resolves an invocation
+or board relation by descriptive id during rollback.  The all-literal local
+require scan is =163= modules and =709= unique edges with =CYCLES []=; the
+definition and output are =/private/tmp/e-r5-require-scan.el= and
+=/tmp/f91-r8-require-final-3.log=.  The cross-owner private production sweep
+reports =0= and duplicate function definitions report =0= in
+=/tmp/f91-r8-private-duplicate-final-3.log=.
+
+** Semantic API consumer map and former-private dispositions
+
+| Contract | Consumer | Boundary |
+|---+---+---|
+| =e-board-runtime-invocation-lease= | Runtime registration, board effect target, runtime drop/apply | Opaque object identity; target and invocation are not reconstructed by a consumer. |
+| =e-board-work-admission-token= | Runtime admission composition and board enrollment | Opaque exact transaction token; only the board fills/consumes its owner receipts. |
+| =e-board-abort-work-enrollment= | Runtime admission error path and direct board owner tests | Exact token inverse; retrying the same token is idempotent and replacement-safe. |
+| =e-work-remove-publication-observer= | Board admission inverse | Exact observer identity. |
+| =e-work-remove-activity-observer=, =e-work-remove-hook-dispatcher= | Runtime hook inverse | Exact owner identity; no handle-id deletion. |
+
+The former key-only runtime target lookup was removed from registration, effect,
+and rollback paths.  The former sequence/event scan inverse was replaced by
+exact event-cell receipts.  The former id-based index rebuild/removal was
+replaced by exact queue-cell receipts.  No private compatibility alias or
+duplicate operational path remains.  Receipt predicates/accessors are used
+only inside =e-board= and its direct mechanism suite; lease predicates/accessors
+are used only inside =e-board-runtime= and its direct owner suite.
+
+** Failure partitions and mechanical-equivalence notes
+
+The runtime registers the exact invocation object in both owner indexes, then
+increments the invocation count.  A post-notification commit check requires
+the same global/local object, count token, open state, and current active
+attachment.  A board-stage signal or normal return after same-key replacement
+therefore aborts only the old board token and leaves the replacement authority.
+
+Board staged appends push an exact receipt before returning to a caller that can
+signal after list/tail/message-count mutation.  Abort removes exact index cells
+then newest staged event cells, while preserving monotonic sequence allocation.
+An inverse that signals before mutation leaves its receipt and maps as the sole
+retry authority; the runtime retries the same board token once
+inside the initiating transaction.  An inverse that signals after mutation has
+already acknowledged its receipt, so a repeated abort is a no-op.  The first
+unexpected admission error remains the surfaced error; no replacement is
+rediscovered or removed.
+
+The only mechanical exception is the addition of process-local object/receipt
+fields and the opaque lease value at an existing board effect seam.  Successful
+public behavior, durable formats, ordering, atomicity, retry/error visibility,
+and restart semantics remain equivalent.  The Work source owner did not need a
+new implementation file; its exact inverse contract is covered directly.
+
+** Test topology and dispositions
+
+Mechanism assertions are retained in the direct owner suites: board event/index
+receipt tests in =test/e-board-test.el=, runtime lease/replacement and real
+enrollment tests in =test/e-board-runtime-test.el=, and exact Work observer
+identity tests in =test/e-work-test.el=.  Composed tests continue to observe
+public board/runtime/Work behavior and do not inspect another owner's private
+state.  Historical tests are =retain/strengthen=; no existing test was deleted
+or renamed.  The new tests are:
+
+- =e-board-test-admission-event-receipts-remove-postmutation-events=;
+- =e-board-test-admission-event-receipt-removes-postmutation-subscription=;
+- =e-board-test-admission-event-receipts-remove-interleaved-events=;
+- =e-board-test-admission-index-receipts-retry-and-preserve-replacement=;
+- =e-board-test-admission-index-receipt-preserves-replacement-queue=;
+- =e-board-runtime-test-stale-invocation-lease-cannot-apply-replacement=;
+- =e-board-runtime-test-enrollment-board-stage-signal-preserves-replacement=;
+- =e-board-runtime-test-enrollment-board-stage-return-preserves-replacement=;
+- =e-board-runtime-test-enrollment-retries-index-inverse-in-outer-transaction=;
+- =e-board-runtime-test-retains-pending-admission-after-persistent-index-fault=;
+- =e-work-test-exact-owner-hook-inverses-preserve-replacements=.
+
+** Exact validation evidence
+
+| Command/purpose | Result | Evidence |
+|---+---+---|
+| Direct =e-board-test.el= | PASS: 78/78 | =/tmp/f91-r8-board-final-2.log= |
+| Direct =e-board-runtime-test.el= | PASS: 100/100 | =/tmp/f91-r8-runtime-final-4.log= |
+| Direct =e-work-test.el= | PASS: 48/48 | =/tmp/f91-r8-work-final-2.log= |
+| Affected 12-file board/runtime/composition batch | PASS: 466 discovered, 465 expected, 0 unexpected, 1 existing fresh-load skip | =/tmp/f91-r8-focused-final-3.log= |
+| Accepted 485-case preservation selector | PASS: 485 selected, 483 expected, 0 unexpected, 2 known skips | =/tmp/f91-r8-preservation-final-2.log= |
+| Full =eldev test -B= in sandbox (negative fixture-environment probe; pre-final pending-test run) | Environment-limited: 2,613 total, 2,600 expected, 6 local fixture-socket failures, 7 skips | =/tmp/f91-r8-full-ert-current.log= |
+| Full =eldev test -B= with fixture sockets | PASS: 2,614 total, 2,607 expected, 0 unexpected, 7 skips | =/tmp/f91-r8-full-ert-fixtures-final-3.log= |
+| Changed production byte compile | PASS: =e-board.el= and =e-board-runtime.el=; no warnings/errors | =/tmp/f91-r8-compile-final-3.log= |
+| Read parsing and current-buffer =check-parens= | PASS: 5 changed Lisp files | =/tmp/f91-r8-read-check-final-4.log= |
+| Diff and explicit changed-file whitespace sweeps | PASS: 0 findings | =/tmp/f91-r8-diff-check-final-6.log= and =/tmp/f91-r8-whitespace-final-6.log= |
+| Fresh board owner operation | PASS: append/receipt/abort leaves zero events and next sequence 1 | =/tmp/f91-r8-fresh-board-final.log= |
+| Fresh runtime owner operation | PASS: attach/retire reaches dormant/done | =/tmp/f91-r8-fresh-runtime-final.log= |
+| Bounded three-run owner smoke | PASS: 3/3; real 0.57s, user 0.46s, sys 0.06s | =/tmp/f91-r8-performance-final.log= |
+
+No graphical rerun was required: this candidate changes only core board/runtime
+admission internals and Work tests, while the accepted presentation graphical
+gate remains unchanged.  Live provider evidence is not applicable to this
+behavior-neutral transaction package.
+
+** Residual topology, risk, and design self-check
+
+The affected cohesive roots remain =e-board= (ordered board history and local
+relation indexes), =e-board-runtime= (attachment/invocation lifetime and
+application admission composition), and =e-work= (carrier hook lifetime).
+No new helper bag, forwarding module, circular dependency, global callback
+bridge, or duplicate implementation was introduced.  The bounded runtime
+rollback retries a lower-owner inverse once.  If an injected inverse fails on
+both attempts, the initiating error remains primary and the attachment retains
+the exact token in its owner-local pending-admission slot; later enrollment or
+attachment retirement retries that same token before proceeding.  The
+persistent-fault case is covered by
+=e-board-runtime-test-retains-pending-admission-after-persistent-index-fault=;
+only a continuously failing lower owner remains a genuine operational blocker.
+
+1. *Would stopping here improve the project?*  Yes: failed admissions no longer
+   leave ghost events, stale index relations, or replacement-canceling target
+   rollbacks.
+2. *What final direction does it move toward?*  One owner per mutable lifetime
+   with an application transaction composing exact lower-owner inverses.
+3. *What is uncertain versus stable?*  Lease/receipt structs are local and
+   reversible; public behavior, formats, and successful ordering are stable.
+4. *Who owns the behavior?*  Runtime owns invocation authority/counts, board
+   owns event/index relations, and Work owns carrier hooks.
+5. *Coupling?*  It is reduced from id/key rediscovery and scans to narrow exact
+   token protocols.
+6. *Wrong dependency direction?*  No; runtime calls board/Work contracts and
+   board calls Work, with no reverse facade edge and an acyclic 163/709 graph.
+7. *Could side effects move outward?*  No; each receipt mutates the owner that
+   owns its list/map, while runtime composes their transaction.
+8. *What state changed?*  Process-local leases, receipt lists, exact cells, and
+   count ownership; no durable state changed.
+9. *Performance?*  Successful admission adds bounded object/index work and
+   removes the old retirement scan; the three-run smoke is 2.42s aggregate.
+10. *Are abstractions real/substitutable?*  Yes; the opaque lease and receipts
+    are concrete single-consumer inverse protocols, not generic adapters.
+11. *Compatibility?*  Established public behavior and formats are preserved;
+    process-local record changes require restart and no private shim was kept.
+12. *Legacy removal?*  Key-only effect lookup, descriptive-id index rebuild,
+    and sequence event scanning were removed.
+13. *Errors?*  Admission/notification errors surface; exact inverse faults are
+    retried in bounded scope without replacing the initiating error.
+14. *Independent proof?*  Direct 78/100/48 owner suites cover receipts/leases,
+    465-case composition and 485-case preservation cover integration, and
+    full fixture ERT is green.
+
+Behavioral status is green for the focused, 485-case, and fixture-enabled full
+preservation gates.  Mechanism status remains candidate/in-progress pending
+independent review; Feature 91 is not marked =Done=.
