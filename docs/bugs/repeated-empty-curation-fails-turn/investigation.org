@@ -96,13 +96,12 @@ curation-only counter was already nonzero.
 
 * Remediation direction
 
-Keep the one-continuation bound, but give repeated curation-only output an
-explicit protocol-convergence outcome owned by the loop/context-lifetime
-boundary.  Before implementation, decide whether that outcome should settle
-with the already committed work, retain the first curation and surface a
-non-fatal diagnostic, or use another bounded recovery.  It should not masquerade
-as durable-record corruption, silently start another acknowledgement loop, or
-discard valid assistant output.
+[[file:../../feats/88-generational-context-ephemeral-frames/addendum8.org][Feature
+88 Addendum 8]] now owns the product decision.  Curation is scoped to one
+accepted decision per consumer-bound active frame rather than one per turn.
+Later tool work may create a new frame that can be curated again.  A duplicate
+against an already closed opportunity mutates no semantic state, receives one
+bounded corrective continuation, and is not reported as invalid durable state.
 
 Add a composed regression that covers a first curation-only response, later
 tool cycles, a second curation-only response, and a subsequent user turn.  The
