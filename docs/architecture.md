@@ -63,6 +63,9 @@ flowchart TD
     S --> SS["JSONL storage adapter"]
     H --> Ctx["context and loop"]
     H --> Tools["tools and resources"]
+    H --> Board["e-board facade"]
+    Board --> BoardState["e-board-state contract"]
+    Board --> BoardAdmission["e-board-admission owner"]
     H --> Backends["backend adapters"]
     Backends --> OpenAI["OpenAI owners"]
     Backends --> MCP["MCP client/transports"]
@@ -201,12 +204,31 @@ formats retain their existing ordering and restart behavior.
 
 ### Boards and retained core state machines
 
-`lisp/core/e-board.el` is a cohesive process-local board state machine. One board
-owns event sequence, participant admission, routing, pickup, publication,
-subscriptions, processing records, activity, terminal classification, and
-aggregation because those transitions share atomic admission and settlement
-ordering. Splitting any one into a generic helper would either duplicate the
-sequence/admission state or break the transaction boundary.
+`lisp/core/e-board-state.el` is the lower Board state/value contract: it defines
+the Board domain records, domain errors, and constant-time unsettled-count
+transition. `lisp/core/e-board-admission.el` is the substantive Board-private
+admission owner. It owns exact event, work-index, classifier, deadline, and
+effect receipts, resumable link/map/count/scheduler inverses, and the pending
+admission catalog. It depends only on the state contract and Work, so it can be
+loaded and exercised without the Board policy facade. Committed receipts retain
+only the link identity needed for later exact neighbour repair; rollback-only
+fields are dropped at admission completion.
+
+`lisp/core/e-board.el` remains the cohesive process-local Board aggregate and
+policy owner. One board owns event sequence, participant admission, routing,
+pickup, publication, subscriptions, processing records, activity, terminal
+classification, and aggregation because those transitions share atomic
+admission and settlement ordering. The facade composes the lower state and
+admission owners through semantic operations; it does not export their raw
+receipt or queue representation. Splitting any remaining policy transition
+into a generic helper would either duplicate the sequence/admission state or
+break the transaction boundary.
+
+The all-literal local-require inventory for the current source tree is 165
+modules and 713 unique edges, with no strongly connected component. The four
+additional edges over the accepted 163/709 baseline are the two new Board
+owner modules and their literal state/Work imports; the reproducible scanner
+and complete edge list are recorded in the current Round 5 audit.
 
 `e-board-runtime.el` is the board attachment adapter. It owns attachment
 admission/reconciliation, endpoint generations, producer/activity mailboxes,

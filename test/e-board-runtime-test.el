@@ -341,7 +341,7 @@
       (cl-letf (((symbol-function 'run-at-time)
                  (lambda (_seconds _repeat function &rest arguments)
                    (push (lambda () (apply function arguments)) scheduled))))
-        (e-board--schedule-effect
+        (e-board-admission-schedule-effect
          (e-board-registry-board-source-board board) #'ignore)
         (let* ((quiescence (e-board-runtime-request-quiescence))
                (request (e-board-runtime-quiescence-request quiescence)))
@@ -371,13 +371,46 @@
   (e-board-runtime-test--with-empty-state
     (let* ((scheduled nil)
            (board (e-board-registry-create :id "board"))
-           (source (e-board-registry-board-source-board board)))
+           (source (e-board-registry-board-source-board board))
+           (terminal-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "terminal-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (deadline-handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "deadline-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil)))
       (setf (e-board-terminal-classification-scheduler source)
             (lambda (drain) (setq scheduled (append scheduled (list drain))))
             (e-board-aggregation-deadline-scheduler source)
-            (lambda (drain) (setq scheduled (append scheduled (list drain)))))
-      (e-board--queue-terminal-classification source "work" '("invocation") nil)
-      (e-board--queue-aggregation-deadline source "aggregation")
+            (lambda (drain) (setq scheduled (append scheduled (list drain))))
+            (e-board-effect-scheduler source)
+            (lambda (drain) (setq scheduled (append scheduled (list drain))))
+            (e-board-invocation-effect-dispatcher source)
+            (lambda (&rest _arguments) nil))
+      ;; Build both blockers through the public Board/Work contracts.  The
+      ;; deadline queue receives its own semantic drain callback; no test code
+      ;; fabricates a Board record or reaches into an admission representation.
+      (e-board-enroll-work source terminal-handle)
+      (e-board-enroll-work source deadline-handle)
+      (let ((aggregation
+             (e-board-subscribe-aggregation
+              source (list (e-work-handle-id deadline-handle)) 'all '(target)
+              :id "aggregation")))
+        (e-board-admission-queue-aggregation-deadline
+         source aggregation nil
+         (lambda (source-board)
+           (setq scheduled
+                 (append scheduled
+                         (list (lambda ()
+                                 (e-board-drain-aggregation-deadlines
+                                  source-board)))))))
+        ;; Work settlement publishes the public terminal classifier blocker.
+        (e-work-finish terminal-handle "done"))
       (let* ((quiescence (e-board-runtime-request-quiescence))
              (request (e-board-runtime-quiescence-request quiescence)))
         (should (eq (e-request-lifecycle-state request) 'started))
@@ -385,8 +418,20 @@
         (funcall (pop scheduled))
         (should (eq (e-request-lifecycle-state request) 'started))
         (funcall (pop scheduled))
+        ;; Deadline settlement publishes the aggregation's deferred effect;
+        ;; quiescence must continue to wait for that owner transition too.
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (should (= (plist-get (e-board-unsettled-state source) :effects) 1))
+        (funcall (pop scheduled))
+        ;; The watched work remains an independent unsettled source until it
+        ;; settles; its public terminal publication queues one final empty
+        ;; classifier page, which is also part of the bounded drain protocol.
+        (should (eq (e-request-lifecycle-state request) 'started))
+        (e-work-finish deadline-handle "done")
+        (funcall (pop scheduled))
         (should (eq (e-request-lifecycle-state request) 'finished))
-        (should (= (plist-get (e-board-unsettled-state source) :routing) 0))))))
+        (should (= (plist-get (e-board-unsettled-state source) :routing) 0))
+        (should (= (plist-get (e-board-unsettled-state source) :effects) 0))))))
 
 (ert-deftest e-board-runtime-test-quiescence-waits-for-task-writer ()
   "A domain writer timer is an activation blocker until its owner retires it."
@@ -793,7 +838,7 @@
         (e-board-runtime--drain-pickups)
         (should-not deliveries)
         (let* ((source-board (e-board-registry-board-source-board board))
-               (delivery-id (car (e-board--pickup-queue
+               (delivery-id (car (e-board-pickup-ids
                                   source-board "participant"))))
           (should (eq (e-board-pickup-state
                        (e-board-pickup source-board delivery-id))

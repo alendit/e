@@ -69,6 +69,21 @@
         :effects e-board-registry--unsettled-effect-count
         :routing e-board-registry--unsettled-routing-count))
 
+(defun e-board-registry-add-unsettled-listener (function)
+  "Subscribe FUNCTION to board unsettled-state transitions.
+
+The registry retains its hook variable privately; consumers receive an
+owner-shaped operation rather than importing that implementation detail."
+  (unless (functionp function)
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (add-hook 'e-board-registry--unsettled-change-functions function)
+  function)
+
+(defun e-board-registry-remove-unsettled-listener (function)
+  "Remove FUNCTION from board unsettled-state transition listeners."
+  (remove-hook 'e-board-registry--unsettled-change-functions function)
+  function)
+
 (defun e-board-registry--board-unsettled-changed (source class delta _state)
   "Aggregate one SOURCE board CLASS change by DELTA without scanning boards."
   (let ((registered (gethash (e-board-id source) e-board-registry--boards)))
@@ -880,7 +895,7 @@ idempotent for an already-published participant and rejects foreign records."
                                    (e-board-participant-id source-participant))
         (signal 'e-board-registry-participant-missing
                 (list (e-board-registry-participant-id current))))
-      (e-board--append-event
+      (e-board-admission-append-event
        source-board 'participant-added
        (list :participant-id
              (e-board-participant-id source-participant)
@@ -910,7 +925,7 @@ before the participant has been exposed to board traffic."
                     (e-board-registry-board-participant-ids board))
             (e-board-registry-board-participant-ids-tail board)
             (last (e-board-registry-board-participant-ids board)))
-      (e-board--rollback-participant-admission source-board participant-id))
+      (e-board-abort-participant-admission source-board participant-id))
     current))
 
 (defun e-board-registry-grant-participant-access
@@ -1097,7 +1112,7 @@ missing current principal grant."
       (when (equal (e-board-subscription-participant-id subscription) participant-id)
         (setf (e-board-subscription-state subscription) 'inactive)))
     (remhash participant-id (e-board-registry-board-participants board))
-    (e-board--append-event
+    (e-board-admission-append-event
      source-board 'participant-removed (list :participant-id participant-id))
     participant))
 
@@ -1217,7 +1232,7 @@ Removal remains the terminal operation in `e-board-registry-remove-participant'.
       (signal 'e-board-registry-error
               (list "Participant already in requested state" state)))
     (setf (e-board-participant-state source-participant) state)
-    (e-board--append-event
+    (e-board-admission-append-event
      source-board
      (pcase state
        ('active 'participant-rebound)

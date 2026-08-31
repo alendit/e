@@ -638,7 +638,7 @@
            attachment handle source-board
            (original-enroll (symbol-function 'e-board-enroll-invocation-work))
            (original-remove (symbol-function
-                             'e-board--remove-indexed-work-subscription))
+                             'e-board-admission-remove-index))
            (index-failed t))
       (e-harness-create-session harness :id "session")
       (setq attachment
@@ -658,7 +658,7 @@
                  (lambda (&rest arguments)
                    (prog1 (apply original-enroll arguments)
                      (error "primary board admission"))))
-                ((symbol-function 'e-board--remove-indexed-work-subscription)
+                ((symbol-function 'e-board-admission-remove-index)
                  (lambda (receipt)
                    (if index-failed
                        (progn
@@ -673,18 +673,11 @@
       ;; second public enrollment has no duplicate index cell.
       (should-not (e-board-observed-work source-board (e-work-handle-id handle)))
       (should-not (e-board-invocation source-board '("turn" "call")))
-      (should-not (e-board--indexed-work-subscriptions
-                   (e-board-invocation-work-index source-board)
-                   (e-work-handle-id handle)))
       (should-not (e-work-handle-publication-observer handle))
       (should (= e-board-runtime--unsettled-invocation-count 0))
       (should (funcall (e-harness-work-enrollment-function harness)
                        handle #'ignore))
-      (should (equal
-               (e-board--indexed-work-subscriptions
-                (e-board-invocation-work-index source-board)
-                (e-work-handle-id handle))
-               '(("turn" "call"))))
+      (should (e-board-invocation source-board '("turn" "call")))
       (e-board-runtime-retire-attachment attachment))))
 
 (ert-deftest e-board-runtime-test-retains-pending-admission-after-persistent-index-fault ()
@@ -695,7 +688,7 @@
            attachment handle source-board condition
            (original-enroll (symbol-function 'e-board-enroll-invocation-work))
            (original-remove (symbol-function
-                             'e-board--remove-indexed-work-subscription))
+                             'e-board-admission-remove-index))
            (inverse-faults 0))
       (e-harness-create-session harness :id "session")
       (setq attachment
@@ -715,7 +708,7 @@
                  (lambda (&rest arguments)
                    (prog1 (apply original-enroll arguments)
                      (error "persistent primary"))))
-                ((symbol-function 'e-board--remove-indexed-work-subscription)
+                ((symbol-function 'e-board-admission-remove-index)
                  (lambda (_receipt)
                    (cl-incf inverse-faults)
                    (error "persistent index inverse"))))
@@ -737,16 +730,12 @@
       (should (= e-board-runtime--unsettled-invocation-count 0))
       ;; Once the lower owner is available again, the retained exact token is
       ;; retired before the new admission is staged and no duplicate remains.
-      (cl-letf (((symbol-function 'e-board--remove-indexed-work-subscription)
+      (cl-letf (((symbol-function 'e-board-admission-remove-index)
                  (lambda (receipt) (funcall original-remove receipt))))
         (should (funcall (e-harness-work-enrollment-function harness)
                          handle #'ignore)))
       (should (= (hash-table-count e-board-runtime--pending-admissions) 0))
-      (should (= (length
-                  (e-board--indexed-work-subscriptions
-                   (e-board-invocation-work-index source-board)
-                   (e-work-handle-id handle)))
-                 1))
+      (should (e-board-invocation source-board '("turn" "call")))
       (should (= e-board-runtime--unsettled-invocation-count 1))
       (e-board-runtime-retire-attachment attachment))))
 
@@ -995,10 +984,6 @@ new same-key invocation lease remains live."
         (should (= e-board-runtime--unsettled-invocation-count 1))
         (should-not (e-board-aggregation
                      source-board '("await" "await-call")))
-        (should-not
-         (e-board--indexed-work-subscriptions
-          (e-board-aggregation-work-index source-board)
-          (e-work-handle-id handle)))
         (e-board-runtime--drop-invocation new-lease)
         (e-board-runtime-retire-attachment new)))))
 

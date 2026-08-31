@@ -1112,3 +1112,133 @@ definition/output is =/private/tmp/e-r5-require-scan.el= and
 =/tmp/f91-r5-receipt-require-final.log=.  The candidate is behavior-green,
 but mechanism acceptance remains pending parent and independent review;
 Feature 91 remains =In-progress= and is not =Done=.
+
+*** Current Board admission-owner correction
+
+This is the current Round 5 implementation continuation from exact baseline
+=6c8bf2ff537e790a0d1cf511fa36fa6bc6138cc8= (reviewed =f5290f6a=).  It
+addresses all eight current Board/admission findings in one package.  The
+review artifact and =docs/feats/index.org= remain untouched; the running
+Emacs remains untouched.
+
+The resulting lower boundary is substantive: =e-board-state.el= owns Board
+record/value shapes and the count transition; =e-board-admission.el= owns
+exact event, work-index, classifier, deadline, effect, aggregation, and
+pending-admission receipts; =e-board.el= retains semantic Board routing,
+publication, subscriptions, processing, and settlement policy;
+=e-board-runtime.el= owns cross-owner attachment and runtime admission
+composition.  Board admission has no facade dependency, runtime has no Board
+private or receipt representation dependency, and receiptless/id-only inverse
+paths were removed.  The facade still composes the lower owner directly;
+there is no generic transaction/helper-bag or compatibility bridge.
+
+State and ordering remain process-local and exact: event sequence allocation
+is monotonic, removed-event message-prefix checkpoints remain available for
+sparse observer cursors, queue/map/list/head/link/tail/count/scheduled bits
+are captured by object identity, and incomplete inverses remain in the Board
+pending catalog for retry.  Committed admissions drop rollback-only fields;
+the minimal link identity needed for later neighbour repair remains.  Public
+event order, FIFO routing, replacement fencing, error precedence,
+quiescence, and durable session/board formats are unchanged.  Core record
+shapes require a full Emacs restart; no live reload was attempted.
+
+Current source/test topology:
+
+- =e-board.el= is 4,022 lines; =e-board-state.el= is 224 and
+  =e-board-admission.el= is 2,229.  The remaining Board policy shares one
+  sequence/routing/settlement invariant and is retained cohesively.
+- =test/e-board-test.el= is 2,099 lines and keeps public Board behavior;
+  =test/e-board-admission-test.el= is 761 lines and is the direct owner
+  mechanism suite; =test/e-board-admission-composition-test.el= is 445 lines
+  and covers public composition without private receipt access;
+  =test/e-board-runtime-test.el= is 3,115 and
+  =test/e-board-runtime-admission-test.el= is 991.  All ordinary related
+  roots are below the 4,000-line signal; the 6,821-line external E2E harness
+  remains one external scenario owner and is N/A for this split.
+- The other initial residual roots (=e-session-aggregate=, =e-context-lifetime=,
+  =e-loop=, =e-tools=, =e-work=, presentation/session/harness/provider/MCP/base
+  facades and owners) remain at their accepted cohesive boundaries; no new
+  mixed-owner logic was introduced in this correction.
+
+The reproducible all-literal local require scan recursively visits every
+source form, deduplicates literal local require pairs, and computes SCCs:
+165 modules, 713 unique edges, =CYCLES []=.  The four-edge increase over the
+accepted 163/709 scan is exactly the two new Board modules and their four
+literal imports.  The scan definition is =/private/tmp/e-r5-require-scan.el=
+and output is =/tmp/f91-require-scan-current2.log=.
+
+Focused current evidence is recorded in =round-5-audit.org= and includes:
+
+- Board/runtime/admission family: 206/206 expected;
+- direct admission owner: 23/23 expected;
+- Board admission composition: 11/11 expected;
+- check-parens and forced Board/state/admission/registry/runtime compilation:
+  pass, no warnings/errors;
+- fresh admission-owner operation without the Board facade and fresh Board
+  facade operation: pass;
+- source and composed-test private sweeps: zero cross-owner private refs and
+  zero receipt/private-representation refs in composed tests;
+- changed-file whitespace and duplicate-definition sweeps: pass.
+
+Behavioral status is green on the focused family and accepted preservation
+baselines; mechanism progress is a complete implementation candidate pending the
+broad final gates, parent review, and independent review.  The exact broad
+preservation selector, full ERT, graphical run, and final affected-family
+timings will be appended to the audit and this plan after they run on this
+exact tree.  Feature 91 remains =In-progress=; no completion claim is made.
+
+*** Final exact-tree gate evidence for this candidate
+
+The complete current tree now has the broad gate results that were pending in
+the preceding section.  The fixture-enabled full =eldev test -B= passes 2,642
+tests with 2,635 expected results, 0 unexpected results, and 7 existing
+skips.  The sandbox-only run had six socket-permission failures; the four MCP
+fixture and two OpenAI local-server cases pass when the test fixture sockets
+are permitted.  The exact 485-case preservation selector passes 483 expected
+results plus 2 known skips, and the isolated graphical suite passes 27/27 in
+the private off-screen frame.  Logs are =/tmp/f91-full-ert-fixture-final.log=,
+=/tmp/f91-preservation-485-final.log=, and
+=/tmp/f91-graphical-final-fixture.log=.
+
+The current focused Board/runtime/admission family is 206/206, including
+23/23 direct admission-owner tests and 11/11 public composition tests.  The
+exact Board test-name comparison is baseline 94, final union 105, missing 0,
+added 11; runtime plus runtime-admission is baseline 101, final 101, missing
+0, added 0.  Evidence is =/tmp/f91-board-test-name-compare-final.log= and
+=/tmp/f91-runtime-test-name-compare-final.log=.
+
+The complete production tree compiles with no warnings through
+=eldev compile -F -f lisp= (the explicit changed-module target also passes);
+check-parens, diff/whitespace, expanded
+cross-owner-private/duplicate scans, fresh owner/facade operation loads, and
+the all-literal local require scan pass.  The final graph is 165 modules and
+713 unique local edges with =CYCLES []=; the four-edge delta from 163/709 is
+the two new Board modules and their four literal imports.  Exact evidence is
+in =/tmp/f91-board-compile-final2.log=,
+=/tmp/f91-check-parens-final.log=, =/tmp/f91-whitespace-final.log=,
+=/tmp/f91-private-duplicate-final.log=,
+=/tmp/f91-fresh-admission-final.log=,
+=/tmp/f91-fresh-facade-final.log=, and
+=/tmp/f91-require-scan-final.log=.
+
+Three direct admission-owner timing runs are 0.60--0.61 seconds real and
+three board/chat hot-path runs are 1.09--1.12 seconds real including Eldev
+startup; no new synchronous write, process-wide scan, or repeated hot-path
+traversal was added.  The exact timing logs are
+=/tmp/f91-board-performance-final.log= and
+=/tmp/f91-board-chat-performance-final.log=.
+
+The syntax-aware Board call scan records 231 cross-owner call sites with the
+directional edges admission->state (1), board->state (12), board->admission
+(86), registry->board (29), registry->admission (3), runtime->registry (37),
+runtime->board (61), and runtime->admission (2 completion checks); no reverse
+owner-to-facade calls or runtime SCCs are present.  Evidence is
+=/tmp/f91-board-call-graph-final.log=.
+
+Behavioral status is green separately from mechanism progress.  Mechanism
+progress is a complete implementation candidate with substantive Board state and
+admission owners, exact resumable receipts, owner-pure tests, and no
+cross-owner private production references.  Parent and independent acceptance
+remain pending; Feature 91 remains =In-progress= and is not =Done=.  Core
+record-shape changes require a restart, and the running Emacs remains
+untouched.
