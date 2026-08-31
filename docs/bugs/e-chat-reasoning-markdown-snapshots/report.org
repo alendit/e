@@ -1,0 +1,11 @@
+#+title: e-chat reasoning Markdown snapshots render as one raw line
+
+* Report
+
+During an active chat turn, reasoning status updates render with their Markdown
+delimiters visible and adjacent updates run together.  The reported transcript
+showed several complete bold status phrases as one value such as
+=**first****second**= instead of separate, visually emphasized lines.
+
+The expected presentation is that each board-visible reasoning snapshot keeps
+its own line, appears emphasized, and does not expose Markdown delimiters.

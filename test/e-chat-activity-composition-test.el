@@ -1142,6 +1142,63 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-reasoning-snapshots-render-as-markdown-lines ()
+  "Board reasoning snapshots stay separate and receive Markdown presentation."
+  (let ((buffer (e-chat-test--buffer nil "chat-reasoning-snapshots")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (dolist (content '("**Inspecting state**" "**Drafting change**"))
+            (e-chat-render-event
+             (e-events-make :type 'reasoning-delta
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 1
+                            :payload (list :content content
+                                           :content-mode 'snapshot))))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)))
+          (let ((text (buffer-string)))
+            (should (string-match-p
+                     (regexp-quote
+                      "**Inspecting state**\n**Drafting change**")
+                     text))
+            (should-not (string-match-p
+                         (regexp-quote
+                          "**Inspecting state****Drafting change**")
+                         text)))
+          (goto-char (point-min))
+          (search-forward "**Inspecting")
+          (let ((opening-start (- (point) (length "**Inspecting"))))
+            (should (eq (get-text-property opening-start 'invisible)
+                        'e-chat-markdown-syntax))
+            (should (invisible-p opening-start)))
+          (search-forward " state")
+          (should (memq 'e-chat-markdown-strong-face
+                        (ensure-list
+                         (get-text-property (1- (point)) 'face))))
+          (search-forward "Drafting change")
+          (should (memq 'e-chat-markdown-strong-face
+                        (ensure-list
+                         (get-text-property (1- (point)) 'face))))
+          (search-forward "**")
+          (let ((closing-start (- (point) 2)))
+            (should (eq (get-text-property closing-start 'invisible)
+                        'e-chat-markdown-syntax))
+            (should (invisible-p closing-start))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (provide 'e-chat-activity-composition-test)
 
 ;;; e-chat-activity-composition-test.el ends here

@@ -731,6 +731,13 @@ so a sibling cannot settle a selected binding through a malformed projection."
                  (append
                   (when-let ((content (e-board-message-content message)))
                     (list :content content))
+                  ;; Reasoning reaches the board through a bounded
+                  ;; latest-value mailbox.  Its content is therefore a
+                  ;; presentation snapshot, not one raw provider fragment to
+                  ;; concatenate with the preceding board publication.
+                  (when (memq activity-kind
+                              '(reasoning-delta reasoning-raw-delta))
+                    (list :content-mode 'snapshot))
                   (copy-tree (e-board-message-attributes message))))))))
       (_
        (append identity

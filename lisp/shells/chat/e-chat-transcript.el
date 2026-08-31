@@ -1269,20 +1269,26 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
         (e-chat-transcript--conceal-markdown-syntax (match-beginning 0) label-start)
         (e-chat-transcript--conceal-markdown-syntax label-end (match-end 0))))))
 
+(defun e-chat-transcript--apply-deterministic-markdown (content-start content-end)
+  "Apply E's deterministic Markdown presentation from CONTENT-START to CONTENT-END."
+  (when (< content-start content-end)
+    (e-chat-transcript--apply-markdown-line-faces content-start content-end)
+    (e-chat-transcript--apply-markdown-delimited-face
+     "\\(`\\)\\([^`\n]+\\)\\(`\\)" content-start content-end
+     'e-chat-markdown-code-face)
+    (e-chat-transcript--apply-markdown-delimited-face
+     "\\(\\*\\*\\)\\([^*\n]+\\)\\(\\*\\*\\)" content-start content-end
+     'e-chat-markdown-strong-face)
+    (e-chat-transcript--apply-markdown-emphasis-face content-start content-end)
+    (e-chat-transcript--apply-markdown-link-faces content-start content-end)))
+
 (defun e-chat-transcript--apply-assistant-markdown (content-start content-end)
   "Apply Markdown presentation between CONTENT-START and CONTENT-END."
   (when (< content-start content-end)
     (unless (e-chat-transcript--apply-markdown-mode-properties content-start content-end)
       (e-chat-clear-markdown-presentation content-start content-end)
-      (e-chat-transcript--apply-markdown-line-faces content-start content-end)
-      (e-chat-transcript--apply-markdown-delimited-face
-       "\\(`\\)\\([^`\n]+\\)\\(`\\)" content-start content-end
-       'e-chat-markdown-code-face)
-      (e-chat-transcript--apply-markdown-delimited-face
-       "\\(\\*\\*\\)\\([^*\n]+\\)\\(\\*\\*\\)" content-start content-end
-       'e-chat-markdown-strong-face)
-      (e-chat-transcript--apply-markdown-emphasis-face content-start content-end)
-      (e-chat-transcript--apply-markdown-link-faces content-start content-end))))
+      (e-chat-transcript--apply-deterministic-markdown
+       content-start content-end))))
 
 (defun e-chat-transcript--output-mode ()
   "Return the effective assistant output markup mode for this chat buffer.
@@ -2249,6 +2255,31 @@ projection, keeping marker and bounds representation private to transcript."
       (setq start (or start (length prefix)))
       (cons start (length text)))))
 
+(defun e-chat-transcript--apply-activity-markdown-lines (start end)
+  "Apply Markdown presentation to activity lines touched by START through END.
+Expanding to complete lines keeps delimiters paired when a streamed update
+changes only a suffix.  Activity projections are compact and bounded, while
+unchanged lines remain untouched during ordinary progress ticks."
+  (when (< start end)
+    (let ((line-start
+           (save-excursion
+             (goto-char start)
+             (line-beginning-position)))
+          (line-end
+           (save-excursion
+             (goto-char (1- end))
+             (min (point-max) (1+ (line-end-position))))))
+      (e-chat-transcript--apply-assistant-markdown line-start line-end)
+      ;; Activity text must be stable across user `markdown-mode'
+      ;; configurations.  In particular, reasoning status delimiters remain
+      ;; presentation syntax rather than visible transcript content.
+      (e-chat-transcript--apply-deterministic-markdown line-start line-end)
+      ;; The Markdown presenter clears generic face properties before adding
+      ;; semantic ones.  Restore the activity base face as the background
+      ;; style while preserving strong/code/link faces on top of it.
+      (add-text-properties
+       line-start line-end '(font-lock-face e-chat-system-face)))))
+
 (defun e-chat-transcript--apply-activity-region
     (turn-id data start end &optional property-start property-end)
   "Apply semantic activity DATA to the transcript region START through END."
@@ -2287,6 +2318,8 @@ projection, keeping marker and bounds representation private to transcript."
             (add-text-properties
              property-buffer-start property-buffer-end
              `(font-lock-face e-chat-system-face ,@properties))
+            (e-chat-transcript--apply-activity-markdown-lines
+             property-buffer-start property-buffer-end)
             (e-chat-transcript--apply-activity-separator-face
              property-buffer-start property-buffer-end))
         (add-text-properties

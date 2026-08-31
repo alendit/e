@@ -1256,6 +1256,53 @@ than the invisible insertion position."
                    "progress-updated-only-active-tail"))))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-reasoning-snapshots-render-as-markdown-lines ()
+  "Board reasoning snapshots render as distinct emphasized status lines."
+  (skip-unless (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "reasoning rendering prompt")
+          (e-chat-behavior-test--emit
+           fixture
+           '(:type reasoning-delta :content "**Inspecting state**")
+           "**Inspecting state**")
+          (e-chat-behavior-test--emit
+           fixture
+           '(:type reasoning-delta :content "**Drafting change**")
+           "**Drafting change**")
+          (with-current-buffer (plist-get fixture :transcript)
+            (let ((text (buffer-string)))
+              (should (string-match-p
+                       (regexp-quote
+                        "**Inspecting state**\n**Drafting change**")
+                       text))
+              (should-not (string-match-p
+                           (regexp-quote
+                            "**Inspecting state****Drafting change**")
+                           text)))
+            (goto-char (point-min))
+            (search-forward "**Inspecting")
+            (let ((opening-start (- (point) (length "**Inspecting"))))
+              (should (eq (get-text-property opening-start 'invisible)
+                          'e-chat-markdown-syntax))
+              (should (invisible-p opening-start)))
+            (search-forward "Drafting change")
+            (should (memq 'e-chat-markdown-strong-face
+                          (ensure-list
+                           (get-text-property (1- (point)) 'face))))
+            (search-forward "**")
+            (let ((closing-start (- (point) 2)))
+              (should (eq (get-text-property closing-start 'invisible)
+                          'e-chat-markdown-syntax))
+              (should (invisible-p closing-start)))
+            (e-chat-behavior-test--capture-state
+             "reasoning-snapshots-markdown-lines")))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-live-activity-history-is-bounded ()
   "A long live turn projects recent rounds while retaining complete details."
   (skip-unless (display-graphic-p))

@@ -1246,6 +1246,12 @@ STATUS defaults to `done'."
   (e-chat-activity--add-intermittent-entry record "Reasoning" content append source)
   (e-chat-activity--refresh-turn-details record))
 
+(defun e-chat-activity--reasoning-append-p (payload)
+  "Return non-nil when reasoning PAYLOAD is an appendable stream fragment.
+Board activity uses `snapshot' content because its publisher has already
+coalesced the raw provider stream."
+  (not (eq (plist-get payload :content-mode) 'snapshot)))
+
 (defun e-chat-activity--record-tool-started (record payload &optional source created-at)
   "Record tool-started PAYLOAD in RECORD.
 CREATED-AT records the tool start time for the running-tool row."
@@ -1860,11 +1866,12 @@ function records only lifecycle audit text."
                               :ended-at
                               (plist-get activity-event :created-at)))
       ('reasoning-delta
-       (e-chat-activity--record-reasoning-delta
-        record
-        (plist-get (plist-get activity-event :payload) :content)
-        t
-        'activity))
+       (let ((payload (plist-get activity-event :payload)))
+         (e-chat-activity--record-reasoning-delta
+          record
+          (plist-get payload :content)
+          (e-chat-activity--reasoning-append-p payload)
+          'activity)))
       ('tool-started
        (e-chat-activity--record-tool-started
         record
@@ -2379,7 +2386,10 @@ provider/tool activity does not require a central per-record dispatch branch."
        (pcase event-type
          ('reasoning-delta
           (e-chat-activity--record-reasoning-delta
-           record (plist-get payload :content) t 'activity)
+           record
+           (plist-get payload :content)
+           (e-chat-activity--reasoning-append-p payload)
+           'activity)
           (when (e-chat-transcript-event-selected-participant-p event)
             (e-chat-surface-set-status "reasoning")))
          ('tool-started

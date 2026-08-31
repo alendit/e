@@ -106,6 +106,33 @@
                 nil))
     (should (plist-get sibling-rendered-message :terminal-output))))
 
+(ert-deftest e-chat-service-test-board-reasoning-is-snapshot-content ()
+  "A coalesced board reasoning publication is not a raw appendable delta."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session
+                   :harness harness :id "reasoning-snapshot"))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (board (e-board-registry-board-source-board
+                 (e-chat-service-binding-board binding)))
+         (participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant
+            (e-chat-service-binding-attachment binding))))
+         (message
+          (e-board-publication-message
+           (e-board-post-activity
+            board :id "reasoning"
+            :author (format "participant:%s" participant-id)
+            :subject-participant-id participant-id :tags '(main)
+            :content "**Inspecting state**" :source-turn-id "source-turn"
+            :activity-kind 'reasoning-delta
+            :source-activity-key '(test reasoning-snapshot 1))))
+         (event (e-chat-service--message-event binding message))
+         (payload (plist-get event :payload)))
+    (should (eq (plist-get event :type) 'reasoning-delta))
+    (should (equal (plist-get payload :content) "**Inspecting state**"))
+    (should (eq (plist-get payload :content-mode) 'snapshot))))
+
 (ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
   "Snapshots include recent bounded messages and session metadata."
   (let ((harness (e-harness-create
