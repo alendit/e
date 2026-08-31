@@ -210,16 +210,15 @@ transition. `lisp/core/e-board-runtime-error.el` is the lower runtime-admission
 error contract; it is loadable with the admission owner without loading the
 runtime facade, and facade-specific runtime conditions extend it.
 `lisp/core/e-board-admission.el` is the substantive Board-private
-admission owner. It owns exact event, work-index, classifier, deadline, and
-effect receipts, resumable link/map/count/scheduler inverses, and the pending
-admission catalog. It depends only on the state contract and Work, so it can be
-loaded and exercised without the Board policy facade. Committed receipts retain
-only the link identity needed for later exact neighbour repair; rollback-only
-fields are dropped at admission completion. Event and index compact finalization
-publishes an exact compact node first, then acknowledges predecessor and
-successor postconditions before releasing the full receipt. Committed index
-nodes are self-authoritative and have no rollback-root slot, so singleton and
-multi-node queues retain only the compact link representation.
+admission owner. It owns the short-lived event, work-index, classifier,
+deadline, and effect admission records needed to fence callbacks and cancel
+ordinary in-flight work. It depends only on the state contract and Work, so it
+can be loaded and exercised without the Board policy facade. Event and index
+records retain exact object-identity neighbours only while a queued relation
+can still be cancelled or appended; completion drops the mutation-specific
+fields. This is ordinary Board lifetime state, not a general in-memory
+transaction journal: arbitrary failures injected into individual hash/list
+primitives after they have already succeeded are outside the runtime contract.
 
 `lisp/core/e-board.el` remains the cohesive process-local Board aggregate and
 policy owner. One board owns event sequence, participant admission, routing,
@@ -229,7 +228,7 @@ admission and settlement ordering. The facade composes the lower state and
 admission owners through semantic operations; it does not export their raw
 receipt or queue representation. Splitting any remaining policy transition
 into a generic helper would either duplicate the sequence/admission state or
-break the transaction boundary.
+break the aggregate's ordering boundary.
 
 The all-literal local-require inventory for the current source tree is 167
 modules and 719 unique edges, with no strongly connected component. Relative
@@ -247,10 +246,12 @@ Its direct Board and Board-admission imports are explicit; it does not rely on
 the runtime-admission owner or the facade to provide those definitions
 transitively.
 `e-board-runtime-admission.el` is the concrete runtime-specific admission
-catalog owner: it owns the pending admission record, the primary/recovery
-catalogs and exact Board/attachment indexes, and remember/fence/retry/complete
+lifetime owner: it owns one pending admission record and bounded exact-object
+indexes by source Board and attachment, plus remember/fence/retry/complete
 operations. It depends downward on Board's semantic admission contract; it
-does not own attachment delivery or call back into the runtime facade. Board
+does not own attachment delivery or call back into the runtime facade. These
+indexes are ordinary lookup aids for a live admission, not a six-catalog
+transaction or synthetic primitive-fault recovery mechanism. Board
 routing/publication remains in `e-board`; harness execution remains behind the
 attached-turn port. `e-board-registry.el`, `e-board-orchestration.el`, and
 `e-board-orchestration-actions.el` provide narrower registry/application seams.
@@ -278,31 +279,18 @@ callback is therefore inert and cannot consume replacement work. Invocation
 effects use the same terminal-owner rule: the exact invocation is removed and
 accounted before fallible unsettled notifications, so a notification fault or
 reentrant attachment retirement cannot double-decrement it.
-Prepared Work admission is one staged runtime transaction.  The runtime first
-installs its exact Work dispatcher/activity observers, then admits the exact
-invocation target and unsettled-count token, and finally asks `e-board` to
-commit the work/invocation relation.  `e-board-work-admission-token` is an
-opaque board-owned inverse token: if a later step signals, the runtime passes
-that token back to `e-board-abort-work-enrollment`, which removes only the
-objects and event identities created by that attempt.  The inverse is
-idempotent and leaves pre-existing or replacement targets/observers untouched;
-the initiating error remains visible.  This process-local transaction does not
-alter durable board formats or event ordering on successful admissions.
-The board's event and work-index owners acquire exact cell receipts before
-their first observable list, map, head, link, tail, or count mutation.  Each
-receipt records object-identity neighbours and resumable forward/inverse
-stages; inverses repair the captured successor and preserve monotonic event
-sequence values without scanning or deleting an equal-key replacement.  The
-same rule covers terminal-classifier and aggregation-deadline queues.  A
-direct board API registers an unfinished admission in the board-local pending
-catalog, while a runtime composition registers its opaque admission in a
-runtime catalog indexed by exact source board and attachment.  Both catalogs
-retain retry authority when a lower-owner inverse signals, and related new
-mutations recover the captured token before proceeding.  Aggregation admission
-tokens additionally capture the exact aggregation map, work indexes,
-subscription event, classifier/deadline receipts, timer, and prepared
-activation; runtime postchecks reject a reentrant or replacement-invalidated
-lease and abort only that exact token.
+Prepared Work admission remains an application-level admission boundary. The
+runtime installs its exact Work observers and invocation target, then asks
+`e-board` to commit the work/invocation relation. If a production callback,
+scheduler, timer, cancellation, or replacement invalidates that authority,
+the exact object/generation is fenced and ordinary idempotent cleanup removes
+only the attempted relation; the initiating error remains visible. This
+process-local behavior does not alter durable Board formats or successful event
+ordering. The Board admission owner retains only the exact short-lived
+relations needed for those real callback boundaries. It does not emulate a
+general commit/abort protocol for synthetic failures of already-completed
+`puthash`, `remhash`, `setcdr`, or accessor primitives, and it does not
+preimplement future SQLite semantics.
 Ordinary-route retirement is owned by `e-board-retire-subscription-exact` in
 `e-board`: its board-monotonic lifetime token fences classifiers, prepared and
 queued effects, replay snapshots, quiet/lifetime/expiry callbacks, and same-id
@@ -312,8 +300,8 @@ that operation before removing participant catalogs. The separate durable
 `participant-removed` event and inactive historical projection.
 Deferred input classification carries an exact subscription object/token and
 participant object from authorization through grouping, preparation, and the
-final atomic pickup commit. A route changed at any of those boundaries fails
-the whole frozen transaction; a committed pickup retains its participant
+final atomic pickup publication. A route changed at any of those boundaries
+fails the whole frozen operation; a published pickup retains its participant
 lifetime so runtime routing can settle stale producer work by delivery identity
 without resolving a same-id replacement.
 `e-board-message-envelope` is the board-owned detached journal projection, and

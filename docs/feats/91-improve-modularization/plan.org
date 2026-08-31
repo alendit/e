@@ -1344,3 +1344,71 @@ Board/runtime public behavior tests, =replace= for old receiptless/id-only
 mechanism paths, and =add= for exact reentry, post-count, catalog, compact
 node, and replacement regressions.  No durable format or public behavior
 exception is intended.  Parent acceptance remains pending.
+
+*** Scope-corrected Round 5 implementation evidence (pending acceptance)
+
+The current continuation applies the corrected failure model for Feature 91.
+The goal is modular ownership and public-behavior preservation; it is not a
+general in-memory transaction system.  Production-reachable observer,
+scheduler, timer, cancellation, reentry, replacement, and exactly-once
+external-effect paths remain in scope.  Synthetic faults injected after a
+successful individual =puthash=, =remhash=, =setcdr=, or accessor operation,
+arbitrary primitive-boundary recovery, six-catalog transaction emulation, and
+preimplementation of the planned SQLite semantics are explicitly out of
+scope.  The old synthetic mechanism tests were removed rather than preserving
+an abstraction that would make the Board admission owner harder to navigate.
+
+The substantive boundaries remain =e-board-state= for Board values/counts,
+=e-board-admission= for short-lived Board admission relations and callback/
+generation fencing, =e-board= for Board routing/publication/settlement, and
+=e-board-runtime-admission= for the exact runtime admission lifetime index.
+The latter has only the primary admission table and exact Board/attachment
+lookup buckets; it is not a recovery transaction catalog.  Committed event
+and work-index entries retain only the short exact link topology required by
+future append/cancel operations.  There are no compact-node helpers, root
+receipts, or generic mutation journals in the current owner.
+
+The public behavior result is separately green for the affected direct and
+consumer suites.  The current mechanism result is a simplified review
+candidate pending independent review; Feature 91 remains
+=In-progress= and is not =Done=.  Core process-local record changes require a
+full Emacs restart; the user's running Emacs was not queried or changed.
+
+Current focused evidence (final source-preferred batch
+=/tmp/e-r5-corrected-focused-final3.log=; post-format Board rerun
+=/tmp/e-r5-corrected-board-final5.log=) is: Board admission 18/18,
+Board facade 77/77, runtime-admission owner 7/7, runtime-admission composition
+20/20, Board runtime 79/79, registry 37/37, Board admission composition 11/11,
+Board orchestration 10/10, orchestration actions 4/4, processing 9/9, and
+Modernchat 46/46.  Logs are the corresponding current runs under =/tmp=;
+the final direct all-ERT substitute is
+=/tmp/e-r5-corrected-final-full-ert-direct.log= (2,645 tests, 2,615
+expected, 9 environment/socket or -Q Org-fold failures, and 21 existing
+skips).  A fresh parent =eldev test -B= run exercises 2,650 tests: 2,640
+expected, 3 unrelated/environment-sensitive failures, and 7 existing skips.
+The failures reproduce in isolated OpenAI HTTP and Org Canvas suites: an
+unbound =url-http-extensions-header= under Emacs 31.1 and two bare-batch Org
+fold-property expectations.  No Board/runtime test fails.
+The fresh source-loaded 485 selector is
+=/tmp/e-r5-corrected-preservation-final.log= (481/485, with the same two
+-Q Org-fold visibility failures and two known chat skips); isolated reproduction
+is =/tmp/e-r5-corrected-org-canvas-isolated.log=.  No affected Board/runtime
+test fails in these environment-limited runs.
+
+Static source evidence is current: check-parens and explicit trailing
+whitespace sweeps are clean (=/tmp/e-r5-corrected-check-parens-final8.log=,
+=/tmp/e-r5-corrected-added-whitespace-final7.log=), =git diff --check= is clean
+(=/tmp/e-r5-corrected-diff-check-final7.log=), the all-literal local require scan
+reports 167 modules, 719 unique edges, and =CYCLES []=
+(=/tmp/e-r5-corrected-require-final2.log=), and the syntax-aware private/duplicate
+sweep reports zero cross-owner production private references and zero duplicate
+definitions (=/tmp/e-r5-corrected-private-duplicate-final2.log=).  The Board/runtime
+focused private sweep is =e-r5-corrected-private-sweep-final.log=.
+
+Test dispositions are explicit: retain the historical Board/runtime behavior
+tests; strengthen the owner suites with real observer/scheduler/reentry and
+replacement cases; replace receiptless/id-based paths with exact object/
+generation checks; and delete only synthetic primitive-fault, compact-journal,
+and six-catalog recovery tests.  The exact changed-name comparison is
+=/tmp/e-r5-corrected-test-name-preservation-final.log=; all deletions are
+listed there and no historical Board facade test name was removed.
