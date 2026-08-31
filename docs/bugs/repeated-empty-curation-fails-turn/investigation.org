@@ -1,0 +1,120 @@
+#+title: Repeated Empty Curation Turn Failure Investigation
+
+* Finding
+
+The incident combines a context-curation failure policy defect with a chat
+projection defect.
+
+The loop deliberately allows one empty response whose only semantic effect is
+=context-curate=.  It commits that effect, sends the required opaque
+function-call acknowledgement, and starts one provider continuation.  Its
+=curation-only-followups= counter is turn-local and is not reset by later tool
+cycles.  If any later response in the same turn is again empty and
+curation-only, the loop prevents another acknowledgement continuation by
+signalling =e-context-lifetime-invalid-record= with
+=curation :repeated-empty-response=.
+
+The bound is necessary, but the error classification and settlement policy are
+not consumer-shaped.  No durable context-lifetime record failed validation at
+that point.  The provider repeated a reserved protocol effect after the turn
+had already used its one allowed curation-only continuation.  The current
+implementation enforces convergence by failing the entire turn and surfaces an
+internal protocol guard as record corruption.
+
+The second visible notice is not evidence of another backend failure.  The
+board first publishes the detailed =turn-failed= activity, then publishes a
+=turn-summary= carrying =:status turn-failed= and aggregate counts.  The chat
+service translates both board messages into =turn-failed= presentation events.
+The summary has no =:error= attribute, so activity rendering falls back to the
+literal =Turn failed= and produces =Turn failed: Turn failed=.
+
+* Live and persisted evidence
+
+The bounded, read-only =scripts/e-live-probe chat= probe reached the user's
+running Emacs.  The selected buffer was the Doom dashboard rather than a chat,
+so it exposed no selected session or active harness.  No live state was
+changed.
+
+The durable journal
+=~/.emacs.d/.local/cache/e/sessions/sessions/20260831T062122-8b14253e0706.jsonl=
+records the failed turn =01M1B7SA7XKB2GK7RP5D259MAG=:
+
+1. Provider request 9 completed normally.  The harness then appended
+   =context-curation-response= entry =01M1B7XG7028DPSRWTVAR2MB22=, consumed its
+   frame, and started the acknowledgement continuation.
+2. Tool work continued through requests 10 and 11.
+3. Provider request 12, =01M1B7Y2370NFN5H12B6H47YAF=, completed normally
+   after 3.772 seconds.
+4. The next event was a non-retryable =turn-failed= with the exact
+   =curation :repeated-empty-response= error.  There was no transport failure.
+5. The board projected that event as detailed =turn-failed= message =msg_92=,
+   then projected =msg_93= as a =turn-summary= with =:status turn-failed=,
+   duration 159.260 seconds, 16 tool calls, and 4 capability actions.
+6. The user later submitted =continue=.  That input created fresh turn
+   =01M1B8X3JB9VTJBE8T4WYQMGXZ=, which reached =turn-finished=.
+
+The provider's reserved response body is not stored in the journal.  The
+semantic conclusion is nevertheless determined by the exact guard: it can run
+only after the decoder supplied curation effects, the provider declared the
+response done, no tool call or assistant text was present, and the turn-local
+curation-only counter was already nonzero.
+
+* Source and test evidence
+
+- =e-loop-run-turn= in =lisp/core/e-loop.el= owns
+  =curation-only-followups= as turn-local protocol state.
+- Its =maybe-start-curation-followup= branch commits the first curation-only
+  response before starting the acknowledgement continuation.  On the next
+  qualifying response it signals =e-context-lifetime-invalid-record= before
+  another commit or provider request.
+- =e-loop-test-curation-only-response-bounds-repeated-empty-followup= in
+  =test/e-loop-test.el= encodes the current behavior: a fake backend emits a
+  curation-only response on every request, the second response must raise
+  =e-context-lifetime-invalid-record=, and only one curation completion may
+  commit.  The focused test passes, confirming this is the accepted current
+  contract rather than an accidental transport exception.
+- The Feature 88 Addendum 4 review accepts repeated-empty curation as bounded
+  evidence for =F88A4-ATOMIC=.  It does not define user-facing failure
+  classification or recovery after the bound is reached.
+- =e-board-runtime--publish-terminal-activity= publishes the detailed terminal
+  failure.  =e-board-runtime--publish-turn-summary= separately publishes the
+  aggregate summary for the same source event.
+- =e-chat-service--message-event= maps a failed =turn-summary= to
+  =turn-failed=.  =e-chat-activity--render-turn-failure= does not suppress a
+  second terminal projection and formats a missing =:error= as =Turn failed=.
+
+* Root causes
+
+1. *Protocol state is misclassified as record validity.*  A turn-local
+   convergence guard raises the error type reserved for invalid context
+   lifetime records.
+2. *The convergence policy is overly fatal.*  The only bounded outcome for a
+   second curation-only response is to fail the whole turn, even after earlier
+   curation and tool work committed successfully.
+3. *Terminal projections are not idempotent.*  The detailed terminal activity
+   and its aggregate summary both become renderable terminal events.
+
+* Remediation direction
+
+Keep the one-continuation bound, but give repeated curation-only output an
+explicit protocol-convergence outcome owned by the loop/context-lifetime
+boundary.  Before implementation, decide whether that outcome should settle
+with the already committed work, retain the first curation and surface a
+non-fatal diagnostic, or use another bounded recovery.  It should not masquerade
+as durable-record corruption, silently start another acknowledgement loop, or
+discard valid assistant output.
+
+Add a composed regression that covers a first curation-only response, later
+tool cycles, a second curation-only response, and a subsequent user turn.  The
+test should prove the chosen settlement policy and that the session remains
+usable.
+
+At the presentation boundary, preserve the detailed terminal activity as the
+failure owner and treat the matching turn summary only as aggregate detail, or
+otherwise deduplicate both publications by their shared source event.  Add a
+board-derived chat regression proving that one runtime failure renders exactly
+one notice while its duration and counts remain available.
+
+No source or test remediation was made.  Feature 91 is =In-review= and the
+repository's current implementation gate prohibits implementation outside that
+feature until it reaches =Done=.

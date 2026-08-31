@@ -1,0 +1,28 @@
+#+title: Repeated Empty Curation Fails the Turn and Renders Twice
+
+* Report
+
+During a long, tool-heavy agent turn, context curation failed after the provider
+request itself completed successfully.  The chat displayed two system notices:
+
+#+begin_example
+Turn failed: Invalid context lifetime record: curation,
+:repeated-empty-response, "01M1B7Y2370NFN5H12B6H47YAF"
+
+Turn failed: Turn failed
+#+end_example
+
+Submitting =continue= in the same session started a new turn, and that turn
+finished successfully.
+
+* Expected behavior
+
+- Context curation must remain bounded; repeated reserved-only responses must
+  not create an acknowledgement loop.
+- Reaching that bound should be handled as a curation protocol outcome, not
+  reported as a malformed durable context-lifetime record.
+- The owning policy should define a recoverable result that preserves the
+  successfully committed earlier work when possible, rather than making the
+  user submit a new turn to finish the task.
+- One failed turn should produce one failure notice.  A later board turn
+  summary must not render a second generic failure for the same terminal event.
