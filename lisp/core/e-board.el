@@ -1820,7 +1820,16 @@ through the injected invocation effect dispatcher."
     (when (memq (e-board-aggregation-state aggregation) '(open prepared))
       (let ((settlement-admission
              (e-board-aggregation-settlement-admission aggregation))
+            settlement-active-p
             activation)
+        ;; Capture the exact lifetime authority before cancellation
+        ;; deliberately changes the aggregation state.  Semantic projection
+        ;; currency is stricter and can already be false for a prepared
+        ;; settlement, but this active token still owns the event/effect
+        ;; lifetime that cancellation must close.
+        (setq settlement-active-p
+              (and settlement-admission
+                   (e-board-admission-active-p board settlement-admission)))
         (when-let ((timer (e-board-aggregation-timer aggregation)))
           (cancel-timer timer))
         (when (eq (e-board-aggregation-state aggregation) 'prepared)
@@ -1839,12 +1848,10 @@ through the injected invocation effect dispatcher."
         (e-board-admission-append-event
          board 'subscription-cancelled
          (list :subscription-id aggregation-id))
-        ;; A normal prepared aggregation owns a committed settlement admission.
-        ;; Close that token now; when cancellation is reentrant with the outer
-        ;; subscription admission, `current-p' is false and the outer postcheck
-        ;; remains responsible for its exact inverse.
-        (when (and settlement-admission
-                   (e-board-admission-current-p settlement-admission))
+        ;; A normal prepared aggregation owns a committed retained settlement
+        ;; admission.  Close only that captured exact token; an enclosing
+        ;; subscription admission remains responsible for its own postcheck.
+        (when settlement-active-p
           (e-board-admission-finish board settlement-admission)
           (e-board--settlement-abort-admission board settlement-admission)
           (e-board--settlement-release aggregation activation

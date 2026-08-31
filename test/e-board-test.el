@@ -1471,18 +1471,79 @@
                                        "call" :id "call")
         (e-work-start-prepared handle)
         (funcall (pop routers))
-        (let ((activation (e-board-activation board '("board" "call" 1))))
+        (let* ((aggregation (e-board-aggregation board "call"))
+               (activation (e-board-activation board '("board" "call" 1)))
+               (admission
+                (e-board-aggregation-settlement-admission aggregation))
+               (drain (car effects)))
           (should (eq (e-board-activation-state activation) 'prepared))
+          (should admission)
           (e-board-cancel-aggregation board "call")
-          (should (eq (e-board-aggregation-state
-                       (e-board-aggregation board "call"))
-                      'cancelled))
-          (should (eq (e-board-activation-state activation) 'cancelled)))
-        (funcall (pop effects))
+          (should (eq (e-board-aggregation-state aggregation) 'cancelled))
+          (should (eq (e-board-activation-state activation) 'cancelled))
+          (should (= (e-board-admission-pending-count board) 0))
+          (should-not (e-board-aggregation-settlement-admission aggregation))
+          (should (e-board-admission-complete-p admission))
+          (should-not (e-board-activation-event-receipt activation))
+          (should (e-board-activation-effect-receipt activation))
+          (funcall drain)
+          ;; A retained stale scheduler callback is inert and cleanup remains
+          ;; complete after the effect cell has already been consumed.
+          (funcall drain)
+          (should (= (e-board-admission-pending-count board) 0))
+          (should-not (e-board-activation-event-receipt activation))
+          (should-not (e-board-activation-effect-receipt activation)))
         (should-not replies)
         (should (eq (e-board-work-state
                      (e-board-observed-work board (e-work-handle-id handle)))
                     'finished))))))
+
+(ert-deftest e-board-test-cancelling-prepared-aggregations-releases-each-admission ()
+  "Prepared cancellations do not accumulate Board admission lifetimes."
+  (e-board-test--with-empty-registry
+    (let (effects routers replies aggregations activations)
+      (let ((board (e-board-create
+                    :id "board"
+                    :effect-scheduler (lambda (effect) (push effect effects))
+                    :terminal-classification-scheduler
+                    (lambda (drain) (push drain routers))
+                    :invocation-effect-dispatcher
+                    (lambda (&rest _arguments) (push 'replied replies)))))
+        (dotimes (index 3)
+          (let* ((work-id (format "work-%d" index))
+                 (aggregation-id (format "call-%d" index))
+                 (handle
+                  (e-work-prepare
+                   (e-work-spec-create
+                    :id work-id :execution 'cheap :interactive-policy 'cheap
+                    :runner (lambda (_arguments _context) "done")) nil)))
+            (e-board-enroll-work board handle)
+            (e-board-subscribe-aggregation
+             board (list (e-work-handle-id handle)) 'all aggregation-id
+             :id aggregation-id)
+            (e-work-start-prepared handle)
+            (funcall (pop routers))
+            (let ((aggregation (e-board-aggregation board aggregation-id)))
+              (push aggregation aggregations)
+              (push (e-board-activation
+                     board (e-board-aggregation-activation-id aggregation))
+                    activations)
+              ;; Finish each public operation before starting the next; the
+              ;; queued stale effects intentionally share one drain callback.
+              (e-board-cancel-aggregation board aggregation-id))))
+        (should (= (e-board-admission-pending-count board) 0))
+        (should (cl-every
+                 (lambda (aggregation)
+                   (null (e-board-aggregation-settlement-admission aggregation)))
+                 aggregations))
+        (funcall (pop effects))
+        (should-not replies)
+        (should (= (e-board-admission-pending-count board) 0))
+        (should (cl-every
+                 (lambda (activation)
+                   (and (null (e-board-activation-event-receipt activation))
+                        (null (e-board-activation-effect-receipt activation))))
+                 activations))))))
 
 (ert-deftest e-board-test-ordinary-subscription-lifecycle-preserves-address-route ()
   "Muting or cancelling an ordinary route cannot alter exact addressing."
