@@ -206,13 +206,20 @@ formats retain their existing ordering and restart behavior.
 
 `lisp/core/e-board-state.el` is the lower Board state/value contract: it defines
 the Board domain records, domain errors, and constant-time unsettled-count
-transition. `lisp/core/e-board-admission.el` is the substantive Board-private
+transition. `lisp/core/e-board-runtime-error.el` is the lower runtime-admission
+error contract; it is loadable with the admission owner without loading the
+runtime facade, and facade-specific runtime conditions extend it.
+`lisp/core/e-board-admission.el` is the substantive Board-private
 admission owner. It owns exact event, work-index, classifier, deadline, and
 effect receipts, resumable link/map/count/scheduler inverses, and the pending
 admission catalog. It depends only on the state contract and Work, so it can be
 loaded and exercised without the Board policy facade. Committed receipts retain
 only the link identity needed for later exact neighbour repair; rollback-only
-fields are dropped at admission completion.
+fields are dropped at admission completion. Event and index compact finalization
+publishes an exact compact node first, then acknowledges predecessor and
+successor postconditions before releasing the full receipt. Committed index
+nodes are self-authoritative and have no rollback-root slot, so singleton and
+multi-node queues retain only the compact link representation.
 
 `lisp/core/e-board.el` remains the cohesive process-local Board aggregate and
 policy owner. One board owns event sequence, participant admission, routing,
@@ -224,16 +231,21 @@ receipt or queue representation. Splitting any remaining policy transition
 into a generic helper would either duplicate the sequence/admission state or
 break the transaction boundary.
 
-The all-literal local-require inventory for the current source tree is 166
-modules and 715 unique edges, with no strongly connected component. Relative
-to the preceding 165/713 tree, the additional module is the runtime-specific
-admission catalog owner and its two literal imports; the reproducible scanner
-and complete edge list are recorded in the current Round 5 audit.
+The all-literal local-require inventory for the current source tree is 167
+modules and 719 unique edges, with no strongly connected component. Relative
+to the preceding 166/715 tree, the additional module is the independent
+runtime-admission error contract; explicit Board, Board-admission, and error
+imports in the runtime/admission owners account for the four new edges. The
+reproducible scanner and complete edge list are recorded in the current Round 5
+audit.
 
 `e-board-runtime.el` is the board attachment adapter. It owns attachment
 admission/reconciliation, endpoint generations, producer/activity mailboxes,
 rebind/move/detach transitions, and delivery settlement because those values
 must change atomically with board admission and attachment settlement.
+Its direct Board and Board-admission imports are explicit; it does not rely on
+the runtime-admission owner or the facade to provide those definitions
+transitively.
 `e-board-runtime-admission.el` is the concrete runtime-specific admission
 catalog owner: it owns the pending admission record, the primary/recovery
 catalogs and exact Board/attachment indexes, and remember/fence/retry/complete

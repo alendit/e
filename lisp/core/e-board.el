@@ -1201,37 +1201,46 @@ is an invariant failure, not a reason to mutate a queue by descriptive id."
         (unless (e-board-aggregation-deadline-receipt-p receipt)
           (signal 'e-board-error
                   (list "Aggregation deadline has no exact receipt" cell)))
-        (let ((removed-p nil))
-          ;; A post-count inverse fault still leaves the exact receipt removed;
-          ;; retain that error but finish this semantic deadline exactly once.
-          ;; A pre-count fault restores the head and stops this page so the
-          ;; receipt remains the authority for a later retry.
-          (condition-case err
-              (progn
-                (e-board-admission-remove-aggregation-deadline receipt)
-                (setq removed-p t))
-            (error
-             (setq first-error (or first-error err)
-                   removed-p
-                   (e-board-aggregation-deadline-receipt--removed-p receipt))))
-          (if (not removed-p)
-              (setq remaining 0)
+        ;; Semantic timeout settlement owns activation/effect publication.  Do
+        ;; it before removing the deadline receipt so a prepared aggregation
+        ;; remains discoverable when its activation event signals.
+        (let ((semantic-done-p t))
+          (when (and (e-board-aggregation-p aggregation)
+                     (eq (gethash (e-board-aggregation-id aggregation)
+                                  (e-board-aggregations board))
+                         aggregation)
+                     (memq (e-board-aggregation-state aggregation)
+                           '(open prepared)))
             (condition-case err
-                (when (and (e-board-aggregation-p aggregation)
-                           (eq (gethash (e-board-aggregation-id aggregation)
-                                        (e-board-aggregations board))
-                               aggregation)
-                           (eq (e-board-aggregation-state aggregation) 'open))
-                  (e-board--settle-aggregation board aggregation 'timed-out))
+                (e-board--settle-aggregation board aggregation 'timed-out)
               (error
-               (setq first-error (or first-error err))))
-            (cl-decf remaining)))))
+               (setq first-error (or first-error err)
+                     semantic-done-p nil))))
+          (if (not semantic-done-p)
+              (setq remaining 0)
+            (let ((removed-p nil))
+              ;; A post-count inverse fault still leaves the exact receipt
+              ;; removed; retain its error but finish this deadline exactly
+              ;; once.  A pre-count fault restores the head and stops this
+              ;; page so the receipt remains the authority for a later retry.
+              (condition-case err
+                  (progn
+                    (e-board-admission-remove-aggregation-deadline receipt)
+                    (setq removed-p t))
+                (error
+                 (setq first-error (or first-error err)
+                       removed-p
+                       (e-board-aggregation-deadline-receipt--removed-p
+                        receipt))))
+              (if (not removed-p)
+                  (setq remaining 0)
+                (cl-decf remaining))))))
     (when (e-board-aggregation-deadlines board)
       (condition-case err
           (e-board--schedule-aggregation-deadline board)
         (error (setq first-error (or first-error err)))))
     (when first-error
-      (signal (car first-error) (cdr first-error)))))
+      (signal (car first-error) (cdr first-error))))))
 
 (defun e-board-drain-effects (board &optional generation)
   "Apply a bounded page of exact effect receipts in publication order."
@@ -1295,7 +1304,8 @@ current identity check and the receipt still advances the queue."
                          (eq (gethash (e-board-aggregation-id aggregation)
                                       (e-board-aggregations board))
                              aggregation)
-                         (eq (e-board-aggregation-state aggregation) 'open)
+                         (memq (e-board-aggregation-state aggregation)
+                               '(open prepared))
                          (e-board--aggregation-ready-p board aggregation))
                     (condition-case err
                         (progn
@@ -1333,14 +1343,105 @@ current identity check and the receipt still advances the queue."
     (when first-error
       (signal (car first-error) (cdr first-error))))))
 
+(defun e-board--settlement-admission-active-p (board admission)
+  "Return whether a retained terminalization admission is still current."
+  (or (e-board-admission-active-p board admission)
+      (signal 'e-board-admission-pending
+              (list "Terminal settlement lost Board authority" admission))))
+
+(defun e-board--settlement-append-prepared-event
+    (board activation admission data)
+  "Append ACTIVATION's prepared event once, retaining exact retry authority.
+
+The lower admission owner stores the receipt before any fallible primitive.  A
+post-mutation error therefore leaves the exact receipt in ACTIVATION and the
+next classifier retry accepts it rather than appending a duplicate event."
+  (e-board--settlement-admission-active-p board admission)
+  (let ((receipt (e-board-activation-event-receipt activation)))
+    (cond
+     ((e-board-admission-event-receipt-committed-p receipt) receipt)
+     (receipt
+      ;; A partially appended event is not safe to retry by appending again.
+      ;; Remove this exact receipt first; its monotonic checkpoint survives the
+      ;; inverse, and any inverse failure leaves the same admission pending.
+      (e-board-admission-remove-event receipt)
+      (setf (e-board-activation-event-receipt activation) nil)
+      (e-board--settlement-append-prepared-event board activation admission data))
+     (t
+      (let ((holder (list nil)))
+        (condition-case err
+            (progn
+              (e-board-admission-append-event
+               board 'activation-prepared data admission holder)
+              (setf receipt (car holder)
+                    (e-board-activation-event-receipt activation) receipt))
+          (error
+           (when (car holder)
+             (setf (e-board-activation-event-receipt activation) (car holder)))
+           (signal (car err) (cdr err))))
+        (unless (e-board-admission-event-receipt-committed-p receipt)
+          (signal 'e-board-admission-pending
+                  (list "Prepared activation event remains pending" activation)))
+        receipt)))))
+
+(defun e-board--settlement-queue-effect
+    (board activation admission effect)
+  "Queue ACTIVATION's effect once with exact receipt retry semantics."
+  (e-board--settlement-admission-active-p board admission)
+  (let ((receipt (e-board-activation-effect-receipt activation)))
+    (cond
+     ((e-board-admission-effect-receipt-queued-p receipt) receipt)
+     ((and receipt
+           (not (e-board-admission-effect-receipt-queued-p receipt)))
+      (setf (e-board-activation-effect-receipt activation) nil)
+      (e-board--settlement-queue-effect board activation admission effect))
+     (t
+      (let ((holder (list nil)))
+        (condition-case err
+            (progn
+              (e-board-admission-schedule-effect
+               board effect admission nil holder)
+              (setf receipt (car holder)
+                    (e-board-activation-effect-receipt activation) receipt))
+          (error
+           (when (car holder)
+             (setf (e-board-activation-effect-receipt activation) (car holder)))
+           (signal (car err) (cdr err))))
+        (unless (e-board-admission-effect-receipt-queued-p receipt)
+          (signal 'e-board-admission-pending
+                  (list "Activation effect remains pending" activation)))
+        receipt)))))
+
+(defun e-board--settlement-finish-admission (board admission)
+  "Complete a retained terminalization admission after its effect settles."
+  (when (e-board-admission-active-p board admission)
+    (e-board-admission-complete board admission)))
+
 (defun e-board--settle-invocation (board invocation state payload)
-  "Commit INVOCATION's exact reply effect for terminal STATE and PAYLOAD."
-  (when (eq (e-board-invocation-state invocation) 'open)
-    (setf (e-board-invocation-state invocation) 'prepared)
-    (let ((activation-id
-           (list (e-board-id board) (e-board-invocation-id invocation) 1))
-          (activation nil))
-      (setf (e-board-invocation-activation-id invocation) activation-id)
+  "Commit INVOCATION's exact reply effect for terminal STATE and PAYLOAD.
+
+Activation publication and effect queuing are resumable semantic stages.  The
+same opaque Board admission remains attached to the invocation until the
+effect callback acknowledges the terminal result, so a prepared-state retry
+cannot silently consume classifier authority."
+  (if (memq (e-board-invocation-state invocation) '(committed failed applying))
+      invocation
+    (let* ((activation-id
+          (or (e-board-invocation-activation-id invocation)
+              (list (e-board-id board) (e-board-invocation-id invocation) 1)))
+         (activation (and (e-board-invocation-activation-id invocation)
+                          (gethash activation-id (e-board-activations board))))
+         (admission (or (e-board-invocation-settlement-admission invocation)
+                        (let ((token (e-board-admission-aggregation-token board)))
+                          (setf (e-board-invocation-settlement-admission invocation)
+                                token)
+                          (e-board-admission-begin board token)
+                          token))))
+    (when (e-board-invocation-settlement-admission invocation)
+      (e-board--settlement-admission-active-p board admission))
+    (cond
+     ((eq (e-board-invocation-state invocation) 'open)
+      (setf (e-board-invocation-state invocation) 'prepared)
       (setq activation
             (e-board-activation--create
              :id activation-id
@@ -1348,41 +1449,65 @@ current identity check and the receipt still advances the queue."
              :message-id (e-board-invocation-work-id invocation)
              :effect 'reply-to-invocation :state 'prepared))
       (puthash activation-id activation (e-board-activations board))
-      (e-board-admission-append-event
-       board 'activation-prepared
-       (list :activation-id activation-id
-             :work-id (e-board-invocation-work-id invocation)
-             :effect 'reply-to-invocation))
-      (e-board-admission-schedule-effect
-       board
-       (lambda ()
-         (when (and (eq (e-board-invocation-state invocation) 'prepared)
-                    (eq (e-board-activation-state activation) 'prepared))
-           (setf (e-board-invocation-state invocation) 'applying)
-           (setf (e-board-activation-state activation) 'applying)
-           (e-board-admission-append-event
-            board 'activation-applying (list :activation-id activation-id))
-           (condition-case err
-               (progn
-                 (let ((dispatcher (e-board-invocation-effect-dispatcher board)))
-                   (unless dispatcher
-                     (signal 'e-board-error
-                             (list "No invocation effect dispatcher" activation-id)))
-                   (funcall dispatcher board
-                            (e-board-invocation-effect-target invocation)
-                            state payload))
-                 (setf (e-board-invocation-state invocation) 'committed)
-                 (setf (e-board-activation-state activation) 'committed)
-                 (e-board-admission-append-event
-                  board 'effect-committed
-                  (list :activation-id activation-id
-                        :effect 'reply-to-invocation)))
-             (error
-              (setf (e-board-invocation-state invocation) 'failed)
-              (setf (e-board-activation-state activation) 'failed)
-              (e-board-admission-append-event
-               board 'effect-failed
-                (list :activation-id activation-id :error err))))))))))
+      (unless (eq (gethash activation-id (e-board-activations board)) activation)
+        (signal 'e-board-error
+                (list "Invocation activation publication did not stick"
+                      activation-id)))
+      (setf (e-board-invocation-activation-id invocation) activation-id))
+     ((and (eq (e-board-invocation-state invocation) 'prepared)
+           (null activation))
+      (signal 'e-board-error
+              (list "Prepared invocation activation is not current" invocation)))
+     ((memq (e-board-invocation-state invocation) '(committed failed applying))
+      (cl-return-from e-board--settle-invocation invocation)))
+    (e-board--settlement-append-prepared-event
+     board activation admission
+     (list :activation-id activation-id
+           :work-id (e-board-invocation-work-id invocation)
+           :effect 'reply-to-invocation))
+    (let ((effect
+           (lambda ()
+             (when (and (eq (e-board-invocation-state invocation) 'prepared)
+                        (eq (e-board-activation-state activation) 'prepared))
+               (setf (e-board-invocation-state invocation) 'applying
+                     (e-board-activation-state activation) 'applying)
+               ;; These later diagnostic events are part of the same retained
+               ;; admission.  Their lower receipt remains recoverable if the
+               ;; event adapter signals after mutation.
+               (e-board-admission-append-event
+                board 'activation-applying (list :activation-id activation-id)
+                admission)
+               (condition-case err
+                   (progn
+                     (let ((dispatcher
+                            (e-board-invocation-effect-dispatcher board)))
+                       (unless dispatcher
+                         (signal 'e-board-error
+                                 (list "No invocation effect dispatcher"
+                                       activation-id)))
+                       (funcall dispatcher board
+                                (e-board-invocation-effect-target invocation)
+                                state payload))
+                     (setf (e-board-invocation-state invocation) 'committed
+                           (e-board-activation-state activation) 'committed)
+                     (e-board-admission-append-event
+                      board 'effect-committed
+                      (list :activation-id activation-id
+                            :effect 'reply-to-invocation)
+                      admission)
+                     (e-board--settlement-finish-admission board admission))
+                 (error
+                  (setf (e-board-invocation-state invocation) 'failed
+                        (e-board-activation-state activation) 'failed)
+                  (condition-case _diagnostic-error
+                      (e-board-admission-append-event
+                       board 'effect-failed
+                       (list :activation-id activation-id :error err)
+                       admission)
+                    (error nil))
+                  (e-board--settlement-finish-admission board admission)))))))
+      (e-board--settlement-queue-effect board activation admission effect)
+        invocation))))
 
 (defun e-board--aggregation-ready-p (board aggregation)
   "Return non-nil when AGGREGATION's observed work has reached its policy."
@@ -1411,46 +1536,61 @@ current identity check and the receipt still advances the queue."
 (defun e-board--settle-aggregation (board aggregation reason &optional admission)
   "Commit AGGREGATION's deferred reply effect with terminal REASON.
 
-When ADMISSION is still being staged, the activation publication is part of its
-exact event receipt set.  The activation itself remains fenced by the same
-admission if a later stage rejects the operation; normal committed drains pass
-no admission and retain their existing asynchronous effect behavior."
-  (when (eq (e-board-aggregation-state aggregation) 'open)
-    (setf (e-board-aggregation-state aggregation) 'prepared)
-    (when-let ((timer (e-board-aggregation-timer aggregation)))
-      (cancel-timer timer)
-      (setf (e-board-aggregation-timer aggregation) nil))
-    (let ((activation-id
-           (list (e-board-id board) (e-board-aggregation-id aggregation) 1))
-          (activation nil))
-      (setf (e-board-aggregation-activation-id aggregation) activation-id)
-      (setq activation
-            (e-board-activation--create
-             :id activation-id
-             :subscription-id (e-board-aggregation-id aggregation)
-             :message-id nil :effect 'reply-to-invocation :state 'prepared))
-      (when-let ((admission (e-board-aggregation-admission aggregation)))
-        (setf (e-board-aggregation-admission-activation admission) activation))
-      (puthash activation-id activation (e-board-activations board))
-      (e-board-admission-append-event
-       board 'activation-prepared
+The prepared activation event and effect queue are independent semantic
+stages.  A committed aggregation admission is used when one is supplied by
+the subscription transaction; a later deadline/classifier drain creates one
+exact retained admission on the aggregation itself so activation-event faults
+can be retried without losing the deadline's semantic owner."
+  (when (memq (e-board-aggregation-state aggregation) '(open prepared))
+    (let* ((admission
+            (or admission
+                (e-board-aggregation-settlement-admission aggregation)
+                (let ((token (e-board-admission-aggregation-token board)))
+                  (setf (e-board-aggregation-settlement-admission aggregation)
+                        token)
+                  (e-board-admission-begin board token)
+                  token)))
+           (activation-id
+            (or (e-board-aggregation-activation-id aggregation)
+                (list (e-board-id board) (e-board-aggregation-id aggregation) 1)))
+           (activation (and (e-board-aggregation-activation-id aggregation)
+                            (gethash activation-id (e-board-activations board)))))
+      (e-board--settlement-admission-active-p board admission)
+      (setf (e-board-aggregation-state aggregation) 'prepared)
+      (when-let ((timer (e-board-aggregation-timer aggregation)))
+        (cancel-timer timer)
+        (setf (e-board-aggregation-timer aggregation) nil))
+      (unless activation
+        (setq activation
+              (e-board-activation--create
+               :id activation-id
+               :subscription-id (e-board-aggregation-id aggregation)
+               :message-id nil :effect 'reply-to-invocation :state 'prepared))
+        (puthash activation-id activation (e-board-activations board))
+        (unless (eq (gethash activation-id (e-board-activations board)) activation)
+          (signal 'e-board-error
+                  (list "Aggregation activation publication did not stick"
+                        activation-id)))
+        (setf (e-board-aggregation-activation-id aggregation) activation-id))
+      (when-let ((outer (e-board-aggregation-admission aggregation)))
+        (setf (e-board-aggregation-admission-activation outer) activation))
+      (e-board--settlement-append-prepared-event
+       board activation admission
        (list :activation-id activation-id
              :work-ids (copy-sequence (e-board-aggregation-work-ids aggregation))
-             :effect 'reply-to-invocation)
-       admission)
+             :effect 'reply-to-invocation))
       ;; Keep the supplied admission as an explicit argument to the effect
-      ;; scheduler.  In particular, do not place ADMISSION inside the effect
-      ;; closure: a ready aggregation can re-enter Board while the closure is
-      ;; being built, and the enclosing transaction must still own both the
-      ;; activation event and the queued effect.
+      ;; scheduler.  The closure retains only the exact semantic objects, not
+      ;; a callback registry or a raw receipt table.
       (let ((effect
              (lambda ()
                (when (and (eq (e-board-aggregation-state aggregation) 'prepared)
                           (eq (e-board-activation-state activation) 'prepared))
-                 (setf (e-board-aggregation-state aggregation) 'applying)
-                 (setf (e-board-activation-state activation) 'applying)
+                 (setf (e-board-aggregation-state aggregation) 'applying
+                       (e-board-activation-state activation) 'applying)
                  (e-board-admission-append-event
-                  board 'activation-applying (list :activation-id activation-id))
+                  board 'activation-applying (list :activation-id activation-id)
+                  admission)
                  (condition-case err
                      (progn
                        (let ((dispatcher
@@ -1462,19 +1602,26 @@ no admission and retain their existing asynchronous effect behavior."
                          (funcall dispatcher board
                                   (e-board-aggregation-effect-target aggregation)
                                   'aggregation reason))
-                       (setf (e-board-aggregation-state aggregation) 'committed)
-                       (setf (e-board-activation-state activation) 'committed)
+                       (setf (e-board-aggregation-state aggregation) 'committed
+                             (e-board-activation-state activation) 'committed)
                        (e-board-admission-append-event
                         board 'effect-committed
                         (list :activation-id activation-id
-                              :effect 'reply-to-invocation)))
+                              :effect 'reply-to-invocation)
+                        admission)
+                       (e-board--settlement-finish-admission board admission))
                    (error
-                    (setf (e-board-aggregation-state aggregation) 'failed)
-                    (setf (e-board-activation-state activation) 'failed)
-                    (e-board-admission-append-event
-                     board 'effect-failed
-                     (list :activation-id activation-id :error err))))))))
-        (e-board-admission-schedule-effect board effect admission)))))
+                    (setf (e-board-aggregation-state aggregation) 'failed
+                          (e-board-activation-state activation) 'failed)
+                    (condition-case _diagnostic-error
+                        (e-board-admission-append-event
+                         board 'effect-failed
+                         (list :activation-id activation-id :error err)
+                         admission)
+                      (error nil))
+                    (e-board--settlement-finish-admission board admission)))))))
+        (e-board--settlement-queue-effect board activation admission effect)
+        aggregation))))
 
 (cl-defun e-board-subscribe-aggregation
     (board work-ids mode effect-target &key id timeout admission)

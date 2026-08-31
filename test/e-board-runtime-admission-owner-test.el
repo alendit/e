@@ -80,6 +80,35 @@ fresh-load gate exercises evaluation in a clean Emacs process."
        (re-search-forward
         "(require[[:space:]]+'e-board-runtime[[:space:]])" nil t)))))
 
+(ert-deftest e-board-runtime-admission-owner-error-contract-is-standalone ()
+  "A bare runtime-admission owner exposes a typed error below the facade.
+
+The owner must classify its in-flight retry condition as both the concrete
+runtime error and an ordinary `error', without loading `e-board-runtime'."
+  (e-board-runtime-admission-owner-test--isolated
+    (let* ((board (e-board-runtime-admission-owner-test--board "owner-error"))
+           (attachment (list 'attachment 'error))
+           (admission
+            (e-board-admission-work-token
+             (e-board-runtime-admission-owner-test--handle "error-work")))
+           typed generic)
+      (e-board-runtime-admission-remember attachment board admission t 1)
+      (condition-case err
+          (e-board-runtime-admission-retry attachment board)
+        (e-board-runtime-error
+         (setq typed err
+               generic (memq 'error
+                             (get 'e-board-runtime-error 'error-conditions))))
+        (error (setq generic err)))
+      (should typed)
+      (should generic)
+      (setf (e-board-runtime-admission-record-in-flight-p
+             (gethash admission e-board-runtime-admission--pending-admissions))
+            nil)
+      (e-board-runtime-admission-complete admission)
+      (should (equal (e-board-runtime-admission-owner-test--catalog-counts)
+                     '(0 0 0 0 0 0))))))
+
 (ert-deftest e-board-runtime-admission-owner-publishes-and-removes-exact-six-catalogs ()
   "One admission owns all primary and secondary catalog memberships."
   (e-board-runtime-admission-owner-test--isolated
@@ -201,6 +230,76 @@ fresh-load gate exercises evaluation in a clean Emacs process."
       ;; replaced bucket survives, as required by exact identity fencing.
       (should (= (hash-table-count e-board-runtime-admission--pending-admissions)
                  0)))))
+
+(ert-deftest e-board-runtime-admission-owner-primary-only-recovery-is-retryable ()
+  "A primary-only recovery record keeps an exact retry handle across two faults."
+  (e-board-runtime-admission-owner-test--isolated
+    (let* ((board (e-board-runtime-admission-owner-test--board
+                   "owner-primary-only"))
+           (attachment (list 'attachment 'primary-only))
+           (admission
+            (e-board-admission-work-token
+             (e-board-runtime-admission-owner-test--handle "primary-work")))
+           (original-puthash (symbol-function 'puthash))
+           (original-remhash (symbol-function 'remhash))
+           publication-fault removal-fault)
+      ;; Stop publication before the first secondary index.  The primary and
+      ;; admission-local record handle are nevertheless already authoritative.
+      (cl-letf (((symbol-function 'puthash)
+                 (lambda (key value table)
+                   (if (and (eq table e-board-runtime-admission--recovery-by-board)
+                            (eq key board))
+                       (progn
+                         (setq publication-fault t)
+                         (error "recovery board before"))
+                     (funcall original-puthash key value table)))))
+        (should-error
+         (e-board-runtime-admission-remember
+          attachment board admission t 4)))
+      (should publication-fault)
+      (should (gethash admission e-board-runtime-admission--recovery))
+      ;; A pre-mutation primary removal fault must leave the exact recovery
+      ;; record discoverable through the admission object, not a global scan.
+      (cl-letf (((symbol-function 'remhash)
+                 (lambda (key table)
+                   (if (and (eq table e-board-runtime-admission--recovery)
+                            (eq key admission)
+                            (not removal-fault))
+                       (progn
+                         (setq removal-fault t)
+                         (error "recovery primary before"))
+                     (funcall original-remhash key table)))))
+        (should-error (e-board-runtime-admission-complete admission)))
+      (should removal-fault)
+      (should (gethash admission e-board-runtime-admission--recovery))
+      (e-board-runtime-admission-complete admission)
+      (should (equal (e-board-runtime-admission-owner-test--catalog-counts)
+                     '(0 0 0 0 0 0))))))
+
+(ert-deftest e-board-runtime-admission-owner-final-removal-postcondition-wins ()
+  "A recovery remhash signal after exact removal is an acknowledged inverse."
+  (e-board-runtime-admission-owner-test--isolated
+    (let* ((board (e-board-runtime-admission-owner-test--board
+                   "owner-final-postcondition"))
+           (attachment (list 'attachment 'final))
+           (admission
+            (e-board-admission-work-token
+             (e-board-runtime-admission-owner-test--handle "final-work")))
+           (original-remhash (symbol-function 'remhash))
+           signalled)
+      (e-board-runtime-admission-remember attachment board admission nil 5)
+      (cl-letf (((symbol-function 'remhash)
+                 (lambda (key table)
+                   (prog1 (funcall original-remhash key table)
+                     (when (and (eq table e-board-runtime-admission--recovery)
+                                (eq key admission)
+                                (not signalled))
+                       (setq signalled t)
+                       (error "recovery primary after"))))))
+        (e-board-runtime-admission-complete admission))
+      (should signalled)
+      (should (equal (e-board-runtime-admission-owner-test--catalog-counts)
+                     '(0 0 0 0 0 0))))))
 
 (provide 'e-board-runtime-admission-owner-test)
 

@@ -69,17 +69,6 @@ Tests that explicitly provide `:requester' retain that exact requester."
           (e-board-runtime--session-attachments (make-hash-table :test 'equal))
           (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
           (e-board-runtime--invocations (make-hash-table :test 'equal))
-          (e-board-runtime-admission--pending-admissions (make-hash-table :test 'eq))
-          (e-board-runtime-admission--pending-by-board
-           (make-hash-table :test 'eq))
-          (e-board-runtime-admission--pending-by-attachment
-           (make-hash-table :test 'eq))
-          (e-board-runtime-admission--recovery
-           (make-hash-table :test 'eq))
-          (e-board-runtime-admission--recovery-by-board
-           (make-hash-table :test 'eq))
-          (e-board-runtime-admission--recovery-by-attachment
-           (make-hash-table :test 'eq))
           (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
           (e-board-runtime--producer-inputs (make-hash-table :test 'equal))
           (e-board-runtime--producer-deliveries (make-hash-table :test 'equal))

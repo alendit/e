@@ -15,8 +15,11 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-board)
+(require 'e-board-admission)
 (require 'e-board-registry)
 (require 'e-board-runtime-admission)
+(require 'e-board-runtime-error)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
@@ -24,7 +27,6 @@
 (require 'e-session)
 (require 'e-work)
 
-(define-error 'e-board-runtime-error "e board runtime error")
 (define-error 'e-board-runtime-attachment-exists
   "e board runtime participant is already attached"
   'e-board-runtime-error)

@@ -103,17 +103,20 @@
 (cl-defstruct (e-board-invocation
                (:constructor e-board-invocation--create)
                (:conc-name e-board-invocation-))
-  id work-id state effect-target activation-id subscription-event)
+  id work-id state effect-target activation-id subscription-event
+  settlement-admission)
 
 (cl-defstruct (e-board-aggregation
                 (:constructor e-board-aggregation--create)
                 (:conc-name e-board-aggregation-))
-  id work-ids mode state effect-target timer activation-id admission)
+  id work-ids mode state effect-target timer activation-id admission
+  settlement-admission)
 
 (cl-defstruct (e-board-activation
                (:constructor e-board-activation--create)
                (:conc-name e-board-activation-))
-  id subscription-id subscription-token message-id effect state)
+  id subscription-id subscription-token message-id effect state
+  event-receipt effect-receipt)
 
 (cl-defstruct (e-board-open-activity
                (:constructor e-board-open-activity--create)

@@ -19,6 +19,7 @@
 
 (require 'cl-lib)
 (require 'e-board-admission)
+(require 'e-board-runtime-error)
 
 (cl-defstruct (e-board-runtime-admission-record
                (:constructor e-board-runtime-admission-record--create)
@@ -68,7 +69,15 @@ hash-table mutation remains retryable even when its adapter signals afterward."
 (defun e-board-runtime-admission--record (admission)
   "Return exact runtime record for ADMISSION, if retained."
   (or (gethash admission e-board-runtime-admission--pending-admissions)
-      (gethash admission e-board-runtime-admission--recovery)))
+      (gethash admission e-board-runtime-admission--recovery)
+      ;; The admission-local handle is the only fallback: it is installed
+      ;; before catalog publication and is never resolved by a descriptive id
+      ;; or a process-wide table scan.
+      (cond
+       ((e-board-work-admission-p admission)
+        (e-board-work-admission-runtime-admission-record admission))
+       ((e-board-aggregation-admission-p admission)
+        (e-board-aggregation-admission-runtime-admission-record admission)))))
 
 (defun e-board-runtime-admission--record-bucket (record slot)
   "Return RECORD's exact bucket named by SLOT."
@@ -241,10 +250,11 @@ expose the catalog record or any of its secondary indexes."
   "Retain exact BOARD ADMISSION in the runtime recovery catalog.
 
 BOARD must be the source Board, and ATTACHMENT is the captured runtime object
-whose lifetime this admission belongs to.  The recovery primary record is
-published first.  Each of the four secondary buckets is then recorded in the
-same record before its outer-table publication, so every partial path remains
-repairable without a process-wide scan."
+whose lifetime this admission belongs to.  The recovery primary is published
+first, but the opaque admission also retains the exact runtime record as a
+narrow retry handle.  Each bucket is recorded in that same record before its
+outer-table publication, so every partial path remains repairable without a
+process-wide scan."
   (unless (and board (e-board-runtime-admission--admission-p admission))
     (signal 'wrong-type-argument
             (list 'e-board-runtime-admission-admission-p admission)))
@@ -255,6 +265,15 @@ repairable without a process-wide scan."
              :board board :attachment attachment :admission admission
              :generation generation :in-flight-p in-flight-p
              :publication-stage 'new)))
+    ;; Keep an exact retry handle on the admission before the first catalog
+    ;; mutation.  This covers the deliberate primary-first publication order:
+    ;; if the first secondary index faults, later completion/retry still has
+    ;; the record without scanning or reconstructing an id.
+    (when (e-board-work-admission-p admission)
+      (setf (e-board-work-admission-runtime-admission-record admission) record))
+    (when (e-board-aggregation-admission-p admission)
+      (setf (e-board-aggregation-admission-runtime-admission-record admission)
+            record))
     ;; The exact Board and attachment object are immutable provenance for this
     ;; admission.  Equal ids never transfer a record to a replacement.
     (unless (and (eq (e-board-runtime-admission-record-board record) board)
@@ -264,7 +283,9 @@ repairable without a process-wide scan."
               (list "Runtime admission identity changed" admission)))
     (setf (e-board-runtime-admission-record-in-flight-p record) in-flight-p)
     ;; The recovery primary is the first exact authority.  If this hash
-    ;; primitive signals after mutation, a later call finds the same record.
+    ;; primitive signals after mutation, a later call finds the same record;
+    ;; if it signals before mutation, the admission-local retry handle above
+    ;; remains the authority until a secondary index can be published.
     (e-board-runtime-admission--ensure-record
      e-board-runtime-admission--recovery admission record)
     (setf (e-board-runtime-admission-record-recovery-installed-p record) t
@@ -318,23 +339,19 @@ interrupted cleanup without rediscovering a replacement by descriptive id."
   (when-let ((record (e-board-runtime-admission--record admission)))
     (let* ((board (e-board-runtime-admission-record-board record))
            (attachment (e-board-runtime-admission-record-attachment record))
+           ;; Only identities captured by RECORD authorize an inverse.  In
+           ;; particular, a missing slot is not permission to adopt the
+           ;; current bucket at an equal board/attachment key: that bucket may
+           ;; belong to a replacement lifetime.
            (board-bucket
-            (or (e-board-runtime-admission-record-board-bucket record)
-                (gethash board e-board-runtime-admission--pending-by-board)))
+            (e-board-runtime-admission-record-board-bucket record))
            (attachment-bucket
-            (or (e-board-runtime-admission-record-attachment-bucket record)
-                (gethash attachment
-                         e-board-runtime-admission--pending-by-attachment)))
+            (e-board-runtime-admission-record-attachment-bucket record))
            (recovery-board-bucket
-            (or (e-board-runtime-admission-record-recovery-board-bucket record)
-                (gethash board
-                         e-board-runtime-admission--recovery-by-board)))
+            (e-board-runtime-admission-record-recovery-board-bucket record))
            (recovery-attachment-bucket
-            (or
-             (e-board-runtime-admission-record-recovery-attachment-bucket
-              record)
-             (gethash attachment
-                      e-board-runtime-admission--recovery-by-attachment))))
+            (e-board-runtime-admission-record-recovery-attachment-bucket
+             record)))
       ;; Semantic Board completion is intentionally outside the runtime
       ;; catalogs.  It is idempotent and precedes every runtime inverse.
       (e-board-admission-complete board admission)
@@ -394,7 +411,16 @@ interrupted cleanup without rediscovering a replacement by descriptive id."
                   record)
           (condition-case err
               (remhash admission e-board-runtime-admission--recovery)
-            (error (signal (car err) (cdr err)))))
+            (error
+             ;; `remhash' can report an adapter fault after removing the
+             ;; exact record.  Absence is the acknowledged inverse; only a
+             ;; still-present exact record keeps the error retryable.
+             (if (eq (gethash admission e-board-runtime-admission--recovery)
+                     record)
+                 (signal (car err) (cdr err))
+               (setf
+                (e-board-runtime-admission-record-recovery-installed-p record)
+                nil))))
         (unless (eq (gethash admission e-board-runtime-admission--recovery)
                     record)
           (setf
@@ -403,8 +429,16 @@ interrupted cleanup without rediscovering a replacement by descriptive id."
                   record)
           (signal 'e-board-runtime-error
                   (list "Runtime admission recovery record remains" admission))))
-      (setf (e-board-runtime-admission-record-cleanup-stage record) 'done)))
-  admission)
+      (setf (e-board-runtime-admission-record-cleanup-stage record) 'done)
+      ;; All six catalog inverses have acknowledged.  Release the admission's
+      ;; narrow retry handle only after that final postcondition; until then a
+      ;; caller can retry completion even when the primary catalog is absent.
+      (when (e-board-work-admission-p admission)
+        (setf (e-board-work-admission-runtime-admission-record admission) nil))
+      (when (e-board-aggregation-admission-p admission)
+        (setf (e-board-aggregation-admission-runtime-admission-record admission)
+              nil))))
+  admission))
 
 (defun e-board-runtime-admission-finish (admission)
   "Mark ADMISSION's current runtime stack frame complete without forgetting it."

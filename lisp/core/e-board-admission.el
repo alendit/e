@@ -31,7 +31,8 @@ name remains the public setting so existing callers retain their behavior.")
   "Exact receipt for one event append and its resumable inverse."
   board event cell previous previous-node root-node next-node prefix-value
   forward-stage inverse-stage registered-p linked-p head-p tail-p count-p
-  prefix-p removed-p)
+  prefix-p removed-p compact-node compact-map-p compact-stage previous-ack-p
+  next-ack-p)
 
 (cl-defstruct (e-board-index-receipt
                (:constructor e-board-index-receipt--create)
@@ -39,7 +40,8 @@ name remains the public setting so existing callers retain their behavior.")
   "Exact receipt for one work-index queue cell."
   index work-id subscription-id queue cell previous previous-node root-node next-node
   queue-created-p forward-stage inverse-stage registered-p linked-p head-p
-  tail-p mapped-p removed-p)
+  tail-p mapped-p removed-p compact-node compact-map-p compact-stage
+  previous-ack-p next-ack-p)
 
 (cl-defstruct (e-board-event-link-node
                (:constructor e-board-event-link-node--create)
@@ -56,8 +58,12 @@ transaction or event payload state."
 (cl-defstruct (e-board-index-link-node
                (:constructor e-board-index-link-node--create)
                (:conc-name e-board-index-link-node--))
-  "Compact permanent topology for a committed work-index queue cell."
-  queue cell previous previous-node root-node next-node linked-p head-p tail-p)
+  "Compact permanent topology for a committed work-index queue cell.
+
+The node is its own root authority.  A committed queue never retains the
+rollback receipt that created it, so no per-queue receipt is reachable through
+this value."
+  queue cell previous previous-node next-node linked-p head-p tail-p)
 
 (defun e-board-admission--event-node-p (node)
   "Return non-nil when NODE is a live receipt or compact event node."
@@ -204,7 +210,10 @@ transaction or event payload state."
 (defun e-board-admission--index-node-root-node (node)
   "Return NODE's exact root node."
   (cond ((e-board-index-receipt-p node) (e-board-index-receipt--root-node node))
-        ((e-board-index-link-node-p node) (e-board-index-link-node--root-node node))
+        ;; A committed index node is self-authoritative.  The old root pointer
+        ;; was only rollback topology and retaining it kept one full receipt
+        ;; reachable for every singleton queue.
+        ((e-board-index-link-node-p node) node)
         (t nil)))
 
 (defun e-board-admission--index-node-linked-p (node)
@@ -253,8 +262,15 @@ transaction or event payload state."
   "Set NODE's exact root node to VALUE."
   (cond ((e-board-index-receipt-p node)
          (setf (e-board-index-receipt--root-node node) value))
+        ;; There is no mutable root slot after commit.  Callers that need to
+        ;; update a live compact neighbour use its self identity as the root;
+        ;; silently accepting that already-proven value keeps this setter
+        ;; useful at a receipt/compact boundary without recreating a receipt.
         ((e-board-index-link-node-p node)
-         (setf (e-board-index-link-node--root-node node) value))
+         (unless (eq value node)
+           (signal 'e-board-error
+                   (list "Committed index root is self-authoritative" node value)))
+         node)
         (t (signal 'e-board-error (list "Invalid index link node" node)))))
 
 (defun e-board-admission--index-node-set-linked (node value)
@@ -314,7 +330,7 @@ transaction or event payload state."
   board handle work invocation invocation-id effect-target
   event-receipts index-receipts classification-receipts effect-receipts
   cleanup-complete-p committed-p aborted-p in-flight-p cancel-requested-p
-  finalized-p work-owned-p)
+  finalized-p work-owned-p runtime-admission-record)
 
 (cl-defstruct (e-board-aggregation-admission
                (:constructor e-board-aggregation-admission--create)
@@ -323,7 +339,7 @@ transaction or event payload state."
   board aggregation event-receipts index-receipts timer deadline-receipt
   classification-receipts effect-receipts activation map-installed-p
   committed-p aborted-p cleanup-complete-p in-flight-p cancel-requested-p
-  finalized-p)
+  finalized-p runtime-admission-record)
 
 (defun e-board-admission--admission-p (value)
   "Return non-nil when VALUE is a Board admission token."
@@ -398,6 +414,18 @@ transaction or event payload state."
   (hash-table-count (or (e-board-pending-admissions board)
                         (make-hash-table :test 'eq))))
 
+(defun e-board-admission-active-p (board admission)
+  "Return whether ADMISSION still owns an active Board transaction.
+
+This is a narrow authority observation for semantic reducers that retain an
+admission across a fallible callback.  It intentionally reports only exact
+membership and cancellation, not the lower receipt representation."
+  (and (e-board-p board)
+       (e-board-admission--admission-p admission)
+       (e-board-pending-admissions board)
+       (eq (gethash admission (e-board-pending-admissions board)) t)
+       (not (e-board-admission--cancel-requested-p admission))))
+
 (defun e-board-admission--pending-in-flight-p (admission)
   "Return whether ADMISSION is executing on the current call stack."
   (if (e-board-work-admission-p admission)
@@ -463,62 +491,164 @@ its admission receipt is only needed until the append transaction commits.
 Keep the exact cell/neighbour topology used by a later append or a staged
 neighbour inverse, but drop the Board/event payload and all rollback progress
 flags.  This is intentionally an event-specific compaction operation, not a
-generic shared state bag.
-"
-  (if (e-board-event-receipt-p receipt)
-      (let* ((board (e-board-event-receipt--board receipt))
-             (cell (e-board-event-receipt--cell receipt))
-             (node (e-board-event-link-node--create
-                    :cell cell
-                    :previous (e-board-event-receipt--previous receipt)
-                    :previous-node (e-board-event-receipt--previous-node receipt)
-                    :root-node (e-board-event-receipt--root-node receipt)
-                    :next-node (e-board-event-receipt--next-node receipt)
-                    :linked-p (e-board-event-receipt--linked-p receipt)
-                    :head-p (e-board-event-receipt--head-p receipt)
-                    :tail-p (e-board-event-receipt--tail-p receipt))))
-        ;; Replacing the value is itself a fallible ownership boundary.  Leave
-        ;; the full receipt intact unless the exact compact node is observed;
-        ;; completion can then retry without reconstructing topology.
-        (when (and (e-board-p board)
-                   (eq (gethash cell (e-board-event-node-index board)) receipt))
+generic shared state bag.  The compact map and both neighbour acknowledgements
+are explicit resumable stages: a callback may signal after any one mutation,
+and the next call repairs the exact published node before releasing the
+receipt."
+  (if (not (e-board-event-receipt-p receipt))
+      receipt
+    (let* ((board (e-board-event-receipt--board receipt))
+           (cell (e-board-event-receipt--cell receipt))
+           (index (and (e-board-p board) (e-board-event-node-index board)))
+           (node (e-board-event-receipt--compact-node receipt)))
+      (unless node
+        (let ((root (e-board-event-receipt--root-node receipt)))
+          (when (e-board-event-receipt-p root)
+            (setq root
+                  (or (e-board-event-receipt--compact-node root) root)))
+          ;; A root receipt is a staging value, never a committed topology
+          ;; value.  Build the compact node first, then make a root point to
+          ;; itself so no committed node retains the full receipt.
+          (setq node
+                (e-board-event-link-node--create
+                 :cell cell
+                 :previous (e-board-event-receipt--previous receipt)
+                 :previous-node (e-board-event-receipt--previous-node receipt)
+                 :root-node root
+                 :next-node (e-board-event-receipt--next-node receipt)
+                 :linked-p (e-board-event-receipt--linked-p receipt)
+                 :head-p (e-board-event-receipt--head-p receipt)
+                 :tail-p (e-board-event-receipt--tail-p receipt)))
+          (when (or (null root) (eq root receipt))
+            (setf (e-board-event-link-node--root-node node) node))
+          (setf (e-board-event-receipt--compact-node receipt) node)))
+      (unless (and (e-board-p board) (hash-table-p index))
+        (signal 'e-board-error
+                (list "Committed event has no exact node index" receipt)))
+      (let ((current (gethash cell index)))
+        (cond
+         ((eq current node)
+          (setf (e-board-event-receipt--compact-stage receipt) 'map
+                (e-board-event-receipt--compact-map-p receipt) t))
+         ((eq current receipt)
           (condition-case err
-              (puthash cell node (e-board-event-node-index board))
+              (puthash cell node index)
             (error
-             (if (eq (gethash cell (e-board-event-node-index board)) node)
-                 nil
+             ;; A postmutation signal is still a visible failed stage; the
+             ;; exact node remains authoritative for the retry.
+             (if (eq (gethash cell index) node)
+                 (progn
+                   (setf (e-board-event-receipt--compact-stage receipt) 'map
+                         (e-board-event-receipt--compact-map-p receipt) t)
+                   (signal (car err) (cdr err)))
                (signal (car err) (cdr err)))))
-          (unless (eq (gethash cell (e-board-event-node-index board)) node)
+          (unless (eq (gethash cell index) node)
             (signal 'e-board-error
                     (list "Committed event node did not compact" cell)))
-          ;; Neighbour acknowledgements point at the transaction receipt while
-          ;; it is staged.  Retarget those exact links only after the compact
-          ;; value is authoritative in the node index.
-          (when-let ((previous-node
-                      (e-board-event-receipt--previous-node receipt)))
-            (when (eq (e-board-admission--event-node-next-node previous-node)
-                      receipt)
-              (e-board-admission--event-node-set-next previous-node node)))
-          (when-let ((next-node (e-board-event-receipt--next-node receipt)))
-            (when (eq (e-board-admission--event-node-previous-node next-node)
-                      receipt)
-              (e-board-admission--event-node-set-previous-node next-node node)
-              (e-board-admission--event-node-set-previous
-               next-node (e-board-event-receipt--previous receipt)))))
-        (setf (e-board-event-receipt--board receipt) nil
-              (e-board-event-receipt--event receipt) nil
-              (e-board-event-receipt--previous receipt) nil
-              (e-board-event-receipt--previous-node receipt) nil
-              (e-board-event-receipt--root-node receipt) nil
-              (e-board-event-receipt--next-node receipt) nil
-              (e-board-event-receipt--forward-stage receipt) nil
-              (e-board-event-receipt--inverse-stage receipt) nil
-              (e-board-event-receipt--registered-p receipt) nil
-              (e-board-event-receipt--prefix-p receipt) nil
-              (e-board-event-receipt--count-p receipt) nil
-              (e-board-event-receipt--prefix-value receipt) nil)
-        node)
-    receipt))
+          (setf (e-board-event-receipt--compact-stage receipt) 'map
+                (e-board-event-receipt--compact-map-p receipt) t))
+         ((null current)
+          (signal 'e-board-error
+                  (list "Committed event node disappeared before compaction"
+                        cell)))
+         (t
+          (signal 'e-board-error
+                  (list "Committed event node was replaced" cell current)))))
+      ;; Retarget the exact predecessor only after the compact map is
+      ;; authoritative.  The postcondition, not the setter's return, is the
+      ;; acknowledgement that permits receipt release.
+      (unless (e-board-event-receipt--previous-ack-p receipt)
+        (let ((previous-node (e-board-event-receipt--previous-node receipt)))
+          (if (null previous-node)
+              (setf (e-board-event-receipt--previous-ack-p receipt) t)
+            (let ((actual (e-board-admission--event-node-next-node previous-node)))
+              (cond
+               ((eq actual node)
+                (setf (e-board-event-receipt--previous-ack-p receipt) t))
+               ((eq actual receipt)
+                (condition-case err
+                    (e-board-admission--event-node-set-next previous-node node)
+                  (error
+                   (if (eq (e-board-admission--event-node-next-node previous-node)
+                           node)
+                       (progn
+                         (setf (e-board-event-receipt--previous-ack-p receipt) t)
+                         (signal (car err) (cdr err)))
+                     (signal (car err) (cdr err)))))
+                (unless (eq (e-board-admission--event-node-next-node previous-node)
+                            node)
+                  (signal 'e-board-error
+                          (list "Committed event predecessor was not repaired"
+                                cell)))
+                (setf (e-board-event-receipt--previous-ack-p receipt) t))
+               (t
+                (signal 'e-board-error
+                        (list "Committed event predecessor has replacement"
+                              cell previous-node actual))))))))
+      ;; Retarget the exact successor in two separately acknowledged steps.
+      ;; This is normally nil for append-at-tail, but is required for a
+      ;; middle-node completion/recovery and is intentionally testable.
+      (unless (e-board-event-receipt--next-ack-p receipt)
+        (let ((next-node (e-board-event-receipt--next-node receipt)))
+          (if (null next-node)
+              (setf (e-board-event-receipt--next-ack-p receipt) t)
+            (let ((actual (e-board-admission--event-node-previous-node next-node)))
+              (unless (eq actual node)
+                (unless (eq actual receipt)
+                  (signal 'e-board-error
+                          (list "Committed event successor has replacement"
+                                cell next-node actual)))
+                (condition-case err
+                    (e-board-admission--event-node-set-previous-node next-node node)
+                  (error
+                   (if (eq (e-board-admission--event-node-previous-node next-node)
+                           node)
+                       (signal (car err) (cdr err))
+                     (signal (car err) (cdr err))))))
+            (unless (eq (e-board-admission--event-node-previous-node next-node)
+                        node)
+              (signal 'e-board-error
+                      (list "Committed event successor was not repaired" cell)))
+            (let ((previous (e-board-event-receipt--previous receipt)))
+              (unless (eq (e-board-admission--event-node-previous next-node)
+                          previous)
+                (condition-case err
+                    (e-board-admission--event-node-set-previous next-node previous)
+                  (error
+                   (if (eq (e-board-admission--event-node-previous next-node)
+                           previous)
+                       (signal (car err) (cdr err))
+                     (signal (car err) (cdr err))))))
+              (unless (eq (e-board-admission--event-node-previous next-node)
+                          previous)
+                (signal 'e-board-error
+                        (list "Committed event successor cell was not repaired"
+                              cell))))
+            (setf (e-board-event-receipt--next-ack-p receipt) t))))
+      (unless (and (e-board-event-receipt--compact-map-p receipt)
+                   (e-board-event-receipt--previous-ack-p receipt)
+                   (e-board-event-receipt--next-ack-p receipt))
+        (signal 'e-board-error
+                (list "Committed event compact acknowledgement incomplete" cell)))
+      (setf (e-board-event-receipt--board receipt) nil
+            (e-board-event-receipt--event receipt) nil
+            (e-board-event-receipt--cell receipt) nil
+            (e-board-event-receipt--previous receipt) nil
+            (e-board-event-receipt--previous-node receipt) nil
+            (e-board-event-receipt--root-node receipt) nil
+            (e-board-event-receipt--next-node receipt) nil
+            (e-board-event-receipt--compact-node receipt) nil
+            (e-board-event-receipt--forward-stage receipt) nil
+            (e-board-event-receipt--inverse-stage receipt) nil
+            (e-board-event-receipt--registered-p receipt) nil
+            (e-board-event-receipt--prefix-p receipt) nil
+            (e-board-event-receipt--count-p receipt) nil
+            (e-board-event-receipt--prefix-value receipt) nil
+            (e-board-event-receipt--compact-map-p receipt) nil
+            (e-board-event-receipt--compact-stage receipt) 'done
+            (e-board-event-receipt--previous-ack-p receipt) nil
+            (e-board-event-receipt--next-ack-p receipt) nil)
+      node))))
 
 (defun e-board-admission--finalize-index-node (receipt)
   "Retain only queue-link state for a committed work-index node.
@@ -526,67 +656,163 @@ generic shared state bag.
 The queue may outlive the admission and be appended to again, so its exact
 cell, queue neighbours, and link flags remain.  Identity, mapping, and inverse
 progress are rollback-only and can be released after the enclosing admission
-has committed.
+has committed.  The compact map and neighbour links are acknowledged in
+separate stages before the receipt is cleared.
 "
-  (if (e-board-index-receipt-p receipt)
-      (let* ((index (e-board-index-receipt--index receipt))
-             (queue (e-board-index-receipt--queue receipt))
-             (cell (e-board-index-receipt--cell receipt))
-             (node (e-board-index-link-node--create
-                    :queue queue
-                    :cell cell
-                    :previous (e-board-index-receipt--previous receipt)
-                    :previous-node (e-board-index-receipt--previous-node receipt)
-                    :root-node (e-board-index-receipt--root-node receipt)
-                    :next-node (e-board-index-receipt--next-node receipt)
-                    :linked-p (e-board-index-receipt--linked-p receipt)
-                    :head-p (e-board-index-receipt--head-p receipt)
-                    :tail-p (e-board-index-receipt--tail-p receipt))))
-        (when (and (hash-table-p index)
-                   (eq (gethash cell (e-board-id-queue-node-index queue)) receipt))
+  (if (not (e-board-index-receipt-p receipt))
+      receipt
+    (let* ((index (e-board-index-receipt--index receipt))
+           (queue (e-board-index-receipt--queue receipt))
+           (cell (e-board-index-receipt--cell receipt))
+           (node (e-board-index-receipt--compact-node receipt)))
+      (unless node
+        ;; The old root pointer is rollback-only.  A committed index node is
+        ;; self-authoritative and therefore does not retain it or its receipt.
+        (setq node
+              (e-board-index-link-node--create
+               :queue queue :cell cell
+               :previous (e-board-index-receipt--previous receipt)
+               :previous-node (e-board-index-receipt--previous-node receipt)
+               :next-node (e-board-index-receipt--next-node receipt)
+               :linked-p (e-board-index-receipt--linked-p receipt)
+               :head-p (e-board-index-receipt--head-p receipt)
+               :tail-p (e-board-index-receipt--tail-p receipt)))
+        (setf (e-board-index-receipt--compact-node receipt) node))
+      (unless (and (hash-table-p index) (e-board-id-queue-p queue))
+        (signal 'e-board-error
+                (list "Committed index has no exact queue authority" receipt)))
+      (let ((node-index (e-board-id-queue-node-index queue))
+            (current (gethash cell (e-board-id-queue-node-index queue))))
+        (cond
+         ((eq current node)
+          (setf (e-board-index-receipt--compact-stage receipt) 'map
+                (e-board-index-receipt--compact-map-p receipt) t))
+         ((eq current receipt)
           (condition-case err
-              (puthash cell node (e-board-id-queue-node-index queue))
+              (puthash cell node node-index)
             (error
-             (if (eq (gethash cell (e-board-id-queue-node-index queue)) node)
-                 nil
+             (if (eq (gethash cell node-index) node)
+                 (progn
+                   (setf (e-board-index-receipt--compact-stage receipt) 'map
+                         (e-board-index-receipt--compact-map-p receipt) t)
+                   (signal (car err) (cdr err)))
                (signal (car err) (cdr err)))))
-          (unless (eq (gethash cell (e-board-id-queue-node-index queue)) node)
+          (unless (eq (gethash cell node-index) node)
             (signal 'e-board-error
                     (list "Committed index node did not compact" cell)))
-          (when-let ((previous-node
-                      (e-board-index-receipt--previous-node receipt)))
-            (when (eq (e-board-admission--index-node-next-node previous-node)
-                      receipt)
-              (e-board-admission--index-node-set-next previous-node node)))
-          (when-let ((next-node (e-board-index-receipt--next-node receipt)))
-            (when (eq (e-board-admission--index-node-previous-node next-node)
-                      receipt)
-              (e-board-admission--index-node-set-previous-node next-node node)
-              (e-board-admission--index-node-set-previous
-               next-node (e-board-index-receipt--previous receipt)))))
-        (setf (e-board-index-receipt--index receipt) nil
-              (e-board-index-receipt--work-id receipt) nil
-              (e-board-index-receipt--subscription-id receipt) nil
-              (e-board-index-receipt--queue receipt) nil
-              (e-board-index-receipt--previous receipt) nil
-              (e-board-index-receipt--previous-node receipt) nil
-              (e-board-index-receipt--root-node receipt) nil
-              (e-board-index-receipt--next-node receipt) nil
-              (e-board-index-receipt--forward-stage receipt) nil
-              (e-board-index-receipt--inverse-stage receipt) nil
-              (e-board-index-receipt--registered-p receipt) nil
-              (e-board-index-receipt--mapped-p receipt) nil
-              (e-board-index-receipt--removed-p receipt) nil)
-        node)
-    receipt))
+          (setf (e-board-index-receipt--compact-stage receipt) 'map
+                (e-board-index-receipt--compact-map-p receipt) t))
+         ((null current)
+          (signal 'e-board-error
+                  (list "Committed index node disappeared before compaction"
+                        cell)))
+         (t
+          (signal 'e-board-error
+                  (list "Committed index node was replaced" cell current)))))
+      (unless (e-board-index-receipt--previous-ack-p receipt)
+        (let ((previous-node (e-board-index-receipt--previous-node receipt)))
+          (if (null previous-node)
+              (setf (e-board-index-receipt--previous-ack-p receipt) t)
+            (let ((actual (e-board-admission--index-node-next-node previous-node)))
+              (cond
+               ((eq actual node)
+                (setf (e-board-index-receipt--previous-ack-p receipt) t))
+               ((eq actual receipt)
+                (condition-case err
+                    (e-board-admission--index-node-set-next previous-node node)
+                  (error
+                   (if (eq (e-board-admission--index-node-next-node previous-node)
+                           node)
+                       (progn
+                         (setf (e-board-index-receipt--previous-ack-p receipt) t)
+                         (signal (car err) (cdr err)))
+                     (signal (car err) (cdr err)))))
+                (unless (eq (e-board-admission--index-node-next-node previous-node)
+                            node)
+                  (signal 'e-board-error
+                          (list "Committed index predecessor was not repaired"
+                                cell)))
+                (setf (e-board-index-receipt--previous-ack-p receipt) t))
+               (t
+                (signal 'e-board-error
+                        (list "Committed index predecessor has replacement"
+                              cell previous-node actual))))))))
+      (unless (e-board-index-receipt--next-ack-p receipt)
+        (let ((next-node (e-board-index-receipt--next-node receipt)))
+          (if (null next-node)
+              (setf (e-board-index-receipt--next-ack-p receipt) t)
+            (let ((actual (e-board-admission--index-node-previous-node next-node)))
+              (unless (eq actual node)
+                (unless (eq actual receipt)
+                  (signal 'e-board-error
+                          (list "Committed index successor has replacement"
+                                cell next-node actual)))
+                (condition-case err
+                    (e-board-admission--index-node-set-previous-node next-node node)
+                  (error
+                   (if (eq (e-board-admission--index-node-previous-node next-node)
+                           node)
+                       (signal (car err) (cdr err))
+                     (signal (car err) (cdr err))))))
+            (unless (eq (e-board-admission--index-node-previous-node next-node)
+                        node)
+              (signal 'e-board-error
+                      (list "Committed index successor was not repaired" cell)))
+            (let ((previous (e-board-index-receipt--previous receipt)))
+              (unless (eq (e-board-admission--index-node-previous next-node)
+                          previous)
+                (condition-case err
+                    (e-board-admission--index-node-set-previous next-node previous)
+                  (error
+                   (if (eq (e-board-admission--index-node-previous next-node)
+                           previous)
+                       (signal (car err) (cdr err))
+                     (signal (car err) (cdr err))))))
+              (unless (eq (e-board-admission--index-node-previous next-node)
+                          previous)
+                (signal 'e-board-error
+                        (list "Committed index successor cell was not repaired"
+                              cell))))
+            (setf (e-board-index-receipt--next-ack-p receipt) t))))
+      (unless (and (e-board-index-receipt--compact-map-p receipt)
+                   (e-board-index-receipt--previous-ack-p receipt)
+                   (e-board-index-receipt--next-ack-p receipt))
+        (signal 'e-board-error
+                (list "Committed index compact acknowledgement incomplete" cell)))
+      (setf (e-board-index-receipt--index receipt) nil
+            (e-board-index-receipt--work-id receipt) nil
+            (e-board-index-receipt--subscription-id receipt) nil
+            (e-board-index-receipt--queue receipt) nil
+            (e-board-index-receipt--cell receipt) nil
+            (e-board-index-receipt--previous receipt) nil
+            (e-board-index-receipt--previous-node receipt) nil
+            (e-board-index-receipt--root-node receipt) nil
+            (e-board-index-receipt--next-node receipt) nil
+            (e-board-index-receipt--compact-node receipt) nil
+            (e-board-index-receipt--forward-stage receipt) nil
+            (e-board-index-receipt--inverse-stage receipt) nil
+            (e-board-index-receipt--registered-p receipt) nil
+            (e-board-index-receipt--mapped-p receipt) nil
+            (e-board-index-receipt--removed-p receipt) nil
+            (e-board-index-receipt--compact-map-p receipt) nil
+            (e-board-index-receipt--compact-stage receipt) 'done
+            (e-board-index-receipt--previous-ack-p receipt) nil
+            (e-board-index-receipt--next-ack-p receipt) nil)
+      node))))
 
 (defun e-board-admission--drop-transient-fields (admission)
   "Drop rollback-only fields after a committed admission is acknowledged."
   (when (e-board-work-admission-p admission)
-    (dolist (receipt (e-board-work-admission-event-receipts admission))
-      (e-board-admission--finalize-event-node receipt))
-    (dolist (receipt (e-board-work-admission-index-receipts admission))
-      (e-board-admission--finalize-index-node receipt))
+    ;; Receipts are pushed newest-first.  Finalize oldest-first so a compact
+    ;; root never captures a still-live sibling receipt from the same commit.
+    (dolist (receipt (reverse (e-board-work-admission-event-receipts admission)))
+      (unless (or (e-board-event-receipt--removed-p receipt)
+                  (eq (e-board-event-receipt--compact-stage receipt) 'done))
+        (e-board-admission--finalize-event-node receipt)))
+    (dolist (receipt (reverse (e-board-work-admission-index-receipts admission)))
+      (unless (or (e-board-index-receipt--removed-p receipt)
+                  (eq (e-board-index-receipt--compact-stage receipt) 'done))
+        (e-board-admission--finalize-index-node receipt)))
     (setf (e-board-work-admission-event-receipts admission) nil
           (e-board-work-admission-index-receipts admission) nil
           (e-board-work-admission-classification-receipts admission) nil
@@ -602,10 +828,16 @@ has committed.
           (e-board-work-admission-finalized-p admission) t))
   (when (e-board-aggregation-admission-p admission)
     (let ((aggregation (e-board-aggregation-admission-aggregation admission)))
-      (dolist (receipt (e-board-aggregation-admission-event-receipts admission))
-        (e-board-admission--finalize-event-node receipt))
-      (dolist (receipt (e-board-aggregation-admission-index-receipts admission))
-        (e-board-admission--finalize-index-node receipt))
+      (dolist (receipt
+               (reverse (e-board-aggregation-admission-event-receipts admission)))
+        (unless (or (e-board-event-receipt--removed-p receipt)
+                    (eq (e-board-event-receipt--compact-stage receipt) 'done))
+          (e-board-admission--finalize-event-node receipt)))
+      (dolist (receipt
+               (reverse (e-board-aggregation-admission-index-receipts admission)))
+        (unless (or (e-board-index-receipt--removed-p receipt)
+                    (eq (e-board-index-receipt--compact-stage receipt) 'done))
+          (e-board-admission--finalize-index-node receipt)))
       ;; `e-board-aggregation' is the durable Board projection.  Its admission
       ;; slot and the token's reciprocal Board/aggregation/activation links are
       ;; rollback-only and must not keep a committed object cycle alive.
@@ -886,16 +1118,31 @@ acknowledged; a pre-mutation failure leaves the token for an exact retry."
             (e-board-event-receipt--forward-stage receipt) 'counted)
       event)))
 
-(defun e-board-admission-append-event (board type data &optional admission)
+(defun e-board-admission-append-event
+    (board type data &optional admission receipt-holder)
   "Append one Board event, retaining exact recovery when no token is supplied.
 
 Internal Board callers normally pass an enclosing admission.  Standalone Board
 notifications receive a short-lived Board admission token so an error after a
 list or index mutation remains discoverable through the Board pending catalog.
 The token is finalized only after the event append commits, and is never
-reconstructed from an event type or sequence number."
+reconstructed from an event type or sequence number.  When RECEIPT-HOLDER is a
+mutable one-element list, the exact receipt for this append is stored there
+even if a lower primitive signals after making its mutation.  Resumable Board
+terminalization uses this to avoid publishing a duplicate event."
   (if (e-board-admission--admission-p admission)
-      (e-board-admission--append-event board type data admission)
+      (condition-case err
+          (let ((event (e-board-admission--append-event
+                        board type data admission)))
+            (when receipt-holder
+              (setcar receipt-holder
+                      (car (e-board-admission--receipts admission 'event))))
+            event)
+        (error
+         (when receipt-holder
+           (setcar receipt-holder
+                   (car (e-board-admission--receipts admission 'event))))
+         (signal (car err) (cdr err))))
     (let ((standalone (e-board-admission-aggregation-token board)))
       (e-board-admission-begin board standalone)
       (let (event)
@@ -904,11 +1151,17 @@ reconstructed from an event type or sequence number."
               (setq event
                     (e-board-admission--append-event
                      board type data standalone))
+              (when receipt-holder
+                ;; A standalone receipt is completed before this wrapper
+                ;; returns and therefore cannot be retained by the caller.
+                (setcar receipt-holder nil))
               (e-board-admission--standalone-postcheck board standalone)
               (setf (e-board-aggregation-admission-committed-p standalone) t)
               (e-board-admission-finish board standalone))
           (error
            (e-board-admission-finish board standalone)
+           (when receipt-holder
+             (setcar receipt-holder nil))
            ;; If the append itself failed, the exact token owns its inverse.
            (condition-case _cleanup-error
                (e-board-admission-abort board standalone)
@@ -1073,6 +1326,17 @@ is allowed.
               (e-board-event-receipt--inverse-stage receipt) 'removed)))
     t))
 
+(defun e-board-admission-event-receipt-committed-p (receipt)
+  "Return non-nil when RECEIPT has completed an event append.
+
+This is a semantic status operation for Board terminalization.  It does not
+expose the receipt's cell, map, or neighbour representation to callers."
+  (and (e-board-event-receipt-p receipt)
+       (not (e-board-event-receipt--removed-p receipt))
+       (e-board-event-receipt--prefix-p receipt)
+       (e-board-event-receipt--count-p receipt)
+       (eq (e-board-event-receipt--forward-stage receipt) 'counted)))
+
 (defun e-board-admission-index-work (index work-id subscription-id
                                            &optional admission)
   "Append SUBSCRIPTION-ID to WORK-ID's INDEX and return an exact receipt."
@@ -1199,11 +1463,14 @@ values and cannot mutate the exact inverse through a returned cons cell."
     (when next-node
       (e-board-admission--index-node-set-previous-node next-node previous-node)
       (e-board-admission--index-node-set-previous next-node previous)
-      (e-board-admission--index-node-set-root-node
-       next-node
-       (if previous-node
-           (e-board-admission--index-node-root-node previous-node)
-         next-node))
+      ;; A committed successor is already self-rooted; only a still-staged
+      ;; receipt carries mutable rollback root state.
+      (when (e-board-index-receipt-p next-node)
+        (e-board-admission--index-node-set-root-node
+         next-node
+         (if previous-node
+             (e-board-admission--index-node-root-node previous-node)
+           next-node)))
       (e-board-admission--index-node-set-head next-node (null previous-node)))
     (when (null previous-node)
       (setf (e-board-index-receipt--head-p receipt) nil))))
@@ -2290,16 +2557,26 @@ keeps a callback generation so a stale callback cannot drain a replacement."
     receipt))
 
 (defun e-board-admission-schedule-effect
-    (board effect &optional admission schedule-function)
+    (board effect &optional admission schedule-function receipt-holder)
   "Queue EFFECT, retaining exact recovery when standalone.
 
 An enclosing Board admission is used when supplied.  Direct effect
 publication gets a short-lived Board admission before the FIFO cell, node
 index, count, and callback generation change, so a later scheduler failure
-cannot leave an unowned receipt behind."
+cannot leave an unowned receipt behind.  RECEIPT-HOLDER, when supplied, is
+updated with the exact effect receipt on both normal and post-mutation error
+returns."
   (if (e-board-admission--admission-p admission)
-      (e-board-admission--schedule-effect
-       board effect admission schedule-function)
+      (condition-case err
+          (let ((receipt (e-board-admission--schedule-effect
+                          board effect admission schedule-function)))
+            (when receipt-holder (setcar receipt-holder receipt))
+            receipt)
+        (error
+         (when receipt-holder
+           (setcar receipt-holder
+                   (car (e-board-admission--receipts admission 'effect))))
+         (signal (car err) (cdr err))))
     (let ((standalone (e-board-admission-aggregation-token board))
           receipt)
       (e-board-admission-begin board standalone)
@@ -2308,11 +2585,13 @@ cannot leave an unowned receipt behind."
             (setq receipt
                   (e-board-admission--schedule-effect
                    board effect standalone schedule-function))
+            (when receipt-holder (setcar receipt-holder nil))
             (e-board-admission--standalone-postcheck board standalone)
             (setf (e-board-aggregation-admission-committed-p standalone) t)
             (e-board-admission-finish board standalone))
         (error
          (e-board-admission-finish board standalone)
+         (when receipt-holder (setcar receipt-holder nil))
          (condition-case _cleanup-error
              (e-board-admission-abort board standalone)
            (error nil))
@@ -2436,6 +2715,15 @@ cannot leave an unowned receipt behind."
         (setf (e-board-effect-receipt--removed-p receipt) t
               (e-board-effect-receipt--inverse-stage receipt) 'removed))
     t)))
+
+(defun e-board-admission-effect-receipt-queued-p (receipt)
+  "Return non-nil when RECEIPT still owns a queued effect.
+
+The effect receipt remains an admission-owned implementation value; this
+predicate is the narrow status needed by a Board settlement continuation."
+  (and (e-board-effect-receipt-p receipt)
+       (not (e-board-effect-receipt--removed-p receipt))
+       (e-board-effect-receipt--queued-p receipt)))
 
 (defun e-board-admission--effect-receipt-for-cell (board cell)
   "Return the exact effect receipt for CELL, or nil for a normal effect."
@@ -2564,11 +2852,21 @@ the captured successor authority."
                       (condition-case err
                           (funcall effect)
                         (error
-                         ;; The effect drain owner records an unexpected effect
-                         ;; failure in the event log; it never retries arbitrary
-                         ;; user code inline.
-                         (e-board-admission-append-event
-                          board 'effect-drain-failed (list :error err)))))
+                         ;; The effect drain owner records an unexpected
+                         ;; effect failure in the event log; it never retries
+                         ;; arbitrary user code inline.  Diagnostic logging is
+                         ;; another fallible boundary, but it must not bypass
+                         ;; the single scheduling-finalization path below.  A
+                         ;; successful diagnostic preserves the historical
+                         ;; containment behavior; if the diagnostic itself
+                         ;; fails, surface the original callback error.
+                         (let ((callback-error err))
+                           (condition-case _diagnostic-error
+                               (e-board-admission-append-event
+                                board 'effect-drain-failed (list :error err))
+                             (error
+                              (setq first-error
+                                    (or first-error callback-error))))))))
                     (when node-error
                       (setq first-error (or first-error node-error))))))
               (cl-decf remaining)))

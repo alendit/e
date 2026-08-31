@@ -1279,23 +1279,33 @@ replacement buckets and removes empty catalogs only when identity still
 matches.  Durable Board/session formats, ordering, error precedence,
 quiescence, and restart lifetime remain unchanged.
 
+The current post-correction inventory is =e-board.el= 4,237 lines,
+=e-board-admission.el= 3,121, =e-board-runtime.el= 3,768, and
+=e-board-runtime-admission.el= 534.  The affected direct/composed Board and
+runtime test roots are 2,304, 1,199, 445, 3,115, 991, 306, and 132 lines;
+none is an unexamined ordinary test root above 4,000.  Board remains retained
+as one sequence/routing/publication/pickup/settlement state machine; runtime
+remains one attachment-generation/producer/pickup owner; the concrete runtime
+catalog is the extracted replacement boundary.
+
 Current evidence on this tree:
 
 | Gate | Result | Evidence |
 |---+---+---|
-| Direct Board admission owner | PASS: 32/32 | =/tmp/e-f91-board-admission-direct-current.log= |
-| Direct runtime-admission owner | PASS: 5/5 | =/tmp/e-f91-runtime-admission-owner-current.log= |
-| Board/runtime focused batch | PASS: 147/147 (32 admission, 5 runtime owner, 22 runtime composition, 77 Board, 11 composition) | =/tmp/e-f91-board-validation-final.log= |
-| Affected Board/consumer batch | PASS: 407/407 | =/tmp/e-f91-board-adjacent-final-current.log= |
-| Accepted preservation selector | PASS: 485 selected, 483 expected, 0 unexpected, 2 known skips | =/tmp/e-f91-preservation-485-final-current.log= |
-| Full fixture-enabled ERT | PASS: 2,662 tests, 2,655 expected, 0 unexpected, 7 existing skips | =/tmp/e-f91-full-ert-fixture-final-current.log= |
-| Full sandbox ERT | Environment-limited: 2,662 tests, 2,649 expected, 6 socket-bind failures, 7 skips | =/tmp/e-f91-full-ert-current.log= |
-| Production compile | PASS: =eldev compile -F -f lisp=, no warnings/errors | =/tmp/e-f91-full-compile-final-current.log= |
-| Fresh owner/facade operations | PASS: owner =e-board-runtime-admission= loads as =(t nil nil t)=; Board facade creates a board with no runtime feature | =/tmp/e-f91-fresh-runtime-admission.log=, =/tmp/e-f91-fresh-board-facade.log= |
-| Check-parens / whitespace | PASS: all changed/new Lisp files; tracked diff and explicit untracked sweep clean | =/tmp/e-f91-check-parens-final-current.log=, =/tmp/e-f91-diff-check-final-current.log=, =/tmp/e-f91-whitespace-final-current.log= |
-| Literal local require/SCC | PASS: 166 modules, 715 unique edges, =CYCLES []= | =/tmp/e-f91-require-final-current.log= |
-| Private/duplicate sweep | PASS: no stale runtime-admission or cross-owner production private references; no duplicate definitions | =/tmp/e-f91-private-sweep-final-current.log=, =/tmp/e-f91-duplicate-definitions-final-current.log= |
-| 10k event shape/performance | PASS: 0.06199s, 10,000 event link nodes, 10,001 prefix entries, nine-slot sample node | =/tmp/e-f91-event-10k-current.log= |
+| Direct Board admission owner | PASS: 35/35 | =/tmp/e-r5-board-admission-direct-after-sibling-fix.log= |
+| Direct runtime-admission owner | PASS: 8/8 | =/tmp/e-r5-runtime-admission-owner-current-final.log= |
+| Board/runtime focused batch | PASS: 269/269 (combined Board registry/runtime/admission/composition selector); roots: admission 35/35, runtime owner 79/79, runtime admission 22/22, runtime-admission owner 8/8, Board 77/77, registry 37/37, composition 11/11 | =/tmp/e-r5-board-composition-final.log=; direct logs =/tmp/e-r5-board-admission-direct-after-sibling-fix.log=, =/tmp/e-r5-runtime-admission-owner-current-final.log=, =/tmp/e-r5-runtime-admission-current-final.log=, =/tmp/e-r5-board-semantic-current-final.log=, =/tmp/e-r5-board-composition-direct-current-final.log= |
+| Affected Board/consumer batch | PASS: 364/364 | =/tmp/e-r5-board-affected-after-sibling-fix.log= |
+| Accepted preservation selector | PASS: 485 selected, 483 expected, 0 unexpected, 2 known skips | =/tmp/e-r5-preservation-485-final.log= |
+| Full fixture-enabled ERT | PASS: 2,670 tests, 2,663 expected, 0 unexpected, 7 existing skips | =/tmp/e-r5-full-ert-fixture-final.log= |
+| Full sandbox ERT | Environment-limited: 2,670 tests, 2,657 expected, 6 socket-bind failures, 7 skips | =/tmp/e-r5-full-ert-sandbox-after-sibling-fix.log= |
+| Production compile | PASS: =eldev compile -F -f lisp=, no warnings/errors | =/tmp/e-r5-eldev-compile-after-drop-fix.log= |
+| Fresh owner/facade operations | PASS: bare owner loads with Runtime absent, catches the owner failure through both typed and generic handlers, and Board facade posts one event with Runtime absent | =/tmp/e-r5-fresh-error-after-drop-fix.log=, =/tmp/e-r5-fresh-board-current-final.log= |
+| Check-parens / whitespace | PASS: all changed/new Lisp files; tracked diff and explicit source sweep clean | =/tmp/e-r5-check-parens-final.log=, =/tmp/e-r5-diff-check-current-final.log=, =/tmp/e-r5-newfile-whitespace-current-final.log= |
+| Literal local require/SCC | PASS: 167 modules, 719 unique edges, =CYCLES []= | =/tmp/e-r5-require-scan-final.log= |
+| Private/duplicate sweep | PASS: no cross-owner production private references and no duplicate definitions | =/tmp/e-r5-private-duplicate-final.log= |
+| Composed test-private sweep | PASS: no runtime-admission or Board-admission private references outside direct owner suite | =/tmp/e-r5-test-private-final.log= |
+| 10k event/index shape/performance | PASS: events 0.067933s / indexes 0.029810s enqueue + 0.015035s completion; 10,000 compact nodes each, zero map receipts, 9-slot compact nodes | =/tmp/e-r5-shape-final.log= |
 
 The six sandbox failures are the four MCP HTTP fixture and two OpenAI local
 server socket cases; the escalated fixture-enabled run passes them.  The two
@@ -1304,13 +1314,12 @@ isolated graphical suite was rerun in the disposable off-screen frame and
 passes 27/27 at =/tmp/e-f91-graphical-current-fixture.log=.  No live provider
 call was made.
 
-The syntax-aware Board-family call scan reports 243 cross-owner call sites:
-admission->state 1, board->state 12, board->admission 86,
-registry->board 29, registry->admission 3, runtime-admission->admission 2,
-runtime->registry 37, runtime->board 58, runtime->runtime-admission 13, and
-runtime->admission 2.  The reproducible current scan and output are
+The syntax-aware Board-family call scan reports 238 cross-owner call sites:
+admission->state 1, board->state 12, board->admission 96,
+registry->board 29, registry->admission 3, runtime->registry 37,
+runtime->board 58, runtime->admission 2.  The reproducible current scan and output are
 =/tmp/e-f91-board-call-graph-current.el= and
-=/tmp/e-f91-board-call-graph-final-current.log=.
+=/tmp/e-r5-board-call-graph-final.log=.
 
 Behavioral status is green: focused Board/runtime behavior, the accepted
 485-case preservation set, and fixture-enabled full ERT pass with only listed
@@ -1319,6 +1328,15 @@ pending parent and independent acceptance; Feature 91 remains =In-progress=
 and is not =Done=.  The package changes process-local core receipt/catalog
 record shapes, so a full Emacs restart is required; no compatibility shim or
 live reload was used.
+
+Post-finalization retry correction evidence: =e-board-admission--drop-transient-fields=
+now skips only receipts whose compact stage is already =done=.  This preserves
+the exact acknowledged compact node when a later sibling receipt fails, so a
+retry does not re-enter a cleared receipt.  Focused Board/runtime suites pass
+269/269 after this correction; the fixture-enabled full ERT rerun (including
+the direct sibling regression) passes 2,670 tests, 2,663 expected, 0
+unexpected, and 7 existing skips at
+=/tmp/e-r5-full-ert-fixture-final.log=.
 
 The residual disposition is =retain= for the cohesive Board semantic
 aggregate, =extract= for runtime admission catalogs, =retain/strengthen= for

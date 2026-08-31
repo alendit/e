@@ -1034,4 +1034,166 @@ pre-admission state; no descriptive work-id lookup is involved."
         (should (eq (e-board-index-link-node--cell node) cell))
         (should (e-board-index-receipt-p receipt))))))
 
+(ert-deftest e-board-test-event-compaction-retries-exact-neighbour-repair ()
+  "A compact event node remains resumable through a postmutation link fault."
+  (let* ((board (e-board-admission-test--make-board :id "event-compact-retry"))
+         (admission (e-board-admission-aggregation-token board))
+         (original-set-previous-node
+          (symbol-function 'e-board-admission--event-node-set-previous-node))
+         first-receipt second-receipt first-node second-node fault)
+    (e-board-admission-begin board admission)
+    (e-board-admission--append-event board 'first nil admission)
+    (e-board-admission--append-event board 'second nil admission)
+    (setq second-receipt
+          (car (e-board-aggregation-admission-event-receipts admission))
+          first-receipt
+          (cadr (e-board-aggregation-admission-event-receipts admission))
+          fault t)
+    (e-board-admission-finish board admission)
+    (cl-letf (((symbol-function 'e-board-admission--event-node-set-previous-node)
+               (lambda (node value)
+                 (prog1 (funcall original-set-previous-node node value)
+                   (when (and fault (eq node second-receipt))
+                     (setq fault nil)
+                     (error "event compact successor after"))))))
+      (should-error (e-board-admission-complete board admission)))
+    (setq first-node
+          (gethash (e-board-events board) (e-board-event-node-index board)))
+    (should (e-board-event-link-node-p first-node))
+    (should (= (e-board-admission-pending-count board) 1))
+    ;; The retry accepts the already-published compact node and repairs the
+    ;; exact successor without adopting a descriptive or replacement value.
+    (e-board-admission-complete board admission)
+    (setq second-node
+          (gethash (cdr (e-board-events board)) (e-board-event-node-index board)))
+    (should (e-board-event-link-node-p second-node))
+    (should (eq (e-board-event-link-node--previous-node second-node) first-node))
+    (should (= (e-board-admission-pending-count board) 0))
+    ;; A later append follows the repaired compact topology, proving that the
+    ;; receipt was not prematurely cleared at the fault boundary.
+    (should (e-board-event-p
+             (e-board-admission-append-event board 'third nil)))
+    (should (eq (e-board-event-link-node--next-node second-node)
+                (gethash (e-board-events-tail board)
+                         (e-board-event-node-index board))))))
+
+(ert-deftest e-board-test-index-compaction-retries-exact-neighbour-repair ()
+  "A compact work-index node remains resumable through a link fault."
+  (let* ((board (e-board-admission-test--make-board :id "index-compact-retry"))
+         (admission (e-board-admission-aggregation-token board))
+         (index (make-hash-table :test 'equal))
+         (original-set-previous-node
+          (symbol-function 'e-board-admission--index-node-set-previous-node))
+         first-receipt second-receipt queue first-node second-node fault)
+    (e-board-admission-begin board admission)
+    (e-board-admission-index-work index "work" "first" admission)
+    (e-board-admission-index-work index "work" "second" admission)
+    (setq queue (gethash "work" index)
+          second-receipt
+          (car (e-board-aggregation-admission-index-receipts admission))
+          first-receipt
+          (cadr (e-board-aggregation-admission-index-receipts admission))
+          fault t)
+    (e-board-admission-finish board admission)
+    (cl-letf (((symbol-function 'e-board-admission--index-node-set-previous-node)
+               (lambda (node value)
+                 (prog1 (funcall original-set-previous-node node value)
+                   (when (and fault (eq node second-receipt))
+                     (setq fault nil)
+                     (error "index compact successor after"))))))
+      (should-error (e-board-admission-complete board admission)))
+    (setq first-node
+          (gethash (e-board-id-queue-head queue)
+                   (e-board-id-queue-node-index queue)))
+    (should (e-board-index-link-node-p first-node))
+    (should (= (e-board-admission-pending-count board) 1))
+    (e-board-admission-complete board admission)
+    (setq second-node
+          (gethash (cdr (e-board-id-queue-head queue))
+                   (e-board-id-queue-node-index queue)))
+    (should (e-board-index-link-node-p second-node))
+    (should (eq (e-board-index-link-node--previous-node second-node) first-node))
+    (should (= (e-board-admission-pending-count board) 0))
+    ;; A later append follows the compact tail, and its exact receipt can still
+    ;; be unlinked independently without retaining a full root receipt.
+    (let* ((later-admission (e-board-admission-aggregation-token board))
+           (third nil))
+      (e-board-admission-begin board later-admission)
+      (setq third (e-board-admission-index-work
+                   index "work" "third" later-admission))
+      (e-board-admission-finish board later-admission)
+      (should (e-board-index-receipt-p third))
+      (e-board-admission-remove-index third)
+      (e-board-admission-complete board later-admission)
+      (should (equal (e-board-admission--index-values index "work")
+                     '("first" "second"))))))
+
+(ert-deftest e-board-test-compaction-skips-completed-sibling-on-retry ()
+  "A later compact fault does not re-enter an already-cleared sibling receipt."
+  (dolist (kind '(event index))
+    (let* ((board (e-board-admission-test--make-board
+                   :id (format "compact-sibling-%s" kind)))
+           (admission (e-board-admission-aggregation-token board))
+           (index (make-hash-table :test 'equal))
+           (original-set-next
+            (symbol-function
+             (if (eq kind 'event)
+                 'e-board-admission--event-node-set-next
+               'e-board-admission--index-node-set-next)))
+           (fault t)
+           first-cell second-cell first-node second-node)
+      (e-board-admission-begin board admission)
+      (if (eq kind 'event)
+          (progn
+            (e-board-admission--append-event board 'first nil admission)
+            (e-board-admission--append-event board 'second nil admission)
+            (setq first-cell (e-board-events board)
+                  second-cell (cdr first-cell)))
+        (e-board-admission-index-work index "work" "first" admission)
+        (e-board-admission-index-work index "work" "second" admission)
+        (let ((queue (gethash "work" index)))
+          (setq first-cell (e-board-id-queue-head queue)
+                second-cell (cdr first-cell))))
+      (e-board-admission-finish board admission)
+      (cl-letf (((symbol-function
+                  (if (eq kind 'event)
+                      'e-board-admission--event-node-set-next
+                    'e-board-admission--index-node-set-next))
+                 (lambda (node value)
+                   (prog1 (funcall original-set-next node value)
+                     ;; The first receipt has no predecessor.  This compact
+                     ;; setter is therefore reached only after that receipt
+                     ;; has completed and the second receipt is finalizing.
+                     (when (and fault
+                                (or (and (eq kind 'event)
+                                         (e-board-event-link-node-p node))
+                                    (and (eq kind 'index)
+                                         (e-board-index-link-node-p node))))
+                       (setq fault nil)
+                       (error "sibling compact setter after"))))))
+        (should-error (e-board-admission-complete board admission)))
+      (setq first-node
+            (gethash first-cell
+                     (if (eq kind 'event)
+                         (e-board-event-node-index board)
+                       (e-board-id-queue-node-index (gethash "work" index)))))
+      (should (e-board-admission-active-p board admission))
+      (should (if (eq kind 'event)
+                  (e-board-event-link-node-p first-node)
+                (e-board-index-link-node-p first-node)))
+      (e-board-admission-complete board admission)
+      (setq second-node
+            (gethash second-cell
+                     (if (eq kind 'event)
+                         (e-board-event-node-index board)
+                       (e-board-id-queue-node-index (gethash "work" index)))))
+      (should (if (eq kind 'event)
+                  (e-board-event-link-node-p second-node)
+                (e-board-index-link-node-p second-node)))
+      (should (eq (if (eq kind 'event)
+                      (e-board-event-link-node--previous-node second-node)
+                    (e-board-index-link-node--previous-node second-node))
+                  first-node))
+      (should (= (e-board-admission-pending-count board) 0)))))
+
 ;;; e-board-admission-test.el ends here
