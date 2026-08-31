@@ -2547,3 +2547,142 @@ Board state/admission owners are substantive, actual runtime dependencies are
 acyclic, cross-owner private production references are zero, and exact
 recovery authority is retained for incomplete inverses.  The current
 implementation and evidence are ready for parent/independent acceptance.
+
+* Current Board/runtime-admission continuation (implementer evidence)
+
+This section supersedes earlier pending-gate paragraphs for the current
+implementation tree. It continues exact baseline =fe6294c0= after review
+=ef115bc1= and addresses all eight Board/admission findings together. The
+review artifact and =docs/feats/index.org= were not edited. The running Emacs
+was not queried, reloaded, signalled, or changed.
+
+** Responsibility and state ownership
+
+| Owner | State, side effects, and disposition |
+|---+---|
+| =e-board-state= | Board values/errors/count transition; Board lifetime; already extracted lower contract |
+| =e-board-admission= | Event/index/classifier/deadline/effect/aggregation receipts, exact staged inverses, Board pending catalog, compact link nodes; retain/strengthen |
+| =e-board= | Event sequencing, routing, publication, subscriptions, processing, aggregation settlement; retain cohesive because one ordering state machine |
+| =e-board-runtime-admission= | Exact runtime admission record plus six primary/recovery and Board/attachment catalogs; process lifetime; extracted here |
+| =e-board-runtime= | Attachment maps/generations, producer/activity/invocation/pickup/delivery state and cross-owner composition; retain attachment aggregate |
+
+Board admission allocates receipts before the first observable mutation and
+records exact cells, neighbours, map membership, head/tail/link/count stages,
+and monotonic event-prefix checkpoints. Classifier/deadline/effect drains retain
+exact head authority through count and semantic completion: pre-count faults
+restore the head, post-count faults finish that exact item once, and successor
+scheduling uses a fresh generation. Standalone wrappers postcheck exact pending
+authority after reentrant callbacks. Completion compacts event/index receipts
+into nine-slot owner link nodes and clears rollback-only token backreferences.
+
+Runtime admission records each bucket object before outer publication.
+=remember= publishes primary recovery, recovery Board/attachment, pending
+primary, and pending Board/attachment memberships. =complete= acknowledges
+exact Board completion before removal; retries remove only the same object and
+preserve replacement buckets. =fence= and =retry= inspect the exact supplied
+attachment/Board bucket union, never a process-wide scan. Runtime no longer
+contains this catalog implementation.
+
+** Actual dependency graph and semantic API map
+
+#+begin_example
+e-board-admission -> e-board-state
+e-board           -> e-board-state, e-board-admission
+e-board-registry  -> e-board, e-board-admission
+e-board-runtime   -> e-board-registry, e-board, e-board-runtime-admission
+e-board-runtime-admission -> e-board-admission
+#+end_example
+
+There is no owner-to-facade reverse edge, runtime/admission mutual pair, or
+callback/global-registry reverse edge. The all-literal scanner reads every
+form under =lisp/=, deduplicates local literal require pairs, and computes
+SCCs: 166 modules, 715 unique edges, =CYCLES []= in
+=/tmp/e-f91-require-final-current.log=; its definition is
+=/private/tmp/e-r5-require-scan.el=. Relative to 165/713, the delta is the
+runtime-admission owner and its two imports.
+
+The syntax-aware current Board-family call scan reports 243 cross-owner calls:
+admission->state 1, board->state 12, board->admission 86,
+registry->board 29, registry->admission 3, runtime-admission->admission 2,
+runtime->registry 37, runtime->board 58, runtime->runtime-admission 13, and
+runtime->admission 2. Its reproducible script is
+=/tmp/e-f91-board-call-graph-current.el= and output is
+=/tmp/e-f91-board-call-graph-final-current.log=.
+
+| Operation | Actual consumer |
+|---+---|
+| Board append/remove event and index operations | =e-board= plus direct/composition Board tests |
+| Board effect/classifier/deadline scheduling and drains | Board settlement plus direct admission tests |
+| Board begin/finish/complete/abort | Board facade and runtime-admission owner |
+| Runtime-admission remember | Runtime enrollment |
+| Runtime-admission fence/retry | Runtime retirement and re-ensure |
+| Runtime-admission abort/complete/finish | Runtime rollback and successful completion |
+
+Raw records/catalogs remain private. No old runtime pending-admission symbols
+remain in =lisp/= or =test/=. Production scans find zero Runtime references
+to =e-board-runtime-admission--*=, zero Runtime/Runtime-admission references
+to =e-board-admission--*=, and zero duplicate operational definitions.
+
+** Test topology and exact verification
+
+| Suite/gate | Disposition and result |
+|---+---|
+| =test/e-board-admission-test.el= | Direct receipt mechanism; 32/32, =/tmp/e-f91-board-admission-direct-current.log= |
+| =test/e-board-admission-composition-test.el= | Public composition/recovery; 11/11, =/tmp/e-f91-board-admission-composition-current.log= |
+| =test/e-board-runtime-admission-owner-test.el= | New direct six-catalog owner; 5/5, =/tmp/e-f91-runtime-admission-owner-current.log= |
+| =test/e-board-runtime-admission-test.el= | Cross-owner enrollment/recovery; 22/22 in focused batch |
+| =test/e-board-test.el= | Board semantic facade/drain behavior; 77/77 in focused batch |
+| Focused Board/runtime/admission batch | PASS 147/147, =/tmp/e-f91-board-validation-final.log= |
+| Affected Board/consumer batch | PASS 407/407, =/tmp/e-f91-board-adjacent-final-current.log= |
+| Accepted 485 selector | PASS 483 expected, 0 unexpected, 2 known skips, =/tmp/e-f91-preservation-485-final-current.log= |
+| Full sandbox ERT | 2,662 total, 2,649 expected, 6 socket-only failures, 7 skips, =/tmp/e-f91-full-ert-current.log= |
+| Full fixture-enabled ERT | PASS 2,662 total, 2,655 expected, 0 unexpected, 7 existing skips, =/tmp/e-f91-full-ert-fixture-final-current.log= |
+| Production compile | PASS =eldev compile -F -f lisp=, no warnings/errors, =/tmp/e-f91-full-compile-final-current.log= |
+| Fresh owner/facade loads | PASS owner =(t nil nil t)=; Board/admission without Runtime; Board facade operation =brd_1= |
+| Parens/whitespace/private/duplicate | PASS all changed/new files; final logs =/tmp/e-f91-check-parens-final-current.log=, =/tmp/e-f91-whitespace-final-current.log=, =/tmp/e-f91-private-sweep-final-current.log=, =/tmp/e-f91-duplicate-definitions-final-current.log= |
+| 10k event shape/performance | PASS 0.06199s, 10,000 link nodes, 10,001 prefix entries, nine-slot sample |
+
+The six sandbox ERT failures are local socket restrictions (four MCP HTTP
+fixture and two OpenAI URL-server tests); the fixture-enabled rerun passes
+all six. The seven skips are existing base-tools, Evil, Markdown text-property,
+harness, MCP, OpenAI, and session fresh-load conditions. This package changes
+no redisplay source; the isolated graphical suite was rerun in the disposable
+off-screen frame and passes 27/27 at
+=/tmp/e-f91-graphical-current-fixture.log=. No live provider call was made.
+
+** Residual topology, compatibility, and self-check
+
+Retain =e-board= and =e-board-runtime= because their sequence/routing or
+attachment map, producer/pickup/activity/invocation, and settlement state
+must change atomically. Extract only the independently changing runtime
+catalog. Earlier accepted session, harness, presentation, provider, MCP,
+base, context, loop, tools, and Work owners are not reopened.
+Public APIs, event order, FIFO, observer gaps, cancellation, quiescence, error
+precedence, and durable formats are intended unchanged. Internal exceptions
+are pre-mutation receipts, resumable drains, exact object fencing, and compact
+committed nodes. Core shapes require restart; no reload, compatibility alias,
+generic transaction framework, shared mutable bag, id-only fallback, or
+duplicate operation was added. Feature 87 remains Planned.
+
+The fourteen design answers are: (1) stopping here improves exact retries and
+navigation; (2) it advances one owner per state/lifetime; (3) only injected
+fault detail is uncertain and local; (4) Board owns semantics, Board admission
+owns receipts, state owns values, Runtime-admission owns catalogs, Runtime owns
+attachments; (5) coupling decreases; (6) dependencies point downward in the
+acyclic 166/715 graph; (7) side effects remain at Board and Runtime boundaries
+to preserve ordering; (8) receipts/catalogs/stages/generations live at process
+lifetime for retry, reentry fencing, and cursors; (9) exact indexes remove
+scans and 10k evidence is bounded; (10) concrete Board contracts are real and
+do not expose unsupported operations; (11) established public/durable
+compatibility remains and core shapes require restart; (12) monolithic catalog,
+receiptless/id-only paths, inverse scans, and full committed receipt retention
+were removed; (13) expected errors stay at owner boundaries and unexpected
+errors surface with primary precedence while incomplete inverse remains visible;
+(14) direct owner/composition suites, fresh loads, preservation/full ERT,
+compile/parens/graph/private/duplicate/whitespace scans, and 10k shape evidence
+prove the core independently.
+
+Behavioral status is green for focused Board/runtime behavior, preservation, and
+fixture-enabled full ERT. Mechanism progress is a complete implementation
+candidate pending parent and independent acceptance; Feature 91 remains
+=In-progress= and is not =Done=.

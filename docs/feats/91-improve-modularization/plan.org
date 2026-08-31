@@ -1242,3 +1242,87 @@ cross-owner private production references.  Parent and independent acceptance
 remain pending; Feature 91 remains =In-progress= and is not =Done=.  Core
 record-shape changes require a restart, and the running Emacs remains
 untouched.
+
+*** Round 5 current-tree Board admission continuation (implementer evidence)
+
+This is the implementation continuation from exact baseline =fe6294c0= after
+review =ef115bc1=.  It addresses the eight Board/runtime-admission findings as
+one owner-lifetime package.  The independent review artifact and
+=docs/feats/index.org= remain untouched; the running Emacs was not queried,
+reloaded, or changed.
+
+The resulting topology has four relevant physical owners.  =e-board-state.el=
+owns Board value/record shapes and the count transition.  =e-board-admission.el=
+owns Board-local exact event, work-index, classifier, deadline, effect, and
+aggregation receipts, staged forward/inverse progress, the Board pending
+catalog, and compact committed link nodes.  =e-board.el= retains semantic
+routing, publication, subscriptions, and settlement.  The new
+=e-board-runtime-admission.el= owns the runtime-specific admission record and
+six exact process-local catalogs (primary/recovery plus Board/attachment
+indexes); =e-board-runtime.el= retains attachment, producer, pickup, activity,
+invocation, and cross-owner composition.  The runtime owner depends downward
+on Board's semantic admission operations and does not inspect Board receipt
+representation or call its facade-private symbols.
+
+State and lifetime are explicit.  A Board event/index receipt is allocated
+before its first observable mutation and records exact cells/neighbours and
+resumable link/map/head/tail/count stages.  Classifier/deadline/effect drains
+retain exact head authority through count and semantic completion; post-count
+faults finish the exact head once, while pre-count faults leave it retryable.
+Successor callbacks use fresh generation/acceptance state.  Completion compacts
+committed event/index entries into nine-slot owner link nodes and clears
+rollback-only token/aggregation backreferences.  Event sequence remains
+monotonic and message-prefix checkpoints survive removed gaps.  Runtime
+admissions publish exact primary and four secondary indexes with recorded
+bucket identity before outer-table mutation; exact retry/removal preserves
+replacement buckets and removes empty catalogs only when identity still
+matches.  Durable Board/session formats, ordering, error precedence,
+quiescence, and restart lifetime remain unchanged.
+
+Current evidence on this tree:
+
+| Gate | Result | Evidence |
+|---+---+---|
+| Direct Board admission owner | PASS: 32/32 | =/tmp/e-f91-board-admission-direct-current.log= |
+| Direct runtime-admission owner | PASS: 5/5 | =/tmp/e-f91-runtime-admission-owner-current.log= |
+| Board/runtime focused batch | PASS: 147/147 (32 admission, 5 runtime owner, 22 runtime composition, 77 Board, 11 composition) | =/tmp/e-f91-board-validation-final.log= |
+| Affected Board/consumer batch | PASS: 407/407 | =/tmp/e-f91-board-adjacent-final-current.log= |
+| Accepted preservation selector | PASS: 485 selected, 483 expected, 0 unexpected, 2 known skips | =/tmp/e-f91-preservation-485-final-current.log= |
+| Full fixture-enabled ERT | PASS: 2,662 tests, 2,655 expected, 0 unexpected, 7 existing skips | =/tmp/e-f91-full-ert-fixture-final-current.log= |
+| Full sandbox ERT | Environment-limited: 2,662 tests, 2,649 expected, 6 socket-bind failures, 7 skips | =/tmp/e-f91-full-ert-current.log= |
+| Production compile | PASS: =eldev compile -F -f lisp=, no warnings/errors | =/tmp/e-f91-full-compile-final-current.log= |
+| Fresh owner/facade operations | PASS: owner =e-board-runtime-admission= loads as =(t nil nil t)=; Board facade creates a board with no runtime feature | =/tmp/e-f91-fresh-runtime-admission.log=, =/tmp/e-f91-fresh-board-facade.log= |
+| Check-parens / whitespace | PASS: all changed/new Lisp files; tracked diff and explicit untracked sweep clean | =/tmp/e-f91-check-parens-final-current.log=, =/tmp/e-f91-diff-check-final-current.log=, =/tmp/e-f91-whitespace-final-current.log= |
+| Literal local require/SCC | PASS: 166 modules, 715 unique edges, =CYCLES []= | =/tmp/e-f91-require-final-current.log= |
+| Private/duplicate sweep | PASS: no stale runtime-admission or cross-owner production private references; no duplicate definitions | =/tmp/e-f91-private-sweep-final-current.log=, =/tmp/e-f91-duplicate-definitions-final-current.log= |
+| 10k event shape/performance | PASS: 0.06199s, 10,000 event link nodes, 10,001 prefix entries, nine-slot sample node | =/tmp/e-f91-event-10k-current.log= |
+
+The six sandbox failures are the four MCP HTTP fixture and two OpenAI local
+server socket cases; the escalated fixture-enabled run passes them.  The two
+preservation skips are the existing Evil/text-property conditions.  The
+isolated graphical suite was rerun in the disposable off-screen frame and
+passes 27/27 at =/tmp/e-f91-graphical-current-fixture.log=.  No live provider
+call was made.
+
+The syntax-aware Board-family call scan reports 243 cross-owner call sites:
+admission->state 1, board->state 12, board->admission 86,
+registry->board 29, registry->admission 3, runtime-admission->admission 2,
+runtime->registry 37, runtime->board 58, runtime->runtime-admission 13, and
+runtime->admission 2.  The reproducible current scan and output are
+=/tmp/e-f91-board-call-graph-current.el= and
+=/tmp/e-f91-board-call-graph-final-current.log=.
+
+Behavioral status is green: focused Board/runtime behavior, the accepted
+485-case preservation set, and fixture-enabled full ERT pass with only listed
+existing skips.  Mechanism progress is a complete implementation candidate,
+pending parent and independent acceptance; Feature 91 remains =In-progress=
+and is not =Done=.  The package changes process-local core receipt/catalog
+record shapes, so a full Emacs restart is required; no compatibility shim or
+live reload was used.
+
+The residual disposition is =retain= for the cohesive Board semantic
+aggregate, =extract= for runtime admission catalogs, =retain/strengthen= for
+Board/runtime public behavior tests, =replace= for old receiptless/id-only
+mechanism paths, and =add= for exact reentry, post-count, catalog, compact
+node, and replacement regressions.  No durable format or public behavior
+exception is intended.  Parent acceptance remains pending.

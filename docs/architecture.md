@@ -224,16 +224,21 @@ receipt or queue representation. Splitting any remaining policy transition
 into a generic helper would either duplicate the sequence/admission state or
 break the transaction boundary.
 
-The all-literal local-require inventory for the current source tree is 165
-modules and 713 unique edges, with no strongly connected component. The four
-additional edges over the accepted 163/709 baseline are the two new Board
-owner modules and their literal state/Work imports; the reproducible scanner
+The all-literal local-require inventory for the current source tree is 166
+modules and 715 unique edges, with no strongly connected component. Relative
+to the preceding 165/713 tree, the additional module is the runtime-specific
+admission catalog owner and its two literal imports; the reproducible scanner
 and complete edge list are recorded in the current Round 5 audit.
 
 `e-board-runtime.el` is the board attachment adapter. It owns attachment
 admission/reconciliation, endpoint generations, producer/activity mailboxes,
 rebind/move/detach transitions, and delivery settlement because those values
-must change atomically with board admission and attachment settlement. Board
+must change atomically with board admission and attachment settlement.
+`e-board-runtime-admission.el` is the concrete runtime-specific admission
+catalog owner: it owns the pending admission record, the primary/recovery
+catalogs and exact Board/attachment indexes, and remember/fence/retry/complete
+operations. It depends downward on Board's semantic admission contract; it
+does not own attachment delivery or call back into the runtime facade. Board
 routing/publication remains in `e-board`; harness execution remains behind the
 attached-turn port. `e-board-registry.el`, `e-board-orchestration.el`, and
 `e-board-orchestration-actions.el` provide narrower registry/application seams.

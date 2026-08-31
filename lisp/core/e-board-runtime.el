@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'e-board-registry)
+(require 'e-board-runtime-admission)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
@@ -142,44 +143,6 @@ Operations accepted before this commit may continue to completion."
 
 (defvar e-board-runtime--invocations (make-hash-table :test 'equal)
   "Exact invocation effect targets owned by their original attachment.")
-
-(defvar e-board-runtime--pending-admissions (make-hash-table :test 'eq)
-  "Exact cross-owner board admissions awaiting commit or inverse cleanup.")
-
-(defvar e-board-runtime--pending-admissions-by-board
-  (make-hash-table :test 'eq)
-  "Exact pending-admission records bucketed by their source board.
-
-The admission object remains the primary key.  This secondary owner-local
-index makes board retirement and re-ensure consult only the affected board's
-records; they never scan the process-wide catalog or reconstruct an admission
-from descriptive ids.")
-
-(defvar e-board-runtime--pending-admissions-by-attachment
-  (make-hash-table :test 'eq)
-  "Exact pending-admission records bucketed by captured attachment object.
-
-This secondary index is only a retirement fence: an attachment can disappear
-from the live runtime maps while its transaction record remains here.  The
-record object is still the admission authority; the index avoids searching the
-process-wide catalog when that captured lifetime is fenced.")
-
-(defvar e-board-runtime--pending-admission-recovery
-  (make-hash-table :test 'eq)
-  "Exact staged pending-admission records retained during publication.
-
-This owner-local recovery index is keyed by the opaque admission token.  It is
-installed before any secondary bucket can be touched and removed last, so a
-partial primary/bucket update never destroys the exact recovery authority.  Its
-value is the same record as the primary catalog, not a second state copy.")
-
-(defvar e-board-runtime--pending-admissions-recovery-by-board
-  (make-hash-table :test 'eq)
-  "Exact board-local recovery buckets for staged pending admissions.")
-
-(defvar e-board-runtime--pending-admissions-recovery-by-attachment
-  (make-hash-table :test 'eq)
-  "Exact attachment-local recovery buckets for staged pending admissions.")
 
 (defvar e-board-runtime--producer-bindings (make-hash-table :test 'equal)
   "Current runtime-scoped trusted producer bindings by producer id.")
@@ -316,22 +279,6 @@ The descriptive target is deliberately carried with the invocation object;
 callers must pass this lease through board staging and later effects rather
 than resolving a potentially newer invocation by an equal target key."
   target invocation)
-
-(cl-defstruct (e-board-runtime-pending-admission
-               (:constructor e-board-runtime-pending-admission--create)
-               (:conc-name e-board-runtime-pending-admission-))
-  "Exact runtime-owned lifetime for one cross-owner board admission.
-
-The catalog entry deliberately outlives the captured attachment object.  It
-remains the recovery authority when a reentrant board callback retires or
-replaces that attachment while the lower-owner call is still on the stack."
-  board attachment admission generation in-flight-p cancel-requested-p
-  recovery-board-bucket recovery-attachment-bucket
-  board-bucket attachment-bucket
-  recovery-installed-p primary-installed-p
-  recovery-board-installed-p recovery-attachment-installed-p
-  board-installed-p attachment-installed-p
-  publication-stage cleanup-stage)
 
 (cl-defstruct (e-board-runtime-work-hooks
                (:constructor e-board-runtime-work-hooks--create)
@@ -1087,504 +1034,6 @@ An equal target held by a replacement is never rediscovered or removed."
         (e-board-runtime--terminalize-invocation target invocation 'cancelled)
         invocation))))
 
-(defun e-board-runtime--abort-board-admission (board admission)
-  "Abort ADMISSION with one bounded exact retry after a lower-owner fault.
-
-The board token retains its receipts when an inverse signals before mutation.
-The runtime therefore retries the same token once inside the initiating
-transaction, preserving the initiating error if a second lower-owner failure
-still prevents completion.  No id-based reconstruction or replacement lookup
-is attempted."
-  (condition-case _first-error
-      (progn
-        (if (e-board-work-admission-p admission)
-            (e-board-abort-work-enrollment board admission)
-          (e-board-abort-aggregation-admission board admission))
-        t)
-    (error
-     (condition-case _retry-error
-         (progn
-           (if (e-board-work-admission-p admission)
-               (e-board-abort-work-enrollment board admission)
-             (e-board-abort-aggregation-admission board admission))
-           t)
-       (error nil)))))
-
-(defun e-board-runtime--pending-admission-board (board)
-  "Return the source board used as the pending-admission catalog key.
-
-Runtime attachments retain the registry board while board admissions operate on
-its source board.  Normalize both callers to one exact owner key so retirement
-and re-ensure reach the same catalog bucket without a process-wide scan."
-  (if (e-board-registry-board-p board)
-      (e-board-registry-board-source-board board)
-    board))
-
-(defun e-board-runtime--pending-admission-record (admission)
-  "Return the exact catalog record for opaque ADMISSION, if retained.
-
-The recovery table is checked after the normal primary table because it is the
-last-removal authority for a partially completed catalog transaction."
-  (or (gethash admission e-board-runtime--pending-admissions)
-      (gethash admission e-board-runtime--pending-admission-recovery)))
-
-(defun e-board-runtime--pending-admission-bucket (table key)
-  "Return or install the exact EQ bucket for KEY in TABLE.
-
-A signal after the table mutation is deliberately re-raised.  The next exact
-retry observes the installed bucket instead of creating a competing one."
-  (let ((bucket (gethash key table)))
-    (cond
-     ((null bucket)
-      (setq bucket (make-hash-table :test 'eq))
-      (condition-case err
-          (puthash key bucket table)
-        (error
-         ;; Keep the operation's error visible even when the primitive changed
-         ;; the table before signalling; the next retry will reuse this bucket.
-         (signal (car err) (cdr err))))
-      bucket)
-     ((hash-table-p bucket) bucket)
-     (t
-     (signal 'e-board-runtime-error
-              (list "Pending admission bucket is not a hash table" key))))))
-
-(defun e-board-runtime--pending-admission-use-bucket (table key known)
-  "Return the exact bucket for KEY, repairing a missing table membership.
-
-KNOWN is the bucket previously recorded by one pending admission.  A missing
-table entry is repaired by reinstalling that exact bucket, which preserves any
-other exact records already held in it.  A different live bucket is replacement
-authority and is rejected rather than being overwritten or silently orphaning
-KNOWN.  This helper is deliberately local to the runtime catalog; it is not a
-generic transaction/index abstraction.
-"
-  (let ((current (gethash key table)))
-    (cond
-     ((and current known (not (eq current known)))
-      (signal 'e-board-runtime-error
-              (list "Pending admission bucket has replacement authority" key)))
-     ((and current (not (hash-table-p current)))
-      (signal 'e-board-runtime-error
-              (list "Pending admission bucket is not a hash table" key)))
-     ((or current known)
-      (let ((bucket (or current known)))
-        (unless (hash-table-p bucket)
-          (signal 'e-board-runtime-error
-                  (list "Pending admission bucket is not a hash table" key)))
-        (when (null current)
-          (condition-case err
-              (puthash key bucket table)
-            (error
-             ;; Whether the table changed or not, preserve the adapter's
-             ;; original failure.  The exact bucket is still discoverable from
-             ;; TABLE (or from KNOWN on the next retry).
-             (signal (car err) (cdr err)))))
-        (unless (eq (gethash key table) bucket)
-          (signal 'e-board-runtime-error
-                  (list "Pending admission bucket repair did not stick" key)))
-        bucket))
-     (t
-      (e-board-runtime--pending-admission-bucket table key)))))
-
-(defun e-board-runtime--pending-admission-ensure-record
-    (table admission record)
-  "Ensure exact ADMISSION RECORD membership in primary TABLE.
-
-The operation is retry-safe when a hash-table adapter signals after mutation,
-and refuses an equal-key replacement object.  Callers retain the membership
-flag only after this postcondition has been observed.
-"
-  (let ((current (gethash admission table)))
-    (cond
-     ((null current)
-      (condition-case err
-          (puthash admission record table)
-        (error
-         ;; A postmutation signal is still an error.  The recovery catalog
-         ;; keeps RECORD reachable so a later exact retry can observe it.
-         (signal (car err) (cdr err))))
-      (unless (eq (gethash admission table) record)
-        (signal 'e-board-runtime-error
-                (list "Pending admission record did not install" admission))))
-     ((eq current record) nil)
-     (t
-      (signal 'e-board-runtime-error
-              (list "Pending admission record has replacement authority"
-                    admission))))
-  record))
-
-(defun e-board-runtime--pending-admission-put
-    (bucket admission record)
-  "Install exact ADMISSION RECORD in BUCKET with a postcondition."
-  (let ((current (gethash admission bucket)))
-    (cond
-     ((null current)
-      (condition-case err
-          (puthash admission record bucket)
-        (error
-         ;; A postmutation signal remains an error, but exact membership is
-         ;; retained for the resumable caller.
-         (signal (car err) (cdr err)))))
-     ((eq current record) record)
-     (t
-      (signal 'e-board-runtime-error
-              (list "Pending admission bucket has a replacement" admission))))
-    (unless (eq (gethash admission bucket) record)
-      (signal 'e-board-runtime-error
-              (list "Pending admission bucket did not retain its record"
-                    admission)))
-    record))
-
-(defun e-board-runtime--pending-admission-remove
-    (table key bucket admission record)
-  "Remove exact ADMISSION from BUCKET and an empty TABLE bucket.
-
-This inverse never removes a replacement bucket or record.  A postmutation
-signal is surfaced only when the exact postcondition still cannot be proved;
-otherwise the next stage can continue safely."
-  (when bucket
-    (let ((current (gethash admission bucket)))
-      (cond
-       ((eq current record)
-        (condition-case err
-            (remhash admission bucket)
-          (error
-           ;; Preserve a postmutation failure as well as a pre-mutation one;
-           ;; the next cleanup stage sees the exact absent member and can
-           ;; continue without touching a replacement.
-           (signal (car err) (cdr err))))
-        (unless (null (gethash admission bucket))
-          (signal 'e-board-runtime-error
-                  (list "Pending admission record remains in its bucket"
-                        admission))))
-       ((null current) nil)
-       (t
-        (signal 'e-board-runtime-error
-                (list "Pending admission bucket has replacement authority"
-                      admission))))))
-  (when (and bucket
-             (= (hash-table-count bucket) 0)
-             (eq (gethash key table) bucket))
-    (condition-case err
-        (remhash key table)
-      (error
-       ;; The table key may already be absent after a postmutation signal, but
-       ;; that does not turn the adapter failure into a successful operation.
-       (signal (car err) (cdr err))))
-    (when (eq (gethash key table) bucket)
-      (signal 'e-board-runtime-error
-              (list "Empty pending admission bucket remains" key))))
-  t)
-
-(defun e-board-runtime--remember-board-admission
-    (attachment board admission &optional in-flight-p)
-  "Retain exact BOARD ADMISSION in the runtime-owned recovery catalog.
-
-The recovery record and its board/attachment buckets are published before the
-normal primary/index entries.  Each membership has an exact postcondition and
-is independently repairable.  ATTACHMENT is provenance only: the record stays
-reachable after that object is retired or replaced."
-  (setq board (e-board-runtime--pending-admission-board board))
-  (when (and (e-board-runtime-attachment-p attachment)
-             (or (e-board-work-admission-p admission)
-                 (e-board-aggregation-admission-p admission)))
-    (let ((record (e-board-runtime--pending-admission-record admission)))
-      (unless record
-        (setq record
-              (e-board-runtime-pending-admission--create
-               :board board :attachment attachment :admission admission
-               :generation (e-board-runtime-attachment-generation attachment)
-               :in-flight-p in-flight-p :publication-stage 'new)))
-      ;; The captured attachment and source board are part of the exact
-      ;; transaction identity.  Never transfer a pending token to a
-      ;; replacement merely because a descriptive id is equal.
-      (unless (and (eq (e-board-runtime-pending-admission-board record) board)
-                   (eq (e-board-runtime-pending-admission-attachment record)
-                       attachment))
-        (signal 'e-board-runtime-error
-                (list "Pending admission identity changed" admission)))
-      (setf (e-board-runtime-pending-admission-in-flight-p record) in-flight-p)
-      ;; Retain the record by token before any secondary bucket can fail.  The
-      ;; recovery indexes below are exact local scopes, never a process scan.
-      (e-board-runtime--pending-admission-ensure-record
-       e-board-runtime--pending-admission-recovery admission record)
-      (setf (e-board-runtime-pending-admission-recovery-installed-p record) t
-            (e-board-runtime-pending-admission-publication-stage record)
-            'recovery-record)
-      (setf (e-board-runtime-pending-admission-recovery-board-bucket record)
-            (e-board-runtime--pending-admission-use-bucket
-             e-board-runtime--pending-admissions-recovery-by-board board
-             (e-board-runtime-pending-admission-recovery-board-bucket record)))
-      (e-board-runtime--pending-admission-put
-       (e-board-runtime-pending-admission-recovery-board-bucket record)
-       admission record)
-      (setf (e-board-runtime-pending-admission-recovery-board-installed-p record)
-            t
-            (e-board-runtime-pending-admission-publication-stage record)
-            'recovery-board)
-      (setf (e-board-runtime-pending-admission-recovery-attachment-bucket record)
-            (e-board-runtime--pending-admission-use-bucket
-             e-board-runtime--pending-admissions-recovery-by-attachment
-             attachment
-             (e-board-runtime-pending-admission-recovery-attachment-bucket record)))
-      (e-board-runtime--pending-admission-put
-       (e-board-runtime-pending-admission-recovery-attachment-bucket record)
-       admission record)
-      (setf (e-board-runtime-pending-admission-recovery-attachment-installed-p
-             record)
-            t
-            (e-board-runtime-pending-admission-publication-stage record)
-            'recovery-attachment)
-      (e-board-runtime--pending-admission-ensure-record
-       e-board-runtime--pending-admissions admission record)
-      (setf (e-board-runtime-pending-admission-primary-installed-p record) t
-            (e-board-runtime-pending-admission-publication-stage record)
-            'primary)
-      (setf (e-board-runtime-pending-admission-board-bucket record)
-            (e-board-runtime--pending-admission-use-bucket
-             e-board-runtime--pending-admissions-by-board board
-             (e-board-runtime-pending-admission-board-bucket record)))
-      (e-board-runtime--pending-admission-put
-       (e-board-runtime-pending-admission-board-bucket record)
-       admission record)
-      (setf (e-board-runtime-pending-admission-board-installed-p record) t
-            (e-board-runtime-pending-admission-publication-stage record)
-            'board)
-      (setf (e-board-runtime-pending-admission-attachment-bucket record)
-            (e-board-runtime--pending-admission-use-bucket
-             e-board-runtime--pending-admissions-by-attachment attachment
-             (e-board-runtime-pending-admission-attachment-bucket record)))
-      (e-board-runtime--pending-admission-put
-       (e-board-runtime-pending-admission-attachment-bucket record)
-       admission record)
-      (setf (e-board-runtime-pending-admission-attachment-installed-p record) t
-            (e-board-runtime-pending-admission-publication-stage record)
-            'published)
-      record)))
-
-(defun e-board-runtime--pending-admission-member-p
-    (table key bucket admission record installed-p)
-  "Return whether exact ADMISSION RECORD still needs BUCKET cleanup.
-
-The recorded flag is an acknowledgement from the forward stage, not the sole
-authority: a hash adapter can signal after installing a member, before the
-flag assignment runs.  Rechecking the exact object identity makes completion
-resumable without ever deleting a same-key replacement.
-"
-  (or installed-p
-      (and bucket (eq (gethash admission bucket) record))
-      (and bucket (eq (gethash key table) bucket)
-           (eq (gethash admission bucket) record))))
-
-(defun e-board-runtime--complete-board-admission (admission)
-  "Complete exact ADMISSION and resumably remove its catalog memberships.
-
-The Board completion is acknowledged before catalog cleanup, while the
-recovery record remains until the primary and both ordinary/recovery buckets
-are empty.  Repeating this operation repairs a postmutation table fault
-without rediscovering a replacement by id."
-  (when (or (e-board-work-admission-p admission)
-            (e-board-aggregation-admission-p admission))
-    (when-let ((record (e-board-runtime--pending-admission-record admission)))
-      (let* ((board (e-board-runtime-pending-admission-board record))
-             (attachment (e-board-runtime-pending-admission-attachment record))
-             (board-bucket
-              (or (e-board-runtime-pending-admission-board-bucket record)
-                  (gethash board e-board-runtime--pending-admissions-by-board)))
-             (attachment-bucket
-              (or (e-board-runtime-pending-admission-attachment-bucket record)
-                  (gethash attachment
-                           e-board-runtime--pending-admissions-by-attachment)))
-             (recovery-board-bucket
-              (or (e-board-runtime-pending-admission-recovery-board-bucket record)
-                  (gethash board
-                           e-board-runtime--pending-admissions-recovery-by-board)))
-             (recovery-attachment-bucket
-              (or
-               (e-board-runtime-pending-admission-recovery-attachment-bucket
-                record)
-               (gethash attachment
-                        e-board-runtime--pending-admissions-recovery-by-attachment))))
-        ;; Board completion is a semantic operation, not catalog cleanup.  It
-        ;; is safe to repeat and is kept ahead of the exact table inverses.
-        (e-board-complete-admission board admission)
-        (setf (e-board-runtime-pending-admission-cleanup-stage record)
-              'board-complete)
-        (when (e-board-runtime--pending-admission-member-p
-               e-board-runtime--pending-admissions-by-attachment attachment
-               attachment-bucket admission record
-               (e-board-runtime-pending-admission-attachment-installed-p record))
-          (e-board-runtime--pending-admission-remove
-           e-board-runtime--pending-admissions-by-attachment attachment
-           attachment-bucket admission record)
-          (setf (e-board-runtime-pending-admission-attachment-installed-p record)
-                nil
-                (e-board-runtime-pending-admission-cleanup-stage record)
-                'attachment-removed))
-        (when (e-board-runtime--pending-admission-member-p
-               e-board-runtime--pending-admissions-by-board board board-bucket
-               admission record
-               (e-board-runtime-pending-admission-board-installed-p record))
-          (e-board-runtime--pending-admission-remove
-           e-board-runtime--pending-admissions-by-board board board-bucket
-           admission record)
-          (setf (e-board-runtime-pending-admission-board-installed-p record) nil
-                (e-board-runtime-pending-admission-cleanup-stage record)
-                'board-removed))
-        (when (or (e-board-runtime-pending-admission-primary-installed-p record)
-                  (eq (gethash admission e-board-runtime--pending-admissions)
-                      record))
-          (let ((current (gethash admission e-board-runtime--pending-admissions)))
-            (when (eq current record)
-              (condition-case err
-                  (remhash admission e-board-runtime--pending-admissions)
-                (error
-                 ;; Keep the exact primary membership flag when the adapter
-                 ;; signals before proving removal.  If it signalled after the
-                 ;; mutation, the same error is still preserved and the next
-                 ;; retry observes the absent exact member.
-                 (signal (car err) (cdr err)))))
-            ;; A nil slot or an exact same-key replacement both prove that the
-            ;; captured primary no longer owns this admission.
-            (unless (eq (gethash admission e-board-runtime--pending-admissions)
-                        record)
-              (setf (e-board-runtime-pending-admission-primary-installed-p record)
-                    nil)))
-          (setf (e-board-runtime-pending-admission-cleanup-stage record)
-                'primary-removed))
-        ;; Recovery buckets are removed only after normal indexes.  Their
-        ;; explicit memberships make a post-primary fault recoverable without
-        ;; a process-wide scan.
-        (when (e-board-runtime--pending-admission-member-p
-               e-board-runtime--pending-admissions-recovery-by-attachment
-               attachment recovery-attachment-bucket admission record
-               (e-board-runtime-pending-admission-recovery-attachment-installed-p
-                record))
-          (e-board-runtime--pending-admission-remove
-           e-board-runtime--pending-admissions-recovery-by-attachment attachment
-           recovery-attachment-bucket admission record)
-          (setf (e-board-runtime-pending-admission-recovery-attachment-installed-p
-                 record)
-                nil))
-        (when (e-board-runtime--pending-admission-member-p
-               e-board-runtime--pending-admissions-recovery-by-board board
-               recovery-board-bucket admission record
-               (e-board-runtime-pending-admission-recovery-board-installed-p
-                record))
-          (e-board-runtime--pending-admission-remove
-           e-board-runtime--pending-admissions-recovery-by-board board
-           recovery-board-bucket admission record)
-          (setf (e-board-runtime-pending-admission-recovery-board-installed-p
-                 record)
-                nil))
-        (when (or (e-board-runtime-pending-admission-recovery-installed-p record)
-                  (eq (gethash admission e-board-runtime--pending-admission-recovery)
-                      record))
-          (let ((current
-                 (gethash admission e-board-runtime--pending-admission-recovery)))
-            (when (eq current record)
-              (condition-case err
-                  (remhash admission e-board-runtime--pending-admission-recovery)
-                (error
-                 (signal (car err) (cdr err)))))
-            (unless (eq (gethash admission e-board-runtime--pending-admission-recovery)
-                        record)
-              (setf (e-board-runtime-pending-admission-recovery-installed-p record)
-                    nil)))
-          (when (eq (gethash admission e-board-runtime--pending-admission-recovery)
-                    record)
-            (signal 'e-board-runtime-error
-                    (list "Pending admission recovery record remains" admission))))
-        (setf (e-board-runtime-pending-admission-cleanup-stage record) 'done)))
-  admission))
-
-(defun e-board-runtime--finish-board-admission-attempt (admission)
-  "Mark ADMISSION's current stack frame complete without forgetting it yet."
-  (when-let ((record (and (or (e-board-work-admission-p admission)
-                              (e-board-aggregation-admission-p admission))
-                          (e-board-runtime--pending-admission-record admission))))
-    (setf (e-board-runtime-pending-admission-in-flight-p record) nil)
-    record))
-
-(defun e-board-runtime--fence-pending-board-admissions (attachment)
-  "Mark ATTACHMENT's in-flight admissions as cancellation-requested.
-
-Reentrant retirement must not recursively mutate a board admission that is on
-the current call stack.  The admission record remains in the catalog; the
-outer owner postcheck observes the fence and executes its exact inverse."
-  (when (e-board-runtime-attachment-p attachment)
-    (dolist (bucket
-             (list (gethash attachment
-                            e-board-runtime--pending-admissions-by-attachment)
-                   (gethash attachment
-                            e-board-runtime--pending-admissions-recovery-by-attachment)))
-      (when bucket
-        (maphash
-         (lambda (_admission record)
-           (setf (e-board-runtime-pending-admission-cancel-requested-p record)
-                 t))
-         bucket)))))
-
-(defun e-board-runtime--retry-pending-board-admissions
-    (&optional attachment board allow-fenced-in-flight)
-  "Retry exact pending board admissions for ATTACHMENT or BOARD.
-
-An in-flight admission is fenced rather than recursively aborted.  A later
-public operation sees the still-reachable record and must wait for the owning
-call to unwind; completed records are removed by exact object identity."
-    (let* ((board (e-board-runtime--pending-admission-board
-                   (or board
-                       (and (e-board-runtime-attachment-p attachment)
-                            (e-board-runtime-attachment-board attachment)))))
-         (bucket (and board
-                      (gethash board
-                               e-board-runtime--pending-admissions-by-board)))
-         (recovery-bucket
-          (and board
-               (gethash board
-                        e-board-runtime--pending-admissions-recovery-by-board)))
-         (attachment-bucket
-          (and attachment
-               (gethash attachment
-                        e-board-runtime--pending-admissions-by-attachment)))
-         (recovery-attachment-bucket
-          (and attachment
-               (gethash attachment
-                        e-board-runtime--pending-admissions-recovery-by-attachment)))
-         records)
-    ;; The board bucket is an exact local index.  When no board or attachment
-    ;; was supplied there is no safe authority to retry; callers must resolve a
-    ;; board before asking for recovery.
-    (dolist (candidate-bucket
-             (if attachment
-                 (list attachment-bucket recovery-attachment-bucket)
-               (list bucket recovery-bucket)))
-      (when candidate-bucket
-        (maphash
-         (lambda (_admission record)
-           (cl-pushnew record records :test #'eq))
-         candidate-bucket)))
-    (dolist (record records)
-      (cond
-       ((and (e-board-runtime-pending-admission-in-flight-p record)
-             allow-fenced-in-flight
-             (e-board-runtime-pending-admission-cancel-requested-p record))
-        ;; The exact owner is unwinding on this same stack.  Its postcheck will
-        ;; abort the token; retirement only fences the record here.
-        nil)
-       ((e-board-runtime-pending-admission-in-flight-p record)
-        (signal 'e-board-runtime-error
-                (list "Board admission is still in flight" record)))
-       ((not (e-board-runtime--abort-board-admission
-              (e-board-runtime-pending-admission-board record)
-              (e-board-runtime-pending-admission-admission record)))
-        (signal 'e-board-runtime-error
-                (list "Pending board admission cleanup remains incomplete" record)))
-       (t
-        (e-board-runtime--complete-board-admission
-         (e-board-runtime-pending-admission-admission record)))))))
-
 (defun e-board-runtime--attachment-key (board participant)
   "Return the attachment lookup key for BOARD and PARTICIPANT."
   (list (e-board-registry-board-id board)
@@ -1849,8 +1298,15 @@ attachment."
   ;; stack.  Fence that exact record first; the outer admission postcheck will
   ;; perform its inverse.  Non-reentrant records are retried now, before any
   ;; attachment-owned route state is mutated.
-  (e-board-runtime--fence-pending-board-admissions attachment)
-  (e-board-runtime--retry-pending-board-admissions attachment nil t)
+  (e-board-runtime-admission-fence
+   attachment
+   (e-board-registry-board-source-board
+    (e-board-runtime-attachment-board attachment)))
+  (e-board-runtime-admission-retry
+   attachment
+   (e-board-registry-board-source-board
+    (e-board-runtime-attachment-board attachment))
+   t)
   (let* ((board (e-board-runtime-attachment-board attachment))
          (participant (e-board-runtime-attachment-participant attachment))
          (stage (e-board-runtime-attachment-retirement-stage attachment))
@@ -2422,7 +1878,7 @@ has no callback and is observed only."
       ;; A prior admission may have preserved its exact board token after two
       ;; lower-owner inverse faults.  Finish that transaction before allowing a
       ;; new Work relation to be staged on the same board.
-      (e-board-runtime--retry-pending-board-admissions nil board)
+      (e-board-runtime-admission-retry nil board)
       ;; Every participant activity is correlated by source turn.  Reject an
       ;; invalid handle before installing observers or enrolling board work so
       ;; the defect surfaces on the initiating call instead of a later timer.
@@ -2453,15 +1909,17 @@ has no callback and is observed only."
                     ;; Install runtime recovery authority before entering the
                     ;; reentrant board stage.  The captured attachment may be
                     ;; retired before this call returns.
-                    (e-board-runtime--remember-board-admission
-                     attachment board admission t)
+                    (e-board-runtime-admission-remember
+                     attachment board admission t
+                     (e-board-runtime-attachment-generation attachment))
                     (setq result
                           (e-board-enroll-invocation-work
                            board handle invocation-id lease
                            :metadata metadata :admission admission)))
                 (setq admission (e-board-work-admission-token handle))
-                (e-board-runtime--remember-board-admission
-                 attachment board admission t)
+                (e-board-runtime-admission-remember
+                 attachment board admission t
+                 (e-board-runtime-attachment-generation attachment))
                 (setq result
                       (e-board-enroll-work
                        board handle :metadata metadata :admission admission)))
@@ -2482,8 +1940,8 @@ has no callback and is observed only."
                 (signal 'e-board-runtime-error
                         (list "Work admission lost active authority" admission)))
               (when admission
-                (e-board-runtime--finish-board-admission-attempt admission)
-                (e-board-runtime--complete-board-admission admission))
+                (e-board-runtime-admission-finish admission)
+                (e-board-runtime-admission-complete admission))
               result)
           (error
            ;; Roll back in owner order.  Each inverse is exact and idempotent;
@@ -2491,21 +1949,22 @@ has no callback and is observed only."
            ;; remove a replacement target/observer and it cannot replace the
            ;; original admission error.
            (when admission
-             (e-board-runtime--finish-board-admission-attempt admission)
-             (unless (e-board-runtime--abort-board-admission board admission)
+             (e-board-runtime-admission-finish admission)
+             (unless (e-board-runtime-admission-abort board admission)
                ;; Keep the exact token reachable if both bounded inverse
                ;; attempts fail.  A subsequent enrollment or attachment
                ;; retirement retries it before mutating the same owner again.
                (condition-case _catalog-error
-                   (e-board-runtime--remember-board-admission
-                    attachment board admission)
+                   (e-board-runtime-admission-remember
+                    attachment board admission nil
+                    (e-board-runtime-attachment-generation attachment))
                  (error nil)))
              (when (and (e-board-admission-complete-p admission))
                ;; Catalog cleanup is part of the rollback, but an unexpected
                ;; cleanup fault must not replace the initiating error.  The
                ;; exact recovery record remains reachable for a later retry.
                (condition-case _catalog-error
-                   (e-board-runtime--complete-board-admission admission)
+                   (e-board-runtime-admission-complete admission)
                  (error nil))))
            (when lease
              (condition-case _rollback-error
@@ -2530,7 +1989,7 @@ has no callback and is observed only."
            (invocation-id (list turn-id (plist-get call :id)))
            ;; Resolve unfinished exact inverses before registering another
            ;; aggregation lease on the same source board.
-           (_pending (e-board-runtime--retry-pending-board-admissions
+           (_pending (e-board-runtime-admission-retry
                       nil board))
            (lease (e-board-runtime--register-invocation
                     attachment turn-id (plist-get call :id)
@@ -2542,25 +2001,27 @@ has no callback and is observed only."
             ;; Catalog publication is part of the initiating transaction.  It
             ;; must be inside the handler so a bucket/primary fault still
             ;; reaches the exact Board inverse and invocation cleanup.
-            (e-board-runtime--remember-board-admission
-             attachment board admission t)
+            (e-board-runtime-admission-remember
+             attachment board admission t
+             (e-board-runtime-attachment-generation attachment))
             (setq aggregation
                   (e-board-subscribe-aggregation
                    board (mapcar #'e-work-handle-id handles) mode lease
                    :id invocation-id :timeout timeout
                    :admission admission)))
         (error
-         (e-board-runtime--finish-board-admission-attempt admission)
-         (unless (e-board-runtime--abort-board-admission board admission)
+         (e-board-runtime-admission-finish admission)
+         (unless (e-board-runtime-admission-abort board admission)
            ;; Keep this exact aggregation token independently of the
            ;; attachment when lower-owner cleanup remains pending.
            (condition-case _catalog-error
-               (e-board-runtime--remember-board-admission
-                attachment board admission)
+               (e-board-runtime-admission-remember
+                attachment board admission nil
+                (e-board-runtime-attachment-generation attachment))
              (error nil)))
          (when (e-board-admission-complete-p admission)
            (condition-case _catalog-error
-               (e-board-runtime--complete-board-admission admission)
+               (e-board-runtime-admission-complete admission)
              (error nil)))
          (condition-case _drop-error
              (e-board-runtime--drop-invocation lease)
@@ -2571,23 +2032,24 @@ has no callback and is observed only."
       ;; never hand a cancellation closure a stale aggregation authority.
         (unless (and (e-board-runtime--invocation-lease-current-p lease)
                    (e-board-aggregation-admission-current-p admission))
-        (e-board-runtime--finish-board-admission-attempt admission)
-        (unless (e-board-runtime--abort-board-admission board admission)
+        (e-board-runtime-admission-finish admission)
+        (unless (e-board-runtime-admission-abort board admission)
           (condition-case _catalog-error
-              (e-board-runtime--remember-board-admission
-               attachment board admission)
+              (e-board-runtime-admission-remember
+               attachment board admission nil
+               (e-board-runtime-attachment-generation attachment))
             (error nil)))
         (when (e-board-admission-complete-p admission)
           (condition-case _catalog-error
-              (e-board-runtime--complete-board-admission admission)
+              (e-board-runtime-admission-complete admission)
             (error nil)))
         (condition-case _drop-error
             (e-board-runtime--drop-invocation lease)
           (error nil))
         (signal 'e-board-runtime-error
                 (list "Aggregation admission lost active authority" invocation-id)))
-      (e-board-runtime--finish-board-admission-attempt admission)
-      (e-board-runtime--complete-board-admission admission)
+      (e-board-runtime-admission-finish admission)
+      (e-board-runtime-admission-complete admission)
       (lambda ()
         (e-board-cancel-aggregation board (e-board-aggregation-id aggregation))
         (e-board-runtime--drop-invocation lease)))))
@@ -3192,7 +2654,7 @@ When omitted, the conservative idle-only harness delivery port is used."
     ;; Re-ensure cannot publish a replacement endpoint around that unfinished
     ;; board inverse; retry the same token before creating new participant
     ;; authority.
-    (e-board-runtime--retry-pending-board-admissions nil source-board t)
+    (e-board-runtime-admission-retry nil source-board t)
     (condition-case error
         (progn
           (setq participant

@@ -445,6 +445,53 @@ pre-admission state; no descriptive work-id lookup is involved."
       (should (= (e-board-unsettled-routing-count board) 0))
       (should-not (gethash work-id (e-board-work-table board))))))
 
+(ert-deftest e-board-test-classifier-index-restore-accepts-exact-replacement ()
+  "Classifier abort acknowledges a proven replacement without overwriting it."
+  (let* ((board (e-board-admission-test--make-board :id "classifier-replacement"))
+         (handle
+          (e-work-prepare
+           (e-work-spec-create
+            :id "classifier-replacement-work" :execution 'cheap
+            :interactive-policy 'cheap :runner #'ignore)
+           nil))
+         (work (e-board-work--create
+                :id "classifier-replacement-work" :handle handle :state 'running))
+         (invocation (e-board-invocation--create
+                      :id "classifier-replacement-invocation"
+                      :work-id (e-board-work-id work) :state 'open
+                      :effect-target '(target)))
+         (index (e-board-invocation-work-index board))
+         (index-admission (e-board-admission-work-token handle))
+         (admission (e-board-admission-work-token handle))
+         replacement receipt)
+    (puthash (e-board-work-id work) work (e-board-work-table board))
+    (puthash (e-board-invocation-id invocation) invocation
+             (e-board-invocations board))
+    (e-board-admission-index-work
+     index (e-board-work-id work) (e-board-invocation-id invocation)
+     index-admission)
+    (setf (e-board-work-admission-board admission) board
+          (e-board-work-admission-work admission) work)
+    (e-board-admission-begin board admission)
+    (setq receipt
+          (e-board-admission-queue-terminal-classification
+           board work (list (e-board-invocation-id invocation)) nil nil
+           admission #'ignore))
+    (should-not (gethash (e-board-work-id work) index))
+    ;; A new owner has already installed a replacement queue.  The old
+    ;; classifier inverse must preserve that exact object and finish without
+    ;; resurrecting the captured queue.
+    (setq replacement (e-board-id-queue--create))
+    (puthash (e-board-work-id work) replacement index)
+    (e-board-admission-finish board admission)
+    (e-board-admission-abort board admission)
+    (should (eq (gethash (e-board-work-id work) index) replacement))
+    (should (= (e-board-admission-pending-count board) 0))
+    (should (e-board-terminal-classification-receipt--removed-p receipt))
+    (should-not
+     (e-board-terminal-classification-receipt--invocation-index-detached-p
+      receipt))))
+
 (ert-deftest e-board-test-admission-deadline-index-boundaries-are-retryable ()
   "Deadline node registration is exact across pre/post notification faults."
   (dolist (failure-mode '(before after))
@@ -665,6 +712,102 @@ pre-admission state; no descriptive work-id lookup is involved."
         (should (equal (reverse applied) '(second third)))
         (should-not drains)))))
 
+(ert-deftest e-board-test-effect-drain-node-removal-retries-before-mutation ()
+  "A pre-mutation node-index fault restores the exact effect head."
+  (e-board-admission-test--with-empty-registry
+    (let (drains applied)
+      (let* ((board (e-board-admission-test--make-board
+                     :id "effect-node-retry"
+                     :effect-scheduler (lambda (drain) (push drain drains))))
+             (original-remhash (symbol-function 'remhash))
+             (fail t))
+        (cl-letf (((symbol-function 'remhash)
+                   (lambda (key table)
+                     (if (and fail (eq table (e-board-effect-node-index board)))
+                         (progn (setq fail nil) (error "effect node before"))
+                       (funcall original-remhash key table)))))
+          (e-board-admission-schedule-effect
+           board (lambda () (push 'effect applied)))
+          (should-error (funcall (pop drains))))
+        ;; The first callback was fenced without consuming its cell.  The
+        ;; successor callback is a fresh generation and can retry it exactly.
+        (should-not applied)
+        (should (e-board-pending-effects board))
+        (should (= (e-board-unsettled-effect-count board) 1))
+        (should (= (hash-table-count (e-board-effect-node-index board)) 1))
+        (should drains)
+        (funcall (pop drains))
+        (should (equal applied '(effect)))
+        (should-not (e-board-pending-effects board))
+        (should (= (e-board-unsettled-effect-count board) 0))))))
+
+(ert-deftest e-board-test-effect-drain-count-notification-retries-before-mutation ()
+  "A pre-mutation count fault preserves the exact FIFO receipt."
+  (e-board-admission-test--with-empty-registry
+    (let (drains applied)
+      (let* ((board (e-board-admission-test--make-board
+                     :id "effect-count-retry"
+                     :effect-scheduler (lambda (drain) (push drain drains))))
+             (original-adjust
+              (symbol-function 'e-board-admission--adjust-unsettled))
+             (fail t))
+        (cl-letf (((symbol-function 'e-board-admission--adjust-unsettled)
+                   (lambda (current-board class delta)
+                     (if (and fail (eq class 'effects) (= delta -1))
+                         (progn (setq fail nil) (error "effect count before"))
+                       (funcall original-adjust current-board class delta)))))
+          (e-board-admission-schedule-effect
+           board (lambda () (push 'effect applied)))
+          (should-error (funcall (pop drains)))
+          (should-not applied)
+          (should (e-board-pending-effects board))
+          (should (= (e-board-unsettled-effect-count board) 1))
+          (should drains)
+          (funcall (pop drains))
+          (should (equal applied '(effect)))
+          (should-not (e-board-pending-effects board))
+          (should (= (e-board-unsettled-effect-count board) 0)))))))
+
+(ert-deftest e-board-test-effect-successor-scheduler-fault-is-retryable ()
+  "A rejected successor scheduler leaves a fresh enqueue able to retry FIFO."
+  (e-board-admission-test--with-empty-registry
+    (let ((e-board-effect-drain-limit 1)
+          callbacks applied (calls 0))
+      (let ((board
+             (e-board-admission-test--make-board
+              :id "effect-successor-retry"
+              :effect-scheduler
+              (lambda (callback)
+                (cl-incf calls)
+                (if (= calls 1)
+                    (push callback callbacks)
+                  (error "effect successor scheduler"))))))
+        (e-board-admission-schedule-effect
+         board (lambda () (push 'first applied)))
+        (e-board-admission-schedule-effect
+         board (lambda () (push 'second applied)))
+        ;; The admission owner itself drains effects; the first callback is
+        ;; enough to prove the failed successor left the second exact cell.
+        (should-error (funcall (pop callbacks)))
+        (should (equal applied '(first)))
+        (should (e-board-pending-effects board))
+        (should (= (e-board-unsettled-effect-count board) 1))
+        (should-not (e-board-effects-scheduled board))
+        ;; A fresh enqueue obtains fresh scheduling authority instead of being
+        ;; stranded behind the rejected successor publication.
+        (setf (e-board-effect-scheduler board)
+              (lambda (callback) (push callback callbacks)))
+        (e-board-admission-schedule-effect
+         board (lambda () (push 'third applied)))
+        (should callbacks)
+        (funcall (pop callbacks))
+        (should (equal applied '(second first)))
+        (should callbacks)
+        (funcall (pop callbacks))
+        (should (equal applied '(third second first)))
+        (should-not (e-board-pending-effects board))
+        (should (= (e-board-unsettled-effect-count board) 0))))))
+
 (ert-deftest e-board-test-standalone-event-admission-retains-recovery-token ()
   "A direct event append keeps its exact token across inverse failure."
   (let* ((board (e-board-admission-test--make-board :id "standalone-event"))
@@ -757,5 +900,138 @@ pre-admission state; no descriptive work-id lookup is involved."
     (should-not (e-board-effects-scheduled board))
     (should (eq (symbol-function 'e-board-admission-remove-effect)
                 remove-original))))
+
+(ert-deftest e-board-test-standalone-event-wrapper-rejects-fenced-success ()
+  "A reentrant owner entry cannot turn a standalone event into success."
+  (let* ((board (e-board-admission-test--make-board :id "event-reentry"))
+         (node-index (e-board-event-node-index board))
+         (original-puthash (symbol-function 'puthash))
+         entered)
+    (cl-letf (((symbol-function 'puthash)
+               (lambda (key value table)
+                 (prog1 (funcall original-puthash key value table)
+                   (when (and (not entered) (eq table node-index))
+                     (setq entered t)
+                     (condition-case nil
+                         (e-board-admission-require-clear board)
+                       (error nil)))))))
+      (should-error (e-board-admission-append-event board 'outer nil)))
+    (should entered)
+    (should-not (e-board-events board))
+    (should (= (e-board-admission-pending-count board) 0))
+    (should (= (e-board-next-seq board) 1))))
+
+(ert-deftest e-board-test-standalone-effect-wrapper-rejects-fenced-success ()
+  "A reentrant owner entry cannot turn a standalone effect into success."
+  (let (entered drains)
+    (let ((board
+           (e-board-admission-test--make-board
+            :id "effect-reentry"
+            :effect-scheduler (lambda (drain) (push drain drains))
+            :unsettled-change-function
+            (lambda (source class delta _state)
+              (when (and (not entered) (eq class 'effects) (= delta 1))
+                (setq entered t)
+                (condition-case nil
+                    (e-board-admission-require-clear source)
+                  (error nil)))))))
+      (should-error (e-board-admission-schedule-effect board #'ignore))
+      (should entered)
+      (should-not (e-board-pending-effects board))
+      (should (= (e-board-unsettled-effect-count board) 0))
+      (should-not (e-board-effects-scheduled board))
+      (should (= (e-board-admission-pending-count board) 0)))))
+
+(ert-deftest e-board-test-standalone-classifier-wrapper-rejects-fenced-success ()
+  "A reentrant owner entry cannot turn a standalone classifier into success."
+  (let (entered)
+    (let* ((board
+            (e-board-admission-test--make-board
+             :id "classifier-reentry"
+             :unsettled-change-function
+             (lambda (source class delta _state)
+               (when (and (not entered) (eq class 'routing) (= delta 1))
+                 (setq entered t)
+                 (condition-case nil
+                     (e-board-admission-require-clear source)
+                   (error nil))))))
+           (handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "classifier-reentry-work" :execution 'cheap
+              :interactive-policy 'cheap :runner #'ignore)
+             nil))
+           (work (e-board-work--create
+                  :id "classifier-reentry-work" :handle handle :state 'posted)))
+      (puthash (e-board-work-id work) work (e-board-work-table board))
+      (should-error
+       (e-board-admission-queue-terminal-classification
+        board work nil nil nil nil #'ignore))
+      (should entered)
+      (should-not (e-board-terminal-classifications board))
+      (should (= (e-board-unsettled-routing-count board) 0))
+      (should (= (e-board-admission-pending-count board) 0)))))
+
+(ert-deftest e-board-test-standalone-deadline-wrapper-rejects-fenced-success ()
+  "A reentrant owner entry cannot turn a standalone deadline into success."
+  (let (entered)
+    (let* ((board
+            (e-board-admission-test--make-board
+             :id "deadline-reentry"
+             :unsettled-change-function
+             (lambda (source class delta _state)
+               (when (and (not entered) (eq class 'routing) (= delta 1))
+                 (setq entered t)
+                 (condition-case nil
+                     (e-board-admission-require-clear source)
+                   (error nil))))))
+           (aggregation
+            (e-board-aggregation--create
+             :id "deadline-reentry-aggregation" :work-ids nil :mode 'all
+             :state 'open :effect-target '(target))))
+      (puthash (e-board-aggregation-id aggregation) aggregation
+               (e-board-aggregations board))
+      (should-error
+       (e-board-admission-queue-aggregation-deadline
+        board aggregation nil #'ignore))
+      (should entered)
+      (should-not (e-board-aggregation-deadlines board))
+      (should (= (e-board-unsettled-routing-count board) 0))
+      (should (= (e-board-admission-pending-count board) 0)))))
+
+(ert-deftest e-board-test-committed-event-and-index-use-compact-owner-nodes ()
+  "Committed event and index maps retain topology, not rollback receipts."
+  (let ((board (e-board-admission-test--make-board :id "compact-nodes")))
+    (let* ((first (e-board-admission-append-event board 'first nil))
+           (first-cell (e-board-events board))
+           (first-node (gethash first-cell (e-board-event-node-index board)))
+           (second (e-board-admission-append-event board 'second nil))
+           (second-cell (cdr first-cell))
+           (second-node (gethash second-cell (e-board-event-node-index board))))
+      (should (e-board-event-p first))
+      (should (e-board-event-link-node-p first-node))
+      (should-not (e-board-event-receipt-p first-node))
+      (should (e-board-event-link-node-p second-node))
+      (should (eq (e-board-event-link-node--next-node first-node)
+                  second-node))
+      (should (eq (e-board-event-link-node--previous-node second-node)
+                  first-node)))
+    (let* ((index (make-hash-table :test 'equal))
+           (admission (e-board-admission-work-token
+                       (e-work-prepare
+                        (e-work-spec-create
+                         :id "compact-index" :execution 'cheap
+                         :interactive-policy 'cheap :runner #'ignore)
+                        nil)))
+           (receipt (e-board-admission-index-work
+                     index "work" "subscription" admission))
+           (queue (gethash "work" index))
+           (cell (e-board-id-queue-head queue)))
+      (e-board-admission-complete board admission)
+      (let ((node (gethash cell (e-board-id-queue-node-index queue))))
+        (should (e-board-index-link-node-p node))
+        (should-not (e-board-index-receipt-p node))
+        (should (eq (e-board-index-link-node--cell node) cell))
+        (should (e-board-index-receipt-p receipt))))))
 
 ;;; e-board-admission-test.el ends here

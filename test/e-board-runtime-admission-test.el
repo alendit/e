@@ -723,7 +723,7 @@
       (should (= inverse-faults 2))
       ;; The board relation and its exact token are retained rather than being
       ;; replaced by a descriptive-id retry or falsely reported as cleaned.
-      (should (= (hash-table-count e-board-runtime--pending-admissions) 1))
+      (should (= (e-board-admission-pending-count source-board) 1))
       (should (e-board-observed-work source-board (e-work-handle-id handle)))
       (should (e-board-invocation source-board '("turn" "call")))
       (should (e-work-handle-publication-observer handle))
@@ -734,7 +734,7 @@
                  (lambda (receipt) (funcall original-remove receipt))))
         (should (funcall (e-harness-work-enrollment-function harness)
                          handle #'ignore)))
-      (should (= (hash-table-count e-board-runtime--pending-admissions) 0))
+      (should (= (e-board-admission-pending-count source-board) 0))
       (should (e-board-invocation source-board '("turn" "call")))
       (should (= e-board-runtime--unsettled-invocation-count 1))
       (e-board-runtime-retire-attachment attachment))))

@@ -1182,6 +1182,211 @@
         (should (eq (e-board-aggregation-state (e-board-aggregation board "empty"))
                     'committed))))))
 
+(ert-deftest e-board-test-ready-aggregation-reentry-aborts-one-supplied-admission ()
+  "A reentrant ready aggregation cannot leave an unowned reply effect."
+  (e-board-test--with-empty-registry
+    (let (entered effects primary)
+      (let ((board
+             (e-board-create
+              :id "ready-reentry"
+              :effect-scheduler (lambda (effect) (push effect effects))
+              :unsettled-change-function
+              (lambda (source class delta _state)
+                (when (and (not entered) (eq class 'effects) (= delta 1))
+                  (setq entered t)
+                  ;; The nested entry fences the ready aggregation's exact
+                  ;; admission and returns through the caller's error path.
+                  (condition-case nil
+                      (e-board-subscribe-aggregation
+                       source nil 'all '(inner) :id "inner")
+                    (error nil)))))))
+        (setq primary
+              (condition-case err
+                  (progn
+                    (e-board-subscribe-aggregation
+                     board nil 'all '(outer) :id "outer")
+                    nil)
+                (error err)))
+        (should entered)
+        (should primary)
+        (should-not (e-board-aggregation board "outer"))
+        (should-not (e-board-pending-effects board))
+        (should (= (e-board-unsettled-effect-count board) 0))
+        (should-not (e-board-effects-scheduled board))
+        ;; The scheduler may retain a callback it accepted before the exact
+        ;; inverse.  Its generation is fenced, so invoking it cannot apply a
+        ;; replacement effect.
+        (when effects
+          (funcall (pop effects)))
+        (should-not (e-board-pending-effects board))
+        (should (= (e-board-unsettled-effect-count board) 0))
+        (should (= (e-board-pending-admission-count board) 0))))))
+
+(ert-deftest e-board-test-effect-drain-postcount-fault-still-applies-head ()
+  "A post-mutation effect count fault does not lose the captured callback."
+  (e-board-test--with-empty-registry
+    (let (drains applied)
+      (let ((board
+             (e-board-create
+              :id "effect-postcount"
+              :effect-scheduler (lambda (drain) (push drain drains))
+              :unsettled-change-function
+              (lambda (_board class delta _state)
+                (when (and (eq class 'effects) (= delta -1))
+                  (error "effect count postmutation"))))))
+        (e-board-admission-schedule-effect
+         board (lambda () (push 'applied applied)))
+        (should-error (funcall (pop drains)))
+        (should (equal applied '(applied)))
+        (should-not (e-board-pending-effects board))
+        (should (= (e-board-unsettled-effect-count board) 0))
+        (should-not (e-board-effects-scheduled board))))))
+
+(ert-deftest e-board-test-terminal-classifier-postcount-fault-finishes-head ()
+  "A post-mutation routing fault still removes one exact classifier head."
+  (e-board-test--with-empty-registry
+    (let (drains)
+      (let ((board
+             (e-board-create
+              :id "classifier-postcount"
+              :terminal-classification-scheduler
+              (lambda (drain) (push drain drains))
+              :unsettled-change-function
+              (lambda (_board class delta _state)
+                (when (and (eq class 'routing) (= delta -1))
+                  (error "classifier count postmutation"))))))
+        (let ((handle
+               (e-work-prepare
+                (e-work-spec-create
+                 :id "classifier-postcount-work" :execution 'cooperative
+                 :interactive-policy 'async :runner (lambda (&rest _) :deferred))
+                nil)))
+          (e-board-enroll-work board handle)
+          (e-work-start-prepared handle)
+          (e-work-finish handle "done"))
+        (should (= (length drains) 1))
+        (should-error (funcall (pop drains)))
+        (should-not (e-board-terminal-classifications board))
+        (should (= (e-board-unsettled-routing-count board) 0))))))
+
+(ert-deftest e-board-test-deadline-postcount-fault-finishes-head ()
+  "A post-mutation routing fault still removes one exact deadline head."
+  (e-board-test--with-empty-registry
+    (let (drains)
+      (let ((board
+             (e-board-create
+              :id "deadline-postcount"
+              :aggregation-deadline-scheduler
+              (lambda (drain) (push drain drains))
+              :unsettled-change-function
+              (lambda (_board class delta _state)
+                (when (and (eq class 'routing) (= delta -1))
+                  (error "deadline count postmutation"))))))
+        (let ((aggregation
+               (e-board-subscribe-aggregation
+                board nil 'all "deadline-target" :id "deadline-aggregation")))
+          ;; The direct deadline operation is intentionally exercised through
+          ;; its public owner boundary; cancellation makes the drain purely a
+          ;; queue/count transition rather than an aggregation settlement.
+          (setf (e-board-aggregation-state aggregation) 'cancelled)
+          (e-board-admission-queue-aggregation-deadline
+           board aggregation nil #'e-board--schedule-aggregation-deadline))
+        (should (= (length drains) 1))
+        (should-error (funcall (pop drains)))
+        (should-not (e-board-aggregation-deadlines board))
+        (should (= (e-board-unsettled-routing-count board) 0))))))
+
+(ert-deftest e-board-test-terminal-classifier-successor-scheduler-fault-is-retryable ()
+  "A rejected classifier successor is retried by fresh queue authority."
+  (e-board-test--with-empty-registry
+    (let ((e-board-terminal-classification-drain-limit 1)
+          callbacks (calls 0))
+      (let ((board
+             (e-board-create
+              :id "classifier-successor-retry"
+              :terminal-classification-scheduler
+              (lambda (callback)
+                (cl-incf calls)
+                (if (= calls 1)
+                    (push callback callbacks)
+                  (error "classifier successor scheduler"))))))
+        (dolist (id '("classifier-one" "classifier-two"))
+          (let* ((handle
+                  (e-work-prepare
+                   (e-work-spec-create
+                    :id id :execution 'cheap :interactive-policy 'cheap
+                    :runner #'ignore)
+                   nil))
+                 (work (e-board-work--create :id id :handle handle :state 'posted)))
+            (puthash id work (e-board-work-table board))
+            (e-board-admission-queue-terminal-classification
+             board work nil nil nil nil #'e-board--schedule-terminal-classification)))
+        (should-error (funcall (pop callbacks)))
+        (should (e-board-terminal-classifications board))
+        (should (= (e-board-unsettled-routing-count board) 1))
+        (should-not (e-board-terminal-classification-scheduled board))
+        (setf (e-board-terminal-classification-scheduler board)
+              (lambda (callback) (push callback callbacks)))
+        (let* ((id "classifier-three")
+               (handle
+                (e-work-prepare
+                 (e-work-spec-create
+                  :id id :execution 'cheap :interactive-policy 'cheap
+                  :runner #'ignore)
+                 nil))
+               (work (e-board-work--create :id id :handle handle :state 'posted)))
+          (puthash id work (e-board-work-table board))
+          (e-board-admission-queue-terminal-classification
+           board work nil nil nil nil #'e-board--schedule-terminal-classification))
+        (should callbacks)
+        (funcall (pop callbacks))
+        (should callbacks)
+        (funcall (pop callbacks))
+        (should-not (e-board-terminal-classifications board))
+        (should (= (e-board-unsettled-routing-count board) 0))))))
+
+(ert-deftest e-board-test-aggregation-deadline-successor-scheduler-fault-is-retryable ()
+  "A rejected deadline successor is retried by fresh queue authority."
+  (e-board-test--with-empty-registry
+    (let ((e-board-aggregation-deadline-drain-limit 1)
+          callbacks (calls 0))
+      (let ((board
+             (e-board-create
+              :id "deadline-successor-retry"
+              :aggregation-deadline-scheduler
+              (lambda (callback)
+                (cl-incf calls)
+                (if (= calls 1)
+                    (push callback callbacks)
+                  (error "deadline successor scheduler"))))))
+        (dolist (id '("deadline-one" "deadline-two"))
+          (let ((aggregation
+                 (e-board-aggregation--create
+                  :id id :work-ids nil :mode 'all :state 'cancelled
+                  :effect-target '(target))))
+            (puthash id aggregation (e-board-aggregations board))
+            (e-board-admission-queue-aggregation-deadline
+             board aggregation nil #'e-board--schedule-aggregation-deadline)))
+        (should-error (funcall (pop callbacks)))
+        (should (e-board-aggregation-deadlines board))
+        (should (= (e-board-unsettled-routing-count board) 1))
+        (should-not (e-board-aggregation-deadline-scheduled board))
+        (setf (e-board-aggregation-deadline-scheduler board)
+              (lambda (callback) (push callback callbacks)))
+        (let ((aggregation
+               (e-board-aggregation--create
+                :id "deadline-three" :work-ids nil :mode 'all :state 'cancelled
+                :effect-target '(target))))
+          (puthash "deadline-three" aggregation (e-board-aggregations board))
+          (e-board-admission-queue-aggregation-deadline
+           board aggregation nil #'e-board--schedule-aggregation-deadline))
+        (should callbacks)
+        (funcall (pop callbacks))
+        (should callbacks)
+        (funcall (pop callbacks))
+        (should-not (e-board-aggregation-deadlines board))
+        (should (= (e-board-unsettled-routing-count board) 0))))))
+
 (ert-deftest e-board-test-exact-invocation-failure-records-its-activation-state ()
   "A failed exact reply is visible on both its invocation and activation."
   (e-board-test--with-empty-registry
