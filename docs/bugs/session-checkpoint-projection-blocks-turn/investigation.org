@@ -1,0 +1,214 @@
+#+title: Session Checkpoint Projection Turn-Latency Investigation
+#+startup: overview
+
+* Status
+
+Resolved with one bounded compatibility correction ahead of the planned
+Feature 87 SQLite storage replacement.  This change restores deferred
+checkpoint projection without redesigning session state management.
+
+* Behavioral goal
+
+- Goal ID: =BUG-SESSION-CHECKPOINT-PROJECTION-LATENCY=
+- Goal: a long-running persistent session can append messages during an active
+  turn without synchronously rebuilding its resume checkpoint.
+- Direct scenario: append a message to a realistic persistent session through
+  the public session API, observe that checkpoint projection has not run on the
+  append stack, finalize the existing durability boundary, then reopen the
+  session from the resulting checkpoint and observe the appended message.
+- Product authority: the user and Feature 91's =F91-PRESERVATION= contract.
+- Owning contract: =SCP-1= below.
+- Behavioral status: failing in the supplied trace.
+
+* Evidence
+
+The structured trace covers about 312 seconds.  Ten
+=harness.message-append= spans consumed 30.9 seconds and grew from about 0.9
+seconds to as much as 3.95 seconds.  Tool lifecycle spans overlap those
+appends and therefore are not additive.
+
+The CPU profile attributes about 39 percent of its weight to automatic
+garbage collection and 27 percent to redisplay.  The memory profile places
+=e-session-catalog-checkpoint-manifest= on stacks representing about 51
+percent of the allocation counter.  Its dominant callers repeatedly freeze
+board values and reconstruct session paths.
+
+The affected journal was about 1.17 MB with roughly 730 records, including
+about 270 board messages.  The raw journal append itself remained fast;
+=session.append-record= averaged less than one millisecond in the structured
+trace.
+
+Source inspection found that =e-session-append-message= requests an index
+refresh after every message.  =e-session--refresh-projections= currently
+builds a complete checkpoint manifest for every loaded session before
+=e-session-storage--write-index= reaches its two-second checkpoint debounce.
+The aggregate first deep-copies the complete board journal, after which the
+catalog retains only the bounded board identity projection.  Catalog path
+construction also performs repeated linear entry lookup.
+
+The behavior was introduced by commit =408c3216= while separating the session
+aggregate, catalog, codec, facade, and storage adapter.  Before that commit,
+the persistence controller constructed each manifest only when the debounced
+checkpoint operation ran.  The refactor correctly removed storage's direct
+call into the session facade, but replaced it with eager detached projection
+publication on every mutation.  Functional and restart tests preserved the
+durable result.  The performance fixture used eight short messages without a
+realistic board history, so it did not expose the scaling failure.
+
+The running Emacs was inspected only with the bounded =scripts/e-live-probe=
+symbol operation and was not reloaded or changed.  The requested symbol was no
+longer loaded when probed after the captured turn, so the profile and current
+repository source—not a claim about current live definitions—are the behavior
+evidence.
+
+* Contract and evidence matrix
+
+| ID | Observable invariant | Owner | Lifetime and recovery | Scenario | Evidence | Status |
+|----+----------------------+-------+-----------------------+----------+----------+--------|
+| =SCP-1= | A public persistent-session append does not construct a checkpoint manifest synchronously. | Session application service | Journal append/submission path and ordering remain unchanged; checkpoint projection remains debounced. | Append, finalize, reopen | Deterministic composed regression | Accepted |
+| =SCP-2= | Finalize publishes the latest dirty-session checkpoint and one catalog barrier with existing retry and error visibility. | Session application service plus storage adapter | Existing dirty, outbox, acknowledgement, and restart lifetimes remain unchanged. | Append, finalize, reopen and focused storage failure tests | Deterministic existing and strengthened coverage | Accepted |
+| =SCP-3= | Storage remains independent of aggregate and catalog representation. | Session/storage boundary | No new durable state or format; the current JSONL adapter remains replaceable by Feature 87. | Dependency search and fresh owner tests | Deterministic repository evidence | Accepted |
+
+The supplied latency and allocation measurements are observational telemetry:
+they localize the defect but define no invented acceptance threshold.
+External compatibility evidence is not applicable because the defect and its
+correction are repository-controlled.
+
+* Remediation package
+
+Plan identity: =session-checkpoint-projection-debounce-v1=.
+
+There is one delivery package, =SCP-DP1=.  It establishes =SCP-1=, =SCP-2=,
+and =SCP-3= together because moving projection timing without preserving the
+same durability barrier would leave an incomplete session contract.
+
+The session application service remains the semantic composition owner and
+the storage adapter retains its timer, dirty set, writer outbox, and physical
+publication responsibilities.  The implementation may pass a narrow deferred
+projection operation across that existing boundary, but must not let storage
+inspect aggregate values, call a facade symbol by name, add another timer or
+registry, or introduce a cache that outlives the current debounce boundary.
+The operation must be replaced by an actual detached manifest before a writer
+command is encoded.  Direct, queued, finalize, retry, and failure paths must
+retain their current behavior.
+
+The direct composed regression establishes both timing and recovery: append
+does not invoke manifest construction; finalize does; reopening observes the
+new message.  Existing storage/controller tests retain their mechanism role.
+A realistic long-session fixture strengthens the performance scenario without
+making elapsed time a normative threshold.
+
+Safe deferred work: incremental checkpoint state, catalog path indexing,
+redisplay/fontification optimization, and general session-state redesign stay
+outside this package.  Feature 87 owns the planned SQLite replacement.
+
+* Architecture disposition
+
+Semantic ownership is unchanged.  =e-session.el= remains the application
+composition boundary, =e-session-catalog.el= owns pure checkpoint selection,
+and =e-session-storage.el= owns physical scheduling and publication.  The
+selected source boundary is the existing facade/storage projection port.  Its
+one reason to change is when application-owned projections become physical
+durability work; no new public or durable interface is required.
+
+* Plan review
+
+Review level: =implementation-plan=.  Reviewed baseline: =121dbdd2=.
+Plan identity: =session-checkpoint-projection-debounce-v1=, bound to the
+behavioral goal, contract matrix, one-package delivery relation, and the
+current facade/catalog/storage ownership contracts above.
+
+All stable contract and delivery-plan cells are cleared.  The three contract
+rows map bidirectionally to the single useful package; its ownership,
+projection lifetime, durability transaction, recovery evidence, dependency
+direction, and deferred-work boundary close together.  The direct scenario
+distinguishes append-stack timing from eventual durable recovery.  Existing
+numeric defaults remain private, telemetry remains observational, external
+evidence is not applicable, and no plan cell is unknown.
+
+Result: =implementation-plan-fixed-point=.  A material change to the projection
+timing, owner boundary, durability/recovery behavior, direct scenario, or
+delivery-package relation invalidates this result before implementation
+continues.
+
+* Resolution
+
+Implemented =SCP-DP1= without changing the reviewed ownership or durability
+transaction.  =e-session.el= still composes catalog values, but now publishes a
+detached index plus an application-owned operation that constructs one current
+checkpoint manifest.  A public append keeps the existing journal
+append/submission path and ordering and replaces that operation without invoking
+it.
+
+The existing storage debounce and finalize paths capture the operation for one
+checkpoint batch.  Storage invokes it only when preparing each dirty session's
+checkpoint, immediately detaches the returned manifest, and then uses the
+existing serial checkpoint and reindex commands.  A successful batch releases
+the captured operation unless a newer mutation installed the next one.  A
+failed batch retains the operation and re-marks the captured session ids dirty,
+so the existing retry, acknowledgement, outbox, restart, and error behavior is
+unchanged.
+
+No timer, registry, incremental checkpoint cache, durable format, or public API
+was added.  Storage still has no dependency on the session aggregate or catalog
+modules.  Goal =BUG-SESSION-CHECKPOINT-PROJECTION-LATENCY= now passes its direct
+scenario, and the implementation is accepted for =SCP-1=, =SCP-2=, and =SCP-3=.
+
+* Validation
+
+- The new composed regression first failed with one manifest construction on
+  the public append stack.  It now proves zero constructions during append,
+  construction during =e-session-finalize=, and recovery of the appended
+  message after reopening the persistent store.  Its fixture includes 40
+  transcript messages and 270 board messages; elapsed time is not asserted.
+- Both strengthened =SCP-2= cases pass: a failed checkpoint keeps its dirty and
+  quiescence invariants, then a public append, retry, and reopen recover the
+  newer message; a mutation made while an older checkpoint batch is held
+  remains dirty through that batch's reindex barrier, then the next finalize
+  clears it and reopen recovers the mutation.
+- Six focused facade, restart, and admission composition cases pass, covering
+  the semantic storage port, coalesced activity index publication, direct
+  persistent reopen, board-session restart, and direct/controller admission.
+- =eldev compile= succeeds.  Generated compiled artifacts were removed with
+  =eldev clean= before the final source-based test run; only pre-existing Emacs
+  31 obsolete-macro warnings were reported.
+- A dependency search finds no aggregate or catalog module reference in
+  =e-session-storage.el=.  The running Emacs was not contacted, reloaded, or
+  changed.
+- The final source-based gate passed all 134 tests in
+  =test/e-session-storage-test.el= and =test/e-session-test.el= with no
+  unexpected results.  Only the repository's pre-existing Emacs 31
+  obsolete-macro warnings were reported.
+- Independent delta review closed the earlier test-evidence finding and found
+  no remaining actionable issue or required unknown for =SCP-1= through
+  =SCP-3=.
+
+* Architecture self-check
+
+1. This package is useful on its own because it removes synchronous checkpoint
+   reconstruction from active turns while preserving recovery.
+2. It moves toward the SQLite-backed state model by keeping semantic projection
+   outside the current physical storage adapter.
+3. The temporary scheduling choice is local to the existing debounce boundary;
+   SQLite design decisions remain deferred and reversible.
+4. The session application service owns checkpoint meaning; storage owns when
+   and how the checkpoint is published.
+5. Coupling is reduced relative to a storage-to-session callback: the boundary
+   accepts one narrow operation and exposes no aggregate representation.
+6. Dependencies still point from the application service toward the storage
+   adapter, not from storage toward catalog or aggregate modules.
+7. Writer submission and serialization remain in storage; no core policy gained
+   a new side effect.
+8. The only new runtime state is one replaceable operation retained until the
+   existing checkpoint batch settles; it is rebuilt on mutation and not durable.
+9. The expensive manifest construction now runs once at the durability boundary
+   instead of on every append; no performance regression is accepted.
+10. The operation's contract is one current detached manifest for a session;
+    storage neither narrows nor interprets the semantic result.
+11. Existing JSONL ordering, retry, recovery, and durable formats are preserved.
+12. No additional legacy path is needed; the eager checkpoint-projection slot
+    and its per-session replacement helper were removed.
+13. Expected writer failures retain the existing dirty/retry behavior;
+    unexpected projection errors still surface through the finalize error path.
+14. The composed append/finalize/reopen test proves the behavior, while focused
+    failure and active-batch tests prove recovery without the full application.

@@ -172,29 +172,30 @@ the storage owner's state representation."
           (file-error nil)
           (json-parse-error nil))))))
 
+(defun e-session--checkpoint-projection-operation (store)
+  "Return an operation that projects STORE's latest SESSION-ID checkpoint."
+  (lambda (session-id)
+    (let ((session (e-session--ensure-loaded store session-id)))
+      (e-session-catalog-checkpoint-manifest
+       session (e-session-aggregate-board-messages store session-id)))))
+
 (defun e-session--refresh-projections (store)
-  "Compose current aggregate values into detached catalog projections."
-  (let (index-projection checkpoints)
+  "Compose STORE's index and deferred checkpoint projection operation."
+  (let (index-projection)
     (dolist (session (e-session-aggregate-session-values store))
       (let* ((session-id (plist-get session :id))
              (file (e-session-storage-session-reference store session-id))
-              (index-entry (e-session-catalog-index-entry session file)))
-         (push index-entry index-projection)
-         (when (plist-get session :loaded)
-           (push (cons session-id
-                       (e-session-catalog-checkpoint-manifest
-                        session
-                        (e-session-aggregate-board-messages store session-id)))
-                 checkpoints))))
+             (index-entry (e-session-catalog-index-entry session file)))
+        (push index-entry index-projection)))
     (list (e-session-catalog-sort-index-entries (nreverse index-projection))
-          checkpoints)))
+          (e-session--checkpoint-projection-operation store))))
 
 (defun e-session--write-index (store)
   "Persist the composed index projection for STORE."
-  (pcase-let ((`(,index-projection ,checkpoint-projections)
+  (pcase-let ((`(,index-projection ,checkpoint-projection-operation)
                (e-session--refresh-projections store)))
     (e-session-storage-publish-projections
-     store index-projection checkpoint-projections)))
+     store index-projection checkpoint-projection-operation)))
 
 (defun e-session--root-record-from-store (store session-id)
   "Return the current semantic root record for SESSION-ID."
@@ -536,17 +537,17 @@ case so a freshly created direct JSONL store remains reopenable."
   (let* ((session (e-session-aggregate-get-live store session-id))
          (records (plist-get session :admission-records)))
     (condition-case err
-        (pcase-let ((`(,index-projection ,checkpoint-projections)
+        (pcase-let ((`(,index-projection ,checkpoint-projection-operation)
                      (e-session--refresh-projections store)))
           ;; Keep the journal admission and aggregate transition as one
           ;; application-level sequence.  Storage owns the physical append;
-          ;; the facade publishes detached projections only after the
-          ;; aggregate has accepted the same semantic admission.
+          ;; the facade publishes the detached index and deferred checkpoint
+          ;; operation only after the aggregate accepts the same admission.
           (e-session-storage-publish-admission
            store session-id records nil)
           (e-session-aggregate-commit-board-admission store session-id)
           (e-session-storage-publish-projections
-           store index-projection checkpoint-projections)
+           store index-projection checkpoint-projection-operation)
           session)
       (error
        (e-session-storage-abort-session store session-id)
@@ -1096,12 +1097,12 @@ never touches durable files or another session's aggregate state."
   store)
 
 (defun e-session-refresh-index (store)
-  "Publish the current detached catalog projections for STORE.
+  "Publish STORE's current index and deferred checkpoint projection.
 
 The application service composes aggregate values with catalog policy and
-hands the resulting projections to the storage owner's one publication
-boundary.  Consumers needing a derived-index barrier use this operation
-instead of reaching into the physical writer."
+hands the resulting index and checkpoint operation to the storage owner's one
+publication boundary.  Consumers needing a derived-index barrier use this
+operation instead of reaching into the physical writer."
   (e-session--write-index store))
 
 (provide 'e-session)

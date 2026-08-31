@@ -193,6 +193,65 @@
     (should-not failure)
     (should done)))
 
+(ert-deftest e-session-storage-test-public-append-defers-checkpoint-projection ()
+  "Public append projects the latest checkpoint only at the durability boundary."
+  (skip-unless (executable-find e-session-storage-node-executable))
+  (let* ((directory (make-temp-file "e-session-deferred-checkpoint-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (session-id "long-running-session")
+         controller)
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          ;; Model the material history from the latency report without turning
+          ;; elapsed time into a contract.  The existing command-budget fixture
+          ;; covers the larger bounded manifest shape independently.
+          (dotimes (index 40)
+            (e-session-append-message
+             store session-id
+             (list :id (format "history-message-%03d" index)
+                   :role (if (zerop (% index 2)) 'user 'assistant)
+                   :content (format "historical transcript entry %03d" index))))
+          (dotimes (index 270)
+            (e-session-append-board-message
+             store session-id
+             (list :id (format "history-board-%03d" index)
+                   :kind 'activity)))
+          (setq controller (e-session-enable store))
+          (let ((original-manifest
+                 (symbol-function 'e-session-catalog-checkpoint-manifest))
+                (manifest-count 0)
+                done failure)
+            (cl-letf (((symbol-function 'e-session-catalog-checkpoint-manifest)
+                       (lambda (&rest arguments)
+                         (setq manifest-count (1+ manifest-count))
+                         (apply original-manifest arguments))))
+              (e-session-append-message
+               store session-id
+               '(:id "message-appended-during-turn"
+                 :role assistant
+                 :content "appended without synchronous projection"))
+              (should (= manifest-count 0))
+              (e-session-finalize
+               store
+               (lambda (_value) (setq done t))
+               (lambda (err) (setq failure err)))
+              (let ((deadline (+ (float-time) 5.0)))
+                (while (and (not done) (not failure)
+                            (< (float-time) deadline))
+                  (accept-process-output nil 0.02)))
+              (should-not failure)
+              (should done)
+              (should (> manifest-count 0))))
+          (let* ((reopened (e-session-persistent-index-store-create directory))
+                 (messages (e-session-messages reopened session-id)))
+            (should (equal (plist-get (car (last messages)) :id)
+                           "message-appended-during-turn"))))
+      (when-let ((process (and controller
+                              (e-session-storage--controller-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (defun e-session-storage-test--route-routing-policy (policy)
   "Route symbol and string attribute messages through POLICY's selector.
 This is an owner-level routing assertion: it exercises the restored selector
@@ -625,6 +684,7 @@ against real board messages instead of comparing only persisted plists."
          (e-session-storage--unsettled-write-count 0)
          (e-session-storage--unsettled-generation 0)
          controller
+         done
          failure)
     (unwind-protect
         (progn
@@ -646,7 +706,115 @@ against real board messages instead of comparing only persisted plists."
           (should-not (e-session-storage--controller-checkpoint-timer controller))
           (should (= (hash-table-count
                       (e-session-storage--controller-outbox controller))
-                     0)))
+                     0))
+          (e-session-append-message
+           store "session-1"
+           '(:id "newer-after-checkpoint-failure"
+             :role user
+             :content "retry must project this state"))
+          (setq failure nil)
+          (e-session-finalize
+           store
+           (lambda (_value) (setq done t))
+           (lambda (err) (setq failure err)))
+          (let ((deadline (+ (float-time) 5.0)))
+            (while (and (not done) (not failure) (< (float-time) deadline))
+              (accept-process-output nil 0.02)))
+          (should-not failure)
+          (should done)
+          (should-not (e-session-storage-checkpoint-dirty-session-ids store))
+          (let* ((reopened
+                  (e-session-persistent-index-store-create directory))
+                 (messages (e-session-messages reopened "session-1")))
+            (should (equal (plist-get (car (last messages)) :id)
+                           "newer-after-checkpoint-failure"))))
+      (when-let ((process (and controller
+                              (e-session-storage--controller-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-storage-test-mutation-during-checkpoint-batch-is-not-lost ()
+  "A mutation during an older checkpoint batch survives its later barrier."
+  (skip-unless (executable-find e-session-storage-node-executable))
+  (let* ((directory (make-temp-file "e-session-checkpoint-replaced-" t))
+         (e-session-storage-checkpoint-delay 60)
+         (store (e-session-persistent-index-store-create directory))
+         (session-id "mutation-during-checkpoint")
+         (original-submit (symbol-function 'e-session-storage--submit))
+         controller first-checkpoint-held held-continuation operations
+         old-done old-failure new-done new-failure)
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (setq controller (e-session-enable store))
+          (cl-letf
+              (((symbol-function 'e-session-storage--submit)
+                (lambda (target operation &optional on-done on-error)
+                  (let ((operation-name (plist-get operation :op)))
+                    (push operation-name operations)
+                    (if (and (equal operation-name "checkpoint")
+                             (not first-checkpoint-held))
+                        ;; Submit the old checkpoint in its real writer order,
+                        ;; but hold its continuation so the batch remains active
+                        ;; while the public mutation installs newer work.
+                        (progn
+                          (setq first-checkpoint-held t)
+                          (funcall
+                           original-submit target operation
+                           (lambda (value)
+                             (setq held-continuation
+                                   (lambda () (funcall on-done value))))
+                           on-error))
+                      (funcall original-submit target operation
+                               on-done on-error))))))
+            (e-session-finalize
+             store
+             (lambda (_value) (setq old-done t))
+             (lambda (err) (setq old-failure err)))
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (not held-continuation) (not old-failure)
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.02)))
+            (should-not old-failure)
+            (should held-continuation)
+            (e-session-append-message
+             store session-id
+             '(:id "message-during-old-checkpoint"
+               :role assistant
+               :content "must survive the next durability boundary"))
+            (should (equal
+                     (e-session-storage-checkpoint-dirty-session-ids store)
+                     (list session-id)))
+            (funcall held-continuation)
+            (setq held-continuation nil)
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (not old-done) (not old-failure)
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.02)))
+            (should-not old-failure)
+            (should old-done)
+            (should (equal
+                     (e-session-storage-checkpoint-dirty-session-ids store)
+                     (list session-id)))
+            (e-session-finalize
+             store
+             (lambda (_value) (setq new-done t))
+             (lambda (err) (setq new-failure err)))
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (not new-done) (not new-failure)
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.02)))
+            (should-not new-failure)
+            (should new-done)
+            (should-not
+             (e-session-storage-checkpoint-dirty-session-ids store))
+            (should (equal (nreverse operations)
+                           '("checkpoint" "append" "reindex"
+                             "checkpoint" "reindex"))))
+          (let* ((reopened (e-session-persistent-index-store-create directory))
+                 (messages (e-session-messages reopened session-id)))
+            (should (equal (plist-get (car (last messages)) :id)
+                           "message-during-old-checkpoint"))))
       (when-let ((process (and controller
                               (e-session-storage--controller-process controller))))
         (when (process-live-p process) (kill-process process)))

@@ -37,7 +37,7 @@
   (checkpoint-dirty-session-ids (make-hash-table :test 'equal))
   (write-queue-generation 0) (write-queue-sequence 0)
   (unsettled-write-count 0) (unsettled-generation 0)
-  index-projection checkpoint-projections controller)
+  index-projection checkpoint-projection-operation controller)
 
 (defvar e-session-storage--states
   (make-hash-table :test 'eq :weakness 'key)
@@ -437,38 +437,24 @@ catalog owners; storage only serializes it."
         (copy-tree projection))
   projection)
 
-(defun e-session-storage--set-checkpoint-projections (store projections)
-  "Install detached checkpoint PROJECTIONS for the next writer barrier.
-
-PROJECTIONS is an alist whose keys are session ids and whose values are
-complete semantic checkpoint manifests.  The application service computes the
-manifests through the catalog owner; storage only keeps the detached values
-until it submits them to the physical adapter."
-  (setf (e-session-storage--state-checkpoint-projections
+(defun e-session-storage--set-checkpoint-projection-operation (store operation)
+  "Install application-produced checkpoint projection OPERATION for STORE."
+  (setf (e-session-storage--state-checkpoint-projection-operation
          (e-session-storage--state store))
-        (copy-tree projections))
-  projections)
-
-(defun e-session-storage--set-checkpoint-projection (store session-id manifest)
-  "Install detached MANIFEST for SESSION-ID in STORE's checkpoint batch."
-  (let* ((state (e-session-storage--state store))
-         (projections (e-session-storage--state-checkpoint-projections state)))
-    (setf (e-session-storage--state-checkpoint-projections state)
-          (cons (cons session-id (copy-tree manifest))
-                (cl-remove-if (lambda (pair) (equal (car pair) session-id))
-                              projections))))
-  manifest)
+        operation)
+  operation)
 
 (defun e-session-storage-publish-projections
-    (store index-projection checkpoint-projections)
-  "Publish detached catalog PROJECTIONS through STORE's durability mode.
+    (store index-projection checkpoint-projection-operation)
+  "Publish catalog projections through STORE's durability mode.
 
-The application service supplies values produced by the catalog owner.  This
-single semantic boundary owns projection retention, queue/controller
-coordination, atomic index/checkpoint publication, and derived durability
-state; callers do not invoke a raw index writer or checkpoint slot directly."
+The application service supplies the detached index value and an operation
+that produces a current semantic checkpoint manifest for one session.  This
+single boundary retains that operation only across the existing debounce and
+checkpoint batch; storage never inspects aggregate or catalog representation."
   (e-session-storage--set-index-projection store index-projection)
-  (e-session-storage--set-checkpoint-projections store checkpoint-projections)
+  (e-session-storage--set-checkpoint-projection-operation
+   store checkpoint-projection-operation)
   (e-session-storage--write-index store))
 
 (defun e-session-storage--write-index-now (store)
@@ -1287,16 +1273,21 @@ retract a command already acknowledged by the writer."
     (e-session-storage--trim-outbox-order controller)
     cancelled))
 
-(defun e-session-storage--checkpoint-operation (controller session-id)
-  "Return one bounded writer checkpoint operation for CONTROLLER SESSION-ID."
+(defun e-session-storage--checkpoint-operation
+    (controller session-id &optional projection-operation)
+  "Return one bounded writer checkpoint operation for CONTROLLER SESSION-ID.
+PROJECTION-OPERATION, when supplied, is the application-owned projection
+captured for the current durability batch."
   (let* ((state (e-session-storage--controller-state controller))
-         ;; The application service owns catalog selection.  Storage receives a
-         ;; detached manifest and only translates its board routing value at
-         ;; the final wire boundary.
+         (projection-operation
+          (or projection-operation
+              (e-session-storage--state-checkpoint-projection-operation state)))
+         ;; The application service owns catalog selection.  Invoke its narrow
+         ;; operation at the durability boundary, then detach the result before
+         ;; command preparation reaches the physical writer adapter.
          (manifest (copy-tree
-                    (or (cdr (assoc session-id
-                                   (e-session-storage--state-checkpoint-projections
-                                    state)))
+                    (or (and projection-operation
+                             (funcall projection-operation session-id))
                         (list :session-id session-id :entry-ids [])))))
     (when (plist-member manifest :board-state)
       (plist-put manifest :board-state
@@ -1319,6 +1310,9 @@ checkpoint is durable.  Call ON-DONE after that barrier or ON-ERROR once on the
 first terminal failure.  The caller owns one unsettled-write slot spanning the
 whole batch; each submitted writer command owns its ordinary outbox slot."
   (let* ((store (e-session-storage--controller-store controller))
+         (state (e-session-storage--controller-state controller))
+         (projection-operation
+          (e-session-storage--state-checkpoint-projection-operation state))
          (session-ids (e-session-storage-checkpoint-dirty-session-ids store))
          (remaining (copy-sequence session-ids))
          (settled nil)
@@ -1336,6 +1330,15 @@ whole batch; each submitted writer command owns its ordinary outbox slot."
          (finish (value)
            (unless settled
              (setq settled t)
+             ;; Do not retain an aggregate-capturing operation after its batch.
+             ;; A mutation during this batch installs a distinct operation for
+             ;; the next debounce and must remain pending.
+             (when (eq projection-operation
+                       (e-session-storage--state-checkpoint-projection-operation
+                        state))
+               (setf (e-session-storage--state-checkpoint-projection-operation
+                      state)
+                     nil))
              (funcall on-done value)))
          (submit-operation (operation success)
            (condition-case err
@@ -1357,7 +1360,7 @@ whole batch; each submitted writer command owns its ordinary outbox slot."
                  (if-let ((session-id (pop remaining)))
                      (when (submit-operation
                             (e-session-storage--checkpoint-operation
-                             controller session-id)
+                             controller session-id projection-operation)
                             #'submit-next)
                        ;; Transfer this snapshot out of the dirty set before the
                        ;; event loop can observe its acknowledgement.  A later

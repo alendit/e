@@ -1,0 +1,15 @@
+#+title: Session Checkpoint Projection Blocks Active Turns
+#+startup: overview
+
+* Report
+
+The user reported that Emacs became very slow during an active agent turn and
+provided the structured trace and native CPU/memory profiles rooted at:
+
+#+begin_example
+/tmp/e-profile/20260831-212147-000001.jsonl
+#+end_example
+
+Expected behavior: appending tool-call and tool-result messages remains
+responsive while durable journal writes and debounced checkpoint/catalog
+publication preserve their existing ordering, retry, and recovery semantics.
