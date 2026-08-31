@@ -9,10 +9,11 @@ Status values for coding agents:
 - In-review :: =review.org= exists in the dev work directory and still has notes to resolve.
 - Done :: review finished and has no unresolved notes.
 
-Current implementation gate: Feature 91 is =In-review= and must reach =Done=
-before implementation or review remediation continues in any other feature.
-Planning and read-only review may continue.  Existing statuses remain unchanged
-because they record lifecycle state, not permission to bypass this gate.
+Feature 91 is =Done=, so its temporary implementation gate is satisfied.
+Before implementation or review remediation resumes in Features 87, 88, or 90,
+rebaseline that feature's source anchors and assumptions against the accepted
+Feature 91 module boundaries.  Existing statuses remain unchanged because they
+record each feature's lifecycle state.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
@@ -106,4 +107,4 @@ because they record lifecycle state, not permission to bypass this gate.
 | 88 | In-review   | 88-generational-context-ephemeral-frames/    | Generational Context with Ephemeral Frames — Addenda 3/4/5/6/7/8 |
 | 89 | Planned     | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
-| 91 | In-review   | 91-improve-modularization/                      | Improve Modularization                               |
+| 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |

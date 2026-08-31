@@ -291,6 +291,9 @@ relations needed for those real callback boundaries. It does not emulate a
 general commit/abort protocol for synthetic failures of already-completed
 `puthash`, `remhash`, `setcdr`, or accessor primitives, and it does not
 preimplement future SQLite semantics.
+This is the accepted Feature 91 boundary: future Board or SQLite work should
+extend these owners through their narrow semantic contracts instead of
+reintroducing primitive-level recovery or cross-owner representation access.
 Ordinary-route retirement is owned by `e-board-retire-subscription-exact` in
 `e-board`: its board-monotonic lifetime token fences classifiers, prepared and
 queued effects, replay snapshots, quiet/lifetime/expiry callbacks, and same-id

@@ -4,12 +4,12 @@
 
 * Status
 
-In-progress.
+Done.
 
-This feature is the current implementation gate.  It must reach =Done= before
-implementation or review remediation continues in any other feature.  Planning
-and read-only review may continue, but accepted source behavior is frozen as
-the preservation baseline while this modularization work is active.
+This feature was the implementation gate for Features 87, 88, and 90.  The
+gate is now satisfied.  Before work resumes in any of those features, rebaseline
+its source anchors and assumptions against the accepted Feature 91 module
+boundaries.
 
 * Goal
 
@@ -1412,3 +1412,29 @@ generation checks; and delete only synthetic primitive-fault, compact-journal,
 and six-catalog recovery tests.  The exact changed-name comparison is
 =/tmp/e-r5-corrected-test-name-preservation-final.log=; all deletions are
 listed there and no historical Board facade test name was removed.
+
+** Final acceptance
+
+Feature 91 is =Done= at =81148322d63a845baab486a145e546c7dc5ba320=,
+following the scope-corrected simplification commit
+=dff11fab85772eb8ed3cf7596f7b31cf968d601d=.  The accepted design keeps
+=e-board-state= as the stable Board value/count contract,
+=e-board-admission= as the short-lived Board relation and callback-fencing
+owner, =e-board= as the routing/publication/settlement policy owner,
+=e-board-runtime-admission= as the exact runtime admission-lifetime index, and
+=e-board-runtime= as the attachment/delivery orchestration owner.
+
+Generalized in-memory transactions, per-primitive recovery, six-catalog
+journaling, and SQLite preimplementation remain explicit non-goals.  The final
+independent review has zero actionable findings under the corrected production
+failure model.  Its sole initial finding—prepared aggregation cancellation
+retaining a pending settlement admission—was corrected through the exact active
+token and passed the unchanged independent witness 5/5.
+
+Repository-side acceptance evidence is 319/319 focused Board/runtime/consumer
+tests and 2,651 full ERT tests with 2,641 expected results, 3 independently
+reproduced unrelated OpenAI HTTP/Org-fold failures, and 7 existing skips.  The
+literal local dependency graph remains 167 modules and 719 edges with no cycle;
+the Board-family semantic graph remains acyclic with no reverse owner-to-facade
+edge.  The running Emacs was left untouched.  Loading the accepted core record
+changes requires a full Emacs restart; =e-dev-reload= is insufficient.

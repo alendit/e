@@ -4,848 +4,645 @@
 
 * Status
 
-In-review.
+Done.  Parent acceptance recorded after this review reached fixed point.
 
-The exact committed candidate reviewed in this independent fixed-point pass is
-=e1aa5722a2aee95af281aba9a1fdcf71c2f2d00d=, =fix: complete exact admission
-recovery stages=.  Its immediate parent and requested baseline is
-=857b78134d5d587675879cb9506184ef6c9e96ad=.  The logical preceding Feature 91
-implementation checkpoint is
-=3cf56b35ad82114f63772ff8ce74d1cc91a38899=.
+This is the bounded closure check of committed Feature 91 remediation
+=81148322d63a845baab486a145e546c7dc5ba320=, =fix: release cancelled
+aggregation admission=.  Its immediate parent is the terminal whole-package
+candidate =dff11fab85772eb8ed3cf7596f7b31cf968d601d=.  The remediation changes
+exactly =lisp/core/e-board.el= and =test/e-board-test.el=, with 80 insertions
+and 12 deletions.
 
-The commits after that checkpoint are deliberately distinguished:
+=HEAD= matched the requested full revision.  At closure entry the index and all
+implementation/test files were clean; the only worktree change was this
+uncommitted =review.org= from the preceding terminal review.  This reviewer
+changed no implementation, test, plan, audit, architecture, index, or other
+repository file.  Only this updated =review.org= is left uncommitted for parent
+inspection.
 
-- =01d522c3ee89030d21779a1d650afeb35b381f77=, =docs: plan frame-scoped
-  repeated curation=, is unrelated shared-main Feature 90 planning work;
-- =857b7813= commits the preceding independent Feature 91 review; and
-- =e1aa5722= is the single Feature 91 remediation candidate under review.
+The exact actionable-finding count is *0*.  The sole terminal finding is
+resolved at its Board settlement owner, and the invalidated cancellation cell
+passes the original single, repeated-callback, and multi-cancellation witness.
+Feature 91 has reached a proportionate repository-controlled fixed point and is
+accepted.  The parent records it as =Done= in =docs/feats/index.org=.  Before
+implementation or review remediation resumes in Features 87, 88, or 90, that
+feature must rebaseline its source anchors against the accepted module
+boundaries.
 
-The candidate itself changes 12 paths with 1,327 insertions and 308 deletions.
-=HEAD= matched the requested full revision and the worktree was clean at review
-entry.  This reviewer changed no implementation, test, plan, audit,
-architecture, index, or other repository file.  Only this =review.org= is
-intentionally left uncommitted for parent inspection.
+* Review result
 
-This revision has not reached fixed point.  The exact actionable-finding count
-is *5*: one =TODO High=, three =TODO Medium=, and one =TODO Low=.  Normal-path
-direct, composition, preservation, compile, and full fixture-enabled ERT gates
-pass, but independent fault-boundary reproductions expose committed-admission
-recovery, terminal settlement, runtime recovery scope, and unbounded retained
-state defects.  Feature 91 must remain =In-review=, and its mandatory sequencing
-gate against implementation or remediation in Features 87, 88, and 90 remains
-closed.
+The closure commit resolves the only production-scope defect from the terminal
+review.  =e-board-cancel-aggregation= now captures the exact settlement token's
+active lifetime authority before deliberately changing the aggregation to
+=cancelled=.  It then completes that exact committed admission and releases the
+owner/event holders while retaining the live effect receipt until the stale
+scheduler callback consumes its queue cell.  Re-entering that callback is inert
+and does not dispatch externally.
 
-* Review summary
+The corrected failure model remains architecturally healthier than the
+preceding synthetic-remediation design.  The terminal candidate removes
+generalized primitive-fault journaling, compact transaction nodes, and six
+runtime recovery catalogs while retaining the production contracts that matter:
+object/generation authority, normal cancellation, callback and scheduler
+reentry, at-most-once irreversible dispatch, and bounded owner-local cleanup.
 
-The candidate fixes substantial parts of the preceding review.  The lower
-=e-board-runtime-error= contract now fresh-loads independently and supports
-both typed and generic handlers.  Direct event and work-index compact
-finalization is resumable at map and neighbour mutations.  The low-level
-classifier, deadline, and effect owners retain count and scheduler authority
-across their tested primitive faults.  The runtime recovery owner records exact
-bucket identity, and direct 10,000-item event and singleton/multi-node index
-shapes contain no full receipt in their maps.  The literal require graph is
-reproducibly 167 modules, 719 unique edges, and acyclic.
+The physical owner graph is coherent and acyclic.  =e-board-state= owns Board
+values and unsettled counts; =e-board-admission= owns short-lived exact Board
+relations and scheduler generations; =e-board= owns semantic Board policy and
+external dispatch; =e-board-runtime-admission= owns the exact runtime admission
+lifetime indexes; and =e-board-runtime= owns attachment-generation
+orchestration.  Fresh loading, private-boundary scans, the syntax-aware call
+graph, and the literal require graph all support that decomposition.
 
-The remaining issues occur where those lower mechanisms compose with semantic
-Board and runtime lifetimes:
+Healthy and signalling invocation settlement, aggregation reentrant
+cancellation after dispatch begins, stale callback fencing, replacement
+generations, scheduler faults, timers, producer/activity cleanup, and chat
+consumer behavior remain green.  Prepared cancellation before dispatch now
+also leaves zero pending admission, no owner token, no event receipt, and—after
+the stale callback—no effect receipt.  No actionable production-scope finding
+remains.
 
-- runtime enrollment cannot distinguish an interrupted committed completion
-  from an admission that still requires rollback;
-- terminal invocation/aggregation settlement can strand a pending admission,
-  consume its only continuation, relabel a successful external effect as
-  failed, or silently lose its terminal diagnostic;
-- attachment-local retirement and retry include Board-wide sibling records,
-  while a compounded publication/cleanup fault can still leave a primary-only
-  record that no object-local public operation can discover;
-- healthy terminal settlements retain their token/receipt/closure graph, and
-  multi-event compact nodes retain full root receipts; and
-- the published call/private-boundary evidence omits 15 call sites and two
-  owner-private facade references.
+* Review basis and evidence boundary
 
-These findings keep =F91-GOAL=, =F91-OWNER=, =F91-RUNTIME=,
-=F91-TOPOLOGY=, and =F91-PRESERVATION= open.  The accepted presentation,
-session, harness, OpenAI, MCP, base, context-estimate, exact attached-turn,
-public chat-drain, and earlier Board lifetime contracts remain intact.
-
-* Scope reviewed
-
-The same persistent independent reviewer used the required authorities:
+The persistent independent reviewer used the required authorities:
 
 - =AGENTS.md=;
 - =docs/references/dev_work.org= and =docs/agents/review.org=;
 - =docs/feats/index.org=;
 - Feature 91 =plan.org= and =round-1-audit.org= through
   =round-5-audit.org=;
-- the preceding committed =review.org=;
+- the preceding =review.org= history;
 - =docs/architecture.md=; and
 - =docs/references/runtime_concepts.org=.
 
-Those authorities were read completely in the persistent review chain.  This
-pass inspected the exact =857b7813..e1aa5722= committed diff, the wider history
-back through =3cf56b35= while separating unrelated shared-main work, every
-changed source/test file, the current architecture and Round 5 audit, and the
-relevant complete Board/admission/registry/runtime/Work owners.  The review
-re-ran the prior defect witnesses, rewrote cases whose APIs or expected states
-changed, and added direct reproductions at the new composition boundaries.
+The terminal review inspected the exact committed =a1e33f68..dff11fab= diff,
+current source and tests rather than summaries, the cumulative owner families
+and public seams, the literal dependency graph, the Board-family call graph,
+and all retained large roots.  This incremental closure check inspected the
+exact two-file =dff11fab..81148322= diff, the changed owner path and assertions,
+and the original independent reproducer.  The user's running Emacs was not
+queried, reloaded, or changed.
 
-The cumulative contract scope remains:
+** In-scope failure model
 
-- =F91-GOAL=, =F91-OWNER=, =F91-PRESENTATION=, =F91-SESSION=,
-  =F91-RUNTIME=, =F91-OPENAI=, =F91-MCP=, =F91-BASE=,
-  =F91-TOPOLOGY=, and =F91-PRESERVATION=;
-- chat facade plus surface, composer, transcript, activity, and overview
-  owners, including Org Canvas consumers;
-- session aggregate/codec/catalog/storage and metadata, identity,
-  provider-anchor, and board-policy value owners, including durable behavior;
-- harness state/capability/activity/turn-state/context-runtime/turn and the
-  public attached-turn port;
-- Board state/admission/semantic/registry/runtime owners, Work relations,
-  exact participant/client/attachment lifetimes, producer/activity mailboxes,
-  pickup generations, invocation leases, classifier routing, and quiescence;
-- OpenAI, MCP, and base facade/owner graphs and substitutability;
-- single ownership of context estimation and the acyclic context graph;
-- the Round 5 public Board envelope, chat drains, continuation reconciliation,
-  default harness projection, attachment live-buffer projection, and session
-  temporary-path operation;
-- every production Lisp root over 2,500 lines and test/E2E Lisp root over 4,000
-  lines; and
-- mandatory Feature 91 sequencing before Features 87, 88, and 90 resume.
+- ordinary callback, observer, scheduler, and timer success or signalling;
+- cancellation before a deferred effect and reentry after an irreversible
+  effect begins;
+- stale callback and exact object/generation replacement;
+- at-most-once external dispatch and visible terminal state;
+- owner catalog, queue, timer, observer, subscription, and receipt lifetimes;
+- narrow public/private seams, fresh-load substitutability, and dependency
+  direction; and
+- full-repository behavior, source/test discovery, and agent navigation.
 
-No credentialed provider request was made.  External provider behavior remains
-=capability-unconfirmed= and is not required to judge this process-local
-topology and failure-semantics change.
+** Explicit non-goals applied in this review
+
+The following former witnesses are not acceptance blockers and were not used
+to demand new machinery:
+
+- arbitrary injected failures after successful =puthash=, =remhash=,
+  =setcdr=, =setf=, or generated accessor mutations;
+- per-primitive forward/inverse recovery;
+- generalized commit/abort journaling or transaction emulation;
+- preservation of compact-root receipt implementations that exist only for
+  those synthetic failures; and
+- preimplementation of Feature 87's SQLite transaction or migration design.
+
+** Prior finding reclassification
+
+| Prior finding family | Disposition at =81148322= |
+|---+---|
+| Arbitrary event/index/hash/list mutation recovery | Withdrawn as outside the corrected failure model.  The associated synthetic tests and generalized journal state were correctly removed. |
+| Six-catalog runtime recovery and primitive-boundary bucket repair | Withdrawn as outside scope.  The current primary/Board/attachment exact indexes are sufficient for production retirement and explicit Board retry. |
+| Runtime error fresh-load contract | Resolved.  =e-board-runtime-admission= explicitly imports =e-board-runtime-error=; a fresh lower-owner load catches the condition through both typed and generic handlers without loading Board facade/runtime/registry. |
+| Invocation admission, terminalization, replacement, and exactly-once dispatch | Resolved for production paths.  Direct focused tests and the independent terminal probes show one dispatch, terminal state, zero pending admission, and released receipt holders on success and signal. |
+| Classifier/deadline/effect scheduler generations and callback reentry | Resolved for production paths.  Current owner/facade suites exercise pre/post count-observer errors, retained callbacks, FIFO successors, stale generations, and reentrant enqueue/cancellation. |
+| Runtime retirement, producer/activity cleanup, pickup generation, subscription lifetime tokens, and grouped classification | Resolved by current exact-object/generation behavior and focused runtime/registry/composition suites. |
+| Healthy settlement retained-graph lifetime | Resolved for committed and failed invocation/aggregation settlement; the 10,000-node shape check has zero payload-bearing committed receipts.  The distinct prepared-cancellation finding is now also resolved. |
+| Published graph/private-boundary evidence | Resolved and independently reproduced: 167 modules, 719 local require edges, no SCC; 269 Board-family cross-owner calls with no reverse edge; zero cross-owner private references and zero duplicate function definitions. |
 
 * What looks good
 
-- =e-board-runtime-error.el= is now a real lower contract.  A fresh process can
-  load the runtime-admission owner without the runtime facade, and the emitted
-  error satisfies both =e-board-runtime-error= and generic =error= handlers.
-- =e-board-runtime-admission.el= remains a substantive 534-line owner rather
-  than a forwarding root.  It has explicit downward dependencies, no require
-  or call back into the runtime facade, and a direct independent test root.
-- Direct event/index finalizers publish a compact node and acknowledge their
-  map, predecessor, and successor postconditions.  Direct event and both
-  singleton/multi-node index 10,000-item shapes retain zero full receipts.
-- Ready aggregation continues to use one supplied admission.  Standalone event,
-  classifier, deadline, and effect wrappers reject stale success after
-  non-signaling or signaling reentry.  Exact classifier index restoration and
-  fresh successor scheduling remain green.
-- The ordinary six-catalog publication/removal matrices preserve exact bucket
-  identity and same-key replacement state across the covered pre/postmutation
-  stages.  The remaining runtime issue is the composition and recovery scope
-  described in Findings 1 and 3, not a return to id reconstruction.
-- =e-board-runtime.el= remains below 4,000 lines and uses public Board/admission
-  contracts.  No runtime call reaches an =e-board-*= private operation.
-- The literal require graph is acyclic, no duplicate production definition was
-  found, historical Board/runtime test names remain discoverable, direct owner
-  roots run independently, and composed suites do not inspect owner-private
-  fields.
-- Earlier exact caller receiver/attached-turn preservation, chat drain
-  termination, client/participant/attachment retirement, producer/activity
-  generation, subscription token, invocation terminalization, pickup
-  generation, and grouped-classifier fixes remain resolved in source and the
-  focused/full suites.
-
-* Prior finding dispositions
-
-| Cumulative prior finding | Disposition at =e1aa5722= |
-|--------------------------+---------------------------|
-| Exact caller receiver must settle both queued and published follow-ups | *Resolved.* Both paths retain the captured receiver; no replacement-port fallback returned. |
-| Public subscription/binding drains must stop after callback fault, detach, stale receiver, unsubscribe, or close while preserving healthy paging | *Resolved.* Current public drain suites and preservation selector remain green. |
-| Require graph evidence must be reproducible | *Resolved for the literal graph:* 167 modules, 719 edges, no SCC.  The semantic call/private scan remains inaccurate (Finding 5). |
-| Terminal attachment lifecycle must retire exact clients, observers, timers, subscriptions, catalogs, and Board relations while preserving durable association/recovery | *Resolved for the previously reviewed ordinary lifecycle matrix.* The new sibling-scope recovery defect is Finding 3. |
-| Exact participant/client/attachment retirement, producer settlement, activity generation, subscription tokens, pickup generation, and grouped classifier authority | *Resolved.* Current focused/full gates show no regression. |
-| Invocation terminalization and admission must survive reentry/replacement and exact event/index rollback | *Resolved for the earlier lease/admission witnesses.* Terminal settlement after enrollment has the new semantic continuation defect in Finding 2. |
-| Lower runtime-admission error had no fresh-load contract | *Resolved.* Explicit import plus fresh typed/generic handling passes. |
-| Event/index compact map and neighbour mutations were not directly resumable | *Resolved at the direct owner boundary.* Runtime chooses the wrong inverse after a committed completion fault (Finding 1), and multi-event roots retain full receipts (Finding 4). |
-| Ready aggregation ownership, standalone wrapper reentry, classifier/deadline/effect primitive authority, and classifier index restoration | *Resolved at their direct primitive boundaries.* Higher semantic settlement still loses continuation/error state (Finding 2). |
-| Runtime six-catalog recovery and replacement identity | *Partially resolved.* Normal primitive matrices pass; cross-attachment scope and primary-only compounded recovery remain (Finding 3). |
-| Committed event/index state must retain only compact link state | *Partially resolved.* Direct shapes pass; composed multi-event settlement and upper semantic holders remain unbounded (Finding 4). |
-
-* Verification performed during this review pass
-
-** Exact revision, history, and workspace
-
-#+begin_src sh
-git status --short --branch
-git rev-parse HEAD
-git rev-parse HEAD^
-git log --oneline -6
-git show --stat --oneline e1aa5722
-git diff --shortstat 857b7813..e1aa5722
-git diff --check 857b7813..e1aa5722
-#+end_src
-
-#+begin_example
-entry: ## main...origin/main, no changed paths
-HEAD:   e1aa5722a2aee95af281aba9a1fdcf71c2f2d00d
-parent: 857b78134d5d587675879cb9506184ef6c9e96ad
-candidate: 12 files changed, 1327 insertions(+), 308 deletions(-)
-diff check: PASS
-#+end_example
-
-** Direct owner, composition, and adjacent suites
-
-The six primary roots were run together and independently discover their own
-tests:
-
-| Root | Result |
-|------+--------|
-| =test/e-board-admission-test.el= | PASS: 35/35 |
-| =test/e-board-runtime-admission-owner-test.el= | PASS: 8/8 |
-| =test/e-board-test.el= | PASS: 77/77 |
-| =test/e-board-runtime-admission-test.el= | PASS: 22/22 |
-| =test/e-board-admission-composition-test.el= | PASS: 11/11 |
-| =test/e-board-runtime-test.el= | PASS: 79/79 |
-
-#+begin_example
-combined primary roots: 232 expected, 0 unexpected
-adjacent registry + Work: 85 expected, 0 unexpected
-  e-board-registry: 37/37
-  e-work:           48/48
-#+end_example
-
-** Independent adversarial witnesses
-
-The old =/private/tmp/e-f91-3cf56-review-probes.el= root was rerun first.  It
-executed 22 cases: 11 invariant cases remained expected and 11 old negative
-assertions became unexpected because their exact prior defect states no longer
-hold.  Those old assertions are historical witnesses, not a current acceptance
-gate.  The affected cases were then rewritten against the current record and
-public APIs.
-
-The current temporary review root
-=/private/tmp/e-f91-e1aa-review-probes.el= ran 14/14 expected with this command:
-
-#+begin_src sh
-eldev exec -f /private/tmp/e-f91-e1aa-review-probes.el \
-  '(ert-run-tests-batch-and-exit "^e-f91-e1aa-")'
-#+end_src
-
-These are defect witnesses: an expected result means the test reproduced and
-bounded the stated bad postcondition.  The 14 cases were:
-
-#+begin_example
-attachment-fence-also-fences-board-sibling-admission
-cancelled-prepared-aggregation-leaks-settlement-admission
-effect-committed-event-postfault-relabels-success-failed
-effect-failure-diagnostic-fault-is-silently-lost
-healthy-settlement-retains-transaction-objects
-invocation-activation-map-postfault-is-not-retryable
-multi-event-commit-retains-full-root-receipts
-partial-compact-commit-cannot-follow-runtime-abort-path
-public-enrollment-compact-fault-is-not-recoverable
-public-primary-only-leak-survives-enroll-retire-and-reattach
-retiring-one-attachment-aborts-sibling-committed-admission
-runtime-primary-only-is-not-object-recoverable
-settlement-applying-event-fault-strands-invocation
-settlement-applying-event-postfault-strands-aggregation
-#+end_example
-
-Important exact postconditions from those witnesses:
-
-- a direct partially compacted committed admission rejects two attempted
-  aborts and remains pending; the public runtime path retains visible Work but
-  later retry still errors with one Board admission pending;
-- ordinary prepared-aggregation cancellation leaves one settlement admission
-  pending even without fault injection;
-- pre/post terminal event faults leave invocation or aggregation in =applying=
-  with no queued effect continuation; a successful dispatcher followed by an
-  =effect-committed= event postfault is relabeled =failed=;
-- a compounded runtime publication/cleanup fault leaves the six-catalog vector
-  =(0 0 0 1 0 0)=, a primary-only record unreachable from attachment/Board
-  retry; public enroll, exact retire, reattach, and later successful enroll do
-  not remove it; and
-- retiring attachment A can mark and abort a distinct committed admission for
-  attachment B on the same Board.
-
-** Preservation and full ERT
-
-The accepted preservation selector passed 485 selected tests: 483 expected, 0
-unexpected, and two established skips.  The default sandbox full run was
-environment-limited only by the known local-server fixtures:
-
-#+begin_example
-sandbox: 2670 total, 2657 expected, 6 unexpected localhost fixture failures,
-         7 established skips
-fixture-enabled: 2670 total, 2663 expected, 0 unexpected, 7 established skips
-#+end_example
-
-The six sandbox failures are the four MCP HTTP fixture cases and two OpenAI URL
-fixture cases.  The fixture-enabled full run passes them and is the relevant
-repository-controlled gate.
-
-** Compile, parse, fresh-load, and topology gates
-
-#+begin_example
-eldev compile -F -f lisp: PASS, no warnings or errors
-check-parens on changed Elisp: PASS
-git diff --check 857b7813..e1aa5722: PASS
-fresh lower owner:
-  owner=t facade=nil conditions=(e-board-runtime-error error)
-  typed=t generic=t
-fresh Board facade: board=t runtime=nil events=1 pending=0
-fresh Eldev runtime load: runtime=t admission=t error=t
-literal require graph: 167 modules, 719 unique edges, CYCLES []
-duplicate production definitions: 0
-composed owner-private test references: 0
-#+end_example
-
-The independently reproduced semantic Board-family call graph has 253
-cross-owner calls:
-
-#+begin_example
-admission -> state:              1
-board -> state:                 12
-board -> admission:             96
-registry -> board:              29
-registry -> admission:           3
-runtime-admission -> admission:  2
-runtime -> registry:             37
-runtime -> board:                58
-runtime -> runtime-admission:    13
-runtime -> admission:             2
-total:                          253
-#+end_example
-
-The current plan/audit total of 238 omits the 2
-=runtime-admission -> admission= and 13 =runtime -> runtime-admission= calls.
-The standard private scanner reported zero, but a syntax-aware source sweep
-found the Board facade reading two owner-private struct accessors at
-=lisp/core/e-board.el:1233= and =:1334=; see Finding 5.
-
-** Shape, reachability, and bounded performance
-
-A direct 10,000-item owner shape passed:
-
-#+begin_example
-count=10000
-event-nodes=10000 event-full-roots=0
-singleton-index-nodes=10000 singleton-full-roots=0
-multinode-index-nodes=10000 multinode-full-roots=0
-#+end_example
-
-That direct result is valid but incomplete.  A three-event same-admission
-completion retains three compact nodes whose first two root links still point
-to a full receipt.  A healthy 10,000-settlement semantic run completed in
-3.476217 seconds and had no pending admission, but retained:
-
-#+begin_example
-tokens=10000 event-receipts=10000 effect-receipts=10000
-event-nodes=30000 full-roots=29999
-#+end_example
-
-Ordinary paths remain bucket/index based; no new whole-process scan was found.
-The defect is Board-lifetime reachability, not the direct enqueue timing.
-
-** Graphical, live, and restart evidence
-
-This candidate changes process-local core receipt/catalog/settlement machinery,
-not graphical presentation, redisplay, window, focus, or viewport behavior.
-The current isolated off-screen graphical evidence recorded with the candidate
-remains 27/27, so another graphical run was not warranted.  Per the explicit
-review instruction, no live probe, reload, provider call, or running-Emacs
-playthrough was performed.  The user's running Emacs was left untouched.
-
-The changed core struct shapes require a full Emacs restart before this
-candidate can be used by an already-running process.  =e-dev-reload= is not a
-valid way to apply them; no compatibility shim should be added merely to avoid
-that one restart.
+- The candidate removes 1,179 lines from =e-board-admission.el= and 276 lines
+  from =e-board-runtime-admission.el= relative to its parent while preserving
+  substantive owners.  Neither file is a forwarding facade or generic helper
+  bag.
+- =e-board-runtime-admission.el= is a narrow 228-line owner with exact =eq=
+  identity for admissions, Board objects, and attachment objects.  Attachment
+  retirement reads only its attachment bucket; Board-wide retry is explicit.
+- Board admission receipts expose semantic predicates and lifecycle operations;
+  callers do not see cells, neighbor links, or owner catalog tables.
+- Runtime continues to call public Board and registry contracts.  No
+  =e-board--*=, =e-board-admission--*=, or
+  =e-board-runtime-admission--*= call crosses its production owner boundary.
+- External invocation dispatch is marked =applying= before entry, successful
+  dispatch is marked =committed= before diagnostic history, and signalling
+  dispatch becomes =failed= without replay.  Reentrant cancellation after
+  dispatch begins cannot cause a second call.
+- Scheduler callbacks use generations; retained old callbacks cannot drain a
+  replacement lifetime, and healthy multi-item FIFO drains retain order.
+- Committed event/index topology retains link identity needed by future
+  append/cancel while dropping Board/event/index payload and admission lists.
+  A fresh 10,000-event plus 10,000-index run retained zero payload-bearing
+  receipts and zero pending admissions.
+- The candidate removes only synthetic primitive/journal test names.  All 77
+  Board facade test names remain, direct owner suites are independently
+  discoverable, and composed suites contain no owner-private references.
 
 * Findings
 
-** TODO Medium: Runtime mistakes interrupted committed completion for rollback
+** DONE Medium: Prepared aggregation cancellation never completed its settlement admission
 
-*** Expected
+*** Expected behavior and historical failure
 
-=F91-OWNER=, =F91-RUNTIME=, and =F91-PRESERVATION= require one exact authority
-and a retryable disposition at every admission stage.  Once Board enrollment
-has committed and completion has begun, a map/neighbour/catalog fault must
-resume committed completion.  It must not attempt the inverse for already
-visible Work or an already-finalized sibling receipt.
+Cancelling an aggregation in =prepared= state must fence the queued external
+reply.  Once the retained effect callback consumes its exact queue cell, the
+Board must also have no pending admission for that cancelled settlement, the
+aggregation must no longer retain the settlement token, and the activation
+must retain no receipt graph.  Repeated cancellations must not accumulate
+false pending authority.  This is an ordinary production path: the runtime's
+aggregation cancellation closure calls =e-board-cancel-aggregation= directly.
 
-*** Observed
+At =dff11fab=, =e-board-cancel-aggregation= changed the aggregation to
+=cancelled= before gating cleanup with =e-board-admission-current-p=.  That
+projection predicate rejects cancelled aggregations, so the cleanup block could
+not run.  The later stale callback released the consumed activation receipts
+but could not remove the pending admission or owner token because the token had
+never completed.
 
-=e-board-runtime.el:1944-1946= runs runtime finish/completion inside the same
-condition that covers admission.  Any completion error reaches
-=e-board-runtime.el:1948-1970=, which calls =finish= and then =abort=.
-Object-local retry repeats that direction: =e-board-runtime-admission.el:523-530=
-always tries the Board abort before runtime completion.  By contrast, the
-lower Board recovery operation correctly distinguishes committed from
-uncommitted tokens at =e-board-admission.el:903-906=.
+The independent public-path witness created a Board with captured classifier
+and effect schedulers, enrolled and finished cheap Work, subscribed an
+aggregation, drained classification to =prepared=, cancelled it, and invoked
+the retained effect callback twice.  At =dff11fab= the single case reported
+=pending=1= and the three-cancellation case reported =pending=3=, with zero
+external dispatches.  That established an owner/resource-lifetime defect, not
+duplicate external behavior.
 
-The direct witness faults completion after one sibling receipt has compacted.
-Two abort attempts both fail and the exact token remains pending.  Through
-public enrollment, the Work projection is visible, Board pending count is one,
-and =e-board-runtime-admission-retry= still errors instead of resuming
-compaction.  The direct owner test at =test/e-board-admission-test.el:1131-1197=
-proves retrying completion; it does not prove the composed runtime disposition.
+*** Closure at =81148322=
 
-*** Why it matters
+The fix is at the owning Board settlement boundary:
 
-An adapter or callback fault in a supported exact-recovery boundary turns a
-successful public enrollment into a visible but permanently blocking partial
-commit.  Later enrollment, retirement, or retry cannot safely infer an inverse
-after some rollback authority has been finalized.
+- =e-board-cancel-aggregation= captures the exact retained token and evaluates
+  =e-board-admission-active-p= before the terminal state transition
+  (=lisp/core/e-board.el:1821=--1832=).
+- After the cancellation events, it finishes that captured token, calls the
+  exact settlement abort/completion path, and releases the aggregation and
+  activation holders (=lisp/core/e-board.el:1851=--1858=).
+- =e-board--settlement-abort-admission= rechecks exact token membership before
+  completing the committed admission (=lisp/core/e-board.el:1431=--1437=), so
+  reentry cannot complete another lifetime or perform a duplicate inverse.
+- =e-board--settlement-release= clears the event receipt and completed owner
+  token immediately, but deliberately retains a still-queued effect receipt
+  until the stale callback consumes it (=lisp/core/e-board.el:1439=--1465=).
 
-*** Smallest corrective direction
+The strengthened facade regression captures the original admission and proves
+the immediate postcondition: zero Board pending admissions, nil aggregation
+owner token, completed captured admission, nil activation event receipt, and a
+still-live queued effect receipt (=test/e-board-test.el:1454=--1488=).  It then
+invokes the captured stale drain twice and proves nil activation receipts and
+zero replies (=test/e-board-test.el:1489=--1499=).  The adjacent three-
+aggregation regression proves that independent prepared cancellations do not
+accumulate admissions and that their shared effect drain releases every receipt
+without dispatch (=test/e-board-test.el:1501=--1546=).
 
-Give the runtime record an explicit semantic disposition or derive it from a
-public Board admission completion stage.  Before Board commit, errors follow
-the exact abort path.  Once Board completion/finalization starts, errors retain
-the record and resume =e-board-admission-complete=; they never call abort.
-Add composed public enrollment tests for faults after each compact sibling and
-runtime-catalog completion boundary.
+The original independent witness was rerun unchanged:
 
-** TODO High: Terminal settlement can lose its only continuation and leak its admission
+#+begin_src sh
+eldev exec -f /private/tmp/e-f91-terminal-production-probes.el \
+  '(ert-run-tests-batch-and-exit "^e-f91-terminal-")'
+#+end_src
 
-*** Expected
+#+begin_example
+Running 5 tests
+Ran 5 tests, 5 results as expected, 0 unexpected
+CANCELLED-POSTCONDITION state=cancelled activation=cancelled dispatch=0
+  pending=0 owner-token=nil token-complete=nil token-events=0 token-effects=0
+  event-receipt=nil effect-receipt=nil effects=0 queue=nil
+CANCELLED-MANY dispatch=0 pending=0 effects=0 queue=nil
+#+end_example
 
-=F91-RUNTIME= and =F91-PRESERVATION= require invocation and aggregation
-terminalization to be exactly-once across classifier, activation, event,
-effect, cancellation, and quiescence boundaries.  External effects must not be
-repeated, successful effects must not be relabeled failed, pending admissions
-must eventually clear, and unexpected publication/diagnostic errors must
-remain visible with an exact retry authority.
+The printed =token-complete=nil= reads the token back through the aggregation
+after the owner link has correctly become nil; the facade regression retains
+the original token separately and asserts =e-board-admission-complete-p= before
+the stale drain.  Its repeated-drain assertions then show that no pending
+authority or receipt is reintroduced.
 
-*** Observed
+The three other probe cases also remain green: healthy and signalling
+invocation settlement each dispatch exactly once and release authority, while
+aggregation cancellation reentered after dispatch begins cannot replay or
+reverse the committed effect.  The changed facade file passes all 78 tests.
 
-The semantic stages are not represented by one retryable owner:
+*** Disposition
 
-- invocation activation changes to =prepared= before map publication at
-  =e-board.el:1443-1456=.  A postmutation =puthash= signal leaves the activation
-  in the map but the invocation without its activation id; the next attempt
-  rejects the prepared object at =:1457-1460=;
-- invocation and aggregation effects switch to =applying= and append the
-  =activation-applying= event outside their inner dispatcher handlers at
-  =e-board.el:1468-1480= and =:1585-1594=;
-- the low-level effect drain removes the exact receipt and consumes unsettled
-  count before invoking the semantic closure at
-  =e-board-admission.el:2829-2869=.  A closure fault therefore has no queued
-  continuation to resume;
-- after an external dispatcher succeeds, an =effect-committed= append fault is
-  caught as though the dispatcher failed, relabeling state =failed= at
-  =e-board.el:1491-1508= and =:1605-1622=.  A failure-diagnostic append fault is
-  then swallowed; and
-- cancellation of a prepared aggregation at =e-board.el:1736-1760= fences the
-  activation and publishes cancellation events but neither completes nor
-  aborts its retained settlement admission.  The ordinary no-fault witness
-  leaves Board pending count one and =e-board-admission-require-clear= errors.
-
-=e-board--settlement-finish-admission= at =e-board.el:1415-1418= only completes
-the lower token.  It does not clear the invocation/aggregation settlement
-slot, activation event/effect receipt holders, or consumed effect receipt.
-
-The independent witnesses also reproduce pre/post =activation-applying= faults
-stranding state =applying=, a successful dispatcher followed by a terminal
-event postfault becoming =failed=, and a missing =effect-failed= event after a
-diagnostic fault.  In each case the lower effect FIFO has already consumed its
-only callback authority.
-
-*** Why it matters
-
-This is a core semantic correctness and resource-lifetime defect.  It can
-block all later Board mutation with a pending admission, lose terminal history,
-or tell consumers that a successfully delivered effect failed.  Retrying the
-arbitrary dispatcher would risk duplicate external side effects; doing nothing
-strands state.
-
-*** Smallest corrective direction
-
-Represent the concrete Board settlement stages in the Board owner: activation
-map publication, prepared/applying event acknowledgements, external dispatch
-started/completed, terminal event acknowledgement, and admission completion.
-Keep the exact semantic continuation reachable after the low-level FIFO cell
-is consumed, but never re-run a dispatcher already acknowledged complete.
-Cancellation must close the retained token.  Preserve the original callback
-error when diagnostic publication also fails, and expose narrow public
-receipt-status operations instead of reading admission-private fields.  Add
-direct semantic tests for every pre/post stage, no-fault prepared cancellation,
-return/signal reentry, and subsequent Board reuse.
-
-** TODO Medium: Runtime recovery crosses attachment scope and can become object-invisible
-
-*** Expected
-
-Runtime recovery state belongs to one exact attachment/Board admission
-lifetime.  Attachment-local retirement must affect only records captured for
-that exact attachment; Board-wide recovery must be an explicit separate
-operation.  Every partial publication must remain reachable through the exact
-object that public retry/retire/re-ensure/submit uses, without pushing an
-upper-runtime record into the lower Board token.
-
-*** Observed
-
-The lower Board admission structs gained a =runtime-admission-record= field at
-=e-board-admission.el:326-342=.  The upper owner stores its record there before
-the first catalog mutation at =e-board-runtime-admission.el:268-276= and clears
-it only after all six inverses at =:432-440=.  This is an opaque exact identity,
-but its ownership and lifetime flow downward from the attachment runtime into
-the lower Board transaction token.
-
-The fallback does not close the recovery contract:
-
-- =e-board-runtime-admission-fence= combines the exact attachment buckets with
-  the entire Board pending/recovery buckets and marks every record, without an
-  attachment identity filter, at =e-board-runtime-admission.el:449-475=;
-- attachment-scoped =retry= likewise collects all records from both Board
-  buckets at =:478-530= and aborts every non-in-flight record;
-- a secondary publication fault compounded with primary cleanup failure leaves
-  the six-catalog vector =(0 0 0 1 0 0)=.  The admission-local field knows the
-  record, but public attachment/Board retry has no catalog membership from
-  which to discover it; and
-- in a realistic post-Board/pre-runtime-completion window, retiring attachment
-  A marks and aborts attachment B's distinct committed admission on the same
-  Board.  B's Work relation is removed even though A's exact lifetime supplied
-  the retirement authority.
-
-The public primary-only witness continues through later successful enrollment,
-exact attachment retirement, reattachment, and another enrollment.  Public
-Work/invocation counts recover, but the orphan primary record remains.  This
-separates the catalog leak from an ordinary service relation leak.
-
-*** Why it matters
-
-An attachment-local cleanup operation can destroy a sibling's valid work, and
-a compounded supported fault can retain an unreachable runtime record for the
-process lifetime.  The lower admission token also becomes coupled to a
-higher-level attachment recovery implementation and cannot substitute without
-carrying that private lifetime.
-
-*** Smallest corrective direction
-
-Keep the exact retry handle in a runtime-owned attachment/recovery object and
-publish its object-local authority before fallible secondary indexes.  Filter
-attachment fence/retry by the record's captured =eq= attachment even when a
-Board bucket is used to recover a partial publication.  Provide a separately
-named Board-wide recovery path for callers that intentionally own the whole
-Board.  Remove the runtime-specific fields from lower admission tokens once
-the runtime owner can discover every partial record.  Test two attachments on
-one Board, primary-only compounded faults, replacements, later public
-retire/re-ensure/submit, and exact catalog/lease/count cleanup.
-
-** TODO Medium: Healthy settlement retains rollback objects and full root receipts
-
-*** Expected
-
-=F91-OWNER=, =F91-TOPOLOGY=, and the architecture contract require committed
-Board-lifetime topology to retain compact link identity only.  Rollback
-receipts, admission tokens, effect closures, and reciprocal semantic holders
-must be released when their transaction reaches its terminal postcondition.
-
-*** Observed
-
-Direct 10,000-item event and index tests correctly show compact map entries and
-zero full receipts.  The composed shape differs:
-
-- =e-board-admission--finalize-event-node= derives a node's root at
-  =e-board-admission.el:500-524=.  When a non-root sibling finalizes before its
-  root receipt, its compact node retains that full root receipt; later root
-  compaction does not retarget the sibling;
-- =e-board--settlement-finish-admission= at =e-board.el:1415-1418= does not
-  clear the invocation/aggregation settlement-token slot or activation
-  event/effect receipt slots; and
-- the effect drain marks a receipt removed at
-  =e-board-admission.el:2848-2851= but retains its Board, queue cell, and effect
-  closure fields.
-
-A three-event same-admission completion leaves three compact nodes, two of
-which retain a full root receipt.  A healthy 10,000-settlement run has zero
-pending tokens in the Board catalog but still retains 10,000 semantic token
-holders, 10,000 event-receipt holders, 10,000 effect-receipt holders, and
-29,999 compact nodes pointing at full roots among 30,000 event nodes.
-
-*** Why it matters
-
-This is unbounded Board-lifetime memory retention.  The retained effect
-closures keep semantic targets and Board objects reachable, while root
-receipts retain rollback graphs.  It directly contradicts
-=docs/architecture.md:216-222= and is not justified by later exact neighbour
-repair.
-
-*** Smallest corrective direction
-
-Create or finalize the compact root before compacting its siblings, or
-explicitly retarget every exact sibling root during root finalization.  After
-terminal settlement completion, clear the invocation/aggregation admission
-slot, activation receipt holders, and consumed effect receipt's Board/cell/
-closure fields.  Add reachability/slot-shape tests for multi-event admissions
-and healthy semantic settlements; checking only the map entry type is
-insufficient.
-
-** TODO Low: Published call/private-boundary evidence is incomplete
-
-*** Expected
-
-=F91-TOPOLOGY= requires source/test topology claims to be reproducible and to
-recognize every owner-private operation, including generated struct accessors.
-Architecture and audit evidence must describe the exact committed tree.
-
-*** Observed
-
-The literal graph claim is correct: 167 modules, 719 unique edges, and no SCC.
-The current syntax-aware Board-family call graph is 253, not 238.  The published
-total omits two =runtime-admission -> admission= calls and thirteen
-=runtime -> runtime-admission= calls.
-
-The standard private scanner reports zero because its admission-private prefix
-set does not include generated =cl-defstruct= accessors.  The Board facade
-reads:
-
-- =e-board-aggregation-deadline-receipt--removed-p= at
-  =lisp/core/e-board.el:1233=; and
-- =e-board-terminal-classification-receipt--removed-p= at
-  =lisp/core/e-board.el:1334=.
-
-They are semantically owner-private even though the existing scanner misses
-them.  The compact-only architecture statement is also inaccurate until
-Finding 4 is fixed.
-
-*** Why it matters
-
-This does not independently break runtime behavior, but it makes the final
-architecture gate report a boundary purity and call inventory that another
-reviewer cannot reproduce.  It can hide future wrong-way private access.
-
-*** Smallest corrective direction
-
-Extend the scanner's owner-private symbol set to generated receipt accessors
-and include the extracted runtime-admission owner in semantic call groups.
-Replace the two facade reads with narrow public status operations.  Correct the
-plan/audit/architecture totals and compact-state claim only after the behavioral
-fixes land.
+Resolved.  The correction is the smallest owner-local change requested by the
+finding: it distinguishes exact token lifetime from semantic projection
+currency, preserves the stale FIFO receipt until consumption, and adds stable
+public postcondition coverage.  It introduces no recovery catalog, generalized
+transaction, compatibility path, or second dispatch route.
 
 * Plan coverage
 
-| Contract | Independent disposition at =e1aa5722= | Evidence / remaining work |
-|----------+----------------------------------------+---------------------------|
-| =F91-GOAL= | *Open.* | The package is materially improved but has five actionable findings and is not fixed point. |
-| =F91-OWNER= | *Open.* | Committed completion disposition, terminal settlement lifetime, runtime recovery scope, and compact reachability lack one exact owner (Findings 1-4). |
-| =F91-PRESENTATION= | *Accepted, unchanged.* | Chat facade plus five owners and Org Canvas consumers retain public-only dependencies; isolated graphical evidence remains current. |
-| =F91-SESSION= | *Accepted, unchanged.* | Aggregate/codec/catalog/storage and value owners preserve the existing durable schema and restart behavior.  Candidate fields are process-local only. |
-| =F91-RUNTIME= | *Open.* | Normal attachment/turn tests pass, but public enrollment completion, settlement, and attachment-scoped recovery violate exact lifetime contracts (Findings 1-3). |
-| =F91-OPENAI= | *Repository contract accepted.* | Profiles/auth/wire/transport/decode owner graph remains substitutable in repository tests.  External provider capability is unconfirmed. |
-| =F91-MCP= | *Accepted, unchanged.* | Helper/HTTP transports and transport-independent capability composition remain green. |
-| =F91-BASE= | *Accepted, unchanged.* | File/resource and bash process/collector owners remain separate behind the facade. |
-| =F91-TOPOLOGY= | *Open.* | Runtime record ownership, private facade reads, inaccurate call inventory, and retained full roots remain (Findings 3-5). |
-| =F91-PRESERVATION= | *Open.* | Normal full ERT is green, but no-fault cancellation and adversarial completion/settlement/recovery postconditions regress (Findings 1-4). |
+| Contract | Review disposition at =81148322= | Evidence |
+|---+---+---|
+| =F91-GOAL= | Met; acceptance-ready | The cumulative modularization direction is sound, and the sole terminal production defect is closed at its semantic owner. |
+| =F91-OWNER= | Met | Physical owners and dependencies are correct.  Board settlement now ends the exact cancelled-aggregation admission lifetime while preserving the queued callback's narrower receipt lifetime. |
+| =F91-PRESENTATION= | Met/unaffected | Chat facade plus surface, composer, transcript, activity, and overview owners remain separated; Org Canvas consumes public seams.  No presentation source changed, and prior isolated graphical 27/27 evidence remains applicable. |
+| =F91-SESSION= | Met/unaffected | Aggregate, codec, catalog, storage, and metadata/identity/provider-anchor/board-policy owners remain separate.  No durable record, path, replay, or storage source changed. |
+| =F91-RUNTIME= | Met | Attached-turn ports, attachment generations, producer/activity/pickup cleanup, and runtime admission are green.  Runtime's public aggregation cancellation closure now reaches a complete Board settlement postcondition. |
+| =F91-OPENAI= | Met/unaffected | Adapter/facade graph is unchanged.  The one full-suite OpenAI failure is the pre-existing Emacs 31.1 =url-http-extensions-header= test-environment issue, not a candidate regression. |
+| =F91-MCP= | Met/unaffected | Helper-process/HTTP substitutability is unchanged; local-socket-enabled full ERT clears the sandbox-only fixture failures. |
+| =F91-BASE= | Met/unaffected | File/resource and bash process/collector owner graph is unchanged and covered by full ERT. |
+| =F91-TOPOLOGY= | Met | Every current large root has an explicit causal disposition; source and test owner topology align; graphs are acyclic; no private reverse edge or forwarding-only test root was found. |
+| =F91-PRESERVATION= | Met | Public/durable formats and normal success paths remain preserved; prepared cancellation now also satisfies its transient-resource and at-most-once postconditions. |
 
-The public Round 5 seams remain semantically real: Board envelope,
-subscription/binding/chat drains, continuation reconciliation, default harness
-projection, attachment live-buffer projection, and session temporary path.
-=e-chat-service-state= still preserves the live attached-turn seed.  No
-receiptless/id-only compatibility path or replacement-port fallback was found.
+The Round 5 public seams remain semantically real and unchanged: detached Board
+envelopes, chat drains, continuation reconciliation, default harness spec,
+attachment live-buffer lookup, and session temporary-path allocation.  The
+live attached-turn seed remains on =e-chat-service-state= and continues through
+the exact attached-turn port.  Context estimation remains singly owned by
+=e-context-estimate= with no require cycle.
 
 * Architecture review
 
-** Physical owners and dependency direction
+** Ownership, coupling, and dependency direction
 
-The broad Feature 91 decomposition remains sound.  Chat presentation, session
-values/storage, harness turn/context owners, OpenAI, MCP, base, and context
-estimation each have a substantive owner and narrow facade.  The literal require
-graph is 167/719 and acyclic; dependencies generally point from facades and
-runtime orchestration toward stable state/admission/error contracts.
+| Owner | Responsibility and lifetime | Review conclusion |
+|---+---+---|
+| =e-board-state.el= (227 lines) | Stable Board values plus constant-time unsettled counters; Board lifetime | Cohesive lower contract.  Its observer callback is the explicit side-effect seam. |
+| =e-board-admission.el= (1,942) | Short-lived exact event/index/classifier/deadline/effect relations, admission tokens, and scheduler generations | Cohesive private mechanism owner.  It depends only on Board state and Work, never upward on the Board facade. |
+| =e-board.el= (4,336) | Board sequence, messages, processing, observers, participants/subscriptions, routing/pickups, Work/aggregation settlement, and public facade | Retain.  These policies share one Board sequence, routing/event order, terminal state, and irreversible dispatch boundary.  State and admission representations are already below it; another split would expose or duplicate the aggregate invariant. |
+| =e-board-runtime-admission.el= (228) | Exact open runtime-admission record and primary/Board/attachment indexes | Real narrow boundary.  Exact object indexes support attachment retirement and explicit Board retry without process-wide scans or id-based transfer. |
+| =e-board-runtime.el= (3,768) | Attachment generations, producer/pickup/activity mailboxes, invocation leases, reconciliation, and cross-owner composition | Retain.  These operations must agree on exact attachment generation and settlement; runtime uses public Board/registry contracts. |
 
-=e-board-runtime-error.el= is now independently loadable and correctly defines
-the lower typed condition.  =e-board-runtime-admission.el= is also a real
-concrete owner, not a generic transaction framework.  Its upward record stored
-inside the lower =e-board-admission= token is nevertheless an ownership/lifetime
-violation in the context of the sibling-scope and primary-only defects in
-Finding 3.  The runtime facade itself uses public lower operations.  The Board
-facade's two generated private receipt reads are the remaining concrete private
-boundary leak.
+The syntax-aware Board-family call scan reports 269 cross-owner calls:
 
-** State, side effects, errors, and performance
+#+begin_example
+admission -> state                 1
+board -> state                    12
+board -> admission               112
+registry -> board                 29
+registry -> admission              3
+runtime-admission -> admission     2
+runtime -> registry               37
+runtime -> board                  58
+runtime -> runtime-admission      13
+runtime -> admission               2
+#+end_example
 
-Board event/routing/publication/pickup/settlement state is process-local and
-correctly belongs to one Board lifetime.  Runtime attachment/catalog state is
-also process-local and must remain exact to one attachment generation.  No
-durable session/board association or wire format changed.
+No lower owner calls the Board facade, and the literal require graph has no
+strongly connected component.  No speculative provider, persistence, or UI
+adapter entered the Board domain.
 
-External invocation dispatch, scheduling, timer cancellation, event
-publication, and observer callbacks remain at Board/runtime edges.  The
-problem is not that those side effects need a new adapter; it is that Board
-semantic state lacks a persistent stage after an irreversible callback.  The
-smallest correction should remain concrete to settlement and admission rather
-than introduce a speculative generic transaction abstraction.
+=docs/architecture.md= accurately describes the current owner graph, downward
+dependencies, corrected non-goals, and retained-root rationale.  Prepared
+aggregation cancellation now realizes its documented short admission lifetime;
+the closure does not change any physical boundary.
 
-Ordinary operations use exact maps, queues, and object-local buckets; no global
-scan was introduced.  Direct 10,000-item event/index performance and compact
-map shape are acceptable.  The 10,000 healthy settlement reachability result
-is not: Board-lifetime token, receipt, closure, and full-root retention grows
-linearly and has no causal justification.
+** Side effects and failure semantics
 
-Expected lower domain errors are typed and visible.  Findings 1 and 2 show two
-remaining unexpected-error violations: a completion error selects the wrong
-inverse, while a terminal diagnostic error can be swallowed and a prior
-successful effect can be relabeled failed.
+Scheduler, timer, Work, publication, and invocation-dispatch effects remain at
+Board/runtime application edges.  Core route/readiness policy is side-effect
+free except through injected callbacks.  The =applying= state is the one-way
+boundary before external invocation dispatch; success is committed before an
+optional diagnostic event, and a signalling dispatcher is terminal rather
+than retried.  Count-observer and successor-scheduler errors stay visible while
+object/generation checks fence retained callbacks.
+
+Unexpected implementation errors are not broadly converted into success.
+Diagnostic =effect-committed= or =effect-failed= history is deliberately
+best-effort only after the external effect outcome is already known; this does
+not authorize replay of the external operation.  The closure handles the normal
+cancellation cleanup condition directly and adds no error swallowing or
+journaling.
 
 ** Interfaces, substitutability, and compatibility
 
-The new lower error and direct admission contracts substitute under fresh
-load.  Runtime admission bucket operations are narrow and exact.  The lower
-Board token should not be required to carry a runtime-specific recovery record,
-and the facade should not require private =--removed-p= accessors.  Narrow
-public completion/receipt status is the real missing contract; a broad receipt
-interface is not warranted.
+The public seams are consumer-shaped: runtime admission remembers/fences/
+finishes/aborts/completes exact tokens; Board callers use semantic receipt
+predicates and lifecycle operations; runtime invokes public Board/registry
+operations and an attachment-bound harness port.  No implementation satisfies
+a shared interface by weakening preconditions or throwing an
+unsupported-operation error.
 
-No durable or wire migration is required.  No new legacy fallback, id-only
-receipt reconstruction, or private compatibility shim was found.  The changed
-core record shapes intentionally require a restart.  Obsolete runtime-specific
-lower token fields and private facade reads can be removed once their owner
-contracts are corrected.
+No durable Board/session envelope, JSONL record, provider wire shape, command,
+event ordering contract, or public error spelling changed in this candidate.
+Removed paths are implementation-only synthetic recovery machinery.  Core
+process-local record shapes did change, so compatibility is correctly handled
+by requiring a full Emacs restart rather than a private shim.
 
-** Retained roots and source/test topology
+** Retained large-root disposition
 
-File size alone is not an extraction requirement.  Current production roots
-over 2,500 lines have these dispositions:
+All production roots above 2,500 lines and all test/e2e roots above 4,000 lines
+were re-counted:
 
 | Root | Lines | Disposition |
-|------+-------+-------------|
-| =e-board.el= | 4,237 | Retain: one causal event/routing/publication/pickup/settlement ordering aggregate.  Fix Findings 2 and 4 inside its concrete owner seams; do not extract merely for size. |
-| =e-board-runtime.el= | 3,768 | Retain: one attachment generation, producer/activity, pickup, invocation, and reconciliation aggregate. |
-| =e-board-admission.el= | 3,121 | Retain as the substantive lower exact-receipt/mutation owner; it is already an extraction. |
-| =e-chat-transcript.el= | 2,795 | Retain: transcript insertion/render/annotation state changes under one buffer ordering invariant. |
-| =e-session-aggregate.el= | 2,706 | Retain: loaded-session mutation, journal, projections, and replay share one sequence invariant. |
-| =e-chat-activity.el= | 2,643 | Retain: one activity rendering/timer lifecycle owner. |
-| =e-chat.el= | 2,607 | Retain as the public shell/application composition facade after five substantive extractions. |
+|---+---+---|
+| =lisp/core/e-board.el= | 4,336 | Retain the semantic Board aggregate for one sequence/routing/publication/settlement order; state and admission mechanisms are already extracted. |
+| =lisp/core/e-board-runtime.el= | 3,768 | Retain the attachment-generation/producer/pickup/activity reconciliation owner; splitting would divide exact attachment settlement. |
+| =lisp/shells/chat/e-chat-transcript.el= | 2,795 | Retain transcript entry/block/replay/navigation/marker ownership at transcript-buffer lifetime. |
+| =lisp/core/e-session-aggregate.el= | 2,706 | Retain loaded session mutation, indexes, journal, and replay application under one aggregate sequence; pure policies and storage are separate. |
+| =lisp/shells/chat/e-chat-activity.el= | 2,643 | Retain turn activity/progress/redraw state at buffer/turn lifetime; it projects through the transcript port. |
+| =lisp/shells/chat/e-chat.el= | 2,607 | Retain the public shell facade and one buffer/window command/event order; five presentation owners hold substantive state. |
+| =e2e/e-live-e2e-test.el= | 6,821 | Retain as the opt-in external-provider scenario harness: 72 independently named ERT scenarios share one enable/config/auth, request-capture, evidence-schema, deadline, and cleanup lifecycle and are excluded from default Eldev discovery.  It is substantive, not a forwarding root. |
 
-The only test/E2E Lisp root over 4,000 lines is
-=e2e/e-live-e2e-test.el= at 6,821 lines.  It remains a selector-discovered
-cross-shell graphical integration fixture rather than an owner unit root.
-Historical Board names relative to the accepted split baseline have zero
-missing names; runtime historical names are present across runtime and the new
-runtime-admission owner suite.  There is no forwarding-only test root and no
-owner-private reference in composed suites.
+No ordinary =test/*.el= root exceeds 4,000 lines; the largest is
+=test/e-loop-test.el= at 3,295.  Size alone was not used as either an extraction
+or retention argument.
 
-The current test split is therefore structurally acceptable.  The missing
-tests are narrow composed fault/reachability cases, not a reason to reorganize
-the entire suite.
+** Test topology and discovery
+
+- Direct owner roots are =test/e-board-admission-test.el= (18 tests) and
+  =test/e-board-runtime-admission-owner-test.el= (7).  Only these inspect their
+  respective owner-private namespace.
+- Composition roots use public contracts.  The scoped private scan found no
+  Board-admission or runtime-admission private reference in a composed suite.
+- =test/e-board-test.el= retains all 77 historical facade test names and adds
+  one prepared-cancellation lifetime regression, for 78 current tests.
+  Terminal-candidate deletions are 17 primitive/link-journal/compact tests, five
+  six-catalog/runtime primitive tests, and two lower inverse-fault composition
+  tests.  These match the explicit non-goals; no production scenario test was
+  removed.
+- Eldev discovers each substantive root directly.  Test support files contain
+  helpers only; no root forwards to another root to manufacture discovery.
+- The prepared-cancel regression now asserts the immediate admission/owner
+  postcondition, repeated stale-callback idempotence, multi-cancellation cleanup,
+  and zero external replies.
+
+* Verification performed during this review pass
+
+** Exact revision and diff
+
+#+begin_src sh
+git status --short --branch
+git rev-parse HEAD HEAD^
+git diff --name-status dff11fab85772eb8ed3cf7596f7b31cf968d601d..HEAD
+git diff --shortstat dff11fab85772eb8ed3cf7596f7b31cf968d601d..HEAD
+#+end_src
+
+#+begin_example
+## main...origin/main [ahead 1]
+ M docs/feats/91-improve-modularization/review.org
+81148322d63a845baab486a145e546c7dc5ba320
+dff11fab85772eb8ed3cf7596f7b31cf968d601d
+M lisp/core/e-board.el
+M test/e-board-test.el
+2 files changed, 80 insertions(+), 12 deletions(-)
+#+end_example
+
+The listed worktree modification is the expected prior review artifact; no
+implementation or test change is uncommitted.
+
+** Focused owner, facade, runtime, registry, and consumer suites
+
+The terminal review's unchanged whole-package focused batch remains:
+
+#+begin_src sh
+eldev test -B \
+  --file test/e-board-admission-test.el \
+  --file test/e-board-runtime-admission-owner-test.el \
+  --file test/e-board-runtime-admission-test.el \
+  --file test/e-board-test.el \
+  --file test/e-board-runtime-test.el \
+  --file test/e-board-registry-test.el \
+  --file test/e-board-admission-composition-test.el \
+  --file test/e-board-orchestration-test.el \
+  --file test/e-board-orchestration-actions-test.el \
+  --file test/e-board-processing-subscription-test.el \
+  --file test/e-modernchat-test.el
+#+end_src
+
+#+begin_example
+Ran 318 tests, 318 results as expected, 0 unexpected
+elapsed 3.822588 seconds
+#+end_example
+
+Those suites cover real count-observer pre/post faults, scheduler
+acceptance/signalling, FIFO successors, stale generations, exact replacement,
+invocation reentry, attachment retirement, pickup and activity callbacks,
+producer settlement, public chat drains, and binding lifecycle.  The closure
+commit changes only the Board cancellation owner and its facade regression, so
+the invalidated owner file was rerun on the exact revision:
+
+#+begin_src sh
+eldev test -B --file test/e-board-test.el
+#+end_src
+
+#+begin_example
+Running 78 tests
+Ran 78 tests, 78 results as expected, 0 unexpected
+#+end_example
+
+** Independent production-path settlement probes
+
+The unchanged five-case probe command and passing output are recorded under the
+resolved finding.  Together the cases prove:
+
+- healthy invocation dispatch runs once even when the captured scheduler
+  callback is invoked twice, commits invocation/activation, and leaves zero
+  pending admission or receipt holders;
+- a dispatcher that increments an external counter and signals is entered
+  once, produces =failed= invocation/activation state, and leaves zero pending
+  admission or receipt holders; and
+- aggregation cancellation reentered from inside a successful dispatcher
+  cannot reverse =applying= or replay the effect; it commits once and releases
+  its admission;
+- prepared cancellation before dispatch releases its exact admission, owner
+  token, and receipts without invoking the dispatcher, even when the retained
+  callback is called twice; and
+- three independently prepared cancellations leave zero pending admissions
+  after their shared FIFO drain.
+
+No witness monkeypatches a hash, list, generated accessor, or other primitive.
+
+** Full repository ERT and unrelated failures
+
+#+begin_src sh
+eldev test -B
+#+end_src
+
+In the managed sandbox the run had 2,650 total, 2,634 expected, 9 unexpected,
+and 7 skipped.  Six unexpected results were local HTTP/socket fixtures that
+could not bind or remain active in the sandbox (four MCP and two OpenAI local
+server cases).  The same command with local socket access had 2,650 total,
+2,640 expected, 3 unexpected, and 7 skipped.  No Board, registry, runtime,
+admission, chat-service, or Modernchat test failed.
+
+The three remaining tests were rerun directly:
+
+#+begin_src sh
+eldev test -B \
+  e-openai-test-default-http-request-start-normalizes-header-bytes \
+  e-org-canvas-test-visibility_tools_accept_heading_path_targets \
+  e-org-canvas-test-visibility_tools_operate_on_session_canvas
+#+end_src
+
+#+begin_example
+OpenAI: void-variable url-http-extensions-header
+Org Canvas session target: expected outline, observed nil after org-fold-outline
+Org Canvas heading path: expected outline, observed nil after org-fold-outline
+Ran 3 tests, 0 expected, 3 unexpected
+#+end_example
+
+These failures are unrelated to =dff11fab= or =81148322=: neither commit changes
+OpenAI, Org Canvas, URL, or presentation source/test files.  They reproduce as
+the documented Emacs 31.1 header-binding and bare-batch Org fold-property
+conditions.  The full suite was not rerun for this bounded two-file closure;
+its classification and the unaffected contract cells are carried from the
+terminal review, while the changed Board owner file and original reproducer
+were rerun on =81148322=.
+
+** Dependency, boundary, load, syntax, and compile checks
+
+#+begin_src sh
+emacs -Q --batch -l /private/tmp/e-r5-require-scan.el \
+  | rg '^(MODULES|EDGES|CYCLES)'
+#+end_src
+
+#+begin_example
+MODULES 167
+EDGES 719
+CYCLES []
+#+end_example
+
+The independently rerun syntax-aware Board call scan produced the 269-call
+matrix above.  Scoped production scans found zero cross-owner references to
+=e-board-admission--*=, =e-board-runtime-admission--*=, or Board facade-private
+=e-board--*= from registry/runtime.  A top-level definition scan found zero
+duplicate function/macro definitions.
+
+#+begin_src sh
+emacs -Q --batch -L lisp/core --eval \
+  "(progn (require 'e-board-runtime-admission) ...)"
+#+end_src
+
+#+begin_example
+runtime-admission=t runtime=nil board=nil registry=nil typed=t generic=t
+#+end_example
+
+Read/check-parens passed the four Board owner sources and their five directly
+changed/support test files.  =git diff --check= and explicit trailing-whitespace
+scans passed.  Targeted byte compilation of =e-board-state=,
+=e-board-admission=, =e-board-runtime-admission=, =e-board=, and
+=e-board-runtime= exited 0.  Emacs 31.1 emitted existing obsolete
+=when-let=/=if-let= warnings, one docstring-width warning, and the pre-existing
+unreachable inner =cl-return-from= guard in =e-board--settle-invocation=; no
+compile error occurred.  That inner branch is guarded by the same outer state
+test before any callback-capable operation and is not a production-path finding
+for this package.
+
+The closure diff adds no =require=, =provide=, definition, private-owner call,
+or new module.  Therefore the previously reproduced 167-module/719-edge/acyclic
+require graph, fresh-load result, private-boundary result, and duplicate scan
+remain valid.  =git diff --check dff11fab..81148322= also passes.
+
+** Bounded shape/performance check
+
+#+begin_src sh
+eldev exec -f /private/tmp/e-f91-terminal-shape.el
+#+end_src
+
+#+begin_example
+events=10000 nodes=10000 payload-bearing=0 pending=0 elapsed=0.025679
+indexes=10000 nodes=10000 payload-bearing=0 pending=0 elapsed=0.244657
+#+end_example
+
+The terminal run used the reviewed source, one event/index operation per
+relation, and no injected primitive failure.  It found no payload-bearing
+committed receipt, pending token, global scan, synchronous I/O, or superlinear
+relation traversal.  The closure changes neither event/index representation nor
+that measurement path.
+
+** Graphical and external capability evidence
+
+No graphical suite was rerun because the candidate changes only Board owner
+source/tests and documentation; no presentation, redisplay, focus, window,
+timer-driven UI, or Org Canvas source changed.  The current lineage's isolated
+off-screen graphical result remains 27/27 and is applicable to the unchanged
+presentation contract.  No live UX playthrough was needed for this
+behavior-neutral topology package, and the running Emacs remained untouched.
+
+No external provider request was made.  Live OpenAI/ChatGPT/MCP provider
+capability remains =capability-unconfirmed= and is not evidence for or against
+the repository-controlled ownership and cancellation result.
 
 * Design self-check
 
-** 1. If this work stopped here, is the project better off?
-
-Yes, in architecture and direct recovery coverage: the lower error contract,
-compact finalizers, and runtime recovery owner are materially stronger than the
-prior checkpoint.  It is not acceptance-ready because the five actionable
-findings include core settlement and recovery defects.
-
-** 2. What final direction does it move toward?
-
-One semantic owner per Board/runtime lifetime, exact resumable mutation
-authority, narrow public facade operations, bounded committed state, and
-provider/presentation-independent harness policy.
-
-** 3. Are changing or uncertain decisions local and reversible?
-
-Provider capability remains explicitly unconfirmed and outside this package.
-The stable requirement is exact admission/settlement behavior; it should be
-modeled directly.  The runtime recovery handle and settlement stage should
-remain concrete local records, not speculative generic extension points.
-
-** 4. What component owns each behavior, and is it cohesive?
-
-Board admission owns exact low-level receipts and inverses; Board owns semantic
-settlement/event order; runtime admission owns attachment-scoped recovery
-catalogs; runtime owns enrollment/retirement orchestration.  Findings 1-3 are
-precisely the points where disposition or lifetime crosses those owners without
-an adequate public contract.
-
-** 5. Does coupling increase or decrease, and are interfaces narrow?
-
-Feature 91 reduces coupling overall.  This candidate's lower-token
-=runtime-admission-record= field increases semantic coupling, and two Board
-facade private reads bypass the intended narrow contract.  Both can be replaced
-by owner-shaped exact status/recovery operations.
-
-** 6. Did a dependency start pointing the wrong way?
-
-No literal require edge points upward and the graph remains acyclic.  The
-runtime-specific record stored in the lower Board token is a semantic wrong-way
-state dependency despite the absence of a require edge.  Generated private
-receipt reads also cross the facade/owner boundary.
-
-** 7. Could side effects move outward?
-
-The dispatcher, scheduler, timer, observer, and event-publication effects are
-already at Board/runtime edges.  Moving them farther out would split atomic
-ordering.  The needed change is durable process-local stage acknowledgement
-around those effects, not another adapter.
-
-** 8. What state is added or mutated, who owns it, and is its lifetime minimal?
-
-All new admission/catalog/receipt state is process-local.  Exact compact link
-nodes correctly live for the Board/queue lifetime.  Runtime records should live
-for one exact attachment admission, not in a lower Board token or a sibling's
-Board-wide cleanup scope.  Settlement receipts/tokens/closures should end at
-terminal acknowledgement; Finding 4 shows they currently live too long.
-
-** 9. What is the performance impact?
-
-Normal paths remain indexed and direct 10,000-item operations are bounded.  No
-global scan was found.  The linear retained object graph after healthy
-settlement is an unjustified memory regression and must be removed; no domain
-requirement needs those rollback objects after terminal completion.
-
-** 10. Are abstractions real and substitutable?
-
-The lower runtime error, Board admission, runtime admission, and public Board
-facade are real concrete contracts.  Fresh-load error substitutability passes.
-Requiring every lower admission token to carry an upper runtime record, and
-requiring facade code to inspect private receipt flags, weakens substitution and
-must be corrected with narrow real operations.
-
-** 11. What compatibility expectations apply?
-
-Public commands, durable session/Board formats, event ordering, and provider
-request behavior must remain unchanged.  The candidate changes only
-process-local structs and intentionally requires restart.  No id-only fallback
-or compatibility shim is justified.
-
-** 12. What legacy code can be removed now?
-
-After remediation, remove the runtime-specific fields from Board admission
-tokens, the two facade-private receipt accesses, and any stale scanner groups or
-documentation totals.  Earlier receiptless/id-only compatibility paths remain
-removed.
-
-** 13. Where are expected and unexpected errors handled?
-
-Expected owner errors use typed Board/runtime conditions and now fresh-load
-correctly.  Unexpected completion/publication faults should remain visible with
-their exact continuation.  Finding 1 selects an unsafe inverse; Finding 2 can
-swallow a diagnostic error or overwrite a successful effect's meaning.  Those
-paths do not yet satisfy the error contract.
-
-** 14. What tests prove the core independently?
-
-Direct Board-admission, runtime-admission-owner, Board, runtime, registry, Work,
-and composition roots prove the normal owner contracts independently.  Full
-fixture ERT proves broad preservation.  The 14 independent witnesses show that
-current checked-in tests omit composed completion direction, terminal semantic
-stage faults/cancellation, sibling-scope recovery, primary-only compounded
-recovery, and semantic reachability.  Those cases can be added narrowly without
-rewriting unrelated suites.
+1. *If work stopped here, is the project better off?*  Yes.  The source/test
+   topology is substantially more navigable and the speculative transaction
+   machinery is gone.  The corrected cancellation lifetime removes the sole
+   terminal blocker without adding a new owner or mechanism.
+2. *What final direction does this move toward?*  One semantic Board aggregate
+   over stable state and exact admission owners, plus one attachment runtime
+   over a small exact runtime-lifetime index.
+3. *Which decisions are stable, uncertain, or likely to change?*  Exact object
+   authority, callback generations, and at-most-once dispatch are stable.
+   SQLite durability is future Feature 87 work.  Arbitrary primitive recovery
+   was correctly removed rather than abstracted speculatively.
+4. *Who owns the behavior and why?*  Board owns sequence/routing/settlement;
+   admission owns short-lived relations; state owns values/counts; runtime
+   admission owns exact runtime indexes; runtime owns attachment generation.
+   The closure correctly stays in Board settlement and uses admission's exact
+   lifetime predicate rather than moving policy into the lower owner.
+5. *Does coupling increase or decrease?*  It decreases.  Raw receipts,
+   catalogs, harness internals, provider details, and presentation state do not
+   cross owners.  Interfaces are narrow and consumer-shaped.
+6. *Did a dependency point the wrong way?*  No.  Require and semantic call
+   graphs are acyclic; lower Board owners never import/call the facade, and
+   runtime uses public Board/registry seams.
+7. *Can side effects move outward?*  They already sit at Board/runtime injected
+   scheduler, timer, Work, publication, and invocation-dispatch edges.  Moving
+   settlement outward would weaken its one-way state/effect ordering.
+8. *What state is added or mutated, who owns it, and how long should it live?*
+   Receipt/token state is process-local and should end with admission or the
+   stale callback that owns its queue cell.  Runtime records end with exact
+   admission completion/retirement.  Cancellation now completes the token and
+   owner lifetime immediately while the activation retains only its queued
+   effect receipt until consumption.
+9. *Performance impact?*  No new global scan or synchronous I/O.  Relation
+   operations remain bounded, and 10,000 event/index checks complete with
+   linear cardinality and zero payload-bearing receipts.  Prepared
+   cancellations now release independently instead of accumulating pending
+   tokens.
+10. *Are abstractions semantically real and substitutable?*  Yes.  State,
+    admission, runtime admission, attached-turn, provider, MCP, and base seams
+    map to real consumers and do not require unsupported operations or weaker
+    behavior.
+11. *What compatibility applies?*  Public commands, events, durable formats,
+    provider requests, and ordering remain compatible.  Core record changes
+    require restart; no compatibility shim is justified.
+12. *What legacy code can be removed now?*  The candidate correctly removed
+    compact/root transaction nodes, arbitrary primitive recovery stages, six
+    runtime catalogs, receiptless/id-only bridges, and their synthetic tests.
+    No additional legacy production path was found.
+13. *Where are errors handled or surfaced?*  Expected stale/cancelled callbacks
+    are fenced locally.  Scheduler/count/dispatcher errors remain visible or
+    become explicit terminal failure; post-effect diagnostics are best-effort
+    only after irreversible outcome.  The normal cancellation postcondition is
+    now handled directly through the exact active token.
+14. *What tests prove the core independently?*  Direct state/admission/runtime
+    owner suites, Board/runtime/registry composition, Modernchat consumers,
+    production-path probes, full ERT, fresh loads, graph/private/name scans,
+    and bounded shape checks.  The Board facade test now covers immediate and
+    post-callback cleanup, repeated callback idempotence, and three independent
+    cancellations without unrelated rewrites.
 
 * Unresolved
 
-Five actionable findings remain at exact revision =e1aa5722=:
+- None.  Exact actionable production-scope finding count: *0*.
+- All required Feature 91 contract cells are cleared or unaffected at exact
+  revision =81148322d63a845baab486a145e546c7dc5ba320=.  The persistent
+  independent review therefore records a proportionate repository-controlled
+  fixed point under the corrected failure model and explicit non-goals.
+- Parent acceptance is recorded and Feature 91 is =Done=.  Its temporary gate
+  is satisfied; Features 87, 88, and 90 require a source-anchor rebaseline
+  before their implementation or review remediation resumes.
+- Live provider capability remains =capability-unconfirmed= and is separate
+  from this repository-controlled modularization acceptance decision.
 
-1. =TODO Medium=: resume committed runtime completion instead of attempting
-   rollback after a finalization/catalog fault.
-2. =TODO High=: retain exact terminal settlement authority, preserve external
-   effect meaning/error precedence, and close cancellation admissions.
-3. =TODO Medium=: make runtime recovery truly attachment-local and
-   object-discoverable without an upper record in a lower Board token.
-4. =TODO Medium=: release semantic transaction holders and full root receipts
-   after healthy completion.
-5. =TODO Low=: correct semantic call/private-boundary scanners and published
-   architecture evidence.
+* Live reload and restart
 
-Feature 91 remains =In-review= and is not at fixed point.  Repository-side
-normal-path verification passed as recorded above, but the independent defect
-witnesses block acceptance.  The running Emacs was left unchanged; a full
-restart, not live reload, will be required after the eventual accepted core
-record-shape implementation.
+Repository-side validation was performed in isolated batch Emacs processes.
+The user's running Emacs was left untouched.  Because Feature 91 changes core
+Board/admission record shapes, using the accepted candidate in the running
+instance requires a full Emacs restart; =e-dev-reload= is intentionally
+insufficient.

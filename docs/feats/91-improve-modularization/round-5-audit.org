@@ -3162,3 +3162,27 @@ complete; independent acceptance is pending.
 
 Parent acceptance and independent review remain pending; no review artifact
 was edited or created by this package.
+
+** Final scope-corrected closure
+
+The authoritative closure is =81148322d63a845baab486a145e546c7dc5ba320=,
+following the simplification candidate
+=dff11fab85772eb8ed3cf7596f7b31cf968d601d=.  The bounded independent review
+found one production-scope resource-lifetime defect: cancelling a prepared
+aggregation fenced external dispatch but retained its settlement admission.
+The closure captures the exact active admission before changing semantic state,
+completes that token, releases the owner/event holders immediately, and retains
+only the queued effect receipt until the stale callback consumes it.  The
+unchanged independent witness passes 5/5, including repeated callbacks and
+three cancellations with zero dispatch and zero pending admissions.
+
+The independent actionable-finding count is zero.  Focused acceptance passes
+319/319.  Full ERT runs 2,651 tests with 2,641 expected results, the same 3
+independently reproduced unrelated OpenAI HTTP/Org-fold failures, and 7 existing
+skips.  Static ownership, dependency, private-boundary, fresh-load, shape, and
+performance evidence from the scope-corrected package remains applicable.
+Feature 91 is =Done=.  Its temporary gate for Features 87, 88, and 90 is
+satisfied, but each feature must rebaseline its source anchors against these
+accepted module boundaries before implementation or remediation resumes.  The
+running Emacs was left untouched; the core record changes require a full
+restart.
