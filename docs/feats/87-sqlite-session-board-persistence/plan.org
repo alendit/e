@@ -77,10 +77,10 @@ establish persistence correctness.
 | F87-C06 | Accepting a Board pickup into a session commits pickup acceptance and admitted session input together through one typed application operation, without generic transactions or cross-owner domain ports. | pickup-admission application service | P2 | S6 pickup/session atomicity matrix | not-applicable | Accepted |
 | F87-C07 | Task attempts and cron firings are claimed before work starts, restore to explicit states, and never blindly repeat an uncertain external effect. | =e-task-queue= and =e-cron= | P3 | S7 task/cron claim and restart matrix | claim and scheduling latency observational | Accepted |
 | F87-C08 | Voice tells, Goodnite events, and =raw-result://= content use owner-shaped SQLite storage with bounded reads, retention, checkpoints, and explicit cleanup. | voice, Goodnite, and raw-resource owners | P3 | S8 auxiliary-state migration/restart/cleanup | row count and resource size observational | Accepted |
-| F87-C09 | Legacy migration and later SQLite schema upgrades are explicit offline operations; semantic manifests, integrity checks, source preservation, and verified pre-upgrade backup prevent silent cutover loss. | migration/upgrade entrypoint and storage worker | P4 | S9 clean, malformed, conflicting, repeat, and upgrade fixtures | migration time and backup size observational | Accepted |
+| F87-C09 | Legacy migration and later SQLite schema upgrades are explicit offline operations; semantic manifests, integrity checks, source preservation, verified pre-upgrade backup, and restrictive permissions for operator artifacts prevent silent or exposed cutover state. | migration/upgrade entrypoint and storage worker | P4 | S9 clean, malformed, conflicting, repeat, upgrade, and artifact-permission fixtures | migration time and backup size observational | Accepted |
 | F87-C10 | Cutover removes production sidecar stores, runtime legacy fallback, permanent dual write, and duplicate in-memory durable Board ledgers while preserving explicit file products. | runtime composition and legacy owners | P4 | S10 source scan plus complete repository/E2E gates | not-applicable | Accepted |
-| F87-C11 | Interactive database work is asynchronous, indexed, paged, and bounded; commit work is not starved by reads, and known large-session resume does not regress without an approved first-principles reason. | storage worker and owner load APIs | P4 | S11 large-load responsiveness and performance suite | all performance measurements have explicit observational or gate role | Accepted |
-| F87-C12 | WAL =synchronous=NORMAL= survives e/worker process failure but does not promise latest-ack survival after host/power failure; artifacts use restrictive permissions and encryption is out of scope. | storage adapter and operator-facing storage commands | P1 | S2 process/host failure and permission checks | host-loss outcome observational beyond consistency gate | Accepted |
+| F87-C11 | Interactive database work is asynchronous, indexed, paged, and bounded; commit work is not starved by reads, and large-session resume reads only the selected path and bounded projections while interactive timers and queued commits progress. | storage worker and owner load APIs | P4 | S11 large-load responsiveness and performance suite | wall-clock latency and size remain observational until a reproducible threshold is accepted | Accepted |
+| F87-C12 | WAL =synchronous=NORMAL= preserves database consistency and acknowledged commits across e/worker process failure but does not promise survival of the latest acknowledgement after host/power failure; the database, WAL, and runtime-ownership files use restrictive permissions. | storage adapter | P1 | S2 process/host failure and store-permission checks | host-loss outcome observational beyond consistency gate | Accepted |
 
 * Accepted decisions
 
@@ -106,7 +106,8 @@ The matrix incorporates these operator decisions:
 - migration and schema upgrades are explicit offline actions;
 - backups are explicit except for the verified backup created by the explicit
   schema-upgrade operation; deletion creates no automatic backup;
-- restrictive local permissions are required; encryption/key management is not;
+- restrictive local permissions are required for the store and every
+  operator artifact; encryption/key management is not;
 - the first resource implementation uses one BLOB and a generous private limit,
   not chunk streaming;
 - shells may display pending intent, but agents and durable projections see only
@@ -137,7 +138,10 @@ Scope:
   deduplication, revisions, WAL/foreign keys, exclusive runtime ownership,
   bounded reads, restart/reconciliation, status, barriers, permissions, and
   explicit diagnostics;
-- introduce =e-session-storage= and make session mutations commit-first;
+- replace the JSONL/index/queued/Node implementation behind the existing
+  =e-session-storage= boundary with the typed SQLite worker protocol; preserve
+  the accepted =e-session= facade, aggregate, codec, and catalog dependency
+  direction, and make session mutations commit-first;
 - store session history/catalog/display projections and paged restore paths;
 - persist tool admission, claim, result, follow-up, promotion, settlement, and
   current restart classification; never persist live requests or handles;
@@ -157,9 +161,14 @@ Gate:
 - tool crash matrix before claim, after claim, after start, after result, and
   before settlement;
 - resource URI, expiry, session deletion, and exact/one-over private-limit tests;
-- the 15,722-record/38 MB fixture resumes without a full history scan and is no
-  slower than the recorded approximately 0.07-second checkpoint baseline unless
-  an approved first-principles explanation updates the gate.
+- a deterministic test-owned 15,722-record/37,851,478-byte fixture restores
+  through indexed, paged reads without reading unrelated audit history; an
+  interactive timer advances and queued commits complete during the load;
+- record elapsed resume time against the historical approximately 0.07-second
+  operator-store observation as observational telemetry.  A deterministic
+  wall-clock gate requires a separately accepted fixture or generator,
+  command, cache policy, sample count, statistic, environment, threshold, and
+  revision trigger.
 
 Useful stopping point: new and disposable stores can run complete SQLite-backed
 sessions, restart-safe tool classification, and temporary resources without
@@ -249,22 +258,33 @@ Scope:
 - remove the Node writer, checkpoints, =index.json= rebuild, legacy runtime
   loaders, per-session file identity, Board-log-owner proxy, persistence
   callbacks, duplicate durable indexes, and all sidecar runtime-state writers;
-- add explicit worker-owned backup/export/integrity operations;
+- add explicit worker-owned backup/export/integrity operations; migration
+  working files, reports, verified pre-upgrade backups, explicit backups and
+  exports, and disposable pathname copies use restrictive local permissions;
 - update architecture and E2E documentation, run the complete repository and
-  graphical/current-config matrix against disposable stores, and record system,
-  restart, backup/restore, migration, and performance results in =review.org=.
+  isolated graphical matrix plus the current-config compatibility runner
+  against disposable stores, and record system, restart, backup/restore,
+  migration, and performance results in =review.org=.
 
 Gate:
 
 - repeat migration is manifest-identical; malformed, conflicting, missing-root,
   legacy-shape, incomplete-tail, and failed-upgrade fixtures do not install;
+- S9 verifies restrictive permissions for every migration, upgrade, backup,
+  export, report, and disposable-path artifact;
 - a dry migration of a copy of the current user store passes without touching
   the live store;
 - S1-S11 pass on one reviewed revision;
 - source scan proves SQLite is the only ordinary persistent authority and no
   implicit legacy fallback or dual write remains;
-- complete batch tests, isolated graphical E2E, and current-config E2E pass
-  against disposable SQLite stores;
+- complete batch tests and =bash e2e/run-graphical-tests.sh= in isolated mode
+  pass against disposable SQLite stores;
+- =bash e2e/run-current-config-tests.sh= passes with its default harness
+  redirected to a disposable SQLite state directory.  Feature 87 does not
+  depend on the complete current-config graphical matrix: its two current
+  presentation defects remain owned by Feature 86.  If Feature 87 adds a
+  graphical persistence scenario, its exact named selector must also pass with
+  =E_E2E_EMACS_CONFIG=current=;
 - performance evidence covers catalog startup, session resume, Board replay,
   commit/finalization, worker startup, resource limits, WAL/database size, and
   main-thread responsiveness.
@@ -312,8 +332,9 @@ the default changes only after every owner and rollback proof is complete.
   Goodnite, and raw-result state; prove caps, consumer checkpoints, expiry, and
   cleanup boundaries.
 - =S9 migration and upgrade= :: Covers =F87-C09=.  Dry-run, repeat, corrupt,
-  conflicting, interrupted, and upgrade fixtures prove all-or-nothing install,
-  source preservation, and verified backup.
+  conflicting, interrupted, upgrade, and operator-artifact permission fixtures
+  prove all-or-nothing install, source preservation, verified backup, and
+  restrictive local access.
 - =S10 cutover negative scan= :: Covers =F87-C01= and =F87-C10=.  Source and
   runtime probes find no sidecar writer, runtime legacy fallback, permanent dual
   write, or duplicate durable Board ledger.
@@ -331,8 +352,9 @@ Feature 87 becomes =Done= only when:
 - every =F87-C*= contract is established by its mapped package;
 - S1-S11 pass on the same reviewed revision;
 - all four packages and their focused gates are complete;
-- the complete repository, isolated graphical, and current-config E2E gates
-  pass against disposable SQLite stores;
+- the complete repository and isolated graphical gates plus the current-config
+  compatibility runner pass against disposable SQLite stores; any Feature
+  87-specific graphical selector also passes in current-config mode;
 - migration proof used only a copy of operator state and the running Emacs was
   not opened, migrated, reloaded, or restarted by repository validation;
 - =review.org= records no unresolved finding or required unknown.

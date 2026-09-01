@@ -20,9 +20,17 @@ second Board or a model-facing surface.
 The current runtime spreads hidden mutable state across several file formats
 and process-local collections:
 
-- session JSONL, resume checkpoints, and =index.json= are owned by
-  [[file:../../../lisp/core/e-session.el][=e-session.el=]] and the Node writer
-  [[file:../../../lisp/core/e-session-writer.mjs][=e-session-writer.mjs=]];
+- session semantics are exposed through the stable
+  [[file:../../../lisp/core/e-session.el][=e-session.el=]] facade;
+  [[file:../../../lisp/core/e-session-aggregate.el][=e-session-aggregate.el=]]
+  owns loaded identity/path state and semantic mutation,
+  [[file:../../../lisp/core/e-session-codec.el][=e-session-codec.el=]] owns
+  deterministic durable normalization and replay,
+  [[file:../../../lisp/core/e-session-catalog.el][=e-session-catalog.el=]] owns
+  catalog/checkpoint projection and recovery policy, and
+  [[file:../../../lisp/core/e-session-storage.el][=e-session-storage.el=]] owns
+  the current replaceable JSONL/index/queued/Node physical adapter together
+  with [[file:../../../lisp/core/e-session-writer.mjs][=e-session-writer.mjs=]];
 - Board messages, source keys, routing queues, pickups, and delivery state are
   currently process-local in [[file:../../../lisp/core/e-board.el][=e-board.el=]]
   and [[file:../../../lisp/core/e-board-runtime.el][=e-board-runtime.el=]], while
@@ -325,9 +333,11 @@ a live database and WAL with an ordinary file copy.  Explicit destructive
 deletion does not automatically create a backup that defeats the deletion
 intent.  Operator-created historical backups remain operator-owned artifacts.
 
-The database, WAL, temporary pathname exports, migration working files,
-reports, and backups use restrictive local permissions.  Encryption at rest and
-key management are outside Feature 87.
+The database, WAL, and runtime-ownership files use restrictive local
+permissions from initial creation.  Migration working files and reports,
+verified pre-upgrade backups, explicit backups and exports, and disposable
+pathname copies use the same restrictive policy when their P4 operations are
+introduced.  Encryption at rest and key management are outside Feature 87.
 
 * Observability and performance
 
@@ -342,12 +352,15 @@ the selected path and bounded auxiliary projections.  Board semantic replay is
 paged and independent of presentation-tail retention.  Reads have row and byte
 budgets and yield to commits.
 
-The existing 15,722-record/38 MB session fixture remains the session-resume
-regression witness.  The implementation records catalog load, resume, Board
+A deterministic test-owned 15,722-record/37,851,478-byte session fixture is the
+session-resume scaling witness.  It proves indexed, paged restoration without
+reading unrelated audit history while an interactive timer advances and queued
+commits complete.  The implementation records catalog load, resume, Board
 restore, commit/finalization latency, worker startup, database/WAL size, private
-resource-limit behavior, and interactive timer responsiveness.  Measurements
-without an accepted threshold are observational and do not independently decide
-acceptance.
+resource-limit behavior, and interactive timer responsiveness.  The historical
+approximately 0.07-second operator-store resume is comparison context only.
+Measurements without an accepted fixture/procedure/environment/threshold
+record are observational and do not independently decide acceptance.
 
 * Compatibility and removal
 
