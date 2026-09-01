@@ -54,6 +54,23 @@ narrow semantic contracts of =e-board-state=, =e-board-admission=, =e-board=,
 cross-owner access to their private representations or persist Feature 91's
 exact process-local admission tokens.
 
+P1 adds an opt-in realization without changing the ordinary backend:
+
+- =e-runtime-store= owns typed worker scheduling, bounded recovery, ordered
+  barriers, and runtime ownership; =e-runtime-store-worker= alone owns SQLite
+  and schema details, and =e-runtime-store-codec= owns exact tagged values;
+- =e-session-storage-sqlite= maps the existing session storage port to typed
+  runtime-store commands, while =e-session-sqlite= composes opt-in creation and
+  paged replay;
+- =e-session= stages one detached aggregate mutation, commits its authoritative
+  record, then publishes live state.  Rebuildable catalog/checkpoint failures
+  remain explicitly dirty and retry through the storage owner without
+  misreporting the primary mutation;
+- =e-session-tool-continuity= owns durable restart classifications without live
+  callbacks or handles; and =e-session-tmp-sqlite= owns physical temporary
+  resource operations while URI, discovery, edit, and search policy remains in
+  =e-session-tmp-resources=.
+
 * Target topology
 
 One e runtime owns one state directory and all harnesses, sessions, Boards,

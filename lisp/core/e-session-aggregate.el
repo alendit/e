@@ -920,12 +920,11 @@ any queued direct-store writes, rather than appending a user-visible tombstone
   "Remove STORE's private board journal for SESSION-ID."
   (remhash session-id (e-session-store-board-journals store)))
 
-(defun e-session-aggregate--freeze-board-value (value)
-  "Return VALUE detached from mutable board-journal input.
-Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
- tables.  The copy is deliberately iterative: board envelopes are bounded by
- policy, but their aggregate list can still be deep enough to exhaust the
- evaluator when a checkpoint is assembled."
+(defun e-session-aggregate--detach-value (value cycle-error)
+  "Return aggregate VALUE detached from mutable input.
+Signal CYCLE-ERROR for cyclic conses, vectors, and hash tables.  The copy is
+deliberately iterative so a large valid durable value does not exhaust the
+evaluator while crossing an aggregate ownership boundary."
   (let ((pending (list (list :value value)))
         (results nil)
         (visiting (make-hash-table :test 'eq)))
@@ -961,7 +960,7 @@ Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
                (push current results))
               ((consp current)
                (when (gethash current visiting)
-                 (signal 'e-session-board-message-cycle (list 'cons)))
+                 (signal cycle-error (list 'cons)))
                (puthash current t visiting)
                (push (list :leave current) pending)
                (push (list :assemble-cons) pending)
@@ -969,7 +968,7 @@ Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
                (push (list :value (car current)) pending))
               ((vectorp current)
                (when (gethash current visiting)
-                 (signal 'e-session-board-message-cycle (list 'vector)))
+                 (signal cycle-error (list 'vector)))
                (puthash current t visiting)
                (push (list :leave current) pending)
                (push (list :assemble-vector (length current)) pending)
@@ -979,7 +978,7 @@ Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
                    (setq index (1- index)))))
               ((hash-table-p current)
                (when (gethash current visiting)
-                 (signal 'e-session-board-message-cycle (list 'hash-table)))
+                 (signal cycle-error (list 'hash-table)))
                (puthash current t visiting)
                (let (pairs)
                  (maphash (lambda (key item)
@@ -995,6 +994,75 @@ Signal `e-session-board-message-cycle' for cyclic conses, vectors, and hash
               (t
                (push current results))))))))
     (car results)))
+
+(defun e-session-aggregate--freeze-board-value (value)
+  "Return VALUE detached from mutable board-journal input.
+Signal `e-session-board-message-cycle' when VALUE is cyclic."
+  (e-session-aggregate--detach-value value 'e-session-board-message-cycle))
+
+(defun e-session-aggregate-stage-session-mutation (store &optional session-id)
+  "Return an isolated aggregate stage derived from STORE.
+
+When SESSION-ID is non-nil, copy that session and its private board journal
+into the stage.  Other sessions are deliberately absent.  The application
+service may perform one semantic mutation on the stage while STORE remains the
+committed live aggregate.  A nil SESSION-ID creates an empty stage for a new
+session.  This boundary owns no persistence or event-loop work."
+  (let ((stage (e-session-store-create
+                :directory (e-session-store-directory store)
+                :sessions-directory (e-session-store-sessions-directory store)
+                :index-file (e-session-store-index-file store)
+                :persistent (e-session-store-persistent store)
+                :write-mode (e-session-store-write-mode store)
+                :sequence (e-session-store-sequence store))))
+    (when session-id
+      (let* ((source (e-session-aggregate-get-live store session-id))
+             (session (e-session-aggregate--detach-value source
+                                                         'e-session-error)))
+        ;; Cached tail cells deliberately alias the canonical list spines.
+        ;; Rebuild those aliases after detaching the semantic value.
+        (e-session-aggregate-initialize-list-state session)
+        (puthash session-id session (e-session-store-sessions stage))
+        (e-session-aggregate--index-session-entries stage session))
+      (let ((source-journal
+             (gethash session-id
+                      (e-session-store-board-journals store))))
+        (when source-journal
+        (let* ((messages
+                (e-session-aggregate--freeze-board-value
+                 (e-session-board-journal-messages source-journal)))
+               (journal
+                (e-session-aggregate--board-journal-create
+                 :messages messages :tail (and messages (last messages)))))
+          (dolist (message messages)
+            (puthash (e-session-aggregate-board-message-identity message)
+                     message (e-session-board-journal-id-index journal)))
+          (puthash session-id journal
+                   (e-session-store-board-journals stage))))))
+    stage))
+
+(defun e-session-aggregate-publish-staged-session
+    (store stage session-id)
+  "Publish SESSION-ID from isolated aggregate STAGE into live STORE.
+
+The caller must establish the durable ordering boundary before invoking this
+operation.  Publication transfers the staged aggregate-owned representation,
+rebuilds its live indexes, and assigns a fresh live projection sequence so a
+different session committed reentrantly cannot create a sequence collision."
+  (let ((session (gethash session-id (e-session-store-sessions stage))))
+    (unless session
+      (signal 'e-session-missing (list session-id)))
+    (setf (e-session-store-sequence store)
+          (1+ (e-session-store-sequence store)))
+    (plist-put session :updated-seq (e-session-store-sequence store))
+    (puthash session-id session (e-session-store-sessions store))
+    (e-session-aggregate--index-session-entries store session)
+    (let ((journal
+           (gethash session-id (e-session-store-board-journals stage))))
+      (if journal
+          (puthash session-id journal (e-session-store-board-journals store))
+        (remhash session-id (e-session-store-board-journals store))))
+    session))
 
 (defun e-session-aggregate-board-messages (store session-id)
   "Return SESSION-ID's durable board envelopes in board order."

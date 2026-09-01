@@ -3,7 +3,7 @@
 
 * Status
 
-Ready.
+In-progress.
 
 The operator reviewed and accepted the plan on 2026-09-01.  Feature 91,
 [[file:../91-improve-modularization/plan.org][Improve Modularization]], is =Done=, and
@@ -29,7 +29,17 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   in its history.
 - Owning contract :: =F87-C01=.
 - Behavioral status :: =unavailable= until Package 4 passes the direct scenario.
-- Mechanism status :: =not-started=.
+- Mechanism status :: =in-progress=.  P1 is accepted; P2-P4 remain.
+
+* Implementation ledger
+
+- P1 :: Accepted on 2026-09-01.  The opt-in SQLite runtime store, commit-first
+  session composition, tool restart classification, and session =tmp://=
+  storage pass 26 focused S2-S4 tests plus 168 existing owner tests.  The
+  deterministic large witness restores 15,722 records and 37,851,478 content
+  bytes through paged reads while timers and a queued commit progress.  This
+  does not change the ordinary legacy backend or make =F87-GOAL= available.
+- P2-P4 :: Not started.
 
 * Goal and boundary
 

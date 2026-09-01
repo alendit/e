@@ -25,9 +25,19 @@
 (require 'e-session-metadata)
 (require 'e-session-provider-anchor)
 (require 'e-session-storage)
+(require 'e-session-sqlite)
+(require 'e-session-tool-continuity)
 
 (defvar e-session--load-in-progress nil
   "Non-nil while the application service is replaying a session journal.")
+
+(defvar e-session--commit-in-progress (make-hash-table :test 'equal)
+  "Session ids with an isolated mutation awaiting durable commit.
+
+The live aggregate remains at its previously committed value while a key is
+present.  Facade operations that need a loaded session fail explicitly at the
+barrier; direct read-only aggregate projections continue to see committed-old
+state.")
 
 (defun e-session--timestamp (&optional time)
   "Return TIME as the compact UTC timestamp used by session records."
@@ -175,9 +185,11 @@ the storage owner's state representation."
 (defun e-session--checkpoint-projection-operation (store)
   "Return an operation that projects STORE's latest SESSION-ID checkpoint."
   (lambda (session-id)
-    (let ((session (e-session--ensure-loaded store session-id)))
-      (e-session-catalog-checkpoint-manifest
-       session (e-session-aggregate-board-messages store session-id)))))
+    (if (e-session-storage-sqlite-p store)
+        (e-session--checkpoint-json store session-id)
+      (let ((session (e-session--ensure-loaded store session-id)))
+        (e-session-catalog-checkpoint-manifest
+         session (e-session-aggregate-board-messages store session-id))))))
 
 (defun e-session--refresh-projections (store)
   "Compose STORE's index and deferred checkpoint projection operation."
@@ -196,6 +208,19 @@ the storage owner's state representation."
                (e-session--refresh-projections store)))
     (e-session-storage-publish-projections
      store index-projection checkpoint-projection-operation)))
+
+(defun e-session--write-index-after-primary (store)
+  "Publish STORE's rebuildable projections after primary acknowledgement.
+
+Once the authoritative session record has committed, a derived publication
+failure cannot turn that mutation back into a reported failure.  Storage keeps
+the dirty owner set, retained projection operation, and bounded diagnostic for
+the next mutation or explicit finalize barrier."
+  (condition-case err
+      (progn (e-session--write-index store) t)
+    (error
+     (e-session-storage-note-projection-error store err)
+     nil)))
 
 (defun e-session--root-record-from-store (store session-id)
   "Return the current semantic root record for SESSION-ID."
@@ -225,6 +250,79 @@ the storage owner's state representation."
     (e-session--write-index store))
   record)
 
+(defun e-session--call-with-commit-barrier (store session-id operation)
+  "Call OPERATION while SESSION-ID rejects dependent facade work."
+  (let ((key (cons store session-id)))
+    (when (gethash key e-session--commit-in-progress)
+      (signal 'e-session-persistence-unavailable
+              (list "Session commit is in progress" session-id)))
+    (puthash key t e-session--commit-in-progress)
+    (unwind-protect (funcall operation)
+      (remhash key e-session--commit-in-progress))))
+
+(cl-defun e-session--commit-session-mutation
+    (store session-id mutate make-record &key before-commit write-index)
+  "Pair one semantic session MUTATE with its durable record.
+
+MUTATE receives an aggregate-owned isolated stage and returns the semantic
+result.  MAKE-RECORD receives that stage and result and returns its one durable
+record, or nil for a semantic no-op.  BEFORE-COMMIT, when non-nil, receives the
+same arguments after record preflight and may establish an owner-specific
+execution fence.  SQLite stages and commits before live publication.  Legacy
+stores retain their historical mutate-then-persist ordering.  This is a narrow
+session application boundary, not a generic transaction builder."
+  (if (not (e-session-storage-sqlite-p store))
+      (let* ((result (funcall mutate store))
+             (record (funcall make-record store result)))
+        (when record
+          (when before-commit
+            (funcall before-commit store result))
+          (e-session--persist-record store session-id record write-index))
+        result)
+    (e-session--call-with-commit-barrier
+     store session-id
+     (lambda ()
+       (let* ((source-present
+               (e-session-aggregate-session-present-p store session-id))
+              (stage
+               (e-session-aggregate-stage-session-mutation
+                store (and source-present session-id)))
+              (result (funcall mutate stage))
+              (record (funcall make-record stage result))
+              (prepared
+               (and record
+                    (e-session-storage-prepare-mutation
+                     store session-id record))))
+         (when record
+           (when before-commit
+             (funcall before-commit stage result))
+           (e-session-storage-commit-mutation store session-id prepared)
+           ;; The worker has acknowledged the durable record.  Only now may a
+           ;; model-facing callback observe the new live value.
+           (e-session-aggregate-publish-staged-session store stage session-id)
+           (when write-index
+             (e-session--write-index-after-primary store)))
+         result)))))
+
+(cl-defun e-session--commit-entry-mutation
+    (store session-id mutate &key before-commit write-index)
+  "Commit MUTATE's one entry record before publishing SESSION-ID."
+  (e-session--commit-session-mutation
+   store session-id mutate
+   (lambda (_stage entry)
+     (and entry (e-session-codec-record-for-entry session-id entry)))
+   :before-commit before-commit :write-index write-index))
+
+(cl-defun e-session--commit-session-event-mutation
+    (store session-id mutate &key write-index)
+  "Commit MUTATE's newest session event before publishing SESSION-ID."
+  (e-session--commit-session-mutation
+   store session-id mutate
+   (lambda (stage _result)
+     (e-session-codec-record-for-entry
+      session-id (e-session--latest-session-event stage session-id)))
+   :write-index write-index))
+
 (defun e-session--persist-entry (store session-id entry &optional write-index)
   "Persist semantic ENTRY and optionally update the catalog."
   (e-session--persist-record
@@ -236,31 +334,38 @@ the storage owner's state representation."
   "Return the newest semantic session event for SESSION-ID."
   (car (last (e-session-aggregate-session-events store session-id))))
 
-(defun e-session--persist-board-state (store session-id)
-  "Persist the aggregate's current board association projection."
+(defun e-session--board-state-record (store session-id)
+  "Return the aggregate's current board association record."
   (let* ((session (e-session-aggregate-get-live store session-id))
          (state (e-session-aggregate-board-association session)))
     (when state
-      (e-session--persist-record
-       store session-id
-       (list :type "board-session-state" :session-id session-id
-             :timestamp (e-session--timestamp)
-             :board-state state
-             :board-id (plist-get state :board-id)
-             :principal (plist-get state :principal)
-             :association-role (plist-get state :association-role)
-             :board-output-sequence
-             (or (plist-get session :board-output-sequence) 0)
-             :board-activity-sequence
-             (or (plist-get session :board-activity-sequence) 0))))))
+      (list :type "board-session-state" :session-id session-id
+            :timestamp (e-session--timestamp)
+            :board-state state
+            :board-id (plist-get state :board-id)
+            :principal (plist-get state :principal)
+            :association-role (plist-get state :association-role)
+            :board-output-sequence
+            (or (plist-get session :board-output-sequence) 0)
+            :board-activity-sequence
+            (or (plist-get session :board-activity-sequence) 0)))))
+
+(defun e-session--persist-board-state (store session-id)
+  "Persist the aggregate's current board association projection."
+  (let ((record (e-session--board-state-record store session-id)))
+    (when record
+      (e-session--persist-record store session-id record))))
 
 (defun e-session--checkpoint-json (store session-id)
   "Return catalog-produced checkpoint JSON value for SESSION-ID."
   (let* ((session (e-session-aggregate-get-live store session-id))
          (offset (plist-get (e-session-storage-session-header store session-id)
                             :byte-size)))
-    (e-session-catalog-checkpoint-json
-     session (e-session-aggregate-board-messages store session-id) offset)))
+    (funcall (if (e-session-storage-sqlite-p store)
+                 #'e-session-catalog-checkpoint-value
+               #'e-session-catalog-checkpoint-json)
+             session (e-session-aggregate-board-messages store session-id)
+             offset)))
 
 (defun e-session--write-session-checkpoint-now (store session-id)
   "Atomically persist SESSION-ID's current bounded checkpoint."
@@ -327,6 +432,12 @@ the storage owner's state representation."
 (cl-defun e-session-load-session-start
     (store session-id &key on-done on-error on-progress chunk-bytes)
   "Start cooperative checkpoint/suffix replay for SESSION-ID."
+  (when (e-session-storage-sqlite-p store)
+    (cl-return-from e-session-load-session-start
+      (e-session-sqlite-load-session-start
+       store session-id :on-done on-done :on-error on-error
+       :on-progress on-progress :page-size
+       (max 1 (min 1024 (or chunk-bytes 256))))))
   (unless (e-session--persistent-p store)
     (signal 'e-session-missing (list session-id)))
   (let* ((header (e-session-storage-session-header store session-id))
@@ -483,6 +594,9 @@ case so a freshly created direct JSONL store remains reopenable."
 
 (defun e-session--ensure-loaded (store session-id)
   "Return loaded SESSION-ID, loading its checkpoint suffix on demand."
+  (when (gethash (cons store session-id) e-session--commit-in-progress)
+    (signal 'e-session-persistence-unavailable
+            (list "Session commit is in progress" session-id)))
   (let ((session (e-session-aggregate-peek-session store session-id)))
     (if (plist-get session :loaded)
         session
@@ -499,21 +613,30 @@ case so a freshly created direct JSONL store remains reopenable."
 
 (cl-defun e-session-create (store &key id metadata defer-persistence)
   "Create SESSION in STORE and publish its root unless deferred."
-  (let ((session (e-session-aggregate-create
-                  store :id (or id (e-session-generate-id))
-                  :metadata metadata :defer-persistence defer-persistence)))
-    (if defer-persistence
-        session
-      (condition-case err
-          (progn
-            (e-session--persist-record
-             store (plist-get session :id)
-             (e-session--root-record-from-store
-              store (plist-get session :id)) t)
-            session)
-        (error
-         (e-session-aggregate-abort-created store (plist-get session :id))
-         (signal (car err) (cdr err)))))))
+  (setq id (or id (e-session-generate-id)))
+  (if (and (e-session-storage-sqlite-p store) (not defer-persistence))
+      (e-session--commit-session-mutation
+       store id
+       (lambda (stage)
+         (e-session-aggregate-create stage :id id :metadata metadata))
+       (lambda (stage _session)
+         (e-session--root-record-from-store stage id))
+       :write-index t)
+    (let ((session (e-session-aggregate-create
+                    store :id id :metadata metadata
+                    :defer-persistence defer-persistence)))
+      (if defer-persistence
+          session
+        (condition-case err
+            (progn
+              (e-session--persist-record
+               store (plist-get session :id)
+               (e-session--root-record-from-store
+                store (plist-get session :id)) t)
+              session)
+          (error
+           (e-session-aggregate-abort-created store (plist-get session :id))
+           (signal (car err) (cdr err))))))))
 
 (cl-defun e-session-create-board-admission
     (store &key id metadata principal board-id association-role routing-policy)
@@ -536,275 +659,397 @@ case so a freshly created direct JSONL store remains reopenable."
   "Publish a prepared board admission as one storage transaction."
   (let* ((session (e-session-aggregate-get-live store session-id))
          (records (plist-get session :admission-records)))
-    (condition-case err
-        (pcase-let ((`(,index-projection ,checkpoint-projection-operation)
-                     (e-session--refresh-projections store)))
-          ;; Keep the journal admission and aggregate transition as one
-          ;; application-level sequence.  Storage owns the physical append;
-          ;; the facade publishes the detached index and deferred checkpoint
-          ;; operation only after the aggregate accepts the same admission.
-          (e-session-storage-publish-admission
-           store session-id records nil)
-          (e-session-aggregate-commit-board-admission store session-id)
-          (e-session-storage-publish-projections
-           store index-projection checkpoint-projection-operation)
-          session)
-      (error
-       (e-session-storage-abort-session store session-id)
-       (e-session-aggregate-abort-created store session-id)
-       (signal (car err) (cdr err))))))
+    (if (not (e-session-storage-sqlite-p store))
+        (condition-case err
+            (pcase-let
+                ((`(,index-projection ,checkpoint-projection-operation)
+                  (e-session--refresh-projections store)))
+              (e-session-storage-publish-admission
+               store session-id records nil)
+              (e-session-aggregate-commit-board-admission store session-id)
+              (e-session-storage-publish-projections
+               store index-projection checkpoint-projection-operation)
+              session)
+          (error
+           (e-session-storage-abort-session store session-id)
+           (e-session-aggregate-abort-created store session-id)
+           (signal (car err) (cdr err))))
+      (e-session--call-with-commit-barrier
+       store session-id
+       (lambda ()
+         (condition-case err
+             (e-session-storage-publish-admission
+              store session-id records nil)
+           (error
+            (e-session-storage-abort-session store session-id)
+            (e-session-aggregate-abort-created store session-id)
+            (signal (car err) (cdr err))))
+         ;; Primary admission is now authoritative.  Removing the private
+         ;; reservation and rebuilding projections cannot turn it into a
+         ;; reported uncommitted failure.
+         (e-session-aggregate-commit-board-admission store session-id)
+         (e-session--write-index-after-primary store)
+         session)))))
 
 (defun e-session-abort-created (store session-id)
   "Abort a not-yet-admitted session and its owned storage work."
-  (e-session-storage-abort-session store session-id)
-  (e-session-aggregate-abort-created store session-id)
-  ;; A queued/indexed store already has a shared derived-index obligation from
-  ;; the admission writes.  Preserve that operation instead of appending a
-  ;; second index command while rolling back one session.
-  (when (and (e-session--persistent-p store)
-             (not (e-session-storage-admission-controller-enabled-p store))
-             (not (plist-get (e-session-storage-durability-status store)
-                             :index-write-pending)))
-    (e-session--write-index store))
-  t)
+  (let ((operation
+         (lambda ()
+           (e-session-storage-abort-session store session-id)
+           (e-session-aggregate-abort-created store session-id)
+           ;; Preserve an existing shared derived-index obligation instead of
+           ;; appending a second command while rolling back one reservation.
+           (when (and
+                  (e-session--persistent-p store)
+                  (not (e-session-storage-admission-controller-enabled-p
+                        store))
+                  (not (plist-get
+                        (e-session-storage-durability-status store)
+                        :index-write-pending)))
+             (e-session--write-index store))
+           t)))
+    (if (not (e-session-storage-sqlite-p store))
+        (funcall operation)
+      (e-session--call-with-commit-barrier store session-id operation))))
+
+(defun e-session-delete (store session-id)
+  "Delete SESSION-ID and all of its private durable SQLite state."
+  (unless (e-session-storage-sqlite-p store)
+    (signal 'e-session-storage-error
+            (list "Session deletion is available on SQLite stores")))
+  (e-session--call-with-commit-barrier
+   store session-id
+   (lambda ()
+     ;; Deletion is already storage-first.  The admission barrier keeps a
+     ;; reentrant append from being ordered between the delete ACK and the live
+     ;; aggregate removal.
+     (e-session-storage-sqlite-delete store session-id)
+     (e-session-aggregate-reset-session store session-id)
+     (e-session--write-index-after-primary store)
+     t)))
 
 (defun e-session-append-message (store session-id message)
   "Append MESSAGE to SESSION-ID and persist its semantic entry."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-message store session-id message)))
-    (e-session--persist-entry store session-id entry t)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-message aggregate session-id message))
+   :before-commit
+   (lambda (_aggregate entry)
+     (e-session-tool-continuity-admit-message store session-id message entry))
+   :write-index t))
 
 (defun e-session-set-message-display (store session-id message-id display)
   "Set DISPLAY on one message and persist its display disposition."
   (e-session--ensure-loaded store session-id)
-  (when-let ((message (e-session-aggregate-set-message-display
-                       store session-id message-id display)))
-    (e-session--persist-record
-     store session-id
-     (list :type "message-display" :session-id session-id
-           :timestamp (e-session--timestamp) :id message-id
-           :display (and display (symbol-name display))) t)
-    message))
+  (e-session--commit-session-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-message-display
+      aggregate session-id message-id display))
+   (lambda (_aggregate message)
+     (when message
+       (list :type "message-display" :session-id session-id
+             :timestamp (e-session--timestamp) :id message-id
+             :display (and display (symbol-name display)))))
+   :write-index t))
 
 (cl-defun e-session-append-activity-event
     (store session-id turn-id event-type payload &key (write-index t)
            checkpoint-retain)
   "Append durable activity EVENT-TYPE and optionally refresh the index."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-activity-event
-                store session-id turn-id event-type payload
-                :write-index write-index :checkpoint-retain checkpoint-retain)))
-    (e-session--persist-entry store session-id entry write-index)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-activity-event
+      aggregate session-id turn-id event-type payload
+      :write-index write-index :checkpoint-retain checkpoint-retain))
+   :before-commit
+   (lambda (_aggregate entry)
+     ;; This owner classification is the execution fence.  If the subsequent
+     ;; session record fails, restart classification is conservative while
+     ;; live session state remains old.
+      (e-session-tool-continuity-record-activity
+      store session-id turn-id event-type payload entry))
+   :write-index write-index))
 
 (cl-defun e-session-append-context-curation-response
     (store session-id turn-id response-entry-id &key (write-index t))
   "Append the audit-only context curation response control entry."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-context-curation-response
-                store session-id turn-id response-entry-id
-                :write-index write-index)))
-    (e-session--persist-entry store session-id entry write-index)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-context-curation-response
+      aggregate session-id turn-id response-entry-id
+      :write-index write-index))
+   :write-index write-index))
 
 (defun e-session-append-process-report (store session-id report)
   "Append an out-of-band process REPORT."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-process-report
-                store session-id report)))
-    (e-session--persist-entry store session-id entry t)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-process-report aggregate session-id report))
+   :write-index t))
 
 (cl-defun e-session-append-branch-summary
     (store session-id branch-id summary &key metadata)
   "Append BRANCH-ID SUMMARY."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-branch-summary
-                store session-id branch-id summary :metadata metadata)))
-    (e-session--persist-entry store session-id entry t)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-branch-summary
+      aggregate session-id branch-id summary :metadata metadata))
+   :write-index t))
 
 (cl-defun e-session-append-compaction
     (store session-id summary &key branch-id range first-kept-entry-id
            tokens-before tokens-kept metadata)
   "Append compaction SUMMARY."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-compaction
-                store session-id summary :branch-id branch-id :range range
-                :first-kept-entry-id first-kept-entry-id
-                :tokens-before tokens-before :tokens-kept tokens-kept
-                :metadata metadata)))
-    (e-session--persist-entry store session-id entry t)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-compaction
+      aggregate session-id summary :branch-id branch-id :range range
+      :first-kept-entry-id first-kept-entry-id
+      :tokens-before tokens-before :tokens-kept tokens-kept
+      :metadata metadata))
+   :write-index t))
 
 (cl-defun e-session-append-provider-anchor
     (store session-id provider-id &key model covered-entry-id fingerprints metadata)
   "Append opaque PROVIDER-ID anchor state."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-provider-anchor
-                store session-id provider-id :model model
-                :covered-entry-id covered-entry-id :fingerprints fingerprints
-                :metadata metadata)))
-    (e-session--persist-entry store session-id entry t)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-provider-anchor
+      aggregate session-id provider-id :model model
+      :covered-entry-id covered-entry-id :fingerprints fingerprints
+      :metadata metadata))
+   :write-index t))
 
 (cl-defun e-session-append-context-generation
     (store session-id generation &key (write-index t))
   "Append semantic context GENERATION."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-append-context-generation
-                store session-id generation :write-index write-index)))
-    (e-session--persist-entry store session-id entry write-index)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-context-generation
+      aggregate session-id generation :write-index write-index))
+   :write-index write-index))
 
 (cl-defun e-session-append-context-curation-package
     (store session-id package &key (write-index t))
   "Append one atomic semantic context curation PACKAGE."
   (e-session--ensure-loaded store session-id)
-  (let* ((result (e-session-aggregate-append-context-curation-package
-                  store session-id package :write-index write-index))
-         (record (plist-get result :record)))
-    (when record
-      (e-session--persist-record store session-id record write-index))
-    result))
+  (e-session--commit-session-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-context-curation-package
+      aggregate session-id package :write-index write-index))
+   (lambda (_aggregate result) (plist-get result :record))
+   :write-index write-index))
 
 (defun e-session-set-metadata (store session-id metadata)
   "Replace durable session METADATA."
   (e-session--ensure-loaded store session-id)
-  (e-session-aggregate-set-metadata store session-id metadata)
-  (e-session--persist-entry store session-id
-                            (e-session--latest-session-event store session-id)
-                            t)
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-metadata aggregate session-id metadata))
+   :write-index t)
   metadata)
 
 (defun e-session-set-session-config (store session-id config)
   "Merge durable session CONFIG."
   (e-session--ensure-loaded store session-id)
-  (let ((result (e-session-aggregate-set-session-config store session-id config)))
-    (e-session--persist-entry store session-id
-                              (e-session--latest-session-event store session-id)
-                              t)
-    result))
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-session-config aggregate session-id config))
+   :write-index t))
 
 (defun e-session-set-context-references (store session-id owner references)
   "Set current-state REFERENCES for OWNER."
   (e-session--ensure-loaded store session-id)
-  (let ((result (e-session-aggregate-set-context-references
-                store session-id owner references)))
-    (e-session--persist-entry store session-id
-                              (e-session--latest-session-event store session-id)
-                              t)
-    result))
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-context-references
+      aggregate session-id owner references))
+   :write-index t))
 
 (defun e-session-set-context-reference (store session-id key reference)
   "Set one durable current-state REFERENCE."
   (e-session--ensure-loaded store session-id)
-  (let ((result (e-session-aggregate-set-context-reference
-                store session-id key reference)))
-    (e-session--persist-entry store session-id
-                              (e-session--latest-session-event store session-id)
-                              t)
-    result))
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-context-reference
+      aggregate session-id key reference))
+   :write-index t))
 
 (cl-defun e-session-set-capability-state
     (store session-id capability-id state &key version)
   "Set durable CAPABILITY-ID STATE."
   (e-session--ensure-loaded store session-id)
-  (let ((result (e-session-aggregate-set-capability-state
-                store session-id capability-id state :version version)))
-    (e-session--persist-entry store session-id
-                              (e-session--latest-session-event store session-id)
-                              t)
-    result))
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-capability-state
+      aggregate session-id capability-id state :version version))
+   :write-index t))
 
 (defun e-session-set-turn-options (store session-id options)
   "Replace session-scoped turn OPTIONS."
   (e-session--ensure-loaded store session-id)
-  (let ((result (e-session-aggregate-set-turn-options store session-id options)))
-    (e-session--persist-entry store session-id
-                              (e-session--latest-session-event store session-id)
-                              t)
-    result))
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-turn-options aggregate session-id options))
+   :write-index t))
 
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set the current branch cursor."
   (e-session--ensure-loaded store session-id)
-  (let ((result (e-session-aggregate-set-current-branch
-                store session-id branch-id)))
-    (e-session--persist-entry store session-id
-                              (e-session--latest-session-event store session-id)
-                              t)
-    result))
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-set-current-branch
+      aggregate session-id branch-id))
+   :write-index t))
 
 (defun e-session-clear-messages (store session-id)
   "Clear transcript-derived state with an append-only reset event."
   (e-session--ensure-loaded store session-id)
-  (let ((entry (e-session-aggregate-clear-messages store session-id)))
-    (e-session--persist-entry store session-id entry t)
-    entry))
+  (e-session--commit-entry-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-clear-messages aggregate session-id))
+   :write-index t))
 
 (defun e-session-rename (store session-id name)
   "Rename SESSION-ID."
   (e-session--ensure-loaded store session-id)
-  (let ((session (e-session-aggregate-rename store session-id name)))
-    (e-session--persist-entry store session-id
-                              (e-session--latest-session-event store session-id)
-                              t)
-    session))
+  (e-session--commit-session-event-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-rename aggregate session-id name))
+   :write-index t))
 
 (defun e-session-append-board-message (store session-id message)
   "Append one immutable board envelope."
   (e-session--ensure-loaded store session-id)
-  (let ((message (e-session-aggregate-append-board-message
-                  store session-id message)))
-    (e-session--persist-record
-     store session-id
+  (e-session--commit-session-mutation
+   store session-id
+   (lambda (aggregate)
+     (e-session-aggregate-append-board-message
+      aggregate session-id message))
+   (lambda (_aggregate result)
      (list :type "board-message" :session-id session-id
-           :timestamp (e-session--timestamp) :message message) t)
-    message))
+           :timestamp (e-session--timestamp) :message result))
+   :write-index t))
 
 (defun e-session-clear-board-messages (store session-id)
   "Clear the independent board journal."
   (e-session--ensure-loaded store session-id)
-  (e-session-aggregate-clear-board-messages store session-id)
-  (e-session--persist-record
+  (e-session--commit-session-mutation
    store session-id
-   (list :type "board-messages-cleared" :session-id session-id
-         :id (e-session-generate-ulid) :timestamp (e-session--timestamp)) t)
-  nil)
+   (lambda (aggregate)
+     (e-session-aggregate-clear-board-messages aggregate session-id))
+   (lambda (_aggregate _result)
+     (list :type "board-messages-cleared" :session-id session-id
+           :id (e-session-generate-ulid) :timestamp (e-session--timestamp)))
+   :write-index t))
 
 (defun e-session-declare-board-state
     (store session-id principal board-id &optional association-role routing-policy)
   "Set and persist board identity and routing policy."
   (e-session--ensure-loaded store session-id)
-  (let ((state (e-session-aggregate-declare-board-state
-                store session-id principal board-id association-role routing-policy)))
-    (e-session--persist-board-state store session-id)
-    (e-session--write-index store)
+  (let ((state
+         (e-session--commit-session-mutation
+          store session-id
+          (lambda (aggregate)
+            (e-session-aggregate-declare-board-state
+             aggregate session-id principal board-id association-role
+             routing-policy))
+          (lambda (aggregate _result)
+            (e-session--board-state-record aggregate session-id))
+          :write-index t)))
     (copy-tree state)))
 
 (cl-defun e-session-fork (store session-id &key at metadata name)
   "Fork SESSION-ID and publish the new aggregate through storage."
   (e-session--ensure-loaded store session-id)
-  (let* ((fork (e-session-aggregate-fork store session-id
-                                          :at at :metadata metadata :name name))
-         (fork-id (plist-get fork :id))
-         (path (e-session-aggregate-current-path store fork-id)))
-    (condition-case err
-        (progn
-          (e-session--persist-record store fork-id
-                                     (e-session--root-record-from-store
-                                      store fork-id) nil)
-          (when (e-session-aggregate-board-association fork)
-            (e-session--persist-board-state store fork-id))
-          (dolist (entry (cdr path))
-            (e-session--persist-entry store fork-id entry nil))
-          (e-session--write-index store)
-          fork)
-      (error
-       (e-session-abort-created store fork-id)
-       (signal (car err) (cdr err))))))
+  (if (not (e-session-storage-sqlite-p store))
+      (let* ((fork (e-session-aggregate-fork
+                    store session-id :at at :metadata metadata :name name))
+             (fork-id (plist-get fork :id))
+             (path (e-session-aggregate-current-path store fork-id)))
+        (condition-case err
+            (progn
+              (e-session--persist-record store fork-id
+                                         (e-session--root-record-from-store
+                                          store fork-id) nil)
+              (when (e-session-aggregate-board-association fork)
+                (e-session--persist-board-state store fork-id))
+              (dolist (entry (cdr path))
+                (e-session--persist-entry store fork-id entry nil))
+              (e-session--write-index store)
+              fork)
+          (error
+           (e-session-abort-created store fork-id)
+           (signal (car err) (cdr err)))))
+    (e-session--call-with-commit-barrier
+     store session-id
+     (lambda ()
+       (let (stage fork fork-id records prepared)
+         (condition-case err
+             (progn
+               (setq stage
+                     (e-session-aggregate-stage-session-mutation
+                      store session-id)
+                     fork
+                     (e-session-aggregate-fork
+                      stage session-id :at at :metadata metadata :name name)
+                     fork-id (plist-get fork :id))
+               ;; A fork is one bounded session-owner mutation.  Build and
+               ;; preflight its complete record vector before submitting the
+               ;; existing atomic append-batch command with one stable runtime
+               ;; identity.  No partial fork can survive process loss.
+               (setq records
+                     (append
+                      (list (e-session--root-record-from-store stage fork-id))
+                      (when (e-session-aggregate-board-association fork)
+                        (list (e-session--board-state-record stage fork-id)))
+                      (mapcar
+                       (lambda (entry)
+                         (e-session-codec-record-for-entry fork-id entry))
+                       (cdr (e-session-aggregate-current-path
+                             stage fork-id))))
+                     prepared
+                     (e-session-storage-prepare-mutation-batch
+                      store fork-id records))
+               (e-session-storage-commit-mutation-batch
+                store fork-id prepared))
+           (error
+            ;; Only a definitive pre-acknowledgement failure may remove the
+            ;; prepared fork.  After the batch ACK it is authoritative and no
+            ;; later projection failure may be reported as a failed fork.
+            (when fork-id
+              (e-session-storage-abort-session store fork-id))
+            (signal (car err) (cdr err))))
+         (e-session-aggregate-publish-staged-session store stage fork-id)
+         (e-session--write-index-after-primary store)
+         fork)))))
 
 (defun e-session-finalize (store on-done on-error)
   "Finalize STORE's asynchronous storage durability boundary."

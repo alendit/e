@@ -500,16 +500,24 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
       (setq parent-id (plist-get entry :id)))
     (e-session-catalog--copy-value (nreverse records))))
 
-(defun e-session-catalog-checkpoint-json (session board-messages offset)
-  "Return JSON-ready checkpoint value for SESSION at journal OFFSET."
+(defun e-session-catalog-checkpoint-value (session board-messages offset)
+  "Return exact semantic checkpoint value for SESSION at journal OFFSET."
   (e-session-catalog--copy-value
    (list :version e-session-checkpoint-version
          :session-id (plist-get session :id)
          :journal-byte-offset offset
-         :records (vconcat (mapcar #'e-session-codec-record-for-json
-                                   (e-session-catalog--checkpoint-records
-                                    session board-messages)))
+         :records (vconcat (e-session-catalog--checkpoint-records
+                            session board-messages))
          :writer-high-watermarks nil)))
+
+(defun e-session-catalog-checkpoint-json (session board-messages offset)
+  "Return JSON-ready checkpoint value for SESSION at journal OFFSET."
+  (let ((checkpoint
+         (e-session-catalog-checkpoint-value session board-messages offset)))
+    (plist-put
+     checkpoint :records
+     (vconcat (mapcar #'e-session-codec-record-for-json
+                      (append (plist-get checkpoint :records) nil))))))
 
 (defun e-session-catalog-index-entry (session &optional file)
   "Return the detached catalog projection for SESSION."

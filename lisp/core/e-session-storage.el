@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'e-session-codec)
 
@@ -23,6 +24,8 @@
 (define-error 'e-session-storage-command-error
   "Invalid session persistence command"
   'e-session-storage-error)
+
+(require 'e-session-storage-sqlite)
 
 ;; The aggregate is intentionally opaque to this module.  One storage state
 ;; object owns all physical-adapter lifetime, queue, checkpoint, and outbox
@@ -37,7 +40,8 @@
   (checkpoint-dirty-session-ids (make-hash-table :test 'equal))
   (write-queue-generation 0) (write-queue-sequence 0)
   (unsettled-write-count 0) (unsettled-generation 0)
-  index-projection checkpoint-projection-operation controller)
+  index-projection checkpoint-projection-operation projection-last-error
+  controller)
 
 (defvar e-session-storage--states
   (make-hash-table :test 'eq :weakness 'key)
@@ -53,7 +57,8 @@
           state))))
 
 (cl-defun e-session-storage-register
-    (owner &key directory sessions-directory index-file persistent write-mode)
+    (owner &key directory sessions-directory index-file persistent write-mode
+           (backend 'legacy) runtime-store)
   "Register a storage state for opaque OWNER and return that state.
 DIRECTORY and the derived paths are supplied by the composition root; this
 owner does not inspect the aggregate's path/configuration slots."
@@ -71,6 +76,7 @@ owner does not inspect the aggregate's path/configuration slots."
                  :persistent (and persistent directory)
                  :write-mode write-mode)))
     (puthash owner state e-session-storage--states)
+    (e-session-storage-sqlite-register owner backend runtime-store)
     state))
 
 (defun e-session-storage--state-for (owner)
@@ -140,6 +146,14 @@ so quiescence observers never see a false zero between related writes."
     (and (e-session-storage--state-persistent state)
          (e-session-storage--state-directory state))))
 
+(defun e-session-storage-sqlite-p (store)
+  "Return non-nil when STORE uses the opt-in SQLite physical adapter."
+  (e-session-storage-sqlite-store-p store))
+
+(defun e-session-storage-runtime-store (store)
+  "Return STORE's runtime-store adapter, or nil for the legacy backend."
+  (e-session-storage-sqlite-runtime store))
+
 (defun e-session-storage--ensure-directories (store)
   "Ensure persistent directories for STORE exist."
   (when (e-session-storage-persistent-p store)
@@ -159,7 +173,9 @@ so quiescence observers never see a false zero between related writes."
 The reference is a catalog-facing value, not an invitation for callers to
 manage the journal.  Reads, writes, and temporary-file handling remain inside
 this owner."
-  (e-session-storage--session-file store session-id))
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-reference session-id)
+    (e-session-storage--session-file store session-id)))
 
 (defun e-session-storage--checkpoint-file (store session-id)
   "Return resume-checkpoint file path for SESSION-ID in STORE."
@@ -180,12 +196,14 @@ this owner."
 The result contains only the existence bit, durable byte size, and a private
 adapter reference used by the application service to identify the session.
 Callers do not need to derive paths or inspect storage state themselves."
-  (let* ((file (e-session-storage--session-file store session-id))
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-header store session-id)
+    (let* ((file (e-session-storage--session-file store session-id))
          (attributes (and (file-readable-p file) (file-attributes file))))
-    (list :session-id session-id
-          :present (and attributes t)
-          :byte-size (if attributes (file-attribute-size attributes) 0)
-          :reference file)))
+      (list :session-id session-id
+            :present (and attributes t)
+            :byte-size (if attributes (file-attribute-size attributes) 0)
+            :reference file))))
 
 (defun e-session-storage--read-file-value (store file-name)
   "Read JSON FILE-NAME below STORE's directory as a detached Lisp value.
@@ -219,11 +237,15 @@ aggregate validation; callers pass the returned value to the codec owner."
 
 This is the semantic resume operation exposed to the application service;
 checkpoint file naming and JSON parsing remain storage implementation details."
-  (e-session-storage--read-checkpoint store session-id))
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-read-checkpoint store session-id)
+    (e-session-storage--read-checkpoint store session-id)))
 
 (defun e-session-storage-resume-checkpoint-present-p (store session-id)
   "Return non-nil when SESSION-ID has a readable resume checkpoint."
-  (file-readable-p (e-session-storage--checkpoint-file store session-id)))
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-checkpoint-present-p store session-id)
+    (file-readable-p (e-session-storage--checkpoint-file store session-id))))
 
 (defun e-session-storage--write-checkpoint (store session-id value)
   "Atomically write detached checkpoint VALUE for SESSION-ID.
@@ -246,7 +268,9 @@ already a catalog/codec projection and is not interpreted here."
 
 (defun e-session-storage-persist-resume-checkpoint (store session-id value)
   "Atomically persist the bounded resume VALUE for SESSION-ID."
-  (e-session-storage--write-checkpoint store session-id value))
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-write-checkpoint store session-id value)
+    (e-session-storage--write-checkpoint store session-id value)))
 
 (defun e-session-storage--read-journal (store session-id &optional offset)
   "Return physical JSONL lines from SESSION-ID beginning at byte OFFSET.
@@ -278,7 +302,24 @@ the codec/aggregate owners."
 
 The adapter owns line framing and file reads; the application service owns
 codec decoding and aggregate replay application."
-  (e-session-storage--read-journal store session-id offset))
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-read-records store session-id offset)
+    (e-session-storage--read-journal store session-id offset)))
+
+(defun e-session-storage-read-session-page
+    (store session-id &optional after limit)
+  "Return a bounded semantic record page after AFTER for SESSION-ID."
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-read-page store session-id after limit)
+    (let* ((records (e-session-storage-read-session-records store session-id))
+           (after (or after 0))
+           (limit (or limit 256))
+           (slice (seq-take (nthcdr after records) limit))
+           (next (+ after (length slice))))
+      (list :records (cl-loop for value in slice
+                              for position from (1+ after)
+                              collect (list :position position :value value))
+            :next (and (= (length slice) limit) next)))))
 
 (defun e-session-storage-read-session-chunk
     (store session-id position next-position)
@@ -301,12 +342,14 @@ physical file reference and coding setup."
 
 (defun e-session-storage-session-ids (store)
   "Return session ids for JSONL files currently present in STORE."
-  (let ((directory (e-session-storage--state-sessions-directory
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-session-ids store)
+    (let ((directory (e-session-storage--state-sessions-directory
                     (e-session-storage--state store))))
-    (if (file-directory-p directory)
-        (mapcar #'file-name-base
-                (directory-files directory t "\\.jsonl\\'"))
-      nil)))
+      (if (file-directory-p directory)
+          (mapcar #'file-name-base
+                  (directory-files directory t "\\.jsonl\\'"))
+        nil))))
 
 (defun e-session-storage--read-index (store)
   "Return the physical session index value, or nil when unavailable."
@@ -324,7 +367,9 @@ physical file reference and coding setup."
 
 (defun e-session-storage-read-catalog-projection (store)
   "Read the detached durable catalog projection for STORE."
-  (e-session-storage--read-index store))
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-read-catalog store)
+    (e-session-storage--read-index store)))
 
 (defun e-session-storage--mark-checkpoint-dirty (store session-id)
   "Mark SESSION-ID's resume state dirty in STORE."
@@ -358,7 +403,8 @@ physical file reference and coding setup."
 
 (defun e-session-storage-admission-controller-enabled-p (store)
   "Return non-nil when STORE has an asynchronous admission adapter."
-  (and (e-session-storage--controller store) t))
+  (or (e-session-storage-sqlite-p store)
+      (and (e-session-storage--controller store) t)))
 
 (defun e-session-storage--index-write-pending-p (store)
   "Return non-nil when STORE has a derived-index write outstanding.
@@ -377,7 +423,17 @@ The result intentionally contains counts and lifecycle booleans only.  It does
 not expose queued records, timers, generations, or the storage state object to
 callers that need to preserve an application-level rollback invariant."
   (let ((state (e-session-storage--state store)))
-    (list :queued-write-count
+    (if (e-session-storage-sqlite-p store)
+        (let ((dirty-count
+               (hash-table-count
+                (e-session-storage--state-checkpoint-dirty-session-ids state)))
+              (error (e-session-storage--state-projection-last-error state)))
+          (append
+           (list :checkpoint-dirty-count dirty-count
+                 :index-write-pending (and (or (> dirty-count 0) error) t)
+                 :projection-last-error (copy-tree error))
+           (e-session-storage-sqlite-status store)))
+      (list :queued-write-count
           (length (e-session-storage--state-write-queue state))
           :write-timer-active
           (and (timerp (e-session-storage--state-write-queue-timer state)) t)
@@ -386,8 +442,32 @@ callers that need to preserve an application-level rollback invariant."
           :unsettled-write-count
           (e-session-storage--state-unsettled-write-count state)
           :checkpoint-dirty-count
-          (hash-table-count
-           (e-session-storage--state-checkpoint-dirty-session-ids state)))))
+            (hash-table-count
+             (e-session-storage--state-checkpoint-dirty-session-ids state))))))
+
+(defconst e-session-storage--projection-error-message-limit 512
+  "Maximum diagnostic message length retained for derived projections.")
+
+(defun e-session-storage-note-projection-error (store error)
+  "Record bounded derived-projection ERROR for STORE durability status."
+  (let* ((symbol (and (consp error) (car error)))
+         (message
+          (condition-case nil
+              (error-message-string error)
+            (error "Unknown derived projection failure"))))
+    (setf (e-session-storage--state-projection-last-error
+           (e-session-storage--state store))
+          (list :symbol (if (symbolp symbol) symbol 'error)
+                :message
+                (substring message 0
+                           (min (length message)
+                                e-session-storage--projection-error-message-limit))))))
+
+(defun e-session-storage-clear-projection-error (store)
+  "Clear STORE's last derived-projection diagnostic after successful retry."
+  (setf (e-session-storage--state-projection-last-error
+         (e-session-storage--state store))
+        nil))
 
 (defun e-session-storage--append-record-now (store session-id record)
   "Immediately append encoded RECORD for SESSION-ID in persistent STORE.
@@ -455,7 +535,21 @@ checkpoint batch; storage never inspects aggregate or catalog representation."
   (e-session-storage--set-index-projection store index-projection)
   (e-session-storage--set-checkpoint-projection-operation
    store checkpoint-projection-operation)
-  (e-session-storage--write-index store))
+  (if (e-session-storage-sqlite-p store)
+      (progn
+        (e-session-storage-sqlite-write-catalog store index-projection)
+        ;; The current session mutation marks its owner dirty before this
+        ;; derived publication.  Persist each bounded owner checkpoint after
+        ;; its record commit, then clear precisely that captured set.
+        (let ((session-ids
+               (e-session-storage-checkpoint-dirty-session-ids store)))
+          (dolist (session-id session-ids)
+            (e-session-storage-persist-resume-checkpoint
+             store session-id
+             (funcall checkpoint-projection-operation session-id)))
+          (e-session-storage-checkpoint-mark-clean store session-ids))
+        (e-session-storage-clear-projection-error store))
+    (e-session-storage--write-index store)))
 
 (defun e-session-storage--write-index-now (store)
   "Immediately write STORE's persistent session index."
@@ -707,7 +801,9 @@ Return STORE."
 
 The caller supplies one typed session mutation.  JSONL encoding, queueing,
 controller submission, and durability bookkeeping stay inside this owner."
-  (let ((record (e-session-codec-record-for-json record)))
+  (let ((record (if (e-session-storage-sqlite-p store)
+                    record
+                  (e-session-codec-record-for-json record))))
     (e-session-storage--profile-call
      'session.append-record
      (list :session-id session-id
@@ -715,7 +811,9 @@ controller submission, and durability bookkeeping stay inside this owner."
      (lambda ()
        (when (e-session-storage-persistent-p store)
          (e-session-storage--mark-checkpoint-dirty store session-id)
-         (if-let ((controller (e-session-storage--controller store)))
+         (if (e-session-storage-sqlite-p store)
+             (e-session-storage-sqlite-append store session-id record)
+           (if-let* ((controller (e-session-storage--controller store)))
              (e-session-storage--submit-record controller session-id record)
            (if (e-session-storage--queued-writes-p store)
              (progn
@@ -724,7 +822,7 @@ controller submission, and durability bookkeeping stay inside this owner."
                      (e-session-storage--state-write-queue
                       (e-session-storage--state store)))
                (e-session-storage--adjust-unsettled-writes store 1))
-           (e-session-storage--append-record-now store session-id record))))))))
+             (e-session-storage--append-record-now store session-id record)))))))))
 
 (defun e-session-storage-prepare-mutation (store session-id record)
   "Validate semantic durable RECORD before any STORE state is published.
@@ -732,11 +830,36 @@ Persistent controller commands are prepared on a detached request so command
 shape, JSON encodability, and byte limits fail before the owning session or
 association is made visible.  Direct and queued stores still use their normal
 write paths after this pure preflight."
-  (let ((record (e-session-codec-record-for-json record)))
-    (json-encode record)
-    (when-let ((controller (e-session-storage--controller store)))
+  (let ((record (if (e-session-storage-sqlite-p store)
+                    (copy-tree record)
+                  (e-session-codec-record-for-json record))))
+    (unless (e-session-storage-sqlite-p store)
+      (json-encode record))
+    (when-let* ((controller (e-session-storage--controller store)))
       (e-session-storage--validate-record controller session-id record))
     record))
+
+(defun e-session-storage-prepare-mutation-batch (store session-id records)
+  "Preflight one complete SQLite session-owner mutation batch."
+  (unless (e-session-storage-sqlite-p store)
+    (signal 'e-session-storage-error
+            (list "Mutation batches require SQLite" session-id)))
+  (unless records
+    (signal 'e-session-storage-error
+            (list "Mutation batch is empty" session-id)))
+  (e-session-storage-sqlite-prepare-append-batch
+   session-id
+   (mapcar (lambda (record)
+             (e-session-storage-prepare-mutation store session-id record))
+           records)))
+
+(defun e-session-storage-commit-mutation-batch (store session-id records)
+  "Commit preflighted RECORDS atomically for SQLite SESSION-ID."
+  (unless (e-session-storage-sqlite-p store)
+    (signal 'e-session-storage-error
+            (list "Mutation batches require SQLite" session-id)))
+  (e-session-storage--mark-checkpoint-dirty store session-id)
+  (e-session-storage-sqlite-append-batch store session-id records))
 
 
 
@@ -747,7 +870,14 @@ write paths after this pure preflight."
    (list :metadata (list :persistent (and (e-session-storage-persistent-p store) t)))
    (lambda ()
      (when (e-session-storage-persistent-p store)
-       (if-let ((controller (e-session-storage--controller store)))
+       (if (e-session-storage-sqlite-p store)
+           (e-session-storage-publish-projections
+            store
+            (e-session-storage--state-index-projection
+             (e-session-storage--state store))
+            (e-session-storage--state-checkpoint-projection-operation
+             (e-session-storage--state store)))
+         (if-let* ((controller (e-session-storage--controller store)))
            (e-session-storage--request-checkpoint controller)
          (if (e-session-storage--queued-writes-p store)
            (progn
@@ -758,16 +888,42 @@ write paths after this pure preflight."
              (setf (e-session-storage--state-index-write-pending
                     (e-session-storage--state store))
                    (e-session-storage--queued-index-entry store)))
-           (e-session-storage--write-index-now store)))))))
+             (e-session-storage--write-index-now store))))))))
 
 (defun e-session-storage-finalize-store (store on-done on-error)
   "Asynchronously finalize STORE's current durability boundary.
 STORE must own the production persistence controller.  Call ON-DONE after its
 checkpoint is acknowledged, or ON-ERROR when the writer rejects it."
-  (if-let ((controller (e-session-storage--controller store)))
+  (if (e-session-storage-sqlite-p store)
+      (condition-case err
+          (progn
+            ;; A primary mutation may already have acknowledged while its
+            ;; rebuildable catalog/checkpoint publication failed.  Retry that
+            ;; retained projection before the explicit ordered barrier.
+            (let* ((state (e-session-storage--state store))
+                   (dirty
+                    (hash-table-count
+                     (e-session-storage--state-checkpoint-dirty-session-ids
+                      state))))
+              (when (or (> dirty 0)
+                        (e-session-storage--state-projection-last-error state))
+                (condition-case projection-error
+                    (e-session-storage--write-index store)
+                  (error
+                   (e-session-storage-note-projection-error
+                    store projection-error)
+                   (signal (car projection-error)
+                           (cdr projection-error))))))
+            ;; The bounded status read is also SQLite's explicit ordered
+            ;; barrier: runtime write priority prevents it from overtaking
+            ;; any effect submitted before this finalize call.
+            (e-session-storage-sqlite-ordered-barrier store)
+            (funcall on-done t))
+        (error (funcall on-error err)))
+    (if-let* ((controller (e-session-storage--controller store)))
       (e-session-storage-finalize controller on-done on-error)
-    (signal 'e-session-persistence-unavailable
-            (list "Session store has no asynchronous persistence controller"))))
+      (signal 'e-session-persistence-unavailable
+              (list "Session store has no asynchronous persistence controller")))))
 
 
 
@@ -1194,6 +1350,10 @@ WRITE-INDEX controls the optional derived-index publication.  The application
 composition root can defer it until after the aggregate has applied the
 semantic admission, while direct callers retain the historical default."
   (cond
+   ((e-session-storage-sqlite-p store)
+    (e-session-storage-sqlite-append-batch store session-id records)
+    (e-session-storage--mark-checkpoint-dirty store session-id)
+    (when write-index (e-session-storage--write-index store)))
    ((e-session-storage--controller store)
     (e-session-storage--submit-admission
      (e-session-storage--controller store) session-id records)
@@ -1223,7 +1383,9 @@ semantic admission, while direct callers retain the historical default."
 This rollback boundary is used only for a session reservation that never
 completed admission.  It never retracts an acknowledged writer command or
 touches another session's pending work."
-  (dolist (entry
+  (if (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-delete store session-id)
+    (dolist (entry
            (copy-sequence
             (e-session-storage--state-write-queue
              (e-session-storage--state store))))
@@ -1246,7 +1408,7 @@ touches another session's pending work."
     ;; The aggregate removes its in-memory session after this physical cleanup.
     ;; It then decides whether the direct catalog must be rewritten; queued
     ;; catalog work remains pending until its normal timer boundary.
-    nil)
+      nil))
   t)
 
 (defun e-session-storage--discard-retained-admission-commands
@@ -1429,7 +1591,9 @@ first stable command id in that batch."
   (let ((state (e-session-storage--state store)))
     (unless (e-session-storage--state-persistent state)
     (signal 'e-session-storage-error (list "Store is not persistent")))
-    (or (e-session-storage--state-controller state)
+    (if (e-session-storage-sqlite-p store)
+        (e-session-storage-runtime-store store)
+      (or (e-session-storage--state-controller state)
         (let ((controller
                (e-session-storage--create
                 :store state
@@ -1438,7 +1602,11 @@ first stable command id in that batch."
                         (truncate (float-time))
                         (random most-positive-fixnum)))))
           (setf (e-session-storage--state-controller state) controller)
-          controller))))
+          controller)))))
+
+(defun e-session-storage-close (store)
+  "Close STORE's opt-in runtime worker; legacy stores need no close."
+  (e-session-storage-sqlite-close store))
 
 
 (provide 'e-session-storage)

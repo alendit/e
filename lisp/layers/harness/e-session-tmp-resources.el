@@ -25,6 +25,7 @@
 (require 'e-resources)
 (require 'e-tools)
 (require 'e-work)
+(require 'e-session-tmp-sqlite)
 
 (define-error 'e-session-tmp-resources-invalid-path
   "tmp:// resource path is invalid")
@@ -107,14 +108,19 @@ sessions stay isolated."
                    t))
                  e-session-tmp--roots))))
 
-(defun e-session-tmp-cleanup-session (harness session-id)
+(cl-defun e-session-tmp-cleanup-session (harness session-id)
   "Delete tmp resources for HARNESS SESSION-ID's lineage root.
 The shared lineage root is removed only when SESSION-ID is the lineage root
 session, so cleaning up a subagent child never destroys a root its parent still
 uses."
   (e-session-tmp--require-session harness session-id)
   (let* ((lineage-id (e-session-tmp--lineage-id harness session-id))
-         (root (gethash lineage-id e-session-tmp--roots)))
+         (root (gethash lineage-id e-session-tmp--roots))
+         (sqlite-result (e-session-tmp-sqlite-cleanup-lineage
+                         harness session-id lineage-id)))
+    (when sqlite-result
+      (cl-return-from e-session-tmp-cleanup-session
+        (cdr sqlite-result)))
     (when (equal session-id lineage-id)
       (e-session-tmp--forget-lineage lineage-id)
       (when (and root (file-directory-p root))
@@ -338,6 +344,83 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
         :kind 'file
         :metadata (e-session-tmp--file-metadata absolute query-metadata)))
 
+(defun e-session-tmp--listed-resource-result (row scope &optional query-metadata)
+  "Return one resource result for physical ROW below SCOPE."
+  (let* ((path (plist-get row :path))
+         (name (if (or (string-empty-p scope) (equal scope "."))
+                   path
+                 (string-remove-prefix (concat (string-remove-suffix "/" scope) "/")
+                                       path))))
+    (list :uri (concat "tmp://" path) :name name :kind 'file
+          :metadata
+          (append (list :bytes (plist-get row :bytes))
+                  (when query-metadata
+                    (list :updated-at
+                          (seconds-to-time (plist-get row :updated-at))))))))
+
+(defun e-session-tmp--glob-listed-resources
+    (rows uri pattern limit case-sensitive sort-by sort-order
+          created-after created-before updated-after updated-before)
+  "Apply tmp glob policy to bounded physical resource ROWS."
+  (let* ((scope (e-session-tmp--scope-relative-name uri))
+         (scope-prefix (unless (equal scope ".")
+                         (string-remove-suffix "/" scope)))
+         (actual-pattern (or pattern "*"))
+         (actual-limit (e-session-tmp--discovery-limit limit))
+         (advanced (or sort-by sort-order created-after created-before
+                       updated-after updated-before))
+         resources)
+    (e-resource-pattern-compile-glob actual-pattern)
+    (dolist (row rows)
+      (let ((path (plist-get row :path)))
+        (when (or (null scope-prefix)
+                  (equal path scope-prefix)
+                  (string-prefix-p (concat scope-prefix "/") path))
+          (let ((resource
+                 (e-session-tmp--listed-resource-result row scope advanced)))
+            (when (e-resource-pattern-glob-match-p
+                   actual-pattern (plist-get resource :name)
+                   (if (null case-sensitive) t case-sensitive))
+              (push resource resources))))))
+    (setq resources
+          (e-session-tmp--apply-query
+           (nreverse resources) sort-by sort-order created-after created-before
+           updated-after updated-before))
+    (list :resources (vconcat (seq-take resources actual-limit))
+          :truncated (> (length resources) actual-limit))))
+
+(defun e-session-tmp--search-listed-resources
+    (rows content-reader uri query options)
+  "Apply tmp search policy to ROWS using CONTENT-READER by path."
+  (let* ((glob-result
+          (e-session-tmp--glob-listed-resources
+           rows uri (plist-get options :glob)
+           (or (plist-get options :resource-limit) 4096) t
+           (plist-get options :resource-sort-by)
+           (plist-get options :resource-sort-order)
+           (plist-get options :created-after)
+           (plist-get options :created-before)
+           (plist-get options :updated-after)
+           (plist-get options :updated-before)))
+         (by-uri (make-hash-table :test 'equal))
+         (limit (e-resource-pattern-search-limit (plist-get options :limit)))
+         matches)
+    (dolist (row rows)
+      (puthash (concat "tmp://" (plist-get row :path)) row by-uri))
+    (dolist (resource (append (plist-get glob-result :resources) nil))
+      (let* ((row (gethash (plist-get resource :uri) by-uri))
+             (content (funcall content-reader (plist-get row :path))))
+        (setq matches
+              (append
+               matches
+               (e-resource-pattern-search-matches-in-text
+                (plist-get resource :uri) content
+                query options (plist-get resource :name))))))
+    (setq matches (e-resource-pattern-rank-search-matches
+                   matches (1+ limit)))
+    (list :matches (vconcat (seq-take matches limit))
+          :truncated (> (length matches) limit))))
+
 (defun e-session-tmp--query-field-functions ()
   "Return tmp:// resource query field functions."
   `(("name" . ,(lambda (resource) (plist-get resource :name)))
@@ -372,10 +455,16 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
               case-sensitive))
     (e-session-tmp--file-result scope-relative scope scope query-metadata)))
 
-(defun e-session-tmp--glob-resource
+(cl-defun e-session-tmp--glob-resource
     (harness session-id uri pattern limit case-sensitive &optional sort-by sort-order
              created-after created-before updated-after updated-before)
   "List tmp resources under parsed URI with PATTERN and LIMIT."
+  (when (e-session-tmp--sqlite-store harness)
+    (cl-return-from e-session-tmp--glob-resource
+      (e-session-tmp--glob-listed-resources
+       (e-session-tmp--sqlite-list harness session-id 4096)
+       uri pattern limit case-sensitive sort-by sort-order
+       created-after created-before updated-after updated-before)))
   (let* ((root (e-session-tmp-directory harness session-id))
          (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
@@ -559,8 +648,16 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
       (list :matches (vconcat (seq-take ranked actual-limit))
             :truncated (> (length ranked) actual-limit)))))
 
-(defun e-session-tmp--search-resource (harness session-id uri query options)
+(cl-defun e-session-tmp--search-resource (harness session-id uri query options)
   "Search tmp resources under parsed URI for QUERY with OPTIONS."
+  (when (e-session-tmp--sqlite-store harness)
+    (cl-return-from e-session-tmp--search-resource
+      (let ((rows (e-session-tmp--sqlite-list harness session-id 4096)))
+        (e-session-tmp--search-listed-resources
+         rows
+         (lambda (path)
+           (e-session-tmp--sqlite-read-content harness session-id path))
+         uri query options))))
   (if (or (> (length (e-resource-pattern-search-terms query)) 1)
           (e-session-tmp--search-advanced-p options))
       (e-session-tmp--search-resource-advanced harness session-id uri query options)
@@ -807,8 +904,12 @@ encode; without these bindings `write-region' would invoke
         (select-safe-coding-system-function nil))
     (write-region content nil path nil 'silent)))
 
-(defun e-session-tmp-write (harness session-id relative-name content)
+(cl-defun e-session-tmp-write (harness session-id relative-name content)
   "Write CONTENT to RELATIVE-NAME in HARNESS SESSION-ID and return tmp URI."
+  (when (e-session-tmp--sqlite-store harness)
+    (cl-return-from e-session-tmp-write
+      (e-session-tmp--sqlite-put
+       harness session-id relative-name content)))
   (let ((path (e-session-tmp--path harness session-id relative-name))
         (root (e-session-tmp-directory harness session-id)))
     (make-directory (file-name-directory path) t)
@@ -816,12 +917,32 @@ encode; without these bindings `write-region' would invoke
     (e-session-tmp--touch-root root)
     (e-session-tmp--uri relative-name)))
 
-(defun e-session-tmp-write-generated (harness session-id relative-name writer)
+(defun e-session-tmp--read-relative (harness session-id relative-name range)
+  "Read RELATIVE-NAME through the active physical content primitive."
+  (if (e-session-tmp--sqlite-store harness)
+      (let ((row (e-session-tmp--sqlite-get
+                  harness session-id relative-name)))
+        (unless row
+          (signal 'file-missing
+                  (list "Opening tmp resource"
+                        (e-session-tmp--uri relative-name))))
+        (e-session-tmp--read-content
+         (e-session-tmp--sqlite-read-content
+          harness session-id relative-name)
+         range))
+    (e-session-tmp--read-file
+     (e-session-tmp--path harness session-id relative-name) range)))
+
+(cl-defun e-session-tmp-write-generated (harness session-id relative-name writer)
   "Have WRITER generate RELATIVE-NAME and return its tmp URI.
 WRITER receives the absolute destination path.  This is the bounded-memory
 counterpart to `e-session-tmp-write' for producers that stream their content."
   (unless (functionp writer)
     (signal 'wrong-type-argument (list 'functionp writer)))
+  (when-let* ((sqlite-result
+               (e-session-tmp-sqlite-write-generated
+                harness session-id relative-name writer)))
+    (cl-return-from e-session-tmp-write-generated (cdr sqlite-result)))
   (let ((path (e-session-tmp--path harness session-id relative-name))
         (root (e-session-tmp-directory harness session-id)))
     (make-directory (file-name-directory path) t)
@@ -873,12 +994,16 @@ previewed with `e-tools-result-content-preview'."
         (append reference (list :metadata metadata))
       reference)))
 
-(defun e-session-tmp-cleanup-reference (harness session-id reference)
+(cl-defun e-session-tmp-cleanup-reference (harness session-id reference)
   "Delete one session tmp REFERENCE for HARNESS SESSION-ID.
 REFERENCE may be a raw-result reference plist or a =tmp://= URI string.  Return
 the deleted file path, or nil when the reference is not session-tmp backed, its
 session root is already gone, or the referenced file is already absent."
   (e-session-tmp--require-session harness session-id)
+  (when-let* ((sqlite-result
+               (e-session-tmp-sqlite-delete-reference
+                harness session-id reference)))
+    (cl-return-from e-session-tmp-cleanup-reference (cdr sqlite-result)))
   (when-let* ((uri (e-session-tmp--reference-uri reference))
               (lineage-id (e-session-tmp--lineage-id harness session-id))
               (root (gethash lineage-id e-session-tmp--roots)))
@@ -902,15 +1027,22 @@ durable receipt."
              (stringp session-id)
              (not (string-empty-p session-id)))
     (condition-case nil
-        (when-let* ((uri (e-session-tmp--reference-uri reference))
-                    (lineage-id (e-session-tmp--lineage-id harness session-id))
-                    (root (gethash lineage-id e-session-tmp--roots)))
-          (and (file-directory-p root)
-               (let* ((relative-name
-                       (e-session-tmp--relative-name-from-uri uri))
-                      (path (e-session-tmp--path-in-root root relative-name)))
-                 (and (file-regular-p path)
-                      (file-readable-p path)))))
+        (let ((sqlite-result
+               (e-session-tmp-sqlite-reference-available-p
+                harness session-id reference)))
+          (if sqlite-result
+              (cdr sqlite-result)
+            (when-let* ((uri (e-session-tmp--reference-uri reference))
+                        (lineage-id
+                         (e-session-tmp--lineage-id harness session-id))
+                        (root (gethash lineage-id e-session-tmp--roots)))
+              (and (file-directory-p root)
+                   (let* ((relative-name
+                           (e-session-tmp--relative-name-from-uri uri))
+                          (path (e-session-tmp--path-in-root
+                                 root relative-name)))
+                     (and (file-regular-p path)
+                          (file-readable-p path)))))))
       (error nil))))
 
 (defun e-session-tmp-cleanup-references (harness session-id references)
@@ -952,6 +1084,26 @@ root and is suitable for streaming writes."
         (let ((beg (point)))
           (if end
               (forward-line (1+ (- end start)))
+            (goto-char (point-max)))
+          (buffer-substring-no-properties beg (point)))))))
+
+(defun e-session-tmp--read-content (content range)
+  "Read text CONTENT with the same optional line RANGE contract as files."
+  (with-temp-buffer
+    (insert content)
+    (if (not range)
+        (buffer-string)
+      (let ((unit (plist-get range :unit))
+            (start (plist-get range :start))
+            (end (plist-get range :end)))
+        (unless (and (equal unit "line") (integerp start) (> start 0)
+                     (or (null end)
+                         (and (integerp end) (>= end start))))
+          (signal 'wrong-type-argument (list 'line-range-p range)))
+        (goto-char (point-min))
+        (forward-line (1- start))
+        (let ((beg (point)))
+          (if end (forward-line (1+ (- end start)))
             (goto-char (point-max)))
           (buffer-substring-no-properties beg (point)))))))
 
@@ -1011,9 +1163,8 @@ root and is suitable for streaming writes."
     :uri-patterns '("tmp://<relative-path>")
     :range-modes '("line")
     :handler (lambda (uri range)
-               (e-session-tmp--read-file
-                (e-session-tmp--path harness session-id (plist-get uri :address))
-                range))))
+               (e-session-tmp--read-relative
+                harness session-id (plist-get uri :address) range))))
   (e-resources-register
    registry
    (e-resource-method-create
@@ -1036,15 +1187,15 @@ root and is suitable for streaming writes."
     :uri-patterns '("tmp://<relative-path>")
     :handler (lambda (uri edits)
                (let* ((relative-name (plist-get uri :address))
-                      (path (e-session-tmp--path harness session-id relative-name))
-                      (content (e-session-tmp--read-file path nil))
+                      (content (e-session-tmp--read-relative
+                                harness session-id relative-name nil))
                       (new-content
                        (e-session-tmp--apply-edits
                         content
                         edits
                         (plist-get uri :uri))))
-                 (e-session-tmp--write-file path new-content)
-                 (e-session-tmp--uri relative-name)))))
+                 (e-session-tmp-write
+                  harness session-id relative-name new-content)))))
   (e-resources-register
    registry
    (e-resource-method-create
@@ -1068,7 +1219,8 @@ root and is suitable for streaming writes."
                created-before
                updated-after
                updated-before))
-   :work (e-session-tmp--glob-work harness session-id)))
+   :work (unless (e-session-tmp--sqlite-store harness)
+           (e-session-tmp--glob-work harness session-id))))
   (e-resources-register
    registry
    (e-resource-method-create
@@ -1084,7 +1236,8 @@ root and is suitable for streaming writes."
                uri
                query
                options))
-   :work (e-session-tmp--search-work harness session-id)))
+   :work (unless (e-session-tmp--sqlite-store harness)
+           (e-session-tmp--search-work harness session-id))))
   nil)
 
 (defun e-session-tmp-capability-create ()
