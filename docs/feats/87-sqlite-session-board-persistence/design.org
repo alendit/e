@@ -93,6 +93,54 @@ P2 adds the accepted opt-in Board realization:
   endpoints, and live authorization objects remain process-local.  The ordinary
   Board path remains legacy-backed until P4.
 
+P3 adds the accepted opt-in realization:
+
+- =e-runtime-sqlite= is the sole composition root: it opens one
+  =e-runtime-store= and lends that runtime to session, Board, task, cron, voice,
+  Goodnite, and raw-result owner adapters; the borrowed session adapter cannot
+  close it, composition shutdown owns the one physical close, and a
+  process-local reservation rejects any second live composition before store
+  creation or process-global owner injection;
+- each P3 domain has a narrow =e-*-storage= port, an =e-*-storage-sqlite=
+  protocol adapter, and an owner-specific =e-*-storage-sqlite-worker= schema and
+  SQL module.  The generic worker grew only typed dispatch, initialization, and
+  error mapping; it retains connection, revision, command-deduplication, and
+  transaction ownership rather than domain SQL;
+- =e-task-queue= retains queue/retry/cancel policy and stages owner transitions
+  around the task port.  Claim acknowledgement precedes runner invocation;
+  immutable attempt identity fences late settlement; restart changes a claimed
+  task to =interrupted= instead of re-queueing it; a pause request commits
+  =pausing= and remains active until that claimed attempt confirms cancellation,
+  while a missing or failing cancellation boundary becomes =interrupted=;
+  a synchronous runner signal after claim is also =interrupted= because the
+  runner may have begun an irreversible effect before returning its handle;
+  and Board publication remains a separate owner effect identified by the task
+  attempt;
+- =e-cron= retains cadence, catch-up, guard, and action policy.  Its port commits
+  the firing claim and cadence advance before guard/action execution; a claimed
+  firing without a live process is =unsafe= unless its re-registered definition
+  supplies the narrow reconciliation callback.  Definitions, guards, actions,
+  active-firing fences, and timers remain process-local;
+- voice uses one atomic tell-update/LRU-cap command; Goodnite gives each
+  observed access a unique stable event identity, appends ordered demand events,
+  and advances the named =goodnite-demand-consumer= checkpoint
+  before bounded physical cleanup; raw results use immutable URI/content
+  deduplication, fixed expiry, a private 16 MiB BLOB boundary, and staging-file
+  disposal only after commit acknowledgement; and
+- pure =e-*-legacy= decoders isolate file representations for P4 inventory and
+  migration.  The opt-in SQLite path never falls back or dual-writes; the
+  ordinary legacy-backed default remains until P4 cutover.
+
+Physical placement follows causal ownership.  SQL/schema clusters are extracted
+into the five owner worker modules (91-276 lines), runtime composition is a
+separate 180-line defaults module, and legacy decoding is isolated in five
+18-33-line modules.  The task and cron roots grow because claim-before-effect,
+restart classification, retries, cadence, guard, and action ordering are their
+semantic policy and must remain on the owner side of the port; they do not
+contain SQL, generic runtime transport, or another owner's representation.
+Voice, Goodnite, and raw roots retain only consumer policy and injection while
+their physical implementations are extracted.
+
 * Target topology
 
 One e runtime owns one state directory and all harnesses, sessions, Boards,

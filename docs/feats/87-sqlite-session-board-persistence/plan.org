@@ -29,7 +29,7 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   in its history.
 - Owning contract :: =F87-C01=.
 - Behavioral status :: =unavailable= until Package 4 passes the direct scenario.
-- Mechanism status :: =in-progress=.  P1-P2 are accepted; P3-P4 remain.
+- Mechanism status :: =in-progress=.  P1-P3 are accepted; P4 remains.
 
 * Implementation ledger
 
@@ -51,7 +51,23 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   Seventeen focused S5-S6 tests plus the existing Board, runtime, admission,
   registry, chat/session, and P1 preservation suites pass.  Ordinary Boards
   remain legacy-backed, so this does not make =F87-GOAL= available.
-- P3-P4 :: Not started.
+- P3 :: Accepted on 2026-09-02.  One opt-in
+  composition opens the existing runtime store once and injects separate task,
+  cron, voice, Goodnite, raw-result, session, and Board adapters.  Task attempts
+  and cron firings commit claims before executable effects and restore ambiguous
+  work as =interrupted= or =unsafe= without automatic replay.  A running task
+  commits =pausing= before requesting cancellation, retains its active slot
+  until the owned attempt confirms cancellation, and treats a missing/failing
+  cancellation boundary as interrupted.  Voice LRU updates, distinct Goodnite
+  observation events with checkpoint cleanup, and immutable fixed-expiry raw
+  BLOBs use owner-shaped commands; the raw boundary is 16 MiB exact with
+  explicit one-over failure.  A process-local composition guard rejects a
+  second live composition before it can open a store or replace owner ports.
+  Seventeen focused S7-S8/composition tests, 119 independently
+  relevant owner tests, and 39 P1-P2 preservation tests pass.  Ordinary runtime
+  defaults and legacy files remain unchanged until P4, so =F87-GOAL= remains
+  unavailable.
+- P4 :: Not started.
 
 * Goal and boundary
 

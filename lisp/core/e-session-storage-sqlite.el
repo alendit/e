@@ -20,13 +20,18 @@
   (make-hash-table :test 'eq :weakness 'key))
 (defvar e-session-storage-sqlite--runtimes
   (make-hash-table :test 'eq :weakness 'key))
+(defvar e-session-storage-sqlite--owned-runtimes
+  (make-hash-table :test 'eq :weakness 'key))
 
-(defun e-session-storage-sqlite-register (store backend runtime)
+(defun e-session-storage-sqlite-register (store backend runtime owns-runtime)
   "Register STORE's physical BACKEND and optional RUNTIME."
   (puthash store backend e-session-storage-sqlite--backends)
   (if runtime
       (puthash store runtime e-session-storage-sqlite--runtimes)
-    (remhash store e-session-storage-sqlite--runtimes)))
+    (remhash store e-session-storage-sqlite--runtimes))
+  (if (and runtime owns-runtime)
+      (puthash store t e-session-storage-sqlite--owned-runtimes)
+    (remhash store e-session-storage-sqlite--owned-runtimes)))
 
 (defun e-session-storage-sqlite-store-p (store)
   "Return non-nil when STORE uses the opt-in SQLite adapter."
@@ -175,8 +180,13 @@ acknowledged status response cannot overtake an earlier submitted write."
 
 (defun e-session-storage-sqlite-close (store)
   "Close STORE's subordinate runtime worker."
-  (when-let* ((runtime (e-session-storage-sqlite-runtime store)))
+  (when-let* ((runtime (and (gethash store
+                                    e-session-storage-sqlite--owned-runtimes)
+                            (e-session-storage-sqlite-runtime store))))
     (e-runtime-store-close runtime))
+  (remhash store e-session-storage-sqlite--owned-runtimes)
+  (remhash store e-session-storage-sqlite--runtimes)
+  (remhash store e-session-storage-sqlite--backends)
   t)
 
 (provide 'e-session-storage-sqlite)

@@ -26,10 +26,23 @@
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-board-conflict "Runtime store Board conflict"
   'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-task-conflict "Runtime store task conflict"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-cron-conflict "Runtime store cron conflict"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-goodnite-conflict "Runtime store Goodnite conflict"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-raw-conflict "Runtime store raw-result conflict"
+  'e-runtime-store-worker-error)
 
 (require 'e-board-storage-sqlite-worker)
+(require 'e-cron-storage-sqlite-worker)
+(require 'e-goodnite-storage-sqlite-worker)
+(require 'e-raw-results-storage-sqlite-worker)
+(require 'e-task-storage-sqlite-worker)
+(require 'e-voice-storage-sqlite-worker)
 
-(defconst e-runtime-store-worker-schema-version 2)
+(defconst e-runtime-store-worker-schema-version 3)
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
 (defconst e-runtime-store-worker-session-page-byte-limit (* 1024 1024)
@@ -145,6 +158,16 @@
          "CREATE INDEX IF NOT EXISTS resources_expiry ON resources(expires_at)"))
     (sqlite-execute e-runtime-store-worker--database statement))
   (e-board-storage-sqlite-worker-initialize
+   e-runtime-store-worker--database)
+  (e-task-storage-sqlite-worker-initialize
+   e-runtime-store-worker--database)
+  (e-cron-storage-sqlite-worker-initialize
+   e-runtime-store-worker--database)
+  (e-voice-storage-sqlite-worker-initialize
+   e-runtime-store-worker--database)
+  (e-goodnite-storage-sqlite-worker-initialize
+   e-runtime-store-worker--database)
+  (e-raw-results-storage-sqlite-worker-initialize
    e-runtime-store-worker--database)
   (let ((row (car (sqlite-select e-runtime-store-worker--database
                                  "SELECT value FROM store_meta WHERE key='schema_version'"))))
@@ -371,6 +394,23 @@
          'board-replay-progress-put 'board-pickup-session-admit)
      (e-board-storage-sqlite-worker-write
       e-runtime-store-worker--database body))
+    ((or 'task-queue-open 'task-enqueue 'task-claim 'task-transition
+         'task-queue-pause 'task-history-delete)
+     (e-task-storage-sqlite-worker-write
+      e-runtime-store-worker--database body))
+    ((or 'cron-register 'cron-claim 'cron-settle 'cron-history-delete)
+     (e-cron-storage-sqlite-worker-write
+      e-runtime-store-worker--database body))
+    ((or 'voice-record 'voice-clear)
+     (e-voice-storage-sqlite-worker-write
+      e-runtime-store-worker--database body))
+    ((or 'goodnite-event-append 'goodnite-checkpoint-ack
+         'goodnite-event-cleanup)
+     (e-goodnite-storage-sqlite-worker-write
+      e-runtime-store-worker--database body))
+    ((or 'raw-result-put 'raw-result-delete 'raw-result-expire)
+     (e-raw-results-storage-sqlite-worker-write
+      e-runtime-store-worker--database body))
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown write operation" (plist-get body :op))))))
 
@@ -494,6 +534,21 @@
          'board-pickup-list 'board-participant-list
          'board-replay-progress-get)
      (e-board-storage-sqlite-worker-read
+      e-runtime-store-worker--database body))
+    ('task-snapshot
+     (e-task-storage-sqlite-worker-read
+      e-runtime-store-worker--database body))
+    ('cron-cadence
+     (e-cron-storage-sqlite-worker-read
+      e-runtime-store-worker--database body))
+    ('voice-list
+     (e-voice-storage-sqlite-worker-read
+      e-runtime-store-worker--database body))
+    ('goodnite-event-page
+     (e-goodnite-storage-sqlite-worker-read
+      e-runtime-store-worker--database body))
+    ('raw-result-read
+     (e-raw-results-storage-sqlite-worker-read
       e-runtime-store-worker--database body))
     ('resource-get
      (when-let* ((row (car (sqlite-select

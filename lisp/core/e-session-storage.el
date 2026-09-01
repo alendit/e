@@ -58,7 +58,7 @@
 
 (cl-defun e-session-storage-register
     (owner &key directory sessions-directory index-file persistent write-mode
-           (backend 'legacy) runtime-store)
+           (backend 'legacy) runtime-store (owns-runtime-store t))
   "Register a storage state for opaque OWNER and return that state.
 DIRECTORY and the derived paths are supplied by the composition root; this
 owner does not inspect the aggregate's path/configuration slots."
@@ -76,7 +76,8 @@ owner does not inspect the aggregate's path/configuration slots."
                  :persistent (and persistent directory)
                  :write-mode write-mode)))
     (puthash owner state e-session-storage--states)
-    (e-session-storage-sqlite-register owner backend runtime-store)
+    (e-session-storage-sqlite-register owner backend runtime-store
+                                       owns-runtime-store)
     state))
 
 (defun e-session-storage--state-for (owner)

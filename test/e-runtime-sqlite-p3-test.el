@@ -1,0 +1,679 @@
+;;; e-runtime-sqlite-p3-test.el --- Feature 87 P3 owner scenarios -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'ert)
+(require 'e-cron)
+(require 'e-cron-storage-sqlite)
+(require 'e-goodnite-storage-sqlite)
+(require 'e-raw-results)
+(require 'e-raw-results-storage-sqlite)
+(require 'e-runtime-sqlite)
+(require 'e-task-queue)
+(require 'e-task-storage-sqlite)
+(require 'e-voice-adjustment)
+(require 'e-voice-storage-sqlite)
+
+(cl-defmacro e-runtime-sqlite-p3-test--with-runtime
+    ((runtime directory) &rest body)
+  "Run BODY with one disposable RUNTIME rooted at DIRECTORY."
+  (declare (indent 1) (debug ((symbolp symbolp) body)))
+  `(let* ((,directory (make-temp-file "e-runtime-sqlite-p3-" t))
+          (,runtime (e-runtime-store-open ,directory)))
+     (unwind-protect (progn ,@body)
+       (ignore-errors (e-runtime-store-close ,runtime))
+       (delete-directory ,directory t))))
+
+(defun e-runtime-sqlite-p3-test--hold-one-response
+    (runtime observation release-delay)
+  "Hold RUNTIME's next complete response, run OBSERVATION, then release it."
+  (let* ((process (e-runtime-store--process runtime))
+         (ordinary-filter (process-filter process))
+         (captured "")
+         held)
+    (set-process-filter
+     process
+     (lambda (worker text)
+       (setq captured (concat captured text))
+       (when (and (not held) (string-match-p "\n" captured))
+         (setq held t)
+         (run-at-time 0 nil observation)
+         (run-at-time
+          release-delay nil
+          (lambda ()
+            (set-process-filter worker ordinary-filter)
+            (funcall ordinary-filter worker captured))))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-claim-precedes-runner-and-restart-is-uncertain ()
+  "Claim ACK gates the runner and a lost live runner never auto-requeues."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (calls 0)
+           settle-thunks
+           (queue
+            (e-task-queue-create
+             :id "claims" :storage storage :max-parallel 0
+             :runner
+             (lambda (_task _harness settle)
+               (cl-incf calls)
+               (push settle settle-thunks)
+               (list :cancel #'ignore))))
+           observed-calls)
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (let* ((record (e-task-queue-enqueue
+                        queue :prompt "commit first"
+                        :harness-instance-id 'test))
+               (task-id (plist-get record :task-id)))
+          (setf (e-task-queue-max-parallel queue) 1)
+          (e-runtime-sqlite-p3-test--hold-one-response
+           runtime (lambda () (setq observed-calls calls)) 0.02)
+          (e-task-queue--dispatch queue)
+          (should (= observed-calls 0))
+          (should (= calls 1))
+          (should (equal (plist-get (e-task-queue-get queue task-id)
+                                    :attempt-id)
+                         (format "%s:a:1" task-id)))
+          (let ((snapshot (e-task-storage-snapshot storage "claims")))
+            (should (= (length (plist-get snapshot :attempts)) 1))
+            (should (eq (plist-get (car (plist-get snapshot :attempts)) :state)
+                        'claimed)))
+          ;; Process loss leaves the claimed runner effect ambiguous.  A fresh
+          ;; queue restores it as interrupted and never invokes a runner.
+          (e-runtime-store-close runtime)
+          (setq runtime (e-runtime-store-open directory)
+                storage (e-task-storage-sqlite-create runtime))
+          (let ((restored
+                 (e-task-queue-create
+                  :id "claims" :storage storage :max-parallel 1
+                  :runner (lambda (&rest _args) (cl-incf calls)))))
+            (e-task-queue-load restored)
+            (should (= calls 1))
+            (should (eq (plist-get (e-task-queue-get restored task-id) :status)
+                        'interrupted))
+            (should (= (length
+                        (plist-get (e-task-storage-snapshot storage "claims")
+                                   :attempts))
+                       1))))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-lost-ack-and-late-settle-are-fenced ()
+  "A lost claim ACK runs once and an old attempt cannot settle its successor."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (calls 0) settles
+           (queue
+            (e-task-queue-create
+             :id "late" :storage storage :max-parallel 0
+             :runner
+             (lambda (_task _harness settle)
+               (cl-incf calls)
+               (setq settles (append settles (list settle)))
+               (list :cancel
+                     (lambda () (funcall settle :status 'cancelled))))))
+           (record (e-task-queue-enqueue
+                    queue :prompt "one effect" :harness-instance-id 'test))
+           (task-id (plist-get record :task-id))
+           (process (e-runtime-store--process runtime))
+           (ordinary-filter (process-filter process))
+           (captured ""))
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (set-process-filter
+         process
+         (lambda (worker text)
+           (setq captured (concat captured text))
+           (when (string-match-p "\n" captured)
+             (set-process-filter worker ordinary-filter)
+             (delete-process worker))))
+        (setf (e-task-queue-max-parallel queue) 1)
+        (e-task-queue--dispatch queue)
+        (should (= calls 1))
+        (should (> (plist-get (e-runtime-store-status runtime) :restart-count)
+                   -1))
+        (e-task-queue-pause queue task-id)
+        (e-task-queue-resume queue task-id)
+        (should (= calls 2))
+        (should (string-suffix-p
+                 ":a:2" (plist-get (e-task-queue-get queue task-id)
+                                    :attempt-id)))
+        (funcall (nth 0 settles) :status 'done :outputs '(stale))
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                    'running))
+        (funcall (nth 1 settles) :status 'done :outputs '(current))
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status) 'done))
+        (should (equal (e-task-queue-outputs queue task-id) '(current)))
+        (should (= (length
+                    (plist-get (e-task-storage-snapshot storage "late")
+                               :attempts))
+                   2))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-pause-waits-for-owned-settlement ()
+  "A pause request retains its slot until the claimed runner confirms it."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (calls 0) (cancels 0) settles
+           (queue
+            (e-task-queue-create
+             :id "pause-confirm" :storage storage :max-parallel 1
+             :runner
+             (lambda (_task _harness settle)
+               (cl-incf calls)
+               (setq settles (append settles (list settle)))
+               (list :cancel (lambda () (cl-incf cancels)))))))
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (let* ((first (e-task-queue-enqueue
+                       queue :prompt "first" :harness-instance-id 'test))
+               (first-id (plist-get first :task-id))
+               (second (e-task-queue-enqueue
+                        queue :prompt "second" :harness-instance-id 'test))
+               (second-id (plist-get second :task-id)))
+          (should (= calls 1))
+          (should (eq (plist-get (e-task-queue-pause queue first-id) :status)
+                      'pausing))
+          (should (= cancels 1))
+          (should (= calls 1))
+          (should (eq (plist-get (e-task-queue-get queue second-id) :status)
+                      'queued))
+          (should (eq (plist-get (e-task-queue-resume queue first-id) :status)
+                      'pausing))
+          (funcall (nth 0 settles) :status 'cancelled)
+          (should (eq (plist-get (e-task-queue-get queue first-id) :status)
+                      'paused))
+          (should (= calls 2))
+          (should (eq (plist-get (e-task-queue-get queue second-id) :status)
+                      'running))
+          (funcall (nth 1 settles) :status 'done)
+          (e-task-queue-resume queue first-id)
+          (should (= calls 3))
+          (should (string-suffix-p
+                   ":a:2" (plist-get (e-task-queue-get queue first-id)
+                                      :attempt-id))))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-pause-failure-is-interrupted ()
+  "Missing or failing cancellation never publishes a safely paused task."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let ((storage (e-task-storage-sqlite-create runtime)))
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (dolist (case '(("missing" . nil) ("failing" . failing)))
+          (let* ((id (car case))
+                 (mode (cdr case))
+                 (queue
+                  (e-task-queue-create
+                   :id id :storage storage :max-parallel 1
+                   :runner
+                   (lambda (&rest _args)
+                     (and mode
+                          (list :cancel
+                                (lambda () (error "cancel failed")))))))
+                 (record (e-task-queue-enqueue
+                          queue :prompt id :harness-instance-id 'test))
+                 (task-id (plist-get record :task-id)))
+            (should-error (e-task-queue-pause queue task-id) :type 'error)
+            (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                        'interrupted))))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-restart-while-pausing-is-interrupted ()
+  "A lost cancellation confirmation restores uncertainty, never queued work."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (calls 0)
+           (queue
+            (e-task-queue-create
+             :id "pause-crash" :storage storage :max-parallel 1
+             :runner (lambda (&rest _args)
+                       (cl-incf calls)
+                       (list :cancel #'ignore)))))
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (let* ((record (e-task-queue-enqueue
+                        queue :prompt "uncertain" :harness-instance-id 'test))
+               (task-id (plist-get record :task-id)))
+          (should (eq (plist-get (e-task-queue-pause queue task-id) :status)
+                      'pausing))
+          (e-runtime-store-close runtime)
+          (setq runtime (e-runtime-store-open directory)
+                storage (e-task-storage-sqlite-create runtime))
+          (let ((restored
+                 (e-task-queue-create
+                  :id "pause-crash" :storage storage :max-parallel 1
+                  :runner (lambda (&rest _args) (cl-incf calls)))))
+            (e-task-queue-load restored)
+            (should (= calls 1))
+            (should (eq (plist-get (e-task-queue-get restored task-id) :status)
+                        'interrupted))))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-runner-signal-is-interrupted ()
+  "A signal after claim is uncertain and never eligible for automatic retry."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (calls 0)
+           queue)
+      (setq queue
+            (e-task-queue-create
+             :id "runner-signal" :storage storage :max-parallel 1
+             :max-retries 2
+             :runner
+             (lambda (task &rest _args)
+               (cl-incf calls)
+               ;; Make the record otherwise retry-eligible.  A `failed'
+               ;; settlement would immediately queue a second attempt.
+               (plist-put
+                (gethash (plist-get task :task-id)
+                         (e-task-queue-records queue))
+                :session-id "retry-eligible-session")
+               (error "runner exploded"))))
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (should-error
+         (e-task-queue-enqueue
+          queue :prompt "explode" :harness-instance-id 'test)
+         :type 'error)
+        (let ((record (car (e-task-queue-list queue))))
+          (should (= calls 1))
+          (should (eq (plist-get record :status) 'interrupted))
+          (should (= (plist-get record :retries) 0))
+          (should (equal (plist-get record :session-id)
+                         "retry-eligible-session"))
+          (should (string-match-p "runner exploded"
+                                  (plist-get record :error)))
+          (e-task-queue--dispatch queue)
+          (should (= calls 1)))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-conflict-barrier-and-history-delete ()
+  "Task revision conflicts surface; the owner barrier and deletion are exact."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (queue (e-task-queue-create
+                   :id "operator" :storage storage :max-parallel 0
+                   :runner #'ignore))
+           done failure)
+      (e-task-queue-enqueue queue :prompt "retained history")
+      (should-error
+       (e-task-storage-set-paused storage "operator" 0 t)
+       :type 'e-task-storage-conflict)
+      (should
+       (eq queue
+           (e-task-queue-finalize
+            queue (lambda (_queue) (setq done t))
+            (lambda (condition) (setq failure condition)))))
+      (should done)
+      (should-not failure)
+      ;; Repeating the same pause/resume semantics at later revisions must not
+      ;; alias the earlier command identity.
+      (e-task-queue-pause queue (plist-get (car (e-task-queue-list queue))
+                                           :task-id))
+      (e-task-queue-resume queue (plist-get (car (e-task-queue-list queue))
+                                            :task-id))
+      (e-task-queue-pause queue (plist-get (car (e-task-queue-list queue))
+                                           :task-id))
+      (e-task-queue-resume queue (plist-get (car (e-task-queue-list queue))
+                                            :task-id))
+      (should (plist-get (e-task-queue-delete-history queue) :deleted))
+      (let ((snapshot (e-task-storage-snapshot storage "operator")))
+        (should-not (plist-get snapshot :records))
+        (should-not (plist-get snapshot :attempts))
+        (should (= (plist-get snapshot :sequence) 1)))
+      (let ((replacement
+             (e-task-queue-enqueue queue :prompt "identity after deletion")))
+        (should (equal (plist-get replacement :task-id) "tsk_000002"))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-cron-claim-gates-effects-and-interruption-is-unsafe ()
+  "Cron commits cadence before work and restores an unresolved claim safely."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-cron-storage-sqlite-create runtime))
+           (e-cron--schedules (make-hash-table :test 'equal))
+           (now (seconds-to-time 1000))
+           (e-cron-current-time-function (lambda () now))
+           (actions 0) observed-actions
+           (schedule
+            (e-cron-register
+             :id 'claimed :when '(:every 60) :enabled nil :storage storage
+             :action (lambda (_schedule) (cl-incf actions) :done))))
+      (e-runtime-sqlite-p3-test--hold-one-response
+       runtime (lambda () (setq observed-actions actions)) 0.02)
+      (e-cron-fire schedule)
+      (should (= observed-actions 0))
+      (should (= actions 1))
+      (let* ((crash-schedule
+              (e-cron-register
+               :id 'crash :when '(:every 30) :enabled nil :storage storage
+               :action (lambda (_schedule) (cl-incf actions))))
+             (due (float-time (e-cron-schedule-next-fire crash-schedule)))
+             (firing-id "crash:1:manual"))
+        (e-cron-storage-claim
+         storage 'crash (e-cron-schedule-revision crash-schedule)
+         firing-id due 1000.0 1030.0)
+        (e-runtime-store-close runtime)
+        (setq runtime (e-runtime-store-open directory)
+              storage (e-cron-storage-sqlite-create runtime)
+              e-cron--schedules (make-hash-table :test 'equal))
+        (let ((restored
+               (e-cron-register
+                :id 'crash :when '(:every 30) :enabled nil :storage storage
+                :action (lambda (_schedule) (cl-incf actions)))))
+          (should (= actions 1))
+          (should (eq (plist-get
+                       (car (e-cron-schedule-unresolved-firings restored))
+                       :state)
+                      'unsafe)))
+        (setq e-cron--schedules (make-hash-table :test 'equal))
+        (let* ((reconciled 0)
+              (restored
+               (e-cron-register
+                :id 'crash :when '(:every 30) :enabled nil :storage storage
+                :action #'ignore
+                :reconcile
+                (lambda (_schedule firing)
+                  (cl-incf reconciled)
+                  (list :classified (plist-get firing :firing-id))))))
+          (should (= reconciled 1))
+          (should-not (e-cron-schedule-unresolved-firings restored)))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-cron-guard-and-replacement-races ()
+  "A skipped guard is durable and a replaced definition is never re-armed."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-cron-storage-sqlite-create runtime))
+           (e-cron--schedules (make-hash-table :test 'equal))
+           (now (seconds-to-time 2000))
+           (e-cron-current-time-function (lambda () now))
+           (actions 0) (arms 0))
+      (let ((schedule
+             (e-cron-register
+              :id 'guarded :when '(:every 10) :enabled nil :storage storage
+              :guard (lambda () nil)
+              :action (lambda (_schedule) (cl-incf actions)))))
+        (should-not (e-cron-fire schedule))
+        (should (= actions 0))
+        (should-not (plist-get (e-cron-storage-cadence storage 'guarded)
+                               :unresolved)))
+      (let (old)
+        (setq old
+              (e-cron-register
+               :id 'replace :when '(:every 10) :enabled nil :storage storage
+               :action
+               (lambda (_schedule)
+                 (e-cron-register
+                  :id 'replace :when '(:every 20) :enabled nil :storage storage
+                  :action #'ignore))))
+        (setf (e-cron-schedule-enabled old) t)
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (&rest _args) (cl-incf arms) 'stub-timer))
+                  ((symbol-function 'timerp) (lambda (_value) nil)))
+          (e-cron--on-timer 'replace))
+        (should (= arms 0))
+        (should-not (eq old (e-cron-get 'replace)))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-cron-failure-conflict-and-history-delete ()
+  "Known action failure settles once; stale claims conflict; deletion is explicit."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-cron-storage-sqlite-create runtime))
+           (e-cron--schedules (make-hash-table :test 'equal))
+           (now (seconds-to-time 3000))
+           (e-cron-current-time-function (lambda () now))
+           (schedule
+            (e-cron-register
+             :id 'fails :when '(:every 10) :enabled nil :storage storage
+             :action (lambda (_schedule) (error "known action failure")))))
+      (should-error (e-cron-fire schedule) :type 'error)
+      (should-not (plist-get (e-cron-storage-cadence storage 'fails)
+                             :unresolved))
+      (should-error
+       (e-cron-storage-claim storage 'fails 0 "stale" 3000.0 3000.0 3010.0)
+       :type 'e-cron-storage-conflict)
+      (should (plist-get (e-cron-delete-history 'fails) :deleted)))))
+
+(ert-deftest e-runtime-sqlite-p3-s8-voice-atomic-lru-restart-and-clear ()
+  "Voice tells update and evict atomically, survive restart, and clear."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let ((storage (e-voice-storage-sqlite-create runtime)))
+      (e-voice-storage-record storage "a" "A" "first" "t1" 2)
+      (e-voice-storage-record storage "b" "B" "second" "t2" 2)
+      (e-voice-storage-record storage "a" "A2" nil "t3" 2)
+      (e-voice-storage-record storage "c" "C" "third" "t4" 2)
+      (let ((tells (plist-get (e-voice-storage-list storage) :tells)))
+        (should (equal (mapcar (lambda (tell) (plist-get tell :key)) tells)
+                       '("c" "a")))
+        (should (= (plist-get (cadr tells) :count) 2))
+        (should (equal (plist-get (cadr tells) :description) "first")))
+      (e-runtime-store-close runtime)
+      (setq runtime (e-runtime-store-open directory)
+            storage (e-voice-storage-sqlite-create runtime))
+      (should (= (plist-get (e-voice-storage-list storage) :count) 2))
+      (e-voice-storage-clear storage)
+      (should-not (plist-get (e-voice-storage-list storage) :tells)))))
+
+(ert-deftest e-runtime-sqlite-p3-s8-goodnite-checkpoint-before-bounded-cleanup ()
+  "Goodnite dedupes demand and resumes cleanup after an ACK-only crash."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let ((storage (e-goodnite-storage-sqlite-create runtime)))
+      (should-not
+       (plist-get (e-goodnite-storage-append
+                   storage "same" '(:kind "read" :ts "one"))
+                  :duplicate))
+      (should
+       (plist-get (e-goodnite-storage-append
+                   storage "same" '(:kind "read" :ts "two"))
+                  :duplicate))
+      (dotimes (index 4)
+        (e-goodnite-storage-append
+         storage (format "event-%d" index) (list :index index)))
+      (let ((page (e-goodnite-storage-page storage 0 2)))
+        (should (= (length (plist-get page :events)) 2))
+        (should (= (plist-get page :next) 2)))
+      (e-goodnite-storage-ack storage 2)
+      ;; Crash after checkpoint but before physical cleanup.
+      (e-runtime-store-close runtime)
+      (setq runtime (e-runtime-store-open directory)
+            storage (e-goodnite-storage-sqlite-create runtime))
+      (let ((page (e-goodnite-storage-page storage 0 2)))
+        (should (= (plist-get page :checkpoint) 2))
+        (should (= (plist-get (car (plist-get page :events)) :position) 3)))
+      (should (plist-get (e-goodnite-storage-cleanup storage 1) :more))
+      (should (= (plist-get (e-goodnite-storage-cleanup storage 1) :deleted) 1))
+      (e-runtime-store-close runtime)
+      (should-error
+       (e-goodnite-storage-append storage "failure" '(:kind "read"))
+       :type 'e-runtime-store-unavailable))))
+
+(ert-deftest e-runtime-sqlite-p3-s8-goodnite-observations-remain-distinct ()
+  "Equal accesses are distinct observations; exact event resubmission dedupes."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-goodnite-storage-sqlite-create runtime))
+           (e-goodnite-resources-storage storage)
+           (e-goodnite-track-access t)
+           (e-goodnite-resources--event-sequence 0)
+           (context '(:session-id "s" :turn-id "t"))
+           (first (e-goodnite-resources--record-access
+                   'search "goodnite://entry" "same" context))
+           (second (e-goodnite-resources--record-access
+                    'search "goodnite://entry" "same" context)))
+      (should-not (equal (plist-get first :event-id)
+                         (plist-get second :event-id)))
+      (let ((events (plist-get (e-goodnite-storage-page storage 0 10)
+                               :events)))
+        (should (= (length events) 2))
+        (should (equal (mapcar (lambda (event)
+                                (plist-get event :position))
+                              events)
+                       '(1 2))))
+      (should
+       (plist-get
+        (e-goodnite-storage-append
+         storage (plist-get first :event-id) '(:duplicate exact-id))
+        :duplicate)))))
+
+(ert-deftest e-runtime-sqlite-p3-s8-raw-immutable-fixed-expiry-and-size-boundary ()
+  "Raw results dedupe exact content, conflict, expire, and enforce 16 MiB."
+  (let ((e-runtime-store-request-timeout 45.0))
+    (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+      (let* ((storage (e-raw-results-storage-sqlite-create runtime))
+             (uri "raw-result://fixed")
+             (first (e-raw-results-storage-put
+                     storage uri "same" '(:owner test) 10.0 20.0))
+             (duplicate (e-raw-results-storage-put
+                         storage uri "same" '(:owner changed) 11.0 99.0)))
+        (should-not (plist-get first :duplicate))
+        (should (plist-get duplicate :duplicate))
+        (should (= (plist-get duplicate :expires-at) 20.0))
+        (should-error
+         (e-raw-results-storage-put storage uri "different" nil 10.0 20.0)
+         :type 'e-raw-results-storage-conflict)
+        (let ((exact (make-string (* 16 1024 1024) ?x)))
+          (should (= (plist-get
+                      (e-raw-results-storage-put
+                       storage "raw-result://exact" exact nil 10.0 30.0)
+                      :bytes)
+                     (string-bytes exact))))
+        (should-error
+         (e-raw-results-storage-put
+          storage "raw-result://over"
+          (make-string (1+ (* 16 1024 1024)) ?x) nil 10.0 30.0)
+         :type 'e-raw-results-storage-too-large)
+        (should-not (e-raw-results-storage-read storage uri 21.0))
+        (should (member uri
+                        (plist-get (e-raw-results-storage-expire storage 21.0)
+                                   :deleted)))))))
+
+(ert-deftest e-runtime-sqlite-p3-s8-raw-lost-ack-import-disposal-and-restart ()
+  "Raw commit reconciliation is singular and imports dispose only after ACK."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-raw-results-storage-sqlite-create runtime))
+           (process (e-runtime-store--process runtime))
+           (ordinary-filter (process-filter process))
+           (captured "")
+           (uri "raw-result://lost"))
+      (set-process-filter
+       process
+       (lambda (worker text)
+         (setq captured (concat captured text))
+         (when (string-match-p "\n" captured)
+           (set-process-filter worker ordinary-filter)
+           (delete-process worker))))
+      (should (= (plist-get
+                  (e-raw-results-storage-put
+                   storage uri "committed-once" nil 1.0 100.0)
+                  :bytes)
+                 14))
+      (let ((source (make-temp-file "e-raw-import-" nil nil "imported"))
+            (conflict (make-temp-file "e-raw-conflict-" nil nil "other"))
+            (e-raw-results-storage storage))
+        (unwind-protect
+            (progn
+              (let ((reference
+                     (e-raw-results-import-file source :id "imported")))
+                (should-not (file-exists-p source))
+                (should (equal (e-raw-results-read
+                                (plist-get reference :uri))
+                               "imported")))
+              (e-raw-results-write :id "conflict" :content "first")
+              (should-error
+               (e-raw-results-import-file conflict :id "conflict")
+               :type 'e-raw-results-storage-conflict)
+              (should (file-exists-p conflict)))
+          (when (file-exists-p source) (delete-file source))
+          (when (file-exists-p conflict) (delete-file conflict))))
+      (e-runtime-store-close runtime)
+      (setq runtime (e-runtime-store-open directory)
+            storage (e-raw-results-storage-sqlite-create runtime))
+      (should (equal (plist-get
+                      (e-raw-results-storage-read storage uri 2.0)
+                      :content)
+                     "committed-once"))
+      (should (plist-get (e-raw-results-storage-delete storage uri) :deleted))
+      (should-not (e-raw-results-storage-read storage uri 2.0)))))
+
+(ert-deftest e-runtime-sqlite-p3-composition-injects-one-runtime-and-closes-once ()
+  "Every owner port borrows the composition's sole physical runtime."
+  (let* ((directory (make-temp-file "e-runtime-sqlite-composition-" t))
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         (e-runtime-sqlite--live-composition nil)
+         (composition (e-runtime-sqlite-open directory))
+         (runtime (e-runtime-sqlite-runtime-store composition)))
+    (unwind-protect
+        (progn
+          (should
+           (eq runtime
+               (e-session-storage-runtime-store
+                (e-runtime-sqlite-session-store composition))))
+          (should
+           (eq runtime
+               (e-board-storage-runtime
+                (e-runtime-sqlite-board-storage composition))))
+          (should
+           (eq runtime
+               (e-task-storage-runtime
+                (e-runtime-sqlite-task-storage composition))))
+          (should (eq runtime (e-cron-storage-runtime e-cron-storage)))
+          (should
+           (eq runtime
+               (e-voice-storage-runtime e-voice-adjustment-storage)))
+          (should
+           (eq runtime
+               (e-goodnite-storage-runtime e-goodnite-resources-storage)))
+          (should
+           (eq runtime
+               (e-raw-results-storage-runtime e-raw-results-storage)))
+          ;; Closing the borrowed session adapter cannot close the runtime.
+          (e-session-sqlite-store-close
+           (e-runtime-sqlite-session-store composition))
+          (should (e-runtime-store-live-p runtime))
+          (e-runtime-sqlite-close composition)
+          (should-not (e-runtime-store-live-p runtime))
+          (should (e-runtime-sqlite-close composition)))
+      (ignore-errors (e-runtime-sqlite-close composition))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-sqlite-p3-composition-rejects-second-live-owner ()
+  "A second directory cannot replace a live composition's injected adapters."
+  (let* ((first-directory (make-temp-file "e-runtime-sqlite-first-" t))
+         (second-directory (make-temp-file "e-runtime-sqlite-second-" t))
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         (e-runtime-sqlite--live-composition nil)
+         first second)
+    (unwind-protect
+        (progn
+          (setq first (e-runtime-sqlite-open first-directory))
+          (let ((first-cron e-cron-storage)
+                (first-voice e-voice-adjustment-storage)
+                (first-goodnite e-goodnite-resources-storage)
+                (first-raw e-raw-results-storage))
+            (should-error
+             (e-runtime-sqlite-open second-directory)
+             :type 'e-runtime-sqlite-live-composition)
+            (should (eq e-runtime-sqlite--live-composition first))
+            (should (eq e-cron-storage first-cron))
+            (should (eq e-voice-adjustment-storage first-voice))
+            (should (eq e-goodnite-resources-storage first-goodnite))
+            (should (eq e-raw-results-storage first-raw))
+            (should-not
+             (file-exists-p
+              (expand-file-name "store.sqlite3" second-directory))))
+          (e-runtime-sqlite-close first)
+          (setq second (e-runtime-sqlite-open second-directory))
+          (should (eq e-runtime-sqlite--live-composition second))
+          (should (e-runtime-store-live-p
+                   (e-runtime-sqlite-runtime-store second)))
+          (e-runtime-sqlite-close second)
+          (should-not e-runtime-sqlite--live-composition))
+      (when (and first (not (e-runtime-sqlite--closed first)))
+        (ignore-errors (e-runtime-sqlite-close first)))
+      (when (and second (not (e-runtime-sqlite--closed second)))
+        (ignore-errors (e-runtime-sqlite-close second)))
+      (delete-directory first-directory t)
+      (delete-directory second-directory t))))
+
+(provide 'e-runtime-sqlite-p3-test)
+
+;;; e-runtime-sqlite-p3-test.el ends here

@@ -92,11 +92,13 @@
       (schedule)
       request)))
 
-(cl-defun e-session-sqlite-store-create (&optional directory &key load-all)
+(cl-defun e-session-sqlite-store-create
+    (&optional directory &key load-all runtime-store)
   "Create an opt-in SQLite-backed session store in DIRECTORY."
   (let* ((directory (file-name-as-directory
                      (expand-file-name (or directory e-session-directory))))
-         (runtime-store (e-runtime-store-open directory))
+         (owns-runtime-store (null runtime-store))
+         (runtime-store (or runtime-store (e-runtime-store-open directory)))
          (store (e-session-store-create
                  :directory directory :sessions-directory nil :index-file nil
                  :persistent t :write-mode 'sqlite)))
@@ -104,7 +106,8 @@
         (progn
           (e-session-storage-register
            store :directory directory :persistent t :write-mode 'sqlite
-           :backend 'sqlite :runtime-store runtime-store)
+           :backend 'sqlite :runtime-store runtime-store
+           :owns-runtime-store owns-runtime-store)
           (if load-all
               (e-session-load store)
             (if (e-session--load-index store)
@@ -112,7 +115,8 @@
               (e-session--reconcile-journal-roots store)))
           store)
       (error
-       (e-runtime-store-close runtime-store)
+       (when owns-runtime-store
+         (e-runtime-store-close runtime-store))
        (signal (car err) (cdr err))))))
 
 (defun e-session-sqlite-store-close (store)

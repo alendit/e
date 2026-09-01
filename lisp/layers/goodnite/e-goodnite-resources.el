@@ -30,6 +30,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-goodnite-storage)
 (require 'e-operations)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
@@ -76,6 +77,18 @@ to rank mined-but-unreviewed knowledge an agent keeps consulting ahead of
 knowledge nothing has pulled up -- demand, not just recurrence."
   :type 'boolean
   :group 'e)
+
+(defvar e-goodnite-resources-storage nil
+  "Optional Goodnite demand-event SQLite storage port.")
+
+(defvar e-goodnite-resources--event-sequence 0
+  "Process-local uniqueness sequence for demand observations.")
+
+(defun e-goodnite-resources-configure-storage (storage)
+  "Install Goodnite demand STORAGE, or nil for the legacy/default path."
+  (unless (or (null storage) (e-goodnite-storage-p storage))
+    (signal 'wrong-type-argument (list 'e-goodnite-storage-p storage)))
+  (setq e-goodnite-resources-storage storage))
 
 (defconst e-goodnite-resources--type-order '("workflows" "pitfalls" "conventions")
   "Consumer knowledge types in display order.")
@@ -549,26 +562,69 @@ characters so a stray NUL or newline never corrupts the JSONL line."
   (when (stringp text)
     (replace-regexp-in-string "[\000-\037]+" " " (string-trim text))))
 
+(defun e-goodnite-resources--new-event-id ()
+  "Return a unique identity for one observed Goodnite access."
+  (secure-hash
+   'sha256
+   (format "%S\0%d\0%d\0%d"
+           (current-time) (emacs-pid) (random most-positive-fixnum)
+           (cl-incf e-goodnite-resources--event-sequence))))
+
 (defun e-goodnite-resources--record-access (kind entry-uri query context)
   "Append one access record for a KIND consultation of ENTRY-URI.
 KIND is `read' or `search'.  QUERY is the search text (nil for a read).
-CONTEXT carries the registration `:session-id' and `:turn-id'.  Best-effort:
-a write failure never disturbs the read or search that triggered it."
+CONTEXT carries the registration `:session-id' and `:turn-id'.  The legacy log
+is best-effort; a configured SQLite demand write is authoritative and errors
+surface to the consultation caller."
   (when e-goodnite-track-access
-    (condition-case nil
-        (let* ((record
-                (list :kind (symbol-name kind)
-                      :entry_uri entry-uri
-                      :query (e-goodnite-resources--scrub query)
-                      :session_id (plist-get context :session-id)
-                      :turn_id (plist-get context :turn-id)
-                      :engine "e"
-                      :ts (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
-               (path (e-goodnite-resources--access-log-path)))
-          (make-directory (file-name-directory path) t)
-          (let ((line (json-serialize record :null-object nil :false-object nil)))
-            (write-region (concat line "\n") nil path 'append 'silent)))
-      (error nil))))
+    (let* ((record
+            (list :kind (symbol-name kind)
+                  :entry_uri entry-uri
+                  :query (e-goodnite-resources--scrub query)
+                  :session_id (plist-get context :session-id)
+                  :turn_id (plist-get context :turn-id)
+                  :engine "e"
+                  :ts (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+           (event-id
+            ;; Each consultation is a distinct demand observation.  Generate
+            ;; once before submission; runtime command reconciliation retains
+            ;; this exact body if the worker response is lost.
+            (e-goodnite-resources--new-event-id)))
+      (if e-goodnite-resources-storage
+          (e-goodnite-storage-append
+           e-goodnite-resources-storage event-id record)
+        (condition-case nil
+            (let ((path (e-goodnite-resources--access-log-path)))
+              (make-directory (file-name-directory path) t)
+              (let ((line
+                     (json-serialize record :null-object nil
+                                     :false-object nil)))
+                (write-region (concat line "\n") nil path 'append 'silent)))
+          (error nil))))))
+
+(defun e-goodnite-resources-demand-page (&optional after limit)
+  "Return one bounded durable Goodnite demand page."
+  (unless e-goodnite-resources-storage
+    (signal 'e-goodnite-storage-error
+            (list "Goodnite demand storage is not configured")))
+  (e-goodnite-storage-page e-goodnite-resources-storage after limit
+                           e-goodnite-demand-consumer))
+
+(defun e-goodnite-resources-ack-demand (position)
+  "Acknowledge durable Goodnite demand through POSITION."
+  (unless e-goodnite-resources-storage
+    (signal 'e-goodnite-storage-error
+            (list "Goodnite demand storage is not configured")))
+  (e-goodnite-storage-ack e-goodnite-resources-storage position
+                          e-goodnite-demand-consumer))
+
+(defun e-goodnite-resources-cleanup-demand (&optional limit)
+  "Delete one bounded acknowledged Goodnite demand prefix."
+  (unless e-goodnite-resources-storage
+    (signal 'e-goodnite-storage-error
+            (list "Goodnite demand storage is not configured")))
+  (e-goodnite-storage-cleanup e-goodnite-resources-storage limit
+                              e-goodnite-demand-consumer))
 
 ;;; Registration
 

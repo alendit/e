@@ -32,6 +32,14 @@
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-board-conflict "Runtime store Board conflict"
   'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-task-conflict "Runtime store task conflict"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-cron-conflict "Runtime store cron conflict"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-goodnite-conflict "Runtime store Goodnite conflict"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-raw-conflict "Runtime store raw-result conflict"
+  'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-resource-too-large "Runtime store resource is too large"
   'e-runtime-store-worker-error)
 
@@ -323,6 +331,8 @@
 Writes use stable command ID and canonical BODY hash."
   (unless (memq kind '(read write))
     (signal 'wrong-type-argument (list '(member read write) kind)))
+  (when (e-runtime-store--closed store)
+    (signal 'e-runtime-store-unavailable (list "Store is closed")))
   ;; Encoding is the producer-side validation boundary.  Reject unsupported or
   ;; cyclic values before the request can become a submitted durable effect.
   (let* ((bytes (e-runtime-store-codec-encode body))

@@ -46,6 +46,8 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-cron-storage)
+(require 'e-cron-legacy)
 
 (defgroup e-cron nil
   "Cron-like schedule engine for e."
@@ -68,6 +70,15 @@ Rebind in tests to drive next-fire computation from an injected clock.")
   "Abnormal hook run after a schedule entry fires its action.
 Each function is called with the schedule.  Intended for observation (shells,
 tests); handlers must not mutate the schedule.")
+
+(defvar e-cron-storage nil
+  "Optional process-wide cron-owned durable storage port.")
+
+(defun e-cron-configure-storage (storage)
+  "Install cron STORAGE, or nil for the legacy/default path."
+  (unless (or (null storage) (e-cron-storage-p storage))
+    (signal 'wrong-type-argument (list 'e-cron-storage-p storage)))
+  (setq e-cron-storage storage))
 
 (define-error 'e-cron-unknown-schedule "Unknown schedule id")
 (define-error 'e-cron-invalid-when "Invalid schedule recurrence")
@@ -97,6 +108,12 @@ guard evaluation.  ENABLED gates arming."
   guard
   (catch-up 'skip)
   metadata
+  storage
+  reconcile
+  revision
+  definition-revision
+  anchor
+  unresolved-firings
   interval
   ;; runtime
   timer
@@ -116,6 +133,14 @@ lazily from `e-cron-state-file' and rewritten after each fire.")
 
 (defvar e-cron--state-loaded nil
   "Non-nil once `e-cron--state' has been hydrated from disk this session.")
+
+(defvar e-cron--active-firings (make-hash-table :test 'equal)
+  "Process-local durable firing identities currently executing an action.")
+
+(defun e-cron--active-firing-key (storage id firing-id)
+  "Return process-local key for STORAGE, schedule ID, and FIRING-ID."
+  (format "%x:%s:%s"
+          (sxhash-eq (e-cron-storage-runtime storage)) id firing-id))
 
 ;; --- time helpers -----------------------------------------------------------
 
@@ -209,7 +234,10 @@ The basis is the last-fire when known, else the persisted first-registration
 anchor -- so a never-fired schedule's first fire is anchored to when it was
 first registered rather than to the moment of the current re-registration."
   (let ((last (e-cron-schedule-last-fire schedule)))
-    (if last (float-time last) (e-cron--state-ensure-anchor schedule))))
+    (if last
+        (float-time last)
+      (or (e-cron-schedule-anchor schedule)
+          (e-cron--state-ensure-anchor schedule)))))
 
 (defun e-cron--due-time (schedule)
   "Return the time SCHEDULE is next due, possibly in the past.
@@ -247,12 +275,8 @@ A malformed or missing file leaves the state empty rather than signaling."
     (setq e-cron--state-loaded t)
     (when (and e-cron-state-file (file-readable-p e-cron-state-file))
       (ignore-errors
-        (with-temp-buffer
-          (insert-file-contents e-cron-state-file)
-          (goto-char (point-min))
-          (let ((data (read (current-buffer))))
-            (when (hash-table-p data)
-              (setq e-cron--state data)))))))
+        (setq e-cron--state
+              (e-cron-legacy-decode-file e-cron-state-file)))))
   e-cron--state)
 
 (defun e-cron--state-write ()
@@ -311,7 +335,8 @@ keep pushing the first fire forward."
                    (format "%s" (e-cron-schedule-id b))))))
 
 (cl-defun e-cron-register (&key id when action guard (catch-up 'skip)
-                                metadata (enabled t))
+                                metadata (enabled t) reconcile
+                                (storage e-cron-storage))
   "Register a schedule entry and return it.
 An existing schedule with the same ID is stopped and replaced.  See
 `e-cron-schedule' for the field meanings.  Registration validates WHEN (via
@@ -329,7 +354,12 @@ entry is armed immediately."
   (let* (;; Derive the fixed interval once; also validates WHEN so an invalid
          ;; recurrence fails at registration rather than at the first tick.
          (interval (e-cron--derive-interval when))
-         (persisted (e-cron--state-get id))
+         (durable
+          (and storage
+               (e-cron-storage-register
+                storage id (list :when when :catch-up catch-up)
+                (float-time (e-cron--now)))))
+         (persisted (and (not storage) (e-cron--state-get id)))
          (last (when-let ((secs (plist-get persisted :last-fire)))
                  (seconds-to-time secs)))
          (schedule (e-cron-schedule--create
@@ -339,9 +369,44 @@ entry is armed immediately."
                     :guard guard
                     :catch-up catch-up
                     :metadata metadata
+                    :storage storage
+                    :reconcile reconcile
+                    :revision (plist-get durable :revision)
+                    :definition-revision
+                    (plist-get durable :definition-revision)
+                    :anchor (plist-get durable :anchor)
+                    :unresolved-firings
+                    (and storage
+                         (plist-get
+                          (e-cron-storage-cadence storage id)
+                          :unresolved))
                     :interval interval
-                    :last-fire last
+                    :last-fire
+                    (or (and (plist-get durable :last-fire)
+                             (seconds-to-time
+                              (plist-get durable :last-fire)))
+                        last)
                     :enabled enabled)))
+    (when storage
+      (dolist (firing (e-cron-schedule-unresolved-firings schedule))
+        (unless (gethash
+                 (e-cron--active-firing-key
+                  storage id (plist-get firing :firing-id))
+                 e-cron--active-firings)
+          (let* ((state (plist-get firing :state))
+                 (resolution
+                  (and reconcile (funcall reconcile schedule firing))))
+            (cond
+             (resolution
+              (e-cron-storage-settle
+               storage id (plist-get firing :firing-id) state 'reconciled
+               resolution))
+             ((eq state 'claimed)
+              (e-cron-storage-settle
+               storage id (plist-get firing :firing-id) 'claimed 'unsafe
+               '(:reason interrupted-action-unknown)))))))
+      (setf (e-cron-schedule-unresolved-firings schedule)
+            (plist-get (e-cron-storage-cadence storage id) :unresolved)))
     ;; Anchor the initial next-fire on persisted history (last-fire or the
     ;; first-registration anchor), not on the moment of registration.
     (setf (e-cron-schedule-next-fire schedule) (e-cron--due-time schedule))
@@ -383,8 +448,13 @@ stale closure."
     (when (e-cron-schedule-enabled schedule)
       (e-cron-fire schedule)
       ;; Re-arm for the next occurrence unless firing disabled the entry.
-      (when (e-cron-schedule-enabled schedule)
-        (e-cron--advance schedule (e-cron--now))
+      (when (and (e-cron-schedule-enabled schedule)
+                 ;; An action may replace or remove its own definition.  The
+                 ;; callback that began under the old definition must never
+                 ;; re-arm that retired schedule after returning.
+                 (eq schedule (e-cron-get id)))
+        (unless (e-cron-schedule-storage schedule)
+          (e-cron--advance schedule (e-cron--now)))
         (e-cron--arm schedule)))))
 
 (defun e-cron--advance (schedule now)
@@ -401,19 +471,101 @@ The action is called with the schedule.  A `skip'-policy entry whose next-fire
 is already in the past and whose guard passes still fires here -- the
 missed-fire decision belongs to the caller (`e-cron-start'), not to a fire it
 has already chosen to run."
-  (let ((now (e-cron--now)))
+  (let* ((now (e-cron--now))
+         (storage (e-cron-schedule-storage schedule))
+         (due (or (e-cron-schedule-next-fire schedule) now))
+         (next (e-cron--next-after schedule now))
+         (firing-id
+          (and storage
+               (format "%s:%d:%s"
+                       (e-cron-schedule-id schedule)
+                       (or (e-cron-schedule-definition-revision schedule) 1)
+                       (format "%.6f" (float-time due))))))
+    (when storage
+      (let ((claim
+             (e-cron-storage-claim
+              storage (e-cron-schedule-id schedule)
+              (e-cron-schedule-revision schedule) firing-id
+              (float-time due) (float-time now) (float-time next))))
+        (setf (e-cron-schedule-revision schedule)
+              (plist-get claim :revision)
+              (e-cron-schedule-last-fire schedule) now
+              (e-cron-schedule-next-fire schedule) next)))
     (setf (e-cron-schedule-last-guard-at schedule) now)
     (let ((guard (e-cron-schedule-guard schedule)))
       (if (and guard (not (setf (e-cron-schedule-last-guard-result schedule)
                                 (funcall guard))))
-          nil
+          (progn
+            (when storage
+              (e-cron-storage-settle
+               storage (e-cron-schedule-id schedule) firing-id
+               'claimed 'skipped '(:guard nil)))
+            nil)
         (when (null guard)
           (setf (e-cron-schedule-last-guard-result schedule) t))
-        (setf (e-cron-schedule-last-fire schedule) now)
-        (e-cron--state-record-fire schedule now)
-        (funcall (e-cron-schedule-action schedule) schedule)
-        (run-hook-with-args 'e-cron-fire-functions schedule)
-        t))))
+        (unless storage
+          (setf (e-cron-schedule-last-fire schedule) now)
+          (e-cron--state-record-fire schedule now))
+        (let ((active-key
+               (and storage
+                    (e-cron--active-firing-key
+                     storage (e-cron-schedule-id schedule) firing-id))))
+          (when active-key
+            (puthash active-key t e-cron--active-firings))
+          (unwind-protect
+              (progn
+                ;; Only action failures are known failures.  A storage error
+                ;; while settling a successful action must leave the claimed
+                ;; firing ambiguous; do not misreport it as a failed action.
+                (condition-case err
+                    (funcall (e-cron-schedule-action schedule) schedule)
+                  (error
+                   (when storage
+                     (e-cron-storage-settle
+                      storage (e-cron-schedule-id schedule) firing-id
+                      'claimed 'failed
+                      (list :error (error-message-string err))))
+                   (signal (car err) (cdr err))))
+                (when storage
+                  (e-cron-storage-settle
+                   storage (e-cron-schedule-id schedule) firing-id
+                   ;; Action return values are process-local and may contain
+                   ;; handles, closures, or owner objects.  The immutable
+                   ;; firing fact records completion only.
+                   'claimed 'done '(:completed t)))
+                (run-hook-with-args 'e-cron-fire-functions schedule)
+                t)
+            (when active-key
+              (remhash active-key e-cron--active-firings))
+            (when storage
+              (when-let* ((current (e-cron-get
+                                    (e-cron-schedule-id schedule))))
+                (setf (e-cron-schedule-unresolved-firings current)
+                      (plist-get
+                       (e-cron-storage-cadence
+                        storage (e-cron-schedule-id schedule))
+                       :unresolved))))))))))
+
+(defun e-cron--skip-due-firing (schedule due now)
+  "Durably skip SCHEDULE's missed DUE firing at NOW."
+  (let* ((storage (e-cron-schedule-storage schedule))
+         (next (e-cron--next-after schedule now))
+         (firing-id
+          (format "%s:%d:%s"
+                  (e-cron-schedule-id schedule)
+                  (or (e-cron-schedule-definition-revision schedule) 1)
+                  (format "%.6f" (float-time due))))
+         (claim
+          (e-cron-storage-claim
+           storage (e-cron-schedule-id schedule)
+           (e-cron-schedule-revision schedule) firing-id
+           (float-time due) (float-time now) (float-time next))))
+    (e-cron-storage-settle
+     storage (e-cron-schedule-id schedule) firing-id
+     'claimed 'skipped '(:reason catch-up-policy))
+    (setf (e-cron-schedule-revision schedule) (plist-get claim :revision)
+          (e-cron-schedule-last-fire schedule) now
+          (e-cron-schedule-next-fire schedule) next)))
 
 (defun e-cron-start (schedule)
   "Enable SCHEDULE and arm its timer, applying the catch-up policy.
@@ -427,9 +579,12 @@ has passed, `skip' advances to the next future occurrence and arms, while
         (due (e-cron--due-time schedule)))
     (setf (e-cron-schedule-next-fire schedule) due)
     (unless (time-less-p now due)
-      (when (eq (e-cron-schedule-catch-up schedule) 'run)
-        (e-cron-fire schedule))
-      (e-cron--advance schedule now)))
+      (if (eq (e-cron-schedule-catch-up schedule) 'run)
+          (e-cron-fire schedule)
+        (when (e-cron-schedule-storage schedule)
+          (e-cron--skip-due-firing schedule due now)))
+      (unless (e-cron-schedule-storage schedule)
+        (e-cron--advance schedule now))))
   (e-cron--arm schedule)
   schedule)
 
@@ -447,6 +602,17 @@ has passed, `skip' advances to the next future occurrence and arms, while
   (let ((schedule (or (e-cron-get id) (signal 'e-cron-unknown-schedule (list id)))))
     (setf (e-cron-schedule-enabled schedule) nil)
     (e-cron-stop schedule)))
+
+(defun e-cron-delete-history (id)
+  "Explicitly delete durable firing history for schedule ID."
+  (let ((schedule (or (e-cron-get id)
+                      (signal 'e-cron-unknown-schedule (list id)))))
+    (unless (e-cron-schedule-storage schedule)
+      (signal 'e-cron-storage-error
+              (list "Cron history deletion requires SQLite storage")))
+    (e-cron-storage-delete-history
+     (e-cron-schedule-storage schedule) id
+     (e-cron-schedule-revision schedule))))
 
 (provide 'e-cron)
 

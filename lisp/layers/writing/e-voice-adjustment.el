@@ -36,6 +36,8 @@
 (require 'e-context)
 (require 'e-layers)
 (require 'e-skills)
+(require 'e-voice-storage)
+(require 'e-voice-adjustment-legacy)
 
 (defgroup e-voice-adjustment nil
   "Voice adjustment: detect, rewrite, and cache LLM writing tells."
@@ -49,7 +51,7 @@ Set to nil to keep the cache in memory only for the session."
   :type '(choice (const :tag "In-memory only" nil) file)
   :group 'e-voice-adjustment)
 
-(defcustom e-voice-adjustment-max-tells 10
+(defcustom e-voice-adjustment-max-tells 128
   "Maximum number of cached tells retained in the LRU store."
   :type 'integer
   :group 'e-voice-adjustment)
@@ -89,6 +91,17 @@ Each entry is a plist with :key, :label, :description, :count, :last.")
 (defvar e-voice-adjustment--loaded nil
   "Non-nil once the persistent store has been hydrated this session.")
 
+(defvar e-voice-adjustment-storage nil
+  "Optional voice-owned SQLite storage port.")
+
+(defun e-voice-adjustment-configure-storage (storage)
+  "Install voice STORAGE, or nil for the legacy/default path."
+  (unless (or (null storage) (e-voice-storage-p storage))
+    (signal 'wrong-type-argument (list 'e-voice-storage-p storage)))
+  (setq e-voice-adjustment-storage storage
+        e-voice-adjustment--loaded nil
+        e-voice-adjustment--tells nil))
+
 (defun e-voice-adjustment--timestamp ()
   "Return an ISO-8601 UTC timestamp."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
@@ -102,14 +115,18 @@ Each entry is a plist with :key, :label, :description, :count, :last.")
   "Hydrate `e-voice-adjustment--tells' from disk once per session."
   (unless e-voice-adjustment--loaded
     (setq e-voice-adjustment--loaded t)
-    (when (and e-voice-adjustment-store-file
+    (if e-voice-adjustment-storage
+        (setq e-voice-adjustment--tells
+              (plist-get
+               (e-voice-storage-list e-voice-adjustment-storage
+                                     e-voice-adjustment-max-tells)
+               :tells))
+      (when (and e-voice-adjustment-store-file
                (file-readable-p e-voice-adjustment-store-file))
-      (ignore-errors
-        (with-temp-buffer
-          (insert-file-contents e-voice-adjustment-store-file)
-          (let ((data (read (current-buffer))))
-            (when (listp data)
-              (setq e-voice-adjustment--tells data)))))))
+        (ignore-errors
+          (setq e-voice-adjustment--tells
+                (e-voice-adjustment-legacy-decode-file
+                 e-voice-adjustment-store-file))))))
   e-voice-adjustment--tells)
 
 (defun e-voice-adjustment--write ()
@@ -141,10 +158,19 @@ front; a new tell is prepended and the store is truncated to
                                (equal key (plist-get tell :key)))
                              e-voice-adjustment--tells))
          (now (e-voice-adjustment--timestamp)))
-    (setq e-voice-adjustment--tells
-          (seq-remove (lambda (tell) (equal key (plist-get tell :key)))
-                      e-voice-adjustment--tells))
-    (let ((entry (list :key key
+    (if e-voice-adjustment-storage
+        (let ((result
+               (e-voice-storage-record
+                e-voice-adjustment-storage key label
+                (and description
+                     (not (string-empty-p (string-trim description)))
+                     (string-trim description))
+                now e-voice-adjustment-max-tells)))
+          (setq e-voice-adjustment--tells (plist-get result :tells)))
+      (setq e-voice-adjustment--tells
+            (seq-remove (lambda (tell) (equal key (plist-get tell :key)))
+                        e-voice-adjustment--tells))
+      (let ((entry (list :key key
                        :label label
                        :description (and description
                                          (not (string-empty-p
@@ -157,11 +183,12 @@ front; a new tell is prepended and the store is truncated to
       (when (and existing (not (plist-get entry :description)))
         (setq entry (plist-put entry :description
                                (plist-get existing :description))))
-      (push entry e-voice-adjustment--tells))
-    (when (> (length e-voice-adjustment--tells) e-voice-adjustment-max-tells)
-      (setq e-voice-adjustment--tells
-            (seq-take e-voice-adjustment--tells e-voice-adjustment-max-tells)))
-    (e-voice-adjustment--write)
+        (push entry e-voice-adjustment--tells))
+      (when (> (length e-voice-adjustment--tells) e-voice-adjustment-max-tells)
+        (setq e-voice-adjustment--tells
+              (seq-take e-voice-adjustment--tells
+                        e-voice-adjustment-max-tells)))
+      (e-voice-adjustment--write))
     (list :key key
           :label label
           :retained (length e-voice-adjustment--tells))))
@@ -175,9 +202,12 @@ front; a new tell is prepended and the store is truncated to
 
 (defun e-voice-adjustment--clear ()
   "Drop every cached tell and clear the persistent store."
+  (when e-voice-adjustment-storage
+    (e-voice-storage-clear e-voice-adjustment-storage))
   (setq e-voice-adjustment--tells nil
         e-voice-adjustment--loaded t)
-  (e-voice-adjustment--write)
+  (unless e-voice-adjustment-storage
+    (e-voice-adjustment--write))
   (list :count 0))
 
 ;;;; Compact passive context
