@@ -1,0 +1,373 @@
+#+title: SQLite Runtime State Design
+#+startup: overview
+
+* Authority and purpose
+
+[[file:plan.org][=plan.org=]] owns Feature 87's observable contracts, delivery-package mapping,
+acceptance decision, and non-goals.  This document is the conditional design
+for those contracts.  Table names, private limits, command framing, and helper
+placement may change when implementation evidence identifies a simpler design,
+provided the owning contract remains satisfied.
+
+The project vocabulary remains defined by
+[[file:../../references/runtime_concepts.org][Runtime Concepts]].  In particular, a
+Board remains the process-local semantic owner of interaction and routing;
+SQLite replaces its durable collections and queues rather than becoming a
+second Board or a model-facing surface.
+
+* Current state inventory
+
+The current runtime spreads hidden mutable state across several file formats
+and process-local collections:
+
+- session JSONL, resume checkpoints, and =index.json= are owned by
+  [[file:../../../lisp/core/e-session.el][=e-session.el=]] and the Node writer
+  [[file:../../../lisp/core/e-session-writer.mjs][=e-session-writer.mjs=]];
+- Board messages, source keys, routing queues, pickups, and delivery state are
+  currently process-local in [[file:../../../lisp/core/e-board.el][=e-board.el=]]
+  and [[file:../../../lisp/core/e-board-runtime.el][=e-board-runtime.el=]], while
+  =e-chat-service= proxies Board persistence through a selected session;
+- task queues replace =records.eld= from
+  [[file:../../../lisp/core/e-task-queue.el][=e-task-queue.el=]];
+- cron replaces =cron-state.eld= from
+  [[file:../../../lisp/core/e-cron.el][=e-cron.el=]];
+- voice adjustment replaces =voice-tells.eld= from
+  [[file:../../../lisp/layers/writing/e-voice-adjustment.el][=e-voice-adjustment.el=]];
+- Goodnite appends =daydream_access.jsonl= from
+  [[file:../../../lisp/layers/goodnite/e-goodnite-resources.el][=e-goodnite-resources.el=]];
+- =raw-result://= and session =tmp://= content use ordinary files through
+  [[file:../../../lisp/core/e-raw-results.el][=e-raw-results.el=]],
+  [[file:../../../lisp/layers/harness/e-session-tmp-resources.el][=e-session-tmp-resources.el=]],
+  and [[file:../../../lisp/layers/harness/e-tool-invocation-details.el][=e-tool-invocation-details.el=]].
+
+Feature 91 established the current Board owner split.  Feature 87 extends the
+narrow semantic contracts of =e-board-state=, =e-board-admission=, =e-board=,
+=e-board-runtime-admission=, and =e-board-runtime=; it does not reintroduce
+cross-owner access to their private representations or persist Feature 91's
+exact process-local admission tokens.
+
+* Target topology
+
+One e runtime owns one state directory and all harnesses, sessions, Boards,
+schedulers, and resource owners within it.  A subordinate batch Emacs is a
+storage adapter for that runtime, not a second e runtime.
+
+#+begin_src text
+ interactive Emacs
+
+  session owner ---- e-session-storage -------+
+  Board owner ------ e-board-storage ---------+
+  task/cron owners - owner-shaped ports ------+--> storage adapter protocol
+  resource owners -- owner-shaped ports ------+              |
+                                                               v
+                                                     batch Emacs worker
+                                                  write + query_only reads
+                                                               |
+                                                               v
+                                                        store.sqlite3
+#+end_src
+
+No SQLite connection is opened in the interactive Emacs process.  The worker
+owns the write connection, bounded read-only connections, schema work, backup,
+integrity checks, and WAL maintenance.  Domain policy remains in the semantic
+owner and reaches storage only through typed commands and projections.
+
+* Owner-shaped ports
+
+** Session storage
+
+=e-session-storage= accepts typed session commits with an expected revision and
+returns the committed revision and projection delta.  It supports bounded
+session-header listing and paged resume projections.  Session identity,
+ancestry, current path, metadata meaning, compaction, and provider-anchor
+compatibility remain =e-session= policy.
+
+The session owner applies no durable live-state mutation before commit
+acknowledgement.  A shell may display provisional intent, but a model-facing
+turn, callback, or dependent external effect sees only committed state.
+
+** Board storage
+
+=e-board-storage= supports:
+
+- canonical publication with Board revision and source-key constraints;
+- bounded record, selector, replay, and audit reads;
+- stable routing outcomes and participant FIFO pickup creation;
+- pickup claim, acceptance, consumption, retry, and tombstone transitions;
+- unresolved-pickup and replay-progress recovery; and
+- ordered barriers and bounded persistence health.
+
+It does not store executable subscriptions, Lisp predicates, callbacks, timers,
+endpoint objects, live invocation handles, or exact admission tokens.
+
+** Composite application operations
+
+An owner port never gains another owner's mutations.  When one public operation
+has an accepted invariant spanning owners, the application service owning that
+operation may submit one typed composite command.  The initial required case is
+pickup admission: appending the admitted session input and advancing Board
+pickup acceptance commit together.  There is no generic transaction builder or
+SQL escape hatch.  Other derived state remains an independently retryable owner
+commit keyed by its causal Board position.
+
+** Other owners
+
+Task queue, cron, voice adjustment, Goodnite demand tracking, raw results, and
+session-temporary resources each retain a consumer-shaped storage port.  They
+share physical infrastructure but neither call one another's storage port nor
+interpret one another's tables.
+
+* Worker protocol and concurrency
+
+Every command carries a stable command id, canonical command hash, owner or
+typed composite identity, conflict precondition, and bounded payload.  In one
+=BEGIN IMMEDIATE= transaction, the worker:
+
+1. resolves a prior command id and verifies its hash;
+2. checks owner revisions or typed preconditions;
+3. inserts immutable facts where the owner has an audit history;
+4. updates the owner's current projections;
+5. advances revisions;
+6. stores the command result; and
+7. commits before acknowledging.
+
+Reusing an id with equal bytes returns the committed result.  Reusing it with
+different bytes is a terminal protocol error.  Constraint and revision
+conflicts are terminal for the affected aggregate.  Busy and transport failure
+are retryable within a bounded policy.
+
+The worker serializes writes.  Bounded read pages use a =query_only= connection,
+carry a committed revision or position and continuation cursor, and yield to
+queued commits.  The adapter exposes ordered owner barriers; a barrier waits for
+already-submitted commits and does not build a checkpoint or force a WAL
+checkpoint.
+
+The store uses foreign keys, WAL, and =synchronous=NORMAL=.  Acknowledged commits
+survive e and worker process failure.  The latest acknowledgements may be lost
+after host failure or sudden power loss, but reopening must produce a consistent
+database without a partial owner transaction.
+
+Store opening establishes exclusive ownership for one e runtime.  A second live
+runtime fails without mutating the store.  A crashed worker is restarted within
+a bounded policy and submitted commands are reconciled through their stable
+ids.  During recovery, owners freeze new durable transitions and dependent
+external effects; shells may display already-loaded committed state with an
+explicit storage-unavailable status.
+
+Cancellation before worker submission removes provisional intent.  After
+submission, the adapter first reconciles whether the original command committed.
+If it did, cancellation is a later owner-shaped cancellation, retry, or
+tombstone transition rather than rollback.
+
+* Exact value codec
+
+One versioned tagged codec preserves supported nested Lisp values without
+collapsing nil, false, symbols, keywords, strings, lists, dotted lists, vectors,
+or supported maps.  It rejects cycles, non-finite numbers, functions, buffers,
+markers, processes, arbitrary records, and unrecognized mutable objects before
+worker submission.
+
+Canonical bytes and key order support command hashes and migration manifests.
+The codec preserves shape only; each domain validator still owns which shapes
+are valid.  An unknown codec version is an explicit load error.
+
+* Conditional relational model
+
+The following relations explain the intended ownership and query shape.  Their
+names and private columns are not public contracts.
+
+** Store metadata
+
+- =schema_migrations=: version, migration identity, checksum, and application
+  timestamp;
+- =writer_commands=: stable id, command hash, committed result, and timestamp;
+- runtime-ownership metadata sufficient to reject a second live runtime and
+  recover an explicitly validated stale owner.
+
+** Sessions and tool continuity
+
+- =sessions=: durable session root, current head, revision, catalog fields,
+  transcript epoch, Board association, and participant recovery position;
+- =session_records=: immutable ordered session facts with entry/parent identity,
+  epoch, payload, and codec version;
+- =message_displays=: rebuildable current display projection;
+- =tool_followups=: current restart classification for admitted, claimed,
+  resulted, follow-up-ready, settled, or attention-required work;
+- =tool_dispatch_outbox=: admitted call payload awaiting durable claim or result.
+
+No external tool starts before its dispatch claim commits.  A claim without a
+durable result means the external effect is uncertain.  Automatic retry requires
+a tool-specific idempotency or reconciliation contract; otherwise restore makes
+the uncertainty visible.  Live callbacks, requests, timers, and handles are not
+stored.
+
+The current model path is read through indexed parent links from the session
+head.  Current display and recovery projections avoid replaying unrelated audit
+history.  Compaction and transcript clear retain audit rows.  Explicit session
+deletion physically removes private session rows and owned temporary resources,
+but not records already published to a shared Board.
+
+** Boards and pickup lifecycle
+
+- =boards=: Board identity, trusted principal, revision, generation, and next
+  durable position;
+- =board_records=: immutable messages, processing records, canonical source
+  keys, stable selector fields, frozen envelope, and codec version;
+- normalized tag and exact-attribute indexes for bounded selectors;
+- =board_routing=: one final routing outcome for a routable input, including an
+  explicit no-recipient outcome;
+- =board_pickups=: immutable pickup identity, participant FIFO order, current
+  lifecycle state, revision, claim, and causal source positions;
+- =board_pickup_events=: ordered claim, acceptance, consumption, retry, and
+  tombstone facts needed to explain or restore the projection.
+
+Publication commits the canonical Board row before routing policy runs.  Routing
+policy is executable Lisp; its stable outcome and pickup identities commit before
+endpoint delivery.  A delivery attempt begins only after its claim commits.
+Acceptance and consumption remain distinct.
+
+A committed routing outcome is final.  Later attachment or subscription changes
+affect new or still-unclassified input only.  Historical rerouting is an explicit
+Board operation with a new durable identity.  Detaching an endpoint leaves its
+pickup pending until compatible rebind or explicit tombstone.
+
+Board clear increments generation.  Current reads select the new generation,
+while older generations remain audit history until explicit Board deletion.
+
+** Task and cron
+
+Task queue state contains queue revision/order/pause state, current task
+projections, and immutable attempt/status facts where restart classification
+requires them.  Claim-next atomically selects the next eligible task, creates an
+attempt, and changes durable status before work starts.  Pause, retry,
+completion, cancellation, and interrupted-attempt recovery are commit-first.
+
+Cron configuration remains owned by active layers.  SQLite stores cadence and
+stable firing claims/results.  A due firing is claimed and cadence advances
+before its action starts.  An interrupted claimed firing is retried only when
+the action contract makes that safe; otherwise its outcome remains explicit.
+
+Live work handles, callbacks, harnesses, guards, action closures, and timers are
+not stored.
+
+** Voice, Goodnite, and resources
+
+Voice tells store the current capped LRU facts; cap enforcement and update commit
+together.  Goodnite demand events become indexed rows.  A consumer acknowledges
+its durable page checkpoint before bounded cleanup deletes earlier events.
+
+=raw-result://= and e-managed session =tmp://= resources retain their URI and
+resource-method semantics while their content, owner, lineage, metadata,
+timestamps, and expiry move to SQLite.  The first implementation uses one BLOB
+and a deliberately generous private value limit.  Exact one-over fails visibly.
+It does not build chunk streaming or fall back to an authoritative file.
+Measurements may revise the private limit or justify chunks later without
+changing the resource contract.
+
+A subprocess that requires a pathname receives a disposable exported copy.
+That copy is not durable state and is removed when its owner settles.
+
+* Retention and deletion
+
+- session, Board, task, and cron audit remains until explicit owner deletion;
+- Board clear and transcript clear do not delete audit history;
+- explicit session deletion purges private rows and owned temporary resources;
+- shared Board records survive session deletion and change only through an
+  explicit Board operation;
+- raw and temporary resources are physically deleted at expiry;
+- Goodnite demand events are deleted only at or before an acknowledged consumer
+  checkpoint;
+- live deletion changes the active store and future backups, not operator-owned
+  historical backups.
+
+Cleanup uses bounded transactions.  Retention is not silently shortened to hit
+a database-size target.
+
+* Read and restore
+
+Startup creates or opens the worker, validates exclusive ownership and schema,
+then reads only indexed root projections for activated owners.  It does not scan
+immutable history or run integrity checks implicitly.
+
+Session restore pages the current path, compatible provider anchors, bounded
+activity/process-report projections, display state, Board association, and
+incomplete tool-followup classification.  Semantic compatibility decisions
+remain in =e-session= and the harness; SQL supplies ordered candidates.
+
+Board presentation reads a bounded recent page.  Semantic restore separately
+pages every required durable fact plus committed routing outcomes, unresolved
+pickups in participant FIFO order, and replay progress.  Reattachment binds
+existing pickup identities to new live endpoints; it does not recreate ids or
+rerun a committed routing outcome.
+
+Audit/export reads immutable rows without hydrating live aggregates.  A
+requested JSONL artifact is an explicit export, never a second authority.
+
+* Migration, schema upgrades, and backups
+
+Legacy-file migration is explicit, offline, and dry-runnable.  It inventories
+and hashes sources, parses them through owner validators, extracts canonical
+Board records from duplicated session journals, imports owners in deterministic
+order into a temporary database, compares semantic manifests, runs foreign-key
+and integrity checks, and atomically installs the verified store.  Conflicting
+identities, unexplained loss, missing roots, and non-round-tripping values abort
+cutover.  Source files remain inactive rollback material and are not deleted.
+
+Ordinary startup creates a new current-version schema but never upgrades an
+older SQLite schema.  An older version reports a targeted migration-required
+error.  A separate explicit offline schema-upgrade operation automatically
+creates and verifies a pre-upgrade backup, applies versioned migrations, checks
+the result, and installs it before ordinary startup continues.
+
+Backups are otherwise explicit operator actions implemented by the worker with
+SQLite's backup API or a validated equivalent such as =VACUUM INTO=.  Never copy
+a live database and WAL with an ordinary file copy.  Explicit destructive
+deletion does not automatically create a backup that defeats the deletion
+intent.  Operator-created historical backups remain operator-owned artifacts.
+
+The database, WAL, temporary pathname exports, migration working files,
+reports, and backups use restrictive local permissions.  Encryption at rest and
+key management are outside Feature 87.
+
+* Observability and performance
+
+Bounded status exposes schema version, database path, runtime-owner identity,
+worker liveness, pending command count and age, last committed command, retry
+state, read-page state, WAL size, and last error.  =quick_check= and full
+=integrity_check= are explicit diagnostics, not implicit UI work.
+
+No SQL operation runs in the interactive Emacs event loop.  Startup cost is
+proportional to requested root projections.  Session resume is proportional to
+the selected path and bounded auxiliary projections.  Board semantic replay is
+paged and independent of presentation-tail retention.  Reads have row and byte
+budgets and yield to commits.
+
+The existing 15,722-record/38 MB session fixture remains the session-resume
+regression witness.  The implementation records catalog load, resume, Board
+restore, commit/finalization latency, worker startup, database/WAL size, private
+resource-limit behavior, and interactive timer responsiveness.  Measurements
+without an accepted threshold are observational and do not independently decide
+acceptance.
+
+* Compatibility and removal
+
+Persistent runtime storage requires Emacs with built-in SQLite support; the
+cutover minimum is Emacs 29.1 with a runtime feature check.  There is no JSONL
+fallback, permanent dual write, second persistent backend, or automatic legacy
+replay.  Unit tests and explicitly ephemeral harnesses use disposable SQLite
+stores rather than a different implementation.
+
+After verified cutover, remove production use of:
+
+- =e-session-writer.mjs= and its tests;
+- JSONL append/scan/suffix replay and per-session file helpers;
+- =index.json= loading/rebuild and dangling-file reconciliation;
+- checkpoint files, manifests, offsets, dirty-id tracking, and retention rules;
+- direct/queued filesystem persistence modes and catalog =:file= fields;
+- superseded local JSON shape repairs;
+- =e-chat-service--board-log-owners= and persistence notification callbacks;
+- authoritative in-memory Board message/source-key and pickup/receipt maps;
+- raw-result and e-managed session =tmp://= backing files.
+
+The legacy decoder remains reachable only from the offline migration entrypoint
+until a later explicit deprecation removes it.

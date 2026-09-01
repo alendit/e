@@ -3,1133 +3,411 @@
 
 * Status
 
-Planned.
-
-Feature 91, [[file:../91-improve-modularization/plan.org][Improve Modularization]], is =Done=.
-This plan is rebaselined on its accepted session/storage and board/runtime
-boundaries.  Implementation remains planned while the remaining product
-decisions in this document are resolved.
-
-* Goal
-
-Make one SQLite database the durable authority for all e-owned mutable runtime state.
-This includes sessions, boards, session-owned lifecycle facts, task queues, cron cadence and firing state, voice-adjustment tells, Goodnite demand events written by e, raw-result resources, and e-managed session-temporary resources such as complete tool-invocation details.
-Keep each component's state semantics with that component, keep live process and presentation objects out of persistence, and route all database reads and writes through a worker so storage work does not stall Emacs redisplay.
-Every transition that changes durable state is commit-first: the owning Lisp component applies the new durable state only after SQLite acknowledges the commit.
-
-The completed feature replaces the JSONL journals, per-session resume checkpoints, derived =index.json=, task-queue snapshots, cron and voice-adjustment state files, e-written Goodnite access JSONL, the raw-result file directory, and e-managed session-temporary resource files.
-It persists the state-machine facts needed to classify and resume an interrupted tool follow-up.
-For boards, it persists canonical records, ordering, identity constraints, routing outcomes, pickup lifecycle, participant replay progress, and the indexes needed for bounded live reads and restart replay.
-It does not persist live harness objects, endpoint attachments, callbacks, timers, processes, Lisp predicate closures, focus, windows, or rendering state.
-User-authored files, explicit exports and backups, migration reports, screenshots, and subprocess artifacts that genuinely require a pathname remain files because file identity is part of their interface.
-
-* Accepted design decisions
-
-- =F87-AUTHORITY=: SQLite owns every durable runtime fact and arbitrates every durable transition.
-  Lisp owners decide policy and may hold provisional intent, but they install no new durable state into their live aggregates before commit acknowledgement.
-- =F87-DISK-BOUNDARY=: Hidden e-managed state and content move to SQLite even when the current implementation exposes them through =tmp://= or =raw-result://=.
-  Resource URIs remain stable; only user-authored artifacts, explicit exports/backups/diagnostics, migration reports, screenshots, and pathname-required subprocess artifacts remain ordinary files.
-- =F87-BOARD-RECOVERY=: SQLite owns canonical Board records plus stable routing outcomes, pickup FIFO identity and state, delivery claims, acceptance/consumption receipts, and participant replay progress needed after restart.
-  Executable subscriptions, Lisp predicates, callbacks, timers, endpoint objects, and the exact process-local admission tokens established by Feature 91 remain in memory.
-- =F87-SCHEDULING=: Task attempts and cron firings are claimed through commit-first SQLite transitions before their actions start.
-  Live work handles, timers, guards, action closures, and harness objects remain process-local.
-- =F87-WORKER-IO=: The interactive Emacs process opens no SQLite connection.
-  One storage worker owns writable and read-only database connections, prioritizes commits, and serves bounded asynchronous read pages.
-- =F87-RUNTIME=: One e runtime owns all harnesses, sessions, Boards, and runtime-state owners for one state directory.
-  The storage worker is an adapter belonging to that runtime, not a second e runtime.
-  A concurrent e runtime opening the same store fails clearly rather than becoming another producer or consumer.
-- =F87-PHYSICAL-STORE=: All owners share one physical =store.sqlite3= while retaining narrow owner-shaped contracts and schemas.
-  Large values and append-heavy state require explicit size and retention policy rather than a second authority.
-- =F87-RETENTION=: Session, Board, task, and cron audit history remains until explicit owner deletion; Board clear starts a new generation without deleting older audit rows.
-  Raw results and temporary resources are physically deleted at expiry.
-  Goodnite demand events are deleted only through a bounded cleanup after the consumer acknowledges its durable checkpoint.
-  Explicit session deletion physically purges that session's private rows and owned temporary resources.
-- =F87-DURABILITY=: Acknowledged commits survive e and storage-worker process crashes, but host crash or power-loss durability is not promised.
-  The writer uses WAL with =synchronous=NORMAL= and preserves database consistency even when the most recent acknowledged commits are lost with the host.
-- =F87-MIGRATION=: Legacy migration is an explicit, offline, dry-runnable operator action.
-  Ordinary startup never silently transforms a legacy store.
-- =F87-WORKER-FAILURE=: The runtime performs bounded automatic worker restart.
-  While storage is unavailable it freezes new durable mutations and external effects, but shells may continue presenting already-loaded committed state with an explicit storage-unavailable status.
-- =F87-ROUTING-FINALITY=: A committed input remains unclassified until its routing outcome commits; that committed outcome is final.
-  Detached endpoints leave existing pickups pending.
-  Later participant or subscription changes affect new or still-unclassified input only; historical rerouting requires an explicit operation.
-- =F87-ATOMIC-COMPOSITION=: When one accepted public operation creates a real invariant across owners, its owning application service may submit one typed, use-case-specific SQLite transaction.
-  There is no generic transaction surface, SQL escape hatch, or permission for either domain owner to mutate the other's representation.
-- =F87-SHARED-DELETION=: Deleting a session purges its private state and resources but leaves records already published to a shared Board.
-  Shared history changes only through an explicit Board operation, and operator-created historical backups are not rewritten by live deletion.
-- =F87-SECURITY=: Feature 87 relies on restrictive local permissions for the database, WAL, temporary pathname exports, migration artifacts, and backups.
-  Encryption at rest and key management are separate work.
-- =F87-LARGE-VALUES=: The first implementation stores one bounded BLOB per resource and uses a deliberately generous private request/value limit.
-  Values above the limit fail explicitly; there is no authoritative file fallback and no initial chunk-streaming subsystem.
-  Measurements may revise the private limit or justify chunking later without changing the resource contract.
-- =F87-PENDING-PRESENTATION=: Shells may present a user operation as pending, but agents and durable projections observe it only after commit.
-  Cancellation before worker submission drops the intent.
-  Once submitted, the command outcome is reconciled; if it committed, cancellation is a later durable domain transition rather than rollback.
-
-* Open design decisions
-
-- =F87-OPEN-SCHEMA-UPGRADE=: Decide whether later SQLite schema versions upgrade automatically at startup or require the same explicit offline operation as legacy-file migration.
-- =F87-OPEN-BACKUP-POLICY=: Decide whether backups remain explicit operator actions or the runtime automatically creates them before schema migration and destructive deletion.
-- =F87-OPEN-DELIVERY-PACKAGES=: Replace the current ten implementation slices with fewer owner-complete delivery packages and decide whether detailed schema/mechanism material remains in =plan.org= or moves to a companion design artifact.
-
-[[file:../89-board-run-visibility-and-handoff/plan.org][Feature 89]] owns chat-visible board-run status, model-context projection, and quiescent completion handoff.
-This feature persists the board facts and participant-authored completion records that feature 89 needs for restart-safe behavior, but it does not own that user experience.
-
-* Why now
-
-The current format has accumulated three representations of related state:
-
-- one append-only JSONL journal per session;
-- one lossy resume checkpoint per session;
-- one rebuildable global session index.
-
-That split made ordinary resume fast, but it also made correctness depend on retention policy, byte offsets, JSON shape, and a periodically rebuilt catalog.
-The recent orchestration restart failure showed both classes of risk: ordinary JSON did not preserve nested Lisp type identity, and a bounded board tail could retain terminal facts after evicting the manifest needed to interpret them.
-
-SQLite gives the runtime one physical durability boundary and direct, indexed access to every durable runtime projection.
-It removes the need to encode semantic correctness into checkpoint tails, rebuild catalogs by scanning files, or maintain separate atomic-replacement and append-only writers for each component.
-A new durable runtime value therefore adds a schema migration and an owner-shaped storage operation instead of another sidecar file.
-
-* Current constraints to preserve
-
-- =e-session= owns session identity, entry ancestry, current-path semantics, metadata classes, compaction boundaries, and provider-anchor compatibility.
-- =e-board= is the central interaction plane.
-  Sessions, =e-chat=, hooks, reducers, and deterministic scripts attach as participants and exchange board data only through board publication, subscription, pickup, and settlement operations.
-- =e-board= owns board identity, validation, routing semantics, process-local participant attachments and subscriptions, and notification of those participants.
-  Participant reducers own the meaning of their derived projections.
-- Every durable publication enters through =e-board=, and the SQLite transaction is the publication.
-  The transaction allocates the position, enforces identity and source-key constraints, inserts the canonical record and its query indexes, and commits.
-  A successful commit wakes =e-board= with the committed position.
-  =e-board= reads the canonical row and applies its routing policy.
-  Stable routing outcomes and pickup lifecycle transitions commit through =e-board-storage= before endpoint delivery proceeds.
-  There is no second in-memory append, source-key index, pickup FIFO, or delivery receipt authority beside the database.
-- =e-chat= and each session are separate board participants.
-  =e-chat= publishes input and receives output only through =e-board=; it does not communicate with =e-session= or use session persistence as a transport.
-  =e-chat-service= is only the board-facing adapter for the chat presentation endpoint.
-  It does not attach or proxy the session participant, route board data around =e-board=, or own persistence.
-  Multiple session participants and presentation participants may attach to one board.
-- =e-board-storage= owns durable board commits and board replay.
-  =e-session-storage= separately owns each session's private durable state and resume projections.
-  Neither port routes the other domain's writes.
-- The shared SQLite adapter owns the acknowledged outbox, worker lifecycle, retry classification, and physical finalization barrier.
-  Each semantic port owns aggregate-specific faulting and exposes its own ordered barrier.
-- All database I/O stays outside the Emacs UI event loop.
-  The worker serves indexed, paged reads asynchronously and returns bounded results per scheduler step.
-- Durable values must round-trip with exact supported Lisp shape.
-  Symbols, keywords, strings, lists, vectors, nil, and JSON false may not collapse into one another.
-- Durable board facts may not be lost because unrelated activity is noisy.
-- Tool admission, dispatch, result, follow-up, and settlement facts that cross a restart boundary are session-owned durable state.
-  Live tool handles, callbacks, timers, and provider requests remain process-local.
-  SQLite may make the local state transition atomic and idempotent, but it cannot claim that an arbitrary external effect ran exactly once without tool-specific reconciliation.
-- Unexpected corruption, unsupported values, schema mismatches, and revision conflicts must surface.
-  Persistence must not guess or silently fall back.
-- Every e-owned durable mutable runtime value uses the shared SQLite database.
-  A component keeps its own schema meaning and storage API; sharing the adapter does not make one component own another component's state.
-  New sidecar state files are not allowed.
-- One e runtime owns one state directory and its worker.
-  A second runtime may not concurrently attach to the same store.
-- Unit tests and explicitly ephemeral harnesses use disposable SQLite stores.
-  They do not require a second storage implementation.
-
-* Direction
-
-Use one database at =<e-state-directory>/store.sqlite3=, where =e-state-directory= defaults to the existing e state root under =user-emacs-directory=.
-Expose owner-shaped storage APIs over one SQLite adapter.
-=e-board-storage= serves the board aggregate.
-=e-session-storage= serves session aggregates and each session participant's private state.
-Task queue, cron, voice adjustment, Goodnite demand tracking, raw-result resources, and session-temporary resources each keep their own typed storage boundary over the same adapter.
-No component exposes SQL or accepts mutations owned by another component.
-
-A long-lived =emacs --batch -Q= worker, launched from the same Emacs installation, owns every SQLite connection.
-It loads only the bundled storage worker and its codec.
-This reuses Emacs's built-in SQLite bindings and avoids a native Node package or command-line SQL interpolation.
-The shared adapter keeps the acknowledged outbox and sends newline-delimited, preflighted commands.
-The worker serializes each aggregate command in one SQL transaction, acknowledges it only after commit, and serves bounded reads from a separate =query_only= connection without exposing either connection to the interactive process.
-Commit work takes priority over long read streams; every read response observes a declared committed revision or position.
-
-The main e runtime owns all harnesses, sessions, Boards, and other runtime-state owners that use this state directory.
-The worker performs persistence I/O for that runtime but contains no harness, session, Board, scheduler, capability, or presentation behavior.
-Store opening establishes exclusive runtime ownership and fails clearly when another live runtime owns the same store.
-The recovery mechanism for stale ownership is explicit and validated; it never permits silent lease takeover.
-If the worker exits, the runtime retries startup within a bounded policy and reconciles submitted command ids against committed =writer_commands= rows.
-Until recovery succeeds, owners accept no new durable mutation and no external effect whose admission depends on durable state.
-Shells may display already-loaded committed state, but they expose storage as unavailable and do not represent provisional intent as committed.
-
-For board communication, =e-board= is the public bus and SQLite is its canonical log.
-A publish call does not first append to an in-memory board.
-=e-board-storage= executes one transaction that deduplicates the source key, inserts the canonical record and its indexed selector values, and advances board position and revision.
-Commit is publication.
-The commit wake carries only the committed position, and =e-board= reads that row before applying live routing policy.
-When policy selects participants, =e-board= commits the stable routing outcome and immutable pickup identities before =e-board-runtime= attempts endpoint delivery.
-Pickup delivery claims, acceptance, consumption, retry, and tombstone transitions are commit-first Board transitions.
-After a restart, the runtime resumes committed unresolved pickups in participant FIFO order and rebinds them to newly attached endpoints without recreating their identities.
-
-SQLite replaces the current in-memory message/event indexes and source-key history.
-=e-board= retains participant attachment, subscription matching, reducer orchestration, and other policy that depends on live Lisp state.
-=e-board-runtime= retains endpoint attachment, current authorization, harness invocation, callbacks, and scheduler integration.
-Live subscriptions may use Lisp predicates because executable matching policy is process-local and is rebuilt when participants attach.
-Indexed SQL selectors support bounded reads and replay; they do not define a second executable subscription system.
-The database stores only the routing decision and pickup lifecycle produced by that policy.
-
-Session and participant-owned state does not travel through =e-board=.
-=e-session= sends typed mutation intents directly to =e-session-storage=, applies the resulting state only after commit acknowledgement, and restores through session projections.
-A participant may persist its own transcript, configuration, metadata, board association, and recovery cursor without publishing those private values to the board.
-There is no generic cross-domain commit API.
-When one public operation has an accepted invariant spanning Board and session state, its owning application service may use one typed composite storage command without making either domain port own the other domain's mutations.
-
-The worker owns a separate read-only connection with =query_only= enabled.
-The main Emacs process sends asynchronous typed read requests and never calls SQLite directly.
-Startup performs only the schema check and the bounded reads needed by components activated at startup.
-The session catalog, task queues, cron cadence, and other component projections load independently through indexed queries.
-Session and board restoration use indexed pages scheduled through the existing request lifecycle.
-Synchronous load remains available only for batch callers and tests; interactive shells use cooperative load.
-
-Persistent runtime storage requires an Emacs build for which =sqlite-available-p= is true.
-The cutover raises the declared minimum Emacs version to 29.1 and still performs the runtime feature check because SQLite is an optional build feature.
-There is no JSONL fallback or second store implementation.
-Ephemeral harnesses create a disposable SQLite database and delete it after use.
-
-** Current implementation delta
-
-The current code does not yet have the planned semantic storage APIs.
-=e-board= is a process-local aggregate with optional message and processing-record notification callbacks.
-Ordinary messages are appended to in-memory event, message, source-key, and selector indexes before the message callback runs, while processing records use a separate pre-append callback path.
-Input routing then runs through bounded in-memory classification queues, creates in-memory pickup objects and participant FIFOs, and hands those pickups to =e-board-runtime= for endpoint delivery.
-The current code therefore implements append, persistence notification, subscription fan-out, pickup queuing, and delivery receipts as separate transitions with different failure boundaries.
-See [[file:../../../lisp/core/e-board.el::(defun e-board--append-processing-record][=e-board--append-processing-record=]], [[file:../../../lisp/core/e-board.el::(defun e-board--make-message][=e-board--make-message=]], [[file:../../../lisp/core/e-board.el::(defun e-board-drain-input-classifications][=e-board-drain-input-classifications=]], [[file:../../../lisp/core/e-board.el::(defun e-board--classification-commit-routing][=e-board--classification-commit-routing=]], and [[file:../../../lisp/core/e-board-runtime.el::(defun e-board-runtime--drain-pickups][=e-board-runtime--drain-pickups=]].
-
-=e-chat= already submits prompts and receives presentation events through board-backed service operations.
-See [[file:../../../lisp/shells/chat/e-chat.el::(defun e-chat-submit][=e-chat-submit=]], [[file:../../../lisp/shells/chat/e-chat.el::(defun e-chat--subscribe][=e-chat--subscribe=]], and [[file:../../../lisp/core/e-chat-service.el::(cl-defun e-chat-service--post][=e-chat-service--post=]].
-
-The current =e-chat-service= binding still combines two peers that the target architecture keeps separate: an =e-chat= board client/observer and an =e-board-runtime= attachment for one harness session.
-It also elects the first combined binding as =e-chat-service--board-log-owners=, persists board envelopes by calling =e-session-append-board-message= on that binding's session, and reconstructs the board from that session on restart.
-See [[file:../../../lisp/core/e-chat-service.el::(cl-defstruct (e-chat-service-binding][=e-chat-service-binding=]], [[file:../../../lisp/core/e-chat-service.el::(cl-defun e-chat-service--install-participant-binding][=e-chat-service--install-participant-binding=]], [[file:../../../lisp/core/e-chat-service.el::(defun e-chat-service--persist-board-message][=e-chat-service--persist-board-message=]], and [[file:../../../lisp/core/e-chat-service.el::(defun e-chat-service--bind-session][=e-chat-service--bind-session=]].
-This coupling is current implementation debt, not the target ownership model.
-The target gives =e-chat= its own board-facing binding and leaves harness-session attachment and restoration with the session participant runtime.
-Neither peer uses the other as its communication or persistence path.
-
-Session mutations already have an independent path.
-=e-session--append-record= sends a session record to its persistence controller without board publication.
-See [[file:../../../lisp/core/e-session.el::(defun e-session--append-record][=e-session--append-record=]].
-
-The current tool-follow-up lifecycle is not restart-safe.
-=e-context-lifetime-frame= is runtime-only, and legacy =context-frame= and =context-frame-settlement= records are ignored on session replay.
-=e-tools-start= keeps settlement, the active request, and its deadline timer in local variables.
-=e-harness--lifetime-tool-observation-frame= creates the paired call/result observation frame in memory, while =e-harness--lifetime-commit-response= completes the frame and appends promotions through separate session operations.
-See [[file:../../../lisp/core/e-context-lifetime.el::(cl-defstruct (e-context-lifetime-frame][=e-context-lifetime-frame=]], [[file:../../../lisp/core/e-session.el::(defun e-session--replay-record][=e-session--replay-record=]], [[file:../../../lisp/core/e-tools.el::(cl-defun e-tools-start][=e-tools-start=]], [[file:../../../lisp/core/e-harness.el::(defun e-harness--lifetime-tool-observation-frame][=e-harness--lifetime-tool-observation-frame=]], and [[file:../../../lisp/core/e-harness.el::(defun e-harness--lifetime-commit-response][=e-harness--lifetime-commit-response=]].
-
-The target removes both the board-log-owner proxy and the combined chat/session binding from =e-chat-service=.
-It also removes the persistence notification callbacks and the authoritative in-memory message/source indexes.
-=e-board-storage= makes canonical record insertion the publication commit and owns stable routing and pickup lifecycle state.
-=e-board= applies routing policy to the committed row, persists its outcome, and lets =e-board-runtime= invoke live endpoints only after the corresponding pickup transition commits.
-Executable subscriptions, exact admission fencing, callbacks, and endpoint invocation remain in process; authoritative pickup FIFOs, claims, and receipts move out of process-local collections.
-=e-chat= remains on board publication and observation APIs, while =e-session-storage= remains private to each session participant.
-
-** Proposed architecture
-
-=e-board= is the central interaction plane for shared application data.
-Sessions, =e-chat=, hooks, reducers, and deterministic scripts are peer participants around it.
-They publish and receive shared data only through board operations.
-=e-chat-service= adapts the =e-chat= presentation endpoint to board publication and observation APIs.
-It does not adapt, attach, or persist a session participant.
-
-SQLite sits inside the board publication and delivery-state paths as the canonical log, queue state, and query engine.
-It is not a second bus and does not execute participants.
-A board publish operation commits one canonical row; routing policy consumes that row and commits stable pickup identities and FIFO order before attached endpoints are invoked.
-Participant callbacks, Lisp predicates, exact admission tokens, and scheduler handles stay in the process.
-A participant's private state still passes through its own storage API without entering =e-board=.
-
-#+begin_src text
-Shared application data
-
- +----------------------+       +---------------------+       +-------------------+
- | session participants |       | e-chat participants |       | hook participants |
- +----------+-----------+       +----------+----------+       +---------+---------+
-            |                              |                            |
-            +------------------------------+----------------------------+
-                                           |
-                                           | publish and observe
-                                           v
- +--------------------------------------------------------------------------------+
- |                                   e-board                                      |
- |                                                                                |
- |  publish: validate -> SQLite insert and commit -> read committed row           |
- |                                      |                                         |
- |                                      v                                         |
- |  apply live routing policy -> commit routing/pickups -> invoke live endpoints  |
- |                                                                                |
- |  SQLite owns canonical order, identity constraints, source-key lookup,         |
- |  pickup FIFO/lifecycle, indexed reads, and replay.                             |
- |  e-board owns participants, live subscriptions, callbacks, and routing policy. |
- +--------------------------------------------------------------------------------+
-                                           |
-                                           | participant-owned state does not
-                                           | pass through the board
-                                           v
-                              owner-shaped storage APIs
-                                           |
-                                           v
-                                    store.sqlite3
-#+end_src
-
-Commit is publication.
-The commit wake identifies committed positions rather than carrying the submitted Lisp object as a second authority.
-=e-board= reads those rows, applies live routing policy, and commits the resulting durable pickup work.
-The runtime claims ready pickups before invocation and records acceptance, consumption, retry, or tombstone outcomes through the same Board storage boundary.
-If an in-process wake is missed, the runtime queries committed unprocessed rows and unresolved pickups rather than relying on a process-local high-water mark as authority.
-After restart, participants reattach, restore their replay progress, and resume the same pickup identities.
-Participant-private derived state still persists through that participant's own storage API.
-
-* Ownership and dependency direction
-
-** =e-session=
-
-Owns each live session aggregate and its private durable state.
-Its public callers create sessions, append typed entries, change configuration, set message display, clear a transcript, record the session's board association, and query current state.
-It emits typed session mutation intents directly to =e-session-storage= and applies committed results in revision order.
-
-It does not publish private state through =e-board= and does not know table names, SQL, WAL settings, migration files, or worker protocol details.
-
-** =e-harness=, =e-loop=, and =e-context-lifetime=
-
-=e-harness= and =e-loop= own the live provider/tool follow-up lifecycle and decide how an interrupted transition may recover.
-=e-context-lifetime= owns generation, frame, observation-consumption, and promotion semantics.
-They submit typed session-lifecycle mutations through =e-session= and =e-session-storage=; they do not write SQL or persist callbacks, timers, requests, or tool handles.
-
-A local commit can prove which lifecycle facts are durable and which transition revision won.
-Only a tool-specific contract can reconcile an external effect that may have occurred before a crash.
-
-** =e-board=
-
-Owns the central interaction aggregate: board identity, validation, participants, live subscriptions, processing, routing policy, and source-key semantics.
-All session, chat, hook, reducer, and deterministic-script participants publish and receive shared data through this boundary.
-
-For publication, it submits one validated record through =e-board-storage=.
-The storage transaction inserts the canonical row and commits it as published.
-=e-board= reads the committed row, applies its process-local routing and subscription policy, then commits stable routing and pickup transitions before invoking endpoints.
-It does not append the candidate to an authoritative in-memory ledger, keep an authoritative in-memory pickup FIFO, accept session mutations, or coordinate participant-owned persistence.
-
-=e-board= does not expose SQL to participants.
-The storage port expresses board operations, while the SQLite adapter supplies ordering, identity enforcement, indexed lookup, and replay.
-
-** =e-chat-service=
-
-Provides =e-chat='s board-facing adapter.
-It gives the presentation endpoint board publication and observation operations.
-=e-chat= sends input to =e-board= and receives output from =e-board= like every other participant.
-It does not address, attach, or call a session participant as part of that exchange.
-
-The session participant has a separate board attachment owned by the participant runtime and a separate private-state path through =e-session= and =e-session-storage=.
-=e-chat-service= does not read or write that private state, elect a session as board-log owner, persist board records through =e-session=, route participant data directly, or own a cross-domain commit.
-
-** =e-board-storage=
-
-Defines the board-owned boundary:
-
-- publish one validated board record with an expected board revision;
-- return the committed position and canonical identity after commit;
-- commit a stable routing outcome and create immutable participant pickup identities in FIFO order;
-- claim, accept, consume, retry, or tombstone one pickup with its expected revision;
-- list bounded unresolved pickups and participant replay progress for recovery;
-- page committed records by board, generation, position, and indexed selector fields;
-- read bounded replay and audit projections;
-- finalize board commands submitted before a barrier;
-- expose bounded board persistence health.
-
-Publication atomically inserts the canonical record and advances board order and revision.
-Each routing or pickup operation commits its stable outcome before endpoint work continues.
-The write contract is asynchronous.
-It does not persist executable subscriptions, Lisp predicates, exact admission tokens, callbacks, timers, endpoint objects, or live invocation handles.
-It has no session mutation, generic =execute-sql=, or generic =append-record= operation.
-
-** =e-session-storage=
-
-Defines the session-owned boundary:
-
-- submit one typed session commit with an expected session revision;
-- list bounded session headers;
-- read one paged session resume projection, including incomplete tool-follow-up state;
-- finalize session commands submitted before a barrier;
-- expose bounded session persistence health.
-
-The write contract is asynchronous.
-It has no board publication, board replay, generic =execute-sql=, or generic =append-record= operation.
-
-** Other runtime-state owners
-
-=e-task-queue=, =e-cron=, voice adjustment, Goodnite demand tracking, raw-result resources, and session-temporary resources each own their durable state contract.
-Each submits typed mutations and bounded reads through a small owner-shaped storage API.
-They share the worker, codec, migration system, backup path, health reporting, and finalization machinery.
-They do not share domain tables or call one another's storage API.
-
-** =e-storage-sqlite=
-
-Implements every runtime-state storage API over one database.
-It owns schema mapping, queries, transactions, PRAGMAs, schema migrations, command deduplication, database errors, runtime-store ownership, and all database connections.
-It translates validated owner commands to SQL and implements board ordering, source-key constraints, indexed selector fields, and paged reads.
-It does not define live subscription semantics, endpoint policy, session paths, queue transitions, cron recurrence, voice-tell policy, Goodnite ranking, resource retention, reducer meaning, or presentation policy.
-
-** =e-storage-sqlite-worker=
-
-Owns the writable connection and the ordered command loop.
-It is shared physical infrastructure, not a domain storage port and not a second implementation of any component's policy.
-Each command targets one owner through one semantic storage API.
-It also owns bounded read-only connections and schedules read pages without allowing an unbounded query to delay commits or redisplay.
-It is the only process that opens =store.sqlite3= for ordinary runtime operation.
-
-* Storage model
-
-The schema keeps identity and query fields relational.
-Nested domain values use one exact, versioned codec.
-Storing the entire current system as opaque JSON blobs would retain the shape bugs and would not provide useful indexed access; fully normalizing capability-owned payloads would make persistence own their schemas.
-The mixed boundary below avoids both errors.
-
-** Store metadata
-
-=schema_migrations=
-
-- schema version, migration name, checksum, and applied timestamp;
-- one row per applied migration;
-- unknown newer versions are a hard open error.
-
-=writer_commands=
-
-- stable command id as the primary key;
-- canonical command hash;
-- committed timestamp and encoded result, including new revisions;
-- inserted in the same transaction as the command's mutations.
-
-A retry with the same id and hash returns the stored result.
-Reusing an id with different bytes is a terminal protocol error.
-
-** Runtime state inventory and boundary
-
-The default is uniform: every e-owned durable mutable runtime value uses this database.
-The value of a cache or telemetry stream does not justify a separate persistence mechanism.
-Sharing a physical database and transaction engine is not domain coupling.
-Coupling would come from one component owning another component's schema or policy, so each owner keeps a typed storage API and its own tables or projections.
-
-The current production stores are:
-
-- The session store spreads authority across the JSONL journal, resume checkpoint, and =index.json= in [[file:../../../lisp/core/e-session.el::(cl-defstruct (e-session-store][=e-session-store=]] and the Node writer.
-  These become session and board tables plus indexed projections.
-- The task queue persists selected task fields by replacing =records.eld= after a debounce.
-  It excludes live handles and normalizes restored =running= tasks back to =queued=.
-  See [[file:../../../lisp/core/e-task-queue.el::(cl-defstruct (e-task-queue][=e-task-queue=]], [[file:../../../lisp/core/e-task-queue.el::(defun e-task-queue--persistable-record][=e-task-queue--persistable-record=]], [[file:../../../lisp/core/e-task-queue.el::(defun e-task-queue--start-async-write][=e-task-queue--start-async-write=]], and [[file:../../../lisp/core/e-task-queue.el::(defun e-task-queue-load][=e-task-queue-load=]].
-  Its durable queue, task, attempt, status, and output facts move to SQLite while live work handles and callbacks stay in memory.
-- Cron cadence state writes =:last-fire= and =:anchor= through atomic file replacement in [[file:../../../lisp/core/e-cron.el::(defun e-cron--state-write][=e-cron--state-write=]].
-  Those values move to SQLite while timers and action closures stay in memory.
-- Voice adjustment stores a capped LRU list of tells through atomic file replacement in [[file:../../../lisp/layers/writing/e-voice-adjustment.el::(defun e-voice-adjustment--write][=e-voice-adjustment--write=]].
-  The tell key, label, description, count, recency, and cap enforcement move to SQLite.
-- Goodnite resource access appends e-owned demand events to =daydream_access.jsonl= in [[file:../../../lisp/layers/goodnite/e-goodnite-resources.el::(defun e-goodnite-resources--record-access][=e-goodnite-resources--record-access=]].
-  Those events move to SQLite.
-  If the external Goodnite miner still requires JSONL, an explicit export or bridge supplies it; the JSONL file is not a second authority.
-- Generic raw-result resources use expiring files in [[file:../../../lisp/core/e-raw-results.el::(cl-defun e-raw-results-write][=e-raw-results-write=]].
-  Their content, metadata, expiry, and cleanup state move to SQLite so the =raw-result://= interface uses the same storage lifecycle.
-- Session-scoped temporary resources and complete tool-invocation details currently use files behind =tmp://=.
-  Their bytes, metadata, lineage, ownership, expiry, and cleanup state move to SQLite while the existing resource URI remains the public identity.
-  See [[file:../../../lisp/core/e-session-tmp-resources.el][=e-session-tmp-resources.el=]] and [[file:../../../lisp/core/e-tool-invocation-details.el][=e-tool-invocation-details.el=]].
-
-Files remain appropriate when the file itself is the product or protocol rather than a hidden runtime authority.
-This includes user-authored source and Org files, explicit exports, verified backups, migration reports, browser screenshots, and subprocess streams that must be exposed through a pathname.
-Pathname-required subprocess artifacts remain disposable and provide no restart guarantee; they are deleted when their owning operation settles.
-They must not become a hidden metadata or recovery authority, and any durable result they produce is imported into SQLite before it is exposed as durable state.
-Developer profiling artifacts remain files because they are explicit diagnostic outputs, not product runtime state.
-
-Live board registry objects, executable subscriptions, predicate closures, harness instances, active turns, tool handles, callbacks, timers, endpoint attachments, scheduler handles, pickup invocation handles, shell buffers, and presentation caches are process state.
-Durable board communication is represented by canonical board records, routing outcomes, and pickup lifecycle rows.
-Participant-specific replay progress or derived state belongs to that participant's own storage boundary.
-
-[[file:../88-generational-context-ephemeral-frames/plan.org][Feature 88]] is the important scope correction.
-It explicitly removed tool admission, dispatch, result, frame-settlement, recovery-state, and transactional-outbox work from that feature because the planned SQLite persistence and atomic-transition work would own it.
-The previous version of this plan excluded active turns and tool requests too broadly and therefore did not satisfy that dependency.
-
-This feature now persists only the lifecycle facts needed to classify and recover an interrupted follow-up.
-=e-harness= and =e-loop= keep ownership of tool execution and recovery policy.
-=e-context-lifetime= keeps ownership of frame and promotion semantics.
-=e-session-storage= commits the typed lifecycle records and current recovery projection as part of the session aggregate.
-No live process object moves into storage, and no generic external side effect gains an exactly-once guarantee merely because its local record committed.
-
-[[file:../89-board-run-visibility-and-handoff/plan.org][Feature 89]] is already inside the board-storage scope.
-Its run facts, keyed completion inputs, publication claims, and consumption receipts are board records.
-Its queue assignments remain task-queue state and reconcile by stable identity after both stores restore.
-
-[[file:../90-tool-invocation-receipts/plan.org][Feature 90]] currently writes complete invocation details through session-scoped =tmp://= resources.
-Feature 87 preserves that resource contract while replacing its file representation with SQLite-backed temporary-resource rows.
-Feature 90 continues to own what invocation detail means and when the resource is published; Feature 87 owns durable bytes, lookup, expiry, and cleanup.
-
-** Sessions
-
-=sessions= stores the current durable session root and catalog projection:
-
-- session id, root entry id, current head id, and revision;
-- created and updated timestamps plus the local update sequence;
-- explicit name, current branch, and turn options;
-- exact encoded metadata;
-- current transcript epoch;
-- optional board id, participant id, association role, and participant-owned recovery cursor;
-- message count, first-user summary, last-message timestamp, and latest assistant marker.
-
-The catalog columns are updated in the same transaction as the record that changes them.
-They are not authoritative duplicate files and never require a reindex scan after an ordinary write.
-Compaction and transcript clear preserve immutable audit history.
-An explicit session-delete operation is different: it physically removes the session's private records, projections, and owned temporary resources through bounded worker transactions.
-It does not remove records already published to a shared Board because a session does not own shared Board history.
-Changing that history requires an explicit Board operation with Board-owned authorization and audit semantics.
-
-=session_records= is the ordered immutable session history:
-
-- session id and monotonically increasing per-session position;
-- record type;
-- optional entry id and parent entry id;
-- transcript epoch and created timestamp;
-- exact encoded payload and codec version.
-
-Identity-bearing session events, messages, activity entries, branch summaries, compactions, provider anchors, and process reports use entry and parent ids.
-Configuration changes, message-display changes, and transcript clears remain ordered records even where they do not introduce a new model-path entry.
-Partial unique indexes enforce entry identity without inventing ids for records that do not have one.
-
-=message_displays= is a rebuildable current projection keyed by session and message id.
-A display change appends its audit record and updates this row in the same transaction.
-Loading does not scan every historical display change.
-
-=tool_followups= is the current recovery projection keyed by session, turn, provider request, and tool-call identity.
-It records the latest durable lifecycle state, paired call/result message ids, frame and consumer identities, external idempotency key when the tool contract provides one, last session-record position, and error or reconciliation state.
-The immutable admission, dispatch-claim, result, follow-up, promotion, and settlement facts remain in =session_records=.
-
-=tool_dispatch_outbox= is the durable handoff from an admitted tool call to =e-tools-start=.
-It is keyed by the same session, turn, provider-request, and tool-call identity and references the immutable admission record plus the exact validated call payload.
-Admission creates the pending outbox row in the same session transaction.
-The runtime claims that row through another revision-checked session commit and starts the external tool only after the claim commits.
-Recording a result appends the result fact and retires the outbox row in one session transaction.
-
-This outbox closes the crash window in which an external effect could start before any durable dispatch evidence existed.
-It cannot close the window between starting the external effect and recording its result.
-A committed =dispatch-claimed= row without a result therefore means the effect may or may not have happened.
-Restore retries it only when the tool contract supplies a safe idempotency or reconciliation rule; otherwise the row becomes explicit attention state.
-
-The current model path is selected from =current_head_id= through indexed parent links.
-The current transcript epoch and explicit path eliminate full journal replay.
-Activity and process-report retention remain application resume policy expressed as bounded queries; the complete audit rows remain in =session_records=.
-
-** Boards
-
-=boards= makes the board a first-class durable aggregate independent of any session chosen to persist its records:
-
-- board id;
-- exact encoded trusted principal;
-- revision and current generation;
-- next durable position and restored retention floor.
-
-Session-to-board association is session-owned state stored with the session aggregate.
-It is not a board table and is not written through =e-board=.
-Several sessions may independently refer to the same board id and restore their own participant endpoints.
-
-Board records belong to the board aggregate and are written once through =e-board-storage=, rather than through a designated session log owner.
-
-=board_records= stores immutable board messages, processing chains, and processing results:
-
-- board id, generation, and monotonically increasing durable position;
-- record namespace and record id;
-- ordinary board sequence when present;
-- stable selector columns such as kind, author, target, subject participant, source turn, activity kind, and created timestamp;
-- canonical source keys where the board contract requires idempotency;
-- exact encoded frozen envelope and codec version.
-
-The canonical row does not embed a mutable recipient list, pickup state, or callback outcome.
-Stable routing and pickup lifecycle are separate Board-owned relations so publication remains immutable and routing can proceed in later commit-first transitions.
-When an endpoint outcome is shared application data, the responsible participant also publishes it as an ordinary board record.
-
-The key is board, generation, record namespace, and record id.
-This preserves the existing separation between ordinary messages, processing chains, and processing results.
-A second unequal processing record with the same key is a conflict.
-The database position preserves the exact interleaving of all three record namespaces even though processing records do not have ordinary board sequence numbers.
-
-=board_record_tags= normalizes tags for indexed =all= and =any= selector clauses.
-=board_record_attributes= normalizes exact attribute clauses as canonical key/value hashes without interpreting capability meaning.
-Capability payloads remain in the encoded envelope, and no capability-specific orchestration columns belong in the base schema.
-
-=board_routing= stores the committed outcome of applying routing policy to one input record.
-It identifies the source Board position, the participating policy revision or classifier result, and the stable participant identities selected for delivery.
-It does not serialize executable subscription predicates or callbacks.
-A routable input remains durably unclassified until one routing outcome commits, including an explicit no-recipient outcome.
-That outcome is final: later participant attachment or subscription changes do not implicitly reroute the input.
-They affect new and still-unclassified input only; rerouting historical input requires an explicit Board operation with its own durable identity.
-
-=board_pickups= stores one immutable pickup identity per routed input and participant, its participant FIFO sequence, current lifecycle state, revision, claim identity, and the source positions needed for replay.
-=board_pickup_events= stores the ordered claim, acceptance, consumption, retry, and tombstone transitions required to explain or recover the current projection.
-A routing transaction records the outcome and creates all pickups for that outcome atomically.
-A delivery attempt begins only after its claim commits.
-Acceptance and consumption remain distinct because an attached endpoint may accept a pickup before the participant durably consumes its meaning.
-
-Executable subscriptions, predicate closures, callbacks, exact admission tokens, endpoint objects, and live invocation handles are not database rows.
-They are in-process parts of =e-board= or =e-board-runtime= and are rebuilt when participants attach.
-SQLite indexes stable selector fields for bounded history and replay queries but does not duplicate executable subscription policy.
-Detaching an endpoint does not alter the committed routing outcome or pickup identity; the pickup remains pending until a compatible endpoint rebinds or an explicit lifecycle transition tombstones it.
-
-A participant's replay progress is durable and advances only through a participant-owned or Board pickup transition with a stable causal position.
-Participant-private derived state remains in that participant's own storage boundary.
-A durable acceptance, completion, failure, or handoff that is shared application data is also an ordinary participant-authored Board record; pickup lifecycle does not replace domain facts.
-
-Clearing a board increments =boards.generation= in one transaction.
-New records use the new generation and ordinary restore reads only that generation.
-Older generations remain available as audit history.
-This preserves the current clear semantics without deleting evidence or requiring a special checkpoint-cleared marker.
-
-** Other runtime state
-
-=task_queues= stores queue identity, revision, sequence, ordering, pause state, and bounded status metadata.
-=task_records= stores the current durable task projection, while =task_events= records ordered status and attempt transitions when audit or restart classification requires them.
-Claim-next is one SQLite transaction that selects the next eligible task, creates its attempt, and changes its durable status before any work starts.
-Pause, retry, completion, cancellation, and interrupted-attempt recovery are likewise commit-first transitions rather than mutations of an authoritative in-memory queue followed by a snapshot.
-Live work handles, callbacks, and harness instances are not stored.
-
-=cron_state= is keyed by schedule id and stores =last_fire=, =anchor=, and revision.
-Schedule definitions, guards, and actions remain configuration-owned.
-=cron_firings= records the stable firing identity, scheduled time, claim, attempt state, and result classification.
-One transaction claims a due firing and advances cadence state before its action starts.
-An interrupted claimed firing is retried only when its action contract makes that safe; otherwise recovery exposes the uncertain outcome rather than silently firing again.
-Action closures and timers remain owned by the active layer and process.
-
-=voice_tells= is keyed by normalized tell key and stores label, description, count, last-use time, and LRU position.
-The voice-adjustment owner enforces the configured cap in the same transaction as an insert or refresh.
-
-=goodnite_access_events= stores the demand events currently appended by e: kind, entry URI, scrubbed query, session id, turn id, engine, and timestamp.
-An external miner reads through a bounded query or explicit export instead of treating JSONL as another authority.
-The consumer records a durable checkpoint after it has accepted a page; bounded cleanup may physically delete only events at or before that acknowledged checkpoint.
-
-=raw_results= stores resource id, content bytes, owner, preview fields, redaction policy, cleanup lifetime, metadata, creation time, last-access time, and expiry.
-The =raw-result://= resource method reads this table, and cleanup physically deletes expired rows in bounded transactions.
-The initial implementation stores one BLOB per resource and admits a deliberately generous private maximum through one bounded worker request.
-The exact maximum is implementation configuration, not a public contract; exceeding it returns an explicit value-too-large error.
-Do not build chunk streaming initially.
-Observed resource sizes, worker memory, and latency determine whether to raise the limit or introduce chunking later.
-An ordinary file spill may be a disposable pathname adapter but cannot remain the resource authority.
-
-=temporary_resources= stores the content bytes and metadata currently represented by e-managed session =tmp://= files, including complete tool-invocation details.
-It preserves resource id, session and lineage ownership, content type, creation and last-access time, expiry, and cleanup classification.
-Read, write, edit, glob, search, and cleanup operations remain resource-method semantics over bounded worker requests; they do not expose database paths or SQL.
-An operation that specifically requires a filesystem pathname uses a disposable exported copy and does not treat that copy as durable state.
-Expiry and explicit session deletion physically delete the owned temporary-resource rows in bounded transactions.
-
-** Exact value codec
-
-Add one shared =e-storage-value-codec-v1= for nested persisted values and the worker protocol.
-It uses tagged canonical JSON bytes with explicit forms for:
-
-- nil and false;
-- integers and finite floats;
-- strings;
-- symbols and keywords;
-- proper and dotted lists;
-- vectors;
-- supported string/symbol-keyed maps where a domain contract already allows them.
-
-The codec rejects cycles, non-finite numbers, buffers, markers, processes, functions, arbitrary records, and unrecognized mutable objects before a command enters the outbox.
-Node and byte budgets remain preflight checks.
-Canonical key order and byte representation make hashes and migration comparison deterministic.
-Each encoded column carries or inherits a codec version; an unknown version is an explicit load error.
-
-This codec replaces local JSON workarounds for metadata and orchestration facts.
-Domain validators still own allowed value shapes.
-The storage codec only preserves the shape it is given.
-
-* Transaction and concurrency contract
-
-Each writer command targets one owner through its typed storage API.
-Board, session, and task-queue commands use aggregate revisions.
-Cron, voice, telemetry, and raw-result commands use owner-specific keys and conflict rules.
-The worker performs the following in one =BEGIN IMMEDIATE= transaction:
-
-1. Look up the command id and verify its canonical hash.
-2. Check the target owner's expected revision or conflict precondition.
-3. Insert that owner's immutable records where the contract has an event history.
-4. Update only that owner's current projections.
-5. Advance the relevant revision or version.
-6. Insert the command result and commit.
-
-The owning Lisp component applies the committed result only after step 6.
-Before acknowledgement it may expose a clearly provisional operation to its caller, but it may not update the authoritative live session, Board, queue, cron, resource, or other durable projection and later attempt to persist that mutation.
-Callbacks and follow-on effects run from the committed result, not from the submitted intent object.
-Cancellation before the adapter submits the command to the worker removes the provisional intent.
-After submission, the adapter first reconciles whether the original command committed.
-If it did, cancellation is represented by a later owner-shaped cancellation, retry, or tombstone transition; neither the shell nor adapter pretends to roll back the committed transaction.
-
-A board publication transaction has one additional fixed contract:
-
-1. Resolve duplicate identity and source-key retries against committed rows.
-2. Allocate the next board position.
-3. Insert the canonical board record and normalized selector values.
-4. Advance board revision.
-5. Commit the record as published.
-
-No message exists before that commit.
-After commit, =e-board= reads the canonical row and applies routing policy in process.
-Any stable routing outcome and pickup creation is a later Board transaction, and endpoint invocation waits for the pickup claim transaction.
-Executable policy remains in memory; its durable outcome does not.
-
-The shared worker serializes commands from every storage API.
-A command normally changes one owner.
-A multi-owner transaction exists only when one accepted public operation defines a real invariant that must commit atomically; sharing the database alone does not invent such an invariant.
-The application service that owns that operation submits one typed composite command whose contract names the participating owner transitions.
-For example, accepting a Board pickup into a session may atomically append the admitted session input and advance the pickup's acceptance state so neither side can exist alone after a crash.
-Neither =e-board-storage= nor =e-session-storage= gains the other's operations, and no caller receives a generic transaction builder.
-Derived state without such an invariant records its causal Board position and remains an independently retryable, idempotent owner commit.
-
-The response is emitted only after commit.
-Constraint and revision conflicts are terminal.
-=SQLITE_BUSY= and worker transport failures are retryable with a bounded backoff.
-A terminal aggregate conflict faults persistence for that session or board; later writes for the aggregate do not continue over an unreconciled in-memory state.
-
-One e runtime may issue concurrent commands for different owners, and the worker serializes their commits.
-Aggregate revisions make stale commands from that runtime visible rather than silently merging them.
-Concurrent e runtimes against one state directory are unsupported: store opening establishes exclusive runtime ownership, and a second live owner receives a clear startup error.
-Automatic last-writer-wins merge and silent stale-owner takeover are not supported.
-
-The connection enables foreign keys and WAL mode.
-Use =synchronous=NORMAL= for the durable writer.
-Acknowledged commits must survive e or worker process failure, but the most recent acknowledged transactions may be lost after host failure or sudden power loss.
-Recovery must still open a consistent database and may not expose a partially applied owner transaction.
-If measured commit latency needs amortization, the worker may group adjacent independent commands into one transaction, but it may acknowledge none of them before the group commit.
-The accepted durability boundary is not weakened further to accommodate the current implementation.
-
-Each storage API exposes an ordered barrier for its submitted commands.
-System quiescence waits for every barrier in the operation's scope.
-Because every acknowledged commit is already durable, a barrier does not build a checkpoint or force a WAL checkpoint.
-
-All read commands also pass through the worker.
-Each names its owner, requested committed revision or starting position where applicable, row and byte budgets, and continuation cursor.
-The worker may use a =query_only= connection for reads, but a read page is bounded and may not monopolize the command loop or delay a queued commit.
-
-* Read and restore contract
-
-** Startup
-
-Opening a store performs a bounded schema/version check and starts the writer.
-Each active component then reads only its indexed root projection.
-Session headers come directly from =sessions= in recent-message order; task queues, cron cadence, voice tells, telemetry consumers, and raw-result cleanup use their own bounded queries.
-Startup does not scan immutable history tables.
-
-The worker must acquire exclusive runtime ownership and report schema readiness before serving either reads or writes.
-Full =integrity_check= is an explicit diagnostic and migration gate, not an unbounded startup task.
-
-** Session load
-
-=e-session-load-session-start= remains the interactive entrypoint.
-It pages indexed rows and yields between pages.
-It reconstructs:
-
-- the session root and current configuration;
-- the current model path from the latest valid compaction boundary, or the complete current path when no compaction exists;
-- compatible provider anchors on that retained path;
-- the existing bounded activity and process-report resume projections;
-- current message display state;
-- the session-owned board association and participant recovery cursor;
-- incomplete tool-follow-up projections and the durable facts needed to classify them.
-
-The recovery owner handles each incomplete follow-up by durable state.
-An admitted tool with a pending outbox row may be claimed and then started after the claim commits.
-A dispatch claim without a durable result requires tool-specific reconciliation or explicit operator attention and is never blindly rerun.
-A durable result whose provider follow-up was not settled may resume the provider follow-up from the paired call/result evidence.
-A settled transition requires no recovery action.
-
-After session reconstruction, the attachment layer requests the referenced board from =e-board-storage=.
-The session projection does not contain or replay board records.
-
-The database replaces checkpoint materialization; =e-session= still decides what a valid compaction and provider anchor mean.
-SQL supplies candidates in stable order and never chooses semantic compatibility.
-
-** Board load
-
-Board restore has two explicitly different products:
-
-- a bounded recent message/activity page for presentation and ordinary context;
-- a complete semantic replay stream for durable facts and processing records needed by reducers and restart reconstruction.
-
-Both come from indexed pages in current-generation order.
-After participants attach, =e-board= replays the committed rows they request and then continues from the live commit high-water mark.
-Semantic facts are never limited by the recent presentation tail.
-Reducers consume their stream incrementally, so correctness no longer requires retaining every fact in the chat buffer or one checkpoint object.
-The binding remains =restoring= until semantic replay is complete; callers must distinguish that state from a definitively missing run or child.
-
-Board restore separately loads committed routing outcomes, unresolved pickups in participant FIFO order, and durable participant replay progress.
-Reattachment binds those existing pickup identities to new live endpoints.
-It does not rerun classification for an input with a committed routing outcome or create replacement pickup ids merely because the process restarted.
-
-Indexed board columns, normalized tags, and canonical exact-attribute hashes support bounded reads.
-Capability-specific interpretation and live predicate matching remain in the owning participant after decoding.
-A later feature may persist reducer-owned projections once a specific projection contract is stable; this feature does not add a generic projection table.
-
-** Audit and export
-
-Audit resources page immutable session or board rows without hydrating the live aggregate.
-There is no per-session backing file after cutover.
-Remove the misleading session =:file= field from catalog entries and use the existing session resource identity for runtime access.
-Add an explicit export command for operator-readable JSONL when a file artifact is needed for debugging or sharing.
-
-* Migration and cutover
-
-Migration is explicit and offline.
-Do not dual-write JSONL and SQLite and do not make startup choose whichever copy happens to parse.
-
-Add =scripts/e-migrate-state-store= with these phases:
-
-1. Verify that no active legacy writer owns a source store, inventory every e-owned durable state file, and record source sizes and hashes.
-2. Parse complete session JSONL journals through the existing legacy normalization and domain validators.
-   Checkpoints and =index.json= may supply diagnostics but are not import authorities because they are derived and intentionally lossy.
-3. Extract legacy board envelopes from session journals, group them by board identity and generation, and import each canonical board record once into the independent board tables.
-   Equal duplicates across session journals collapse by canonical identity; unequal envelopes for one identity abort migration.
-4. Parse task-queue snapshots, cron cadence, voice tells, Goodnite access events written by e, unexpired raw-result resources, and e-managed session-temporary resources through owner-specific validators.
-5. Build a temporary SQLite database with the current schema and import every owner in deterministic order.
-   The importer is restartable by source hash but never exposes a partially imported database as current.
-6. Compare owner-specific semantic manifests.
-   Session and board manifests cover identity, ordering, current projections, canonical payload hashes, and the exact journal-to-board extraction map.
-   Queue, cron, voice, Goodnite, raw-result, and temporary-resource manifests cover their durable identities, values, order where relevant, and canonical payload hashes.
-7. Run foreign-key checks and =integrity_check=, checkpoint the temporary WAL, close all connections, and atomically install =store.sqlite3=.
-8. Write a migration report naming exact repairs, warnings, skipped legacy fields, and failures.
-   Preserve every imported legacy state file as read-only rollback material.
-
-Any unexplained record loss, missing root, conflicting typed board record, or non-round-tripping value aborts the whole cutover.
-Known legacy normalization may be accepted only when the report states the exact transformation.
-Missing historical facts are not invented.
-
-On startup, the final SQLite backend behaves as follows:
-
-- a valid =store.sqlite3= is opened;
-- a legacy-only directory produces a targeted migration-required error;
-- both formats present after migration use SQLite and report legacy files as inactive backup material;
-- an invalid or newer SQLite schema is a hard error, never a JSONL fallback.
-
-Deletion of legacy files is a separate, explicit future cleanup after the SQLite store has been used and backed up.
-This feature does not delete them.
-
-* Backup, recovery, and observability
-
-- Add an explicit worker-owned backup operation using SQLite's online backup API or =VACUUM INTO= after capability validation.
-  Never copy a live database and WAL pair with ordinary file copy.
-- Expose schema version, database path, runtime-owner identity, worker liveness, pending command count, oldest pending age, last committed command, retry state, read-page state, WAL size, and last error through the existing bounded persistence status.
-- Add explicit =quick_check= and full =integrity_check= diagnostics.
-  They are operator actions, not implicit UI work.
-- A corrupt database is left untouched and errors with recovery instructions.
-  Recovery means restoring a verified backup or explicitly rerunning the legacy importer against preserved sources.
-- Temporary databases, backups, and migration reports use restrictive file permissions consistent with the session directory.
-- The database, WAL, temporary pathname exports, and migration working files use the same restrictive local permissions.
-- Encryption at rest and key management are not part of this feature.
-- Live deletion changes the active store and future backups only; it does not locate or rewrite operator-created historical backups.
-
-* Implementation slices
-
-Each slice is a coherent commit and leaves the project in a useful state.
-The SQLite backend remains opt-in until the migration and cutover gates pass.
-
-1. *Storage contracts and exact codec*
-   - Add separate typed mutation/read boundaries for =e-board-storage= and =e-session-storage=.
-   - Keep the existing JSONL session path temporarily while the new ports are introduced, but do not model it as a valid board-storage implementation.
-   - Add the shared tagged value codec, budgets, canonical hashing, and property tests for exact round trips and rejection.
-   - Convert metadata and orchestration fact persistence to the shared codec without changing their domain schemas.
-   - Gate: session callers use only the session port, board callers use only the board port, and neither caller emits generic JSON records.
-
-2. *SQLite schema and worker*
-   - Add schema migrations, the batch Emacs worker, typed read/write protocol, WAL/foreign key settings, command deduplication, aggregate revisions, exclusive runtime ownership, and bounded status.
-   - Keep every SQLite connection in the worker, prioritize commits over bounded read pages, and attach every read result to a committed revision or position.
-   - Reconcile submitted command ids before resolving post-submission cancellation; never expose generic SQL or transaction construction.
-   - Test empty creation, reopen, second-runtime refusal, stale-owner recovery, duplicate command, hash mismatch, revision conflict, busy retry, bounded restart, kill-before-commit, and kill-after-commit-before-ack.
-   - Gate: the SQLite adapter passes focused transaction and bounded-read tests with WAL =synchronous=NORMAL=, without changing the default backend or opening SQLite in the interactive Emacs process.
-
-3. *Session writes and catalog reads*
-   - Map every session mutation to typed SQL transactions and update catalog projections transactionally.
-   - Change session mutation flow so submitted intent remains provisional and live durable state advances only from the acknowledged committed result.
-   - Load only session headers at store startup; remove reindex work from the SQLite path.
-   - Run the semantic contract suite against disposable SQLite stores.
-   - Implement explicit session deletion as a physical purge of private rows and owned temporary resources without treating transcript clear or compaction as deletion or removing shared Board history.
-   - Gate: create, metadata/config changes, branches, compactions, anchors, displays, transcript clear, explicit deletion, list ordering, and finalization survive restart with exact values.
-
-4. *Cooperative session resume and tool-follow-up recovery*
-   - Implement paged current-path and bounded auxiliary projection reads.
-   - Add typed admission, dispatch-claim, result, follow-up, promotion, and settlement mutations plus the =tool_followups= recovery projection and =tool_dispatch_outbox=.
-   - Commit admission with its pending dispatch row, require the claim commit before =e-tools-start=, and retire the row with the durable result.
-   - Commit each local lifecycle transition atomically with its related session messages and projection update.
-   - Restore incomplete transitions without recreating live callbacks, timers, provider requests, or tool handles.
-   - Keep compaction and provider compatibility decisions in =e-session=, tool execution and recovery policy in =e-harness= and =e-loop=, and frame/promotion semantics in =e-context-lifetime=.
-   - Replace checkpoint-based interactive loading in the SQLite path.
-   - Gate: the 15,722-record/38 MB regression fixture resumes without a full record scan and is no slower than the approximately 0.07-second checkpoint baseline on the same machine, unless a measured, first-principles reason is recorded and approved.
-     Kill-before-claim, kill-after-claim-before-start, kill-after-start-before-result, kill-after-result, and kill-before-settlement tests restore to the correct classified state without blind replay of an uncertain external effect.
-
-5. *SQLite board log and indexed reads*
-   - Move board identity, messages, facts, and processing records into board tables with generation and position semantics.
-   - Implement the publish transaction that deduplicates the source key, allocates board order, inserts the canonical record and indexed selector values, and commits it as published.
-   - Implement bounded presentation pages and complete incremental semantic replay from committed positions.
-   - Remove the authoritative in-memory message, event, and source-key indexes that SQLite replaces.
-   - Gate: no message is visible before commit; noisy activity cannot hide a required fact; clear, duplicate, conflict, indexed-read, processing-record, and orchestration restart cases pass without checkpoint retention rules.
-
-6. *Durable Board routing, pickup recovery, and participant independence*
-   - Replace the =e-chat-service= board-log-owner callbacks and both persistence notification callbacks with commit wakes that contain only committed position ranges.
-   - Have =e-board= read each committed row, apply live routing policy, and commit stable routing outcomes plus participant FIFO pickups before endpoint invocation.
-   - Make claim, acceptance, consumption, retry, tombstone, and participant replay progress commit-first transitions while keeping predicates, callbacks, exact admission tokens, endpoints, and invocation handles in =e-board= and =e-board-runtime=.
-   - Leave input unclassified until one outcome commits; make that outcome final, keep pickups pending across endpoint detach, and require an explicit operation to reroute historical input.
-   - Recover a missed wake by querying committed unprocessed rows and unresolved pickups, and recover a restart by rebinding existing pickup identities after participants attach.
-   - Split the current combined chat/session binding so =e-chat= and the harness session remain independent peers attached to =e-board=.
-   - Keep =e-chat= input, output, and observation on board APIs; do not resolve communication through =e-session=.
-   - Keep participant-owned transcript, configuration, metadata, association, and private recovery state on =e-session-storage= or the participant's own storage boundary; keep shared pickup lifecycle on =e-board-storage=.
-   - Add only the typed composite transaction required to admit an accepted pickup into session state while advancing its Board acceptance; keep all other cross-owner derivation independently retryable by causal identity.
-   - Gate: commit is publication; every routed delivery originates from a canonical SQLite row and a committed pickup claim; session admission and pickup acceptance cannot tear; restart preserves identity, FIFO order, and consumption state; no generic transaction surface, executable subscription, or callback enters storage; no Board record uses a session log owner; and neither domain port owns the other's mutations.
-
-7. *Remaining runtime-state stores*
-   - Move task queues, cron cadence and firing claims, voice tells, e-written Goodnite demand events, raw-result resources, and e-managed session-temporary resources onto their typed SQLite APIs.
-   - Make task claim/attempt transitions and cron firing claims commit before their work starts.
-   - Preserve each resource URI and owner's current semantic rules while replacing its file writer, loader, error swallowing, and cleanup path.
-   - Start with one BLOB per resource and one generous private value limit; reject larger values explicitly and defer chunk streaming until measurements require it.
-   - Retain queue and cron audit until explicit owner deletion, physically delete expired raw/temporary resources, and add acknowledged Goodnite consumer checkpoints before event cleanup.
-   - Add bounded reads, status, barriers, retention, and owner-specific contract tests.
-   - Gate: no production path writes =records.eld=, =cron-state.eld=, =voice-tells.eld=, =daydream_access.jsonl=, raw-result files, or e-managed session =tmp://= files; restart preserves every supported durable value and pending claim identity; cleanup never crosses an unacknowledged lifetime or consumer checkpoint.
-
-8. *Offline importer and verification*
-   - Add dry-run, import, semantic manifest comparison, integrity checks, deterministic reports, and atomic installation.
-   - Exercise clean, malformed, legacy-shape, missing-root, board-clear, orchestration, raw-result, and session-temporary-resource fixtures.
-     Run a dry migration of a copy of the current user store; never modify the live store as part of repository tests.
-   - Gate: repeat import produces the same manifest and any unexplained mismatch prevents installation.
-
-9. *Cutover and legacy removal*
-   - Make SQLite the only persistent backend, add the migration-required startup error, raise the declared Emacs minimum, and update architecture and E2E documentation.
-   - Remove the JSONL writer, checkpoint manifests and retention limits, checkpoint loader/migrator, index rebuild, direct/queued file write modes, per-session file exposure, raw-result files, and e-managed session-temporary resource files.
-   - Retain only the offline legacy reader used by the migration command.
-     It is not linked into ordinary startup or load.
-   - Gate: source search finds no production sidecar runtime-state writer or content store and no implicit compatibility fallback; concurrent runtime ownership of one state directory fails clearly.
-
-10. *System, current-config, and performance proof*
-   - Run focused storage, session, board, chat-service, orchestration, resource, and restart suites; then the complete batch suite.
-   - Run graphical E2E in isolated mode and =E_E2E_EMACS_CONFIG=current= mode against temporary SQLite stores.
-   - Measure startup catalog load, session resume, board semantic restore, append/commit latency, finalization latency, database/WAL size, and Emacs main-thread time under a representative event burst.
-   - Perform process-crash recovery, bounded worker-restart, terminal storage-unavailable, host-loss consistency, and verified backup/restore playthroughs.
-     Record all results in =review.org= before any live user-store migration.
-
-* Performance requirements
-
-- No SQL read, write, migration, checkpoint, or integrity operation runs in the main Emacs event loop.
-- No interactive read step decodes more than its configured row/byte budget.
-- Store startup is proportional to session headers returned, not total transcript or board history.
-- Session resume is proportional to the selected model path and bounded auxiliary projections, not total audit history.
-- Board semantic restore may read every required fact, but does so in bounded pages and does not retain unrelated activity merely to preserve facts.
-- Session list ordering uses an index over catalog timestamps and stable tie breakers.
-- Board indexes cover generation plus durable position, kind, ordinary sequence, normalized tags, attributes, and source keys.
-- A lost commit wake causes only delayed processing; querying committed unprocessed records and unresolved pickups recovers it without a second publication path.
-- Writer batching, if added, must preserve command order, revision checks, and acknowledgement-after-durability.
-- A large read stream yields between bounded pages and may not delay a queued commit beyond the accepted latency threshold.
-
-* Test strategy
-
-** Core contract tests
-
-Keep pure =e-session= tests and pure =e-board= validation, live subscription matching, and endpoint-policy tests independent of physical storage.
-Run every board publication, routing outcome, pickup lifecycle, ordered-read, indexed-query, and replay contract against disposable SQLite databases because SQLite is the Board's durable authority, not an optional side store.
-Cover identity, ancestry, branch selection, clear semantics, metadata ownership, provider anchors, display state, board record namespaces, exact duplicate handling, participant FIFO, delivery claims, acceptance/consumption, conflict behavior, and strict separation between the board and session ports.
-There is no second in-memory board-store implementation for these tests.
-The tests should fail narrowly when domain semantics change and should not assert SQL text.
-
-** Adapter tests
-
-Test schema migrations and SQL constraints directly with disposable databases.
-Cover command deduplication, canonical hashes, revisions, foreign keys, transaction rollback, busy classification, worker death boundaries, pre/post-submission cancellation, exclusive runtime ownership, atomic Board insertion and pickup creation, typed cross-owner composition, indexed selector reads, page positions, read/write scheduling, exact/one-over private resource limits, unknown codec/schema versions, and the absence of main-process database connections.
-
-** Migration tests
-
-Use immutable legacy fixtures and semantic manifests rather than regex checks of generated SQL.
-Include the known list/vector/symbol ambiguity, retained orchestration facts, checkpoint-only omissions, missing roots, typed board-id collisions, clears, and journals with an incomplete final line.
-
-** System tests
-
-One restart scenario must create several independent session participants plus an =e-chat= participant on one board, branch and compact one session, install several live subscriptions, publish ordinary and processing records plus orchestration facts, route several participant pickups, accept but not consume one pickup, change a message display, clear and reuse a board id in a new generation, kill the worker, reopen, reattach the participants, and prove exact session, Board, FIFO, and pickup reconstruction through bounded replay.
-It must also prove that each session's private commits remain in =e-session-storage= and never enter board publication.
-
-One board-publication scenario must stop before commit, after commit before wake delivery, and after wake delivery.
-It must prove that commit is the only publication boundary, routing uses the committed row, pickup creation and claims commit before endpoint delivery, a lost wake resumes from committed unprocessed state, and restart preserves pickup identity and consumption state.
-It must also prove that a committed no-recipient outcome is not implicitly changed by later subscription attachment and that explicit rerouting has a new durable identity.
-
-One pickup-admission scenario must stop before and after the typed composite commit.
-It must prove that accepted session input and Board pickup acceptance appear together, that neither domain port exposes the other's mutation surface, and that an unrelated participant projection remains an independently retryable causal commit.
-
-One tool-follow-up scenario must crash before dispatch claim, after claim but before tool start, after tool start but before durable result, after durable result, and after provider-follow-up settlement.
-It must prove that no tool starts before its claim commits, safe automatic continuation occurs where the durable state and tool contract permit it, and an uncertain external effect becomes explicit attention state when it cannot be reconciled safely.
-
-One load scenario must keep an interactive timer responsive while paging a large session and board.
-The existing graphical/current-config matrix must use temporary state and must never open or migrate the user's live database.
-
-One worker-failure scenario must kill the worker before commit and after commit before acknowledgement.
-It must prove bounded automatic restart, command-id reconciliation, frozen mutations and dependent external effects while unavailable, readable already-loaded committed presentation state, and a visible terminal failure when restart cannot recover.
-
-* Acceptance criteria
-
-- =store.sqlite3= is the only ordinary persistent authority for all e-owned durable mutable runtime state.
-- Task queues, cron cadence and firing state, voice tells, e-written Goodnite demand events, raw-result resources, and e-managed session-temporary resources use the shared SQLite substrate through owner-shaped APIs.
-- Adding durable runtime state requires a schema migration and storage operation rather than a new sidecar file.
-- Every owner applies a durable transition only after the worker acknowledges its SQLite commit.
-- Session headers are listed without transcript replay or a rebuilt index file.
-- Sessions resume from indexed records without checkpoint files or byte offsets.
-- An interrupted tool follow-up restores to a durable classified state: safe to start, requires reconciliation, ready for provider follow-up, settled, or explicit attention.
-- Each local tool-lifecycle transition commits its immutable facts and current recovery projection atomically with the related session records.
-- No external tool starts before its durable dispatch claim commits.
-- Board facts required by reducers survive regardless of unrelated activity volume.
-- Live board communication is decoded from committed SQLite rows rather than forwarded from submitted in-memory objects.
-- The board publication transaction atomically inserts the canonical record, allocates its order, and commits it as published.
-- =e-board= routes from the committed row; stable routing outcomes, pickup FIFO state, delivery claims, and acceptance/consumption receipts are durable before dependent endpoint work proceeds.
-- A missed wake is recovered from committed unprocessed rows and unresolved pickups, and restart preserves their identities and participant order.
-- No authoritative in-memory message index, source-key map, pickup FIFO, or delivery-receipt map duplicates SQLite state.
-- Session and board nested values round-trip with exact supported Lisp shape.
-- Participant-owned state persists independently through =e-session-storage=.
-- Restore never blindly repeats a dispatched external effect whose outcome is unknown.
-- Duplicate publication with the same identity is idempotent; conflicting command ids, record ids, and aggregate revisions fail visibly.
-- All database reads and writes remain asynchronous to the interactive Emacs process, and interactive loads remain bounded and cooperative.
-- One e runtime owns one state directory; a second concurrent runtime fails without mutating the store.
-- =tmp://= tool-invocation details and other e-managed session-temporary resources retain their resource interface without ordinary backing files.
-- Session, Board, task, and cron audit remains until explicit owner deletion; Board clear and transcript clear do not silently delete audit history.
-- Expired raw and temporary resources are physically deleted, and Goodnite event cleanup never advances beyond its consumer's acknowledged checkpoint.
-- Explicit session deletion physically purges private session state and owned temporary resources.
-- Session deletion leaves shared Board history unchanged, and live deletion does not rewrite historical operator backups.
-- Worker failure triggers bounded restart and stable-command reconciliation; while unavailable, new durable mutations and dependent external effects remain frozen and shells identify already-loaded state as storage-unavailable.
-- Committed routing outcomes are final, detached endpoints preserve pickup identity, and historical rerouting is explicit.
-- A typed application-service transaction makes accepted pickup admission and its session input atomic without exposing generic transactions or cross-owner domain ports.
-- Resource values up to the private implementation limit use SQLite BLOB storage without ordinary backing files; exact one-over fails explicitly, and chunk streaming is not required initially.
-- Shells distinguish provisional intent from committed state; pre-submission cancellation drops intent, while post-submission cancellation reconciles the original command and uses a later durable transition when it committed.
-- The database and related artifacts use restrictive local permissions; encryption at rest is not part of Feature 87.
-- WAL =synchronous=NORMAL= protects committed transactions from e and worker process crashes but does not promise survival of the latest acknowledgements after host failure or sudden power loss.
-- Legacy migration is explicit, verified, atomic at cutover, and preserves the source files.
-- Store opening fails clearly when SQLite support, the expected schema, or a required migration is absent.
-- Repository, isolated graphical, and current-config E2E validation pass against disposable SQLite state before any operator-owned store is touched.
+Ready.
+
+The operator reviewed and accepted the plan on 2026-09-01.  Feature 91,
+[[file:../91-improve-modularization/plan.org][Improve Modularization]], is =Done=, and
+this feature is rebaselined on its session/storage and Board/runtime boundaries.
+There are no open product or implementation-plan decisions.
+
+[[file:design.org][=design.org=]] contains the conditional ownership, schema,
+transaction, restore, migration, and risk design.  This file is the normative
+authority for observable contracts, package mapping, acceptance, and non-goals.
+
+* Behavioral goal
+
+- Goal ID :: =F87-GOAL=
+- Behavioral goal :: A user can restart e and recover every e-owned durable
+  session, Board, work-scheduling, and resource fact from one SQLite store,
+  without hidden sidecar state or interactive-Emacs database stalls.
+- Direct scenario :: Starting from a verified legacy-store copy, the operator
+  migrates it, opens one e runtime, resumes a session and Board with interrupted
+  tool and pickup work, restores scheduled work and resources, completes new
+  work, restarts, and observes the same committed state while no production
+  sidecar writer runs.
+- Product authority :: This Feature 87 plan and the operator decisions recorded
+  in its history.
+- Owning contract :: =F87-C01=.
+- Behavioral status :: =unavailable= until Package 4 passes the direct scenario.
+- Mechanism status :: =not-started=.
+
+* Goal and boundary
+
+One =<e-state-directory>/store.sqlite3= becomes the only ordinary persistent
+authority for all e-owned mutable runtime state:
+
+- sessions, catalog and resume projections, message display, and durable tool
+  follow-up classification;
+- Board records, routing outcomes, pickup FIFO/lifecycle, and replay progress;
+- task queues, attempts, cron cadence and firing claims;
+- voice tells and Goodnite demand events;
+- =raw-result://= and e-managed session =tmp://= resources, including complete
+  tool-invocation details.
+
+SQLite owns durable facts and transition arbitration.  Domain modules own
+meaning and policy.  Memory holds provisional intent, caches, executable
+subscriptions, callbacks, timers, live handles, endpoints, and presentation
+state.  Every durable transition is commit-first.
+
+Files remain when file identity is the product or protocol: user-authored files,
+explicit exports and backups, migration reports, screenshots, diagnostics, and
+subprocess artifacts that genuinely require a pathname.  Such artifacts are
+not a second runtime-state authority.
+
+Feature 89 owns chat-visible Board-run status and completion handoff.  Feature
+90 owns the meaning and publication of complete tool-invocation details.
+Feature 87 supplies their durable storage and restart boundaries without taking
+over their product policy.
+
+* Contract matrix
+
+This matrix is the single normative contract authority.  Later sections and
+[[file:design.org][=design.org=]] reference these IDs rather than creating new
+requirements.  All evidence is repository-controlled; external compatibility
+evidence is =not-applicable= because no provider capability is required to
+establish persistence correctness.
+
+| ID | Observable contract | Semantic owner | Package | Deterministic evidence | Telemetry | Status |
+|----+---------------------+----------------+---------+------------------------+-----------+--------|
+| F87-C01 | One SQLite database is the only ordinary authority for all e-owned durable mutable runtime state; owner-shaped ports preserve domain meaning. | runtime storage boundary plus each domain owner | P4 | S1 migrated-system restart and S10 sidecar negative scan | database/WAL size observational | Accepted |
+| F87-C02 | All SQLite I/O runs in one subordinate worker owned by one e runtime; main Emacs never opens SQLite, a second runtime is rejected, and bounded restart freezes new durable effects while unavailable. | storage adapter/worker | P1 | S2 worker and ownership failure matrix | startup, queue age, and read latency observational | Accepted |
+| F87-C03 | Session state changes only after commit; indexed restore recovers exact values and classifies interrupted tool follow-up without blindly repeating an uncertain external effect. | =e-session=, =e-harness=, =e-loop=, =e-context-lifetime= through =e-session-storage= | P1 | S3 session/tool crash matrix | resume and commit latency measured against fixture | Accepted |
+| F87-C04 | E-managed session =tmp://= resources retain their resource interface while SQLite owns content, lineage, expiry, and cleanup; one generous private BLOB limit fails explicitly at one-over. | session temporary-resource owner | P1 | S4 resource round trip, expiry, deletion, exact/one-over | value size and worker memory observational | Accepted |
+| F87-C05 | Board publication, final routing outcomes, pickup identity/FIFO/lifecycle, and replay progress are durable; executable policy and live endpoints remain process-local. | =e-board= and =e-board-runtime= through =e-board-storage= | P2 | S5 Board publication/routing/restart matrix | Board commit and replay latency observational | Accepted |
+| F87-C06 | Accepting a Board pickup into a session commits pickup acceptance and admitted session input together through one typed application operation, without generic transactions or cross-owner domain ports. | pickup-admission application service | P2 | S6 pickup/session atomicity matrix | not-applicable | Accepted |
+| F87-C07 | Task attempts and cron firings are claimed before work starts, restore to explicit states, and never blindly repeat an uncertain external effect. | =e-task-queue= and =e-cron= | P3 | S7 task/cron claim and restart matrix | claim and scheduling latency observational | Accepted |
+| F87-C08 | Voice tells, Goodnite events, and =raw-result://= content use owner-shaped SQLite storage with bounded reads, retention, checkpoints, and explicit cleanup. | voice, Goodnite, and raw-resource owners | P3 | S8 auxiliary-state migration/restart/cleanup | row count and resource size observational | Accepted |
+| F87-C09 | Legacy migration and later SQLite schema upgrades are explicit offline operations; semantic manifests, integrity checks, source preservation, and verified pre-upgrade backup prevent silent cutover loss. | migration/upgrade entrypoint and storage worker | P4 | S9 clean, malformed, conflicting, repeat, and upgrade fixtures | migration time and backup size observational | Accepted |
+| F87-C10 | Cutover removes production sidecar stores, runtime legacy fallback, permanent dual write, and duplicate in-memory durable Board ledgers while preserving explicit file products. | runtime composition and legacy owners | P4 | S10 source scan plus complete repository/E2E gates | not-applicable | Accepted |
+| F87-C11 | Interactive database work is asynchronous, indexed, paged, and bounded; commit work is not starved by reads, and known large-session resume does not regress without an approved first-principles reason. | storage worker and owner load APIs | P4 | S11 large-load responsiveness and performance suite | all performance measurements have explicit observational or gate role | Accepted |
+| F87-C12 | WAL =synchronous=NORMAL= survives e/worker process failure but does not promise latest-ack survival after host/power failure; artifacts use restrictive permissions and encryption is out of scope. | storage adapter and operator-facing storage commands | P1 | S2 process/host failure and permission checks | host-loss outcome observational beyond consistency gate | Accepted |
+
+* Accepted decisions
+
+The matrix incorporates these operator decisions:
+
+- one physical database and one e runtime per state directory;
+- every database read and write goes through the worker;
+- durable state is commit-first rather than an asynchronous mirror of mutated
+  Lisp state;
+- stable Board routing and pickup state is durable, while executable predicates,
+  callbacks, endpoint objects, timers, and Feature 91 admission tokens are not;
+- task and cron work is claimed durably before action;
+- e-managed =tmp://= and raw-result content moves into SQLite;
+- session, Board, task, and cron audit remains until explicit owner deletion;
+  expired resources are physically deleted, and Goodnite cleanup follows an
+  acknowledged consumer checkpoint;
+- session deletion purges private state but not shared Board history or old
+  operator backups;
+- committed routing outcomes are final; historical rerouting is explicit;
+- typed composite transactions exist only for accepted cross-owner invariants;
+- =synchronous=NORMAL= is sufficient; host/power-loss preservation of the latest
+  acknowledgement is not promised;
+- migration and schema upgrades are explicit offline actions;
+- backups are explicit except for the verified backup created by the explicit
+  schema-upgrade operation; deletion creates no automatic backup;
+- restrictive local permissions are required; encryption/key management is not;
+- the first resource implementation uses one BLOB and a generous private limit,
+  not chunk streaming;
+- shells may display pending intent, but agents and durable projections see only
+  committed state; post-submission cancellation reconciles and then records a
+  later durable transition when needed.
+
+* Delivery packages
+
+Packages are ordered and owner-complete.  Internal steps and design checkpoints
+do not count as accepted packages.  Each package runs its focused gates and is
+committed before dependent work begins; the complete repository and graphical
+matrix runs once at Package 4.
+
+Before P4, “establishes” means that the complete contract passes for an explicit
+new or disposable SQLite store.  It does not claim the default runtime has cut
+over or that =F87-GOAL= is behaviorally available.  P4 alone makes SQLite the
+ordinary backend, removes the legacy runtime path, and can advance the direct
+scenario from =unavailable= to =passing=.
+
+** P1: Runtime store, sessions, tool continuity, and temporary resources
+
+Establishes =F87-C02=, =F87-C03=, =F87-C04=, and =F87-C12=.
+
+Scope:
+
+- add the exact tagged value codec and typed storage protocol;
+- implement the batch Emacs worker, migrations for a new store, command
+  deduplication, revisions, WAL/foreign keys, exclusive runtime ownership,
+  bounded reads, restart/reconciliation, status, barriers, permissions, and
+  explicit diagnostics;
+- introduce =e-session-storage= and make session mutations commit-first;
+- store session history/catalog/display projections and paged restore paths;
+- persist tool admission, claim, result, follow-up, promotion, settlement, and
+  current restart classification; never persist live requests or handles;
+- move e-managed session =tmp://= content and complete invocation details to one
+  bounded SQLite BLOB per resource;
+- retain the legacy session backend only as the still-default production path
+  while the SQLite path is exercised with new/disposable stores.
+
+Gate:
+
+- exact codec property/rejection tests;
+- worker creation, reopen, duplicate/conflict, process crash, restart,
+  second-runtime, cancellation, read scheduling, permissions, and host-loss
+  consistency tests;
+- session semantic suite against disposable SQLite, including branch,
+  compaction, display, clear, delete, and exact value restore;
+- tool crash matrix before claim, after claim, after start, after result, and
+  before settlement;
+- resource URI, expiry, session deletion, and exact/one-over private-limit tests;
+- the 15,722-record/38 MB fixture resumes without a full history scan and is no
+  slower than the recorded approximately 0.07-second checkpoint baseline unless
+  an approved first-principles explanation updates the gate.
+
+Useful stopping point: new and disposable stores can run complete SQLite-backed
+sessions, restart-safe tool classification, and temporary resources without
+changing the user's legacy default store.
+
+** P2: Board authority, durable routing, and session admission
+
+Establishes =F87-C05= and =F87-C06=; depends on P1.
+
+Scope:
+
+- move Board identity, canonical records, order, source-key constraints,
+  selectors, and replay to =e-board-storage=;
+- make commit the only publication boundary and remove authoritative in-memory
+  message/source-key indexes;
+- persist final routing outcomes, pickup identity/FIFO, claims, acceptance,
+  consumption, retry, tombstone, and replay progress;
+- preserve executable subscriptions, predicates, callback fencing, endpoint
+  attachments, and scheduler handles in the Feature 91 process-local owners;
+- split the combined =e-chat-service= chat/session binding and remove the
+  session-selected Board-log owner;
+- add the typed pickup-admission operation that atomically appends admitted
+  session input and advances Board pickup acceptance;
+- recover unprocessed rows and unresolved pickups after missed wakes or restart
+  without changing pickup identity or rerouting a committed outcome.
+
+Gate:
+
+- publication before/after-commit, clear/generation, duplicate/conflict,
+  selector, replay, noisy-history, and processing-record tests;
+- routing finality, no-recipient, explicit reroute, detach/rebind, FIFO, claim,
+  acceptance/consumption, missed-wake, and restart tests;
+- pickup/session atomicity before and after the composite commit;
+- dependency searches prove no generic transaction surface, no executable
+  subscription persistence, no Board record through session storage, and no
+  owner access to another owner's private representation.
+
+Useful stopping point: an opt-in SQLite store provides complete Board
+publication, routing, delivery recovery, and session admission while preserving
+Feature 91's live ownership boundaries.
+
+** P3: Remaining scheduler, adaptation, and resource state
+
+Establishes =F87-C07= and =F87-C08=; depends on P1 and consumes P2 identities
+where task/Board reconciliation requires them.
+
+Scope:
+
+- move task queues, attempts, pause/retry/cancel state, outputs, and claim-next
+  arbitration to a task-owned SQLite port;
+- move cron cadence and firing claim/result state to a cron-owned port while
+  definitions, guards, action closures, and timers remain configuration/process
+  state;
+- move voice tells and capped-LRU updates, Goodnite demand events plus consumer
+  checkpoints, and raw-result bytes/metadata/expiry to owner-shaped ports;
+- make every durable mutation commit-first and remove each owner's file writer,
+  loader fallback, error swallowing, and duplicate in-memory durable authority;
+- apply the accepted retention and physical cleanup rules.
+
+Gate:
+
+- task/cron claim, uncertain-effect, pause/retry/cancel, restart, and owner
+  deletion tests;
+- voice cap/update, Goodnite checkpoint/cleanup, raw-result URI/expiry/limit,
+  migration-manifest, and restart tests;
+- negative source scan finds no production write to =records.eld=,
+  =cron-state.eld=, =voice-tells.eld=, =daydream_access.jsonl=, raw-result files,
+  or e-managed session =tmp://= backing files.
+
+Useful stopping point: every non-session/non-Board runtime-state owner has one
+complete SQLite path and no hidden file store, while legacy session migration
+and default cutover remain explicit later work.
+
+** P4: Migration, cutover, removal, and system proof
+
+Establishes =F87-C01=, =F87-C09=, =F87-C10=, and =F87-C11=; depends on P1-P3.
+
+Scope:
+
+- implement dry-run legacy import with source hashes, owner validators,
+  canonical Board extraction/deduplication, semantic manifests, integrity
+  checks, deterministic reports, atomic installation, and source preservation;
+- implement explicit offline SQLite schema upgrade with automatic verified
+  pre-upgrade backup; keep ordinary startup migration-free;
+- make SQLite the only persistent runtime backend and produce targeted errors
+  for legacy-only, older-schema, newer-schema, and missing-SQLite stores;
+- remove the Node writer, checkpoints, =index.json= rebuild, legacy runtime
+  loaders, per-session file identity, Board-log-owner proxy, persistence
+  callbacks, duplicate durable indexes, and all sidecar runtime-state writers;
+- add explicit worker-owned backup/export/integrity operations;
+- update architecture and E2E documentation, run the complete repository and
+  graphical/current-config matrix against disposable stores, and record system,
+  restart, backup/restore, migration, and performance results in =review.org=.
+
+Gate:
+
+- repeat migration is manifest-identical; malformed, conflicting, missing-root,
+  legacy-shape, incomplete-tail, and failed-upgrade fixtures do not install;
+- a dry migration of a copy of the current user store passes without touching
+  the live store;
+- S1-S11 pass on one reviewed revision;
+- source scan proves SQLite is the only ordinary persistent authority and no
+  implicit legacy fallback or dual write remains;
+- complete batch tests, isolated graphical E2E, and current-config E2E pass
+  against disposable SQLite stores;
+- performance evidence covers catalog startup, session resume, Board replay,
+  commit/finalization, worker startup, resource limits, WAL/database size, and
+  main-thread responsiveness.
+
+Useful stopping point: the user has a verified migration and cutover to one
+complete SQLite authority, the legacy sources remain rollback material, and no
+partial alternative backend remains to maintain.
+
+* Package boundary rationale
+
+P1 combines infrastructure with its first full consumer so it does not stop at
+an unused adapter.  P2 remains separate because Board publication/routing and
+the one real Board/session atomic composition have a distinct owner and failure
+surface.  P3 groups smaller existing file stores because they share the same
+mechanical migration pattern but retain separate semantic ports; splitting them
+would create small repetitive cycles without changing a design decision.  P4
+combines migration and cutover because neither is a safe stopping point alone:
+the default changes only after every owner and rollback proof is complete.
+
+* Scenario portfolio
+
+- =S1 migrated-system restart= :: Covers =F87-C01=.  Migrate a legacy copy,
+  open sessions/Boards/tasks/cron/resources, complete new work, restart, and
+  prove exact committed reconstruction with no sidecar writer.
+- =S2 worker and ownership failure matrix= :: Covers =F87-C02= and =F87-C12=.
+  Stop before commit and after commit-before-ack, reject a second runtime,
+  recover the worker by command id, freeze effects while unavailable, and verify
+  consistency after simulated host loss.
+- =S3 session/tool crash matrix= :: Covers =F87-C03=.  Exercise session changes
+  and every durable tool-follow-up boundary; uncertain external effects become
+  explicit rather than blindly repeated.
+- =S4 temporary-resource lifecycle= :: Covers =F87-C04=.  Round-trip exact bytes
+  through =tmp://=, restore, expire, session-delete, and prove exact/one-over
+  private-limit behavior without a backing file.
+- =S5 Board publication/routing/restart= :: Covers =F87-C05=.  Exercise commit
+  publication, final/no-recipient routing, pickup FIFO/lifecycle, missed wakes,
+  detach/rebind, clear/generation, and restart replay.
+- =S6 pickup/session atomicity= :: Covers =F87-C06=.  Stop on both sides of the
+  typed composite commit and prove session admission and pickup acceptance
+  cannot tear.
+- =S7 task/cron claim and restart= :: Covers =F87-C07=.  Stop before claim,
+  after claim, and after external start; restore only to the state permitted by
+  the action's idempotency/reconciliation contract.
+- =S8 auxiliary-state lifecycle= :: Covers =F87-C08=.  Migrate and restart voice,
+  Goodnite, and raw-result state; prove caps, consumer checkpoints, expiry, and
+  cleanup boundaries.
+- =S9 migration and upgrade= :: Covers =F87-C09=.  Dry-run, repeat, corrupt,
+  conflicting, interrupted, and upgrade fixtures prove all-or-nothing install,
+  source preservation, and verified backup.
+- =S10 cutover negative scan= :: Covers =F87-C01= and =F87-C10=.  Source and
+  runtime probes find no sidecar writer, runtime legacy fallback, permanent dual
+  write, or duplicate durable Board ledger.
+- =S11 bounded interactive load= :: Covers =F87-C11=.  Large paged session and
+  Board loads keep an interactive timer responsive while commits continue.
+
+Each scenario is a deterministic release gate.  Performance measurements not
+named as pass/fail thresholds remain observational.  No external credentialed
+probe participates in Feature 87 acceptance.
+
+* Acceptance decision
+
+Feature 87 becomes =Done= only when:
+
+- every =F87-C*= contract is established by its mapped package;
+- S1-S11 pass on the same reviewed revision;
+- all four packages and their focused gates are complete;
+- the complete repository, isolated graphical, and current-config E2E gates
+  pass against disposable SQLite stores;
+- migration proof used only a copy of operator state and the running Emacs was
+  not opened, migrated, reloaded, or restarted by repository validation;
+- =review.org= records no unresolved finding or required unknown.
+
+Implementation progress and behavioral progress remain separate.  Passing
+owner/mechanism tests does not make =F87-GOAL= pass before S1 succeeds.
 
 * Non-goals
 
-- Do not persist live active-turn objects, provider requests, callbacks, timers, work handles, executable Board subscriptions, exact admission tokens, endpoint attachments, Lisp predicate closures, live pickup invocation handles, focus, windows, overlays, render caches, or other process/presentation state.
-  Persist canonical Board records, stable routing/pickup lifecycle, and the session lifecycle facts and current recovery projection needed to resume accepted durable work.
-- Do not promise exactly-once execution of arbitrary external tool effects.
-  Automatic retry requires a tool-specific idempotency or reconciliation contract.
-- Do not promise that the latest acknowledged commit survives host failure or sudden power loss.
-- Do not provide encryption at rest or key management in this feature.
-- Do not add chunk-streaming storage before observed resource sizes require it.
-- Do not make SQLite a model-facing tool or capability action.
-- Do not expose generic SQL to agents, shells, capabilities, or resources.
-- Do not add full-text search, cloud sync, shared network storage, concurrent multi-runtime consumption, or a generic capability projection framework in this feature.
-- Do not treat one session as the storage owner of a board shared by several session bindings.
-- Do not keep permanent JSONL dual-write, runtime legacy replay, or automatic format fallback.
-- Do not delete the user's legacy store during implementation or migration.
+- Persisting active turns, provider requests, callbacks, timers, work handles,
+  executable Board subscriptions, exact admission tokens, endpoint objects,
+  Lisp predicate closures, focus, windows, overlays, render caches, or other
+  process/presentation state.
+- Exactly-once execution of arbitrary external effects.  Automatic retry needs
+  a tool/action-specific idempotency or reconciliation contract.
+- Latest-acknowledgement survival after host failure or sudden power loss.
+- Generic SQL, transaction builders, or cross-owner mutation ports exposed to
+  agents, shells, capabilities, resources, or domain owners.
+- Chunk-streaming resource storage before observed sizes justify it.
+- Encryption at rest or key management.
+- Full-text search, cloud sync, shared network storage, concurrent multi-runtime
+  consumption, or a generic capability-projection framework.
+- Automatic startup migration, permanent JSONL dual write, runtime legacy
+  replay, format fallback, or deletion of preserved legacy sources.
+- Treating one session as the owner of a Board shared by several participants.
+- Rewriting operator-created historical backups during live deletion.
 
-* Risks and explicit mitigations
+* Compatibility and operator boundary
 
-** SQLite availability
+Cutover requires Emacs 29.1 or newer with built-in SQLite support.  Ordinary
+startup may create a new current schema, but an older legacy or SQLite schema
+reports a targeted migration-required error.  Legacy migration and future
+schema upgrades are explicit offline operations.  Backups are explicit except
+for the verified pre-upgrade backup created by the upgrade command.
 
-Built-in SQLite is optional even on a new Emacs.
-Persistent construction checks it before creating state and reports how to obtain a compatible build.
-Tests and ephemeral harnesses create disposable SQLite databases rather than switching to another storage implementation.
-CI must exercise the declared minimum and current supported Emacs with SQLite enabled.
-
-** Worker startup cost
-
-A batch Emacs is heavier than the current Node writer.
-It starts once per store, with =-Q= and a small load path.
-Measure cold and warm startup.
-If it is material, reduce the worker's load path or keep it warm for the runtime's store rather than moving database work onto the UI thread.
-
-** Database growth
-
-SQLite may retain complete audit rows plus raw and temporary-resource bytes.
-WAL size is observable and checkpoints are worker-owned maintenance.
-Session, Board, task, and cron audit history remains until explicit owner deletion.
-Expired raw and temporary resources are physically deleted, and Goodnite demand events are deleted only through an acknowledged consumer checkpoint.
-Database and backup growth under those rules is measured; retention is not silently shortened to satisfy a size target.
-
-** Host-failure durability
-
-The accepted WAL =synchronous=NORMAL= boundary does not promise that the latest acknowledged commits survive host failure or sudden power loss.
-It does require process-crash survival, transaction consistency, and successful integrity checks after reopening.
-Status and documentation state this tradeoff explicitly rather than describing every acknowledgement as power-loss durable.
-
-** Worker read scheduling
-
-Even read-only SQL can delay commits inside the worker.
-All interactive queries require covering indexes, row and byte limits, continuation cursors, and request-lifecycle yielding.
-Commit priority and a bounded read quantum are acceptance requirements; an unbounded convenience query is a test failure, not an accepted implementation shortcut.
-
-** Commit-first live state
-
-The live aggregate does not apply submitted durable state before acknowledgement.
-A terminal commit or revision failure rejects the provisional operation and blocks dependent effects; it does not require rolling back an already-installed durable projection in Lisp.
-UI may show pending intent, but it must distinguish pending from committed state and remove or fault it when the operation fails.
-
-** Missed commit wake
-
-The worker commit acknowledgement is only a wake-up signal for in-process policy and endpoint work.
-=e-board= queries committed Board positions without routing outcomes and unresolved pickups after every wake.
-A missed or coalesced wake delays processing but cannot lose canonical records, pickup identity, or participant FIFO state.
-After restart, participants reattach and resume durable pickups through new live endpoints.
-
-** Live subscription boundary
-
-Subscriptions may contain Lisp predicates, callbacks, timers, and endpoint references.
-They remain process-local and are rebuilt when participants attach.
-SQLite indexes stable board fields for bounded reads and persists the routing/pickup outcome after policy runs, but it does not duplicate the live subscription registry or attempt to persist executable behavior.
-
-** Single runtime ownership
-
-SQLite itself permits several clients, but this feature deliberately has one e runtime per state directory.
-Opening the store must distinguish a live owner from a stale crash remnant without silently stealing a live store.
-The exact ownership mechanism remains private, but its tests must cover second-owner refusal, worker crash/restart under the same runtime, stale-owner recovery, and clear operator diagnostics.
-
-** Worker unavailability
-
-The runtime automatically restarts an unexpectedly exited worker within a bounded retry policy and reconciles commands by stable id.
-During restart, all owners freeze new durable transitions and dependent external effects.
-Already-loaded committed state remains presentation-readable with an explicit storage-unavailable status.
-A terminal restart or schema failure remains visible and requires operator action; no owner falls back to memory-only mutation or a legacy file store.
-
-* Legacy removal list
-
-After verified cutover, remove from production:
-
-- =lisp/core/e-session-writer.mjs= and its Node tests;
-- JSONL append, scan, suffix replay, and per-session file helpers;
-- =index.json= loading, refresh, rebuild, and dangling-file reconciliation;
-- resume checkpoint files, manifests, byte offsets, dirty-id tracking, and all checkpoint retention limits;
-- direct and queued filesystem write modes;
-- local JSON array/plist repair paths that the shared exact codec supersedes;
-- catalog =:file= fields that imply one session equals one backing file;
-- =e-chat-service--board-log-owners= and the board message/processing persistence notification callbacks;
-- authoritative in-memory Board message, source-key, pickup FIFO, and delivery-receipt indexes replaced by indexed SQLite rows;
-- raw-result backing files and e-managed session =tmp://= backing files, including complete tool-invocation details.
-
-Keep the legacy decoder only under the offline migration entrypoint until a separate deprecation removes it.
+Repository validation uses disposable stores and never opens or migrates the
+operator's live store.  Running Emacs remains untouched.  Core runtime, worker,
+session, Board, and record-shape changes require a full Emacs restart when the
+operator chooses to use the new implementation; =e-dev-reload= is insufficient.
 
 * Design self-check
 
-1. *Useful stopping point*: Each delivery package must complete one owner's commit-first write, bounded read, recovery, and public behavior rather than leaving SQLite as an unused mirror.
-   The importer and final cutover are separately useful once every runtime-state owner has a complete SQLite path.
-2. *Final direction*: One physical SQLite authority replaces journals, checkpoints, catalog files, and the board's duplicate in-memory durable ledgers.
-   =e-board-storage= and =e-session-storage= preserve separate domain boundaries while SQLite acts as the board data plane inside the central =e-board= interaction boundary.
-3. *Stable versus uncertain*: Session/board identity, ancestry, immutable facts, lifecycle ordering, canonical board order, and exact value shape are stable.
-   Page sizes, WAL maintenance thresholds, worker read scheduling, live notification scheduling, and tool-specific reconciliation are tunable or contract-specific.
-   Retention classes, explicit migration, routing finality, bounded worker recovery, and process-crash versus host-loss durability are accepted contracts.
-   Reducer-specific projections and executable subscription predicates remain outside the durable Board schema; stable routing and pickup outcomes do not.
-4. *Ownership*: Session semantics and participant-owned state stay in =e-session= behind =e-session-storage=.
-   Shared interaction stays in =e-board=, whose storage port commits canonical records, stable routing/pickup lifecycle, and indexed reads through =e-storage-sqlite=.
-   =e-chat-service= adapts only the chat presentation participant; =e-board-runtime= owns live endpoints; =e-harness= and =e-loop= own tool execution and recovery policy; =e-context-lifetime= owns frame and promotion semantics.
-5. *Coupling*: SQL is behind narrow owner-shaped ports, but the board port deliberately uses relational transactions as its implementation rather than rebuilding a database beside an in-memory router.
-   The design separates the current combined chat/session binding, removes the =e-chat-service= to =e-session= board-log proxy, and does not add a second ephemeral storage implementation.
-6. *Dependency direction*: The SQLite adapter depends on domain mutation/read contracts.
-   Stable domain policy does not depend on SQL, the worker, presentation, or provider adapters.
-7. *Side effects*: Writable connections, migrations, backups, WAL maintenance, and filesystem changes live in the worker/adapter boundary.
-   Shells only request application operations.
-8. *State lifetime*: Immutable session and Board facts, user intent, stable references, routing/pickup lifecycle, scheduler claims, resource content, lifecycle facts needed for restart classification, and current durable roots persist according to their retention class.
-   Catalog, display, and tool-follow-up rows are rebuildable projections.
-   Executable Board subscriptions, endpoint attachments, callbacks, timers, requests, tool handles, exact admission tokens, predicate closures, focus, and rendering state remain process- or presentation-local.
-9. *Performance*: Every database operation remains in the worker; reads are indexed, paged, and scheduled behind commits; SQLite performs source-key lookup, Board ordering, selector-field lookup, pickup recovery, and replay scans instead of repeated in-memory reconstruction.
-   Startup no longer scans files, and resume no longer materializes a checkpoint plus suffix.
-   WAL =synchronous=NORMAL= process-crash durability is provided in the worker; host-loss exposure is explicit and measured recovery validates consistency rather than preservation of the latest acknowledgement.
-10. *Real interfaces*: =e-board-storage= and =e-session-storage= are separate, consumer-shaped contracts over the same SQLite adapter.
-    Neither has generic SQL, cross-domain mutation operations, or unsupported-operation escape hatches.
-11. *Compatibility*: Legacy data has one explicit offline importer.
-    Runtime fallback and dual-write are rejected.
-    SQLite availability and the minimum Emacs change are explicit cutover requirements.
-12. *Removal*: The JSONL writer, checkpoint system, derived index, queued/direct file modes, per-session file field, superseded JSON normalization, Board-log-owner proxy, persistence notification callbacks, duplicate Board/pickup indexes, raw-result files, and e-managed session-temporary backing files are removed after migration proof.
-13. *Errors*: Expected busy/transport failures retry at the adapter.
-    Invalid values, corruption, schema mismatch, command hash mismatch, typed record conflict, aggregate revision conflict, and terminal worker restart failure reach the persistence owner and fault the affected aggregate.
-14. *Tests*: Pure policy tests prove validation, executable subscription matching, and endpoint rules independently.
-    Disposable-SQLite contract tests prove Board publication, routing/pickup transitions, ordering, indexed reads, and replay.
-    Migration manifests prove equivalence; restart, graphical, current-config, crash, and performance suites prove the integrated behavior.
+1. *Useful stopping points*: Each package closes owner semantics, durable state,
+   recovery, public composition, and focused evidence; none is only a helper or
+   checkpoint.
+2. *Final direction*: One SQLite authority replaces every hidden runtime-state
+   file and duplicate durable in-memory Board collection.
+3. *Stable versus uncertain*: Ownership, commit-first visibility, exact value
+   shape, recovery classifications, retention classes, migration, and failure
+   boundaries are stable.  Table names, private limits, page sizes, worker
+   framing, checkpoint cadence, and chunking remain local and revisable.
+4. *Ownership*: Session, Board, task, cron, voice, Goodnite, and resources keep
+   their semantic ports.  The adapter owns only physical storage and typed
+   composite execution.
+5. *Coupling*: Sharing one database removes duplicated persistence while narrow
+   ports and one use-case-specific composition prevent representation coupling.
+6. *Dependency direction*: Domain policy defines commands/projections; the
+   SQLite adapter depends on them.  Policy does not depend on SQL or tables.
+7. *Side effects*: Database, migration, backup, export, and maintenance work is
+   in the worker/adapter; shells request application operations only.
+8. *State lifetime*: Durable facts and accepted recovery state persist by owner
+   retention; rebuildable projections are indexed; live objects remain local.
+9. *Performance*: Main Emacs performs no SQL; reads are bounded and yield to
+   commits; the known large-session fixture and graphical timer prove the hot
+   paths.
+10. *Substitutability*: Owner ports contain only supported owner operations;
+    there is no generic SQL, fake alternative backend, or unsupported method.
+11. *Compatibility*: One explicit importer and upgrade path replace runtime
+    fallback; preserved sources remain inactive rollback material.
+12. *Removal*: Node/JSONL, checkpoints, derived index, sidecar stores, Board-log
+    proxy, persistence callbacks, and duplicate durable indexes are deleted
+    after proof.
+13. *Errors*: Expected busy/transport failure is bounded and retryable;
+    corruption, schema/value/identity/revision conflict, uncertain effects, and
+    terminal worker recovery surface explicitly.
+14. *Tests*: Pure policy tests remain storage-independent; disposable-SQLite
+    owner, composition, migration, restart, graphical, and system scenarios
+    fail at narrow boundaries.
