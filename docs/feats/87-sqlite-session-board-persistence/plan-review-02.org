@@ -1,0 +1,165 @@
+#+title: Feature 87 Implementation Plan Review 02
+#+startup: overview
+
+* Decision
+
+Result: =implementation-plan-fixed-point=.
+
+The incremental admission Tick found zero P0--P3 findings and no required
+unknowns.  F87-PR01, F87-PR02, F87-PR03, and F87-U01 are closed.  The unchanged
+contract, package, and scenario cells from Review 01 remain cleared after the
+affected cells were invalidated and re-reviewed.
+
+Reviewed plan identity:
+
+- commit :: =60d4a5ccb26e9e58af62d15f730bdea14b5f2e3c=
+- =plan.org= blob :: =26a7ea8553a05322cd34792b8ca937359a4d6ad1=
+- =design.org= blob :: =28aa5106d9efec5b1413fc09e445d1905ec3885e=
+- plan-owning content :: =plan.org= and =design.org= at that commit
+- material dependencies :: the accepted Feature 91 session/storage and
+  Board/runtime boundaries, current owner sources, the Feature 86
+  current-config evidence, =docs/feats/index.org=, =AGENTS.md=,
+  =docs/references/runtime_concepts.org=, and
+  =docs/references/dev_work.org=
+- selected result level :: implementation plan
+
+This result is bound to unchanged plan-owning content and material dependencies
+at that identity, not to =HEAD= in general.  Between Review 01's plan identity
+=2ce39725fcf79b07ef26e5ca766fe6029f9dfc73= and the reviewed identity, only
+Feature 87's plan, design, and first review artifact changed.  Current source,
+Feature 86 evidence, the index, glossary, workflow guidance, and repository
+instructions therefore retain the source facts already audited in Review 01.
+
+* Behavioral and mechanism status
+
+- Goal :: =F87-GOAL=
+- Behavioral status :: =unavailable=.  The direct migrated-system restart
+  scenario has not run; plan admission does not provide behavioral evidence.
+- Mechanism status :: =not-started=.  No Feature 87 implementation was reviewed
+  or credited by this Tick.
+- Product authority :: the Feature 87 plan and its recorded operator decisions
+- Owning contract :: =F87-C01=
+
+The implementation plan is ready to execute.  The feature behavior is not yet
+available.
+
+* Findings and unknowns
+
+None.  There are zero open P0--P3 findings, required unknowns, architectural
+follow-ups, or external-capability dependencies.
+
+* Prior-item closure
+
+| Item | Result | Exact closure evidence |
+|------+--------+------------------------|
+| F87-PR01 | Closed | =design.org=:23--33 now records the stable =e-session= facade and the aggregate/codec/catalog/storage split.  P1 replaces the implementation behind the existing =e-session-storage= boundary (=plan.org=:141--144).  This matches Feature 91's accepted placement (=docs/feats/91-improve-modularization/plan.org=:143--152) and current source: =e-session-storage.el=:8--11 owns the replaceable physical adapter while =e-session-aggregate.el=:8--12 performs no durable I/O. |
+| F87-PR02 | Closed | C12/P1 now owns process-failure consistency plus permissions for the database, WAL, and runtime-ownership files (=plan.org=:83,132--158).  C09/P4 and S9 own permissions for migration, upgrade, backup, export, report, and disposable-path artifacts when those operations are introduced (=plan.org=:80,247--274,334--337; =design.org=:336--340).  Each permission outcome is established by the package that creates its artifact. |
+| F87-PR03 | Closed | C11, P1, and the design now make indexed/paged restoration plus timer and commit progress deterministic (=plan.org=:82,164--171; =design.org=:355--363).  The historical approximately 0.07-second result is comparison telemetry only.  A future wall-clock gate requires an accepted fixture or generator, procedure, environment, and threshold record. |
+| F87-U01 | Closed | P4 names =bash e2e/run-current-config-tests.sh= for default-harness compatibility against disposable SQLite state and excludes the complete current-config graphical matrix (=plan.org=:280--287).  Current source already creates a private state directory and exports it to the suite (=e2e/run-current-config-tests.sh=:9--19).  Feature 86 proves that runner at 4/4 while separately retaining two current-config graphical presentation failures (=docs/feats/86-current-emacs-config-e2e/review.org=:105--124).  Only a Feature 87-specific graphical selector would add a targeted current-config graphical gate. |
+
+No closure broadens the operational failure model.  Process interruption,
+commit-before-ack, exclusive ownership, host-loss consistency, and owner
+recovery remain production-reachable boundaries.  The plan still excludes
+arbitrary synthetic in-memory mutation faults and generalized transactions.
+
+* Incremental cell disposition
+
+Only cells affected by the four prior items were reopened.  All now clear:
+
+| Reopened cell | Disposition |
+|---------------+-------------|
+| Change locality and source placement | Cleared by the existing Feature 91 session facade/aggregate/codec/catalog/storage boundary.  No second session-storage facade is introduced. |
+| Durable contract boundary | Cleared by separating store/runtime-ownership permissions in C12/P1 from operator-artifact permissions in C09/P4. |
+| Contract-to-package coverage | Cleared.  C09 and C12 now close inside the packages that create their respective artifacts. |
+| Cohesion and transaction/recovery closure | Cleared.  Permissions follow artifact operations; the only cross-owner transaction remains typed pickup admission in C06/P2. |
+| Evidence topology and telemetry decision power | Cleared.  Structural scaling and responsiveness are deterministic; unthresholded wall-clock and size measurements are observational. |
+| Exact-limit justification | Cleared.  The scaling fixture has exact record and byte counts; private BLOB/page limits remain implementation-local with exact/one-over evidence. |
+| Dependency order | Cleared.  P4 depends on P1--P3 and on the green current-config compatibility runner, not on Feature 86's known-red complete graphical matrix. |
+| Acceptance-cost topology | Cleared.  Focused package gates precede one complete P4 repository/isolated-graphical/current-config-compatibility gate; only new Feature 87 graphical behavior adds a named current-config selector. |
+
+The unaffected specification cells carry forward as cleared: single normative
+authority, behavioral design trace, scenario diagnosability, defensive
+actionability, workflow boundary, decision-level separation, useful stopping
+points, package-size tradeoff, and checkpoint/package distinction.  External
+freshness and compatibility remain =not-applicable= because persistence
+acceptance uses no provider or credentialed external capability.
+
+* Complete coverage disposition
+
+** Contracts
+
+| Contract | Package | Scenario evidence | Disposition |
+|----------+---------+-------------------+-------------|
+| F87-C01 | P4 | S1, S10 | Cleared; one-store cutover and negative authority scan remain complementary. |
+| F87-C02 | P1 | S2 | Cleared; subordinate-worker ownership, rejection, and bounded recovery remain adapter-owned. |
+| F87-C03 | P1 | S3 | Cleared; session commit-first restore and tool uncertainty use the accepted storage boundary. |
+| F87-C04 | P1 | S4 | Cleared; temporary-resource value, lifetime, deletion, and exact/one-over behavior remain complete. |
+| F87-C05 | P2 | S5 | Cleared; durable Board facts remain separate from executable policy and endpoints. |
+| F87-C06 | P2 | S6 | Cleared; one typed pickup-admission operation owns the real atomic invariant. |
+| F87-C07 | P3 | S7 | Cleared; task/cron claim and uncertain-effect recovery remain owner-shaped. |
+| F87-C08 | P3 | S8 | Cleared; auxiliary state retains separate semantic ports over one store. |
+| F87-C09 | P4 | S9 | Cleared after permission closure; migration, upgrade, backup, and operator artifacts are one offline boundary. |
+| F87-C10 | P4 | S10 | Cleared; cutover removes sidecars, fallback, dual write, and duplicate durable ledgers. |
+| F87-C11 | P4 | S11 | Cleared after evidence closure; bounded timer/commit progress decides acceptance, while latency and size remain observational. |
+| F87-C12 | P1 | S2 | Cleared after package closure; process consistency and store/runtime-file permissions are P1-complete. |
+
+Every C01--C12 contract appears exactly once in the package-establishment
+relation.  S1--S11 cover every contract; S1/S10 jointly cover C01 and S2 covers
+the related but distinct C02/C12 failure and ownership outcomes.  Those
+intentional compositions do not duplicate package ownership.
+
+** Packages and dependency order
+
+| Package | Establishes | Admission result |
+|---------+-------------+------------------|
+| P1 | C02, C03, C04, C12 | Cleared.  It pairs the worker with complete opt-in session/tool/resource consumers and leaves the legacy default unchanged. |
+| P2 | C05, C06 | Cleared; depends on P1.  It closes Board authority, recovery, and typed pickup/session admission without a generic transaction surface. |
+| P3 | C07, C08 | Cleared; depends on P1 and consumes P2 identities only where task/Board reconciliation requires them.  Separate owner ports preserve meaning despite shared migration mechanics. |
+| P4 | C01, C09, C10, C11 | Cleared; depends on P1--P3.  Migration and cutover form one safe adoption boundary and run the complete acceptance matrix once. |
+
+P1--P4 remain useful stopping points and are proportionate to acceptance cost.
+P1 avoids an unused adapter, P2 isolates the one Board/session atomic surface,
+P3 avoids repetitive low-decision packages without merging semantic owners,
+and P4 prevents migration or cutover from becoming an unsafe partial backend.
+
+** Scenarios and limits
+
+S1--S11 remain named, deterministic, and diagnosable at the runtime, worker,
+session/tool, temporary-resource, Board, pickup-admission, scheduler,
+auxiliary-owner, migration, cutover, and bounded-load boundaries respectively.
+The scenario set preserves exact-value, exact/one-over private-limit,
+commit-before/after, source-preservation, permission, and negative-authority
+checks.  No arbitrary memory-fault suite, generic transaction framework,
+second runtime, main-Emacs SQLite connection, encryption design, online schema
+migration, permanent dual write, or legacy fallback enters acceptance.
+
+* Glossary and writing status
+
+Selected glossary: =docs/references/runtime_concepts.org=.  Harness, session,
+Board, participant, pickup, observer/orchestration subscription, and backend
+adapter retain their established meanings.  Current semantic owners outrank
+descriptive glossary wording: SQLite is the physical durable adapter, not a
+second runtime, Board, participant, subscription, or provider backend.
+
+One clear-technical-writing pass was applied to this review artifact after the
+decision and coverage tables were fixed.  It changed no disposition, evidence,
+severity, or acceptance result.
+
+* Verification
+
+Read-only verification established:
+
+- =HEAD= and the reviewed revision were exactly
+  =60d4a5ccb26e9e58af62d15f730bdea14b5f2e3c= before this artifact was created;
+- the diff from Review 01's plan identity to this reviewed identity changed
+  only Feature 87's plan, design, and first review artifact, so unaffected
+  source/dependency cells were eligible for incremental carry-forward;
+- the plan contains exactly C01--C12, P1--P4, and S1--S11 with the package and
+  scenario relations recorded above;
+- the changed source-placement statements match current Feature 91 sources;
+- the Feature 86 compatibility runner and its two separate graphical findings
+  match P4's resolved dependency boundary;
+- Org parsing and trailing-whitespace checks passed for this artifact.
+
+No implementation tests, graphical tests, live probe, reload, or restart were
+required for this plan-only Tick.  The user's running Emacs was left unchanged.
