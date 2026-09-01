@@ -1,0 +1,331 @@
+#+title: Feature 87 Implementation Plan Review 01
+#+startup: overview
+
+* Decision
+
+The reviewed plan is *not* at =implementation-plan-fixed-point=.  Three P2
+plan defects and one required delivery-plan unknown remain.  No implementation
+package should be admitted from this review result.
+
+Reviewed plan identity:
+
+- commit :: =2ce39725fcf79b07ef26e5ca766fe6029f9dfc73=
+- plan-owning content :: =plan.org= and =design.org= at that commit
+- material dependencies :: the accepted Feature 91 session/storage and
+  Board/runtime boundaries, current owner sources, =docs/feats/index.org=,
+  =AGENTS.md=, =docs/references/runtime_concepts.org=,
+  =docs/references/dev_work.org=, and the current-config E2E gate named by P4
+- selected result level :: implementation plan
+
+The review is bound to the unchanged plan-owning content and dependencies at
+that identity, not to =HEAD= in general.  =HEAD= was the reviewed commit and the
+worktree was clean before this review artifact was created.
+
+* Behavioral and mechanism status
+
+- Goal :: =F87-GOAL=
+- Direct scenario status :: =unavailable=.  No S1 migrated-system restart has
+  run, as the plan correctly records.
+- Mechanism status :: =not-started=.  This was a specification Tick, not an
+  implementation review.
+- Product authority :: the Feature 87 plan and the operator decisions recorded
+  in its history, unchanged by this review
+
+The goal, direct scenario, product authority, and owning contract =F87-C01=
+form one complete behavioral trace.  Mechanism evidence was not credited as
+behavioral progress.
+
+* Findings
+
+** P2 F87-PR01: The session placement inventory is stale after Feature 91
+
+The plan says Feature 87 was rebaselined on Feature 91's session/storage
+boundary (=plan.org=:8--11), but P1 says to introduce =e-session-storage=
+(=plan.org=:140).  The design inventory assigns JSONL, checkpoints, and the
+catalog to =e-session.el= plus the Node writer (=design.org=:23--25).
+
+That is not the current source boundary.  Accepted Feature 91 Round 2 says the
+stable facade is =e-session.el=, semantic mutation is in
+=e-session-aggregate.el=, normalization/replay is in =e-session-codec.el=,
+catalog/recovery policy is in =e-session-catalog.el=, and the replaceable
+JSONL/index/queued/Node adapter already exists in =e-session-storage.el=
+(=docs/feats/91-improve-modularization/plan.org=:143--152).  The source says the
+same thing directly: =lisp/core/e-session-storage.el=:8--11 owns the current
+physical adapter and is intentionally replaceable by Feature 87, while
+=lisp/core/e-session-aggregate.el=:8--12 owns semantic mutation without
+physical I/O.
+
+This is an implementation-placement defect, not naming polish.  Following the
+current wording could recreate a storage boundary, put SQLite behavior in the
+facade, or bypass the accepted aggregate/catalog/codec dependency direction.
+
+Owning correction: update the current-state inventory and P1 placement at the
+existing session-family boundary.  Do not add a second session storage facade
+or teach the aggregate SQL.
+
+Proposed replacement for =design.org=:23--25:
+
+#+begin_quote
+Session semantics are exposed through the stable =e-session.el= facade.
+=e-session-aggregate.el= owns loaded identity/path state and semantic mutation,
+=e-session-codec.el= owns deterministic durable normalization and replay,
+=e-session-catalog.el= owns catalog/checkpoint projection and recovery policy,
+and =e-session-storage.el= owns the current replaceable
+JSONL/index/queued/Node physical adapter together with
+=e-session-writer.mjs=.
+#+end_quote
+
+Proposed replacement for =plan.org=:140:
+
+#+begin_quote
+Replace the JSONL/index/queued/Node implementation behind the existing
+=e-session-storage= boundary with the typed SQLite worker protocol; preserve
+the accepted =e-session= facade, aggregate, codec, and catalog dependency
+direction.
+#+end_quote
+
+** P2 F87-PR02: F87-C12 cannot be established completely by P1
+
+=F87-C12= combines two independently changing outcomes: process/host-loss
+durability and restrictive permissions for all artifacts (=plan.org=:83).
+The row maps both to P1, whose scope can establish database/WAL behavior and
+permissions (=plan.org=:131--154).  P4, however, first creates the migration
+working files, reports, verified pre-upgrade backup, explicit backups, exports,
+and disposable-store system path to which the same permission requirement
+applies (=plan.org=:242--255; =design.org=:306--331).  P1 cannot prove the
+permission behavior of operations that do not exist until P4.
+
+The row therefore fails one-observable-contract normalization and package
+closure.  It also makes the bidirectional contract/package relation inaccurate:
+part of the accepted C12 outcome is established only by P4 although the matrix
+assigns it exactly once to P1.
+
+Owning correction: keep the failure/durability outcome in C12/P1 and give P4's
+operator-artifact permission behavior its own P4 contract row, or move that
+behavior into a single existing P4 row whose public composition and S9/S10
+evidence cover it.  Do not add a generic security or artifact framework.
+
+Proposed C12 wording:
+
+#+begin_quote
+WAL =synchronous=NORMAL= preserves database consistency and acknowledged
+commits across e/worker process failure; it does not promise survival of the
+latest acknowledgement after host or power failure.  The database and WAL use
+restrictive local permissions.
+#+end_quote
+
+Proposed P4 permission row wording if a new row is selected:
+
+#+begin_quote
+Migration and upgrade working files, deterministic reports, verified
+pre-upgrade backups, explicit backups/exports, and disposable pathname copies
+use restrictive local permissions; encryption and key management remain out
+of scope.  Owner: migration/upgrade and worker-owned operator operations.
+Package: P4.  Evidence: S9 artifact-permission matrix and S10 negative scan.
+#+end_quote
+
+** P2 F87-PR03: The 0.07-second release gate has no reproducible threshold record
+
+P1 makes the 15,722-record/38 MB resume no slower than an approximately
+0.07-second checkpoint baseline unless an approved explanation changes the
+gate (=plan.org=:160--162).  The source observation was a closed operator store:
+the journal was 37,851,478 bytes, its checkpoint 5,756,709 bytes, and one batch
+run took about 0.07 seconds
+(=docs/bugs/session-resume-replays-full-journal/investigation.org=:41--48;
+=docs/feats/78-session-resume-checkpoints/review.org=:81--91).  The reviewed
+plan names no repository fixture identity or construction, command, warm/cold
+cache policy, sample count, statistic, reference machine, or exact threshold.
+
+Consequently the check is neither reproducible as a deterministic release gate
+nor safely classified as telemetry.  “Approximately” cannot decide pass/fail,
+and an unspecified approval escape cannot repair the missing evidence record.
+The structural no-full-scan and interactive-responsiveness invariants are
+valid deterministic targets; the historical wall-clock observation is not yet
+one.
+
+Owning correction: make bounded indexed work and timer/commit progress the
+deterministic gate.  Treat the historical 0.07-second value as observational
+unless product authority adds a complete reproducible performance record.
+
+Proposed replacement for =plan.org=:160--162:
+
+#+begin_quote
+The test-owned 15,722-record/37,851,478-byte fixture restores through indexed,
+paged reads without reading unrelated audit history; the interactive timer
+advances and queued commits complete during the load.  Record elapsed resume
+time against the historical approximately 0.07-second operator-store
+observation as observational telemetry.  A deterministic wall-clock regression
+gate may replace that telemetry only after the plan records the fixture or
+generator, command, cache policy, sample count, statistic, environment,
+pass/fail threshold, and revision trigger.
+#+end_quote
+
+This correction preserves the AGENTS.md requirement that any observed
+regression receive a first-principles justification; it stops presenting an
+unrepeatable observation as an exact gate.
+
+* Required unknown
+
+** F87-U01: P4 does not identify the current-config gate it depends on
+
+P4 says to run a “graphical/current-config matrix” and later requires isolated
+graphical E2E plus current-config E2E (=plan.org=:253--267,329--335).  The
+repository exposes two distinct current-config paths:
+
+- =bash e2e/run-current-config-tests.sh=, whose owner review records four
+  compatibility checks passing; and
+- =E_E2E_EMACS_CONFIG=current bash e2e/run-graphical-tests.sh=, whose owning
+  Feature 86 remains =In-review= with two reproducible presentation failures
+  (=docs/feats/86-current-emacs-config-e2e/review.org=:76--96,159--168).
+
+The plan does not say whether “graphical/current-config matrix” includes the
+known-red current-config graphical path, name storage-specific selectors, or
+declare a dependency on Feature 86 closure.  This prevents dependency-order and
+acceptance-cost cells from clearing.  It is not evidence of a Feature 87
+product defect and must not be laundered into one.
+
+Proposed insertion under P4 Gate:
+
+#+begin_quote
+Run =bash e2e/run-current-config-tests.sh= with the default harness redirected
+to a disposable SQLite state directory.  Run =bash e2e/run-graphical-tests.sh=
+in isolated mode for the complete graphical suite.  [Choose one before
+implementation admission: either also depend on Feature 86 reaching =Done= and
+run the complete current-config graphical suite, or name only the Feature 87
+current-config graphical selectors and classify unrelated pre-existing Feature
+86 failures outside this gate.]
+#+end_quote
+
+Product authority must choose the bracketed branch; this review does not infer
+it.
+
+* Contract coverage disposition
+
+| Contract | Disposition | Owner/source feasibility | Evidence disposition |
+|----------+-------------+--------------------------+----------------------|
+| F87-C01 | Cleared | One runtime storage boundary plus owner ports is feasible; P4 is the sole cutover establishment. | S1 and S10 are complementary deterministic compositions. |
+| F87-C02 | Cleared | A subordinate worker keeps SQLite out of interactive Emacs; bounded restart and exclusive ownership are adapter concerns. | S2 uses production-reachable process/ownership boundaries. |
+| F87-C03 | Finding F87-PR01 | Session behavior is feasible, but placement must use the accepted facade/aggregate/codec/catalog/storage split. | S3 is diagnosable; wall-clock material is handled under F87-PR03. |
+| F87-C04 | Cleared | Existing =tmp://= and invocation-detail owners provide a real port boundary; the BLOB limit remains private and exact/one-over is mechanism evidence. | S4 covers round-trip, restart lifetime, expiry, deletion, and boundary rejection. |
+| F87-C05 | Cleared | Current Board, runtime, state, and admission owners support a storage port without persisting executable policy or exact tokens. | S5 separates publication/routing/pickup/replay failure surfaces. |
+| F87-C06 | Cleared | The existing Board-runtime/attached-turn composition is a feasible owner for one typed pickup-admission operation. | S6 covers both sides of the real composite commit; no generic transaction is required. |
+| F87-C07 | Cleared | Current task and cron action entrypoints can claim through owner ports before runner/action entry. | S7 covers production-reachable before/after-claim interruption and explicit uncertainty. |
+| F87-C08 | Cleared | Voice, Goodnite, and raw-result owners already have distinct file boundaries that can retain narrow ports over one physical store. | S8 localizes migration, checkpoint, expiry, cap, and cleanup behavior. |
+| F87-C09 | Cleared | Explicit offline importer/upgrader and worker-owned backup operations are feasible. | S9 is deterministic; timing and backup size remain observational. |
+| F87-C10 | Cleared | Current sidecar writers, Board-log proxy, fallback loaders, and duplicate durable indexes are named removable paths. | S10 negative source/runtime scans establish the absence contract. |
+| F87-C11 | Finding F87-PR03; F87-U01 affects final gate | Indexed/page-bounded worker reads and commit priority are feasible. | S11 structural responsiveness is deterministic; the 0.07-second check is not yet a valid thresholded gate. |
+| F87-C12 | Finding F87-PR02 | Process durability is P1-owned; operator-artifact permissions span operations first built in P4. | S2 covers process/host consistency, but permission evidence is not package-closed. |
+
+External compatibility is =not-applicable=: no provider or credentialed
+capability participates in persistence correctness.  All unthresholded size,
+latency, queue-age, and host-loss measurements remain observational and cannot
+establish acceptance.
+
+* Delivery-package disposition
+
+| Package | Contract mapping | Stopping point, closure, and dependency result |
+|---------+------------------+------------------------------------------------|
+| P1 | C02, C03, C04, C12 exactly once in the recorded relation | Useful session-backed stopping point.  Blocked by F87-PR01, F87-PR02, and F87-PR03.  Infrastructure is paired with a complete session consumer rather than accepted alone. |
+| P2 | C05 and C06 exactly once | Cleared.  Board authority, recovery, and the one typed Board/session transaction close around Board delivery admission and consume only P1. |
+| P3 | C07 and C08 exactly once | Cleared.  The smaller owners retain separate ports while sharing a mechanical physical-store migration; task/Board identity use depends on accepted P2. |
+| P4 | C01, C09, C10, and C11 exactly once | Migration and cutover form the final operational adoption boundary and the complete gate runs once.  Required unknown F87-U01 blocks its dependency and acceptance-cost cells. |
+
+Every contract ID appears once in the recorded package relation and every
+package establishes at least one complete contract syntactically.  F87-PR02
+shows that the semantic relation is not complete for C12.  Design checkpoints
+and internal steps are not miscounted as delivery packages.  The P1/P2/P3/P4
+size rationale is otherwise proportionate: P1 avoids an unused adapter, P2
+isolates the Board transaction surface, P3 avoids repetitive low-decision
+packages, and P4 reserves the one complete system gate for cutover.
+
+* Required specification-cell disposition
+
+| Cell | Disposition |
+|------+-------------|
+| Single normative authority | Cleared.  The contract matrix is the sole normative requirement authority; accepted decisions and conditional design are read as trace/appendix material. |
+| Behavioral design trace | Cleared.  F87-GOAL and its direct public restart scenario remain stable; the one-store/owner-port design is the smallest faithful aggregate found. |
+| Durable contract boundary | Finding F87-PR02 for mixed C12 outcomes; otherwise cleared. |
+| Scenario diagnosability | Cleared.  S1--S11 state observable compositions and localize owner, worker, migration, or cutover boundaries. |
+| Evidence topology | Finding F87-PR03 and unknown F87-U01; deterministic, external, and observational lanes are otherwise separate. |
+| External freshness | Not applicable; no external capability participates. |
+| Telemetry decision power | Finding F87-PR03; all other metrics are explicitly observational or not applicable. |
+| Exact-limit justification | Finding F87-PR03 for the approximate wall-clock gate.  Private BLOB/page limits are correctly deferred and do not enter the stable contract. |
+| Defensive actionability | Cleared.  The plan protects accepted durability/recovery outcomes using production-reachable interruption boundaries; it does not promote arbitrary in-memory mutation faults or generalized transactionality. |
+| Change locality | Finding F87-PR01; Board, scheduler, and resource placements are otherwise owner-shaped and conditional. |
+| Workflow boundary | Cleared.  Product artifacts contain targets/evidence and do not own Tick/Tock reviewer mechanics. |
+| Decision level and plan disposition | Cleared.  Contract and package fields are distinguishable and this review returns the implementation-plan level. |
+| Contract-to-package coverage | Finding F87-PR02. |
+| Useful stopping point | Cleared, subject to each package's findings and unknown above. |
+| Cohesion and transaction closure | Finding F87-PR02 for permission operations outside P1; Board/session atomicity and recovery otherwise close at their owning package. |
+| Dependency order | Unknown F87-U01; P1--P4 ordering otherwise consumes accepted earlier package outcomes. |
+| Package-size tradeoff | Cleared.  The package-boundary rationale is causal rather than file- or line-count based. |
+| Acceptance-cost topology | Unknown F87-U01; focused package checks and one complete P4 gate are otherwise proportionate. |
+| Checkpoint/package distinction | Cleared. |
+
+No non-gating architectural follow-up or external capability ledger applies.
+No architectural finding was downgraded into a follow-up.
+
+* Glossary and writing status
+
+Selected glossary: =docs/references/runtime_concepts.org= at the reviewed
+revision.  The review accessed the material entries directly: harness,
+session, Board, participant, pickup, observer/orchestration subscription, and
+backend adapter.  The plan uses those terms consistently with their semantic
+sources.  In particular, SQLite remains a physical adapter and durable fact
+authority rather than a second Board, harness, participant, subscription, or
+backend adapter.  No glossary edit or new project term is needed.
+
+One clear-technical-writing pass was applied after the findings and
+dispositions were fixed.  It changed no finding, severity, owner, evidence, or
+decision.
+
+* Verification
+
+Read-only review evidence included:
+
+#+begin_src sh
+git status --short --branch
+git rev-parse HEAD
+git show --stat --oneline 2ce39725fcf79b07ef26e5ca766fe6029f9dfc73
+git diff --name-status 2ce39725fcf79b07ef26e5ca766fe6029f9dfc73 -- \
+  docs/feats/87-sqlite-session-board-persistence/plan.org \
+  docs/feats/87-sqlite-session-board-persistence/design.org \
+  docs/feats/index.org
+#+end_src
+
+#+begin_example
+HEAD and branch tip were 2ce39725fcf79b07ef26e5ca766fe6029f9dfc73.
+The plan, design, and index had no baseline-to-worktree delta.
+The worktree was clean before this review artifact was written.
+#+end_example
+
+The review then inspected every F87-C01--C12 row, P1--P4 package, S1--S11
+scenario, the complete conditional design, the accepted Feature 91 owner
+record, current session/Board/runtime/scheduler/resource sources, the selected
+glossary, the dev-work status authority, and both current-config E2E paths.
+No repository tests or live Emacs probe were appropriate for a plan-only Tick.
+The user's running Emacs was left unchanged.
+
+Final artifact checks:
+
+#+begin_src sh
+emacs -Q --batch --eval \
+  '(progn (require (quote org))
+          (find-file "docs/feats/87-sqlite-session-board-persistence/plan-review-01.org")
+          (org-element-parse-buffer)
+          (princ "org-parse=pass\n"))'
+! rg -n '[[:blank:]]+$' \
+  docs/feats/87-sqlite-session-board-persistence/plan-review-01.org
+rg -n "F87-PR0[1-3]|F87-U01|implementation-plan-fixed-point|F87-C(0[1-9]|1[0-2])|P[1-4]|S(0?[1-9]|1[0-1])" \
+  docs/feats/87-sqlite-session-board-persistence/plan-review-01.org
+#+end_src
+
+#+begin_example
+org-parse=pass
+No trailing-whitespace matches.
+58 coverage-identity matches.
+#+end_example
+
+The artifact is Org-parseable and contains all findings, the required unknown,
+the complete contract/package/scenario coverage, and the non-fixed-point
+decision above.
