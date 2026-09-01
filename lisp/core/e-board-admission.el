@@ -536,6 +536,8 @@ The token is finalized only after the event append commits, and is never
 reconstructed from an event type or sequence number.  When RECEIPT-HOLDER is a
 mutable one-element list, retain the exact append receipt for a caller that
 must finish semantic settlement after a callback error."
+  (when (e-board-mutation-frozen-p board)
+    (signal 'e-board-mutation-frozen (list (e-board-id board) type)))
   (if (e-board-admission--admission-p admission)
       (condition-case err
           (let ((event (e-board-admission--append-event

@@ -269,7 +269,8 @@ messages so the transcript reads as one clean answer."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create
                      :backend (e-backend-create :name "noop")
                      :enabled-layer-ids nil))
@@ -651,7 +652,8 @@ only checking the in-memory association."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal)))
     (unwind-protect
         (let* ((store (e-session-persistent-store-create directory))
                (harness (e-harness-create
@@ -880,7 +882,8 @@ successful admission at the end verifies the same path remains replayable."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal)))
     (unwind-protect
         (let* ((store (e-session-persistent-store-create directory))
                (harness (e-harness-create
@@ -1076,7 +1079,8 @@ proves both queued records reopen together."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal)))
     (unwind-protect
         (let* ((store (e-session-persistent-index-store-create
                        directory :write-mode 'queued))
@@ -1618,8 +1622,12 @@ session and board binding without exposing a participant-added event."
                         binding))
             (should (memq binding
                           (gethash board-id e-chat-service--board-bindings)))
-            (should (eq (gethash board-id e-chat-service--board-log-owners)
-                        binding))
+            (let ((owner
+                   (gethash board-id
+                            e-board-session-association--legacy-owners)))
+              (should (eq (car owner) source))
+              (should (eq (nth 1 owner) (e-harness-sessions harness)))
+              (should (equal (nth 2 owner) "main")))
             (should (eq (e-chat-service-binding harness "main") binding))
             (should (eq (e-chat-service-ensure-binding harness "main")
                         binding))
@@ -1645,7 +1653,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
            (binding (e-chat-service-create-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding))
@@ -1702,7 +1711,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
            (binding (e-chat-service-create-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding))
@@ -1747,7 +1757,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal))
         close-callbacks
         (e-board-registry-close-scheduler
          (lambda (function)
@@ -1766,7 +1777,8 @@ session and board binding without exposing a participant-added event."
           (should-not (e-chat-service-binding harness "close"))
           (should-not (memq binding
                             (gethash board-id e-chat-service--board-bindings)))
-          (should-not (gethash board-id e-chat-service--board-log-owners))
+          (should-not
+           (gethash board-id e-board-session-association--legacy-owners))
           (should-not (e-chat-service-subscription-active-p subscription))
           (should (eq (car (e-chat-service-subscription-state subscription))
                       'detached))
@@ -1998,7 +2010,8 @@ session and board binding without exposing a participant-added event."
         (e-board-registry--unsettled-generation 0)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal))
         (e-board-runtime--attachments (make-hash-table :test 'equal))
         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)))
@@ -2029,7 +2042,8 @@ session and board binding without exposing a participant-added event."
                 e-chat-service--bindings
                 (make-hash-table :test 'eq :weakness 'key)
                 e-chat-service--board-bindings (make-hash-table :test 'equal)
-                e-chat-service--board-log-owners (make-hash-table :test 'equal)
+                e-board-session-association--legacy-owners
+                (make-hash-table :test 'equal)
                 e-board-runtime--attachments (make-hash-table :test 'equal)
                 e-board-runtime--session-attachments (make-hash-table :test 'equal)
                 e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
@@ -2153,7 +2167,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal))
         (initial-reply
          (concat "Errors rose after the rollout.\n\n"
                  "```reasoning\n"
@@ -2334,7 +2349,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--unsettled-change-functions nil)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal))
         (e-chat-service--continuation-reconciling (make-hash-table :test 'equal))
         close-callbacks)
     (e-harness-turn-state-reset-aggregate)
@@ -2403,8 +2419,9 @@ session and board binding without exposing a participant-added event."
                  (gethash (e-board-registry-board-id board)
                           e-chat-service--board-bindings))
                 (should-not
-                 (gethash (e-board-registry-board-id board)
-                          e-chat-service--board-log-owners))
+                 (gethash
+                  (e-board-registry-board-id board)
+                  e-board-session-association--legacy-owners))
                 (should-not
                  (gethash (e-board-runtime--session-key harness session-id)
                           e-board-runtime--session-attachments))
@@ -2478,7 +2495,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal))
         callbacks)
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
            (binding nil)
@@ -2537,7 +2555,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal))
         callbacks close-callbacks)
     (e-harness-turn-state-reset-aggregate)
     (unwind-protect
@@ -2625,7 +2644,8 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--admission-open-p t)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-chat-service--board-log-owners (make-hash-table :test 'equal)))
+        (e-board-session-association--legacy-owners
+         (make-hash-table :test 'equal)))
     (e-harness-turn-state-reset-aggregate)
     (unwind-protect
         (cl-letf (((symbol-function 'run-at-time)

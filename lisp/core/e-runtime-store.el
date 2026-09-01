@@ -30,6 +30,8 @@
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-revision-conflict "Runtime store revision conflicts"
   'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-board-conflict "Runtime store Board conflict"
+  'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-resource-too-large "Runtime store resource is too large"
   'e-runtime-store-worker-error)
 

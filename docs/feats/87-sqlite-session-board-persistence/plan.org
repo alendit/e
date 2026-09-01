@@ -29,7 +29,7 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   in its history.
 - Owning contract :: =F87-C01=.
 - Behavioral status :: =unavailable= until Package 4 passes the direct scenario.
-- Mechanism status :: =in-progress=.  P1 is accepted; P2-P4 remain.
+- Mechanism status :: =in-progress=.  P1-P2 are accepted; P3-P4 remain.
 
 * Implementation ledger
 
@@ -39,7 +39,19 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   deterministic large witness restores 15,722 records and 37,851,478 content
   bytes through paged reads while timers and a queued commit progress.  This
   does not change the ordinary legacy backend or make =F87-GOAL= available.
-- P2-P4 :: Not started.
+- P2 :: Accepted on 2026-09-02.  The opt-in
+  SQLite Board path commits canonical publications, processing rows, final
+  routing outcomes, pickup identities and lifecycle transitions, participant
+  recovery identity, and stable replay progress through =e-board-storage=.
+  One typed pickup-admission operation commits the accepted pickup and session
+  input together before either owner publishes live state.  Correction evidence
+  covers post-ambiguity FIFO recovery, replay claim-before-effect, strict SQLite
+  association restore, canonical source signatures and selectors, terminal
+  pickup identity restore, and cleanup of unpublished participant admissions.
+  Seventeen focused S5-S6 tests plus the existing Board, runtime, admission,
+  registry, chat/session, and P1 preservation suites pass.  Ordinary Boards
+  remain legacy-backed, so this does not make =F87-GOAL= available.
+- P3-P4 :: Not started.
 
 * Goal and boundary
 

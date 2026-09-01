@@ -24,8 +24,12 @@
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-resource-too-large "Runtime store resource is too large"
   'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-board-conflict "Runtime store Board conflict"
+  'e-runtime-store-worker-error)
 
-(defconst e-runtime-store-worker-schema-version 1)
+(require 'e-board-storage-sqlite-worker)
+
+(defconst e-runtime-store-worker-schema-version 2)
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
 (defconst e-runtime-store-worker-session-page-byte-limit (* 1024 1024)
@@ -111,10 +115,24 @@
 
 (defun e-runtime-store-worker--schema ()
   "Create the current new-store schema."
+  ;; Inspect an existing store before creating current-version relations.  P4
+  ;; owns explicit offline upgrades; ordinary startup must not mutate an older
+  ;; P1 database and then report that it is unsupported.
+  (sqlite-execute
+   e-runtime-store-worker--database
+   "CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+  (let ((row (car (sqlite-select
+                   e-runtime-store-worker--database
+                   "SELECT value FROM store_meta WHERE key='schema_version'"))))
+    (when (and row
+               (/= (string-to-number (e-runtime-store-worker--column row 0))
+                   e-runtime-store-worker-schema-version))
+      (signal 'e-runtime-store-worker-error
+              (list "Unsupported schema version"
+                    (e-runtime-store-worker--column row 0)))))
   (dolist
       (statement
-       '("CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-         "CREATE TABLE IF NOT EXISTS writer_commands (command_id TEXT PRIMARY KEY, command_hash TEXT NOT NULL, result TEXT NOT NULL, committed_at REAL NOT NULL)"
+       '("CREATE TABLE IF NOT EXISTS writer_commands (command_id TEXT PRIMARY KEY, command_hash TEXT NOT NULL, result TEXT NOT NULL, committed_at REAL NOT NULL)"
          "CREATE TABLE IF NOT EXISTS owner_revisions (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL)"
          "CREATE TABLE IF NOT EXISTS session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, position))"
          "CREATE INDEX IF NOT EXISTS session_records_position ON session_records(session_id, position)"
@@ -126,13 +144,11 @@
          "CREATE INDEX IF NOT EXISTS resources_session ON resources(session_id)"
          "CREATE INDEX IF NOT EXISTS resources_expiry ON resources(expires_at)"))
     (sqlite-execute e-runtime-store-worker--database statement))
+  (e-board-storage-sqlite-worker-initialize
+   e-runtime-store-worker--database)
   (let ((row (car (sqlite-select e-runtime-store-worker--database
                                  "SELECT value FROM store_meta WHERE key='schema_version'"))))
-    (if row
-        (unless (= (string-to-number (e-runtime-store-worker--column row 0))
-                   e-runtime-store-worker-schema-version)
-          (signal 'e-runtime-store-worker-error
-                  (list "Unsupported schema version" (e-runtime-store-worker--column row 0))))
+    (unless row
       (sqlite-execute e-runtime-store-worker--database
                       "INSERT INTO store_meta(key,value) VALUES('schema_version',?)"
                       (vector (number-to-string
@@ -334,6 +350,7 @@
                 (vector (or (plist-get body :now) (float-time))))))
     (list :deleted count)))
 
+
 (defun e-runtime-store-worker--write-dispatch (body)
   "Execute typed write BODY inside the current transaction."
   (pcase (plist-get body :op)
@@ -348,6 +365,12 @@
     ('resource-delete-lineage
      (e-runtime-store-worker--resource-delete-lineage body))
     ('resource-expire (e-runtime-store-worker--resource-expire body))
+    ((or 'board-create 'board-clear 'board-record-put 'board-routing-put
+         'board-pickup-transition 'board-participant-put
+         'board-participant-delete 'board-participant-publish
+         'board-replay-progress-put 'board-pickup-session-admit)
+     (e-board-storage-sqlite-worker-write
+      e-runtime-store-worker--database body))
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown write operation" (plist-get body :op))))))
 
@@ -467,6 +490,11 @@
        "SELECT call_id,state,payload,revision FROM tool_followups WHERE session_id=? ORDER BY call_id LIMIT ?"
        (vector (plist-get body :session-id)
                (min 1024 (max 1 (or (plist-get body :limit) 256)))))))
+    ((or 'board-get 'board-list 'board-record-page 'board-routing-get
+         'board-pickup-list 'board-participant-list
+         'board-replay-progress-get)
+     (e-board-storage-sqlite-worker-read
+      e-runtime-store-worker--database body))
     ('resource-get
      (when-let* ((row (car (sqlite-select
                             e-runtime-store-worker--database

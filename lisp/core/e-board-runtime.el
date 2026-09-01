@@ -20,6 +20,7 @@
 (require 'e-board-registry)
 (require 'e-board-runtime-admission)
 (require 'e-board-runtime-error)
+(require 'e-board-pickup-admission)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
@@ -1382,7 +1383,9 @@ attachment."
         ;; exist.  A signal leaves `retirement-stage' at `local' and permits a
         ;; later retry to use the same authority rather than falling back to
         ;; an id lookup.
-        (e-board-registry-retire-participant-exact board participant))
+        (if (e-board-registry-participant-publication-pending participant)
+            (e-board-registry-abort-participant-admission board participant)
+          (e-board-registry-retire-participant-exact board participant)))
       (setf (e-board-runtime-attachment-retirement-stage attachment) 'maps)
       (dolist (table/key
                (list (cons e-board-runtime--attachments attachment-key)
@@ -2580,11 +2583,25 @@ steering lane while queue-mode enters the later-turn inbox."
                                 attached-turn-port))
            (active-turn
             (and active-observation
-                 (eq (plist-get active-observation :status) 'running))))
+                 (eq (plist-get active-observation :status) 'running)))
+           (lane (pcase (e-board-pickup-mode pickup)
+                   ('queue (if active-turn 'follow-up 'idle))
+                   ('inject (if active-turn 'steer 'idle))))
+           (source-board
+            (e-board-registry-board-source-board
+             (e-board-runtime-attachment-board attachment))))
+      (when (e-board-storage-backed-p source-board)
+        (e-board-pickup-admission-commit
+         source-board (e-board-pickup-delivery-id pickup)
+         (e-harness-sessions (e-board-runtime-attachment-harness attachment))
+         (e-board-runtime-attachment-session-id attachment) lane
+         :metadata (e-board-pickup-cause-metadata pickup)))
       (pcase (e-board-pickup-mode pickup)
         ('queue
          (if active-turn
-             (list :accepted
+             (list (if (e-board-storage-backed-p source-board)
+                       :committed-accepted
+                     :accepted)
                    (e-harness-attached-turn-port-follow-up
                     attached-turn-port prompt :metadata metadata))
            (let ((turn-id
@@ -3533,6 +3550,10 @@ and pickup tombstones remain on the source board."
                              (e-board-runtime-attachment-delivery-function attachment)
                              attachment pickup message)))
                        (pcase (car-safe result)
+                         (:committed-accepted
+                          ;; The composite worker command already accepted the
+                          ;; pickup before the turn-port effect was invoked.
+                          nil)
                          (:accepted
                           (if (and
                                (e-board-runtime--current-attachment-p attachment)
@@ -3582,8 +3603,14 @@ and pickup tombstones remain on the source board."
                             (e-board-runtime--enqueue-pickups
                              board (list next-id))))))
                    (error
-                    (e-board-pickup-return-ready source-board delivery-id err)
-                    (unless (eq (car err) 'e-board-runtime-session-busy)
+                    (if (eq (e-board-pickup-state pickup) 'accepted)
+                        (e-board-pickup-mark-uncertain
+                         source-board delivery-id
+                         (list 'post-admission-effect-failed err))
+                      (e-board-pickup-return-ready source-board delivery-id err))
+                    (when (and (eq (e-board-pickup-state pickup) 'ready)
+                               (not (eq (car err)
+                                        'e-board-runtime-session-busy)))
                       (if (>= (e-board-delivery-attempt-number
                                (e-board-pickup-attempt pickup))
                               e-board-runtime-pickup-retry-limit)

@@ -29,6 +29,8 @@
   "Board message envelope contains unsupported mutable structure" 'e-board-error)
 (define-error 'e-board-admission-pending
   "Board admission cleanup remains pending" 'e-board-error)
+(define-error 'e-board-mutation-frozen
+  "Board durable commit is in progress" 'e-board-error)
 
 (cl-defstruct (e-board-message
                (:constructor e-board-message--create)
@@ -37,7 +39,7 @@
   source-input-key source-output-key reply-to-message-ids caused-by-delivery-ids
   source-activity-key source-fact-key subject-participant-id source-turn-id
   activity-kind matching-participant-ids pickup-ids unrouted-reason routing-state
-  created-at)
+  created-at durable-position)
 
 (cl-defstruct (e-board-event
                (:constructor e-board-event--create)
@@ -87,7 +89,7 @@
                (:conc-name e-board-pickup-))
   delivery-id board-id participant-id message-id subscription-ids
   participant-lifetime event-seq-range mode requester-actor addressed-p
-  cause-metadata content reference state attempt)
+  cause-metadata content reference fifo-position revision state attempt)
 
 (cl-defstruct (e-board-publication
                (:constructor e-board-publication--create)
@@ -155,12 +157,13 @@
 (cl-defstruct (e-board-subscription-replay
                (:constructor e-board-subscription-replay--create)
                (:conc-name e-board-subscription-replay-))
-  subscription next-seq through-seq)
+  subscription next-seq through-seq next-position through-position)
 
 (cl-defstruct (e-board
                (:constructor e-board-state-create)
                (:conc-name e-board-))
-  id id-function next-seq events events-tail messages messages-tail message-count
+  id id-function storage trusted-principal generation revision mutation-frozen-p
+  next-seq events events-tail messages messages-tail message-count
   message-table message-seq-table message-index-table event-message-count
   event-message-prefix-high-watermark event-node-index
   pending-admissions
@@ -171,7 +174,8 @@
   processing-chain-reservations
   processing-results-internal processing-results-tail-internal processing-result-table-internal
   processing-result-reservations processing-record-notification-function
-  observers pickups source-high-watermarks source-recent work-table invocations aggregations
+  observers pickups source-high-watermarks source-recent source-signatures
+  work-table invocations aggregations
   pending-effects pending-effects-tail effect-node-index effects-scheduled
   effect-schedule-generation effect-draining-p
   effect-callback-generation effect-scheduler invocation-effect-dispatcher
@@ -218,7 +222,7 @@ logic."
       ('effects (setf (e-board-unsettled-effect-count board) next))
       ('routing (setf (e-board-unsettled-routing-count board) next)))
     (cl-incf (e-board-unsettled-generation board))
-    (when-let ((notify (e-board-unsettled-change-function board)))
+    (when-let* ((notify (e-board-unsettled-change-function board)))
       (funcall notify board class delta (e-board-state-unsettled-state board)))
     next))
 

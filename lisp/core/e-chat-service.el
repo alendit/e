@@ -17,6 +17,7 @@
 (require 'e-capabilities)
 (require 'e-board-registry)
 (require 'e-board-runtime)
+(require 'e-board-session-association)
 (require 'e-board-orchestration)
 (require 'e-harness)
 (require 'e-harness-instances)
@@ -76,9 +77,6 @@
 (defvar e-chat-service--board-bindings (make-hash-table :test 'equal)
   "Live chat bindings sharing each registered board identity.")
 
-(defvar e-chat-service--board-log-owners (make-hash-table :test 'equal)
-  "Stable root binding that persists each live board's durable message log.")
-
 (defvar e-chat-service--continuation-reconciling (make-hash-table :test 'equal)
   "Boards whose terminal continuation is being reconciled synchronously.")
 
@@ -133,20 +131,6 @@ only observes durable claim decisions."
                  (e-chat-service--publish-continuation-claim
                   board run-id (plist-get continuation :publication-key) 'failed err)))))
         (remhash board-id e-chat-service--continuation-reconciling)))))
-
-(defun e-chat-service--persist-board-message (binding message)
-  "Append MESSAGE once to BINDING's durable board log."
-  (e-session-append-board-message
-   (e-harness-sessions (e-chat-service-binding-harness binding))
-   (e-chat-service-binding-session-id binding)
-   (e-board-message-envelope message)))
-
-(defun e-chat-service--persist-board-processing-record (binding record _type)
-  "Append immutable processing RECORD once to BINDING's durable board log."
-  (e-session-append-board-message
-   (e-harness-sessions (e-chat-service-binding-harness binding))
-   (e-chat-service-binding-session-id binding)
-   (e-board-processing-record-envelope record)))
 
 (defun e-chat-service--harness-bindings (harness)
   "Return the session binding table owned by HARNESS."
@@ -396,10 +380,9 @@ orphaned board-registry clients."
                                        e-chat-service--board-bindings))))
           (if remaining
               (puthash board-id remaining e-chat-service--board-bindings)
-            (remhash board-id e-chat-service--board-bindings)))
-        (when (eq (gethash board-id e-chat-service--board-log-owners)
-                  binding)
-          (remhash board-id e-chat-service--board-log-owners))
+            (remhash board-id e-chat-service--board-bindings)
+            (e-board-session-association-release
+             (e-board-registry-board-source-board board))))
         (when-let ((client (e-chat-service-binding-client binding)))
           (e-board-registry-detach-client-exact board client)))
       binding)))
@@ -451,9 +434,9 @@ removal: it emits no board removal event and removes the binding from every
                             (gethash board-id e-chat-service--board-bindings))))
         (if remaining
             (puthash board-id remaining e-chat-service--board-bindings)
-          (remhash board-id e-chat-service--board-bindings)))
-      (when (eq (gethash board-id e-chat-service--board-log-owners) binding)
-        (remhash board-id e-chat-service--board-log-owners))
+          (remhash board-id e-chat-service--board-bindings)
+          (e-board-session-association-release
+           (e-board-registry-board-source-board board))))
       (when attachment
         (e-board-runtime-abort-new-attachment attachment))
       (when client
@@ -506,7 +489,6 @@ request, while a completed close is already terminal and returns nil."
                       (gethash board-id e-chat-service--board-bindings)))
       (e-chat-service--retire-binding current))
     (remhash board-id e-chat-service--board-bindings)
-    (remhash board-id e-chat-service--board-log-owners)
     (pcase (e-board-registry-board-state board)
       ('active (e-board-registry-close board))
       ('closing
@@ -522,7 +504,7 @@ request, while a completed close is already terminal and returns nil."
          (board-id (e-board-registry-board-id
                     (e-chat-service-binding-board binding))))
     (e-harness-reset harness session-id)
-    (e-session-clear-board-messages store session-id)
+    (e-board-session-association-reset-legacy-projection store session-id)
     (dolist (current (gethash board-id e-chat-service--board-bindings))
       (dolist (projection
                (list (e-chat-service-binding-message-projection current)
@@ -1224,10 +1206,6 @@ resolved participant identity so restart never needs shell or caller policy."
                                (gethash (e-board-registry-board-id board)
                                         e-chat-service--board-bindings))
                          e-chat-service--board-bindings)
-                (unless (gethash (e-board-registry-board-id board)
-                                 e-chat-service--board-log-owners)
-                  (puthash (e-board-registry-board-id board) binding
-                           e-chat-service--board-log-owners))
                 ;; Materialize only the recent bounded tail.  The observer's
                 ;; live cursor already starts at the same high watermark, so
                 ;; retained history is never rescanned to fill a fixed-capacity
@@ -1237,12 +1215,9 @@ resolved participant identity so restart never needs shell or caller policy."
                 ;; These callbacks are installed only after all admission
                 ;; steps above succeed, keeping attachment failure cleanup
                 ;; independent of board notification publication.
-                (setf (e-board-message-notification-function source-board)
-                      (lambda (source message)
-                        (when-let ((owner (gethash
-                                           (e-board-id source)
-                                           e-chat-service--board-log-owners)))
-                          (e-chat-service--persist-board-message owner message))
+                (e-board-session-association-configure-notifications
+                 (e-harness-sessions harness) session-id source-board
+                 (lambda (source message)
                         (dolist (current (copy-sequence
                                           (gethash (e-board-id source)
                                                    e-chat-service--board-bindings)))
@@ -1252,19 +1227,13 @@ resolved participant identity so restart never needs shell or caller policy."
                             (e-chat-service--schedule-subscription-drain
                              subscription))
                           (e-chat-service--schedule-observer-drain current))
-                        (when-let ((owner (gethash
-                                           (e-board-id source)
-                                           e-chat-service--board-log-owners)))
+                        (when-let* ((owner
+                                    (car (gethash
+                                          (e-board-id source)
+                                          e-chat-service--board-bindings))))
                           (e-chat-service-reconcile-board-continuation
                            (e-chat-service-binding-board owner)
                            (e-chat-service-binding-harness owner)))))
-                (setf (e-board-processing-record-notification-function source-board)
-                      (lambda (source record type)
-                        (when-let ((owner (gethash
-                                           (e-board-id source)
-                                           e-chat-service--board-log-owners)))
-                          (e-chat-service--persist-board-processing-record
-                           owner record type))))
                 binding)
             (error
              ;; No binding is returned until all process-local maps are in a
@@ -1282,10 +1251,7 @@ resolved participant identity so restart never needs shell or caller policy."
                                        e-chat-service--board-bindings))))
                    (if remaining
                        (puthash board-id remaining e-chat-service--board-bindings)
-                     (remhash board-id e-chat-service--board-bindings)))
-                 (when (eq (gethash board-id e-chat-service--board-log-owners)
-                           binding)
-                   (remhash board-id e-chat-service--board-log-owners))))
+                     (remhash board-id e-chat-service--board-bindings)))))
              (when main-subscription
                (e-board-retire-subscription-exact source-board main-subscription))
              (when attachment
@@ -1305,26 +1271,9 @@ resolved participant identity so restart never needs shell or caller policy."
              (_ (unless (and (stringp board-id) principal)
                   (signal 'e-session-missing
                           (list session-id 'board-session-state))))
-             (existing (and board-id
-                            (condition-case nil
-                                (e-board-registry-get board-id)
-                              (e-board-registry-missing nil))))
-             (board (or existing
-                        (e-board-registry-create
-                         :id board-id :principal principal))))
-        (unless existing
-          (e-board-orchestration-mark-restoring
-           (e-board-registry-board-source-board board))
-          (unwind-protect
-              (dolist (envelope (e-session-board-messages
-                                 (e-harness-sessions harness) session-id))
-                (if (plist-get envelope :record-type)
-                    (e-board-import-processing-record
-                     (e-board-registry-board-source-board board) envelope)
-                  (e-board-import-message
-                   (e-board-registry-board-source-board board) envelope)))
-            (e-board-orchestration-mark-restored
-             (e-board-registry-board-source-board board))))
+             (board
+              (e-board-session-association-restore
+               (e-harness-sessions harness) session)))
         (if routing-policy
             (e-chat-service--install-participant-binding
              board harness session-id :principal principal
@@ -1336,28 +1285,19 @@ resolved participant identity so restart never needs shell or caller policy."
           (e-chat-service--install-participant-binding
            board harness session-id :principal principal)))))
 
-(defun e-chat-service--persist-board-state
-    (store session-id principal board-id role &optional routing-policy)
-  "Persist board identity, chat ROLE, and ROUTING-POLICY through STORE."
-  ;; Session composition owns the aggregate-to-storage transition.  Keeping
-  ;; this call at the facade boundary prevents the chat service from reaching
-  ;; into the storage controller's projection details.
-  (e-session-declare-board-state
-   store session-id principal board-id role routing-policy))
-
 (cl-defun e-chat-service-create-board (&key harness metadata id)
   "Create a top-level board with one main participant and return its binding."
   (let* ((harness (or harness (e-chat-service-default-harness)))
          (session (e-harness-create-session harness :id id :metadata metadata))
          (session-id (plist-get session :id))
          (principal (format "chat:%s" session-id))
-         (board (e-board-registry-create :principal principal))
          (store (e-harness-sessions harness))
+         (board (e-board-session-association-create-board store principal))
          (participant-id (e-board-registry-allocate-participant-id board))
          (routing-policy
           (e-chat-service--routing-policy
            participant-id '(:tags (main)) '(:tags (main)) '(main) nil)))
-    (e-chat-service--persist-board-state
+    (e-board-session-association-persist
      store session-id principal (e-board-registry-board-id board)
      e-chat-service--board-role-root routing-policy)
     (e-chat-service--install-participant-binding
@@ -1427,7 +1367,7 @@ resolved participant identity so restart never needs shell or caller policy."
        :principal (plist-get state :principal))
       ;; Admission upgrades are durable before a runtime attachment can expose
       ;; the participant to board traffic.
-      (e-chat-service--persist-board-state
+      (e-board-session-association-persist
        (e-harness-sessions harness) session-id
        (plist-get state :principal) (plist-get state :board-id)
        (plist-get state :association-role) routing-policy))

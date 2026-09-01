@@ -71,6 +71,28 @@ P1 adds an opt-in realization without changing the ordinary backend:
   resource operations while URI, discovery, edit, and search policy remains in
   =e-session-tmp-resources=.
 
+P2 adds the accepted opt-in Board realization:
+
+- =e-board-storage= is the Board-owned durability port;
+  =e-board-storage-sqlite= maps it to typed runtime-store commands, and
+  =e-board-storage-sqlite-worker= owns only the Board schema and SQL handlers;
+- =e-board-durability= stages and commits canonical Board records, participants,
+  final routing outcomes, pickup transitions, clear generations, and replay
+  progress before =e-board= publishes the corresponding live semantic state;
+- =e-board-pickup-admission= owns the one accepted cross-owner operation, using
+  =e-session-board-input-admission= to prepare a detached session record and one
+  typed worker command to accept the pickup and append that record atomically;
+- =e-board-session-association= owns the remaining legacy Board/session journal
+  compatibility and SQLite Board restore association, leaving presentation
+  bindings, subscribers, timers, and projections in =e-chat-service=; and
+- restart reconciliation re-reads committed pickup FIFO state after settling
+  ambiguity; durable replay progress commits before its executable effect;
+  routing outcomes retain immutable pickup identities; and unpublished durable
+  participant admissions are deleted on abort or process-loss recovery;
+- executable subscriptions, predicates, admission tokens, callbacks, timers,
+  endpoints, and live authorization objects remain process-local.  The ordinary
+  Board path remains legacy-backed until P4.
+
 * Target topology
 
 One e runtime owns one state directory and all harnesses, sessions, Boards,

@@ -294,7 +294,8 @@ private-board operation without treating nil as authority."
     t))
 
 (cl-defun e-board-registry-create
-    (&key id id-function author principal client-revocation-scheduler)
+    (&key id id-function author principal client-revocation-scheduler
+          storage restoring generation revision)
   "Create and register an active board with stored AUTHOR and PRINCIPAL.
 ID-FUNCTION receives an identity kind and supplies all registry-owned ids.
 The source board is registered with `e-board' under the same board identity."
@@ -309,7 +310,11 @@ The source board is registered with `e-board' under the same board identity."
             e-board-registry--unsettled-generation 0))
     (when (gethash id e-board-registry--boards)
       (signal 'e-board-registry-id-conflict (list id)))
-    (let* ((source-board (e-board-create :id id :id-function id-function))
+    (let* ((source-board
+            (e-board-create :id id :id-function id-function
+                            :storage storage :trusted-principal principal
+                            :restoring restoring :generation generation
+                            :revision revision))
            (board (e-board-registry-board--create
                   :id id
                   :source-board source-board
@@ -832,13 +837,16 @@ attached client from muting, resuming, or closing another client's cursor."
 
 (cl-defun e-board-registry-add-participant
     (board-or-id &key id author principal controller (state 'active)
-                 (publish-event t))
+                 subscription-id (publish-event t))
   "Add a board-local participant to active BOARD-OR-ID.
 The participant's built-in exact address subscription is created by the source
 board, with its identity supplied by this registry's id generator."
   (let* ((board (e-board-registry--require-active board-or-id))
          (id-function (e-board-registry-board-id-function board))
          (id (or id (e-board-registry--next-id id-function 'participant)))
+         (subscription-id
+          (or subscription-id
+              (e-board-registry--next-id id-function 'subscription)))
          (participants (e-board-registry-board-participants board))
          (role (and principal (e-board-registry-principal-role board principal))))
     (when (and principal (not role))
@@ -846,13 +854,18 @@ board, with its identity supplied by this registry's id generator."
               (list (e-board-registry-board-id board) principal 'participant)))
     (when (gethash id participants)
       (signal 'e-board-registry-id-conflict (list id)))
+    (e-board-persist-participant
+     (e-board-registry-board-source-board board)
+     (list :id id :author author :principal principal
+           :controller (or controller principal) :role role :state state
+           :subscription-id subscription-id
+           :publication-pending (not publish-event)))
     (let* ((source-participant
             (e-board-add-participant
              (e-board-registry-board-source-board board)
              :id id
              :state state
-             :create-pickup-subscription-id
-             (e-board-registry--next-id id-function 'subscription)
+             :create-pickup-subscription-id subscription-id
              :publish-event publish-event))
            (participant
             (e-board-registry-participant--create
@@ -862,7 +875,7 @@ board, with its identity supplied by this registry's id generator."
              :access-grants (make-hash-table :test 'equal)
             :private-grants
              (let ((grants (make-hash-table :test 'equal)))
-               (when-let ((controller (or controller principal)))
+               (when-let* ((controller (or controller principal)))
                  (puthash controller
                           (copy-sequence
                            e-board-registry-participant-private-rights)
@@ -872,7 +885,7 @@ board, with its identity supplied by this registry's id generator."
              :publication-pending (not publish-event))))
       (puthash id participant participants)
       (let ((cell (list id)))
-        (if-let ((tail (e-board-registry-board-participant-ids-tail board)))
+        (if-let* ((tail (e-board-registry-board-participant-ids-tail board)))
             (setcdr tail cell)
           (setf (e-board-registry-board-participant-ids board) cell))
         (setf (e-board-registry-board-participant-ids-tail board) cell))
@@ -895,6 +908,8 @@ idempotent for an already-published participant and rejects foreign records."
                                    (e-board-participant-id source-participant))
         (signal 'e-board-registry-participant-missing
                 (list (e-board-registry-participant-id current))))
+      (e-board-publish-persisted-participant
+       source-board (e-board-participant-id source-participant))
       (e-board-admission-append-event
        source-board 'participant-added
        (list :participant-id
@@ -919,6 +934,10 @@ before the participant has been exposed to board traffic."
          (source-board (e-board-registry-board-source-board board)))
     (when (and current (or (eq current participant)
                            (not (e-board-registry-participant-p participant))))
+      ;; The participant identity committed before any later session/runtime
+      ;; admission work.  Remove that unpublished durable projection first so
+      ;; an ordinary failed admission cannot wedge exact retry or reappear.
+      (e-board-abort-persisted-participant source-board participant-id)
       (remhash participant-id (e-board-registry-board-participants board))
       (setf (e-board-registry-board-participant-ids board)
             (delete participant-id

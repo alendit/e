@@ -16,6 +16,7 @@
 (require 'e-work)
 (require 'e-board-state)
 (require 'e-board-admission)
+(require 'e-board-durability)
 
 (defvar e-board--id-sequence 0
   "Process-local fallback sequence for board identities.")
@@ -91,7 +92,7 @@
   "Return BOARD's next identity for KIND.
 An injected id function receives KIND.  The fallback is only process-local and
 exists so callers need not supply ids outside deterministic tests."
-  (let ((id (if-let ((function (e-board-id-function board)))
+  (let ((id (if-let* ((function (e-board-id-function board)))
                 (funcall function kind)
               (format "%s%d"
                       (pcase kind
@@ -221,6 +222,7 @@ The board object remains valid for inspection by its holder."
           terminal-classification-scheduler input-classification-scheduler
           aggregation-deadline-scheduler continuation-timer-scheduler
           subscription-timer-scheduler
+          storage trusted-principal restoring generation revision
           (pickup-pending-limit e-board-default-pickup-pending-limit)
           (retention-floor 0)
           (register t))
@@ -246,12 +248,30 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
               (functionp processing-record-notification-function))
     (signal 'wrong-type-argument
             (list 'functionp processing-record-notification-function)))
-  (let* ((event-prefix (let ((table (make-hash-table :test 'eql)))
+  (let* ((id (or id (format "brd_%d" (cl-incf e-board--id-sequence))))
+         (durable-root
+          (and storage
+               (if restoring
+                   (list :board-id id :trusted-principal trusted-principal
+                         :generation generation :revision revision)
+                 (e-board-storage-create-board
+                  storage id trusted-principal (list :board-id id)))))
+         (_existing
+          (when (and durable-root
+                     (eq (plist-get durable-root :status) 'existing)
+                     (not restoring))
+            (signal 'e-board-id-conflict (list id))))
+         (event-prefix (let ((table (make-hash-table :test 'eql)))
                          (puthash 0 0 table)
                          table))
          (board (e-board-state-create
-                  :id (or id (format "brd_%d" (cl-incf e-board--id-sequence)))
+                  :id id
                  :id-function id-function
+                 :storage storage
+                 :trusted-principal trusted-principal
+                 :generation (or (plist-get durable-root :generation) 0)
+                 :revision (or (plist-get durable-root :revision) 0)
+                 :mutation-frozen-p nil
                  :next-seq 0
                  :events nil
                   :events-tail nil
@@ -288,6 +308,7 @@ PICKUP-PENDING-LIMIT bounds records queued behind a participant's active head."
                   :pickups (make-hash-table :test 'equal)
                   :source-high-watermarks (make-hash-table :test 'equal)
                   :source-recent (make-hash-table :test 'equal)
+                  :source-signatures (make-hash-table :test 'equal)
                    :work-table (make-hash-table :test 'equal)
                    :invocations (make-hash-table :test 'equal)
                    :aggregations (make-hash-table :test 'equal)
@@ -437,6 +458,11 @@ safe when the persistence adapter deduplicates its durable identity."
     (puthash id t reservations)
     (unwind-protect
         (progn
+          (unless e-board--processing-replay-p
+            (e-board--storage-publish-record
+             board
+             (append (e-board-processing-record-envelope record)
+                     (list :record-kind type))))
           ;; A nested record would publish before its outer durable predecessor.
           (unless e-board--processing-replay-p
             (when-let ((notify (e-board-processing-record-notification-function board)))
@@ -823,6 +849,8 @@ may replace this binding only after the previous call was proven uncommitted."
                           'proven-uncommitted)))
         (signal 'e-board-error
                 (list "Pickup attempt is not replaceable" delivery-id)))
+      (e-board--storage-transition-pickup
+       board pickup 'claim (list :attempt-number number))
       (setf (e-board-pickup-attempt pickup)
             (e-board-delivery-attempt--create
              :number number
@@ -855,6 +883,7 @@ Return the newly ready pickup identity, if any."
            (queue (e-board--pickup-queue board participant-id)))
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+      (e-board--storage-transition-pickup board pickup 'consume)
       (setf (e-board-pickup-state pickup) 'consumed)
       (e-board-state-adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'consumed)
@@ -875,6 +904,7 @@ Return the newly ready pickup identity, if any."
                     (signal 'e-board-error (list "Unknown pickup" delivery-id)))))
     (unless (eq (e-board-pickup-state pickup) 'delivering)
       (signal 'e-board-error (list "Pickup is not delivering" delivery-id)))
+    (e-board--storage-transition-pickup board pickup 'accept)
     (setf (e-board-pickup-state pickup) 'accepted)
     (e-board--set-pickup-attempt-state pickup 'accepted)
     (when receipt
@@ -894,6 +924,8 @@ Return the newly ready pickup identity, if any."
            (cancelled-p (eq (e-board-pickup-state pickup) 'cancelling)))
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+      (e-board--storage-transition-pickup
+       board pickup (if cancelled-p 'cancel 'discard) (list :reason reason))
       (setf (e-board-pickup-state pickup) (if cancelled-p 'cancelled 'discarded))
       (e-board-state-adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state
@@ -922,6 +954,8 @@ original endpoint.  REASON records the reconciliation gap for later inspection."
            (queue (e-board--pickup-queue board participant-id)))
       (unless (equal (car queue) delivery-id)
         (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+      (e-board--storage-transition-pickup
+       board pickup 'uncertain (list :reason reason))
       (setf (e-board-pickup-state pickup) 'uncertain)
       (e-board-state-adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'uncertain reason)
@@ -950,6 +984,8 @@ call releases the FIFO head."
               (list "Pickup cancellation requires a nonterminal state" delivery-id)))
     (if (memq (e-board-pickup-state pickup) '(delivering accepted))
         (progn
+          (e-board--storage-transition-pickup
+           board pickup 'cancel (list :reason reason))
           (setf (e-board-pickup-state pickup) 'cancelling)
           (e-board--set-pickup-attempt-state pickup 'cancelling reason)
           (e-board-admission-append-event board 'pickup-cancelling
@@ -958,6 +994,8 @@ call releases the FIFO head."
       (let* ((participant-id (e-board-pickup-participant-id pickup))
              (queue (e-board--pickup-queue board participant-id))
              (head-p (equal (car queue) delivery-id)))
+        (e-board--storage-transition-pickup
+         board pickup 'cancel (list :reason reason))
         (setf (e-board-pickup-state pickup) 'cancelled)
         (e-board-state-adjust-unsettled board 'pickups -1)
         (e-board--set-pickup-attempt-state pickup 'cancelled reason)
@@ -985,6 +1023,8 @@ next FIFO record."
     (let* ((participant-id (e-board-pickup-participant-id pickup))
            (queue (e-board--pickup-queue board participant-id))
            (head-p (equal (car queue) delivery-id)))
+      (e-board--storage-transition-pickup
+       board pickup 'expire (list :reason reason))
       (setf (e-board-pickup-state pickup) 'expired)
       (e-board-state-adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'expired reason)
@@ -1013,6 +1053,8 @@ uses `e-board-pickup-return-ready' instead."
     (let* ((participant-id (e-board-pickup-participant-id pickup))
            (queue (e-board--pickup-queue board participant-id))
            (head-p (equal (car queue) delivery-id)))
+      (e-board--storage-transition-pickup
+       board pickup 'fail (list :reason reason))
       (setf (e-board-pickup-state pickup) 'failed)
       (e-board-state-adjust-unsettled board 'pickups -1)
       (e-board--set-pickup-attempt-state pickup 'failed reason)
@@ -1040,6 +1082,8 @@ uncommitted failure settles that cancellation instead of retrying it."
                (queue (e-board--pickup-queue board participant-id)))
           (unless (equal (car queue) delivery-id)
             (signal 'e-board-error (list "Pickup lost FIFO ownership" delivery-id)))
+          (e-board--storage-transition-pickup
+           board pickup 'cancel (list :reason err))
           (setf (e-board-pickup-state pickup) 'cancelled)
           (e-board-state-adjust-unsettled board 'pickups -1)
           (e-board--set-pickup-attempt-state pickup 'cancelled err)
@@ -1053,6 +1097,8 @@ uncommitted failure settles that cancellation instead of retrying it."
               (e-board-admission-append-event board 'pickup-ready
                                      (list :delivery-id next-id))
               next-id)))
+      (e-board--storage-transition-pickup
+       board pickup 'retry (list :reason err))
       (setf (e-board-pickup-state pickup) 'ready)
       (e-board--set-pickup-attempt-state pickup 'proven-uncommitted)
       (e-board-admission-append-event board 'pickup-delivery-failed
@@ -3205,13 +3251,37 @@ subscription records the relationship without rewriting its terminal state."
   "Freeze SUBSCRIPTION and queue its explicit retained post-input replay.
 START-SEQ is exclusive.  The captured high watermark isolates the replay from
 ordinary future routing, which retains its existing append-time classifier."
-  (let ((record (e-board-subscription-replay--create
-                 :subscription (copy-e-board-subscription subscription)
-                 :next-seq (1+ start-seq)
-                 :through-seq (e-board-next-seq board))))
+  (let* ((durable-p (e-board-storage-backed-p board))
+         (start-position
+          (and durable-p
+               (let ((position 0))
+                 (dolist (message (e-board-messages board) position)
+                   (when (and (<= (e-board-message-seq message) start-seq)
+                              (e-board-message-durable-position message))
+                     (setq position
+                           (max position
+                                (e-board-message-durable-position message))))))))
+         (progress
+          (and durable-p
+               (e-board-storage-replay-progress
+                (e-board-storage board) (e-board-id board)
+                (e-board-generation board)
+                (e-board-subscription-id subscription))))
+         (through-position
+          (and durable-p (e-board-messages-tail board)
+               (e-board-message-durable-position
+                (car (e-board-messages-tail board)))))
+         (record (e-board-subscription-replay--create
+                  :subscription (copy-e-board-subscription subscription)
+                  :next-seq (1+ start-seq)
+                  :through-seq (e-board-next-seq board)
+                  :next-position
+                  (max (or start-position 0)
+                       (or (plist-get progress :position) 0))
+                  :through-position (or through-position 0))))
     (setf (e-board-subscription-replays board)
           (or (e-board-subscription-replays board) (list record)))
-    (if-let ((tail (e-board-subscription-replay-tail board)))
+    (if-let* ((tail (e-board-subscription-replay-tail board)))
         (let ((cell (list record)))
           (setcdr tail cell)
           (setf (e-board-subscription-replay-tail board) cell))
@@ -3223,6 +3293,45 @@ ordinary future routing, which retains its existing append-time classifier."
            :start-seq start-seq :through-seq (e-board-subscription-replay-through-seq record)))
     (e-board--schedule-subscription-replay board)))
 
+(defun e-board--complete-subscription-replay (board record)
+  "Remove completed RECORD and publish its process-local completion event."
+  (setf (e-board-subscription-replays board)
+        (cdr (e-board-subscription-replays board)))
+  (unless (e-board-subscription-replays board)
+    (setf (e-board-subscription-replay-tail board) nil))
+  (e-board-admission-append-event
+   board 'subscription-replay-complete
+   (list :subscription-id
+         (e-board-subscription-id
+          (e-board-subscription-replay-subscription record)))))
+
+(defun e-board--apply-subscription-replay-message (board record message)
+  "Apply MESSAGE to RECORD's frozen subscription when it still matches."
+  (when message
+    (condition-case err
+        (when (e-board--message-subscription-matches-p
+               board (e-board-subscription-replay-subscription record) message)
+          (e-board--accept-post-input-match
+           board (e-board-subscription-replay-subscription record) message))
+      (error
+       (e-board--fault-subscription
+        board (e-board-subscription-replay-subscription record) err)))))
+
+(defun e-board--record-durable-replay-progress (board record position)
+  "Commit RECORD's stable replay POSITION and advance BOARD revision."
+  (let ((result
+         (e-board--call-with-storage-barrier
+          board
+          (lambda ()
+            (e-board-storage-put-replay-progress
+             (e-board-storage board) (e-board-id board)
+             (e-board-generation board)
+             (e-board-subscription-id
+              (e-board-subscription-replay-subscription record))
+             position (e-board-revision board))))))
+    (setf (e-board-revision board) (plist-get result :revision)
+          (e-board-subscription-replay-next-position record) position)))
+
 (defun e-board-drain-subscription-replays (board)
   "Classify one bounded page of explicit retained post-input replays."
   (setf (e-board-subscription-replay-scheduled board) nil)
@@ -3230,30 +3339,41 @@ ordinary future routing, which retains its existing append-time classifier."
     (while (and (> remaining 0) (e-board-subscription-replays board))
       (let* ((record (car (e-board-subscription-replays board)))
              (next-seq (e-board-subscription-replay-next-seq record)))
-        (if (> next-seq (e-board-subscription-replay-through-seq record))
-            (progn
-              (setf (e-board-subscription-replays board)
-                    (cdr (e-board-subscription-replays board)))
-              (unless (e-board-subscription-replays board)
-                (setf (e-board-subscription-replay-tail board) nil))
-              (e-board-admission-append-event
-               board 'subscription-replay-complete
-               (list :subscription-id
-                     (e-board-subscription-id
-                      (e-board-subscription-replay-subscription record)))))
-          (setf (e-board-subscription-replay-next-seq record) (1+ next-seq))
-          (when-let ((message (gethash next-seq (e-board-message-seq-table board))))
-            (condition-case err
-                (when (e-board--message-subscription-matches-p
-                       board (e-board-subscription-replay-subscription record) message)
-                  (e-board--accept-post-input-match
-                   board (e-board-subscription-replay-subscription record) message))
-              (error
-               (e-board--fault-subscription
-                board (e-board-subscription-replay-subscription record) err))))))
-        (cl-decf remaining)))
+        (if (e-board-storage-backed-p board)
+            (let ((position (e-board-subscription-replay-next-position record))
+                  (through (e-board-subscription-replay-through-position record)))
+              (if (>= position through)
+                  (e-board--complete-subscription-replay board record)
+                (let* ((page
+                        (e-board-storage-record-page
+                         (e-board-storage board) (e-board-id board)
+                         (e-board-generation board) position remaining
+                         '(:kinds (input output activity fact))))
+                       (items
+                        (cl-remove-if
+                         (lambda (item) (> (plist-get item :position) through))
+                         (plist-get page :records))))
+                  (if (null items)
+                      (setf (e-board-subscription-replay-next-position record)
+                            through)
+                    (dolist (item items)
+                      (let* ((envelope (plist-get item :record))
+                             (message
+                              (e-board-message board (plist-get envelope :id)))
+                             (item-position (plist-get item :position)))
+                        (e-board--record-durable-replay-progress
+                         board record item-position)
+                        (e-board--apply-subscription-replay-message
+                         board record message)
+                        (cl-decf remaining)))))))
+          (if (> next-seq (e-board-subscription-replay-through-seq record))
+              (e-board--complete-subscription-replay board record)
+            (e-board--apply-subscription-replay-message
+             board record (gethash next-seq (e-board-message-seq-table board)))
+            (setf (e-board-subscription-replay-next-seq record) (1+ next-seq))
+            (cl-decf remaining)))))
     (when (e-board-subscription-replays board)
-      (e-board--schedule-subscription-replay board)))
+      (e-board--schedule-subscription-replay board))))
 
 (defun e-board--queue-subscription-expiry
     (board subscription-id generation &optional subscription-token)
@@ -3474,7 +3594,11 @@ tuples.  Lists and vectors are accepted to keep adapters representation-neutral.
       (signal 'e-board-invalid-source-key (list source-key)))
     parts))
 
-(defun e-board--source-publication (board kind source-key)
+(defun e-board--source-signature-hash (signature)
+  "Return the canonical exact-codec hash for SOURCE SIGNATURE."
+  (e-board-storage-signature-hash signature))
+
+(defun e-board--source-publication (board kind source-key &optional signature)
   "Return existing or expired publication status for BOARD KIND SOURCE-KEY.
 Return nil when the key is new and may be appended."
   (when source-key
@@ -3487,6 +3611,12 @@ Return nil when the key is new and may be appended."
                                      (e-board-source-high-watermarks board))))
       (cond
        (existing
+        (when (and (e-board-storage-backed-p board) signature
+                   (not (equal (e-board--source-signature-hash signature)
+                               (gethash recent-key
+                                        (e-board-source-signatures board)))))
+          (signal 'e-board-storage-conflict
+                  (list "Conflicting Board source identity" kind source-key)))
         (e-board-publication--create
          :status 'duplicate :message existing
          :pickup-ids (e-board-message-pickup-ids existing)))
@@ -3494,13 +3624,16 @@ Return nil when the key is new and may be appended."
         (e-board-publication--create :status 'source-history-expired))
        (t nil)))))
 
-(defun e-board--remember-source (board kind source-key message)
+(defun e-board--remember-source (board kind source-key message &optional signature)
   "Atomically retain SOURCE-KEY's MESSAGE and advance its high watermark."
   (when source-key
     (pcase-let ((`(,producer ,generation ,sequence)
                  (e-board--source-key-parts source-key)))
       (puthash (list kind producer generation sequence) message
                (e-board-source-recent board))
+      (puthash (list kind producer generation sequence)
+               (and signature (e-board--source-signature-hash signature))
+               (e-board-source-signatures board))
       (puthash (list kind producer generation) sequence
                (e-board-source-high-watermarks board)))))
 
@@ -3573,7 +3706,7 @@ cannot rewrite retained board state."
                                      reply-to-message-ids caused-by-delivery-ids
                                      &optional source-activity-key source-fact-key
                                      subject-participant-id source-turn-id activity-kind
-                                     created-at)
+                                     created-at source-signature)
   "Create and record one immutable BOARD message, returning it."
   (when (e-board-message board id)
     (signal 'e-board-id-conflict (list id)))
@@ -3626,12 +3759,10 @@ cannot rewrite retained board state."
          (frozen-source-turn-id
           (e-board--freeze-envelope-value
            source-turn-id 'source-turn-id e-board-message-metadata-byte-limit))
-         (event (e-board-admission-append-event
-                 board (intern (format "%s-posted" kind))
-                 (list :message-id id)))
+         (prospective-seq (1+ (e-board-next-seq board)))
          (message
           (e-board-message--create
-           :id id :board-id (e-board-id board) :seq (e-board-event-seq event)
+           :id id :board-id (e-board-id board) :seq prospective-seq
            :kind kind :author frozen-author :requester-actor frozen-requester
            :tags frozen-tags
            :attributes frozen-attributes :to frozen-to :mode mode
@@ -3647,6 +3778,29 @@ cannot rewrite retained board state."
            :activity-kind activity-kind
            :created-at (or created-at (float-time))
            :routing-state (and (eq kind 'input) 'routing))))
+    (when-let* ((result
+                 (e-board--storage-publish-record
+                  board
+                  (append (e-board-message-envelope message)
+                          (list :record-kind kind
+                                :selector-tags (copy-tree frozen-tags)
+                                :selector-attributes
+                                (copy-tree frozen-attributes)))
+                  (and (or frozen-source-input-key frozen-source-output-key
+                           frozen-source-activity-key frozen-source-fact-key)
+                       (list :kind kind
+                             :key
+                             (or frozen-source-input-key frozen-source-output-key
+                                 frozen-source-activity-key frozen-source-fact-key)
+                             :signature source-signature)))))
+      (setf (e-board-message-durable-position message)
+            (plist-get result :position)))
+    (let ((event (e-board-admission-append-event
+                  board (intern (format "%s-posted" kind))
+                  (list :message-id id))))
+      (unless (= prospective-seq (e-board-event-seq event))
+        (signal 'e-board-error
+                (list "Board event sequence changed during durable append" id))))
     (puthash id message (e-board-message-table board))
     (puthash (e-board-message-seq message) message (e-board-message-seq-table board))
     (push message
@@ -3974,6 +4128,9 @@ the subscription or participant id."
     (when overflow
       (setq participant-ids nil
             pickup-ids nil))
+    (e-board-durability-commit-routing
+     board message (e-board-input-classification-prepared-pickups record)
+     participant-ids overflow)
     (cond
      (overflow
       (setf (e-board-message-unrouted-reason message) overflow
@@ -3995,7 +4152,15 @@ the subscription or participant id."
       ;; upper bound while keeping every prepared pickup invisible until here.
       (dolist (pickup (e-board-input-classification-prepared-pickups record))
         (puthash (e-board-pickup-delivery-id pickup) pickup (e-board-pickups board))
-        (e-board--enqueue-pickup board pickup))
+        (if (e-board-storage-backed-p board)
+            (progn
+              (puthash (e-board-pickup-participant-id pickup)
+                       (append (e-board--pickup-queue
+                                board (e-board-pickup-participant-id pickup))
+                               (list (e-board-pickup-delivery-id pickup)))
+                       (e-board-pickup-queues board))
+              (e-board-state-adjust-unsettled board 'pickups 1))
+          (e-board--enqueue-pickup board pickup)))
       (setf (e-board-message-matching-participant-ids message) participant-ids
             (e-board-message-pickup-ids message) pickup-ids
             (e-board-message-routing-state message) 'routed)
@@ -4195,17 +4360,39 @@ SOURCE-INPUT-KEY retries return the existing message; old or out-of-order keys
 return status `source-history-expired' without appending or routing again."
   (unless (memq mode '(inject queue))
     (signal 'wrong-type-argument (list '(member inject queue) mode)))
-  (or (e-board--source-publication board 'input source-input-key)
+  (let ((signature (list 'input author requester-actor tags attributes to mode
+                         content reference)))
+    (or (e-board--source-publication board 'input source-input-key signature)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message (e-board--make-message
                         board 'input id author requester-actor
                         tags attributes to mode content reference
-                       source-input-key nil nil nil))
+                        source-input-key nil nil nil
+                        nil nil nil nil nil nil signature))
              (publication (e-board-publication--create
                            :status 'posted :message message :pickup-ids nil)))
-        (e-board--remember-source board 'input source-input-key message)
+        (e-board--remember-source board 'input source-input-key message signature)
         (e-board--queue-input-classification board message publication)
-        publication)))
+        publication))))
+
+(cl-defun e-board-reroute-input
+    (board message-id &key id source-input-key)
+  "Explicitly republish MESSAGE-ID under a new durable identity.
+The prior routing outcome remains final and unchanged."
+  (let ((message (or (e-board-message board message-id)
+                     (signal 'e-board-error (list "Unknown input" message-id)))))
+    (unless (eq (e-board-message-kind message) 'input)
+      (signal 'e-board-error (list "Only input messages may reroute" message-id)))
+    (e-board-post-input
+     board :id id :author (e-board-message-author message)
+     :requester-actor (e-board-message-requester-actor message)
+     :tags (e-board-message-tags message)
+     :attributes (append (copy-tree (e-board-message-attributes message))
+                         (list :reroute-of message-id))
+     :to (e-board-message-to message) :mode (e-board-message-mode message)
+     :content (e-board-message-content message)
+     :reference (e-board-message-reference message)
+     :source-input-key source-input-key)))
 
 (cl-defun e-board-post-output
     (board &key id author tags content reference source-output-key
@@ -4223,20 +4410,23 @@ at-most-once.  Outputs never create participant pickups."
       (signal 'e-board-invalid-activity
               (list :author author :subject-participant-id subject-participant-id
                     :source-turn-id source-turn-id))))
-  (or (e-board--source-publication board 'output source-output-key)
+  (let ((signature
+         (list 'output author tags content reference subject-participant-id
+               source-turn-id reply-to-message-ids caused-by-delivery-ids)))
+    (or (e-board--source-publication board 'output source-output-key signature)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message (e-board--make-message
                         board 'output id author nil tags nil nil nil content reference nil
                        source-output-key reply-to-message-ids
                        caused-by-delivery-ids nil nil subject-participant-id
-                       source-turn-id nil)))
-        (e-board--remember-source board 'output source-output-key message)
+                        source-turn-id nil nil signature)))
+        (e-board--remember-source board 'output source-output-key message signature)
         (e-board--close-open-activity
          board subject-participant-id source-turn-id message)
         (let ((publication (e-board-publication--create
                             :status 'posted :message message :pickup-ids nil)))
           (e-board--queue-input-classification board message publication)
-          publication))))
+          publication)))))
 
 (cl-defun e-board-post-activity
     (board &key id author subject-participant-id source-turn-id activity-kind
@@ -4253,39 +4443,44 @@ an activity tag by itself cannot re-enter a participant inbox."
     (signal 'e-board-invalid-activity
             (list :author author :subject-participant-id subject-participant-id
                   :source-turn-id source-turn-id :activity-kind activity-kind)))
-  (or (e-board--source-publication board 'activity source-activity-key)
+  (let ((signature
+         (list 'activity author subject-participant-id source-turn-id
+               activity-kind tags attributes content reference
+               reply-to-message-ids caused-by-delivery-ids)))
+    (or (e-board--source-publication board 'activity source-activity-key signature)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message
               (e-board--make-message
                board 'activity id author nil tags attributes nil nil content reference
                nil nil reply-to-message-ids caused-by-delivery-ids
                source-activity-key nil subject-participant-id source-turn-id
-               activity-kind)))
-        (e-board--remember-source board 'activity source-activity-key message)
+               activity-kind nil signature)))
+        (e-board--remember-source board 'activity source-activity-key message signature)
         (e-board--record-open-activity board message)
         (let ((publication (e-board-publication--create
                             :status 'posted :message message :pickup-ids nil)))
           (e-board--queue-input-classification board message publication)
-          publication))))
+          publication)))))
 
 (cl-defun e-board-post-fact
     (board &key id author tags attributes content reference source-fact-key)
   "Append one source-keyed, observation-only board fact message."
   (unless source-fact-key
     (signal 'e-board-invalid-source-key (list source-fact-key)))
-  (or (e-board--source-publication board 'fact source-fact-key)
+  (let ((signature (list 'fact author tags attributes content reference)))
+    (or (e-board--source-publication board 'fact source-fact-key signature)
       (let* ((id (or id (e-board--next-id board 'message)))
              (message
               (e-board--make-message
                board 'fact id author nil tags attributes nil nil content reference
-               nil nil nil nil nil source-fact-key nil nil nil)))
-        (e-board--remember-source board 'fact source-fact-key message)
+               nil nil nil nil nil source-fact-key nil nil nil nil signature)))
+        (e-board--remember-source board 'fact source-fact-key message signature)
         (let ((publication (e-board-publication--create
                             :status 'posted :message message :pickup-ids nil)))
           (e-board--queue-input-classification board message publication)
-          publication))))
+          publication)))))
 
-(defun e-board-import-message (board envelope)
+(defun e-board-import-message (board envelope &optional durable-position)
   "Restore one historical ENVELOPE into BOARD without routing or delivery.
 The restored message receives a fresh process-local sequence while preserving
 its durable source identity fields and order in the imported stream."
@@ -4320,7 +4515,8 @@ its durable source identity fields and order in the imported stream."
           (plist-get envelope :unrouted-reason)
           (e-board-message-matching-participant-ids message)
           (copy-tree (plist-get envelope :matching-participant-ids))
-          (e-board-message-pickup-ids message) nil)
+          (e-board-message-pickup-ids message) nil
+          (e-board-message-durable-position message) durable-position)
     message))
 
 (defun e-board-unrouted-inputs (board)
