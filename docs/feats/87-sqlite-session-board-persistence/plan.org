@@ -53,14 +53,24 @@ User-authored files, explicit exports and backups, migration reports, screenshot
 - =F87-ROUTING-FINALITY=: A committed input remains unclassified until its routing outcome commits; that committed outcome is final.
   Detached endpoints leave existing pickups pending.
   Later participant or subscription changes affect new or still-unclassified input only; historical rerouting requires an explicit operation.
+- =F87-ATOMIC-COMPOSITION=: When one accepted public operation creates a real invariant across owners, its owning application service may submit one typed, use-case-specific SQLite transaction.
+  There is no generic transaction surface, SQL escape hatch, or permission for either domain owner to mutate the other's representation.
+- =F87-SHARED-DELETION=: Deleting a session purges its private state and resources but leaves records already published to a shared Board.
+  Shared history changes only through an explicit Board operation, and operator-created historical backups are not rewritten by live deletion.
+- =F87-SECURITY=: Feature 87 relies on restrictive local permissions for the database, WAL, temporary pathname exports, migration artifacts, and backups.
+  Encryption at rest and key management are separate work.
+- =F87-LARGE-VALUES=: The first implementation stores one bounded BLOB per resource and uses a deliberately generous private request/value limit.
+  Values above the limit fail explicitly; there is no authoritative file fallback and no initial chunk-streaming subsystem.
+  Measurements may revise the private limit or justify chunking later without changing the resource contract.
+- =F87-PENDING-PRESENTATION=: Shells may present a user operation as pending, but agents and durable projections observe it only after commit.
+  Cancellation before worker submission drops the intent.
+  Once submitted, the command outcome is reconciled; if it committed, cancellation is a later durable domain transition rather than rollback.
 
 * Open design decisions
 
-- =F87-OPEN-ATOMIC-COMPOSITION=: Decide whether the few workflows whose accepted outcome spans owners, such as consuming a Board pickup into a session, use one use-case-specific SQLite transaction or independent idempotent owner commits.
-- =F87-OPEN-SHARED-DELETION=: Decide whether deleting a session leaves its authored records in shared Boards or triggers an explicit shared-data deletion policy.
-- =F87-OPEN-SECURITY=: Decide whether restrictive local permissions are sufficient for the database and backups or encryption at rest belongs in this feature.
-- =F87-OPEN-LARGE-VALUES=: Define bounded worker transport and storage for large resource bytes without falling back to an authoritative ordinary file.
-- =F87-OPEN-PENDING-PRESENTATION=: Define whether shells show commit-pending user operations and how cancellation behaves before and after commit.
+- =F87-OPEN-SCHEMA-UPGRADE=: Decide whether later SQLite schema versions upgrade automatically at startup or require the same explicit offline operation as legacy-file migration.
+- =F87-OPEN-BACKUP-POLICY=: Decide whether backups remain explicit operator actions or the runtime automatically creates them before schema migration and destructive deletion.
+- =F87-OPEN-DELIVERY-PACKAGES=: Replace the current ten implementation slices with fewer owner-complete delivery packages and decide whether detailed schema/mechanism material remains in =plan.org= or moves to a companion design artifact.
 
 [[file:../89-board-run-visibility-and-handoff/plan.org][Feature 89]] owns chat-visible board-run status, model-context projection, and quiescent completion handoff.
 This feature persists the board facts and participant-authored completion records that feature 89 needs for restart-safe behavior, but it does not own that user experience.
@@ -164,7 +174,8 @@ The database stores only the routing decision and pickup lifecycle produced by t
 Session and participant-owned state does not travel through =e-board=.
 =e-session= sends typed mutation intents directly to =e-session-storage=, applies the resulting state only after commit acknowledgement, and restores through session projections.
 A participant may persist its own transcript, configuration, metadata, board association, and recovery cursor without publishing those private values to the board.
-There is no cross-domain commit API that combines a board publication with a session mutation.
+There is no generic cross-domain commit API.
+When one public operation has an accepted invariant spanning Board and session state, its owning application service may use one typed composite storage command without making either domain port own the other domain's mutations.
 
 The worker owns a separate read-only connection with =query_only= enabled.
 The main Emacs process sends asynchronous typed read requests and never calls SQLite directly.
@@ -463,7 +474,8 @@ The catalog columns are updated in the same transaction as the record that chang
 They are not authoritative duplicate files and never require a reindex scan after an ordinary write.
 Compaction and transcript clear preserve immutable audit history.
 An explicit session-delete operation is different: it physically removes the session's private records, projections, and owned temporary resources through bounded worker transactions.
-The treatment of shared Board records authored by the deleted session remains a separate product decision because a session does not own a shared Board.
+It does not remove records already published to a shared Board because a session does not own shared Board history.
+Changing that history requires an explicit Board operation with Board-owned authorization and audit semantics.
 
 =session_records= is the ordered immutable session history:
 
@@ -588,7 +600,11 @@ The consumer records a durable checkpoint after it has accepted a page; bounded 
 
 =raw_results= stores resource id, content bytes, owner, preview fields, redaction policy, cleanup lifetime, metadata, creation time, last-access time, and expiry.
 The =raw-result://= resource method reads this table, and cleanup physically deletes expired rows in bounded transactions.
-Large values require bounded worker transport and database access; an ordinary file spill may be a disposable pathname adapter but cannot remain the resource authority.
+The initial implementation stores one BLOB per resource and admits a deliberately generous private maximum through one bounded worker request.
+The exact maximum is implementation configuration, not a public contract; exceeding it returns an explicit value-too-large error.
+Do not build chunk streaming initially.
+Observed resource sizes, worker memory, and latency determine whether to raise the limit or introduce chunking later.
+An ordinary file spill may be a disposable pathname adapter but cannot remain the resource authority.
 
 =temporary_resources= stores the content bytes and metadata currently represented by e-managed session =tmp://= files, including complete tool-invocation details.
 It preserves resource id, session and lineage ownership, content type, creation and last-access time, expiry, and cleanup classification.
@@ -635,6 +651,9 @@ The worker performs the following in one =BEGIN IMMEDIATE= transaction:
 The owning Lisp component applies the committed result only after step 6.
 Before acknowledgement it may expose a clearly provisional operation to its caller, but it may not update the authoritative live session, Board, queue, cron, resource, or other durable projection and later attempt to persist that mutation.
 Callbacks and follow-on effects run from the committed result, not from the submitted intent object.
+Cancellation before the adapter submits the command to the worker removes the provisional intent.
+After submission, the adapter first reconciles whether the original command committed.
+If it did, cancellation is represented by a later owner-shaped cancellation, retry, or tombstone transition; neither the shell nor adapter pretends to roll back the committed transaction.
 
 A board publication transaction has one additional fixed contract:
 
@@ -651,9 +670,11 @@ Executable policy remains in memory; its durable outcome does not.
 
 The shared worker serializes commands from every storage API.
 A command normally changes one owner.
-A multi-owner transaction is added only when the application defines a real invariant that must commit atomically; sharing the database alone does not invent such an invariant.
-A participant that derives private state from a board row records the committed board position as a causal reference and persists its own state through =e-session-storage=.
-That session update is independently retryable and must be idempotent; it is not part of board routing.
+A multi-owner transaction exists only when one accepted public operation defines a real invariant that must commit atomically; sharing the database alone does not invent such an invariant.
+The application service that owns that operation submits one typed composite command whose contract names the participating owner transitions.
+For example, accepting a Board pickup into a session may atomically append the admitted session input and advance the pickup's acceptance state so neither side can exist alone after a crash.
+Neither =e-board-storage= nor =e-session-storage= gains the other's operations, and no caller receives a generic transaction builder.
+Derived state without such an invariant records its causal Board position and remains an independently retryable, idempotent owner commit.
 
 The response is emitted only after commit.
 Constraint and revision conflicts are terminal.
@@ -792,6 +813,9 @@ This feature does not delete them.
 - A corrupt database is left untouched and errors with recovery instructions.
   Recovery means restoring a verified backup or explicitly rerunning the legacy importer against preserved sources.
 - Temporary databases, backups, and migration reports use restrictive file permissions consistent with the session directory.
+- The database, WAL, temporary pathname exports, and migration working files use the same restrictive local permissions.
+- Encryption at rest and key management are not part of this feature.
+- Live deletion changes the active store and future backups only; it does not locate or rewrite operator-created historical backups.
 
 * Implementation slices
 
@@ -808,6 +832,7 @@ The SQLite backend remains opt-in until the migration and cutover gates pass.
 2. *SQLite schema and worker*
    - Add schema migrations, the batch Emacs worker, typed read/write protocol, WAL/foreign key settings, command deduplication, aggregate revisions, exclusive runtime ownership, and bounded status.
    - Keep every SQLite connection in the worker, prioritize commits over bounded read pages, and attach every read result to a committed revision or position.
+   - Reconcile submitted command ids before resolving post-submission cancellation; never expose generic SQL or transaction construction.
    - Test empty creation, reopen, second-runtime refusal, stale-owner recovery, duplicate command, hash mismatch, revision conflict, busy retry, bounded restart, kill-before-commit, and kill-after-commit-before-ack.
    - Gate: the SQLite adapter passes focused transaction and bounded-read tests with WAL =synchronous=NORMAL=, without changing the default backend or opening SQLite in the interactive Emacs process.
 
@@ -816,7 +841,7 @@ The SQLite backend remains opt-in until the migration and cutover gates pass.
    - Change session mutation flow so submitted intent remains provisional and live durable state advances only from the acknowledged committed result.
    - Load only session headers at store startup; remove reindex work from the SQLite path.
    - Run the semantic contract suite against disposable SQLite stores.
-   - Implement explicit session deletion as a physical purge of private rows and owned temporary resources without treating transcript clear or compaction as deletion.
+   - Implement explicit session deletion as a physical purge of private rows and owned temporary resources without treating transcript clear or compaction as deletion or removing shared Board history.
    - Gate: create, metadata/config changes, branches, compactions, anchors, displays, transcript clear, explicit deletion, list ordering, and finalization survive restart with exact values.
 
 4. *Cooperative session resume and tool-follow-up recovery*
@@ -846,12 +871,14 @@ The SQLite backend remains opt-in until the migration and cutover gates pass.
    - Split the current combined chat/session binding so =e-chat= and the harness session remain independent peers attached to =e-board=.
    - Keep =e-chat= input, output, and observation on board APIs; do not resolve communication through =e-session=.
    - Keep participant-owned transcript, configuration, metadata, association, and private recovery state on =e-session-storage= or the participant's own storage boundary; keep shared pickup lifecycle on =e-board-storage=.
-   - Gate: commit is publication; every routed delivery originates from a canonical SQLite row and a committed pickup claim; restart preserves identity, FIFO order, and consumption state; no executable subscription or callback enters storage; no board record uses a session log owner; and session writes do not pass through =e-board= or =e-board-storage=.
+   - Add only the typed composite transaction required to admit an accepted pickup into session state while advancing its Board acceptance; keep all other cross-owner derivation independently retryable by causal identity.
+   - Gate: commit is publication; every routed delivery originates from a canonical SQLite row and a committed pickup claim; session admission and pickup acceptance cannot tear; restart preserves identity, FIFO order, and consumption state; no generic transaction surface, executable subscription, or callback enters storage; no Board record uses a session log owner; and neither domain port owns the other's mutations.
 
 7. *Remaining runtime-state stores*
    - Move task queues, cron cadence and firing claims, voice tells, e-written Goodnite demand events, raw-result resources, and e-managed session-temporary resources onto their typed SQLite APIs.
    - Make task claim/attempt transitions and cron firing claims commit before their work starts.
    - Preserve each resource URI and owner's current semantic rules while replacing its file writer, loader, error swallowing, and cleanup path.
+   - Start with one BLOB per resource and one generous private value limit; reject larger values explicitly and defer chunk streaming until measurements require it.
    - Retain queue and cron audit until explicit owner deletion, physically delete expired raw/temporary resources, and add acknowledged Goodnite consumer checkpoints before event cleanup.
    - Add bounded reads, status, barriers, retention, and owner-specific contract tests.
    - Gate: no production path writes =records.eld=, =cron-state.eld=, =voice-tells.eld=, =daydream_access.jsonl=, raw-result files, or e-managed session =tmp://= files; restart preserves every supported durable value and pending claim identity; cleanup never crosses an unacknowledged lifetime or consumer checkpoint.
@@ -902,7 +929,7 @@ The tests should fail narrowly when domain semantics change and should not asser
 ** Adapter tests
 
 Test schema migrations and SQL constraints directly with disposable databases.
-Cover command deduplication, canonical hashes, revisions, foreign keys, transaction rollback, busy classification, worker death boundaries, exclusive runtime ownership, atomic board insertion and pickup creation, indexed selector reads, page positions, read/write scheduling, unknown codec/schema versions, and the absence of main-process database connections.
+Cover command deduplication, canonical hashes, revisions, foreign keys, transaction rollback, busy classification, worker death boundaries, pre/post-submission cancellation, exclusive runtime ownership, atomic Board insertion and pickup creation, typed cross-owner composition, indexed selector reads, page positions, read/write scheduling, exact/one-over private resource limits, unknown codec/schema versions, and the absence of main-process database connections.
 
 ** Migration tests
 
@@ -917,6 +944,9 @@ It must also prove that each session's private commits remain in =e-session-stor
 One board-publication scenario must stop before commit, after commit before wake delivery, and after wake delivery.
 It must prove that commit is the only publication boundary, routing uses the committed row, pickup creation and claims commit before endpoint delivery, a lost wake resumes from committed unprocessed state, and restart preserves pickup identity and consumption state.
 It must also prove that a committed no-recipient outcome is not implicitly changed by later subscription attachment and that explicit rerouting has a new durable identity.
+
+One pickup-admission scenario must stop before and after the typed composite commit.
+It must prove that accepted session input and Board pickup acceptance appear together, that neither domain port exposes the other's mutation surface, and that an unrelated participant projection remains an independently retryable causal commit.
 
 One tool-follow-up scenario must crash before dispatch claim, after claim but before tool start, after tool start but before durable result, after durable result, and after provider-follow-up settlement.
 It must prove that no tool starts before its claim commits, safe automatic continuation occurs where the durable state and tool contract permit it, and an uncertain external effect becomes explicit attention state when it cannot be reconciled safely.
@@ -954,8 +984,13 @@ It must prove bounded automatic restart, command-id reconciliation, frozen mutat
 - Session, Board, task, and cron audit remains until explicit owner deletion; Board clear and transcript clear do not silently delete audit history.
 - Expired raw and temporary resources are physically deleted, and Goodnite event cleanup never advances beyond its consumer's acknowledged checkpoint.
 - Explicit session deletion physically purges private session state and owned temporary resources.
+- Session deletion leaves shared Board history unchanged, and live deletion does not rewrite historical operator backups.
 - Worker failure triggers bounded restart and stable-command reconciliation; while unavailable, new durable mutations and dependent external effects remain frozen and shells identify already-loaded state as storage-unavailable.
 - Committed routing outcomes are final, detached endpoints preserve pickup identity, and historical rerouting is explicit.
+- A typed application-service transaction makes accepted pickup admission and its session input atomic without exposing generic transactions or cross-owner domain ports.
+- Resource values up to the private implementation limit use SQLite BLOB storage without ordinary backing files; exact one-over fails explicitly, and chunk streaming is not required initially.
+- Shells distinguish provisional intent from committed state; pre-submission cancellation drops intent, while post-submission cancellation reconciles the original command and uses a later durable transition when it committed.
+- The database and related artifacts use restrictive local permissions; encryption at rest is not part of Feature 87.
 - WAL =synchronous=NORMAL= protects committed transactions from e and worker process crashes but does not promise survival of the latest acknowledgements after host failure or sudden power loss.
 - Legacy migration is explicit, verified, atomic at cutover, and preserves the source files.
 - Store opening fails clearly when SQLite support, the expected schema, or a required migration is absent.
@@ -968,6 +1003,8 @@ It must prove bounded automatic restart, command-id reconciliation, frozen mutat
 - Do not promise exactly-once execution of arbitrary external tool effects.
   Automatic retry requires a tool-specific idempotency or reconciliation contract.
 - Do not promise that the latest acknowledged commit survives host failure or sudden power loss.
+- Do not provide encryption at rest or key management in this feature.
+- Do not add chunk-streaming storage before observed resource sizes require it.
 - Do not make SQLite a model-facing tool or capability action.
 - Do not expose generic SQL to agents, shells, capabilities, or resources.
 - Do not add full-text search, cloud sync, shared network storage, concurrent multi-runtime consumption, or a generic capability projection framework in this feature.
