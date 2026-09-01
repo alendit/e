@@ -91,26 +91,125 @@ application service and storage adapter."
     :context-curation-packages)
   "Append-only semantic fields represented in a session value.")
 
+(defconst e-session-catalog--missing
+  (make-symbol "e-session-catalog--missing")
+  "Sentinel used when an equal-tested catalog lookup has no value.")
+
+(cl-defstruct (e-session-catalog--analysis
+              (:constructor e-session-catalog--analysis-create
+                            (session entries path path-id-set path-id-index
+                             suffix suffix-id-set)))
+  "Invocation-local indexed analysis of one session projection.
+
+The analysis is deliberately disposable.  It collects the supplied semantic
+value once, preserves the first equal ID just as the historical linear lookup
+did, and carries the path/set values needed by one manifest or checkpoint
+projection.  It is not aggregate state and is never retained by storage."
+  session entries path path-id-set path-id-index suffix suffix-id-set)
+
+(defun e-session-catalog--analysis-entry (by-id id)
+  "Resolve ID through the invocation-local indexed catalog BY-ID."
+  (gethash id by-id e-session-catalog--missing))
+
+(defun e-session-catalog--analysis-member-p (set key)
+  "Return non-nil when KEY is present in the equal-tested indexed SET."
+  (gethash key set))
+
+(defun e-session-catalog--select-retained (items predicate)
+  "Select ITEMS for one bounded retained-entry category using PREDICATE."
+  (cl-remove-if-not predicate items))
+
+(defun e-session-catalog--select-final-path (path predicate)
+  "Select final retained entries from PATH using PREDICATE."
+  (cl-remove-if-not predicate path))
+
 (defun e-session-catalog--session-entries (session)
   "Return all durable entries in SESSION order-independent list order."
   (apply #'append
          (mapcar (lambda (field) (copy-sequence (plist-get session field)))
                  e-session-catalog--list-fields)))
 
-(defun e-session-catalog--entry-by-id (entries id)
-  "Return entry ID from ENTRIES."
-  (seq-find (lambda (entry) (equal (plist-get entry :id) id)) entries))
+(defun e-session-catalog--analysis-latest-valid-compaction
+  (session path-id-set)
+  "Return latest valid compaction for SESSION and indexed PATH-ID-SET."
+  (seq-find
+   (lambda (entry)
+     (and (eq (plist-get entry :type) 'compaction)
+          (let ((boundary (plist-get entry :first-kept-entry-id)))
+            (and boundary
+                 (e-session-catalog--analysis-member-p path-id-set boundary)))))
+   (reverse (plist-get session :compactions))))
 
-(defun e-session-catalog--path (session &optional head-id)
-  "Return SESSION's canonical parent path ending at HEAD-ID."
+(defun e-session-catalog--analysis-build (session &optional head-id)
+  "Build one indexed, invocation-local analysis for SESSION.
+
+The equal hash index is populated in the exact order returned by
+`e-session-catalog--session-entries`; an existing value is never overwritten.
+This preserves the historical first-match behavior for duplicate IDs across
+and within semantic catalog fields.  Missing parent IDs and repeated path IDs
+are malformed catalog values and signal `e-session-catalog-error`."
   (let* ((entries (e-session-catalog--session-entries session))
-         (head-id (or head-id (plist-get session :current-head-id)))
-         result)
-    (while head-id
-      (when-let ((entry (e-session-catalog--entry-by-id entries head-id)))
-        (push entry result)
-        (setq head-id (plist-get entry :parent-id))))
-    result))
+         (by-id (make-hash-table :test #'equal
+                                 :size (max 1 (length entries))))
+         (cursor (or head-id (plist-get session :current-head-id)))
+         (visited (make-hash-table :test #'equal
+                                   :size (max 1 (length entries))))
+         path)
+    (dolist (entry entries)
+      (let ((id (plist-get entry :id)))
+        (when (eq (gethash id by-id e-session-catalog--missing)
+                  e-session-catalog--missing)
+          (puthash id entry by-id))))
+    (while cursor
+      (when (e-session-catalog--analysis-member-p visited cursor)
+        (signal 'e-session-catalog-error
+                (list (format "Session path repeats entry ID %S" cursor))))
+      (puthash cursor t visited)
+      (let ((entry (e-session-catalog--analysis-entry by-id cursor)))
+        (if (eq entry e-session-catalog--missing)
+            (signal 'e-session-catalog-error
+                    (list (format "Session path cannot resolve entry ID %S"
+                                  cursor)))
+          (push entry path)
+          (setq cursor (plist-get entry :parent-id)))))
+    (let* ((path-id-set (make-hash-table :test #'equal
+                                         :size (max 1 (length path))))
+           (path-id-index (make-hash-table
+                           :test #'equal :size (max 1 (length path)))))
+      (dolist (entry path)
+        (let ((id (plist-get entry :id)))
+          (puthash id t path-id-set)
+          (puthash id entry path-id-index)))
+      (let* ((compaction
+              (e-session-catalog--analysis-latest-valid-compaction
+               session path-id-set))
+           (boundary-id (and compaction
+                               (plist-get compaction :first-kept-entry-id)))
+             (boundary (and boundary-id
+                            (e-session-catalog--analysis-entry
+                             path-id-index boundary-id)))
+             (suffix (if (and boundary
+                              (e-session-catalog--analysis-member-p
+                               path-id-set boundary-id))
+                         ;; `by-id' and PATH share the same entry objects, so
+                         ;; `memq' finds the exact historical first match without
+                         ;; another equal linear membership scan.
+                         (or (memq boundary path) path)
+                       path))
+             (suffix-id-set (make-hash-table :test #'equal
+                                             :size (max 1 (length suffix)))))
+        (dolist (entry suffix)
+          (puthash (plist-get entry :id) t suffix-id-set))
+        (e-session-catalog--analysis-create
+         session entries path path-id-set path-id-index suffix suffix-id-set)))))
+
+(defun e-session-catalog--path (session &optional head-id analysis)
+  "Return SESSION's canonical parent path ending at HEAD-ID.
+
+ANALYSIS, when supplied by a composed projection, reuses its indexed path.
+Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
+  (e-session-catalog--analysis-path
+   (or analysis (e-session-catalog--analysis-build session head-id))))
 
 (defun e-session-catalog--root-id (session)
   "Return SESSION's durable root event id."
@@ -122,25 +221,16 @@ application service and storage adapter."
   (let ((count (length items)))
     (copy-sequence (nthcdr (max 0 (- count limit)) items))))
 
-(defun e-session-catalog--latest-valid-compaction (session)
+(defun e-session-catalog--latest-valid-compaction (session &optional analysis)
   "Return latest compaction whose boundary occurs on SESSION's path."
-  (let ((path (e-session-catalog--path session)))
-    (seq-find
-     (lambda (entry)
-       (and (eq (plist-get entry :type) 'compaction)
-            (let ((boundary (plist-get entry :first-kept-entry-id)))
-              (and boundary
-                   (e-session-catalog--entry-by-id path boundary)))))
-     (reverse (plist-get session :compactions)))))
+  (let ((analysis (or analysis (e-session-catalog--analysis-build session))))
+    (e-session-catalog--analysis-latest-valid-compaction
+     session (e-session-catalog--analysis-path-id-set analysis))))
 
-(defun e-session-catalog--checkpoint-path-suffix (session)
+(defun e-session-catalog--checkpoint-path-suffix (session &optional analysis)
   "Return SESSION's resumable current-path suffix."
-  (let ((path (e-session-catalog--path session)))
-    (if-let* ((compaction (e-session-catalog--latest-valid-compaction session))
-              (boundary (e-session-catalog--entry-by-id
-                         path (plist-get compaction :first-kept-entry-id))))
-        (member boundary path)
-      path)))
+  (e-session-catalog--analysis-suffix
+   (or analysis (e-session-catalog--analysis-build session))))
 
 (defun e-session-catalog--board-messages (messages)
   "Select the bounded board resume union from MESSAGES."
@@ -174,9 +264,11 @@ application service and storage adapter."
                             (copy-tree (plist-get entry :erasure)))))))
     (_ nil)))
 
-(defun e-session-catalog--context-state (path complete-path)
-  "Return bounded context lifetime projection for PATH and COMPLETE-PATH."
-  (let* ((generations
+(defun e-session-catalog--context-state (analysis)
+  "Return bounded context lifetime projection from indexed ANALYSIS."
+  (let* ((path (e-session-catalog--analysis-suffix analysis))
+         (complete-path (e-session-catalog--analysis-path analysis))
+         (generations
           (seq-filter (lambda (entry)
                         (eq (plist-get entry :type) 'context-generation))
                       complete-path))
@@ -211,101 +303,122 @@ application service and storage adapter."
         (push (car pair) erasure-entries)))
     (let* ((erasures (nreverse erasures))
            (erasure-generation-ids
-            (delete-dups (delq nil (mapcar (lambda (record)
-                                             (plist-get record :generation-id))
-                                           erasures))))
-           (required-generations
-            (seq-filter
-             (lambda (entry)
-               (or (eq entry generation-entry)
-                   (member (plist-get (plist-get entry :context-record) :id)
-                           erasure-generation-ids)))
-             generations))
-           (entries
-            (seq-filter
-             (lambda (entry)
-               (or (memq entry required-generations)
-                   (memq entry promotion-entries)
-                   (memq entry erasure-entries)))
-             complete-path)))
-      (list :generation generation
-            :generations
-            (vconcat (mapcar (lambda (entry)
-                               (copy-tree (plist-get entry :context-record)))
-                             required-generations))
-            :promotions (vconcat (mapcar #'copy-tree (nreverse promotions)))
-            :erasures (vconcat erasures)
-            :entry-ids (vconcat (mapcar (lambda (entry) (plist-get entry :id))
-                                        entries))))))
+            (make-hash-table :test #'equal
+                             :size (max 1 (length erasures))))
+           (required-generations nil)
+           (required-generation-set (make-hash-table :test #'eq))
+           (promotion-entry-set (make-hash-table :test #'eq))
+           (erasure-entry-set (make-hash-table :test #'eq)))
+      (dolist (record erasures)
+        (when-let ((generation-id (plist-get record :generation-id)))
+          (puthash generation-id t erasure-generation-ids)))
+      (dolist (entry generations)
+        (when (or (eq entry generation-entry)
+                  (e-session-catalog--analysis-member-p
+                   erasure-generation-ids
+                   (plist-get (plist-get entry :context-record) :id)))
+          (push entry required-generations)))
+      (setq required-generations (nreverse required-generations))
+      (dolist (entry required-generations)
+        (puthash entry t required-generation-set))
+      (dolist (entry promotion-entries)
+        (puthash entry t promotion-entry-set))
+      (dolist (entry erasure-entries)
+        (puthash entry t erasure-entry-set))
+      (let ((entries
+             (seq-filter
+              (lambda (entry)
+                (or (e-session-catalog--analysis-member-p
+                     required-generation-set entry)
+                    (e-session-catalog--analysis-member-p
+                     promotion-entry-set entry)
+                    (e-session-catalog--analysis-member-p
+                     erasure-entry-set entry)))
+              complete-path)))
+        (list :generation generation
+              :generations
+              (vconcat (mapcar (lambda (entry)
+                                 (copy-tree (plist-get entry :context-record)))
+                               required-generations))
+              :promotions (vconcat (mapcar #'copy-tree (nreverse promotions)))
+              :erasures (vconcat erasures)
+              :entry-ids (vconcat (mapcar (lambda (entry) (plist-get entry :id))
+                                          entries)))))))
 
-(defun e-session-catalog--retained-entries (session)
+(defun e-session-catalog--retained-entries
+    (session &optional analysis context)
   "Return ordered bounded durable entries needed to resume SESSION."
-  (let* ((path (e-session-catalog--checkpoint-path-suffix session))
-         (path-ids (mapcar (lambda (entry) (plist-get entry :id)) path))
-         (complete-path (e-session-catalog--path session))
+  (let* ((analysis (or analysis (e-session-catalog--analysis-build session)))
+         (path (e-session-catalog--analysis-suffix analysis))
+         (path-id-set (e-session-catalog--analysis-suffix-id-set analysis))
+         (complete-path (e-session-catalog--analysis-path analysis))
+         (complete-path-id-set
+          (e-session-catalog--analysis-path-id-set analysis))
+         (context (or context (e-session-catalog--context-state analysis)))
          (activity
           (e-session-catalog--tail
-           (cl-remove-if-not
-            (lambda (entry) (member (plist-get entry :id) path-ids))
-            (plist-get session :activity-events))
+           (e-session-catalog--select-retained
+            (plist-get session :activity-events)
+            (lambda (entry)
+              (e-session-catalog--analysis-member-p
+               path-id-set (plist-get entry :id))))
            e-session-checkpoint-activity-event-limit))
          (marked-activity
           (e-session-catalog--tail
-           (cl-remove-if-not
+           (e-session-catalog--select-retained
+            (plist-get session :activity-events)
             (lambda (entry)
-              (and (member (plist-get entry :id)
-                           (mapcar (lambda (item) (plist-get item :id))
-                                   complete-path))
-                   (plist-get entry :checkpoint-retain)))
-            (plist-get session :activity-events))
+              (and (e-session-catalog--analysis-member-p
+                    complete-path-id-set (plist-get entry :id))
+                   (plist-get entry :checkpoint-retain))))
            e-session-checkpoint-marked-activity-event-limit))
          (reports
           (e-session-catalog--tail
-           (cl-remove-if-not
-            (lambda (entry) (member (plist-get entry :id) path-ids))
-            (plist-get session :process-reports))
+           (e-session-catalog--select-retained
+            (plist-get session :process-reports)
+            (lambda (entry)
+              (e-session-catalog--analysis-member-p
+               path-id-set (plist-get entry :id))))
            e-session-checkpoint-process-report-limit))
          (anchors
-          (cl-remove-if-not
+          (e-session-catalog--select-retained
+           (plist-get session :provider-anchors)
            (lambda (anchor)
-             (and (member (plist-get anchor :id) path-ids)
-                  (member (plist-get anchor :covered-entry-id) path-ids)))
-           (plist-get session :provider-anchors)))
+             (and (e-session-catalog--analysis-member-p
+                  path-id-set (plist-get anchor :id))
+                  (e-session-catalog--analysis-member-p
+                   path-id-set (plist-get anchor :covered-entry-id))))))
          (curation-controls
-          (cl-remove-if-not
+          (e-session-catalog--select-retained
+           complete-path
            (lambda (entry)
              (and (eq (plist-get entry :type) 'activity-event)
                   (eq (plist-get entry :event-type)
-                      'context-curation-response)))
-           complete-path))
-         (required-ids
-          (delete-dups
-           (append
-            (mapcar (lambda (entry) (plist-get entry :id))
-                    (seq-filter (lambda (entry)
-                                  (memq (plist-get entry :type)
-                                        '(message branch-summary compaction)))
-                                path))
-            (mapcar (lambda (entry) (plist-get entry :id)) activity)
-            (mapcar (lambda (entry) (plist-get entry :id)) marked-activity)
-            (when-let ((latest (plist-get session :latest-token-usage-event)))
-              (list (plist-get latest :id)))
-            (mapcar (lambda (entry) (plist-get entry :id)) reports)
-            (mapcar (lambda (entry) (plist-get entry :id)) anchors)
-            (mapcar (lambda (entry) (plist-get entry :id)) curation-controls)
-            (append (append (plist-get (e-session-catalog--context-state
-                                        path complete-path)
-                                       :entry-ids)
-                            nil)
-                    nil)
-            (list (plist-get session :current-head-id)
-                  (and path (plist-get (car path) :id)))))))
-    (cl-remove-if-not
+                      'context-curation-response)))))
+         (required-ids (make-hash-table :test #'equal
+                                        :size (max 1 (length path)))))
+    (dolist (entry path)
+      (when (memq (plist-get entry :type)
+                  '(message branch-summary compaction))
+        (puthash (plist-get entry :id) t required-ids)))
+    (dolist (entries (list activity marked-activity reports anchors
+                           curation-controls))
+      (dolist (entry entries)
+        (puthash (plist-get entry :id) t required-ids)))
+    (when-let ((latest (plist-get session :latest-token-usage-event)))
+      (puthash (plist-get latest :id) t required-ids))
+    (let ((context-entry-ids (plist-get context :entry-ids)))
+      (dotimes (index (length context-entry-ids))
+        (puthash (aref context-entry-ids index) t required-ids)))
+    (puthash (plist-get session :current-head-id) t required-ids)
+    (puthash (and path (plist-get (car path) :id)) t required-ids)
+    (e-session-catalog--select-final-path
+     complete-path
      (lambda (entry)
        (and (not (equal (plist-get entry :id)
                         (e-session-catalog--root-id session)))
-            (member (plist-get entry :id) required-ids)))
-     complete-path)))
+            (e-session-catalog--analysis-member-p
+             required-ids (plist-get entry :id)))))))
 
 (defun e-session-catalog--root (session)
   "Return compact root state from SESSION."
@@ -321,11 +434,10 @@ application service and storage adapter."
 
 (defun e-session-catalog-checkpoint-manifest (session &optional board-messages)
   "Return semantic resume manifest for SESSION and BOARD-MESSAGES."
-  (let* ((path (e-session-catalog--path session))
-         (entries (e-session-catalog--retained-entries session))
-         (context (e-session-catalog--context-state
-                   (e-session-catalog--checkpoint-path-suffix session)
-                   path))
+  (let* ((analysis (e-session-catalog--analysis-build session))
+         (context (e-session-catalog--context-state analysis))
+         (entries (e-session-catalog--retained-entries
+                   session analysis context))
          (board (e-session-catalog--board-messages (or board-messages nil))))
     (e-session-catalog--copy-value
      (list :session-id (plist-get session :id)
@@ -360,7 +472,11 @@ application service and storage adapter."
 
 (defun e-session-catalog--checkpoint-records (session &optional board-messages)
   "Return canonical replay records for SESSION's resume projection."
-  (let* ((session-id (plist-get session :id))
+  (let* ((analysis (e-session-catalog--analysis-build session))
+         (context (e-session-catalog--context-state analysis))
+         (retained (e-session-catalog--retained-entries
+                    session analysis context))
+         (session-id (plist-get session :id))
          (root (e-session-catalog--root session))
          (records (list (append (list :type "session" :session-id session-id
                                       :timestamp (plist-get root :created-at))
@@ -378,7 +494,7 @@ application service and storage adapter."
     (dolist (message (e-session-catalog--board-messages (or board-messages nil)))
       (push (list :type "board-message" :session-id session-id
                   :message (copy-tree message)) records))
-    (dolist (entry (e-session-catalog--retained-entries session))
+    (dolist (entry retained)
       (push (e-session-catalog--checkpoint-entry-record session-id entry parent-id)
             records)
       (setq parent-id (plist-get entry :id)))

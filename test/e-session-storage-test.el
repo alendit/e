@@ -252,6 +252,80 @@
         (when (process-live-p process) (kill-process process)))
       (delete-directory directory t))))
 
+(ert-deftest e-session-storage-test-projection-error-does-not-submit-checkpoint ()
+  "A catalog projection error reaches storage before a partial checkpoint."
+  (skip-unless (executable-find e-session-storage-node-executable))
+  (let ((e-session-storage-checkpoint-delay 60)
+        (directory (make-temp-file "e-session-projection-error-" t))
+        store controller)
+    (unwind-protect
+        (progn
+          (setq store (e-session-persistent-index-store-create directory))
+          (e-session-create store :id "projection-error")
+          (setq controller (e-session-enable store))
+          (e-session-append-message
+           store "projection-error"
+           '(:id "projection-message" :role user :content "deferred"))
+          ;; Let the ordinary append command settle, while the long checkpoint
+          ;; debounce keeps projection out of this setup phase.
+          (let ((deadline (+ (float-time) 5.0)))
+            (while (and (> (hash-table-count
+                            (e-session-storage--controller-outbox controller)) 0)
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.02)))
+          (let ((original-submit
+                 (symbol-function 'e-session-storage--submit))
+                submitted failure done)
+            (cl-letf (((symbol-function 'e-session-catalog-checkpoint-manifest)
+                       (lambda (&rest _arguments)
+                         (signal 'e-session-catalog-error
+                                 (list "malformed checkpoint projection"))))
+                      ((symbol-function 'e-session-storage--submit)
+                       (lambda (target operation &optional on-done on-error)
+                         (push operation submitted)
+                         (funcall original-submit target operation
+                                  on-done on-error))))
+              (e-session-finalize
+               store
+               (lambda (_value) (setq done t))
+               (lambda (err) (setq failure err)))
+              (let ((deadline (+ (float-time) 5.0)))
+                (while (and (not done) (not failure)
+                            (< (float-time) deadline))
+                  (accept-process-output nil 0.02)))
+              (should failure)
+              (should (eq (car failure) 'e-session-catalog-error))
+              (should-not done)
+              (should-not submitted)
+              (should (member
+                       "projection-error"
+                       (e-session-storage-checkpoint-dirty-session-ids store)))
+              (should-not
+               (e-session-storage-resume-checkpoint-present-p
+                store "projection-error"))
+              (should (= (e-session-storage--state-unsettled-write-count
+                          (e-session-storage-test--state store))
+                         0)))
+            ;; The projection boundary remains retryable after the injected
+            ;; owner error; the restored implementation must submit normally.
+            (setq failure nil done nil)
+            (e-session-finalize
+             store
+             (lambda (_value) (setq done t))
+             (lambda (err) (setq failure err)))
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (not done) (not failure)
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.02)))
+            (should done)
+            (should-not failure)
+            (should (e-session-storage-resume-checkpoint-present-p
+                     store "projection-error"))))
+      (when-let ((process (and controller
+                              (e-session-storage--controller-process controller))))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (defun e-session-storage-test--route-routing-policy (policy)
   "Route symbol and string attribute messages through POLICY's selector.
 This is an owner-level routing assertion: it exercises the restored selector

@@ -1,0 +1,283 @@
+#+title: Checkpoint Manifest Path-Scanning CPU Investigation
+#+startup: overview
+
+* Status
+
+Resolved.  The supplied trace and native profiles established a catalog-owned
+checkpoint-selection defect.  CMP-DP1 implements the accepted indexed-analysis
+plan and reached =deterministic-fixed-point= in independent implementation
+review.
+
+* Behavioral goal
+
+- Goal ID: =BUG-CHECKPOINT-MANIFEST-LINEARITY=
+- Behavioral goal: a long persistent session can cross its ordinary durability
+  checkpoint without checkpoint selection monopolizing the Emacs event loop.
+- Direct scenario: create a realistic long persistent session through the
+  public session API, append a message, finalize the existing durability
+  boundary, reopen the store, and observe the appended message while the
+  checkpoint selector performs one indexed analysis rather than repeated
+  whole-path scans.
+- Product authority: the user.
+- Owning contract: =CMP-1= below.
+- Behavioral status: the supplied pre-fix profile demonstrates the failure and
+  the public preservation scenario passes after CMP-DP1.  A production profile
+  rerun was not performed because it would require changing the running Emacs;
+  timing remains observational rather than an acceptance gate.
+
+* Scope and non-goals
+
+The correction is limited to pure checkpoint selection in
+=e-session-catalog=.  Contract =CMP-2= owns every preservation requirement;
+this section only bounds the changed owner.
+
+The package does not change Board routing, provider transport, redisplay,
+session-index publication, durability scheduling, generalized transaction
+semantics, or the planned SQLite backend.  The running Emacs is not reloaded,
+signalled, or modified during investigation or repository-side validation.
+
+* Evidence
+
+The structured trace covers approximately 18 seconds and contains 598 events.
+It records 282 journal appends averaging 0.080 ms and eight public message
+appends averaging 32.731 ms.  The earlier =fc9a19cf= correction therefore
+removed the prior multi-second manifest reconstruction from the synchronous
+message-append stack.
+
+The native profiles expose the remaining checkpoint-bound cost.  Direct stack
+aggregation attributes 27.82 percent of CPU samples and 45.98 percent of
+allocated bytes to =e-session-catalog-checkpoint-manifest=.  Its nested
+=e-session-catalog--path= and =e-session-catalog--entry-by-id= branches account
+for 23.84/23.73 percent of CPU samples and 41.86/41.81 percent of allocated
+bytes respectively.  These percentages overlap because the path and lookup
+work runs beneath the manifest owner.
+
+Source inspection explains the profile.  =e-session-catalog--path= first
+concatenates every durable entry list, then resolves each parent with a linear
+=seq-find=.  One path of length =N= therefore costs quadratic lookup work.
+One manifest independently reconstructs that path for its top-level path,
+retained-entry selection, compaction selection, checkpoint suffix, and context
+projection.  The 1,000-entry source-preferred batch fixture invoked
+=e-session-catalog--entry-by-id= 6,006 times; every invocation performed a
+linear scan.
+
+An observational pre-fix batch baseline at the =fc9a19cf= source produced:
+
+| Entries | One manifest | Lookup calls |
+|---------+--------------+--------------|
+|     250 |     0.0186 s |        1,506 |
+|     500 |     0.0327 s |        3,006 |
+|   1,000 |     0.1388 s |        6,006 |
+|   2,000 |     0.5087 s | not recorded |
+|   4,000 |     1.9589 s | not recorded |
+
+Elapsed values are observational telemetry, not acceptance by themselves.
+The deterministic defect is repeated linear parent lookup inside repeated
+whole-path construction.
+
+This is related to, but distinct from, the defect corrected by =fc9a19cf=.
+That commit moved manifest construction from every mutation to the existing
+durability boundary.  It deliberately deferred catalog path indexing.  The new
+profile proves that the remaining projection algorithm is itself too costly at
+that correct boundary.
+
+* Contract and evidence matrix
+
+| ID | Observable contract | Semantic owner | Public composition | Delivery package | Deterministic evidence | External evidence | Telemetry | Status |
+|----+---------------------+----------------+--------------------+------------------+------------------------+-------------------+-----------+--------|
+| =CMP-1= | A long persistent session finalizes and reopens with the same bounded checkpoint meaning, while one checkpoint projection performs total catalog selection work linear in the durable entries examined plus selected output: entries are collected once, each selected parent is resolved once, and no path-, suffix-, context-, or retained-ID linear membership scan is nested inside an entry scan. | Session catalog | public append, finalize, reopen | =CMP-DP1= | owner-level output equivalence plus deterministic operation-count bounds covering entry collection, parent resolution, every unbounded ID-membership relation, and final retained selection; composed public append/finalize/reopen | not applicable; repository-controlled | supplied profiles and before/after timings, observational | accepted |
+| =CMP-2= | For every accepted session value, manifest and checkpoint-record/JSON projections—including bounds, context and compaction semantics, Board identities, detachment, ordering, and reopen recovery—remain equivalent. The public session facade and storage debounce, writer ordering, retry behavior, and checkpoint format remain unchanged. Catalog adds no durable state, timer, transaction, storage dependency, or compatibility path. | Session catalog and unchanged session/storage boundary | existing checkpoint publication | =CMP-DP1= | before/after manifest, checkpoint-record, and checkpoint-JSON equivalence across representative partitions; existing deferred-projection, checkpoint failure/retry, mutation-during-batch, and public finalize/reopen scenarios; dependency search | not applicable; repository-controlled | not applicable | accepted |
+
+* Aggregate-design comparison
+
+- Accepted behavior and recovery invariants :: Contract =CMP-2=.
+- Current aggregate :: Each private selector rebuilds a complete entry list and
+  repeatedly performs linear ID lookup; a single manifest recomputes equivalent
+  paths several times.
+- Smallest faithful alternative :: Build one invocation-local ID index and
+  canonical path, derive the suffix/context/retained-entry results from those
+  values, and discard the analysis when the pure projection returns.
+- Material difference :: Same public and durable values, no new state or
+  boundary, and linear parent lookup instead of repeated quadratic scans.
+- Decision :: Use the invocation-local indexed analysis.  Do not add an
+  aggregate cache, storage callback protocol, durable index, timer, or SQLite
+  precursor.
+
+* Implementation plan
+
+Plan identity: =checkpoint-manifest-indexed-analysis-v2=.
+
+There is one delivery package, =CMP-DP1=.  Splitting the catalog rewrite from
+its recovery and performance evidence would leave no useful accepted stopping
+point; expanding it into index publication, context runtime, provider, or UI
+work would combine owners that the profile does not justify changing.
+
+1. In =e-session-catalog.el=, introduce one private invocation-local analysis
+   that collects session entries once; builds equal-tested indexes or sets for
+   every unbounded ID-membership relation, including complete path, suffix,
+   retained IDs, and context-owner membership; follows the selected head once;
+   and derives reusable complete-path and checkpoint-suffix values.  Build the
+   entry index in the exact existing catalog field and within-field order and
+   install only the first entry for an equal ID, preserving current =seq-find=
+   precedence.  If duplicate IDs are instead declared invalid, that is a
+   separate aggregate/recovery contract change requiring re-reviewed scope.
+2. Pass one analysis through manifest, checkpoint records/JSON, retained-entry,
+   compaction, and context projection.  Prohibit path- or retained-ID list
+   scans inside per-entry loops.  Preserve useful direct private-helper
+   behavior, but remove the repeated old work from checkpoint construction.
+3. Strengthen catalog tests with representative compaction/context/marked-
+   activity/Board selection equivalence; equal-ID precedence within one field
+   and across fields for path, manifest, and checkpoint records; and a
+   deterministic total-work witness at =N= and =2N= covering entry visits,
+   parent resolution, every unbounded ID-membership relation, and final retained
+   selection.  Counting only =e-session-catalog--entry-by-id= calls is
+   insufficient.  Strengthen the public persistent append/finalize/reopen
+   scenario with a realistic long path.
+4. Record before/after measurements using the same source-preferred batch
+   fixture.  Treat the measured direction as observational; deterministic
+   acceptance comes from stable output/recovery plus the bounded-work witness.
+5. Run focused catalog, session, and storage tests; compilation; the repository
+   preservation gate; and one independent implementation review.
+
+* Architecture disposition
+
+- Semantic owner :: =e-session-catalog= continues to own pure bounded
+  checkpoint selection.
+- Selected source boundary :: private helpers within
+  =lisp/core/e-session-catalog.el=; no new public module or interface.
+- Cohesion reason :: the temporary index and derived paths exist only to answer
+  one catalog projection and have one reason to change: checkpoint selection
+  policy or its algorithm.
+- State lifetime :: invocation-local and rebuildable from the supplied session
+  value; nothing is cached or persisted.
+- Dependency direction :: unchanged; catalog continues to depend only on
+  value/codec utilities and never on aggregate or storage owners.
+
+* Test disposition
+
+- Retain all existing manifest, context, compaction, detachment, checkpoint,
+  and reopen tests.
+- Strengthen owner coverage for a realistic long path and malformed path
+  integrity (missing head, missing intermediate parent, and repeated ID).
+- Replace the earlier parent-lookup-only witness with one mechanism-only
+  deterministic bounded-work witness that counts collection, parent
+  resolution, every indexed membership category, retained-list visits,
+  final-filter visits, and context components at N and 2N.
+- Add one public-composition storage regression for projection failure before
+  checkpoint submission, dirty-state retention, and successful retry.
+- Delete no behavioral tests and add no compatibility branch.
+
+* Plan review
+
+The first independent implementation-plan review blocked
+=checkpoint-manifest-indexed-analysis-v1= because its work witness covered
+parent lookup but not nested retained-ID membership, its local hash design did
+not preserve the catalog's existing first-equal-ID precedence, and preservation
+requirements lacked one normative owner.  Version 2 strengthens =CMP-1=,
+=CMP-2=, the implementation steps, and the evidence topology accordingly.
+
+Independent plan review of =checkpoint-manifest-indexed-analysis-v2= reached
+=implementation-plan-fixed-point= at baseline =fc9a19cf=.  The plan-review
+report hash is =219fda4a0af7939ad47bf6d6e5df1132f88c7e7a519c61a0e20bb3e9567a8c8f=
+and the investigation hash is
+=ba816412318347d950a9bc2a68b5a32069ff1e19620c6dd4eb0c48356c4fadc5=.
+
+* Resolution
+
+CMP-DP1 is implemented in =lisp/core/e-session-catalog.el=.  Each top-level
+manifest or checkpoint-record/JSON projection builds one disposable analysis:
+the durable fields are collected once, an equal-tested ID index resolves the
+first matching parent links, and complete/suffix path sets replace repeated
+linear membership checks.  The index is invocation-local and is discarded
+before the storage adapter observes the detached projection.  No durable value,
+timer, writer operation, dependency, transaction mechanism, or SQLite-facing
+contract changed.
+
+The final correction closes two implementation-review findings within the same
+pure projection boundary:
+
+- P1 path integrity :: the analysis now keeps an equal-tested visited set while
+  following the selected head.  An unresolved head or intermediate parent, or
+  a repeated path ID, signals =e-session-catalog-error= instead of silently
+  truncating the path.  The direct owner suite covers all three malformed
+  shapes, and the composed storage test proves that the error is surfaced
+  before checkpoint submission and remains retryable without a partial
+  checkpoint.
+- P2 work witness :: private owner selection boundaries count retained-list
+  visits and final filtering in the direct test, alongside entry collection,
+  parent resolution, indexed membership, and context-component visits.  Exact
+  N/2N counts cover every category and therefore reject the former
+  member-inside-entry-scan implementation; a test-local `member` shadow also
+  confirms that no legacy list-scan work occurs.  The counters are test-local
+  wrappers around private semantic operations; no production metric or durable
+  state was added.
+
+Synthetic primitive-fault recovery, transaction journals, and persistence
+redesign remain explicitly out of scope.
+
+* Validation
+
+Source-preferred focused evidence:
+
+- =e-session-catalog-test.el=: 11/11 passed, including duplicate-ID first-
+  match preservation through manifest/records/JSON, missing-head,
+  missing-intermediate, and two-entry-cycle errors, plus deterministic 64/128
+  counts for all contracted owner work categories.  Log:
+  =/tmp/e-profile/catalog-owner-p1p2.log=.
+- Composed projection-error durability boundary: 1/1 passed; a malformed
+  catalog projection surfaced as =e-session-catalog-error= before any
+  checkpoint submit, left the session dirty, and succeeded on retry.  Log:
+  =/tmp/e-profile/storage-projection-error-p1.log=.
+- Composed session/storage/facade batch: 136/136 passed, including the new
+  projection-error retry case.  Log:
+  =/tmp/e-profile/session-composed-p1p2.log=.
+- Public deferred append/finalize/reopen regression: 1/1 passed.  Log:
+  =/tmp/e-profile/public-checkpoint-v2.log=.
+- Source check-parens passed.  Log:
+  =/tmp/e-profile/catalog-check-parens-p1p2.log=.
+- Fresh catalog-only load produced a manifest with the facade and storage
+  features absent (=catalog=t facade-loaded=nil storage-loaded=nil=).  Log:
+  =/tmp/e-profile/catalog-fresh-load-p1p2.log=.
+- Test-name preservation comparison found no removals: catalog owner tests
+  6 -> 11 (five focused additions) and storage tests 38 -> 39 (one composed
+  addition).  Evidence: =/tmp/e-profile/test-name-compare-p1p2.txt=.
+- Byte compilation passed with only the repository's existing obsolete
+  =when-let= warnings.  Log: =/tmp/e-profile/catalog-byte-compile-p1p2.log=.
+- The source-preferred post-fix linear fixture measured 100, 200, 400, and 800
+  entries without the former quadratic lookup path.  Log:
+  =/tmp/e-profile/checkpoint-scaling-v2.log=.  Timings are observational; the
+  deterministic work assertions are part of the direct owner suite.
+- Parent focused catalog and storage verification passed 48/48.
+- Parent =eldev compile= passed with existing warnings.
+- Parent =eldev test= ran 2,659 tests: 2,643 expected results, 7 skips, and 9
+  unrelated MCP/OpenAI HTTP/Org Canvas failures.  No catalog, session, or
+  storage test failed; the same nine unrelated failures occurred before the
+  final correction.
+- Independent implementation review verified both P1 and P2 remediations at
+  the exact file identity and reported =deterministic-fixed-point= with zero
+  actionable P0-P3 findings.
+
+No live Emacs action was performed.  The core catalog shape changed, so a full
+Emacs restart is required before a running process can use the implementation.
+
+* Architecture self-check
+
+1. The package is useful on its own because it removes the demonstrated
+   checkpoint selector bottleneck without waiting for SQLite.
+2. It keeps the uncertain future persistence design local by changing only a
+   pure, replaceable algorithm.
+3. Catalog remains the single cohesive semantic owner; no source extraction is
+   justified by this bounded internal algorithm change.
+4. The only added state is an invocation-local, rebuildable lookup table.
+5. Dependencies and side effects are unchanged.
+6. The indexed analysis is a real internal contract for one projection, not a
+   speculative public abstraction.
+7. No compatibility requirement or obsolete path applies.
+8. Existing unexpected projection errors continue to surface at the durability
+   boundary.
+9. Native profiles and timings are observational; output/recovery and bounded
+   lookup work are deterministic gates.
+10. No new normative numeric limit is introduced.
+11. Focused owner equivalence and public finalize/reopen prove stable behavior.
+12. No non-local architectural defect remains in scope after localizing the
+    repeated scans to the catalog owner.

@@ -1,0 +1,18 @@
+#+title: Checkpoint Manifest Path Scanning Pegs Emacs CPU
+#+startup: overview
+
+* Report
+
+The user reported that the running GUI Emacs again consumed a full CPU core
+after the deferred session-checkpoint correction in commit =fc9a19cf= and
+provided this profile bundle:
+
+#+begin_example
+/tmp/e-profile/20260901-123426-000001.jsonl
+/tmp/e-profile/20260901-123426-000001-emacs-cpu.profile
+/tmp/e-profile/20260901-123426-000001-emacs-mem.profile
+#+end_example
+
+Expected behavior: a durability checkpoint for a long persistent session
+preserves the same bounded resume state without making the Emacs event loop
+perform repeated whole-path scans that visibly monopolize the UI thread.
