@@ -230,7 +230,7 @@ A deadline records evidence or changes a durable group projection.  Wall-clock d
 
 5. *Durable report and manifest contract* [durable foundation; may start after 1]
    - Add =lisp/core/e-board-orchestration.el= and =test/e-board-orchestration-test.el=.  Keep board message validation and idempotent fact publication in =lisp/core/e-board.el=.
-   - Define versioned, bounded board facts for a run manifest, task attempt, terminal report, conflict, and continuation claim.  A manifest names =run-id=, task keys, required or optional policy, accepted attempt rules, deadline policy, and continuation destination.  A report names =run-id=, task key, attempt, terminal status, summary, declared outputs, and bounded error data.
+   - Define versioned, bounded board facts for a run manifest, task attempt, terminal report, conflict, and continuation claim.  A manifest names =run-id=, task keys, required or optional policy, accepted attempt rules, deadline policy, continuation destination, and an optional bounded opaque =:descriptor= for producer-owned recovery inputs.  The core validates and replays that descriptor without interpreting its application fields.  A report names =run-id=, task key, attempt, terminal status, summary, declared outputs, and bounded error data.
    - Reduce facts into an idempotent group projection.  Duplicate matching reports are no-ops.  A conflicting report remains visible and blocks a successful terminal projection.  A deadline is a projection fact only; it never cancels work.
    - Test gate: focused ERT proves schema budgets, fact idempotency, required/optional completion, accepted-attempt selection, conflict visibility, and deadline-without-cancellation.
 

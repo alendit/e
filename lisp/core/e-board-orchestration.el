@@ -119,6 +119,32 @@ new input identity for the same reconciliation request."
                (format "continuation:%s" run-id))
            :continuation-publication-key))))
 
+(defun e-board-orchestration--descriptor (value)
+  "Validate and copy an optional bounded application-owned run descriptor VALUE.
+The orchestration core persists this plist for producer recovery but does not
+interpret its fields."
+  (when value
+    (unless (and (proper-list-p value)
+                 (zerop (% (length value) 2)))
+      (e-board-orchestration--invalid :descriptor value))
+    (let ((tail value)
+          (seen (make-hash-table :test 'eq)))
+      (while tail
+        (let ((key (pop tail)))
+          (unless (keywordp key)
+            (e-board-orchestration--invalid :descriptor-key value))
+          (when (gethash key seen)
+            (e-board-orchestration--invalid :duplicate-descriptor-key key))
+          (puthash key t seen))
+        (unless tail
+          (e-board-orchestration--invalid :descriptor-key value))
+        (pop tail)))
+    (let* ((wire-value (e-board-orchestration--wire-encode value))
+           (encoded-width (string-bytes (prin1-to-string wire-value))))
+      (when (> encoded-width e-board-orchestration-fact-byte-limit)
+        (e-board-orchestration--invalid :descriptor value))
+      (e-board-orchestration--wire-decode wire-value))))
+
 (defun e-board-orchestration--wire-encode (value)
   "Encode orchestration VALUE without JSON list/object ambiguity."
   (cond
@@ -284,19 +310,24 @@ safe to store in a board envelope and contains no runtime state."
         ('manifest
          (let ((seen (make-hash-table :test 'equal))
                (tasks (mapcar #'e-board-orchestration--task
-                              (e-board-orchestration--list (plist-get payload :tasks) :tasks))))
+                              (e-board-orchestration--list (plist-get payload :tasks) :tasks)))
+               (descriptor (e-board-orchestration--descriptor
+                            (plist-get payload :descriptor))))
            (dolist (task tasks)
              (let ((task-key (plist-get task :task-key)))
                (when (gethash task-key seen)
                  (e-board-orchestration--invalid :duplicate-task-key task-key))
                (puthash task-key t seen)))
            (list :version version :type type :idempotency-key key
-                 :payload (list :run-id run-id :tasks tasks
-                                :deadline (e-board-orchestration--deadline
-                                           (or (plist-get payload :deadline) '(:kind none)))
-                                :continuation
-                                (e-board-orchestration--continuation
-                                 (plist-get payload :continuation) run-id)))))
+                 :payload
+                 (append
+                  (list :run-id run-id :tasks tasks
+                        :deadline (e-board-orchestration--deadline
+                                   (or (plist-get payload :deadline) '(:kind none)))
+                        :continuation
+                        (e-board-orchestration--continuation
+                         (plist-get payload :continuation) run-id))
+                  (when descriptor (list :descriptor descriptor))))))
         ('continuation-claim
          (let ((publication-key
                 (e-board-orchestration--string

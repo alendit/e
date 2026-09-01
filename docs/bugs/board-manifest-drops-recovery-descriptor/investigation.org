@@ -1,0 +1,52 @@
+#+title: Investigation: Board Manifest Drops Application Recovery Descriptor
+#+startup: overview
+
+* Summary
+
+The generic board manifest validator deliberately reconstructs its payload
+from the orchestration-owned run id, task policy, deadline, and continuation.
+That closed normalization silently discarded the Grimoire producer's
+application-owned recovery fields.
+The Daily controller then required those discarded fields when rebuilding its
+frozen worker descriptor, making a terminal but incomplete run unrecoverable.
+
+The Daily content itself was not repeatedly restored from a stale snapshot.
+Repository read-back showed that the completed note was saved and committed;
+the final agent response had relied on a stale current-state attachment.
+The controller transaction nevertheless remained incomplete because its Slack
+report had no declared outputs and its replayed manifest lacked the recovery
+inputs needed to retry finalization.
+
+* Source and live evidence
+
+The running Emacs was inspected only through =scripts/e-live-probe chat=.
+It selected the completed Daily session and reported the turn as done.
+No live state was changed.
+
+The persisted board manifest contains only =:run-id=, =:tasks=, =:deadline=,
+and =:continuation=.
+The producer source supplied =:date=, =:path=, =:mode=, =:started-at=,
+=:cutoff=, and =:previous= before publication, while its recovery function
+requires the first four.
+
+The completed Daily file matches Git commit =2cb87c9=.
+It records =E_DAILY_RUN_APPLIED= but not =E_DAILY_RUN_COMPLETED=, which
+distinguishes persisted content from controller finalization.
+
+* Resolution
+
+The orchestration manifest contract now has one optional bounded
+=:descriptor= plist.
+The orchestration core validates its shape and encoded size, persists it across
+the typed wire format, and projects it unchanged without interpreting its
+application fields.
+Unknown top-level manifest keys remain outside the closed generic contract.
+
+Grimoire stores its frozen Daily recovery inputs in that descriptor and reads
+them back from the replayed manifest.
+Focused core and Grimoire tests prove typed JSON replay and recovery of the
+original date, path, mode, start time, cutoff, and previous-day path.
+
+The existing 2026-09-01 controller fact predates this field and cannot regain
+data that was already discarded.
+It was left unchanged for explicit recovery after the code fix.

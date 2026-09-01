@@ -68,6 +68,58 @@
                       (car (e-board-messages restored)))
                      expected)))))
 
+(ert-deftest e-board-orchestration-test-manifest-descriptor-survives-wire-replay ()
+  "Application recovery inputs remain opaque and durable across JSON replay."
+  (let* ((e-board--registry (make-hash-table :test 'equal))
+         (source (e-board-create :id "descriptor-source"))
+         (restored (e-board-create :id "descriptor-restored"))
+         (descriptor '(:date "2026-09-01" :mode populate
+                       :path "daily/2026-09-01.org"
+                       :window (:started-at "2026-09-01T09:39:10Z")))
+         (fact (e-board-orchestration-test--fact
+                'manifest "manifest-descriptor"
+                (list :run-id "run-1"
+                      :tasks '((:task-key "task" :required t :accepted-attempt 0))
+                      :deadline '(:kind none)
+                      :descriptor descriptor))))
+    (e-board-orchestration-publish-fact source fact)
+    (let* ((attributes (e-board-message-attributes (car (e-board-messages source))))
+           (replayed
+            (json-parse-string (json-encode attributes)
+                               :object-type 'plist :array-type 'list
+                               :null-object nil :false-object :json-false)))
+      (e-board-post-fact restored :tags '(orchestration) :attributes replayed
+                         :source-fact-key '("wire" "manifest-descriptor" 0))
+      (should
+       (equal
+        (plist-get
+         (plist-get (e-board-orchestration-run-projection restored "run-1")
+                    :manifest)
+         :descriptor)
+        descriptor)))))
+
+(ert-deftest e-board-orchestration-test-manifest-descriptor-is-bounded-plist ()
+  "Opaque descriptors remain keyed and bounded board facts."
+  (dolist (descriptor (list '(not-a-key "value")
+                            '(:odd)
+                            '(:value "first" :value "second")
+                            (list :value
+                                  (make-string
+                                   e-board-orchestration-fact-byte-limit ?x))))
+    (should-error
+     (e-board-orchestration-validate-fact
+      (e-board-orchestration-test--fact
+       'manifest "bad-descriptor"
+       (list :run-id "run-1" :tasks nil :deadline '(:kind none)
+             :descriptor descriptor)))
+     :type 'e-board-orchestration-invalid-fact))
+  (let* ((fact (e-board-orchestration-test--fact
+                'manifest "closed-manifest"
+                '(:run-id "run-1" :tasks nil :deadline (:kind none)
+                  :date "application-field")))
+         (payload (plist-get (e-board-orchestration-validate-fact fact) :payload)))
+    (should-not (plist-member payload :date))))
+
 (ert-deftest e-board-orchestration-test-legacy-json-facts-replay ()
   "Pre-wire duplicate-key JSON objects restore into a run projection."
   (let ((e-board--registry (make-hash-table :test 'equal))

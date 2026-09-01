@@ -1,0 +1,24 @@
+#+title: Board Manifest Drops Application Recovery Descriptor
+#+startup: overview
+
+* Report
+
+The 2026-09-01 Grimoire Daily run completed its gatherers and applied a partial
+snapshot, but restart recovery failed with:
+
+#+begin_example
+Stored daily manifest is missing :date
+#+end_example
+
+* Expected
+
+A board-run producer can persist the bounded application inputs required to
+recover its run without adding domain fields to the generic orchestration
+policy.
+
+* Actual
+
+The Daily producer supplied its frozen date, path, mode, start time, cutoff,
+and previous-day path in the manifest payload.
+The orchestration validator retained only its closed generic fields, so the
+replayed projection could no longer reconstruct the Daily run descriptor.
