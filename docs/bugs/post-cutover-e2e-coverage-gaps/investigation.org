@@ -13,7 +13,9 @@
 - P1 status: parent-accepted at
   =0885eb019ab084983f05d5600a0d44166dc92e68= after independent 2/2 E2E and
   mechanism reruns.
-- P2 mechanism status: implemented locally, awaiting parent acceptance.
+- P2 status: parent-accepted at
+  =5da849d7b47947a1d2062f2c1f0ad77c42b01aa1= after independent 2/2
+  post-cutover E2E reruns.
 
 * Ownership and physical boundary
 
@@ -180,7 +182,24 @@ request assertions additionally cover the request-local lifetime corrected by
 
 | Item | Status after local implementation |
 |------+-----------------------------------|
-| =E2E-C02= source realization | implemented; focused proof passed locally |
-| =S-E2E-CUTOVER-CURATION-ACK= | stateless and anchored variants passed locally |
-| Behavioral goal | proved by deterministic repository scenario, awaiting parent acceptance |
-| P2 mechanism | implemented, awaiting parent acceptance |
+| =E2E-C02= source realization | implemented and parent-accepted |
+| =S-E2E-CUTOVER-CURATION-ACK= | stateless and anchored variants passed independently |
+| Behavioral goal | proved by deterministic repository scenarios |
+| P2 mechanism | accepted at =5da849d7b47947a1d2062f2c1f0ad77c42b01aa1= |
+
+* Final independent review
+
+The planned final review compared the complete remediation at
+=5da849d7b47947a1d2062f2c1f0ad77c42b01aa1= with base
+=d8861d5f6828f882b963379f829c7119dfa1f81c=.  It found no actionable P0--P3
+defect and classified the package as a fixed point.  Its independent focused
+checks passed 8/8: two post-cutover E2Es, five migration/catalog selectors, and
+the reviewed-blocking-site inventory.
+
+The full 2,704-test preservation run was not repeated after the final
+blocking-inventory expectation changed.  The directly affected selector
+passed independently.  The other observed full-run failures reproduced as
+existing timing, local-socket, Emacs 31, or Org-fold environment cases.  The
+64-session fixture is a structural lazy-loading gate, not an operator-scale
+performance benchmark; the existing copied-store measurements remain the
+scale evidence.
