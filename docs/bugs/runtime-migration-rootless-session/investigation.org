@@ -1,0 +1,82 @@
+#+title: Investigation: legacy migration rootless session
+#+startup: overview
+
+* Scope and safety
+
+The user's Emacs remained stopped and untouched.  Investigation read only the
+explicit working copy at
+=/Users/dvorona/.config/emacs/.local/cache/e-cutover-copy-20260902T171948Z=.
+It did not open or modify the preserved backup, the working copy, or the
+invalid current runtime root.  Reduced fixtures and evidence were written only
+under =/tmp= and repository tests use disposable directories.
+
+* Bounded enumeration
+
+The copied store contains 1,250 journal identities and 1,250 matching catalog
+identities.  Exactly 1,247 journals contain a =type=session= record.  The three
+rootless journals are:
+
+| Session | Records | Bytes | Record types |
+|---------+---------+-------+--------------|
+| =20260807T101346-90ba4ce0f030= | 1,854 | 4,362,581 | 1,299 Board messages; 397 activity events; 148 messages; 10 process reports |
+| =20260813T075414-6f5cc807b04a= | 7,249 | 19,406,457 | 4,728 Board messages; 1,819 activity events; 653 messages; 29 process reports; 20 session-info records |
+| =20260814T075614-82430180342f= | 3,377 | 9,162,949 | 1,940 Board messages; 1,023 activity events; 378 messages; 25 process reports; 10 session-info records; 1 display record |
+
+Together they contain 12,480 records and 32,931,987 bytes.  Every record names
+the session encoded by its journal filename.  All three begin with a Board
+message.  The latter two have active checkpoints whose first semantic record
+is the exact session root.  The first has no checkpoint; its sparse catalog
+entry lacks timestamps and metadata, while its record graph has one missing
+parent identity and its earliest usable timestamp is
+=2026-08-07T10:13:47Z=.
+
+Two other journals begin with Board messages but contain a session root at
+record seven.  They are not rootless and are outside this correction.
+
+* Root cause
+
+=e-session-legacy-decode= validated JSONL framing and values but did not
+require or normalize a root.  =e-runtime-migration= then committed every
+record through the session storage port.  SQLite relational integrity does not
+encode the aggregate replay invariant that a session needs a root, so the
+operator dry run could succeed while later =:load-sessions= replay failed.
+
+* Resolution
+
+The read-only legacy decoder now recognizes only the demonstrated nonempty,
+fully rootless historical shape:
+
+- it requires one matching legacy catalog entry and one session identity
+  across all records;
+- when an active checkpoint exists, its first matching =session= record is the
+  authoritative root prepended to the journal;
+- prepending that root shifts the translated SQLite checkpoint position by
+  exactly one while leaving the checkpoint's source value unchanged;
+- without a checkpoint, the decoder infers the unique missing parent identity
+  as the root id, takes metadata and optional names from the catalog, and fills
+  missing root timestamps from the earliest valid record timestamp; and
+- every original journal record remains unchanged and in its original order
+  after the prepended root.
+
+Missing catalog identity, mixed session identities, an invalid checkpoint
+root, an ambiguous root parent, or unusable timestamps fail migration.  This
+is an offline format normalization, not runtime repair, fallback, retry, or
+reconciliation.
+
+* Validation
+
+Focused decoder tests cover synthesized roots, exact record preservation,
+checkpoint-root authority, unchanged source offsets, and the required +1
+SQLite position shift.  A P4 integration test migrates a representative sparse
+rootless journal, opens it through ordinary default runtime composition,
+restarts that composition, and restores the exact session message both times.
+Final repository evidence passes 3/3 correction regressions, 7/7 legacy
+decoder/session preservation tests, 13/13 P4 migration tests, 10/10 SQLite
+session-owner tests, and 31/31 isolated defaults tests.
+
+A source-only batch check against reduced copies of the three actual journals
+produced 1,855, 7,250, and 3,378 normalized records respectively.  It retained
+the two checkpoint root ids, inferred the first journal's historical missing
+parent id, derived =2026-08-07T10:13:47Z=, and shifted checkpoint positions to
+7,250 and 3,378.  Detailed bounded evidence is in
+=/tmp/e-feature87-rootless-enumeration=.

@@ -389,6 +389,61 @@
       (dolist (directory (list source target first-target second-target))
         (when (file-directory-p directory) (delete-directory directory t))))))
 
+(ert-deftest e-runtime-sqlite-p4-rootless-session-default-restore ()
+  "Migration normalizes a rootless journal before ordinary default startup."
+  (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (target (concat source "-rootless-installed"))
+         (session-id "20260807T101346-90ba4ce0f030")
+         (original
+          `((:type "board-message" :session-id ,session-id
+             :message (:id "board-1" :kind "input"
+                       :created-at 1786097627.224162
+                       :content "preserved board input"))
+            (:type "message" :session-id ,session-id :id "message-1"
+             :parent-id "legacy-root-id"
+             :timestamp "2026-08-07T10:13:48Z"
+             :message (:id "message-1" :parent-id "legacy-root-id"
+                       :role "user" :content "preserved session input"))))
+         (process-environment (copy-sequence process-environment))
+         (e-session-directory (expand-file-name "custom-layout" source))
+         (e-default--runtime nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil))
+    (unwind-protect
+        (progn
+          (e-runtime-sqlite-p4-test--write-session-records
+           source session-id original)
+          (e-runtime-sqlite-p4-test--write
+           (expand-file-name "sessions/index.json" source)
+           (concat (json-encode
+                    (vector (list :id session-id :message-count 0)))
+                   "\n"))
+          (e-runtime-migration-run source target)
+          (setenv "E_RUNTIME_STATE_DIRECTORY" target)
+          (let* ((store (e-default-session-store))
+                 (physical
+                  (e-session-storage-read-session-records store session-id))
+                 (session (e-session-get store session-id)))
+            (should (= (length physical) (1+ (length original))))
+            (should (equal (plist-get (car physical) :type) "session"))
+            (should (equal (plist-get (car physical) :id) "legacy-root-id"))
+            (should (equal (plist-get session :created-at)
+                           "2026-08-07T10:13:47Z"))
+            (should (equal
+                     (plist-get (car (e-session-messages store session-id))
+                                :content)
+                     "preserved session input")))
+          (e-default-runtime-close)
+          (setq e-default--runtime nil e-default--chat-sessions nil)
+          (let ((store (e-default-session-store)))
+            (should (equal
+                     (plist-get (car (e-session-messages store session-id))
+                                :content)
+                     "preserved session input"))))
+      (e-default-runtime-close)
+      (dolist (directory (list source target))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
 (ert-deftest e-runtime-sqlite-p4-cutover-preserves-root-backup-and-default-restores ()
   "Offline same-root cutover preserves legacy state and feeds ordinary startup."
   (let* ((root (e-runtime-sqlite-p4-test--legacy-fixture))

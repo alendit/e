@@ -42,11 +42,16 @@ the ordinary runtime:
   [[file:../../../lisp/core/e-session-storage.el][=e-session-storage.el=]] owns
   the current physical port.  The JSONL/index/queued/Node adapter and
   =e-session-writer.mjs= are retired; =e-session-legacy.el= is the read-only
-  migration decoder.  Active =*.checkpoint.json= files remain session-owned
+  migration decoder and owns normalization of demonstrated historical JSONL
+  shapes.  Active =*.checkpoint.json= files remain session-owned
   durable resume state and migrate through the session storage port after
   their JSONL byte cursors are translated to equivalent SQLite record
-  positions; timestamped journal/checkpoint/index backups remain preserved
-  inactive source artifacts;
+  positions.  For a nonempty journal with no session root, an exact matching
+  checkpoint root is prepended and advances that position once; without a
+  checkpoint, one validated catalog entry plus the unique unresolved parent
+  identity and earliest record timestamp supply the root.  Original records
+  remain ordered and unchanged.  Timestamped journal/checkpoint/index backups
+  remain preserved inactive source artifacts;
 - before cutover, Board messages, source keys, routing queues, pickups, and
   delivery state were process-local in
   [[file:../../../lisp/core/e-board.el][=e-board.el=]] and
@@ -469,8 +474,9 @@ and hashes sources, parses them through owner validators, extracts canonical
 Board records from duplicated session journals, imports owners in deterministic
 order into a temporary database, compares semantic manifests, runs foreign-key
 and integrity checks, and atomically installs the verified store.  Conflicting
-identities, unexplained loss, missing roots, and non-round-tripping values abort
-cutover.  Source files remain inactive rollback material and are not deleted.
+identities, unexplained loss, non-round-tripping values, and missing roots
+outside the validated historical normalization above abort cutover.  Source
+files remain inactive rollback material and are not deleted.
 The ordinary runtime path is the common e root, not its legacy =sessions/=
 child.  Defaults derive that root only from the conventional
 =<root>/sessions= shape; a differently named custom session directory requires

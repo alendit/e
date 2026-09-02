@@ -1,0 +1,22 @@
+#+title: Legacy migration can install a session without a durable root
+#+startup: overview
+
+* Report
+
+During the explicit Feature 87 operator cutover, migration completed and
+SQLite integrity passed, but ordinary startup failed while restoring session
+=20260807T101346-90ba4ce0f030=.  Its legacy catalog entry and 1,854 meaningful
+JSONL records were present, but the journal contained no =type=session= root.
+
+* Expected
+
+The offline migrator should either normalize an accepted historical session
+shape into a complete current session or reject it before installation.
+Successful migration must produce a store that ordinary default startup can
+restore.
+
+* Actual
+
+The importer copied the rootless records and retained a catalog fact without
+creating a SQLite session root.  Database integrity remained valid, but eager
+session replay had no aggregate root and startup failed.

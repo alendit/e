@@ -221,7 +221,7 @@ and semantic owners are:
 | `e-session-codec.el` | Pure durable value/record normalization, replay mapping, and legacy JSON decoding | Stateless; no aggregate/store mutation |
 | `e-session-catalog.el` | Bounded index/checkpoint projections and recovery policy over explicit values | Stateless/pure projection; no file or storage calls |
 | `e-session-storage.el` | Session-owned current physical port | Session-store lifetime; no SQL knowledge |
-| `e-session-legacy.el` | Read-only retired JSONL decoding for explicit offline migration | Operator-copy lifetime; no writer or runtime fallback |
+| `e-session-legacy.el` | Read-only retired JSONL decoding and demonstrated historical-root normalization for explicit offline migration | Operator-copy lifetime; no writer or runtime fallback |
 | `e-session-storage-sqlite.el` | Typed session record, checkpoint, catalog, tool-continuity, and barrier mapping | Borrows the one runtime store; no aggregate policy |
 | `e-runtime-store.el` | Process protocol, scheduling, liveness, failure propagation, and ownership | Process-wide runtime lifetime; interactive Emacs owns no SQLite handle |
 | `e-runtime-store-worker.el` | Connection, WAL, schema gate, atomic owner writes, integrity, backup, and typed dispatch | One subordinate batch Emacs owns all SQLite I/O |
@@ -485,7 +485,13 @@ The retired =sessions/chat-overview-state.json= file is reported as preserved
 derived presentation state rather than imported as a durable owner fact.
 Active session checkpoints are imported through the session storage port after
 their legacy byte offsets are mapped to SQLite record positions; the remaining
-checkpoint content is preserved exactly. Timestamped session backups and
+checkpoint content is preserved exactly. For a demonstrated nonempty rootless
+journal, the decoder prepends the matching checkpoint root and advances that
+position once. Without a checkpoint, it validates the catalog identity,
+infers the unique unresolved parent as the root ID, and derives missing root
+timestamps from the earliest record. Original journal records retain their
+order and values.
+Timestamped session backups and
 historical task =.org= products are hashed and reported as preserved source
 artifacts. Any file without an explicit import, validate/rebuild, preservation,
 or retirement disposition aborts the migration. Migration and upgrade CLI

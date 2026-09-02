@@ -45,6 +45,120 @@
     (e-session--finish-replay store session-id)
     store))
 
+(defun e-session-test--write-legacy-records (directory session-id records)
+  "Write RECORDS as SESSION-ID's retired journal below DIRECTORY."
+  (let ((file (expand-file-name (format "sessions/%s.jsonl" session-id)
+                                directory)))
+    (make-directory (file-name-directory file) t)
+    (with-temp-file file
+      (dolist (record records)
+        (insert (json-encode record) "\n")))
+    file))
+
+(defun e-session-test--write-legacy-catalog (directory entries)
+  "Write legacy session catalog ENTRIES below DIRECTORY."
+  (with-temp-file (expand-file-name "index.json" directory)
+    (insert (json-encode (vconcat entries)) "\n")))
+
+(ert-deftest e-session-test-legacy-rootless-journal-synthesizes-catalog-root ()
+  "A nonempty rootless journal gets one validated replayable root."
+  (let* ((directory (make-temp-file "e-session-rootless-" t))
+         (session-id "20260807T101346-90ba4ce0f030")
+         (records
+          `((:type "board-message" :session-id ,session-id
+             :message (:id "board-1" :kind "input"
+                       :created-at 1786097627.224162 :content "board exact"))
+            (:type "message" :session-id ,session-id :id "message-1"
+             :parent-id "root-from-history"
+             :timestamp "2026-08-07T10:13:48Z"
+             :message (:id "message-1" :parent-id "root-from-history"
+                       :role "user" :content "session exact")))))
+    (unwind-protect
+        (progn
+          (e-session-test--write-legacy-records directory session-id records)
+          (e-session-test--write-legacy-catalog
+           directory (list (list :id session-id :message-count 0)))
+          (let* ((original
+                  (e-session-legacy-read-records directory session-id))
+                 (decoded (e-session-legacy-decode directory))
+                 (normalized
+                  (cdr (assoc session-id (plist-get decoded :sessions))))
+                 (root (car normalized)))
+            (should (= (length normalized) (1+ (length original))))
+            (should (equal (cdr normalized) original))
+            (should (equal (plist-get root :type) "session"))
+            (should (equal (plist-get root :session-id) session-id))
+            (should (equal (plist-get root :id) "root-from-history"))
+            (should (equal (plist-get root :created-at)
+                           "2026-08-07T10:13:47Z"))
+            (should (equal (plist-get root :updated-at)
+                           "2026-08-07T10:13:47Z")))
+          (let ((store (e-session-test--replay-legacy-copy
+                        directory session-id)))
+            (should (equal
+                     (plist-get (e-session-get store session-id) :created-at)
+                     "2026-08-07T10:13:47Z"))
+            (should (equal
+                     (plist-get (car (e-session-messages store session-id))
+                                :content)
+                     "session exact"))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-legacy-rootless-checkpoint-root-shifts-position ()
+  "A checkpoint root is prepended and its SQLite position advances once."
+  (let* ((directory (make-temp-file "e-session-rootless-checkpoint-" t))
+         (session-id "rootless-checkpoint")
+         (root
+          `(:type "session" :session-id ,session-id :id "checkpoint-root"
+            :timestamp "2026-08-13T07:54:14Z"
+            :created-at "2026-08-13T07:54:14Z"
+            :updated-at "2026-08-13T07:54:15Z"
+            :metadata (:project-root "/tmp/exact/") :name "Exact"))
+         (records
+          `((:type "board-message" :session-id ,session-id
+             :message (:id "board-1" :kind "input" :content "exact"))
+            (:type "message" :session-id ,session-id :id "message-1"
+             :parent-id "checkpoint-root"
+             :timestamp "2026-08-13T07:54:15Z"
+             :message (:id "message-1" :parent-id "checkpoint-root"
+                       :role "user" :content "exact"))))
+         (journal
+          (e-session-test--write-legacy-records directory session-id records))
+         (offset (file-attribute-size (file-attributes journal)))
+         (checkpoint-file
+          (expand-file-name
+           (format "sessions/%s.checkpoint.json" session-id) directory)))
+    (unwind-protect
+        (progn
+          (e-session-test--write-legacy-catalog
+           directory
+           (list (list :id session-id :created-at "2026-08-13T07:54:14Z"
+                       :metadata '(:project-root "/tmp/exact/"))))
+          (with-temp-file checkpoint-file
+            (insert
+             (json-encode
+              (list :version 1 :session-id session-id
+                    :journal-byte-offset offset
+                    :records (vconcat (list root (cadr records)))))
+             "\n"))
+          (let* ((original
+                  (e-session-legacy-read-records directory session-id))
+                 (decoded (e-session-legacy-decode directory))
+                 (normalized
+                  (cdr (assoc session-id (plist-get decoded :sessions))))
+                 (checkpoint (car (plist-get decoded :checkpoints))))
+            (should (equal (cdr normalized) original))
+            (should (equal (car normalized)
+                           (car (plist-get (plist-get checkpoint :value)
+                                           :records))))
+            (should (= (plist-get (plist-get checkpoint :source-value)
+                                  :journal-byte-offset)
+                       offset))
+            (should (= (plist-get (plist-get checkpoint :value)
+                                  :journal-byte-offset)
+                       (1+ (length original))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-semantic-storage-port-does-not-require-jsonl-details ()
   "The facade composes a storage double through typed mutation operations.
 

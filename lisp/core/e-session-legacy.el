@@ -91,6 +91,180 @@ reported so an operator receives a complete source-quality assessment."
                  (list "Malformed legacy session catalog" file
                        (error-message-string err))))))))
 
+(defun e-session-legacy--catalog-key-id (key)
+  "Return the session identifier represented by catalog KEY."
+  (cond
+   ((keywordp key) (string-remove-prefix ":" (symbol-name key)))
+   ((symbolp key) (symbol-name key))
+   ((stringp key) key)))
+
+(defun e-session-legacy--catalog-entry (catalog session-id)
+  "Return SESSION-ID's unique detached entry from legacy CATALOG."
+  (let (matches)
+    (cond
+     ((and (proper-list-p catalog) (listp (car catalog)))
+      (dolist (entry catalog)
+        (when (and (listp entry)
+                   (equal (plist-get entry :id) session-id))
+          (push entry matches))))
+     ((proper-list-p catalog)
+      (let ((tail catalog))
+        (while tail
+          (let* ((key (pop tail))
+                 (entry (and tail (pop tail)))
+                 (id (e-session-legacy--catalog-key-id key)))
+            (when (and (equal id session-id) (listp entry))
+              (let ((entry (copy-tree entry)))
+                (unless (plist-get entry :id)
+                  (plist-put entry :id id))
+                (push entry matches))))))))
+    (unless (= (length matches) 1)
+      (signal 'e-session-legacy-error
+              (list "Rootless legacy journal requires one catalog entry"
+                    session-id (length matches))))
+    (copy-tree (car matches))))
+
+(defun e-session-legacy--timestamp-seconds (value)
+  "Return VALUE as floating-point epoch seconds, or nil when invalid."
+  (condition-case nil
+      (cond
+       ((numberp value) (float value))
+       ((stringp value) (float-time (date-to-time value))))
+    (error nil)))
+
+(defun e-session-legacy--format-timestamp (value)
+  "Return validated timestamp VALUE in a session-root-compatible spelling."
+  (let ((seconds (e-session-legacy--timestamp-seconds value)))
+    (when seconds
+      (if (stringp value)
+          value
+        (format-time-string "%Y-%m-%dT%H:%M:%SZ"
+                            (seconds-to-time seconds) t)))))
+
+(defun e-session-legacy--catalog-timestamp
+    (catalog-entry key fallback session-id)
+  "Return CATALOG-ENTRY's validated KEY, or FALLBACK for SESSION-ID."
+  (let ((value (plist-get catalog-entry key)))
+    (if (null value)
+        fallback
+      (or (e-session-legacy--format-timestamp value)
+          (signal 'e-session-legacy-error
+                  (list "Invalid rootless session catalog timestamp"
+                        session-id key value))))))
+
+(defun e-session-legacy--earliest-record-timestamp (records session-id)
+  "Return the earliest timestamp represented by RECORDS for SESSION-ID."
+  (let (earliest)
+    (dolist (record records)
+      (let ((message (plist-get record :message)))
+        (dolist (value (list (plist-get record :created-at)
+                             (plist-get record :timestamp)
+                             (and (listp message)
+                                  (plist-get message :created-at))
+                             (and (listp message)
+                                  (plist-get message :timestamp))))
+          (when-let* ((seconds
+                       (e-session-legacy--timestamp-seconds value)))
+            (when (or (null earliest) (< seconds earliest))
+              (setq earliest seconds))))))
+    (unless earliest
+      (signal 'e-session-legacy-error
+              (list "Rootless legacy journal has no usable timestamp"
+                    session-id)))
+    (format-time-string "%Y-%m-%dT%H:%M:%SZ"
+                        (seconds-to-time earliest) t)))
+
+(defun e-session-legacy--inferred-root-id (records session-id)
+  "Return RECORDS' unique missing parent identity for SESSION-ID."
+  (let ((ids (make-hash-table :test 'equal)) missing)
+    (dolist (record records)
+      (when-let* ((id (plist-get record :id)))
+        (puthash id t ids)))
+    (dolist (record records)
+      (when-let* ((parent-id (plist-get record :parent-id)))
+        (unless (gethash parent-id ids)
+          (push parent-id missing))))
+    (setq missing (delete-dups missing))
+    (unless (= (length missing) 1)
+      (signal 'e-session-legacy-error
+              (list "Rootless legacy journal has no unique root identity"
+                    session-id (length missing))))
+    (car missing)))
+
+(defun e-session-legacy--synthesize-root (session-id records catalog-entry)
+  "Build SESSION-ID's missing root from RECORDS and CATALOG-ENTRY."
+  (let* ((fallback
+          (e-session-legacy--earliest-record-timestamp records session-id))
+         (created-at
+          (e-session-legacy--catalog-timestamp
+           catalog-entry :created-at fallback session-id))
+         (updated-at
+          (e-session-legacy--catalog-timestamp
+           catalog-entry :updated-at created-at session-id)))
+    (list :type "session" :session-id session-id
+          :id (e-session-legacy--inferred-root-id records session-id)
+          :timestamp created-at :created-at created-at :updated-at updated-at
+          :metadata (copy-tree (plist-get catalog-entry :metadata))
+          :name (plist-get catalog-entry :name))))
+
+(defun e-session-legacy--checkpoint-root (checkpoint session-id)
+  "Return CHECKPOINT's authoritative root for SESSION-ID, or nil."
+  (when checkpoint
+    (let* ((value (plist-get checkpoint :value))
+           (root (car (plist-get value :records))))
+      (unless (and (listp root)
+                   (equal (plist-get root :type) "session")
+                   (equal (plist-get root :session-id) session-id))
+        (signal 'e-session-legacy-error
+                (list "Rootless legacy checkpoint has no matching root"
+                      session-id)))
+      (copy-tree root))))
+
+(defun e-session-legacy--normalize-rootless-sessions
+    (sessions checkpoints catalog)
+  "Prepend canonical roots to nonempty rootless SESSIONS.
+
+CHECKPOINTS and CATALOG are accepted historical projections.  A matching
+checkpoint root is authoritative.  Without one, the catalog supplies session
+metadata while the journal supplies the root identity and earliest timestamp.
+The original journal records remain in their exact order after the root."
+  (dolist (entry sessions)
+    (let ((session-id (car entry))
+          (records (cdr entry)))
+      (when (and records
+                 (not (seq-some
+                       (lambda (record)
+                         (equal (plist-get record :type) "session"))
+                       records)))
+        (unless (seq-every-p
+                 (lambda (record)
+                   (equal (plist-get record :session-id) session-id))
+                 records)
+          (signal 'e-session-legacy-error
+                  (list "Rootless legacy journal mixes session identities"
+                        session-id)))
+        (let* ((catalog-entry
+                (e-session-legacy--catalog-entry catalog session-id))
+               (checkpoint
+                (seq-find
+                 (lambda (candidate)
+                   (equal (plist-get candidate :session-id) session-id))
+                 checkpoints))
+               (root
+                (or (e-session-legacy--checkpoint-root checkpoint session-id)
+                    (e-session-legacy--synthesize-root
+                     session-id records catalog-entry))))
+          (setcdr entry (cons root records))
+          (when checkpoint
+            (let* ((value (plist-get checkpoint :value))
+                   (position (plist-get value :journal-byte-offset)))
+              (unless (and (integerp position) (>= position 0))
+                (signal 'e-session-legacy-error
+                        (list "Invalid rootless checkpoint position"
+                              session-id position)))
+              (plist-put value :journal-byte-offset (1+ position))))))))
+  (list :sessions sessions :checkpoints checkpoints))
+
 (defun e-session-legacy--checkpoint-file-session-id (file)
   "Return the session id encoded by legacy checkpoint FILE."
   (string-remove-suffix ".checkpoint.json" (file-name-nondirectory file)))
@@ -159,13 +333,19 @@ position.  All other semantic fields are preserved exactly."
 
 (defun e-session-legacy-decode (root)
   "Return validated retired session facts from copied legacy ROOT."
-  (let ((ids (e-session-legacy-session-ids root)))
-    (list :sessions
+  (let* ((ids (e-session-legacy-session-ids root))
+         (sessions
           (mapcar (lambda (id)
                     (cons id (e-session-legacy-read-records root id)))
-                  ids)
-          :checkpoints (e-session-legacy-read-checkpoints root)
-          :catalog (e-session-legacy-read-catalog root))))
+                  ids))
+         (checkpoints (e-session-legacy-read-checkpoints root))
+         (catalog (e-session-legacy-read-catalog root))
+         (normalized
+          (e-session-legacy--normalize-rootless-sessions
+           sessions checkpoints catalog)))
+    (list :sessions (plist-get normalized :sessions)
+          :checkpoints (plist-get normalized :checkpoints)
+          :catalog catalog)))
 
 (provide 'e-session-legacy)
 

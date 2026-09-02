@@ -48,9 +48,10 @@ queued requests once, so buffered responses cannot publish after ownership ends.
 - One worker transaction remains the atomic mutation boundary.  Process-local
   request IDs correlate responses only; worker death never triggers an
   automatic retry of an ambiguous write.
-- Migration works from a copied source tree, hashes exact inputs, rejects
-  missing roots, incomplete session tails, conflicting Board roots, and any
-  unmapped file before installation.  It imports root and nested task snapshots
+- Migration works from a copied source tree, hashes exact inputs, normalizes
+  the demonstrated fully rootless session shape, and rejects unrecoverable
+  roots, incomplete session tails, conflicting Board roots, and any unmapped
+  file before installation.  It imports root and nested task snapshots
   under deterministic queue identities, explicitly reports the preserved
   retired chat-overview presentation sidecar, imports active session resume
   checkpoints through the storage owner, source-preserves timestamped backups
@@ -84,10 +85,11 @@ running Emacs was not contacted or changed.
 - Focused task owner/action/shell preservation: 49 expected, 0 unexpected.
   Migration coverage proves the owner terminal spelling =done= and preserves a
   nested terminal queue independently from =default=.
-- P4 migration/upgrade scenarios: 6 expected, 0 unexpected.  They include
+- P4 migration/upgrade scenarios: 7 expected, 0 unexpected.  They include
   nested task import, active checkpoint cursor translation and exact semantic
-  restore, retired/preserved artifact accounting, unknown-file rejection, and
-  bounded migration and upgrade CLI failures.
+  restore, rootless historical-session normalization and default restart,
+  retired/preserved artifact accounting, unknown-file rejection, and bounded
+  migration and upgrade CLI failures.
 - A disposable-store observation recorded 0.060741 seconds to open the worker,
   0.000302 seconds for one session-record commit, and 0.000177 seconds for the
   ordered status barrier.  The live WAL snapshot was 547,992 bytes and the
@@ -271,13 +273,36 @@ session restore at the unchanged logical root.  Feature status remains =Done=;
 this is a bounded correction to =C01/C09/C10=, not a new persistence model.
 
 Correction evidence on the final worktree state: 10/10 narrow startup/cutover
-regressions, 12/12 complete P4 migration/upgrade tests (including a relocated
+regressions, 13/13 complete P4 migration/upgrade tests (including a relocated
 source tree with all adjacent bytecode removed), 14/14 runtime-store
 ownership/failure tests, and 31/31 defaults tests pass.  The defaults fixture
 that reopens an index store now closes its writer first, so it observes the
 same exclusive one-store rule as production.  =eldev compile=, check-parens for
 all changed Lisp files, =bash -n scripts/e-runtime-migrate=, and
 =git diff --check= pass with only pre-existing compiler warnings.
+
+** DONE High: Rootless legacy journals installed without replayable sessions
+
+The actual operator cutover exposed three rootless journals among 1,250 copied
+session journals.  They contain 12,480 meaningful records and 32,931,987 bytes;
+all records match their filename session identity.  Two have active checkpoints
+whose first semantic record is the exact session root.  The 1,854-record
+=20260807T101346-90ba4ce0f030= journal has no checkpoint and a sparse catalog
+entry, but has one unresolved parent identity and an earliest timestamp of
+=2026-08-07T10:13:47Z=.  Relational integrity accepted the imported records,
+then ordinary eager replay failed because no aggregate root existed.
+
+The offline session decoder now prepends the authoritative checkpoint root or,
+for the checkpoint-less demonstrated shape, synthesizes the root from the
+matching catalog, unique missing parent, and earliest record timestamp.  It
+preserves all source records after that root and advances a translated
+checkpoint position by exactly one.  Invalid or ambiguous variants fail
+migration rather than invoking runtime repair.  Focused owner tests and the P4
+default-runtime restart scenario pass; a reduced exact-copy source-only check
+normalizes all three actual shapes with resulting record counts 1,855, 7,250,
+and 3,378.  Final repository evidence passes 3/3 correction regressions, 7/7
+legacy decoder/session preservation tests, 13/13 P4 migration tests, 10/10
+SQLite session-owner tests, and 31/31 isolated defaults tests.
 
 * Plan coverage
 

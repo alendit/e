@@ -98,7 +98,10 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   layout, startup rejects an unmigrated root with an actionable offline
   command, and explicit cutover verifies a copied source before rotating the
   original root to a sibling backup and installing SQLite at the original
-  path.  A failed post-rotation install restores the legacy root.
+  path.  A failed post-rotation install restores the legacy root.  An
+  actual-cutover follow-up normalizes the three demonstrated rootless journals
+  in the copied operator tree before import and proves ordinary default
+  restore from the migrated result.
 - Simplification correction :: Implemented and parent-accepted on 2026-09-02;
   independently accepted at the exact completed revision.  The runtime
   protocol now uses process-local response correlation only: worker loss fails
@@ -373,9 +376,14 @@ Scope:
 
 Gate:
 
-- repeat migration is manifest-identical; malformed, conflicting, missing-root,
-  legacy-shape, incomplete-tail, unmapped-file, and failed-upgrade fixtures do
-  not install.  Every nested task snapshot has a deterministic queue identity,
+- repeat migration is manifest-identical; malformed, conflicting,
+  unrecoverable-missing-root, legacy-shape, incomplete-tail, unmapped-file, and
+  failed-upgrade fixtures do not install.  Demonstrated nonempty rootless
+  session journals receive one canonical prepended root: the exact checkpoint
+  root when present, otherwise a root from the matching catalog, unique missing
+  parent identity, and earliest record timestamp.  Every original record is
+  preserved and a checkpoint position advances once for the prepended root.
+  Every nested task snapshot has a deterministic queue identity,
   active session checkpoints preserve their semantic values while translating
   physical JSONL byte cursors to SQLite record positions, timestamped backups
   and historical task output products are explicitly source-preserved, retired
