@@ -99,15 +99,27 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
 (defvar e-default--runtime nil
   "The process-wide default SQLite runtime composition.")
 
+(defun e-default-common-state-directory ()
+  "Return the common e state root established by session configuration.
+
+The retired session owner used a dedicated child directory while the other
+owners used siblings below the common root.  Keeping this derivation here
+lets defaults assemble the process without teaching storage adapters about
+another owner's configuration."
+  (file-name-as-directory
+   (file-name-directory
+    (directory-file-name (expand-file-name e-session-directory)))))
+
 (defun e-default-runtime-directory ()
   "Return the ordinary runtime state directory.
 
 Tests and operators may isolate startup by setting
-`E_RUNTIME_STATE_DIRECTORY'.  Otherwise the established
-`e-session-directory' is the one runtime state directory."
+`E_RUNTIME_STATE_DIRECTORY'.  Otherwise use the common e state root that
+contains the established session directory and its sibling legacy owners."
   (file-name-as-directory
    (expand-file-name
-    (or (getenv "E_RUNTIME_STATE_DIRECTORY") e-session-directory))))
+    (or (getenv "E_RUNTIME_STATE_DIRECTORY")
+        (e-default-common-state-directory)))))
 
 (defun e-default-runtime ()
   "Return the process-wide default SQLite runtime, opening it once."

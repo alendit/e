@@ -214,14 +214,19 @@
 
 (ert-deftest e-defaults-test-session-store-is-persistent-and-cached ()
   "The default session store is persistent and reused for the same directory."
-  (let ((directory (make-temp-file "e-defaults-" t))
-        (process-environment (copy-sequence process-environment))
-        (e-default--runtime nil)
-        (e-default--chat-sessions nil)
-        (e-runtime-sqlite--live-composition nil))
+  (let* ((directory (make-temp-file "e-defaults-" t))
+         (sessions-directory (expand-file-name "sessions" directory))
+         (process-environment (copy-sequence process-environment))
+         (e-default--runtime nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil))
     (setenv "E_RUNTIME_STATE_DIRECTORY" nil)
     (unwind-protect
-        (let ((e-session-directory directory))
+        (let ((e-session-directory sessions-directory))
+          (should (equal (file-name-as-directory directory)
+                         (e-default-common-state-directory)))
+          (should (equal (file-name-as-directory directory)
+                         (e-default-runtime-directory)))
           (let ((first (e-default-session-store))
                 (second (e-default-session-store)))
             (should (eq first second))
@@ -232,6 +237,20 @@
                            (e-session-store-directory first)))))
       (e-default-runtime-close)
       (delete-directory directory t))))
+
+(ert-deftest e-defaults-test-runtime-directory-honors-explicit-override ()
+  "The explicit runtime directory overrides the derived common e root."
+  (let* ((root (make-temp-file "e-defaults-root-" t))
+         (override (make-temp-file "e-defaults-override-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-session-directory (expand-file-name "sessions" root)))
+    (unwind-protect
+        (progn
+          (setenv "E_RUNTIME_STATE_DIRECTORY" override)
+          (should (equal (file-name-as-directory override)
+                         (e-default-runtime-directory))))
+      (delete-directory root t)
+      (delete-directory override t))))
 
 (ert-deftest e-defaults-test-chat-harness-uses-unconfigured-backend-without-factory ()
   "Default chat creates no provider-backed harness without user configuration."
@@ -469,15 +488,20 @@
 (ert-deftest e-defaults-test-startup-refreshes-retained-session-index-metadata ()
   "Startup repairs stale unloaded index stubs in a retained harness store."
   (let* ((directory (make-temp-file "e-defaults-refresh-index-" t))
-         (writer (e-session-persistent-store-create directory)))
+         (writer (e-session-persistent-store-create directory))
+         store)
     (unwind-protect
         (progn
           (e-session-create writer :id "root")
           (e-session-create writer :id "worker"
                             :metadata '(:parent-session-id "root"
                                         :subagent-role "tool-user"))
-          (let* ((store (e-session-persistent-index-store-create directory))
-                 (worker (e-session-aggregate-peek-session store "worker"))
+          ;; Reopen only after releasing the fixture writer's exclusive
+          ;; runtime ownership, matching the production one-store boundary.
+          (e-session-storage-close writer)
+          (setq writer nil
+                store (e-session-persistent-index-store-create directory))
+          (let* ((worker (e-session-aggregate-peek-session store "worker"))
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
@@ -494,6 +518,8 @@
                        (mapcar (lambda (session) (plist-get session :id))
                                (e-harness-root-session-list harness))
                        '("root"))))))
+      (when store (ignore-errors (e-session-storage-close store)))
+      (when writer (ignore-errors (e-session-storage-close writer)))
       (delete-directory directory t))))
 
 (ert-deftest e-defaults-test-startup-refreshes-stale-chat-session-capability ()

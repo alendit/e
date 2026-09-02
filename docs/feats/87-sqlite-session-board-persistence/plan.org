@@ -20,11 +20,13 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
 - Behavioral goal :: A user can restart e and recover every e-owned durable
   session, Board, work-scheduling, and resource fact from one SQLite store,
   without hidden sidecar state or interactive-Emacs database stalls.
-- Direct scenario :: Starting from a verified legacy-store copy, the operator
-  migrates it, opens one e runtime, resumes a session and Board with interrupted
-  tool and pickup work, restores scheduled work and resources, completes new
-  work, restarts, and observes the same committed state while no production
-  sidecar writer runs.
+- Direct scenario :: Starting from a legacy root, the operator stops Emacs,
+  creates and verifies a copied source, rotates the common legacy e root to a
+  sibling backup, installs the verified SQLite root at that same
+  logical path, and restarts one e runtime.  The runtime resumes a session and
+  Board with interrupted tool and pickup work, restores scheduled work and
+  resources, completes new work, restarts, and observes the same committed
+  state while no production sidecar writer runs.
 - Product authority :: This Feature 87 plan and the operator decisions recorded
   in its history.
 - Owning contract :: =F87-C01=.
@@ -90,7 +92,12 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   resume checkpoints, two task queues with 81 tasks, 42 Board roots, cron, and
   voice state, then passed full SQLite integrity without installing a target or
   changing the source.  Independent review accepted the exact completed
-  revision.
+  revision.  A bounded cutover-startup correction keeps the established common
+  e root: defaults derive it from the parent of =e-session-directory=, startup
+  rejects an unmigrated root with an actionable offline command, and explicit
+  cutover verifies a copied source before rotating the original root to a
+  sibling backup and installing SQLite at the original path.  A failed
+  post-rotation install restores the legacy root.
 - Simplification correction :: Implemented and parent-accepted on 2026-09-02;
   independently accepted at the exact completed revision.  The runtime
   protocol now uses process-local response correlation only: worker loss fails
@@ -344,6 +351,10 @@ Scope:
 - implement dry-run legacy import with source hashes, owner validators,
   canonical Board extraction/deduplication, semantic manifests, integrity
   checks, deterministic reports, atomic installation, and source preservation;
+- implement explicit offline same-root cutover: require Emacs stopped and an
+  exact copied source, install a verified sibling stage, rotate the common
+  legacy e root to a named sibling backup, atomically install SQLite at the
+  original root, and restore the legacy root if the final rename fails;
 - implement explicit offline SQLite schema upgrade with automatic verified
   pre-upgrade backup; keep ordinary startup migration-free;
 - make SQLite the only persistent runtime backend and produce targeted errors
@@ -373,6 +384,10 @@ Gate:
   export, report, and disposable-path artifact;
 - a dry migration of a copy of the current user store passes without touching
   the live store;
+- same-root cutover preserves the complete legacy tree in its sibling backup;
+  preflight failure leaves the root unmoved, post-move install failure restores
+  it, and ordinary startup restores the migrated session without a config-path
+  change;
 - S1-S11 pass on one reviewed revision;
 - source scan proves SQLite is the only ordinary persistent authority and no
   implicit legacy fallback or dual write remains;
@@ -486,9 +501,12 @@ owner/mechanism tests does not make =F87-GOAL= pass before S1 succeeds.
 
 Cutover requires Emacs 29.1 or newer with built-in SQLite support.  Ordinary
 startup may create a new current schema, but an older legacy or SQLite schema
-reports a targeted migration-required error.  Legacy migration and future
-schema upgrades are explicit offline operations.  Backups are explicit except
-for the verified pre-upgrade backup created by the upgrade command.
+reports a targeted migration-required error.  For legacy state, that error
+names the common e root and the explicit copied-source, sibling-backup cutover
+command.  Legacy migration, same-root rotation, and future schema upgrades are
+explicit offline operations.  Backups are explicit except for the preserved
+legacy-root backup made by cutover and the verified pre-upgrade backup made by
+the upgrade command.
 
 Repository validation uses disposable stores and never opens or migrates the
 operator's live store.  Running Emacs remains untouched.  Core runtime, worker,

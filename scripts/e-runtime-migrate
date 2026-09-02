@@ -1,25 +1,44 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -lt 3 ]; then
+if [ "$#" -lt 1 ]; then
   echo "usage: e-runtime-migrate dry-run|install COPIED_LEGACY_SOURCE NEW_STATE_DIRECTORY" >&2
+  echo "       e-runtime-migrate cutover COPIED_LEGACY_SOURCE CURRENT_E_ROOT SIBLING_BACKUP" >&2
   exit 64
 fi
 
 operation=$1
-source=$2
-target=$3
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 case "$operation" in
-  dry-run) dry_run=t ;;
-  install) dry_run=nil ;;
-  *) echo "operation must be dry-run or install" >&2; exit 64 ;;
+  dry-run|install)
+    if [ "$#" -ne 3 ]; then
+      echo "usage: e-runtime-migrate dry-run|install COPIED_LEGACY_SOURCE NEW_STATE_DIRECTORY" >&2
+      exit 64
+    fi
+    source=$2
+    target=$3
+    backup=
+    if [ "$operation" = dry-run ]; then dry_run=t; else dry_run=nil; fi
+    ;;
+  cutover)
+    if [ "$#" -ne 4 ]; then
+      echo "usage: e-runtime-migrate cutover COPIED_LEGACY_SOURCE CURRENT_E_ROOT SIBLING_BACKUP" >&2
+      exit 64
+    fi
+    source=$2
+    target=$3
+    backup=$4
+    dry_run=nil
+    ;;
+  *) echo "operation must be dry-run, install, or cutover" >&2; exit 64 ;;
 esac
 
+export E_RUNTIME_MIGRATION_OPERATION="$operation"
 export E_RUNTIME_MIGRATION_SOURCE="$source"
 export E_RUNTIME_MIGRATION_TARGET="$target"
 export E_RUNTIME_MIGRATION_DRY_RUN="$dry_run"
+export E_RUNTIME_MIGRATION_BACKUP="$backup"
 
 exec emacs -Q --batch \
   -L "$repo/lisp" \

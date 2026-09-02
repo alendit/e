@@ -43,6 +43,8 @@
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-schema-too-new "Runtime store schema is newer than this runtime"
   'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-migration-required
+  "Offline runtime migration is required" 'e-runtime-store-error)
 
 (defcustom e-runtime-store-request-timeout 60.0
   "Maximum seconds for one bounded runtime-store request.
@@ -448,10 +450,15 @@ Return `dropped' for provisional work or `in-flight' once transport began."
               (lambda (relative)
                 (file-exists-p (expand-file-name relative directory)))
               e-runtime-store--legacy-state-markers))
-    (signal 'e-runtime-store-schema-too-old
-            (list :actual 'legacy-only
-                  :required 4
-                  :operation 'e-runtime-migration-run))))
+    (signal
+     'e-runtime-store-migration-required
+     (list
+      (format
+       (concat "Legacy runtime state at %s has no SQLite store. Stop Emacs, "
+               "copy that directory to COPIED_LEGACY_SOURCE, run "
+               "scripts/e-runtime-migrate cutover COPIED_LEGACY_SOURCE %s "
+               "SIBLING_BACKUP, then restart Emacs")
+       directory directory)))))
 
 (cl-defun e-runtime-store-open (directory &key runtime-id)
   "Open one subordinate runtime store for DIRECTORY."

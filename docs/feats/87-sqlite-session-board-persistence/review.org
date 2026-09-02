@@ -123,14 +123,19 @@ The entrypoints are deliberately offline and positional:
 #+begin_src sh
 scripts/e-runtime-migrate dry-run COPIED_LEGACY_SOURCE UNUSED_TARGET
 scripts/e-runtime-migrate install COPIED_LEGACY_SOURCE NEW_STATE_DIRECTORY
+scripts/e-runtime-migrate cutover COPIED_LEGACY_SOURCE CURRENT_E_ROOT SIBLING_BACKUP
 scripts/e-runtime-upgrade CLOSED_STATE_DIRECTORY [BACKUP_FILE]
 #+end_src
 
 The source argument must be a copy, the migration target must not exist, and an
-upgrade target must be closed.  The later operator gate must copy the real
-legacy tree to =/tmp= and invoke only =dry-run=; neither command should point at
-the running operator store.  Both commands reduce failures to a bounded
-single-line operator message rather than emitting a decoded-state backtrace.
+upgrade target must be closed.  Same-root =cutover= additionally requires Emacs
+stopped, an exact copied source, the current common e root, and a nonexistent
+sibling backup.  It verifies before moving the root, preserves the complete
+legacy tree in the backup, and restores that root if the final install rename
+fails.  The earlier operator gate copied the real legacy tree to =/tmp= and
+invoked only =dry-run=; no repository validation command pointed at the running
+operator store.  Both CLIs reduce failures to a bounded single-line operator
+message rather than emitting a decoded-state backtrace.
 
 * Findings
 
@@ -243,6 +248,33 @@ tells were imported, and full SQLite integrity returned =ok=.  The dry run
 removed its temporary store, created no target, and never opened or changed the
 live store.  Its roughly 21-minute duration is observational telemetry, not a
 deterministic acceptance threshold.
+
+** DONE High: Default startup targeted the legacy sessions child
+
+After the default SQLite cutover, startup still passed =e-session-directory=
+directly to the one-store composition.  That path denotes the historical
+=sessions/= owner child, while migration inventories the common parent e root
+containing every owner.  The mismatch prevented an existing operator from
+following one coherent cutover path.
+
+Defaults now derive the common root from the parent of
+=e-session-directory=, while preserving =E_RUNTIME_STATE_DIRECTORY= as an
+explicit isolation override.  Runtime-store rejects a legacy-only root before
+creating SQLite and reports one bounded command naming the copied source,
+common root, sibling backup, and restart requirement.  The migration
+application owns the offline exact-copy verification and same-parent
+backup/install swap.  Focused tests prove preflight immutability, full backup
+preservation, rollback after a failed install rename, and ordinary default
+session restore at the unchanged logical root.  Feature status remains =Done=;
+this is a bounded correction to =C01/C09/C10=, not a new persistence model.
+
+Correction evidence on the final worktree state: 8/8 narrow startup/cutover
+regressions, 11/11 complete P4 migration/upgrade tests, 14/14 runtime-store
+ownership/failure tests, and 30/30 defaults tests pass.  The defaults fixture
+that reopens an index store now closes its writer first, so it observes the
+same exclusive one-store rule as production.  =eldev compile=, check-parens for
+all changed Lisp files, =bash -n scripts/e-runtime-migrate=, and
+=git diff --check= pass with only pre-existing compiler warnings.
 
 * Plan coverage
 

@@ -38,6 +38,8 @@
   'e-runtime-migration-error)
 (define-error 'e-runtime-migration-target-exists "Migration target exists"
   'e-runtime-migration-error)
+(define-error 'e-runtime-migration-cutover-error "Runtime cutover failed"
+  'e-runtime-migration-error)
 
 (defconst e-runtime-migration-manifest-version 1)
 (defconst e-runtime-migration-raw-expiry-seconds (* 365 24 60 60))
@@ -500,6 +502,110 @@ directory to TARGET.  SOURCE is never written."
       (when (and (file-directory-p work) (or dry-run (not success)))
         (delete-directory work t)))))
 
+(defun e-runtime-migration--cutover-paths (source root backup)
+  "Validate and return normalized SOURCE, ROOT, and BACKUP cutover paths."
+  (let* ((source (directory-file-name (expand-file-name source)))
+         (root (directory-file-name (expand-file-name root)))
+         (backup (directory-file-name (expand-file-name backup)))
+         (root-parent (file-name-directory root))
+         (backup-parent (file-name-directory backup)))
+    (unless (file-directory-p source)
+      (signal 'e-runtime-migration-cutover-error
+              (list "Copied legacy source is missing" source)))
+    (unless (file-directory-p root)
+      (signal 'e-runtime-migration-cutover-error
+              (list "Legacy runtime root is missing" root)))
+    (when (or (file-symlink-p source) (file-symlink-p root))
+      (signal 'e-runtime-migration-cutover-error
+              (list "Cutover source and runtime root must be real directories"
+                    source root)))
+    (when (or (file-equal-p source root)
+              (file-in-directory-p source root)
+              (file-in-directory-p root source))
+      (signal 'e-runtime-migration-cutover-error
+              (list "Copied source must be outside the runtime root" source root)))
+    (unless (file-equal-p root-parent backup-parent)
+      (signal 'e-runtime-migration-cutover-error
+              (list "Backup must be a sibling of the runtime root"
+                    backup root)))
+    (when (or (file-exists-p backup) (file-symlink-p backup))
+      (signal 'e-runtime-migration-cutover-error
+              (list "Cutover backup already exists" backup)))
+    (when (or (file-exists-p (expand-file-name "store.sqlite3" root))
+              (file-exists-p (expand-file-name "store.sqlite3.owner" root)))
+      (signal 'e-runtime-migration-cutover-error
+              (list "Runtime root already contains current or live SQLite state"
+                    root)))
+    (list source root backup)))
+
+(defun e-runtime-migration-cutover (source root backup)
+  "Replace legacy ROOT with verified SQLite state imported from SOURCE.
+
+SOURCE must be an exact copied legacy tree outside ROOT.  BACKUP must be a
+nonexistent sibling of ROOT.  The caller must stop Emacs first.  This offline
+operation imports and verifies a sibling staging directory, rechecks that ROOT
+still matches SOURCE, renames ROOT to BACKUP, and atomically installs the
+staging directory at ROOT.  If installation fails after the first rename, the
+original ROOT is restored.  Neither SOURCE nor BACKUP is deleted."
+  (pcase-let* ((`(,source ,root ,backup)
+                (e-runtime-migration--cutover-paths source root backup))
+               (parent (file-name-directory root))
+               (prefix (expand-file-name
+                        (format ".%s.cutover-" (file-name-nondirectory root))
+                        parent))
+               (source-inventory (e-runtime-migration-inventory source))
+               (root-inventory (e-runtime-migration-inventory root))
+               (staging nil)
+               (report nil)
+               (installed nil))
+    (unless (equal source-inventory root-inventory)
+      (signal 'e-runtime-migration-cutover-error
+              (list "Copied source does not exactly match the legacy root"
+                    source root)))
+    ;; Reserve a collision-free sibling name, then return it to the importer,
+    ;; whose public install contract requires a nonexistent target.
+    (setq staging (make-temp-file prefix t))
+    (delete-directory staging)
+    (unwind-protect
+        (progn
+          (setq report (e-runtime-migration-run source staging))
+          (unless (and (equal source-inventory (plist-get report :inventory))
+                       (equal source-inventory
+                              (e-runtime-migration-inventory source)))
+            (signal 'e-runtime-migration-cutover-error
+                    (list "Copied source changed during offline verification"
+                          source)))
+          (setq report (plist-put report :operation 'cutover)
+                report (plist-put report :installed root)
+                report (plist-put report :backup backup))
+          ;; Write the final operator paths before swapping, so no fallible
+          ;; report mutation occurs after the new authority is installed.
+          (e-runtime-migration--write-report staging report)
+          (unless (equal source-inventory
+                         (e-runtime-migration-inventory root))
+            (signal 'e-runtime-migration-cutover-error
+                    (list "Legacy root changed during offline verification"
+                          root)))
+          (rename-file root backup nil)
+          (condition-case install-error
+              (progn
+                (rename-file staging root nil)
+                (setq installed t)
+                report)
+            (error
+             (let (restore-error)
+               (condition-case caught
+                   (rename-file backup root nil)
+                 (error (setq restore-error caught)))
+               (if restore-error
+                   (signal
+                    'e-runtime-migration-cutover-error
+                    (list "SQLite install and legacy-root restore both failed"
+                          install-error restore-error root backup))
+                 (signal (car install-error) (cdr install-error)))))))
+      (when (and staging (file-directory-p staging) (not installed))
+        (delete-directory staging t)))))
+
 (defun e-runtime-migration--bounded-error-message (error-data)
   "Return a one-line bounded operator message for ERROR-DATA."
   (let ((message
@@ -515,10 +621,15 @@ directory to TARGET.  SOURCE is never written."
   (condition-case err
       (progn
         (prin1
-         (e-runtime-migration-run
-          (getenv "E_RUNTIME_MIGRATION_SOURCE")
-          (getenv "E_RUNTIME_MIGRATION_TARGET")
-          :dry-run (equal (getenv "E_RUNTIME_MIGRATION_DRY_RUN") "t")))
+         (if (equal (getenv "E_RUNTIME_MIGRATION_OPERATION") "cutover")
+             (e-runtime-migration-cutover
+              (getenv "E_RUNTIME_MIGRATION_SOURCE")
+              (getenv "E_RUNTIME_MIGRATION_TARGET")
+              (getenv "E_RUNTIME_MIGRATION_BACKUP"))
+           (e-runtime-migration-run
+            (getenv "E_RUNTIME_MIGRATION_SOURCE")
+            (getenv "E_RUNTIME_MIGRATION_TARGET")
+            :dry-run (equal (getenv "E_RUNTIME_MIGRATION_DRY_RUN") "t"))))
         (terpri))
     (error
      (princ

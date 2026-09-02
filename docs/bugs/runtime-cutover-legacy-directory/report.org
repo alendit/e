@@ -1,0 +1,14 @@
+#+title: Default SQLite Cutover Uses the Legacy Session Directory
+#+startup: overview
+
+* Report
+
+The user reported that opening the default chat after Feature 87 did not offer
+a workable migration path for the existing e state.  The supplied screenshot
+showed startup failing while the established legacy state still occupied the
+common e root.
+
+Expected behavior: startup recognizes the common legacy e root without
+changing it, gives one bounded command for an explicit offline copied-source
+cutover, and opens the canonical SQLite store at that same logical root after
+the operator completes the cutover and restarts Emacs.

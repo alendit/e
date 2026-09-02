@@ -1973,9 +1973,16 @@ stand in for the pure curation preparation path."
              "\"last-message-at\":\"2026-05-24T17:21:00Z\""
              "}"
              "}\n"))
-          (should-error
-           (e-session-persistent-index-store-create directory)
-           :type 'e-runtime-store-schema-too-old))
+          (let ((err
+                 (should-error
+                  (e-session-persistent-index-store-create directory)
+                  :type 'e-runtime-store-migration-required)))
+            (should (string-match-p "copy that directory"
+                                    (error-message-string err)))
+            (should (string-match-p "e-runtime-migrate cutover"
+                                    (error-message-string err)))
+            (should-not
+             (file-exists-p (expand-file-name "store.sqlite3" directory)))))
       (delete-directory directory t))))
 
 

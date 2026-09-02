@@ -1,0 +1,94 @@
+#+title: Default SQLite Cutover Legacy Directory Investigation
+#+startup: overview
+
+* Evidence
+
+The screenshot supplied with the report showed the default chat failing during
+persistent runtime startup rather than after a provider or presentation action.
+A supported =scripts/e-live-probe= attempt could not connect to the Emacs
+socket.  In accordance with the running-Emacs boundary, it was not retried and
+no raw =emacsclient= request was substituted.
+
+Read-only filesystem evidence showed the established common e root containing
+the accepted legacy owners: =sessions/=, =task-queue/=, =cron-state.eld=, and
+=voice-tells.eld=.  The prior copied-store gate had already verified those
+owners, including current session checkpoints, nested task history, and the
+explicitly preserved legacy backup and task-product classes.  No hidden config
+was mixed into that operator root.
+
+Source inspection found that =e-session-directory= defaults to the
+=e/sessions/= owner child.  =e-default-runtime-directory= passed that child
+unchanged to =e-runtime-sqlite-open=, although =e-runtime-migration= correctly
+expects the common parent tree containing every durable owner.  The defaults
+composition therefore selected a different physical root from the migrator.
+
+* Root Cause
+
+The P4 default-cutover change reused the historical session-owner directory as
+if it were the process-wide runtime directory.  That conflated one legacy
+owner's path with the common ownership root and left no safe, documented swap
+from the existing tree to SQLite at the path ordinary startup would use.
+
+* Resolution
+
+=e-default-harnesses= now owns a narrow derivation from the established
+=e-session-directory= to its common parent root.  An explicit
+=E_RUNTIME_STATE_DIRECTORY= still wins for disposable or operator-selected
+composition.  =e-runtime-store= detects a legacy-only directory before
+creating it and raises =e-runtime-store-migration-required= with a bounded
+message naming the root, copied-source requirement, =scripts/e-runtime-migrate
+cutover= command, sibling backup, and restart step.  Older SQLite schemas keep
+their separate explicit-upgrade condition.
+
+=e-runtime-migration-cutover= is the sole filesystem rotation application
+service.  With Emacs stopped, it requires an exact copied legacy source, the
+current common root, and a nonexistent sibling backup.  It builds and verifies
+SQLite in a sibling stage, rechecks the original bytes, renames the complete
+legacy root to the backup, and atomically installs the stage at the original
+path.  If the install rename fails after the move, it restores the original
+root.  It never deletes the legacy copy or backup and adds no runtime retry or
+reconciliation protocol.
+
+* Validation
+
+Focused repository-side tests cover common-root derivation, explicit override,
+non-mutating actionable startup failure, lower-level legacy-only rejection,
+successful same-path cutover and default session restore, complete backup
+preservation, preflight failure, post-move rollback, and invalid cutover paths.
+The narrow regressions pass 8/8, the complete P4 file passes 11/11,
+runtime-store passes 14/14, and defaults passes 30/30.  Compilation,
+check-parens, shell syntax, documentation/diff checks also pass.  Exact commands
+and counts are recorded in the Feature 87 review follow-up.
+
+The user's running Emacs was not contacted, reloaded, restarted, or migrated by
+the correction.  The supported live-probe socket failure remained the final
+live-access attempt.  Core runtime and startup changes take effect only after
+the operator deliberately stops Emacs, performs cutover, and restarts it.
+
+* Architecture Self-Check
+
+1. The package leaves startup and offline adoption safer even if no further
+   migration features are added.
+2. It completes the one-common-root SQLite direction already selected by
+   Feature 87.
+3. Backup naming remains an explicit operator choice; root ownership and the
+   offline-only swap are stable.  No speculative extension point is added.
+4. Defaults owns root selection and assembly, runtime-store owns legacy-only
+   diagnosis, and migration owns the offline swap.
+5. Coupling is reduced because session configuration is translated once at the
+   composition boundary rather than becoming the physical database root.
+6. Domain owners still depend only on their storage ports; none learns a path.
+7. Filesystem copy verification and rename effects remain in the operator
+   application service.
+8. No new durable runtime state is added.  The preserved sibling backup is an
+   explicit operator-owned rollback artifact.
+9. Startup adds only bounded path/marker checks.  Migration hashing remains an
+   offline operation.
+10. Existing owner ports and SQLite adapters are unchanged and substitutable.
+11. The legacy tree is preserved but no longer an active fallback after
+    cutover.
+12. Passing the legacy session child as the runtime root is removed.
+13. Expected legacy, path, and swap errors surface with operator context;
+    unexpected filesystem failures surface after rollback is attempted.
+14. Focused tests prove selection, immutability, swap, rollback, and restore
+    without the full system or the user's Emacs.

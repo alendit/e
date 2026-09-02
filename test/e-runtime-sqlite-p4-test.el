@@ -377,6 +377,143 @@
       (dolist (directory (list source target first-target second-target))
         (when (file-directory-p directory) (delete-directory directory t))))))
 
+(ert-deftest e-runtime-sqlite-p4-cutover-preserves-root-backup-and-default-restores ()
+  "Offline same-root cutover preserves legacy state and feeds ordinary startup."
+  (let* ((root (e-runtime-sqlite-p4-test--legacy-fixture))
+         (source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (backup (concat root ".backup"))
+         (before (e-runtime-migration-inventory root))
+         (process-environment (copy-sequence process-environment))
+         (e-session-directory (expand-file-name "sessions" root))
+         (e-default--runtime nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil))
+    (setenv "E_RUNTIME_STATE_DIRECTORY" nil)
+    (unwind-protect
+        (progn
+          (let ((err
+                 (should-error (e-default-session-store)
+                               :type 'e-runtime-store-migration-required)))
+            (should (string-match-p (regexp-quote root)
+                                    (error-message-string err)))
+            (should (string-match-p "COPIED_LEGACY_SOURCE"
+                                    (error-message-string err)))
+            (should (string-match-p "SIBLING_BACKUP"
+                                    (error-message-string err)))
+            (should (string-match-p "restart Emacs"
+                                    (error-message-string err))))
+          (should-not (file-exists-p (expand-file-name "store.sqlite3" root)))
+          (should (equal before (e-runtime-migration-inventory root)))
+          (let ((result (e-runtime-migration-cutover source root backup)))
+            (should (eq (plist-get result :operation) 'cutover))
+            (should (equal (plist-get result :installed) root))
+            (should (equal (plist-get result :backup) backup)))
+          (should (equal before (e-runtime-migration-inventory backup)))
+          (should (file-regular-p (expand-file-name "store.sqlite3" root)))
+          (should-not (file-exists-p (expand-file-name "sessions" root)))
+          (let ((sessions (e-default-session-store)))
+            (should (equal (e-session-store-directory sessions)
+                           (file-name-as-directory root)))
+            (should (equal
+                     (plist-get
+                      (car (e-session-messages sessions "restored-session"))
+                      :content)
+                     "exact legacy input"))))
+      (e-default-runtime-close)
+      (dolist (directory (list root source backup))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-cutover-preflight-failure-leaves-root-unchanged ()
+  "A stale copied source cannot move or mutate the legacy root."
+  (let* ((root (e-runtime-sqlite-p4-test--legacy-fixture))
+         (source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (backup (concat root ".backup")))
+    (unwind-protect
+        (progn
+          (e-runtime-sqlite-p4-test--write
+           (expand-file-name "voice-tells.eld" source)
+           "((:key \"plain\" :label \"Plain\" :description \"changed copy\" :count 2 :last \"2026-01-01T00:00:00Z\"))")
+          (let ((before (e-runtime-migration-inventory root)))
+            (should-error (e-runtime-migration-cutover source root backup)
+                          :type 'e-runtime-migration-cutover-error)
+            (should (equal before (e-runtime-migration-inventory root)))
+            (should-not (file-exists-p backup))
+            (should-not
+             (file-exists-p (expand-file-name "store.sqlite3" root)))))
+      (dolist (directory (list root source backup))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-cutover-install-failure-restores-root ()
+  "A failed post-move SQLite install restores the exact legacy root."
+  (let* ((root (e-runtime-sqlite-p4-test--legacy-fixture))
+         (source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (backup (concat root ".backup"))
+         (before (e-runtime-migration-inventory root))
+         (real-rename (symbol-function 'rename-file)))
+    (unwind-protect
+        (progn
+          (cl-letf
+              (((symbol-function 'rename-file)
+                (lambda (old new &optional ok-if-already-exists)
+                  (if (and (equal (directory-file-name (expand-file-name new))
+                                  root)
+                           (not (equal
+                                 (directory-file-name (expand-file-name old))
+                                 backup)))
+                      (signal 'file-error '("simulated SQLite install failure"))
+                    (funcall real-rename old new ok-if-already-exists)))))
+            (should-error (e-runtime-migration-cutover source root backup)
+                          :type 'file-error))
+          (should (file-directory-p root))
+          (should-not (file-exists-p backup))
+          (should (equal before (e-runtime-migration-inventory root)))
+          (should-not
+           (file-exists-p (expand-file-name "store.sqlite3" root))))
+      (dolist (directory (list root source backup))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-cutover-rejects-non-sibling-and-current-store ()
+  "Cutover refuses a non-atomic backup layout or an existing SQLite authority."
+  (let* ((root (e-runtime-sqlite-p4-test--legacy-fixture))
+         (source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (other-parent (make-temp-file "e-runtime-p4-other-" t))
+         (non-sibling (expand-file-name "backup" other-parent))
+         (sibling (concat root ".backup")))
+    (unwind-protect
+        (progn
+          (should-error (e-runtime-migration-cutover source root non-sibling)
+                        :type 'e-runtime-migration-cutover-error)
+          (should-not (file-exists-p non-sibling))
+          (e-runtime-sqlite-p4-test--write
+           (expand-file-name "store.sqlite3" root) "already current")
+          (should-error (e-runtime-migration-cutover source root sibling)
+                        :type 'e-runtime-migration-cutover-error)
+          (should-not (file-exists-p sibling)))
+      (dolist (directory (list root source sibling other-parent))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-cutover-cli-dispatches-offline-swap ()
+  "The operator script dispatches its explicit four-argument cutover surface."
+  (let* ((root (e-runtime-sqlite-p4-test--legacy-fixture))
+         (source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (backup (concat root ".backup"))
+         (script (expand-file-name "scripts/e-runtime-migrate"
+                                   (locate-dominating-file
+                                    default-directory "scripts")))
+         (output (generate-new-buffer " *e-runtime-cutover-cli-output*")))
+    (unwind-protect
+        (progn
+          (should (zerop (process-file script nil output nil
+                                       "cutover" source root backup)))
+          (should (string-match-p ":operation cutover"
+                                  (with-current-buffer output
+                                    (buffer-string))))
+          (should (file-regular-p (expand-file-name "store.sqlite3" root)))
+          (should (file-directory-p backup)))
+      (kill-buffer output)
+      (dolist (directory (list root source backup))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
 (ert-deftest e-runtime-sqlite-p4-s10-default-runtime-is-one-sqlite-store ()
   "Ordinary defaults inject one SQLite composition and write no sidecars."
   (let* ((directory (make-temp-file "e-runtime-p4-default-" t))

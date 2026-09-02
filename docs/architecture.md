@@ -131,7 +131,10 @@ The following are current boundaries, not a future proposal:
   settles every owned request once before any late response can be observed.
 - Ordinary startup creates only the current schema. Legacy import and schema
   upgrade are explicit offline actions; unsupported stores fail with targeted
-  guidance rather than fallback.
+  guidance rather than fallback. The default SQLite directory is the common e
+  state root (the parent of the historical session directory), with
+  `E_RUNTIME_STATE_DIRECTORY` as an explicit override. A legacy-only common
+  root is never mutated by startup.
 - WAL uses `synchronous=NORMAL`. It establishes database consistency across
   process failure, not survival of the latest acknowledgement after power loss.
 - Expected domain errors are handled by the owner with enough context.
@@ -488,6 +491,17 @@ or retirement disposition aborts the migration. Migration and upgrade CLI
 failures are single-line and bounded, so a malformed large snapshot cannot
 flood operator output.
 
+The ordinary SQLite store occupies the same common e root that historically
+contained `sessions/`, `task-queue/`, and the other owner sidecars. Adoption is
+therefore an explicit offline rotation, not a configuration-path change. With
+Emacs stopped, the operator verifies an external copy, supplies a nonexistent
+sibling backup path, and runs `scripts/e-runtime-migrate cutover`. The
+migration service builds and verifies a sibling stage, confirms that the copy
+still exactly matches the legacy root, renames the complete legacy tree to the
+backup, and atomically installs SQLite at the original path. If the install
+rename fails, it restores the original root. The backup retains rollback data
+and retired file products; startup never performs this operation.
+
 ## Public Surfaces
 
 Stable public surfaces include:
@@ -501,7 +515,7 @@ Stable public surfaces include:
   compaction, current-branch, catalog, and storage-facing application services.
 - `e-runtime-store-*` health, integrity, metrics, explicit backup, and close
   operations; session storage exposes its ordered status barrier.
-  `e-runtime-migration-run` and
+  `e-runtime-migration-run`, `e-runtime-migration-cutover`, and
   `e-runtime-store-offline-upgrade` are offline operator surfaces.
 - `e-capability-*`, `e-actions-*`, `e-resources-*`, `e-tools-*`, `e-work-*`,
   `e-request-*`, `e-hooks-*`, and `e-session-tmp-*` contracts.
@@ -598,8 +612,12 @@ are separate because they have no aggregate mutation state.
 Feature 87 moves durability to one physical authority while preserving semantic
 ownership. `e-runtime-store` changes for process protocol and worker-loss failure;
 each worker-side owner module changes for its schema and typed commands; domain
-facades change only for their commit-first application boundary. Migration and
-upgrade are operator services and are never invoked by ordinary startup.
+facades change only for their commit-first application boundary. Migration,
+same-root cutover, and upgrade are operator services and are never invoked by
+ordinary startup. Defaults own common-root selection and process assembly;
+runtime-store owns legacy-only detection and its bounded actionable error;
+migration alone owns copied-source validation and the backup/install filesystem
+swap.
 
 Remaining gaps are deliberately explicit: permission/audit policy is not a
 first-class gate, canvas has no independent versioned state strategy, and shell

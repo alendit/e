@@ -160,11 +160,14 @@ P3 adds the accepted opt-in realization:
   migration.  The opt-in SQLite path never falls back or dual-writes; the
   ordinary legacy-backed default remains until P4 cutover.
 
-P4 implements the cutover, awaiting same-revision review:
+P4 implements the accepted cutover:
 
 - =e-default-harnesses= opens and caches one =e-runtime-sqlite= composition in
-  =E_RUNTIME_STATE_DIRECTORY= (or the configured e state directory), injects
-  its task queue into the task capability, and closes the composition once;
+  =E_RUNTIME_STATE_DIRECTORY= when explicitly overridden.  Otherwise it
+  derives the common e state root as the parent of the established
+  =e-session-directory=; it never mistakes the legacy =sessions/= child for
+  the whole runtime root.  It injects its task queue into the task capability
+  and closes the composition once;
 - =e-runtime-migration= is the only legacy import application service.  It
   inventories a copied source tree, hashes exact bytes, decodes each accepted
   legacy owner, canonically deduplicates Board facts, imports through typed
@@ -178,7 +181,12 @@ P4 implements the cutover, awaiting same-revision review:
   Historical nested task =.org= fragments are likewise reported as preserved
   task output products, not queue authority.  Any other unmapped file aborts
   before installation, and the operator CLI bounds error output rather than
-  printing large decoded values in a backtrace;
+  printing large decoded values in a backtrace.  Its explicit =cutover=
+  operation requires Emacs stopped, an exact copied source, the current common
+  root, and a nonexistent sibling backup.  It verifies a sibling SQLite stage,
+  rechecks the legacy bytes, renames the complete legacy root to the backup,
+  and installs the stage at the original root.  If installation fails after
+  rotation, it restores the original root;
 - =e-runtime-store-offline= launches a private batch worker for the sole
   supported v3-to-v4 schema upgrade.  The worker rejects a live owner, verifies
   the source, creates and verifies a restrictive pre-upgrade backup, applies
@@ -457,6 +465,15 @@ order into a temporary database, compares semantic manifests, runs foreign-key
 and integrity checks, and atomically installs the verified store.  Conflicting
 identities, unexplained loss, missing roots, and non-round-tripping values abort
 cutover.  Source files remain inactive rollback material and are not deleted.
+The ordinary runtime path is the common e root, not its legacy =sessions/=
+child.  Same-root adoption is a separate explicit cutover step: after a copied
+source verifies, the application service requires a sibling backup path,
+confirms the copy still exactly matches the stopped legacy root, rotates that
+entire root to the backup, then renames the verified sibling stage into the
+original path.  Both renames stay on one parent filesystem.  A failed install
+rename restores the backup before returning the error.  A legacy-only startup
+does none of this work; it raises =e-runtime-store-migration-required= with the
+source, target, copied-source requirement, cutover command, and restart step.
 
 Ordinary startup creates a new current-version schema but never upgrades an
 older SQLite schema.  An older version reports a targeted migration-required
@@ -468,7 +485,8 @@ Backups are otherwise explicit operator actions implemented by the worker with
 SQLite's backup API or a validated equivalent such as =VACUUM INTO=.  Never copy
 a live database and WAL with an ordinary file copy.  Explicit destructive
 deletion does not automatically create a backup that defeats the deletion
-intent.  Operator-created historical backups remain operator-owned artifacts.
+intent.  Operator-created historical backups and the complete cutover backup
+remain operator-owned artifacts.
 
 The database, WAL, and runtime-ownership files use restrictive local
 permissions from initial creation.  Migration working files and reports,
