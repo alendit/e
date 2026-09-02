@@ -39,6 +39,9 @@ present.  Facade operations that need a loaded session fail explicitly at the
 barrier; direct read-only aggregate projections continue to see committed-old
 state.")
 
+(defvar e-session--lazy-load-in-progress (make-hash-table :test 'equal)
+  "Session ids whose first lazy replay is in progress.")
+
 (defun e-session--timestamp (&optional time)
   "Return TIME as the compact UTC timestamp used by session records."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
@@ -253,6 +256,9 @@ the next mutation or explicit finalize barrier."
 (defun e-session--call-with-commit-barrier (store session-id operation)
   "Call OPERATION while SESSION-ID rejects dependent facade work."
   (let ((key (cons store session-id)))
+    (when (gethash key e-session--lazy-load-in-progress)
+      (signal 'e-session-persistence-unavailable
+              (list "Session load is in progress" session-id)))
     (when (gethash key e-session--commit-in-progress)
       (signal 'e-session-persistence-unavailable
               (list "Session commit is in progress" session-id)))
@@ -492,22 +498,31 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session--ensure-loaded (store session-id)
   "Return loaded SESSION-ID, loading its checkpoint suffix on demand."
-  (when (gethash (cons store session-id) e-session--commit-in-progress)
-    (signal 'e-session-persistence-unavailable
-            (list "Session commit is in progress" session-id)))
-  (let ((session (e-session-aggregate-peek-session store session-id)))
-    (if (plist-get session :loaded)
-        session
-      (condition-case err
-          (e-session-load-session store session-id)
-        ;; An index store may be opened between the first journal flush and
-        ;; the asynchronous checkpoint barrier.  Ordinary facade reads retain
-        ;; the historical reopen behavior by replaying that journal in full;
-        ;; the explicit `e-session-load-session' API remains strict and still
-        ;; reports a missing resume checkpoint to its caller.
-        (e-session-checkpoint-missing
-         (e-session--load-session-journal-fully store session-id))
-        (error (signal (car err) (cdr err)))))))
+  (let ((key (cons store session-id)))
+    (when (gethash key e-session--commit-in-progress)
+      (signal 'e-session-persistence-unavailable
+              (list "Session commit is in progress" session-id)))
+    (when (gethash key e-session--lazy-load-in-progress)
+      (signal 'e-session-persistence-unavailable
+              (list "Session load is in progress" session-id)))
+    (let ((session (e-session-aggregate-peek-session store session-id)))
+      (if (plist-get session :loaded)
+          session
+        (progn
+          (puthash key t e-session--lazy-load-in-progress)
+          (unwind-protect
+              (condition-case err
+                  (e-session-load-session store session-id)
+                ;; An index store may be opened between the first journal flush
+                ;; and the asynchronous checkpoint barrier.  Ordinary facade
+                ;; reads retain the historical reopen behavior by replaying
+                ;; that journal in full; the explicit `e-session-load-session'
+                ;; API remains strict and still reports a missing resume
+                ;; checkpoint to its caller.
+                (e-session-checkpoint-missing
+                 (e-session--load-session-journal-fully store session-id))
+                (error (signal (car err) (cdr err))))
+            (remhash key e-session--lazy-load-in-progress)))))))
 
 (cl-defun e-session-create (store &key id metadata defer-persistence)
   "Create SESSION in STORE and publish its root unless deferred."

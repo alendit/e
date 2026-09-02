@@ -111,6 +111,73 @@
          (plist-get
           (e-session-aggregate-peek-session store "catalog-lazy") :loaded))))))
 
+(ert-deftest e-session-sqlite-first-lazy-load-rejects-same-session-reentry ()
+  "A timer cannot mutate a session while its first replay awaits storage."
+  (e-session-sqlite-test--with-store (store directory)
+    (e-session-create store :id "lazy-reentry")
+    (e-session-append-message
+     store "lazy-reentry" '(:role user :content "committed before reopen"))
+    (e-session-sqlite-store-close store)
+    (setq store (e-session-sqlite-store-create directory))
+    (let* ((runtime (e-session-storage-runtime-store store))
+           (process (e-runtime-store--process runtime))
+           (ordinary-filter (process-filter process))
+           (captured "")
+           response-seen
+           reentrant-result
+           reentrant-delete-result)
+      (set-process-filter
+       process
+       (lambda (worker text)
+         (setq captured (concat captured text))
+         (when (and (not response-seen) (string-match-p "\n" captured))
+           (setq response-seen t)
+           (run-at-time
+            0 nil
+            (lambda ()
+              (setq reentrant-result
+                    (condition-case err
+                        (e-session-append-message
+                         store "lazy-reentry"
+                         '(:role user :content "must not commit"))
+                      (e-session-persistence-unavailable
+                       (list :unavailable (cadr err))))
+                    reentrant-delete-result
+                    (condition-case err
+                        (e-session-delete store "lazy-reentry")
+                      (e-session-persistence-unavailable
+                       (list :unavailable (cadr err)))))))
+           (run-at-time
+            0.02 nil
+            (lambda ()
+              (set-process-filter worker ordinary-filter)
+              (funcall ordinary-filter worker captured))))))
+      (should (equal
+               (mapcar (lambda (message) (plist-get message :content))
+                       (e-session-messages store "lazy-reentry"))
+               '("committed before reopen")))
+      (should response-seen)
+      (should (equal (car reentrant-result) :unavailable))
+      (should (equal (car reentrant-delete-result) :unavailable))
+      (should (= (plist-get
+                  (e-session-storage-session-header store "lazy-reentry")
+                  :record-count)
+                 2))
+      (e-session-append-message
+       store "lazy-reentry" '(:role user :content "committed after replay"))
+      (should (equal
+               (mapcar (lambda (message) (plist-get message :content))
+                       (e-session-messages store "lazy-reentry"))
+               '("committed before reopen" "committed after replay")))
+      (e-session-unload-session store "lazy-reentry")
+      (cl-letf (((symbol-function 'e-session-load-session)
+                 (lambda (&rest _args)
+                   (signal 'e-session-storage-error
+                           '("injected lazy-load failure")))))
+        (should-error (e-session-get store "lazy-reentry")
+                      :type 'e-session-storage-error))
+      (should (= (length (e-session-messages store "lazy-reentry")) 2)))))
+
 (ert-deftest e-session-sqlite-s3-tool-cut-points-restore-classification ()
   "Production session/activity paths and explicit later transitions persist."
   (e-session-sqlite-test--with-store (store directory)

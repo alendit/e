@@ -105,6 +105,8 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   makes ordinary composition restore only catalog stubs, defers transcript
   replay to first session access, and limits missing-catalog root inspection to
   one record per session after eager replay exhausted production Emacs memory.
+  A process-local per-session fence rejects same-session facade reentry during
+  that first cooperative replay and is cleared on every exit.
 - Simplification correction :: Implemented and parent-accepted on 2026-09-02;
   independently accepted at the exact completed revision.  The runtime
   protocol now uses process-local response correlation only: worker loss fails

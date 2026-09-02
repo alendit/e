@@ -52,7 +52,10 @@ load option.  Store construction reads the bounded catalog projection and
 installs unloaded session stubs.  Catalog-backed startup does not read any
 transcript page.  The first semantic access continues through
 =e-session--ensure-loaded= and restores that one session from its checkpoint
-and journal suffix.
+and journal suffix.  A process-local session-owned load fence covers that
+cooperative wait: same-session reentrant reads or mutations fail visibly until
+the first replay completes, while unrelated sessions remain independent.  The
+fence is removed after success, error, or nonlocal exit.
 
 When no catalog exists, journal-root reconciliation calls the existing bounded
 page port with limit one and inspects only the returned first record.  This
@@ -66,9 +69,14 @@ Focused regressions prove that default composition omits eager loading,
 catalog-backed startup reads no transcripts, first access restores the exact
 message, and missing-catalog reconciliation issues only one-record page reads.
 The final repository state passes 3/3 focused regressions, 45/45 combined
-defaults and P4 tests, and 12/12 SQLite session-owner tests.  The latter's
+defaults and P4 tests, and 13/13 SQLite session-owner tests.  The latter's
 existing 15,722-record / 37,851,478-content-byte load witness completed in
 4.003680 seconds while 3,667 timer ticks advanced.  A separate disposable
 fixture of that same record and content size opened lazily in 0.061760 seconds,
 read zero transcript pages, and retained an unloaded session stub.  Timings are
 observations, not thresholds.
+
+A follow-up held-response regression covers first-access reentrancy: timer
+callbacks attempting both append and delete fail before mutation, the outer
+load returns the exact committed transcript, later mutation succeeds, and an
+injected load failure clears the fence before a subsequent successful access.

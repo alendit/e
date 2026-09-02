@@ -332,10 +332,17 @@ instead of materializing each complete journal.  No storage protocol, schema,
 transaction, or durable state changed.  Focused tests cover the default
 composition argument, catalog-backed no-replay startup, lazy first access, and
 one-record root reconciliation.  The final repository state passes 3/3 focused
-regressions, 45/45 combined defaults and P4 tests, and 12/12 SQLite session-owner
+regressions, 45/45 combined defaults and P4 tests, and 13/13 SQLite session-owner
 tests.  A disposable 15,722-record / 37,851,478-content-byte store opened lazily
 in 0.061760 seconds with zero transcript page reads and an unloaded session
 stub; timing is observational.
+
+The lazy-load follow-up adds one session-owned process-local fence around the
+first cooperative replay.  A held worker response lets timer callbacks attempt
+both append and delete: both fail visibly before mutation, the outer access
+returns the exact two-record session, a later append succeeds, and an injected
+load error clears the fence before the next access.  The fence adds no durable
+state, retry, revision check, or transaction behavior.
 
 * Plan coverage
 
