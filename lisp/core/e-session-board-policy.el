@@ -367,8 +367,7 @@ Lisp call stack merely while detaching nested selector data.  Cycles signal the
 same invalid-policy condition as the admission walk."
   (let ((pending (list (list :value value)))
         (results nil)
-        (visiting (make-hash-table :test 'eq))
-        (leave-marker (make-symbol "routing-copy-leave")))
+        (visiting (make-hash-table :test 'eq)))
     (while pending
       (let ((task (pop pending)))
         (pcase (car task)
@@ -396,7 +395,7 @@ same invalid-policy condition as the admission walk."
                  (signal 'e-session-board-routing-invalid
                          (list "Cyclic routing value" current)))
                (puthash current t visiting)
-               (push (cons leave-marker current) pending)
+               (push (list :leave current) pending)
                (push (list :assemble-vector (length current)) pending)
                (if (vectorp current)
                    (let ((index (1- (length current))))

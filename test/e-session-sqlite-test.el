@@ -57,17 +57,17 @@
      store "tools" "turn-1" 'tool-started
      '(:tool-call (:id "call-1" :name "write")))
     (e-session-tool-followup-transition
-     store "tools" "call-1" 'started '(:request-id "request-1") 2)
+     store "tools" "call-1" 'started '(:request-id "request-1"))
     (e-session-append-activity-event
      store "tools" "turn-1" 'tool-finished
      '(:tool-call (:id "call-1" :name "write")
        :result (:status ok :content "done")))
     (e-session-tool-followup-transition
-     store "tools" "call-1" 'follow-up-ready '(:entry-id "result") 4)
+     store "tools" "call-1" 'follow-up-ready '(:entry-id "result"))
     (e-session-tool-followup-transition
-     store "tools" "call-1" 'promoted '(:generation "g1") 5)
+     store "tools" "call-1" 'promoted '(:generation "g1"))
     (e-session-tool-followup-transition
-     store "tools" "call-1" 'settled '(:turn-id "turn-1") 6)
+     store "tools" "call-1" 'settled '(:turn-id "turn-1"))
     (e-session-tool-followup-transition
      store "tools" "call-uncertain" 'claimed '(:tool-name "external"))
     (e-session-sqlite-store-close store)
@@ -113,35 +113,18 @@
                   :record-count)
                  1)))))
 
-(ert-deftest e-session-sqlite-s3-fork-batch-reconciles-completely-after-loss ()
-  "A lost fork batch ACK restores one complete fork and one writer command."
+(ert-deftest e-session-sqlite-s3-fork-batch-is-atomic-and-restorable ()
+  "A fork commits its complete bounded record vector in one transaction."
   (e-session-sqlite-test--with-store (store directory)
     (e-session-create store :id "fork-source")
     (e-session-append-message
      store "fork-source" '(:role user :content "one"))
     (e-session-append-message
      store "fork-source" '(:role assistant :content "two"))
-    (let* ((runtime (e-session-storage-runtime-store store))
-           (process (e-runtime-store--process runtime))
-           (ordinary-filter (process-filter process))
-           (captured "")
-           response-lost
-           fork)
-      ;; The first complete response after installing this filter is the one
-      ;; atomic fork batch.  Drop it after COMMIT and kill the worker so the
-      ;; production stable-id reconciliation path must finish the facade call.
-      (set-process-filter
-       process
-       (lambda (worker text)
-         (setq captured (concat captured text))
-         (when (and (not response-lost) (string-match-p "\n" captured))
-           (setq response-lost t)
-           (set-process-filter worker ordinary-filter)
-           (delete-process worker))))
+    (let (fork)
       (cl-letf (((symbol-function 'e-session-identity-generate-id)
                  (lambda () "atomic-fork")))
         (setq fork (e-session-fork store "fork-source")))
-      (should response-lost)
       (should (equal (plist-get fork :id) "atomic-fork"))
       (should (= (plist-get
                   (e-session-storage-session-header store "atomic-fork")
@@ -152,21 +135,6 @@
                              (e-session-messages store "atomic-fork"))
                      '("one" "two"))))
     (e-session-sqlite-store-close store)
-    (let ((database
-           (sqlite-open (expand-file-name "store.sqlite3" directory))))
-      (unwind-protect
-          (let ((commands 0))
-            (dolist (row
-                     (sqlite-select database
-                                    "SELECT result FROM writer_commands"))
-              (let ((result
-                     (e-runtime-store-worker--value (car row))))
-                (when (and (equal (plist-get result :session-id)
-                                  "atomic-fork")
-                           (plist-member result :first-position))
-                  (cl-incf commands))))
-            (should (= commands 1)))
-        (sqlite-close database)))
     (setq store (e-session-sqlite-store-create directory))
     (should (= (plist-get
                 (e-session-storage-session-header store "atomic-fork")

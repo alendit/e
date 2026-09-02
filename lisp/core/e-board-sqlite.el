@@ -52,8 +52,7 @@
         (let ((result
                (e-board-storage-transition-pickup
                 storage (e-board-id board) generation
-                (plist-get pickup :delivery-id)
-                (plist-get pickup :revision) 'uncertain
+                (plist-get pickup :delivery-id) 'uncertain
                 (list :reason 'restart-effect-ambiguous))))
           (setf (e-board-revision board) (plist-get result :revision))
           ;; Uncertainty is terminal but remains visible.  Re-read the active
@@ -89,7 +88,7 @@
             ;; association intent; durable pickups would reject this cleanup.
             (let ((result
                    (e-board-storage-delete-participant
-                    storage board-id generation (e-board-revision board)
+                    storage board-id generation
                     (plist-get participant :id))))
               (setf (e-board-revision board) (plist-get result :revision)))
           (let ((restored

@@ -319,62 +319,23 @@
                        (e-goodnite-resources-test--glob "goodnite://workflows/"))))
       (delete-directory e-goodnite-resources-test--home t))))
 
-(defun e-goodnite-resources-test--access-lines ()
-  "Return parsed records from the test home's access log."
-  (let ((path (expand-file-name "state/daydream_access.jsonl"
-                                e-goodnite-resources-test--home)))
-    (when (file-readable-p path)
-      (mapcar (lambda (line)
-                (json-parse-string line :object-type 'plist :array-type 'list
-                                   :null-object nil :false-object nil))
-              (seq-remove #'string-empty-p
-                          (split-string
-                           (with-temp-buffer
-                             (insert-file-contents path) (buffer-string))
-                           "\n"))))))
-
-(ert-deftest e-goodnite-resources-test-read-records-access ()
-  "A read through the registered handler appends one access record."
+(ert-deftest e-goodnite-resources-test-tracking-requires-runtime-storage ()
+  "Demand tracking never falls back to the retired JSONL sidecar."
   (e-goodnite-resources-test--with-home
     (let ((e-goodnite-track-access t)
+          (e-goodnite-resources-storage nil)
           (registry (e-resources-registry-create)))
       (e-goodnite-resources-register-resource-methods
        registry :session-id "sess-1" :turn-id "turn-1")
       (let ((method (seq-find
                      (lambda (m) (equal (e-resource-method-scheme m) "goodnite"))
                      (e-resources-methods-for-operation registry e-operation-read))))
-        (funcall (e-resource-method-handler method)
-                 (e-resources-parse-uri
-                  "goodnite://workflows/resolving-rebase-conflicts")
-                 nil))
-      (let ((records (e-goodnite-resources-test--access-lines)))
-        (should (= (length records) 1))
-        (should (equal (plist-get (car records) :kind) "read"))
-        (should (equal (plist-get (car records) :entry_uri)
-                       "goodnite://workflows/resolving-rebase-conflicts"))
-        (should (equal (plist-get (car records) :session_id) "sess-1"))
-        (should (equal (plist-get (car records) :engine) "e"))))))
-
-(ert-deftest e-goodnite-resources-test-search-records-each-hit ()
-  "A lexical search records one access record per returned hit."
-  (e-goodnite-resources-test--with-home
-    (let ((e-goodnite-track-access t)
-          (e-goodnite-search-semantic nil)
-          (registry (e-resources-registry-create)))
-      (e-goodnite-resources-register-resource-methods
-       registry :session-id "sess-1" :turn-id "turn-1")
-      (let ((method (seq-find
-                     (lambda (m) (equal (e-resource-method-scheme m) "goodnite"))
-                     (e-resources-methods-for-operation registry e-operation-search))))
-        (funcall (e-resource-method-handler method)
-                 (e-resources-parse-uri "goodnite://") "rebase conflict"
-                 '(:limit 5)))
-      (let ((records (e-goodnite-resources-test--access-lines)))
-        (should records)
-        (should (seq-every-p
-                 (lambda (r) (equal (plist-get r :kind) "search")) records))
-        (should (member "goodnite://workflows/resolving-rebase-conflicts"
-                        (mapcar (lambda (r) (plist-get r :entry_uri)) records)))))))
+        (should-error
+         (funcall (e-resource-method-handler method)
+                  (e-resources-parse-uri
+                   "goodnite://workflows/resolving-rebase-conflicts")
+                  nil)
+         :type 'e-goodnite-storage-error)))))
 
 (ert-deftest e-goodnite-resources-test-access-tracking-off ()
   "With tracking disabled, no access log is written."
@@ -389,7 +350,10 @@
                  (e-resources-parse-uri
                   "goodnite://workflows/resolving-rebase-conflicts")
                  nil))
-      (should-not (e-goodnite-resources-test--access-lines)))))
+      (should-not
+       (file-exists-p
+        (expand-file-name "state/daydream_access.jsonl"
+                          e-goodnite-resources-test--home))))))
 
 (ert-deftest e-goodnite-resources-test-capability-and-layer-shape ()
   "The goodnite capability registers goodnite:// and carries the skill preamble."

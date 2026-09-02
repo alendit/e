@@ -1394,7 +1394,14 @@ operation.  The facade retains only durable transcript and shell composition."
         ((eq activity-result :session-reset)
          (e-chat--insert-transcript-entry "System" "Session reset" t))
         ((eq activity-result t)
-         nil)
+         ;; Session-owned metadata such as a derived title may commit after
+         ;; the Board user-message observer has rendered its row.  The later
+         ;; selected turn boundary is the first presentation event that can
+         ;; reliably refresh those committed projections without depending on
+         ;; incidental timer ordering.
+         (when (and (eq (plist-get event :type) 'turn-started)
+                    (e-chat-event-selected-participant-p event))
+           (e-chat--refresh-session-display)))
         (t
          (pcase (plist-get event :type)
            ('compaction-started

@@ -221,6 +221,24 @@
               (should (equal delivered '("new")))
               (should-not e-board-runtime--pending-pickup-head))))))))
 
+(ert-deftest e-board-runtime-test-empty-pickup-enqueue-does-not-wedge-scheduler ()
+  "A missed-wake with no pickups leaves the next real enqueue schedulable."
+  (e-board-runtime-test--with-empty-state
+    (let ((board (e-board-registry-create :id "board"))
+          scheduled)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest arguments)
+                   (push (lambda () (apply function arguments)) scheduled))))
+        (e-board-runtime--enqueue-pickups board nil)
+        (should-not scheduled)
+        (should-not e-board-runtime--pickup-drain-scheduled)
+        (e-board-runtime--enqueue-pickups board '("real"))
+        (should (= (length scheduled) 1))
+        (should e-board-runtime--pickup-drain-scheduled)
+        (funcall (pop scheduled))
+        (should-not e-board-runtime--pending-pickup-head)
+        (should-not e-board-runtime--pickup-drain-scheduled)))))
+
 (ert-deftest e-board-runtime-test-pickup-drain-fence-preserves-other-attachment ()
   "Retiring one attachment fences only its callback, not another FIFO lane."
   (e-board-runtime-test--with-empty-state
@@ -943,6 +961,39 @@
             (should (= calls 0))
             (should (eq (e-board-pickup-state pickup) 'failed))
             (should-not (e-board-pickup-attempt pickup))))))))
+
+(ert-deftest e-board-runtime-test-synchronous-consumption-receipt-terminalizes-once ()
+  "A reentrant endpoint receipt owns terminalization before adapter return."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (source-board (e-board-registry-board-source-board board))
+           (harness (e-harness-create))
+           delivery-id)
+      (e-harness-create-session harness :id "session")
+      (e-board-runtime-attach
+       board harness "session" :participant-id "participant"
+       :delivery-function
+       (lambda (_attachment pickup _message)
+         (setq delivery-id (e-board-pickup-delivery-id pickup))
+         (e-board-pickup-complete-delivery source-board delivery-id)
+         :consumed))
+      (e-board-runtime-post-input
+       board :id "input" :to "participant" :content "consume synchronously")
+      (e-board-runtime--drain-input-routing
+       board (lambda () (e-board-drain-input-classifications source-board)))
+      (e-board-runtime--drain-pickups)
+      (should delivery-id)
+      (should (eq (e-board-pickup-state
+                   (e-board-pickup source-board delivery-id))
+                  'consumed))
+      (should (= (cl-count-if
+                  (lambda (event)
+                    (and (eq (e-board-event-type event) 'pickup-consumed)
+                         (equal (plist-get (e-board-event-data event)
+                                           :delivery-id)
+                                delivery-id)))
+                  (e-board-events-after source-board 0))
+                 1)))))
 
 (ert-deftest e-board-runtime-test-requester-membership-revoke-fences-delivery ()
   "A routed tagged pickup rechecks its frozen requester's current membership."

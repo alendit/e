@@ -17,12 +17,25 @@
 (require 'e-harness)
 (require 'e-hooks)
 (require 'e-raw-results)
+(require 'e-raw-results-storage-sqlite)
+(require 'e-runtime-store)
 (require 'e-resources)
 (require 'e-session-tmp-resources)
 (require 'e-tool-invocation-details)
 
 (defvar e-tool-output-truncation-max-bytes)
 (defvar e-tool-output-truncation-max-lines)
+
+(defmacro e-tool-output-truncation-test--with-raw-storage (&rest body)
+  "Run BODY with a disposable runtime-level raw-result adapter."
+  (declare (indent 0) (debug t))
+  `(let* ((directory (make-temp-file "e-tool-raw-runtime-" t))
+          (runtime (e-runtime-store-open directory))
+          (e-raw-results-storage
+           (e-raw-results-storage-sqlite-create runtime)))
+     (unwind-protect (progn ,@body)
+       (e-runtime-store-close runtime)
+       (delete-directory directory t))))
 
 (declare-function e-tool-output-truncation-capability-create
                   "e-tool-output-truncation")
@@ -210,8 +223,8 @@
 (ert-deftest e-tool-output-truncation-test-without-session-uses-raw-result-store ()
   "Large outputs without an owning session are persisted to raw-result://."
   (should (require 'e-tool-output-truncation nil t))
+  (e-tool-output-truncation-test--with-raw-storage
   (let* ((directory (make-temp-file "e-tool-raw-results-test-" t))
-         (e-raw-results-directory directory)
          (result '(:tool-call-id "call-raw"
                    :name "external"
                    :status ok
@@ -242,13 +255,13 @@
                                   (plist-get truncated :content)))
           (should (equal (e-raw-results-read uri)
                          "abcdefghijklmnopqrstuvwxyz")))
-      (delete-directory directory t))))
+      (delete-directory directory t)))))
 
 (ert-deftest e-tool-output-truncation-test-file-content-imports-without-session ()
   "A non-session file carrier is copied to raw results without path exposure."
   (should (require 'e-tool-output-truncation nil t))
+  (e-tool-output-truncation-test--with-raw-storage
   (let* ((directory (make-temp-file "e-tool-file-raw-results-" t))
-         (e-raw-results-directory directory)
          (source (make-temp-file "e-tool-file-content-" nil ".txt"))
          (content "abcdefghijklmnopqrstuvwxyz")
          (carrier
@@ -275,13 +288,13 @@
             (should-not (string-match-p (regexp-quote source)
                                         (plist-get truncated :content)))))
       (when (file-exists-p source) (delete-file source))
-      (delete-directory directory t))))
+      (delete-directory directory t)))))
 
 (ert-deftest e-tool-output-truncation-test-incomplete-carrier-preview-stays-referenced ()
   "A partial carrier preview stays truncated after presentation limits grow."
   (should (require 'e-tool-output-truncation nil t))
+  (e-tool-output-truncation-test--with-raw-storage
   (let* ((directory (make-temp-file "e-tool-file-partial-preview-" t))
-         (e-raw-results-directory directory)
          (source (make-temp-file "e-tool-file-content-" nil ".txt"))
          (content "abcdefghijklmnopqrst")
          (carrier
@@ -308,7 +321,7 @@
                                     (plist-get truncated :content)))
             (should (equal (e-raw-results-read uri) content))))
       (when (file-exists-p source) (delete-file source))
-      (delete-directory directory t))))
+      (delete-directory directory t)))))
 
 (ert-deftest e-tool-output-truncation-test-structured-content-uses-shared-text ()
   "Structured content is measured using provider-visible text."

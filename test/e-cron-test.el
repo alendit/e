@@ -29,6 +29,7 @@ fresh in-memory table with persistence to disk disabled, so tests never touch
   `(let ((e-cron--schedules (make-hash-table :test 'equal))
          (e-cron--state (make-hash-table :test 'equal))
          (e-cron--state-loaded t)
+         (e-cron-storage nil)
          (e-cron-state-file nil))
      (cl-letf (((symbol-function 'run-at-time)
                 (lambda (&rest _) 'stub-timer))
@@ -287,30 +288,25 @@ re-basing to the new registration moment."
                          (format-time-string
                           "%F %T" (e-cron-schedule-next-fire schedule))))))))
 
-(ert-deftest e-cron-test-state-round-trips-through-file ()
-  "Fire state written to `e-cron-state-file' hydrates a fresh session."
+(ert-deftest e-cron-test-no-longer-writes-state-file ()
+  "Cron cadence without an injected store remains explicitly in memory."
   (let ((file (make-temp-file "e-cron-state-test-" nil ".eld")))
     (unwind-protect
         (progn
-          ;; Session 1: fire and persist to the real file.
+          (delete-file file)
           (let ((e-cron--schedules (make-hash-table :test 'equal))
                 (e-cron--state (make-hash-table :test 'equal))
                 (e-cron--state-loaded t)
-                (e-cron-state-file file))
+                (e-cron-storage nil))
             (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) 'stub))
                       ((symbol-function 'cancel-timer) #'ignore)
                       ((symbol-function 'timerp) (lambda (v) (eq v 'stub))))
               (e-cron-test--with-clock "2026-06-15 09:00:00"
                 (e-cron-fire (e-cron-register :id 'rt :when '(:every 3600)
-                                              :action #'ignore :enabled nil)))))
-          ;; Session 2: a fresh in-memory state loads last-fire from disk.
-          (let ((e-cron--schedules (make-hash-table :test 'equal))
-                (e-cron--state (make-hash-table :test 'equal))
-                (e-cron--state-loaded nil)
-                (e-cron-state-file file))
-            (should (= (float-time (e-cron-test--time "2026-06-15 09:00:00"))
-                       (plist-get (e-cron--state-get 'rt) :last-fire)))))
-      (delete-file file))))
+                                              :action #'ignore :enabled nil))))
+            (should (plist-get (e-cron--state-get 'rt) :last-fire)))
+          (should-not (file-exists-p file)))
+      (when (file-exists-p file) (delete-file file)))))
 
 (provide 'e-cron-test)
 

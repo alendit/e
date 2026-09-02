@@ -32,9 +32,15 @@
     ("lisp/core/e-request.el" "accept-process-output" 2)
     ("lisp/core/e-request.el" "process-file" 2)
     ("lisp/core/e-request.el" "url-retrieve-synchronously" 2)
+    ;; Explicit operator-only schema upgrade runs outside the interactive
+    ;; runtime and synchronously waits for its private batch worker.
+    ("lisp/core/e-runtime-store-offline.el" "process-file" 1)
+    ;; The runtime client waits cooperatively for typed worker responses; all
+    ;; SQLite work itself remains in the subordinate process.
+    ("lisp/core/e-runtime-store.el" "accept-process-output" 2)
     ;; The third occurrence is the explicit eager-store loop.  Interactive
     ;; resume continues to use `e-session-load-session-start'.
-    ("lisp/core/e-session.el" "e-session-load-session" 6)
+    ("lisp/core/e-session.el" "e-session-load-session" 5)
     ("lisp/core/e-tools.el" "accept-process-output" 1)
     ("lisp/core/e-ui-work.el" "accept-process-output" 1)
     ("lisp/core/e-work.el" "accept-process-output" 2)

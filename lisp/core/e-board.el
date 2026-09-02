@@ -3328,7 +3328,7 @@ ordinary future routing, which retains its existing append-time classifier."
              (e-board-generation board)
              (e-board-subscription-id
               (e-board-subscription-replay-subscription record))
-             position (e-board-revision board))))))
+             position)))))
     (setf (e-board-revision board) (plist-get result :revision)
           (e-board-subscription-replay-next-position record) position)))
 

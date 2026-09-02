@@ -17,13 +17,26 @@
 (require 'e-harness)
 (require 'e-raw-result-cleanup)
 (require 'e-raw-results)
+(require 'e-raw-results-storage-sqlite)
+(require 'e-runtime-store)
 (require 'e-session-tmp-resources)
+
+(defmacro e-raw-result-cleanup-test--with-storage (&rest body)
+  "Run BODY with a disposable runtime-level raw-result adapter."
+  (declare (indent 0) (debug t))
+  `(let* ((runtime-directory (make-temp-file "e-raw-cleanup-runtime-" t))
+          (runtime (e-runtime-store-open runtime-directory))
+          (e-raw-results-storage
+           (e-raw-results-storage-sqlite-create runtime)))
+     (unwind-protect (progn ,@body)
+       (e-runtime-store-close runtime)
+       (delete-directory runtime-directory t))))
 
 (ert-deftest e-raw-result-cleanup-test-deletes-mixed-reference-list ()
   "Mixed cleanup deletes both session tmp and generic raw-result references."
   (should (require 'e-raw-result-cleanup nil t))
+  (e-raw-result-cleanup-test--with-storage
   (let* ((directory (make-temp-file "e-raw-result-cleanup-test-" t))
-         (e-raw-results-directory directory)
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :intrinsic-capabilities
@@ -46,34 +59,31 @@
                 (list session-reference
                       '(:uri "file://not-raw-result" :storage file)
                       generic-reference))))
-          (should (equal (sort (mapcar #'file-name-nondirectory deleted)
-                               #'string<)
-                         '("generic.txt" "session.txt")))
+          (should (member "raw-result://generic.txt" deleted))
+          (should (member session-path deleted))
           (should-not (file-exists-p session-path))
           (should-not (file-exists-p generic-path))
           (should (file-directory-p root)))
       (when (file-directory-p directory)
         (delete-directory directory t))
-      (e-session-tmp-cleanup-harness harness))))
+      (e-session-tmp-cleanup-harness harness)))))
 
 (ert-deftest e-raw-result-cleanup-test-generic-reference-needs-no-session ()
   "Generic raw-result cleanup does not require harness session ownership."
   (should (require 'e-raw-result-cleanup nil t))
+  (e-raw-result-cleanup-test--with-storage
   (let* ((directory (make-temp-file "e-raw-result-cleanup-test-" t))
-         (e-raw-results-directory directory)
          (reference (e-raw-results-write
                      :id "orphan.txt"
-                     :content "orphan"))
-         (path (expand-file-name "orphan.txt" directory)))
+                     :content "orphan")))
     (unwind-protect
         (progn
-          (should (file-exists-p path))
           (should (equal (e-raw-result-cleanup-reference
                           nil nil reference)
-                         path))
-          (should-not (file-exists-p path)))
+                         "raw-result://orphan.txt"))
+          (should-error (e-raw-results-read "raw-result://orphan.txt")))
       (when (file-directory-p directory)
-        (delete-directory directory t)))))
+        (delete-directory directory t))))))
 
 (provide 'e-raw-result-cleanup-test)
 

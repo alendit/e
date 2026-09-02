@@ -544,11 +544,10 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                          'provider-request-started))
                    activity))
                  (payload (plist-get started :payload))
-                 (journal
-                  (with-temp-buffer
-                    (insert-file-contents
-                     (e-session-storage-session-reference store "session-1"))
-                    (buffer-string)))
+                 (durable-records
+                  (prin1-to-string
+                   (e-session-storage-read-session-records
+                    loaded "session-1")))
                  (projected (plist-get payload :diagnostics)))
             (should started)
             (dolist (key '(:observation-delivery
@@ -559,12 +558,8 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                            :context-rendering-strategy
                            :provider-anchor-safety))
               (should (plist-member projected key)))
-            ;; JSONL keeps scalar enum values as strings on replay; the
-            ;; semantic value remains present and the live activity projection
-            ;; above retains the original symbols used by the E2E consumers.
-            (should (member (plist-get projected :observation-delivery)
-                            '(request-local-replaceable
-                              "request-local-replaceable")))
+            (should (eq (plist-get projected :observation-delivery)
+                        'request-local-replaceable))
             (should (equal (plist-get projected
                                       :replaceable-current-state-present)
                            t))
@@ -572,10 +567,10 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                            fingerprint))
             (should (equal (plist-get projected :reasoning-summary)
                            "detailed"))
-            (should (member (plist-get projected :context-rendering-strategy)
-                            '(replaceable-channel "replaceable-channel")))
-            (should (member (plist-get projected :provider-anchor-safety)
-                            '(advance-eligible "advance-eligible")))
+            (should (eq (plist-get projected :context-rendering-strategy)
+                        'replaceable-channel))
+            (should (eq (plist-get projected :provider-anchor-safety)
+                        'advance-eligible))
             (dolist (key '(:observation-frontier
                            :replaceable-current-state
                            :current-state-messages
@@ -583,7 +578,8 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                            :messages))
               (should-not (plist-member (plist-get payload :diagnostics)
                                         key)))
-            (should-not (string-match-p (regexp-quote raw) journal))))
+            (should-not (string-match-p (regexp-quote raw)
+                                        durable-records))))
       (delete-directory directory t))))
 
 (ert-deftest e-harness-test-context-curation-revision-fences-material-anchor ()

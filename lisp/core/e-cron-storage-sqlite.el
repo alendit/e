@@ -7,12 +7,6 @@
 
 (require 'e-cron-storage)
 (require 'e-runtime-store)
-(require 'e-runtime-store-codec)
-
-(defun e-cron-storage-sqlite--stable-id (prefix value)
-  "Return stable command id for PREFIX and VALUE."
-  (format "%s:%s" prefix
-          (secure-hash 'sha256 (e-runtime-store-codec-encode value))))
 
 (defun e-cron-storage-sqlite--call (runtime operation arguments)
   "Dispatch cron OPERATION ARGUMENTS through RUNTIME."
@@ -28,31 +22,27 @@
               :anchor anchor))))
     ('claim
      (pcase-let
-         ((`(,id ,expected ,firing-id ,due-at ,fire-at ,next-fire) arguments))
+         ((`(,id ,firing-id ,due-at ,fire-at ,next-fire) arguments))
        (e-runtime-store-call
         runtime 'write
         (list :op 'cron-claim :schedule-id id
-              :expected-revision expected :firing-id firing-id
-              :due-at due-at :fire-at fire-at :next-fire next-fire)
-        (e-cron-storage-sqlite--stable-id "cron-claim" firing-id))))
+              :firing-id firing-id :due-at due-at :fire-at fire-at
+              :next-fire next-fire))))
     ('settle
      (pcase-let
          ((`(,id ,firing-id ,expected-state ,state ,result) arguments))
        (e-runtime-store-call
         runtime 'write
         (list :op 'cron-settle :schedule-id id :firing-id firing-id
-              :expected-state expected-state :state state :result result)
-        (e-cron-storage-sqlite--stable-id
-         "cron-settle" (list firing-id state)))))
+              :expected-state expected-state :state state :result result))))
     ('cadence
      (e-runtime-store-call
       runtime 'read (list :op 'cron-cadence :schedule-id (car arguments))))
     ('delete-history
-     (pcase-let ((`(,id ,expected) arguments))
+     (pcase-let ((`(,id) arguments))
        (e-runtime-store-call
         runtime 'write
-        (list :op 'cron-history-delete :schedule-id id
-              :expected-revision expected))))
+        (list :op 'cron-history-delete :schedule-id id))))
     (_ (signal 'e-cron-storage-error
                (list "Unknown cron storage operation" operation)))))
 

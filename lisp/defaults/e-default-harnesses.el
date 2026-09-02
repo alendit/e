@@ -26,6 +26,8 @@
 (require 'e-layers)
 (require 'e-prompts)
 (require 'e-session)
+(require 'e-runtime-sqlite)
+(require 'e-task-queue-actions)
 (require 'e-shells)
 (require 'e-startup)
 
@@ -92,7 +94,50 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
   "System guidance attached to the default debug harness.")
 
 (defvar e-default--chat-sessions nil
-  "Cached default persistent chat session store.")
+  "Cached default SQLite-backed chat session port.")
+
+(defvar e-default--runtime nil
+  "The process-wide default SQLite runtime composition.")
+
+(defun e-default-runtime-directory ()
+  "Return the ordinary runtime state directory.
+
+Tests and operators may isolate startup by setting
+`E_RUNTIME_STATE_DIRECTORY'.  Otherwise the established
+`e-session-directory' is the one runtime state directory."
+  (file-name-as-directory
+   (expand-file-name
+    (or (getenv "E_RUNTIME_STATE_DIRECTORY") e-session-directory))))
+
+(defun e-default-runtime ()
+  "Return the process-wide default SQLite runtime, opening it once."
+  (let ((directory (e-default-runtime-directory)))
+    (unless (and (e-runtime-sqlite-p e-default--runtime)
+                 (not (e-runtime-sqlite--closed e-default--runtime))
+                 (equal (e-runtime-sqlite--directory e-default--runtime)
+                        directory))
+      (when (and e-default--runtime
+                 (not (e-runtime-sqlite--closed e-default--runtime)))
+        (signal 'e-runtime-sqlite-live-composition
+                (list "Default runtime directory changed while live"
+                      (e-runtime-sqlite--directory e-default--runtime)
+                      directory)))
+      (setq e-default--runtime
+            (e-runtime-sqlite-open directory :load-sessions t)
+            e-default--chat-sessions
+            (e-runtime-sqlite-session-store e-default--runtime)))
+    (e-task-queue-actions-configure-queue
+     (e-runtime-sqlite-task-queue e-default--runtime))
+    e-default--runtime))
+
+(defun e-default-runtime-close ()
+  "Close the process-wide default runtime exactly once."
+  (when (e-runtime-sqlite-p e-default--runtime)
+    (e-runtime-sqlite-close e-default--runtime))
+  (e-task-queue-actions-configure-queue nil)
+  (setq e-default--runtime nil
+        e-default--chat-sessions nil)
+  t)
 
 (defun e-default-chat--prompt-capability ()
   "Return built-in prompt templates for default chat harnesses."
@@ -124,18 +169,12 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
      "Review ${focus} for bugs, regressions, and missing tests."))))
 
 (defun e-default-session-store ()
-  "Return the default persistent session store."
-  (let ((directory (file-name-as-directory
-                    (expand-file-name e-session-directory))))
-    (unless (and (e-session-store-p e-default--chat-sessions)
-                 (equal (e-session-store-directory e-default--chat-sessions)
-                        directory))
-      (setq e-default--chat-sessions
-            (e-session-persistent-index-store-create
-             directory
-             :write-mode 'queued)))
-    (e-session-enable e-default--chat-sessions)
-    e-default--chat-sessions))
+  "Return the default SQLite-backed session port."
+  (let ((store (e-runtime-sqlite-session-store (e-default-runtime))))
+    (e-session-enable store)
+    store))
+
+(add-hook 'kill-emacs-hook #'e-default-runtime-close)
 
 (defun e-default-chat--record-layer-ids (harness)
   "Record HARNESS explicitly enabled registered layer ids as default chat config."

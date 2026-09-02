@@ -1,156 +1,20 @@
-;;; e-raw-results-test.el --- Tests for raw-result resources -*- lexical-binding: t; -*-
+;;; e-raw-results-test.el --- Raw-result cutover tests -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
-
-;; Author: Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
-
-;;; Commentary:
-
-;; ERT tests for generic raw-result resources.
 
 ;;; Code:
 
 (require 'ert)
-(require 'e)
-(require 'e-capabilities)
-(require 'e-resources)
 (require 'e-raw-results)
 
-(ert-deftest e-raw-results-test-write-and-read-reference ()
-  "Raw-result references preserve full content behind a bounded preview."
-  (should (require 'e-raw-results nil t))
-  (let* ((directory (make-temp-file "e-raw-results-test-" t))
-         (e-raw-results-directory directory)
-         (reference (e-raw-results-write
-                     :id "tool-output.txt"
-                     :content "abcdefghijklmnopqrstuvwxyz"
-                     :owner '(:kind tool-result :tool-name "bash")
-                     :preview "abcdefghijkl"
-                     :preview-bytes 10)))
-    (unwind-protect
-        (progn
-          (should (equal (plist-get reference :uri)
-                         "raw-result://tool-output.txt"))
-          (should (eq (plist-get reference :storage) 'raw-result-store))
-          (should (equal (plist-get reference :cleanup-lifetime)
-                         'raw-result-store))
-          (should (equal (plist-get reference :original-bytes) 26))
-          (should (equal (plist-get reference :preview) "abcdefghij"))
-          (should (equal (e-raw-results-read (plist-get reference :uri))
-                         "abcdefghijklmnopqrstuvwxyz")))
-      (delete-directory directory t))))
-
-(ert-deftest e-raw-results-test-import-file-copies-with-bounded-metadata ()
-  "File import copies complete content without requiring a content string."
-  (let* ((directory (make-temp-file "e-raw-results-import-" t))
-         (e-raw-results-directory directory)
-         (source (make-temp-file "e-raw-results-source-" nil ".txt"))
-         reference)
-    (unwind-protect
-        (progn
-          (write-region "complete source" nil source nil 'silent)
-          (setq reference
-                (e-raw-results-import-file
-                 source :id "import.txt" :preview "complete"
-                 :preview-bytes 4 :original-bytes 15))
-          (should (equal (plist-get reference :preview) "comp"))
-          (should (= (plist-get reference :original-bytes) 15))
-          (should (equal (e-raw-results-read (plist-get reference :uri))
-                         "complete source"))
-          (should (file-exists-p source)))
-      (when (file-exists-p source) (delete-file source))
-      (delete-directory directory t))))
-
-(ert-deftest e-raw-results-test-resource-method-reads-reference ()
-  "The raw-result capability exposes stored output through the read operation."
-  (should (require 'e-raw-results nil t))
-  (let* ((directory (make-temp-file "e-raw-results-test-" t))
-         (e-raw-results-directory directory)
-         (registry (e-resources-registry-create))
-         (reference (e-raw-results-write
-                     :id "full.txt"
-                     :content "full content")))
-    (unwind-protect
-        (progn
-          (e-capabilities-register-resource-methods
-           (e-raw-results-capability-create)
-           registry)
-          (should (equal (e-resources-read registry
-                                           (plist-get reference :uri)
-                                           nil)
-                         "full content")))
-      (delete-directory directory t))))
-
-(ert-deftest e-raw-results-test-cleanup-reference-deletes-file ()
-  "Raw-result references can be explicitly cleaned up by owner paths."
-  (should (require 'e-raw-results nil t))
-  (let* ((directory (make-temp-file "e-raw-results-test-" t))
-         (e-raw-results-directory directory)
-         (reference (e-raw-results-write
-                     :id "cleanup.txt"
-                     :content "discard me"))
-         (path (expand-file-name "cleanup.txt" directory)))
-    (unwind-protect
-        (progn
-          (should (file-exists-p path))
-          (should (equal (e-raw-results-cleanup-reference reference) path))
-          (should-not (file-exists-p path))
-          (should-not (e-raw-results-cleanup-reference reference)))
-      (when (file-directory-p directory)
-        (delete-directory directory t)))))
-
-(ert-deftest e-raw-results-test-cleanup-expired-deletes-stale-files ()
-  "Expired cleanup deletes only stale raw-result files."
-  (should (require 'e-raw-results nil t))
-  (let* ((directory (make-temp-file "e-raw-results-test-" t))
-         (e-raw-results-directory directory)
-         (old-reference (e-raw-results-write
-                         :id "old.txt"
-                         :content "old"))
-         (fresh-reference (e-raw-results-write
-                           :id "fresh.txt"
-                           :content "fresh"))
-         (old-path (expand-file-name "old.txt" directory))
-         (fresh-path (expand-file-name "fresh.txt" directory))
-         (nested-directory (expand-file-name "nested" directory))
-         (now 1000.0))
-    (unwind-protect
-        (progn
-          (make-directory nested-directory)
-          (set-file-times old-path (seconds-to-time 900))
-          (set-file-times fresh-path (seconds-to-time 995))
-          (set-file-times nested-directory (seconds-to-time 900))
-          (should (equal (e-raw-results-cleanup-expired 50 now)
-                         (list old-path)))
-          (should-not (file-exists-p old-path))
-          (should (file-exists-p fresh-path))
-          (should (file-directory-p nested-directory))
-          (should (equal (e-raw-results-read
-                          (plist-get fresh-reference :uri))
-                         "fresh"))
-          (should-not (e-raw-results-cleanup-reference old-reference)))
-      (when (file-directory-p directory)
-        (delete-directory directory t)))))
-
-(ert-deftest e-raw-results-test-cleanup-expired-uses-default-age ()
-  "Expired cleanup uses `e-raw-results-default-max-age-seconds' by default."
-  (should (require 'e-raw-results nil t))
-  (let* ((directory (make-temp-file "e-raw-results-test-" t))
-         (e-raw-results-directory directory)
-         (e-raw-results-default-max-age-seconds 10)
-         (_reference (e-raw-results-write
-                      :id "default-age.txt"
-                      :content "old"))
-         (path (expand-file-name "default-age.txt" directory)))
-    (unwind-protect
-        (progn
-          (set-file-times path (seconds-to-time 980))
-          (should (equal (e-raw-results-cleanup-expired nil 1000.0)
-                         (list path)))
-          (should-not (file-exists-p path)))
-      (when (file-directory-p directory)
-        (delete-directory directory t)))))
+(ert-deftest e-raw-results-test-requires-runtime-storage ()
+  "Ordinary raw-result operations never fall back to filesystem sidecars."
+  (let ((e-raw-results-storage nil))
+    (should-error (e-raw-results-write :id "result.txt" :content "value")
+                  :type 'e-raw-results-storage-error)
+    (should-error (e-raw-results-read "raw-result://result.txt")
+                  :type 'e-raw-results-storage-error)))
 
 (provide 'e-raw-results-test)
 

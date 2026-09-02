@@ -6,7 +6,7 @@
 ;;; Commentary:
 
 ;; Owns only the private task schema and typed task command handlers.  The
-;; generic worker supplies the transaction, command deduplication, and codec.
+;; generic worker supplies the transaction, dispatch, and codec.
 
 ;;; Code:
 
@@ -37,8 +37,7 @@
        '("CREATE TABLE IF NOT EXISTS task_queues (queue_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, sequence INTEGER NOT NULL, paused INTEGER NOT NULL)"
          "CREATE TABLE IF NOT EXISTS task_records (queue_id TEXT NOT NULL, task_id TEXT NOT NULL, position INTEGER NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(queue_id,task_id), UNIQUE(queue_id,position), FOREIGN KEY(queue_id) REFERENCES task_queues(queue_id) ON DELETE CASCADE)"
          "CREATE INDEX IF NOT EXISTS task_records_dispatch ON task_records(queue_id,status,position)"
-         "CREATE TABLE IF NOT EXISTS task_attempts (queue_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, state TEXT NOT NULL, started_at TEXT, settled_at TEXT, payload TEXT NOT NULL, PRIMARY KEY(queue_id,attempt_id), FOREIGN KEY(queue_id,task_id) REFERENCES task_records(queue_id,task_id) ON DELETE CASCADE)"
-         "CREATE TABLE IF NOT EXISTS task_events (queue_id TEXT NOT NULL, event_id TEXT NOT NULL, task_id TEXT NOT NULL, position INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, UNIQUE(queue_id,event_id), FOREIGN KEY(queue_id,task_id) REFERENCES task_records(queue_id,task_id) ON DELETE CASCADE)"))
+         "CREATE TABLE IF NOT EXISTS task_attempts (queue_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, state TEXT NOT NULL, started_at TEXT, settled_at TEXT, payload TEXT NOT NULL, PRIMARY KEY(queue_id,attempt_id), FOREIGN KEY(queue_id,task_id) REFERENCES task_records(queue_id,task_id) ON DELETE CASCADE)"))
     (sqlite-execute database statement)))
 
 (defun e-task-storage-sqlite-worker--queue (queue-id)
@@ -49,17 +48,6 @@
             (vector queue-id)))
       (signal 'e-runtime-store-task-conflict
               (list "Unknown task queue" queue-id))))
-
-(defun e-task-storage-sqlite-worker--check (body)
-  "Return BODY queue row after revision validation."
-  (let* ((queue-id (plist-get body :queue-id))
-         (row (e-task-storage-sqlite-worker--queue queue-id))
-         (expected (plist-get body :expected-revision))
-         (revision (e-task-storage-sqlite-worker--column row 0)))
-    (when (and expected (/= expected revision))
-      (signal 'e-runtime-store-revision-conflict
-              (list (format "task:%s" queue-id) expected revision)))
-    row))
 
 (defun e-task-storage-sqlite-worker--set-root
     (queue-id revision sequence paused-p)
@@ -84,8 +72,8 @@
 
 (defun e-task-storage-sqlite-worker--enqueue (body)
   "Append one queued task from BODY."
-  (let* ((row (e-task-storage-sqlite-worker--check body))
-         (queue-id (plist-get body :queue-id))
+  (let* ((queue-id (plist-get body :queue-id))
+         (row (e-task-storage-sqlite-worker--queue queue-id))
          (record (plist-get body :record))
          (task-id (plist-get record :task-id))
          (position (plist-get body :position))
@@ -113,8 +101,8 @@
 
 (defun e-task-storage-sqlite-worker--claim (body)
   "Claim one task before runner invocation."
-  (let* ((queue-row (e-task-storage-sqlite-worker--check body))
-         (queue-id (plist-get body :queue-id))
+  (let* ((queue-id (plist-get body :queue-id))
+         (queue-row (e-task-storage-sqlite-worker--queue queue-id))
          (task-id (plist-get body :task-id))
          (attempt-id (plist-get body :attempt-id))
          (task-row (e-task-storage-sqlite-worker--task-row queue-id task-id))
@@ -153,8 +141,8 @@
 
 (defun e-task-storage-sqlite-worker--transition (body)
   "Commit one task transition from BODY."
-  (let* ((queue-row (e-task-storage-sqlite-worker--check body))
-         (queue-id (plist-get body :queue-id))
+  (let* ((queue-id (plist-get body :queue-id))
+         (queue-row (e-task-storage-sqlite-worker--queue queue-id))
          (task-id (plist-get body :task-id))
          (task-row (e-task-storage-sqlite-worker--task-row queue-id task-id))
          (status (intern (e-task-storage-sqlite-worker--column task-row 0)))
@@ -162,17 +150,10 @@
          (record (plist-get body :record))
          (next-status (plist-get record :status))
          (revision (1+ (e-task-storage-sqlite-worker--column queue-row 0)))
-         (task-revision (1+ (e-task-storage-sqlite-worker--column task-row 1)))
-         (event-id (plist-get body :event-id)))
+         (task-revision (1+ (e-task-storage-sqlite-worker--column task-row 1))))
     (unless (eq status expected-status)
       (signal 'e-runtime-store-task-conflict
               (list "Task status conflict" task-id expected-status status)))
-    (sqlite-execute
-     e-task-storage-sqlite-worker--database
-     "INSERT INTO task_events(queue_id,event_id,task_id,payload) VALUES(?,?,?,?)"
-     (vector queue-id event-id task-id
-             (e-task-storage-sqlite-worker--pack
-              (list :from status :to next-status :record record))))
     (sqlite-execute
      e-task-storage-sqlite-worker--database
      "UPDATE task_records SET status=?,revision=?,payload=? WHERE queue_id=? AND task_id=?"
@@ -196,8 +177,8 @@
 
 (defun e-task-storage-sqlite-worker--pause (body)
   "Commit queue pause gate from BODY."
-  (let* ((row (e-task-storage-sqlite-worker--check body))
-         (queue-id (plist-get body :queue-id))
+  (let* ((queue-id (plist-get body :queue-id))
+         (row (e-task-storage-sqlite-worker--queue queue-id))
          (revision (1+ (e-task-storage-sqlite-worker--column row 0)))
          (paused-p (and (plist-get body :paused-p) t)))
     (e-task-storage-sqlite-worker--set-root
@@ -206,18 +187,82 @@
 
 (defun e-task-storage-sqlite-worker--delete-history (body)
   "Delete explicit task history from BODY."
-  (let* ((row (e-task-storage-sqlite-worker--check body))
-         (queue-id (plist-get body :queue-id))
+  (let* ((queue-id (plist-get body :queue-id))
+         (row (e-task-storage-sqlite-worker--queue queue-id))
          (revision (1+ (e-task-storage-sqlite-worker--column row 0)))
          (sequence (e-task-storage-sqlite-worker--column row 1)))
     (sqlite-execute e-task-storage-sqlite-worker--database
                     "DELETE FROM task_records WHERE queue_id=?"
                     (vector queue-id))
-    ;; Keep the monotonic task sequence across history deletion.  Reusing an
-    ;; old task identity would collide with the runtime command-dedup ledger.
+    ;; Keep the monotonic task sequence across history deletion so task
+    ;; identities never repeat within this durable queue.
     (e-task-storage-sqlite-worker--set-root queue-id revision sequence nil)
     (list :queue-id queue-id :revision revision :sequence sequence
           :deleted t)))
+
+(defconst e-task-storage-sqlite-worker--import-statuses
+  '(queued paused done failed cancelled interrupted)
+  "Terminal and resumable task states accepted by offline migration.")
+
+(defun e-task-storage-sqlite-worker--import-legacy-snapshot (body)
+  "Import BODY's complete legacy snapshot into an empty task queue."
+  (let* ((queue-id (plist-get body :queue-id))
+         (snapshot (plist-get body :snapshot))
+         (root (e-task-storage-sqlite-worker--queue queue-id))
+         (records (or (plist-get snapshot :records) nil))
+         (order (or (plist-get snapshot :order)
+                    (mapcar (lambda (record) (plist-get record :task-id))
+                            records)))
+         (by-id (make-hash-table :test 'equal))
+         (sequence (or (plist-get snapshot :sequence) (length records)))
+         (position 0))
+    (unless (and (= (e-task-storage-sqlite-worker--column root 0) 0)
+                 (null (sqlite-select
+                        e-task-storage-sqlite-worker--database
+                        "SELECT 1 FROM task_records WHERE queue_id=? LIMIT 1"
+                        (vector queue-id))))
+      (signal 'e-runtime-store-task-conflict
+              (list "Legacy task import requires an empty queue" queue-id)))
+    (dolist (record records)
+      (let ((task-id (plist-get record :task-id)))
+        (unless (and (stringp task-id) (not (string-empty-p task-id))
+                     (not (gethash task-id by-id)))
+          (signal 'e-runtime-store-task-conflict
+                  (list "Malformed or duplicate legacy task" task-id)))
+        (puthash task-id (copy-tree record) by-id)))
+    (unless (= (length order) (hash-table-count by-id))
+      (signal 'e-runtime-store-task-conflict
+              (list "Legacy task order does not match records")))
+    (dolist (task-id order)
+      (let* ((record (gethash task-id by-id))
+             (status (and record (plist-get record :status))))
+        (unless record
+          (signal 'e-runtime-store-task-conflict
+                  (list "Legacy task order names an unknown task" task-id)))
+        ;; A legacy live process cannot survive an offline migration.  Preserve
+        ;; ambiguity instead of turning a possibly irreversible effect into a
+        ;; fresh queued attempt.
+        (when (memq status '(running pausing))
+          (setq status 'interrupted
+                record (plist-put record :status 'interrupted)
+                record (plist-put record :error
+                                  "Legacy in-flight task was interrupted during migration")))
+        (unless (memq status e-task-storage-sqlite-worker--import-statuses)
+          (signal 'e-runtime-store-task-conflict
+                  (list "Unsupported legacy task status" task-id status)))
+        (setq position (1+ position))
+        (sqlite-execute
+         e-task-storage-sqlite-worker--database
+         "INSERT INTO task_records(queue_id,task_id,position,status,revision,payload) VALUES(?,?,?,?,1,?)"
+         (vector queue-id task-id position (symbol-name status)
+                 (e-task-storage-sqlite-worker--pack record)))))
+    (e-task-storage-sqlite-worker--set-root
+     queue-id (if records 1 0) (max sequence position)
+     (and (plist-get snapshot :paused-p) t))
+    (list :queue-id queue-id :revision (if records 1 0)
+          :sequence (max sequence position)
+          :paused-p (and (plist-get snapshot :paused-p) t)
+          :records position)))
 
 (defun e-task-storage-sqlite-worker-write (database body)
   "Execute one typed task write BODY using DATABASE."
@@ -229,6 +274,8 @@
     ('task-transition (e-task-storage-sqlite-worker--transition body))
     ('task-queue-pause (e-task-storage-sqlite-worker--pause body))
     ('task-history-delete (e-task-storage-sqlite-worker--delete-history body))
+    ('task-import-legacy-snapshot
+     (e-task-storage-sqlite-worker--import-legacy-snapshot body))
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown task write" (plist-get body :op))))))
 

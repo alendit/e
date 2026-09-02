@@ -43,7 +43,7 @@
               (list "Unknown cron schedule" id))))
 
 (defun e-cron-storage-sqlite-worker--register (body)
-  "Register or reconcile one schedule definition from BODY."
+  "Register or update one schedule definition from BODY."
   (let* ((id (format "%s" (plist-get body :schedule-id)))
          (hash (plist-get body :definition-hash))
          (anchor (plist-get body :anchor))
@@ -77,13 +77,8 @@
   "Claim one firing and advance cadence from BODY."
   (let* ((id (format "%s" (plist-get body :schedule-id)))
          (row (e-cron-storage-sqlite-worker--row id))
-         (expected (plist-get body :expected-revision))
-         (actual (e-cron-storage-sqlite-worker--column row 2))
-         (revision (1+ actual))
+         (revision (1+ (e-cron-storage-sqlite-worker--column row 2)))
          (firing-id (plist-get body :firing-id)))
-    (unless (= expected actual)
-      (signal 'e-runtime-store-revision-conflict
-              (list (format "cron:%s" id) expected actual)))
     (sqlite-execute
      e-cron-storage-sqlite-worker--database
      "INSERT INTO cron_firings(schedule_id,firing_id,definition_revision,due_at,fire_at,state) VALUES(?,?,?,?,?,'claimed')"
@@ -129,14 +124,10 @@
     (list :schedule-id id :firing-id firing-id :state state)))
 
 (defun e-cron-storage-sqlite-worker--delete-history (body)
-  "Delete firing history after validating cadence revision."
+  "Delete firing history for BODY's cadence."
   (let* ((id (format "%s" (plist-get body :schedule-id)))
          (row (e-cron-storage-sqlite-worker--row id))
-         (expected (plist-get body :expected-revision))
          (actual (e-cron-storage-sqlite-worker--column row 2)))
-    (unless (= expected actual)
-      (signal 'e-runtime-store-revision-conflict
-              (list (format "cron:%s" id) expected actual)))
     (sqlite-execute e-cron-storage-sqlite-worker--database
                     "DELETE FROM cron_firings WHERE schedule_id=?" (vector id))
     (list :schedule-id id :revision actual :deleted t)))

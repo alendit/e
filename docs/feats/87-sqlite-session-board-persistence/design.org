@@ -9,16 +9,27 @@ for those contracts.  Table names, private limits, command framing, and helper
 placement may change when implementation evidence identifies a simpler design,
 provided the owning contract remains satisfied.
 
+The operator's 2026-09-02 simplification is authoritative for the runtime
+failure model: SQLite transactions remain atomic, but transport acknowledgement
+is not reconciled.  Worker death fails outstanding operations without retry;
+reopening reloads canonical database state.  Natural owner identities,
+generations, positions, and constraints fence stale work instead of a generic
+revision/CAS layer.  A submitted request timeout has the same boundary: the
+store stops its worker, fails all outstanding requests once, suppresses late
+callbacks, and requires close/reopen plus owner reload.
+
 The project vocabulary remains defined by
 [[file:../../references/runtime_concepts.org][Runtime Concepts]].  In particular, a
 Board remains the process-local semantic owner of interaction and routing;
 SQLite replaces its durable collections and queues rather than becoming a
 second Board or a model-facing surface.
 
-* Current state inventory
+* Legacy source inventory and implemented state
 
-The current runtime spreads hidden mutable state across several file formats
-and process-local collections:
+The pre-cutover legacy tree spread hidden mutable state across these file
+formats and process-local collections.  P4 keeps their pure decoders reachable
+only from explicit migration and makes the SQLite realization described below
+the ordinary runtime:
 
 - session semantics are exposed through the stable
   [[file:../../../lisp/core/e-session.el][=e-session.el=]] facade;
@@ -29,13 +40,20 @@ and process-local collections:
   [[file:../../../lisp/core/e-session-catalog.el][=e-session-catalog.el=]] owns
   catalog/checkpoint projection and recovery policy, and
   [[file:../../../lisp/core/e-session-storage.el][=e-session-storage.el=]] owns
-  the current replaceable JSONL/index/queued/Node physical adapter together
-  with [[file:../../../lisp/core/e-session-writer.mjs][=e-session-writer.mjs=]];
-- Board messages, source keys, routing queues, pickups, and delivery state are
-  currently process-local in [[file:../../../lisp/core/e-board.el][=e-board.el=]]
-  and [[file:../../../lisp/core/e-board-runtime.el][=e-board-runtime.el=]], while
-  =e-chat-service= proxies Board persistence through a selected session;
-- task queues replace =records.eld= from
+  the current physical port.  The JSONL/index/queued/Node adapter and
+  =e-session-writer.mjs= are retired; =e-session-legacy.el= is the read-only
+  migration decoder.  Active =*.checkpoint.json= files remain session-owned
+  durable resume state and migrate through the session storage port after
+  their JSONL byte cursors are translated to equivalent SQLite record
+  positions; timestamped journal/checkpoint/index backups remain preserved
+  inactive source artifacts;
+- before cutover, Board messages, source keys, routing queues, pickups, and
+  delivery state were process-local in
+  [[file:../../../lisp/core/e-board.el][=e-board.el=]] and
+  [[file:../../../lisp/core/e-board-runtime.el][=e-board-runtime.el=]], while
+  chat proxied Board persistence through a selected session.  Current durable
+  Board facts use =e-board-storage= and its SQLite adapter;
+- task queues replace every inventoried =task-queue/**/records.eld= from
   [[file:../../../lisp/core/e-task-queue.el][=e-task-queue.el=]];
 - cron replaces =cron-state.eld= from
   [[file:../../../lisp/core/e-cron.el][=e-cron.el=]];
@@ -56,7 +74,7 @@ exact process-local admission tokens.
 
 P1 adds an opt-in realization without changing the ordinary backend:
 
-- =e-runtime-store= owns typed worker scheduling, bounded recovery, ordered
+- =e-runtime-store= owns typed worker scheduling, failure propagation, ordered
   barriers, and runtime ownership; =e-runtime-store-worker= alone owns SQLite
   and schema details, and =e-runtime-store-codec= owns exact tagged values;
 - =e-session-storage-sqlite= maps the existing session storage port to typed
@@ -104,8 +122,8 @@ P3 adds the accepted opt-in realization:
 - each P3 domain has a narrow =e-*-storage= port, an =e-*-storage-sqlite=
   protocol adapter, and an owner-specific =e-*-storage-sqlite-worker= schema and
   SQL module.  The generic worker grew only typed dispatch, initialization, and
-  error mapping; it retains connection, revision, command-deduplication, and
-  transaction ownership rather than domain SQL;
+  error mapping; it retains connection and transaction ownership rather than
+  domain SQL;
 - =e-task-queue= retains queue/retry/cancel policy and stages owner transitions
   around the task port.  Claim acknowledgement precedes runner invocation;
   immutable attempt identity fences late settlement; restart changes a claimed
@@ -118,9 +136,8 @@ P3 adds the accepted opt-in realization:
   attempt;
 - =e-cron= retains cadence, catch-up, guard, and action policy.  Its port commits
   the firing claim and cadence advance before guard/action execution; a claimed
-  firing without a live process is =unsafe= unless its re-registered definition
-  supplies the narrow reconciliation callback.  Definitions, guards, actions,
-  active-firing fences, and timers remain process-local;
+  firing without a live process is =unsafe= and never auto-runs.  Definitions,
+  guards, actions, active-firing fences, and timers remain process-local;
 - voice uses one atomic tell-update/LRU-cap command; Goodnite gives each
   observed access a unique stable event identity, appends ordered demand events,
   and advances the named =goodnite-demand-consumer= checkpoint
@@ -131,10 +148,42 @@ P3 adds the accepted opt-in realization:
   migration.  The opt-in SQLite path never falls back or dual-writes; the
   ordinary legacy-backed default remains until P4 cutover.
 
+P4 implements the cutover, awaiting same-revision review:
+
+- =e-default-harnesses= opens and caches one =e-runtime-sqlite= composition in
+  =E_RUNTIME_STATE_DIRECTORY= (or the configured e state directory), injects
+  its task queue into the task capability, and closes the composition once;
+- =e-runtime-migration= is the only legacy import application service.  It
+  inventories a copied source tree, hashes exact bytes, decodes each accepted
+  legacy owner, canonically deduplicates Board facts, imports through typed
+  owner ports into a private current-schema store, compares a deterministic
+  semantic manifest, verifies integrity, and atomically renames the closed
+  work directory into place.  Dry-run performs the same import and proof but
+  removes the working store.  The root task snapshot maps to queue =default=;
+  nested task snapshots map to their stable relative directory identities.
+  The retired =sessions/chat-overview-state.json= presentation sidecar is
+  explicitly reported as preserved derived input, not imported as authority.
+  Historical nested task =.org= fragments are likewise reported as preserved
+  task output products, not queue authority.  Any other unmapped file aborts
+  before installation, and the operator CLI bounds error output rather than
+  printing large decoded values in a backtrace;
+- =e-runtime-store-offline= launches a private batch worker for the sole
+  supported v3-to-v4 schema upgrade.  The worker rejects a live owner, verifies
+  the source, creates and verifies a restrictive pre-upgrade backup, applies
+  the upgrade transactionally, and verifies the resulting store.  Ordinary
+  startup rejects old, newer, legacy-only, and unversioned stores;
+- runtime-store maintenance exposes only typed integrity, metrics, and verified
+  backup operations.  It does not expose SQL, a transaction builder, or a
+  cross-owner maintenance port; and
+- ordinary cron, voice, Goodnite, and raw-result behavior no longer writes
+  legacy sidecars.  Task directory construction is rejected with migration
+  guidance; the default task queue is composition-injected.  Preserved source
+  trees remain inactive rollback material for the offline importer.
+
 Physical placement follows causal ownership.  SQL/schema clusters are extracted
-into the five owner worker modules (91-276 lines), runtime composition is a
-separate 180-line defaults module, and legacy decoding is isolated in five
-18-33-line modules.  The task and cron roots grow because claim-before-effect,
+into the owner worker modules, runtime composition is a separate 183-line
+defaults module, and legacy decoding is isolated in six read-only owner modules
+(18--105 lines).  The task and cron roots grow because claim-before-effect,
 restart classification, retries, cadence, guard, and action ordering are their
 semantic policy and must remain on the owner side of the port; they do not
 contain SQL, generic runtime transport, or another owner's representation.
@@ -156,23 +205,24 @@ storage adapter for that runtime, not a second e runtime.
   resource owners -- owner-shaped ports ------+              |
                                                                v
                                                      batch Emacs worker
-                                                  write + query_only reads
+                                                   typed bounded operations
                                                                |
                                                                v
                                                         store.sqlite3
 #+end_src
 
 No SQLite connection is opened in the interactive Emacs process.  The worker
-owns the write connection, bounded read-only connections, schema work, backup,
-integrity checks, and WAL maintenance.  Domain policy remains in the semantic
-owner and reaches storage only through typed commands and projections.
+owns the single connection, schema work, backup, integrity checks, and WAL
+maintenance.  Typed read requests are indexed and page-bounded; queued writes
+take priority between requests.  Domain policy remains in the semantic owner
+and reaches storage only through typed commands and projections.
 
 * Owner-shaped ports
 
 ** Session storage
 
-=e-session-storage= accepts typed session commits with an expected revision and
-returns the committed revision and projection delta.  It supports bounded
+=e-session-storage= accepts typed session commits and returns the committed
+monotonic position and projection delta.  It supports bounded
 session-header listing and paged resume projections.  Session identity,
 ancestry, current path, metadata meaning, compaction, and provider-anchor
 compatibility remain =e-session= policy.
@@ -214,28 +264,20 @@ interpret one another's tables.
 
 * Worker protocol and concurrency
 
-Every command carries a stable command id, canonical command hash, owner or
-typed composite identity, conflict precondition, and bounded payload.  In one
-=BEGIN IMMEDIATE= transaction, the worker:
+Every request carries only a process-local transport correlation id, a typed
+operation, and a bounded payload.  In one =BEGIN IMMEDIATE= transaction, the
+worker validates owner identity/generation and domain constraints, inserts or
+updates the owner's facts, advances natural positions or serials, and commits
+before acknowledging.  SQLite constraints and owner state/generation fences
+reject inconsistent operations visibly.  There is no durable writer-command
+ledger, reconciliation hash, general expected-revision/CAS protocol, or
+automatic resubmission.
 
-1. resolves a prior command id and verifies its hash;
-2. checks owner revisions or typed preconditions;
-3. inserts immutable facts where the owner has an audit history;
-4. updates the owner's current projections;
-5. advances revisions;
-6. stores the command result; and
-7. commits before acknowledging.
-
-Reusing an id with equal bytes returns the committed result.  Reusing it with
-different bytes is a terminal protocol error.  Constraint and revision
-conflicts are terminal for the affected aggregate.  Busy and transport failure
-are retryable within a bounded policy.
-
-The worker serializes writes.  Bounded read pages use a =query_only= connection,
-carry a committed revision or position and continuation cursor, and yield to
-queued commits.  The adapter exposes ordered owner barriers; a barrier waits for
-already-submitted commits and does not build a checkpoint or force a WAL
-checkpoint.
+The worker serializes every request on its connection.  Bounded read pages
+carry a committed position and continuation cursor; write requests take queue
+priority between pages.  The session adapter exposes an ordered status barrier
+that waits behind already-submitted commits without building a checkpoint or
+forcing a WAL checkpoint.
 
 The store uses foreign keys, WAL, and =synchronous=NORMAL=.  Acknowledged commits
 survive e and worker process failure.  The latest acknowledgements may be lost
@@ -243,16 +285,16 @@ after host failure or sudden power loss, but reopening must produce a consistent
 database without a partial owner transaction.
 
 Store opening establishes exclusive ownership for one e runtime.  A second live
-runtime fails without mutating the store.  A crashed worker is restarted within
-a bounded policy and submitted commands are reconciled through their stable
-ids.  During recovery, owners freeze new durable transitions and dependent
-external effects; shells may display already-loaded committed state with an
-explicit storage-unavailable status.
+runtime fails without mutating the store.  If the worker exits before a response,
+the active and queued requests fail once with storage-unavailable and that store
+object remains frozen.  The write may or may not have committed.  The runtime
+does not retry it: the application closes the failed composition, reopens the
+database, and reloads canonical owner state.
 
 Cancellation before worker submission removes provisional intent.  After
-submission, the adapter first reconciles whether the original command committed.
-If it did, cancellation is a later owner-shaped cancellation, retry, or
-tombstone transition rather than rollback.
+submission, cancellation reports in-flight and cannot imply rollback.  Worker
+loss is surfaced; any later cancellation, retry, or tombstone is a deliberate
+owner operation after canonical reload.
 
 * Exact value codec
 
@@ -262,7 +304,7 @@ or supported maps.  It rejects cycles, non-finite numbers, functions, buffers,
 markers, processes, arbitrary records, and unrecognized mutable objects before
 worker submission.
 
-Canonical bytes and key order support command hashes and migration manifests.
+Canonical bytes and key order support domain source signatures and migration manifests.
 The codec preserves shape only; each domain validator still owns which shapes
 are valid.  An unknown codec version is an explicit load error.
 
@@ -275,26 +317,22 @@ names and private columns are not public contracts.
 
 - =schema_migrations=: version, migration identity, checksum, and application
   timestamp;
-- =writer_commands=: stable id, command hash, committed result, and timestamp;
 - runtime-ownership metadata sufficient to reject a second live runtime and
   recover an explicitly validated stale owner.
 
 ** Sessions and tool continuity
 
-- =sessions=: durable session root, current head, revision, catalog fields,
-  transcript epoch, Board association, and participant recovery position;
 - =session_records=: immutable ordered session facts with entry/parent identity,
   epoch, payload, and codec version;
-- =message_displays=: rebuildable current display projection;
+- =session_checkpoints=: rebuildable per-session resume projection;
+- =catalog_projection=: rebuildable bounded session catalog projection;
 - =tool_followups=: current restart classification for admitted, claimed,
   resulted, follow-up-ready, settled, or attention-required work;
-- =tool_dispatch_outbox=: admitted call payload awaiting durable claim or result.
 
 No external tool starts before its dispatch claim commits.  A claim without a
-durable result means the external effect is uncertain.  Automatic retry requires
-a tool-specific idempotency or reconciliation contract; otherwise restore makes
-the uncertainty visible.  Live callbacks, requests, timers, and handles are not
-stored.
+durable result means the external effect is uncertain; restore makes that state
+visible and never automatically repeats it.  Live callbacks, requests, timers,
+and handles are not stored.
 
 The current model path is read through indexed parent links from the session
 head.  Current display and recovery projections avoid replaying unrelated audit
@@ -339,8 +377,8 @@ completion, cancellation, and interrupted-attempt recovery are commit-first.
 
 Cron configuration remains owned by active layers.  SQLite stores cadence and
 stable firing claims/results.  A due firing is claimed and cadence advances
-before its action starts.  An interrupted claimed firing is retried only when
-the action contract makes that safe; otherwise its outcome remains explicit.
+before its action starts.  An interrupted claimed firing becomes =unsafe= and
+is never automatically invoked again.
 
 Live work handles, callbacks, harnesses, guards, action closures, and timers are
 not stored.
@@ -429,9 +467,10 @@ introduced.  Encryption at rest and key management are outside Feature 87.
 * Observability and performance
 
 Bounded status exposes schema version, database path, runtime-owner identity,
-worker liveness, pending command count and age, last committed command, retry
-state, read-page state, WAL size, and last error.  =quick_check= and full
-=integrity_check= are explicit diagnostics, not implicit UI work.
+worker liveness, pending request count and age, unavailable state, startup
+details, and last error.  Explicit metrics expose database/WAL size;
+=quick_check= and full =integrity_check= are explicit diagnostics, not implicit
+UI work.
 
 No SQL operation runs in the interactive Emacs event loop.  Startup cost is
 proportional to requested root projections.  Session resume is proportional to

@@ -100,8 +100,8 @@
                                    :attempts))
                        1))))))))
 
-(ert-deftest e-runtime-sqlite-p3-s7-task-lost-ack-and-late-settle-are-fenced ()
-  "A lost claim ACK runs once and an old attempt cannot settle its successor."
+(ert-deftest e-runtime-sqlite-p3-s7-task-late-settle-is-fenced-by-attempt ()
+  "A late old attempt cannot settle its explicitly resumed successor."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
            (calls 0) settles
@@ -116,24 +116,12 @@
                      (lambda () (funcall settle :status 'cancelled))))))
            (record (e-task-queue-enqueue
                     queue :prompt "one effect" :harness-instance-id 'test))
-           (task-id (plist-get record :task-id))
-           (process (e-runtime-store--process runtime))
-           (ordinary-filter (process-filter process))
-           (captured ""))
+           (task-id (plist-get record :task-id)))
       (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
                  (lambda (_id) :test-harness)))
-        (set-process-filter
-         process
-         (lambda (worker text)
-           (setq captured (concat captured text))
-           (when (string-match-p "\n" captured)
-             (set-process-filter worker ordinary-filter)
-             (delete-process worker))))
         (setf (e-task-queue-max-parallel queue) 1)
         (e-task-queue--dispatch queue)
         (should (= calls 1))
-        (should (> (plist-get (e-runtime-store-status runtime) :restart-count)
-                   -1))
         (e-task-queue-pause queue task-id)
         (e-task-queue-resume queue task-id)
         (should (= calls 2))
@@ -285,8 +273,8 @@
           (e-task-queue--dispatch queue)
           (should (= calls 1)))))))
 
-(ert-deftest e-runtime-sqlite-p3-s7-task-conflict-barrier-and-history-delete ()
-  "Task revision conflicts surface; the owner barrier and deletion are exact."
+(ert-deftest e-runtime-sqlite-p3-s7-task-barrier-and-history-delete ()
+  "The owner barrier and explicit history deletion are exact."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
            (queue (e-task-queue-create
@@ -294,9 +282,6 @@
                    :runner #'ignore))
            done failure)
       (e-task-queue-enqueue queue :prompt "retained history")
-      (should-error
-       (e-task-storage-set-paused storage "operator" 0 t)
-       :type 'e-task-storage-conflict)
       (should
        (eq queue
            (e-task-queue-finalize
@@ -304,8 +289,7 @@
             (lambda (condition) (setq failure condition)))))
       (should done)
       (should-not failure)
-      ;; Repeating the same pause/resume semantics at later revisions must not
-      ;; alias the earlier command identity.
+      ;; Repeating ordinary owner transitions remains serialized by one worker.
       (e-task-queue-pause queue (plist-get (car (e-task-queue-list queue))
                                            :task-id))
       (e-task-queue-resume queue (plist-get (car (e-task-queue-list queue))
@@ -347,8 +331,7 @@
              (due (float-time (e-cron-schedule-next-fire crash-schedule)))
              (firing-id "crash:1:manual"))
         (e-cron-storage-claim
-         storage 'crash (e-cron-schedule-revision crash-schedule)
-         firing-id due 1000.0 1030.0)
+         storage 'crash firing-id due 1000.0 1030.0)
         (e-runtime-store-close runtime)
         (setq runtime (e-runtime-store-open directory)
               storage (e-cron-storage-sqlite-create runtime)
@@ -363,17 +346,14 @@
                        :state)
                       'unsafe)))
         (setq e-cron--schedules (make-hash-table :test 'equal))
-        (let* ((reconciled 0)
-              (restored
+        (let ((restored
                (e-cron-register
                 :id 'crash :when '(:every 30) :enabled nil :storage storage
-                :action #'ignore
-                :reconcile
-                (lambda (_schedule firing)
-                  (cl-incf reconciled)
-                  (list :classified (plist-get firing :firing-id))))))
-          (should (= reconciled 1))
-          (should-not (e-cron-schedule-unresolved-firings restored)))))))
+                :action #'ignore)))
+          (should (eq (plist-get
+                       (car (e-cron-schedule-unresolved-firings restored))
+                       :state)
+                      'unsafe)))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-cron-guard-and-replacement-races ()
   "A skipped guard is durable and a replaced definition is never re-armed."
@@ -409,8 +389,8 @@
         (should (= arms 0))
         (should-not (eq old (e-cron-get 'replace)))))))
 
-(ert-deftest e-runtime-sqlite-p3-s7-cron-failure-conflict-and-history-delete ()
-  "Known action failure settles once; stale claims conflict; deletion is explicit."
+(ert-deftest e-runtime-sqlite-p3-s7-cron-failure-and-history-delete ()
+  "Known action failure settles once and history deletion is explicit."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-cron-storage-sqlite-create runtime))
            (e-cron--schedules (make-hash-table :test 'equal))
@@ -423,9 +403,6 @@
       (should-error (e-cron-fire schedule) :type 'error)
       (should-not (plist-get (e-cron-storage-cadence storage 'fails)
                              :unresolved))
-      (should-error
-       (e-cron-storage-claim storage 'fails 0 "stale" 3000.0 3000.0 3010.0)
-       :type 'e-cron-storage-conflict)
       (should (plist-get (e-cron-delete-history 'fails) :deleted)))))
 
 (ert-deftest e-runtime-sqlite-p3-s8-voice-atomic-lru-restart-and-clear ()
@@ -482,7 +459,7 @@
        :type 'e-runtime-store-unavailable))))
 
 (ert-deftest e-runtime-sqlite-p3-s8-goodnite-observations-remain-distinct ()
-  "Equal accesses are distinct observations; exact event resubmission dedupes."
+  "Equal accesses are distinct observations; re-appending one event id dedupes."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-goodnite-storage-sqlite-create runtime))
            (e-goodnite-resources-storage storage)
@@ -540,21 +517,11 @@
                         (plist-get (e-raw-results-storage-expire storage 21.0)
                                    :deleted)))))))
 
-(ert-deftest e-runtime-sqlite-p3-s8-raw-lost-ack-import-disposal-and-restart ()
-  "Raw commit reconciliation is singular and imports dispose only after ACK."
+(ert-deftest e-runtime-sqlite-p3-s8-raw-import-disposal-and-restart ()
+  "Raw imports dispose only after commit and content survives restart."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-raw-results-storage-sqlite-create runtime))
-           (process (e-runtime-store--process runtime))
-           (ordinary-filter (process-filter process))
-           (captured "")
-           (uri "raw-result://lost"))
-      (set-process-filter
-       process
-       (lambda (worker text)
-         (setq captured (concat captured text))
-         (when (string-match-p "\n" captured)
-           (set-process-filter worker ordinary-filter)
-           (delete-process worker))))
+           (uri "raw-result://restart"))
       (should (= (plist-get
                   (e-raw-results-storage-put
                    storage uri "committed-once" nil 1.0 100.0)

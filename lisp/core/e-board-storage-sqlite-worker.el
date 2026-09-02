@@ -8,7 +8,7 @@
 ;; Owns the private SQLite schema and typed commands for durable Boards.  The
 ;; generic runtime worker supplies one transaction-scoped connection and calls
 ;; the narrow initialize/write/read dispatch operations.  This module owns no
-;; process transport, command deduplication, or transaction acknowledgement.
+;; process transport or transaction acknowledgement.
 
 ;;; Code:
 
@@ -37,30 +37,6 @@
   "Decode exact value from SQLite TEXT."
   (and text
        (e-runtime-store-codec-decode (base64-decode-string text))))
-
-(defun e-board-storage-sqlite-worker--revision (owner)
-  "Return current session OWNER revision."
-  (if-let* ((row (car (sqlite-select
-                       e-board-storage-sqlite-worker--database
-                       "SELECT revision FROM owner_revisions WHERE owner=?"
-                       (vector owner)))))
-      (e-board-storage-sqlite-worker--column row 0)
-    0))
-
-(defun e-board-storage-sqlite-worker--check-revision (owner expected)
-  "Return OWNER revision after checking EXPECTED."
-  (let ((revision (e-board-storage-sqlite-worker--revision owner)))
-    (when (and expected (/= expected revision))
-      (signal 'e-runtime-store-revision-conflict
-              (list :owner owner :expected expected :actual revision)))
-    revision))
-
-(defun e-board-storage-sqlite-worker--advance-revision (owner revision)
-  "Set OWNER to REVISION."
-  (sqlite-execute
-   e-board-storage-sqlite-worker--database
-   "INSERT INTO owner_revisions(owner,revision) VALUES(?,?) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision"
-   (vector owner revision)))
 
 (defun e-board-storage-sqlite-worker-initialize (database)
   "Create private Board tables on DATABASE."
@@ -92,22 +68,15 @@
               (list "Unknown Board" board-id))))
 
 (defun e-board-storage-sqlite-worker--board-check (body)
-  "Return BODY's current Board row after generation/revision preconditions."
+  "Return BODY's current Board row after its generation fence."
   (let* ((board-id (plist-get body :board-id))
          (row (e-board-storage-sqlite-worker--board-row board-id))
          (generation (e-board-storage-sqlite-worker--column row 1))
-         (revision (e-board-storage-sqlite-worker--column row 2))
-         (expected-generation (plist-get body :generation))
-         (expected-revision (plist-get body :expected-revision)))
+         (expected-generation (plist-get body :generation)))
     (when (and expected-generation (/= expected-generation generation))
-      (signal 'e-runtime-store-revision-conflict
-              (list :owner (concat "board:" board-id)
-                    :expected-generation expected-generation
-                    :actual-generation generation)))
-    (when (and expected-revision (/= expected-revision revision))
-      (signal 'e-runtime-store-revision-conflict
-              (list :owner (concat "board:" board-id)
-                    :expected expected-revision :actual revision)))
+      (signal 'e-runtime-store-board-conflict
+              (list "Stale Board generation" board-id
+                    expected-generation generation)))
     row))
 
 (defun e-board-storage-sqlite-worker--board-create (body)
@@ -350,13 +319,9 @@
          (attempt (e-board-storage-sqlite-worker--column row 5))
          (payload (e-board-storage-sqlite-worker--value
                    (e-board-storage-sqlite-worker--column row 6)))
-         (expected (plist-get body :expected-pickup-revision))
          (transition (plist-get body :transition))
          (data (plist-get body :data))
          next-state terminal-p)
-    (when (and expected (/= expected revision))
-      (signal 'e-runtime-store-revision-conflict
-              (list :owner delivery-id :expected expected :actual revision)))
     (pcase transition
       ('claim
        (unless (eq state 'ready)
@@ -553,12 +518,13 @@
          (pickup-payload
           (e-board-storage-sqlite-worker--value
            (e-board-storage-sqlite-worker--column pickup-row 6)))
-         (expected-pickup (plist-get body :expected-pickup-revision))
          (session-id (plist-get body :session-id))
-         (session-owner (concat "session:" session-id))
          (session-revision
-          (e-board-storage-sqlite-worker--check-revision
-           session-owner (plist-get body :expected-session-revision)))
+          (or (caar (sqlite-select
+                     e-board-storage-sqlite-worker--database
+                     "SELECT MAX(position) FROM session_records WHERE session_id=?"
+                     (vector session-id)))
+              0))
          (session-position (1+ session-revision))
          (record (plist-get body :record))
          (record-payload (e-board-storage-sqlite-worker--sql-value record))
@@ -566,10 +532,6 @@
     (unless (eq state 'claimed)
       (signal 'e-runtime-store-board-conflict
               (list "Pickup admission requires a claim" delivery-id state)))
-    (when (and expected-pickup (/= expected-pickup pickup-revision))
-      (signal 'e-runtime-store-revision-conflict
-              (list :owner delivery-id :expected expected-pickup
-                    :actual pickup-revision)))
     (when (> (string-bytes record-payload)
              e-board-storage-sqlite-worker-session-record-byte-limit)
       (signal 'e-runtime-store-worker-error
@@ -580,7 +542,6 @@
      e-board-storage-sqlite-worker--database
      "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
      (vector session-id session-position record-payload))
-    (e-board-storage-sqlite-worker--advance-revision session-owner session-position)
     (sqlite-execute
      e-board-storage-sqlite-worker--database
      "INSERT INTO board_session_admissions(delivery_key,session_id,session_position,lane,payload) VALUES(?,?,?,?,?)"

@@ -185,11 +185,7 @@ the storage owner's state representation."
 (defun e-session--checkpoint-projection-operation (store)
   "Return an operation that projects STORE's latest SESSION-ID checkpoint."
   (lambda (session-id)
-    (if (e-session-storage-sqlite-p store)
-        (e-session--checkpoint-json store session-id)
-      (let ((session (e-session--ensure-loaded store session-id)))
-        (e-session-catalog-checkpoint-manifest
-         session (e-session-aggregate-board-messages store session-id))))))
+    (e-session--checkpoint-json store session-id)))
 
 (defun e-session--refresh-projections (store)
   "Compose STORE's index and deferred checkpoint projection operation."
@@ -204,10 +200,13 @@ the storage owner's state representation."
 
 (defun e-session--write-index (store)
   "Persist the composed index projection for STORE."
-  (pcase-let ((`(,index-projection ,checkpoint-projection-operation)
-               (e-session--refresh-projections store)))
-    (e-session-storage-publish-projections
-     store index-projection checkpoint-projection-operation)))
+  (e-session--profile-call
+   'session.write-index nil
+   (lambda ()
+     (pcase-let ((`(,index-projection ,checkpoint-projection-operation)
+                  (e-session--refresh-projections store)))
+       (e-session-storage-publish-projections
+        store index-projection checkpoint-projection-operation)))))
 
 (defun e-session--write-index-after-primary (store)
   "Publish STORE's rebuildable projections after primary acknowledgement.
@@ -357,15 +356,12 @@ session application boundary, not a generic transaction builder."
       (e-session--persist-record store session-id record))))
 
 (defun e-session--checkpoint-json (store session-id)
-  "Return catalog-produced checkpoint JSON value for SESSION-ID."
+  "Return catalog-produced exact checkpoint value for SESSION-ID."
   (let* ((session (e-session-aggregate-get-live store session-id))
          (offset (plist-get (e-session-storage-session-header store session-id)
                             :byte-size)))
-    (funcall (if (e-session-storage-sqlite-p store)
-                 #'e-session-catalog-checkpoint-value
-               #'e-session-catalog-checkpoint-json)
-             session (e-session-aggregate-board-messages store session-id)
-             offset)))
+    (e-session-catalog-checkpoint-value
+     session (e-session-aggregate-board-messages store session-id) offset)))
 
 (defun e-session--write-session-checkpoint-now (store session-id)
   "Atomically persist SESSION-ID's current bounded checkpoint."
@@ -431,105 +427,13 @@ session application boundary, not a generic transaction builder."
 
 (cl-defun e-session-load-session-start
     (store session-id &key on-done on-error on-progress chunk-bytes)
-  "Start cooperative checkpoint/suffix replay for SESSION-ID."
-  (when (e-session-storage-sqlite-p store)
-    (cl-return-from e-session-load-session-start
-      (e-session-sqlite-load-session-start
-       store session-id :on-done on-done :on-error on-error
-       :on-progress on-progress :page-size
-       (max 1 (min 1024 (or chunk-bytes 256))))))
-  (unless (e-session--persistent-p store)
+  "Start cooperative indexed SQLite replay for SESSION-ID."
+  (unless (e-session-storage-sqlite-p store)
     (signal 'e-session-missing (list session-id)))
-  (let* ((header (e-session-storage-session-header store session-id))
-         ;; Cooperative reads are also used by a freshly-created index store
-         ;; before its first checkpoint barrier.  In that narrow case replay
-         ;; the complete journal asynchronously; the explicit synchronous
-         ;; `e-session-load-session' operation remains checkpoint-strict.
-         (checkpoint
-          (condition-case err
-              (e-session--read-checkpoint store session-id)
-            (e-session-checkpoint-missing nil)
-            (error (signal (car err) (cdr err)))))
-         (offset (or (and checkpoint
-                          (plist-get checkpoint :journal-byte-offset))
-                     0))
-         (size (plist-get header :byte-size))
-         (chunk-bytes (max 1 (or chunk-bytes e-session-load-chunk-bytes)))
-         position carry timer request)
-    (unless (plist-get header :present)
-      (signal 'e-session-missing (list session-id)))
-    (when (> offset size)
-      (signal 'e-session-checkpoint-invalid
-              (list session-id "Checkpoint offset exceeds journal size"
-                    offset size)))
-    (if checkpoint
-        (e-session--begin-checkpoint-replay store session-id checkpoint)
-      ;; There is no resume prefix to install.  Leave a clean empty aggregate
-      ;; for the asynchronous journal reader to populate in physical order.
-      (e-session-aggregate-reset-session store session-id))
-    (setq position offset carry "")
-    (cl-labels
-        ((clear-timer ()
-           (when (timerp timer) (cancel-timer timer))
-           (setq timer nil))
-         (progress ()
-           (let ((payload (list :session-id session-id
-                                :bytes-read position :bytes-total size)))
-             (e-request-progress request payload)
-             (when on-progress (funcall on-progress payload))))
-         (fail (err)
-           (unless (e-request-terminal-p request)
-             (clear-timer)
-             (e-request-fail request err)
-             (when on-error (funcall on-error err))))
-         (finish ()
-           (unless (e-request-terminal-p request)
-             (clear-timer)
-             (condition-case err
-                 (progn
-                   (unless (string-empty-p carry)
-                     (e-session--apply-physical-record
-                      store
-                      (e-session-codec-json-read-line
-                       (decode-coding-string carry 'utf-8))))
-                   (let ((session (e-session--finish-replay store session-id)))
-                     (e-request-finish request session)
-                     (when on-done (funcall on-done session))))
-               (error (fail err)))))
-         (schedule ()
-           (setq timer (run-at-time 0 nil #'step)))
-         (process-text (text final-newline)
-           (let* ((joined (concat carry text))
-                  (lines (split-string joined "\n")))
-             (setq carry (if final-newline "" (car (last lines))))
-             (dolist (line (if final-newline lines (butlast lines)))
-               (unless (string-empty-p line)
-                 (e-session--apply-physical-record
-                  store
-                  (e-session-codec-json-read-line
-                   (decode-coding-string line 'utf-8)))))))
-         (step ()
-           (unless (e-request-terminal-p request)
-             (condition-case err
-                 (if (>= position size)
-                     (finish)
-                   (let* ((next (min size (+ position chunk-bytes)))
-                          (chunk (e-session-storage-read-session-chunk
-                                  store session-id position next))
-                          (text (plist-get chunk :text)))
-                     (setq position next)
-                     (process-text text (string-suffix-p "\n" text))
-                     (progress)
-                     (schedule)))
-               (error (fail err))))))
-      (setq request
-            (e-request-lifecycle-create
-             :id (e-session-generate-ulid) :owner 'e-session-load
-             :session-id session-id :state 'created
-             :cancel-function (lambda (_request) (clear-timer))))
-      (e-request-start request (list :session-id session-id :bytes-total size))
-      (schedule)
-      request)))
+  (e-session-sqlite-load-session-start
+   store session-id :on-done on-done :on-error on-error
+   :on-progress on-progress :page-size
+   (max 1 (min 1024 (or chunk-bytes 256)))))
 
 (defun e-session--load-session-journal-fully (store session-id)
   "Replay all journal records for explicit checkpoint migration."
@@ -565,32 +469,25 @@ case so a freshly created direct JSONL store remains reopenable."
 
 (cl-defun e-session-persistent-index-store-create
     (&optional directory &key write-mode)
-  "Create a persistent index-backed STORE without transcript replay."
-  (let* ((directory (file-name-as-directory
-                     (expand-file-name (or directory e-session-directory))))
-         (sessions-directory (expand-file-name "sessions" directory))
-         (store (e-session-store-create
-                 :directory directory :sessions-directory sessions-directory
-                 :index-file (expand-file-name "index.json" directory)
-                 :persistent t :write-mode write-mode)))
-    (e-session-storage-register
-     store
-     :directory directory
-     :sessions-directory sessions-directory
-     :index-file (expand-file-name "index.json" directory)
-     :persistent t
-     :write-mode write-mode)
-    (if (e-session--load-index store)
-        (e-session--reconcile-journal-roots store t)
-      (e-session--reconcile-journal-roots store))
-    store))
+  "Open the current SQLite session STORE without eager transcript replay.
+
+WRITE-MODE is retained only to diagnose removed JSONL writer configurations;
+nil and `sqlite' both select the sole current physical adapter."
+  (unless (memq write-mode '(nil sqlite))
+    (signal 'e-session-storage-migration-required
+            (list "Legacy session write modes are retired; migrate offline"
+                  write-mode)))
+  (e-session-sqlite-store-create directory))
 
 (cl-defun e-session-persistent-store-create (&optional directory &key write-mode)
-  "Create a persistent STORE and replay its durable journals."
-  (let ((store (e-session-persistent-index-store-create directory
-                                                         :write-mode write-mode)))
-    (e-session-load store)
-    store))
+  "Open the current SQLite session STORE and eagerly restore its sessions.
+
+This historical facade name no longer selects or falls back to JSONL."
+  (unless (memq write-mode '(nil sqlite))
+    (signal 'e-session-storage-migration-required
+            (list "Legacy session write modes are retired; migrate offline"
+                  write-mode)))
+  (e-session-sqlite-store-create directory :load-all t))
 
 (defun e-session--ensure-loaded (store session-id)
   "Return loaded SESSION-ID, loading its checkpoint suffix on demand."

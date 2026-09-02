@@ -41,12 +41,12 @@
   "Return STORE's runtime-store adapter, or nil."
   (gethash store e-session-storage-sqlite--runtimes))
 
-(defun e-session-storage-sqlite--call (store kind body &optional id)
+(defun e-session-storage-sqlite--call (store kind body)
   "Call STORE's typed runtime KIND BODY operation."
   (let ((runtime (e-session-storage-sqlite-runtime store)))
     (unless runtime
       (signal 'e-session-storage-error (list "SQLite runtime is unavailable")))
-    (e-runtime-store-call runtime kind body id)))
+    (e-runtime-store-call runtime kind body)))
 
 (defun e-session-storage-sqlite-reference (session-id)
   "Return the opaque catalog reference for SESSION-ID."
@@ -164,14 +164,12 @@ acknowledged status response cannot overtake an earlier submitted write."
   (e-session-storage-sqlite-ordered-barrier store))
 
 (defun e-session-storage-sqlite-tool-transition
-    (store session-id call-id state payload expected-revision)
+    (store session-id call-id state payload)
   "Persist one tool continuity transition."
   (e-session-storage-sqlite--call
    store 'write
-   (append (list :op 'tool-transition :session-id session-id
-                 :call-id call-id :state state :payload payload)
-           (when expected-revision
-             (list :expected-revision expected-revision)))))
+   (list :op 'tool-transition :session-id session-id
+         :call-id call-id :state state :payload payload)))
 
 (defun e-session-storage-sqlite-tool-classifications (store session-id)
   "Return SESSION-ID's bounded tool continuity classifications."

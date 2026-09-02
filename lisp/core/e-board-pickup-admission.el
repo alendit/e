@@ -41,10 +41,7 @@
            (result
             (e-board-storage-admit-pickup
              (e-board-storage board) (e-board-id board)
-             (e-board-generation board) delivery-id
-             (e-board-pickup-revision pickup)
-             session-id
-             (e-session-board-input-admission-expected-revision admission)
+             (e-board-generation board) delivery-id session-id
              (e-session-board-input-admission-record admission) lane)))
       ;; Both semantic owners publish only after the one worker ACK.
       (e-session-board-input-admission-publish admission)

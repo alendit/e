@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-runtime-store)
 (require 'e-session-storage)
 
 (defun e-session-storage-contract--source-requires-no-siblings-p ()
@@ -34,22 +35,26 @@ one Emacs process."
   (should (e-session-storage-contract--source-requires-no-siblings-p)))
 
 (ert-deftest e-session-storage-contract-state-is-explicit-and-owned ()
-  "Queue, checkpoint, and controller fields live in storage state."
+  "Current projection and durability state lives in the storage owner."
   (let* ((owner (make-symbol "opaque-session-owner"))
-         (state (e-session-storage-register owner :write-mode 'queued)))
+         (state (e-session-storage-register owner)))
     (should (e-session-storage--state-p state))
     (should (eq (e-session-storage--state-owner state) owner))
-    (should (null (e-session-storage--state-write-queue state)))
     (should (= (e-session-storage--state-unsettled-write-count state) 0))
-    (should-not (e-session-storage--state-controller state))))
+    (should (= (hash-table-count
+                (e-session-storage--state-checkpoint-dirty-session-ids state))
+               0))
+    (should-not (e-session-storage--state-projection-last-error state))))
 
 (ert-deftest e-session-storage-contract-commits-typed-mutation-for-opaque-owner ()
-  "The semantic commit operation writes JSONL without aggregate knowledge."
+  "The semantic commit operation uses SQLite without aggregate knowledge."
   (let* ((directory (make-temp-file "e-session-storage-contract-" t))
          (owner (make-symbol "opaque-session-owner"))
          (session-id "opaque-session")
+         (runtime (e-runtime-store-open directory))
          (state (e-session-storage-register
-                 owner :directory directory :persistent t :write-mode nil)))
+                 owner :directory directory :persistent t :backend 'sqlite
+                 :runtime-store runtime :owns-runtime-store t)))
     (unwind-protect
         (progn
           (should (e-session-storage--state-p state))
@@ -58,32 +63,50 @@ one Emacs process."
            (list :type "session" :session-id session-id
                  :id "opaque-root" :created-at "2026-08-30T00:00:00Z"
                  :metadata nil))
-          (let ((journal (e-session-storage--session-file owner session-id)))
-            (should (file-readable-p journal))
-            (with-temp-buffer
-              (insert-file-contents journal)
-              (should (string-match-p "opaque-root" (buffer-string)))))
+          (should (equal
+                   (plist-get
+                    (car (e-session-storage-read-session-records
+                          owner session-id))
+                    :id)
+                   "opaque-root"))
           (should (equal (e-session-storage-session-ids owner)
                          (list session-id))))
+      (e-session-storage-close owner)
       (delete-directory directory t))))
 
 (ert-deftest e-session-storage-contract-checkpoint-write-is-atomic-value-operation ()
   "Checkpoint persistence accepts detached values, not aggregate records."
   (let* ((directory (make-temp-file "e-session-storage-checkpoint-" t))
-         (owner (make-symbol "opaque-session-owner")))
+         (owner (make-symbol "opaque-session-owner"))
+         (runtime (e-runtime-store-open directory)))
     (unwind-protect
         (progn
-          (e-session-storage-register owner :directory directory :persistent t)
-          (e-session-storage--write-checkpoint
+          (e-session-storage-register
+           owner :directory directory :persistent t :backend 'sqlite
+           :runtime-store runtime :owns-runtime-store t)
+          (e-session-storage-commit-mutation
+           owner "checkpoint-session"
+           '(:type "session" :session-id "checkpoint-session"
+             :id "root" :created-at "2026-08-30T00:00:00Z"))
+          (e-session-storage-persist-resume-checkpoint
            owner "checkpoint-session"
            '(:version 1 :entry-ids ["root" "message-1"]))
           (should (equal
                    (plist-get
-                    (e-session-storage--read-checkpoint owner
-                                                        "checkpoint-session")
+                    (e-session-storage-read-resume-checkpoint
+                     owner "checkpoint-session")
                     :version)
                    1)))
+      (e-session-storage-close owner)
       (delete-directory directory t))))
+
+(ert-deftest e-session-storage-contract-rejects-retired-persistent-registration ()
+  "Persistent callers cannot select the removed sidecar backend."
+  (should-error
+   (e-session-storage-register
+    (make-symbol "legacy-owner") :directory temporary-file-directory
+    :persistent t)
+   :type 'e-session-storage-error))
 
 (provide 'e-session-storage-contract-test)
 

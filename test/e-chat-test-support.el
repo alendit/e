@@ -16,6 +16,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-bayesian-reasoning)
+(require 'e-board-storage-sqlite)
 (require 'e-chat)
 (require 'e-chat-session)
 (require 'e-context-inspection)
@@ -80,10 +81,20 @@ tests, matching how the buffer behaves when shown to a user."
 (defun e-chat-test--create-session (store &rest arguments)
   "Create one board-native test session in STORE from ARGUMENTS."
   (let* ((session (apply #'e-session-create store arguments))
-         (session-id (plist-get session :id)))
+         (session-id (plist-get session :id))
+         (principal (format "chat:%s" session-id))
+         (board-id (format "test-board:%s" session-id)))
+    ;; Current durable sessions and Boards have independent authoritative
+    ;; owners.  A board-native fixture must therefore seed both roots rather
+    ;; than relying on the retired session-journal Board proxy.
+    (when (e-session-storage-sqlite-p store)
+      (let ((storage
+             (e-board-storage-sqlite-create
+              (e-session-storage-runtime-store store))))
+        (unless (e-board-storage-board storage board-id)
+          (e-board-storage-create-board storage board-id principal))))
     (e-session-declare-board-state
-     store session-id (format "chat:%s" session-id)
-     (format "test-board:%s" session-id))
+     store session-id principal board-id)
     session))
 
 

@@ -307,15 +307,14 @@
            (marker (e-process-reporting-test--call-action
                     harness :mark '(:signal "success" :note "Stored once.")))
            (reports (e-session-process-reports store "session-1"))
-           (disk (with-temp-buffer
-                   (insert-file-contents
-                    (e-session-storage-session-reference store "session-1"))
-                   (buffer-string))))
+           (durable-records
+            (prin1-to-string
+             (e-session-storage-read-session-records store "session-1"))))
       (should (= (length reports) 1))
       (should (equal (plist-get (car reports) :id) (plist-get marker :id)))
       (should-not (e-session-messages store "session-1"))
-      (should (string-match-p "\\\"type\\\":\\\"process-report\\\"" disk))
-      (should-not (string-match-p "records.jsonl" disk)))))
+      (should (string-match-p "process-report" durable-records))
+      (should-not (string-match-p "records.jsonl" durable-records)))))
 
 (ert-deftest e-process-reporting-test-terminal-suppression-is-session-scoped ()
   (e-process-reporting-test--with-store (store directory)
@@ -460,13 +459,13 @@
        (list :marker-ids (vector (plist-get marker :id))
              :session-evidence ["https://user:password@example.test/path"]
              :estimation-method "api_key=hidden-key estimate"))
-      (let ((disk (with-temp-buffer
-                    (insert-file-contents
-                     (e-session-storage-session-reference store "session-1"))
-                    (buffer-string))))
-        (should (string-match-p "REDACTED" disk))
+      (let ((durable-records
+             (prin1-to-string
+              (e-session-storage-read-session-records store "session-1"))))
+        (should (string-match-p "REDACTED" durable-records))
         (should-not (string-match-p
-                     "hidden-secret\\|hidden-key\\|password@example" disk))))))
+                     "hidden-secret\\|hidden-key\\|password@example"
+                     durable-records))))))
 
 (ert-deftest e-process-reporting-test-trigger-chain-preserves-nested-action ()
   (e-process-reporting-test--with-store (store directory)

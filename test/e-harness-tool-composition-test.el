@@ -252,11 +252,11 @@
             (should (equal receipt
                            '(:tool-call-id "call-1"
                              :tool "bash"
-                             :status "ok"
+                             :status ok
                              :stated-purpose "Run the bounded command"
                              :details-uri
                              "tmp://tool-invocations/turn-1/call-1.json"
-                             :details-lifetime "session-tmp")))
+                             :details-lifetime session-tmp)))
             (should-not (string-match-p
                          "raw-command-secret\\|raw-result-secret"
                          serialized))))
@@ -379,16 +379,14 @@
           (e-harness-create-session harness :id "session-1")
           (e-harness-test-prompt-batch harness "session-1" "question")
           (e-session-flush-write-queue store)
-          (let ((disk
-                 (with-temp-buffer
-                   (insert-file-contents
-                    (e-session-storage-session-reference store "session-1"))
-                   (buffer-string))))
-            (should (string-match-p "REDACTED" disk))
+          (let ((durable-records
+                 (prin1-to-string
+                  (e-session-storage-read-session-records store "session-1"))))
+            (should (string-match-p "REDACTED" durable-records))
             (should-not
              (string-match-p
               "disk-provider-secret\\|password@example\\|disk-path-secret\\|disk-model-secret\\|disk-diagnostic-secret\\|disk-usage-secret\\|cache-key-disk-secret"
-              disk)))
+              durable-records)))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (activity (e-session-activity-events loaded "session-1"))
                  (started (seq-find

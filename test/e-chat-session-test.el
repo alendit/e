@@ -327,7 +327,8 @@
 (ert-deftest e-chat-session-test-persisted-canonical-attachment-replaces-canvas ()
   "A persisted canonical attachment remains usable after replay."
   (let* ((directory (make-temp-file "e-chat-session-context-" t))
-         (store (e-session-persistent-store-create directory)))
+         (store (e-session-persistent-store-create directory))
+         reopened)
     (unwind-protect
         (progn
           (e-session-create store :id "canonical")
@@ -335,7 +336,10 @@
            store "canonical" 'chat-session
            '(:attachments
              ((:uri "file://old.org" :label "old" :canvas t))))
-          (let* ((loaded (e-session-persistent-store-create directory))
+          (e-session-storage-close store)
+          (setq store nil)
+          (let* ((loaded (setq reopened
+                               (e-session-persistent-store-create directory)))
                  (harness (e-harness-create
                            :backend (e-backend-fake-create :items nil)
                            :sessions loaded)))
@@ -357,6 +361,10 @@
             (should
              (e-chat-session-context-attachments-provider
               :harness harness :session-id "canonical"))))
+      (when store
+        (e-session-storage-close store))
+      (when reopened
+        (e-session-storage-close reopened))
       (delete-directory directory t))))
 
 (ert-deftest e-chat-session-test-obsolete-attachment-metadata-rejected ()
@@ -403,6 +411,7 @@
 
 (ert-deftest e-chat-session-test-offline-migration-repairs-persistent-store ()
   "The one-off migrator canonicalizes a real store before strict replay."
+  (ert-skip "Retired online repair; Feature 87 migration owns decoding and install")
   (skip-unless (executable-find "python3"))
   (let* ((directory (make-temp-file "e-chat-attachment-migration-" t))
          (store (e-session-persistent-store-create directory))

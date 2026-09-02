@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+In-review.
 
 The operator reviewed and accepted the plan on 2026-09-01.  Feature 91,
 [[file:../91-improve-modularization/plan.org][Improve Modularization]], is =Done=, and
@@ -28,18 +28,23 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
 - Product authority :: This Feature 87 plan and the operator decisions recorded
   in its history.
 - Owning contract :: =F87-C01=.
-- Behavioral status :: =unavailable= until Package 4 passes the direct scenario.
-- Mechanism status :: =in-progress=.  P1-P3 are accepted; P4 remains.
+- Behavioral status :: =unavailable= pending independent same-revision review
+  of the Package 4 direct scenario.
+- Mechanism status :: =implemented-awaiting-review=.  The P1-P3 owner
+  boundaries remain accepted.  Parent read-back accepts their simplified
+  failure protocol and the P4 cutover; independent same-revision review remains.
 
 * Implementation ledger
 
-- P1 :: Accepted on 2026-09-01.  The opt-in SQLite runtime store, commit-first
+- P1 :: Owner boundary accepted on 2026-09-01; failure protocol simplified on
+  2026-09-02 and awaiting same-revision review.  The SQLite runtime store, commit-first
   session composition, tool restart classification, and session =tmp://=
   storage pass 26 focused S2-S4 tests plus 168 existing owner tests.  The
   deterministic large witness restores 15,722 records and 37,851,478 content
   bytes through paged reads while timers and a queued commit progress.  This
   does not change the ordinary legacy backend or make =F87-GOAL= available.
-- P2 :: Accepted on 2026-09-02.  The opt-in
+- P2 :: Owner boundary accepted on 2026-09-02; transport assumptions simplified
+  on 2026-09-02 and awaiting same-revision review.  The
   SQLite Board path commits canonical publications, processing rows, final
   routing outcomes, pickup identities and lifecycle transitions, participant
   recovery identity, and stable replay progress through =e-board-storage=.
@@ -51,7 +56,8 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   Seventeen focused S5-S6 tests plus the existing Board, runtime, admission,
   registry, chat/session, and P1 preservation suites pass.  Ordinary Boards
   remain legacy-backed, so this does not make =F87-GOAL= available.
-- P3 :: Accepted on 2026-09-02.  One opt-in
+- P3 :: Owner boundary accepted on 2026-09-02; transport assumptions simplified
+  on 2026-09-02 and awaiting same-revision review.  One
   composition opens the existing runtime store once and injects separate task,
   cron, voice, Goodnite, raw-result, session, and Board adapters.  Task attempts
   and cron firings commit claims before executable effects and restore ambiguous
@@ -67,7 +73,40 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   relevant owner tests, and 39 P1-P2 preservation tests pass.  Ordinary runtime
   defaults and legacy files remain unchanged until P4, so =F87-GOAL= remains
   unavailable.
-- P4 :: Not started.
+- P4 :: Implemented and parent-accepted on 2026-09-02; independent acceptance
+  remains.
+  Ordinary defaults open one SQLite composition; explicit migration inventories
+  accepted legacy owners, produces deterministic physical and semantic
+  manifests, verifies integrity, and atomically installs a closed new store.
+  Explicit v3-to-v4 upgrade creates and verifies a restrictive pre-upgrade
+  backup before changing the schema.  Five focused S1/S9/S10 tests pass,
+  including invalid-input no-install cases, as do 17 P3 tests and 43 P1-P2
+  preservation tests including the exact large witness.  The isolated
+  graphical gate passes 28/28 and current-config passes 4/4.  A complete dry
+  run against the copied operator tree imported 595,268 session records, 1,249
+  resume checkpoints, two task queues with 81 tasks, 42 Board roots, cron, and
+  voice state, then passed full SQLite integrity without installing a target or
+  changing the source.  Independent same-revision review remains acceptance
+  work; =F87-GOAL= therefore remains unavailable.
+- Simplification correction :: Implemented and parent-accepted on 2026-09-02;
+  independent acceptance remains.  The runtime protocol now uses process-local response
+  correlation only: worker loss fails once, freezes the store object, and
+  requires explicit reopen plus canonical owner reload.  Durable command and
+  owner-revision ledgers, command hashes, ordinary revision preconditions,
+  automatic worker restart, and ambiguous-operation resubmission are removed.
+  Task and cron retain natural attempt/firing identities and restore in-flight
+  work as =interrupted= or =unsafe= without automatic execution.  The combined
+  SQLite domain/package suite passes 50/50, the S2 runtime suite passes 13/13,
+  and affected owner/resource suites pass 135/135;
+  Board/runtime/admission/chat preservation passes 315 expected with 2 declared
+  skips; graphical passes 28/28 and current-config passes 4/4.  The complete
+  final 2,678-test restricted repository gate has 2,655 expected, 9
+  unexpected, and 14 skips.  Six local HTTP-fixture tests denied by that
+  sandbox pass 6/6 with loopback permission, leaving only 3 unrelated Emacs 31
+  baseline failures; the effective preservation result is therefore 2,661
+  expected, 3 baseline failures, and 14 skips.  The copied-operator-store dry
+  run passed after the bounded legacy-inventory corrections.  =F87-GOAL=
+  remains unavailable until independent same-revision acceptance.
 
 * Goal and boundary
 
@@ -107,17 +146,17 @@ establish persistence correctness.
 
 | ID | Observable contract | Semantic owner | Package | Deterministic evidence | Telemetry | Status |
 |----+---------------------+----------------+---------+------------------------+-----------+--------|
-| F87-C01 | One SQLite database is the only ordinary authority for all e-owned durable mutable runtime state; owner-shaped ports preserve domain meaning. | runtime storage boundary plus each domain owner | P4 | S1 migrated-system restart and S10 sidecar negative scan | database/WAL size observational | Accepted |
-| F87-C02 | All SQLite I/O runs in one subordinate worker owned by one e runtime; main Emacs never opens SQLite, a second runtime is rejected, and bounded restart freezes new durable effects while unavailable. | storage adapter/worker | P1 | S2 worker and ownership failure matrix | startup, queue age, and read latency observational | Accepted |
-| F87-C03 | Session state changes only after commit; indexed restore recovers exact values and classifies interrupted tool follow-up without blindly repeating an uncertain external effect. | =e-session=, =e-harness=, =e-loop=, =e-context-lifetime= through =e-session-storage= | P1 | S3 session/tool crash matrix | resume and commit latency measured against fixture | Accepted |
-| F87-C04 | E-managed session =tmp://= resources retain their resource interface while SQLite owns content, lineage, expiry, and cleanup; one generous private BLOB limit fails explicitly at one-over. | session temporary-resource owner | P1 | S4 resource round trip, expiry, deletion, exact/one-over | value size and worker memory observational | Accepted |
-| F87-C05 | Board publication, final routing outcomes, pickup identity/FIFO/lifecycle, and replay progress are durable; executable policy and live endpoints remain process-local. | =e-board= and =e-board-runtime= through =e-board-storage= | P2 | S5 Board publication/routing/restart matrix | Board commit and replay latency observational | Accepted |
-| F87-C06 | Accepting a Board pickup into a session commits pickup acceptance and admitted session input together through one typed application operation, without generic transactions or cross-owner domain ports. | pickup-admission application service | P2 | S6 pickup/session atomicity matrix | not-applicable | Accepted |
-| F87-C07 | Task attempts and cron firings are claimed before work starts, restore to explicit states, and never blindly repeat an uncertain external effect. | =e-task-queue= and =e-cron= | P3 | S7 task/cron claim and restart matrix | claim and scheduling latency observational | Accepted |
-| F87-C08 | Voice tells, Goodnite events, and =raw-result://= content use owner-shaped SQLite storage with bounded reads, retention, checkpoints, and explicit cleanup. | voice, Goodnite, and raw-resource owners | P3 | S8 auxiliary-state migration/restart/cleanup | row count and resource size observational | Accepted |
-| F87-C09 | Legacy migration and later SQLite schema upgrades are explicit offline operations; semantic manifests, integrity checks, source preservation, verified pre-upgrade backup, and restrictive permissions for operator artifacts prevent silent or exposed cutover state. | migration/upgrade entrypoint and storage worker | P4 | S9 clean, malformed, conflicting, repeat, upgrade, and artifact-permission fixtures | migration time and backup size observational | Accepted |
-| F87-C10 | Cutover removes production sidecar stores, runtime legacy fallback, permanent dual write, and duplicate in-memory durable Board ledgers while preserving explicit file products. | runtime composition and legacy owners | P4 | S10 source scan plus complete repository/E2E gates | not-applicable | Accepted |
-| F87-C11 | Interactive database work is asynchronous, indexed, paged, and bounded; commit work is not starved by reads, and large-session resume reads only the selected path and bounded projections while interactive timers and queued commits progress. | storage worker and owner load APIs | P4 | S11 large-load responsiveness and performance suite | wall-clock latency and size remain observational until a reproducible threshold is accepted | Accepted |
+| F87-C01 | One SQLite database is the only ordinary authority for all e-owned durable mutable runtime state; owner-shaped ports preserve domain meaning. | runtime storage boundary plus each domain owner | P4 | S1 migrated-system restart and S10 sidecar negative scan | database/WAL size observational | Implemented; review pending |
+| F87-C02 | All SQLite I/O runs in one subordinate worker owned by one e runtime; main Emacs never opens SQLite, a second runtime is rejected, and worker loss fails outstanding operations without automatic resubmission. | storage adapter/worker | P1 | S2 worker loss, reopen, and ownership scenarios | startup, queue age, and read latency observational | Implemented; simplified protocol review pending |
+| F87-C03 | Session state changes only after commit; indexed restore recovers exact values and classifies interrupted tool follow-up without blindly repeating an uncertain external effect. | =e-session=, =e-harness=, =e-loop=, =e-context-lifetime= through =e-session-storage= | P1 | S3 commit-first session and interrupted-tool restore | resume and commit latency measured against fixture | Implemented; review pending |
+| F87-C04 | E-managed session =tmp://= resources retain their resource interface while SQLite owns content, lineage, expiry, and cleanup; one generous private BLOB limit fails explicitly at one-over. | session temporary-resource owner | P1 | S4 resource round trip, expiry, deletion, exact/one-over | value size and worker memory observational | Implemented; review pending |
+| F87-C05 | Board publication, final routing outcomes, pickup identity/FIFO/lifecycle, and replay progress are durable; executable policy and live endpoints remain process-local. | =e-board= and =e-board-runtime= through =e-board-storage= | P2 | S5 Board publication/routing/restart matrix | Board commit and replay latency observational | Implemented; review pending |
+| F87-C06 | Accepting a Board pickup into a session commits pickup acceptance and admitted session input together through one typed application operation, without generic transactions or cross-owner domain ports. | pickup-admission application service | P2 | S6 pickup/session atomicity matrix | not-applicable | Implemented; review pending |
+| F87-C07 | Task attempts and cron firings are claimed before work starts, restore to explicit states, and never blindly repeat an uncertain external effect. | =e-task-queue= and =e-cron= | P3 | S7 task/cron claim and restart matrix | claim and scheduling latency observational | Implemented; review pending |
+| F87-C08 | Voice tells, Goodnite events, and =raw-result://= content use owner-shaped SQLite storage with bounded reads, retention, checkpoints, and explicit cleanup. | voice, Goodnite, and raw-resource owners | P3 | S8 auxiliary-state migration/restart/cleanup | row count and resource size observational | Implemented; review pending |
+| F87-C09 | Legacy migration and later SQLite schema upgrades are explicit offline operations; semantic manifests, integrity checks, source preservation, verified pre-upgrade backup, and restrictive permissions for operator artifacts prevent silent or exposed cutover state. | migration/upgrade entrypoint and storage worker | P4 | S9 clean, malformed, conflicting, repeat, upgrade, and artifact-permission fixtures | migration time and backup size observational | Implemented; review pending |
+| F87-C10 | Cutover removes production sidecar stores, runtime legacy fallback, permanent dual write, and duplicate in-memory durable Board ledgers while preserving explicit file products. | runtime composition and legacy owners | P4 | S10 source scan plus complete repository/E2E gates | not-applicable | Implemented; review pending |
+| F87-C11 | Interactive database work is asynchronous, indexed, paged, and bounded; commit work is not starved by reads, and large-session resume reads only the selected path and bounded projections while interactive timers and queued commits progress. | storage worker and owner load APIs | P4 | S11 large-load responsiveness and performance suite | wall-clock latency and size remain observational until a reproducible threshold is accepted | Implemented; review pending |
 | F87-C12 | WAL =synchronous=NORMAL= preserves database consistency and acknowledged commits across e/worker process failure but does not promise survival of the latest acknowledgement after host/power failure; the database, WAL, and runtime-ownership files use restrictive permissions. | storage adapter | P1 | S2 process/host failure and store-permission checks | host-loss outcome observational beyond consistency gate | Accepted |
 
 * Accepted decisions
@@ -149,8 +188,17 @@ The matrix incorporates these operator decisions:
 - the first resource implementation uses one BLOB and a generous private limit,
   not chunk streaming;
 - shells may display pending intent, but agents and durable projections see only
-  committed state; post-submission cancellation reconciles and then records a
-  later durable transition when needed.
+  committed state; cancellation drops work only before submission.  Once sent,
+  worker loss fails the operation and requires close/reopen plus owner reload;
+  the runtime never resubmits an ambiguous write.
+
+On 2026-09-02 the operator simplified the accepted mechanism without changing
+semantic ownership or package scope.  Stable command identities, reconciliation
+hashes, the durable writer-command ledger, ordinary expected-revision/CAS, and
+automatic worker restart/resubmission are no longer part of Feature 87.  The
+single worker serializes ordinary owner operations; natural positions,
+generations, attempt identities, and SQLite constraints remain.  A missing ACK
+is storage-unavailable, not evidence of rollback or permission to retry.
 
 * Delivery packages
 
@@ -172,10 +220,9 @@ Establishes =F87-C02=, =F87-C03=, =F87-C04=, and =F87-C12=.
 Scope:
 
 - add the exact tagged value codec and typed storage protocol;
-- implement the batch Emacs worker, migrations for a new store, command
-  deduplication, revisions, WAL/foreign keys, exclusive runtime ownership,
-  bounded reads, restart/reconciliation, status, barriers, permissions, and
-  explicit diagnostics;
+- implement the batch Emacs worker, new-store schema, WAL/foreign keys,
+  exclusive runtime ownership, serialized transactions, bounded reads, status,
+  barriers, permissions, explicit worker-loss failure, and diagnostics;
 - replace the JSONL/index/queued/Node implementation behind the existing
   =e-session-storage= boundary with the typed SQLite worker protocol; preserve
   the accepted =e-session= facade, aggregate, codec, and catalog dependency
@@ -191,13 +238,13 @@ Scope:
 Gate:
 
 - exact codec property/rejection tests;
-- worker creation, reopen, duplicate/conflict, process crash, restart,
-  second-runtime, cancellation, read scheduling, permissions, and host-loss
-  consistency tests;
+- worker creation, ordinary writes, process loss, explicit reopen/reload,
+  second-runtime rejection, pre-submission cancellation, read scheduling,
+  permissions, and host-loss consistency tests;
 - session semantic suite against disposable SQLite, including branch,
   compaction, display, clear, delete, and exact value restore;
-- tool crash matrix before claim, after claim, after start, after result, and
-  before settlement;
+- ordinary tool-continuity restore distinguishes completed work from incomplete
+  or uncertain external effects and never automatically repeats the latter;
 - resource URI, expiry, session deletion, and exact/one-over private-limit tests;
 - a deterministic test-owned 15,722-record/37,851,478-byte fixture restores
   through indexed, paged reads without reading unrelated audit history; an
@@ -251,7 +298,7 @@ Feature 91's live ownership boundaries.
 ** P3: Remaining scheduler, adaptation, and resource state
 
 Establishes =F87-C07= and =F87-C08=; depends on P1 and consumes P2 identities
-where task/Board reconciliation requires them.
+where task-derived Board publication requires stable causal identities.
 
 Scope:
 
@@ -307,7 +354,13 @@ Scope:
 Gate:
 
 - repeat migration is manifest-identical; malformed, conflicting, missing-root,
-  legacy-shape, incomplete-tail, and failed-upgrade fixtures do not install;
+  legacy-shape, incomplete-tail, unmapped-file, and failed-upgrade fixtures do
+  not install.  Every nested task snapshot has a deterministic queue identity,
+  active session checkpoints preserve their semantic values while translating
+  physical JSONL byte cursors to SQLite record positions, timestamped backups
+  and historical task output products are explicitly source-preserved, retired
+  presentation state is reported, and operator failures emit bounded
+  diagnostics rather than decoded snapshot backtraces;
 - S9 verifies restrictive permissions for every migration, upgrade, backup,
   export, report, and disposable-path artifact;
 - a dry migration of a copy of the current user store passes without touching
@@ -347,13 +400,13 @@ the default changes only after every owner and rollback proof is complete.
 - =S1 migrated-system restart= :: Covers =F87-C01=.  Migrate a legacy copy,
   open sessions/Boards/tasks/cron/resources, complete new work, restart, and
   prove exact committed reconstruction with no sidecar writer.
-- =S2 worker and ownership failure matrix= :: Covers =F87-C02= and =F87-C12=.
-  Stop before commit and after commit-before-ack, reject a second runtime,
-  recover the worker by command id, freeze effects while unavailable, and verify
-  consistency after simulated host loss.
-- =S3 session/tool crash matrix= :: Covers =F87-C03=.  Exercise session changes
-  and every durable tool-follow-up boundary; uncertain external effects become
-  explicit rather than blindly repeated.
+- =S2 worker loss and ownership= :: Covers =F87-C02= and =F87-C12=.
+  Prove ordinary commit/read progress, reject a second runtime, propagate worker
+  loss as storage-unavailable exactly once without resubmission, then close,
+  reopen, and reload canonical committed database state.
+- =S3 session/tool restart= :: Covers =F87-C03=.  Exercise commit-first session
+  changes and restore completed versus interrupted tool follow-up; uncertain
+  external effects become explicit rather than blindly repeated.
 - =S4 temporary-resource lifecycle= :: Covers =F87-C04=.  Round-trip exact bytes
   through =tmp://=, restore, expire, session-delete, and prove exact/one-over
   private-limit behavior without a backing file.
@@ -363,9 +416,9 @@ the default changes only after every owner and rollback proof is complete.
 - =S6 pickup/session atomicity= :: Covers =F87-C06=.  Stop on both sides of the
   typed composite commit and prove session admission and pickup acceptance
   cannot tear.
-- =S7 task/cron claim and restart= :: Covers =F87-C07=.  Stop before claim,
-  after claim, and after external start; restore only to the state permitted by
-  the action's idempotency/reconciliation contract.
+- =S7 task/cron claim and restart= :: Covers =F87-C07=.  Prove claims precede
+  executable work and restart changes in-flight work to interrupted or unsafe;
+  it never automatically runs the external effect again.
 - =S8 auxiliary-state lifecycle= :: Covers =F87-C08=.  Migrate and restart voice,
   Goodnite, and raw-result state; prove caps, consumer checkpoints, expiry, and
   cleanup boundaries.
@@ -406,8 +459,9 @@ owner/mechanism tests does not make =F87-GOAL= pass before S1 succeeds.
   executable Board subscriptions, exact admission tokens, endpoint objects,
   Lisp predicate closures, focus, windows, overlays, render caches, or other
   process/presentation state.
-- Exactly-once execution of arbitrary external effects.  Automatic retry needs
-  a tool/action-specific idempotency or reconciliation contract.
+- Exactly-once execution of arbitrary external effects.  Ambiguous worker
+  acknowledgement and in-flight external work fail visibly; deliberate owner
+  action may inspect canonical state but the runtime never retries them.
 - Latest-acknowledgement survival after host failure or sudden power loss.
 - Generic SQL, transaction builders, or cross-owner mutation ports exposed to
   agents, shells, capabilities, resources, or domain owners.
@@ -465,9 +519,10 @@ operator chooses to use the new implementation; =e-dev-reload= is insufficient.
 12. *Removal*: Node/JSONL, checkpoints, derived index, sidecar stores, Board-log
     proxy, persistence callbacks, and duplicate durable indexes are deleted
     after proof.
-13. *Errors*: Expected busy/transport failure is bounded and retryable;
-    corruption, schema/value/identity/revision conflict, uncertain effects, and
-    terminal worker recovery surface explicitly.
+13. *Errors*: Owner validation and SQLite constraints surface visibly.  Worker
+    loss fails outstanding requests once and requires explicit reopen/reload;
+    corruption, schema/value/identity conflicts, and uncertain effects are not
+    swallowed or automatically retried.
 14. *Tests*: Pure policy tests remain storage-independent; disposable-SQLite
     owner, composition, migration, restart, graphical, and system scenarios
     fail at narrow boundaries.

@@ -25,6 +25,30 @@
 (defvar e-board--storage-replay-p nil
   "Non-nil while publishing an already committed durable Board transition.")
 
+(defvar e-board--post-storage-barrier-callbacks
+  (make-hash-table :test 'eq :weakness 'key)
+  "Process-local owner callbacks waiting for a Board commit barrier.")
+
+(defun e-board--defer-after-storage-barrier (board callback)
+  "Run CALLBACK later, after BOARD's current durable barrier is released.
+This is the narrow owner-scheduling seam for callbacks that were already
+admitted before a worker wait.  It stores no durable executable state and does
+not allow a caller mutation to bypass the barrier."
+  (if (e-board-mutation-frozen-p board)
+      (puthash board
+               (nconc (gethash board e-board--post-storage-barrier-callbacks)
+                      (list callback))
+               e-board--post-storage-barrier-callbacks)
+    (run-at-time 0 nil callback)))
+
+(defun e-board--release-storage-barrier (board)
+  "Release BOARD's barrier and schedule its admitted owner callbacks."
+  (setf (e-board-mutation-frozen-p board) nil)
+  (let ((callbacks (gethash board e-board--post-storage-barrier-callbacks)))
+    (remhash board e-board--post-storage-barrier-callbacks)
+    (dolist (callback callbacks)
+      (run-at-time 0 nil callback))))
+
 (defun e-board-storage-backed-p (board)
   "Return non-nil when BOARD has a durable storage port."
   (and (e-board-p board) (e-board-storage-p (e-board-storage board))))
@@ -37,7 +61,7 @@
       (signal 'e-board-mutation-frozen (list (e-board-id board))))
     (setf (e-board-mutation-frozen-p board) t)
     (unwind-protect (funcall operation)
-      (setf (e-board-mutation-frozen-p board) nil))))
+      (e-board--release-storage-barrier board))))
 
 (defun e-board--storage-publish-record (board record &optional source)
   "Commit detached RECORD and optional SOURCE before BOARD publication."
@@ -49,8 +73,7 @@
             (lambda ()
               (e-board-storage-publish-record
                (e-board-storage board) (e-board-id board)
-               (e-board-generation board) (e-board-revision board)
-               record source)))))
+               (e-board-generation board) record source)))))
       (setf (e-board-revision board) (plist-get result :revision))
       result)))
 
@@ -65,7 +88,7 @@
               (e-board-storage-transition-pickup
                (e-board-storage board) (e-board-id board)
                (e-board-generation board) (e-board-pickup-delivery-id pickup)
-               (e-board-pickup-revision pickup) transition data)))))
+               transition data)))))
       (setf (e-board-revision board)
             (or (plist-get result :board-revision)
                 (plist-get result :revision))
@@ -90,8 +113,7 @@
             (lambda ()
               (e-board-storage-put-participant
                (e-board-storage board) (e-board-id board)
-               (e-board-generation board) (e-board-revision board)
-               participant)))))
+               (e-board-generation board) participant)))))
       (setf (e-board-revision board) (plist-get result :revision))
       result)))
 
@@ -105,8 +127,7 @@
             (lambda ()
               (e-board-storage-delete-participant
                (e-board-storage board) (e-board-id board)
-               (e-board-generation board) (e-board-revision board)
-               participant-id)))))
+               (e-board-generation board) participant-id)))))
       (setf (e-board-revision board) (plist-get result :revision))
       result)))
 
@@ -120,8 +141,7 @@
             (lambda ()
               (e-board-storage-publish-participant
                (e-board-storage board) (e-board-id board)
-               (e-board-generation board) (e-board-revision board)
-               participant-id)))))
+               (e-board-generation board) participant-id)))))
       (setf (e-board-revision board) (plist-get result :revision))
       result)))
 
@@ -162,8 +182,7 @@ PARTICIPANT-IDS and OVERFLOW are already-decided Board policy values."
              (lambda ()
                (e-board-storage-commit-routing
                 (e-board-storage board) (e-board-id board)
-                (e-board-generation board) (e-board-revision board)
-                (e-board-message-id message)
+                (e-board-generation board) (e-board-message-id message)
                 (list :state state :reason reason
                       :participant-ids (copy-tree participant-ids)
                       :pickup-ids
@@ -284,8 +303,7 @@ available as immutable audit after `e-board-clear'."
           board
           (lambda ()
             (e-board-storage-clear-board
-             (e-board-storage board) (e-board-id board)
-             (e-board-revision board))))))
+             (e-board-storage board) (e-board-id board))))))
     (setf (e-board-generation board) (plist-get result :generation)
           (e-board-revision board) (plist-get result :revision)
           (e-board-messages board) nil

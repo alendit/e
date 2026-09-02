@@ -17,6 +17,7 @@ if [[ ${E_E2E_EMACS_CONFIG:-current} != current ]]; then
 fi
 export E_E2E_EMACS_CONFIG=current
 export E_CURRENT_CONFIG_E2E_STATE_DIR=$state_dir
+export E_RUNTIME_STATE_DIRECTORY=$state_dir
 
 emacs_command=(emacs)
 if [[ -n ${E_E2E_EMACS_INIT_DIRECTORY:-} ]]; then

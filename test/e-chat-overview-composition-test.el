@@ -57,13 +57,18 @@
                                         :id "indexed-preview"
                                         :metadata '(:name "Indexed preview"))
                       :id))
-         (backend (e-backend-fake-create :items nil)))
+         (backend (e-backend-fake-create :items nil))
+         indexed-store)
     (unwind-protect
         (progn
           (e-session-append-message
            store session-id
            '(:id "msg-1" :role user :content "indexed preview hello"))
-          (let* ((indexed-store (e-session-persistent-index-store-create directory))
+          (e-session-storage-close store)
+          (setq store nil
+                indexed-store
+                (e-session-persistent-index-store-create directory))
+          (let* ((indexed-store indexed-store)
                  (harness (e-chat-test--activate-chat-session
                            (e-harness-create :backend backend
                                              :sessions indexed-store)))
@@ -96,6 +101,10 @@
                                  text))
                     (should (string-match-p "Indexed preview" text))))))))
       (e-chat-test--kill-chat-buffers)
+      (when store
+        (e-session-storage-close store))
+      (when indexed-store
+        (e-session-storage-close indexed-store))
       (delete-directory directory t))))
 
 (ert-deftest e-chat-test-overview-mode-disables-undo ()
@@ -266,7 +275,8 @@ surface; switch, resume, active-sessions, and overview list only root chats."
           (e-chat-test--activate-chat-session
            (e-harness-create
             :backend (e-backend-fake-create :items nil)
-            :sessions writer))))
+            :sessions writer)))
+         indexed-store)
     (unwind-protect
         (progn
           (let* ((binding
@@ -282,7 +292,11 @@ surface; switch, resume, active-sessions, and overview list only root chats."
            :metadata '(:parent-session-id "top-level"
                        :subagent-role "tool-user"
                        :subagent-label "nested work"))
-          (let* ((store (e-session-persistent-index-store-create directory))
+          (e-session-storage-close writer)
+          (setq writer nil
+                indexed-store
+                (e-session-persistent-index-store-create directory))
+          (let* ((store indexed-store)
                  (harness
                   (e-chat-test--activate-chat-session
                    (e-harness-create
@@ -297,6 +311,10 @@ surface; switch, resume, active-sessions, and overview list only root chats."
                                    (plist-get candidate :session-id))
                                  (e-chat-overview-session-candidates))
                          '("top-level")))))))
+      (when writer
+        (e-session-storage-close writer))
+      (when indexed-store
+        (e-session-storage-close indexed-store))
       (delete-directory directory t))))
 
 (ert-deftest e-chat-test-session-candidates-order-newest-message-first ()
@@ -836,7 +854,8 @@ surface; switch, resume, active-sessions, and overview list only root chats."
   (let* ((directory (make-temp-file "e-chat-active-" t))
          (store (e-session-persistent-store-create directory))
          (e-chat-session-summary-preview-max-chars 6)
-         loaded)
+         loaded
+         indexed-store)
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "unloaded-active"
@@ -847,8 +866,11 @@ surface; switch, resume, active-sessions, and overview list only root chats."
           (e-session-append-message
            store "unloaded-active"
            '(:id "msg-2" :role assistant :content "last response"))
-          (let* ((indexed-store
-                  (e-session-persistent-index-store-create directory))
+          (e-session-storage-close store)
+          (setq store nil
+                indexed-store
+                (e-session-persistent-index-store-create directory))
+          (let* ((indexed-store indexed-store)
                  (harness (e-harness-create
                            :backend (e-backend-fake-create :items nil)
                            :sessions indexed-store))
@@ -869,6 +891,10 @@ surface; switch, resume, active-sessions, and overview list only root chats."
                   (should (string-match-p "last p…" text))
                   (should-not (string-match-p "last prompt" text))
                   (should-not (string-match-p "last response" text)))))))
+      (when store
+        (e-session-storage-close store))
+      (when indexed-store
+        (e-session-storage-close indexed-store))
       (delete-directory directory t))))
 
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()

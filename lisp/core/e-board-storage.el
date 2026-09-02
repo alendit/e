@@ -55,15 +55,15 @@
   "Return a bounded durable Board-root page after AFTER."
   (e-board-storage--call storage 'list-boards after limit))
 
-(defun e-board-storage-clear-board (storage board-id expected-revision)
-  "Advance BOARD-ID generation after EXPECTED-REVISION."
-  (e-board-storage--call storage 'clear-board board-id expected-revision))
+(defun e-board-storage-clear-board (storage board-id)
+  "Advance BOARD-ID generation."
+  (e-board-storage--call storage 'clear-board board-id))
 
 (defun e-board-storage-publish-record
-    (storage board-id generation expected-revision record source)
+    (storage board-id generation record source)
   "Publish canonical RECORD and optional SOURCE identity to BOARD-ID."
   (e-board-storage--call storage 'publish-record board-id generation
-                         expected-revision record source))
+                         record source))
 
 (defun e-board-storage-record-page
     (storage board-id generation &optional after limit selector)
@@ -72,20 +72,20 @@
                          selector))
 
 (defun e-board-storage-commit-routing
-    (storage board-id generation expected-revision message-id outcome pickups)
+    (storage board-id generation message-id outcome pickups)
   "Commit MESSAGE-ID's final OUTCOME and immutable PICKUPS."
   (e-board-storage--call storage 'commit-routing board-id generation
-                         expected-revision message-id outcome pickups))
+                         message-id outcome pickups))
 
 (defun e-board-storage-routing (storage board-id generation message-id)
   "Return MESSAGE-ID's final routing projection, or nil."
   (e-board-storage--call storage 'routing board-id generation message-id))
 
 (defun e-board-storage-transition-pickup
-    (storage board-id generation delivery-id expected-revision transition data)
+    (storage board-id generation delivery-id transition data)
   "Commit DELIVERY-ID TRANSITION with bounded DATA."
   (e-board-storage--call storage 'transition-pickup board-id generation
-                         delivery-id expected-revision transition data))
+                         delivery-id transition data))
 
 (defun e-board-storage-unresolved-pickups
     (storage board-id generation &optional participant-id limit)
@@ -94,32 +94,32 @@
                          participant-id limit))
 
 (defun e-board-storage-put-participant
-    (storage board-id generation expected-revision participant)
+    (storage board-id generation participant)
   "Persist logical PARTICIPANT identity for BOARD-ID."
   (e-board-storage--call storage 'put-participant board-id generation
-                         expected-revision participant))
+                         participant))
 
 (defun e-board-storage-delete-participant
-    (storage board-id generation expected-revision participant-id)
-  "Delete unpublished PARTICIPANT-ID after EXPECTED-REVISION."
+    (storage board-id generation participant-id)
+  "Delete unpublished PARTICIPANT-ID."
   (e-board-storage--call storage 'delete-participant board-id generation
-                         expected-revision participant-id))
+                         participant-id))
 
 (defun e-board-storage-publish-participant
-    (storage board-id generation expected-revision participant-id)
-  "Publish provisional PARTICIPANT-ID after EXPECTED-REVISION."
+    (storage board-id generation participant-id)
+  "Publish provisional PARTICIPANT-ID."
   (e-board-storage--call storage 'publish-participant board-id generation
-                         expected-revision participant-id))
+                         participant-id))
 
 (defun e-board-storage-participants (storage board-id generation &optional limit)
   "Return bounded logical participant projections for BOARD-ID."
   (e-board-storage--call storage 'participants board-id generation limit))
 
 (defun e-board-storage-put-replay-progress
-    (storage board-id generation subscription-id position expected-revision)
+    (storage board-id generation subscription-id position)
   "Persist SUBSCRIPTION-ID replay POSITION for BOARD-ID GENERATION."
   (e-board-storage--call storage 'put-replay-progress board-id generation
-                         subscription-id position expected-revision))
+                         subscription-id position))
 
 (defun e-board-storage-replay-progress
     (storage board-id generation subscription-id)
@@ -128,11 +128,10 @@
                          subscription-id))
 
 (defun e-board-storage-admit-pickup
-    (storage board-id generation delivery-id pickup-revision session-id
-             session-revision record lane)
+    (storage board-id generation delivery-id session-id record lane)
   "Atomically accept DELIVERY-ID and append session admission RECORD."
   (e-board-storage--call storage 'admit-pickup board-id generation delivery-id
-                         pickup-revision session-id session-revision record lane))
+                         session-id record lane))
 
 (defun e-board-storage-status (storage)
   "Return bounded STORAGE health and runtime status."

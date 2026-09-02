@@ -17,7 +17,13 @@
       (let ((coding-system-for-read 'utf-8))
         (insert-file-contents file))
       (goto-char (point-min))
-      (read (current-buffer)))))
+      (let ((read-eval nil)
+            (value (read (current-buffer))))
+        (skip-chars-forward " \t\r\n")
+        (unless (eobp)
+          (signal 'invalid-read-syntax
+                  (list "Trailing data in legacy task snapshot" file)))
+        value))))
 
 (provide 'e-task-queue-legacy)
 

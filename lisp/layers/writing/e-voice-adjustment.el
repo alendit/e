@@ -37,19 +37,11 @@
 (require 'e-layers)
 (require 'e-skills)
 (require 'e-voice-storage)
-(require 'e-voice-adjustment-legacy)
 
 (defgroup e-voice-adjustment nil
   "Voice adjustment: detect, rewrite, and cache LLM writing tells."
   :group 'e
   :prefix "e-voice-adjustment-")
-
-(defcustom e-voice-adjustment-store-file
-  (locate-user-emacs-file "e/voice-tells.eld")
-  "File persisting the least-recently-used cache of detected writing tells.
-Set to nil to keep the cache in memory only for the session."
-  :type '(choice (const :tag "In-memory only" nil) file)
-  :group 'e-voice-adjustment)
 
 (defcustom e-voice-adjustment-max-tells 128
   "Maximum number of cached tells retained in the LRU store."
@@ -95,7 +87,7 @@ Each entry is a plist with :key, :label, :description, :count, :last.")
   "Optional voice-owned SQLite storage port.")
 
 (defun e-voice-adjustment-configure-storage (storage)
-  "Install voice STORAGE, or nil for the legacy/default path."
+  "Install voice STORAGE, or nil while no runtime is active."
   (unless (or (null storage) (e-voice-storage-p storage))
     (signal 'wrong-type-argument (list 'e-voice-storage-p storage)))
   (setq e-voice-adjustment-storage storage
@@ -115,34 +107,13 @@ Each entry is a plist with :key, :label, :description, :count, :last.")
   "Hydrate `e-voice-adjustment--tells' from disk once per session."
   (unless e-voice-adjustment--loaded
     (setq e-voice-adjustment--loaded t)
-    (if e-voice-adjustment-storage
-        (setq e-voice-adjustment--tells
-              (plist-get
-               (e-voice-storage-list e-voice-adjustment-storage
-                                     e-voice-adjustment-max-tells)
-               :tells))
-      (when (and e-voice-adjustment-store-file
-               (file-readable-p e-voice-adjustment-store-file))
-        (ignore-errors
-          (setq e-voice-adjustment--tells
-                (e-voice-adjustment-legacy-decode-file
-                 e-voice-adjustment-store-file))))))
+    (when e-voice-adjustment-storage
+      (setq e-voice-adjustment--tells
+            (plist-get
+             (e-voice-storage-list e-voice-adjustment-storage
+                                   e-voice-adjustment-max-tells)
+             :tells))))
   e-voice-adjustment--tells)
-
-(defun e-voice-adjustment--write ()
-  "Persist `e-voice-adjustment--tells' to disk atomically.
-No-op when persistence is disabled (`e-voice-adjustment-store-file' nil)."
-  (when e-voice-adjustment-store-file
-    (ignore-errors
-      (make-directory (file-name-directory e-voice-adjustment-store-file) t)
-      (let ((tmp (make-temp-file
-                  (expand-file-name
-                   ".voice-tells-"
-                   (file-name-directory e-voice-adjustment-store-file)))))
-        (with-temp-file tmp
-          (let ((print-length nil) (print-level nil))
-            (prin1 e-voice-adjustment--tells (current-buffer))))
-        (rename-file tmp e-voice-adjustment-store-file t)))))
 
 (defun e-voice-adjustment--record (label description)
   "Record a tell LABEL with DESCRIPTION, refreshing LRU order.
@@ -188,7 +159,7 @@ front; a new tell is prepended and the store is truncated to
         (setq e-voice-adjustment--tells
               (seq-take e-voice-adjustment--tells
                         e-voice-adjustment-max-tells)))
-      (e-voice-adjustment--write))
+      )
     (list :key key
           :label label
           :retained (length e-voice-adjustment--tells))))
@@ -206,8 +177,6 @@ front; a new tell is prepended and the store is truncated to
     (e-voice-storage-clear e-voice-adjustment-storage))
   (setq e-voice-adjustment--tells nil
         e-voice-adjustment--loaded t)
-  (unless e-voice-adjustment-storage
-    (e-voice-adjustment--write))
   (list :count 0))
 
 ;;;; Compact passive context

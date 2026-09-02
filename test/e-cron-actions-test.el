@@ -16,6 +16,7 @@
   `(let ((e-cron--schedules (make-hash-table :test 'equal))
          (e-cron--state (make-hash-table :test 'equal))
          (e-cron--state-loaded t)
+         (e-cron-storage nil)
          (e-cron-state-file nil)
          (e-board--registry (make-hash-table :test 'equal))
          (e-board--id-sequence 0)

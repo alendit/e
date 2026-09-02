@@ -7,27 +7,15 @@
 
 (require 'e-goodnite-storage)
 (require 'e-runtime-store)
-(require 'e-runtime-store-codec)
-
-(defun e-goodnite-storage-sqlite--stable-id (prefix value)
-  "Return stable command identity for PREFIX and VALUE."
-  (format "%s:%s" prefix
-          (secure-hash 'sha256 (e-runtime-store-codec-encode value))))
 
 (defun e-goodnite-storage-sqlite--call (runtime operation arguments)
   "Dispatch Goodnite OPERATION ARGUMENTS through RUNTIME."
   (pcase operation
     ('append
      (pcase-let ((`(,event-id ,event) arguments))
-       (let ((body (list :op 'goodnite-event-append
-                         :event-id event-id :event event)))
-         (e-runtime-store-call
-          runtime 'write body
-          ;; Transport reconciliation identifies this exact append attempt.
-          ;; Domain deduplication by EVENT-ID remains worker-owned, so a later
-          ;; equivalent demand carrying a different observation timestamp can
-          ;; still return the original position.
-          (e-goodnite-storage-sqlite--stable-id "goodnite-event" body)))))
+       (e-runtime-store-call
+        runtime 'write
+        (list :op 'goodnite-event-append :event-id event-id :event event))))
     ('page
      (pcase-let ((`(,after ,limit ,consumer) arguments))
        (e-runtime-store-call

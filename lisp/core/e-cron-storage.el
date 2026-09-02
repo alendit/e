@@ -6,7 +6,7 @@
 ;;; Commentary:
 
 ;; Names the durable cadence and immutable firing operations consumed by cron.
-;; Definitions, guards, actions, reconciliation callbacks, and timers stay live.
+;; Definitions, guards, actions, and timers stay live.
 
 ;;; Code:
 
@@ -32,8 +32,6 @@
   (condition-case err
       (apply (e-cron-storage--call-operation storage) operation arguments)
     (e-runtime-store-cron-conflict
-     (signal 'e-cron-storage-conflict (cdr err)))
-    (e-runtime-store-revision-conflict
      (signal 'e-cron-storage-conflict (cdr err)))))
 
 (defun e-cron-storage-register
@@ -42,9 +40,9 @@
   (e-cron-storage--call storage 'register schedule-id definition anchor))
 
 (defun e-cron-storage-claim
-    (storage schedule-id expected-revision firing-id due-at fire-at next-fire)
+    (storage schedule-id firing-id due-at fire-at next-fire)
   "Claim FIRING-ID and advance cadence before executable work."
-  (e-cron-storage--call storage 'claim schedule-id expected-revision firing-id
+  (e-cron-storage--call storage 'claim schedule-id firing-id
                         due-at fire-at next-fire))
 
 (defun e-cron-storage-settle
@@ -57,9 +55,9 @@
   "Return SCHEDULE-ID cadence and unresolved firing projections."
   (e-cron-storage--call storage 'cadence schedule-id))
 
-(defun e-cron-storage-delete-history (storage schedule-id expected-revision)
-  "Delete SCHEDULE-ID firing history after EXPECTED-REVISION."
-  (e-cron-storage--call storage 'delete-history schedule-id expected-revision))
+(defun e-cron-storage-delete-history (storage schedule-id)
+  "Delete SCHEDULE-ID firing history."
+  (e-cron-storage--call storage 'delete-history schedule-id))
 
 (provide 'e-cron-storage)
 

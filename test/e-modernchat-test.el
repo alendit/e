@@ -248,74 +248,24 @@ messages so the transcript reads as one clean answer."
              (lambda () nil)))
     (should-error (e-modernchat--ensure-runtime) :type 'user-error)))
 
-(ert-deftest e-chat-service-test-processing-record-persistence-failure-retries-atomically ()
-  "A chat persistence failure leaves a processing record available for retry."
-  (let ((e-board--registry (make-hash-table :test 'equal))
-        (e-board--id-sequence 0)
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--id-sequence 0)
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--invocations (make-hash-table :test 'equal))
-        (e-board-runtime--pending-pickup-head nil)
-        (e-board-runtime--pending-pickup-tail nil)
-        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
-        (e-board-runtime--pickup-drain-scheduled nil)
-        (e-board-runtime--admission-open-p t)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-board-session-association--legacy-owners
-         (make-hash-table :test 'equal)))
-    (let* ((harness (e-harness-create
-                     :backend (e-backend-create :name "noop")
-                     :enabled-layer-ids nil))
-           (session (e-chat-service-create-session :harness harness :id "retry"))
-           (session-id (plist-get session :id))
-           (binding (e-chat-service-binding harness session-id))
-           (board (e-board-registry-board-source-board
-                   (e-chat-service-binding-board binding)))
-           (store (e-harness-sessions harness))
-           (append-function (symbol-function 'e-session-append-board-message))
-           (attempts 0))
-      (cl-letf (((symbol-function 'e-session-append-board-message)
-                 (lambda (&rest arguments)
-                   (setq attempts (1+ attempts))
-                   (let ((result (apply append-function arguments)))
-                     (if (= attempts 1)
-                         (error "simulated post-append failure")
-                       result)))))
-        (should-error
-         (e-board-record-processing-chain
-          board :id "chain" :root-message-id "root"
-          :candidate-message-id "candidate" :caused-by-message-id "root"
-          :processor-history nil :processing-depth 0 :created-at 1))
-        (should-not (e-board-list-processing-chains board))
-        (should (equal (mapcar (lambda (record) (plist-get record :id))
-                               (e-session-board-messages store session-id))
-                       '("chain")))
-        (should-error
-         (e-board-record-processing-chain
-          board :id "chain" :root-message-id "root"
-          :candidate-message-id "other" :caused-by-message-id "root"
-          :processor-history nil :processing-depth 0 :created-at 1)
-         :type 'e-session-board-message-conflict)
-        (should-not (e-board-list-processing-chains board))
-        (e-board-record-processing-chain
-         board :id "chain" :root-message-id "root"
-         :candidate-message-id "candidate" :caused-by-message-id "root"
-         :processor-history nil :processing-depth 0 :created-at 1)
-        (should (= attempts 3))
-        (should (equal (mapcar #'e-board-processing-chain-id
-                               (e-board-list-processing-chains board))
-                       '("chain")))
-        (should (equal (mapcar (lambda (record) (plist-get record :id))
-                               (e-session-board-messages store session-id))
-                       '("chain")))))))
+(ert-deftest e-chat-service-test-processing-records-never-use-session-proxy ()
+  "Board processing records never route through retired session persistence."
+  (let ((board (e-board-create :id "processing-owner"))
+        (session-writes 0))
+    (e-board-session-association-configure-notifications
+     nil "session" board #'ignore)
+    (cl-letf (((symbol-function 'e-session-append-board-message)
+               (lambda (&rest _arguments)
+                 (setq session-writes (1+ session-writes))
+                 (error "retired Board/session persistence proxy called"))))
+      (e-board-record-processing-chain
+       board :id "chain" :root-message-id "root"
+       :candidate-message-id "candidate" :caused-by-message-id "root"
+       :processor-history nil :processing-depth 0 :created-at 1)
+      (should (= session-writes 0))
+      (should (equal (mapcar #'e-board-processing-chain-id
+                             (e-board-list-processing-chains board))
+                     '("chain"))))))
 
 (ert-deftest e-chat-service-test-submit-uses-bound-board-ingress ()
   "Shell-neutral submit posts only through its attached board participant."
@@ -634,6 +584,7 @@ messages so the transcript reads as one clean answer."
 An unused explicit upgrade succeeds before and after reopening the persistent
 store.  The byte snapshots make the preflight boundary observable rather than
 only checking the in-memory association."
+  (ert-skip "Retired online JSONL upgrade; covered by Feature 87 offline migration")
   (let ((directory (make-temp-file "e-chat-legacy-upgrade-" t))
         (e-board--registry (make-hash-table :test 'equal))
         (e-board--id-sequence 0)
@@ -864,6 +815,7 @@ only checking the in-memory association."
 The unrelated participant is established first so each failure must preserve
 an already attached client, source-board history, and the derived index.  The
 successful admission at the end verifies the same path remains replayable."
+  (ert-skip "Retired sidecar fixture; covered by SQLite admission cut-point tests")
   (let ((directory (make-temp-file "e-chat-admission-direct-" t))
         (e-board--registry (make-hash-table :test 'equal))
         (e-board--id-sequence 0)
@@ -1059,6 +1011,7 @@ runtime checks succeed.  Each injected failure therefore has to remove only
 the target reservation, leaving the unrelated queue, timer, derived-index
 obligation, and attached participant intact.  A final successful admission
 proves both queued records reopen together."
+  (ert-skip "Retired queued JSONL writer; SQLite admission is commit-first")
   (let ((directory (make-temp-file "e-chat-admission-queued-" t))
         (store-holder nil)
         (e-session-write-queue-delay 60)
@@ -1082,8 +1035,7 @@ proves both queued records reopen together."
         (e-board-session-association--legacy-owners
          (make-hash-table :test 'equal)))
     (unwind-protect
-        (let* ((store (e-session-persistent-index-store-create
-                       directory :write-mode 'queued))
+        (let* ((store (e-session-persistent-index-store-create directory))
                (harness (e-harness-create
                          :enabled-layer-ids nil :sessions store))
                (board (e-board-registry-create
@@ -1245,7 +1197,10 @@ proves both queued records reopen together."
           (e-session-flush-write-queue store-holder)))
       (delete-directory directory t))))
 
-(ert-deftest e-chat-service-test-participant-admission-controller-is-atomic ()
+(when nil
+  ;; Retired Node-controller fixture; SQLite admission cut points are covered
+  ;; by `e-board-sqlite-test'.
+  (ert-deftest e-chat-service-test-participant-admission-controller-is-atomic ()
   "A controller submission failure leaves no visible participant state.
 
 The storage owner owns outbox/retry mechanics in its direct suite.  This
@@ -1292,7 +1247,7 @@ session and board binding without exposing a participant-added event."
             (should (= (plist-get (e-session-storage-durability-status store)
                                    :unsettled-write-count)
                        0))))
-      (delete-directory directory t))))
+      (delete-directory directory t)))))
 
 (ert-deftest e-chat-service-test-root-catalog-role-survives-cross-store-id-reuse ()
   "A participant cannot become a root by reusing the owner's id in its store."
@@ -1358,6 +1313,7 @@ session and board binding without exposing a participant-added event."
 
 (ert-deftest e-chat-service-test-root-catalog-normalizes-index-association-presence ()
   "Malformed nested index state stays unlisted without hiding valid roots."
+  (ert-skip "Retired index.json representation; current catalog validation is typed")
   (let* ((directory (make-temp-file "e-chat-malformed-index-" t))
          (index-file (expand-file-name "index.json" directory))
          (json
@@ -1622,12 +1578,6 @@ session and board binding without exposing a participant-added event."
                         binding))
             (should (memq binding
                           (gethash board-id e-chat-service--board-bindings)))
-            (let ((owner
-                   (gethash board-id
-                            e-board-session-association--legacy-owners)))
-              (should (eq (car owner) source))
-              (should (eq (nth 1 owner) (e-harness-sessions harness)))
-              (should (equal (nth 2 owner) "main")))
             (should (eq (e-chat-service-binding harness "main") binding))
             (should (eq (e-chat-service-ensure-binding harness "main")
                         binding))
@@ -2001,6 +1951,7 @@ session and board binding without exposing a participant-added event."
 
 (ert-deftest e-chat-service-test-persistent-board-log-reopens-without-redelivery ()
   "A restarted service restores board history as board messages, not transcript."
+  (ert-skip "Retired session Board-log proxy; Board SQLite restart is covered directly")
   (let ((directory (make-temp-file "e-chat-board-log-" t))
         (e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))

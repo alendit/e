@@ -32,8 +32,6 @@
   (condition-case err
       (apply (e-task-storage--call-operation storage) operation arguments)
     (e-runtime-store-task-conflict
-     (signal 'e-task-storage-conflict (cdr err)))
-    (e-runtime-store-revision-conflict
      (signal 'e-task-storage-conflict (cdr err)))))
 
 (defun e-task-storage-open-queue (storage queue-id)
@@ -41,35 +39,39 @@
   (e-task-storage--call storage 'open-queue queue-id))
 
 (defun e-task-storage-enqueue
-    (storage queue-id expected-revision position record)
-  "Append RECORD at POSITION after EXPECTED-REVISION."
-  (e-task-storage--call storage 'enqueue queue-id expected-revision position
-                        record))
+    (storage queue-id position record)
+  "Append RECORD at POSITION."
+  (e-task-storage--call storage 'enqueue queue-id position record))
 
 (defun e-task-storage-claim
-    (storage queue-id expected-revision task-id attempt-id started-at instance-id)
+    (storage queue-id task-id attempt-id started-at instance-id)
   "Claim TASK-ID as immutable ATTEMPT-ID before its runner starts."
-  (e-task-storage--call storage 'claim queue-id expected-revision task-id
+  (e-task-storage--call storage 'claim queue-id task-id
                         attempt-id started-at instance-id))
 
 (defun e-task-storage-transition
-    (storage queue-id expected-revision task-id expected-status event-id record)
-  "Commit TASK-ID RECORD transition identified by EVENT-ID."
-  (e-task-storage--call storage 'transition queue-id expected-revision task-id
-                        expected-status event-id record))
+    (storage queue-id task-id expected-status record)
+  "Commit TASK-ID RECORD from EXPECTED-STATUS."
+  (e-task-storage--call storage 'transition queue-id task-id
+                        expected-status record))
 
 (defun e-task-storage-set-paused
-    (storage queue-id expected-revision paused-p)
-  "Commit QUEUE-ID PAUSED-P gate after EXPECTED-REVISION."
-  (e-task-storage--call storage 'set-paused queue-id expected-revision paused-p))
+    (storage queue-id paused-p)
+  "Commit QUEUE-ID PAUSED-P gate."
+  (e-task-storage--call storage 'set-paused queue-id paused-p))
 
 (defun e-task-storage-snapshot (storage queue-id &optional limit)
   "Return bounded current QUEUE-ID projection and attempt history."
   (e-task-storage--call storage 'snapshot queue-id (or limit 1024)))
 
-(defun e-task-storage-delete-history (storage queue-id expected-revision)
-  "Delete QUEUE-ID records and attempts after EXPECTED-REVISION."
-  (e-task-storage--call storage 'delete-history queue-id expected-revision))
+(defun e-task-storage-delete-history (storage queue-id)
+  "Delete QUEUE-ID records and attempts."
+  (e-task-storage--call storage 'delete-history queue-id))
+
+(defun e-task-storage-import-legacy-snapshot (storage queue-id snapshot)
+  "Import one validated legacy SNAPSHOT into empty durable QUEUE-ID.
+This operation exists only for the explicit offline migration application."
+  (e-task-storage--call storage 'import-legacy-snapshot queue-id snapshot))
 
 (provide 'e-task-storage)
 

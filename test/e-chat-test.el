@@ -708,10 +708,13 @@ test covers only the chat presentation subscription's redundant callbacks."
         (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
         (e-board-runtime--pickup-drain-scheduled nil)
         (e-board-runtime--admission-open-p t)
-        root-buffer)
+        root-buffer
+        primary-store
+        restarted-store)
     (e-board-e2e-reset-runtime)
     (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
+        (let* ((store (setq primary-store
+                            (e-session-persistent-store-create directory)))
                (harness (e-harness-create
                          :sessions store :enabled-layer-ids nil))
                (root-session
@@ -788,6 +791,8 @@ test covers only the chat presentation subscription's redundant callbacks."
           (should (equal (plist-get private-policy :default-to)
                          update-participant))
           (e-session-flush-write-queue store)
+          (e-session-storage-close store)
+          (setq primary-store nil)
           ;; Recreate the board/service runtime while retaining only durable
           ;; board-session state and its owner log.
           (setq e-board--registry (make-hash-table :test 'equal)
@@ -808,7 +813,8 @@ test covers only the chat presentation subscription's redundant callbacks."
                 e-board-runtime--pending-pickup-set
                 (make-hash-table :test 'equal)
                 e-board-runtime--pickup-drain-scheduled nil)
-          (let* ((loaded (e-session-persistent-store-create directory))
+          (let* ((loaded (setq restarted-store
+                               (e-session-persistent-store-create directory)))
                  (restarted (e-harness-create
                              :sessions loaded :enabled-layer-ids nil))
                  (restored-root
@@ -1026,6 +1032,10 @@ test covers only the chat presentation subscription's redundant callbacks."
                 (should (eq (e-chat--submit-intent nil) 'submit))))))
       (when (buffer-live-p root-buffer)
         (kill-buffer root-buffer))
+      (when primary-store
+        (e-session-storage-close primary-store))
+      (when restarted-store
+        (e-session-storage-close restarted-store))
       (delete-directory directory t))))
 
 
@@ -1056,6 +1066,7 @@ selected/sibling isolation boundary."
         (e-board-runtime--pickup-drain-scheduled nil)
         (e-board-runtime--admission-open-p t)
         (store (e-session-persistent-store-create directory))
+        reopened-store
         live-buffer replay-buffer)
     (e-board-e2e-reset-runtime)
     (unwind-protect
@@ -1143,6 +1154,8 @@ selected/sibling isolation boundary."
           (e-session-flush-write-queue store)
           (kill-buffer live-buffer)
           (setq live-buffer nil)
+          (e-session-storage-close store)
+          (setq store nil)
           ;; Rebuild the board/service process state, then let the normal chat
           ;; open path render the persisted observer snapshot.
           (setq e-board--registry (make-hash-table :test 'equal)
@@ -1161,7 +1174,8 @@ selected/sibling isolation boundary."
                 e-board-runtime--pending-pickup-tail nil
                 e-board-runtime--pending-pickup-set (make-hash-table :test 'equal)
                 e-board-runtime--pickup-drain-scheduled nil)
-          (let* ((loaded (e-session-persistent-store-create directory))
+          (let* ((loaded (setq reopened-store
+                               (e-session-persistent-store-create directory)))
                  (restarted (e-harness-create
                              :sessions loaded :enabled-layer-ids nil))
                  (restored-binding
@@ -1188,6 +1202,10 @@ selected/sibling isolation boundary."
         (kill-buffer live-buffer))
       (when (buffer-live-p replay-buffer)
         (kill-buffer replay-buffer))
+      (when store
+        (e-session-storage-close store))
+      (when reopened-store
+        (e-session-storage-close reopened-store))
       (delete-directory directory t)))))
 
 
@@ -1559,13 +1577,12 @@ selected/sibling isolation boundary."
             (with-current-buffer (e-chat-new)
               (setq second-id e-chat-session-id))
             (should (not (equal first-id second-id)))
+            (should (e-session-get store first-id))
+            (should (e-session-get store second-id))
             (should (file-exists-p
-                     (expand-file-name (concat first-id ".jsonl")
-                                       (expand-file-name "sessions" directory))))
-            (should (file-exists-p
-                     (expand-file-name
-                      (concat second-id ".jsonl")
-                      (expand-file-name "sessions" directory))))))
+                     (expand-file-name "store.sqlite3" directory)))
+            (should-not (file-directory-p
+                         (expand-file-name "sessions" directory)))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
@@ -2677,6 +2694,7 @@ selected/sibling isolation boundary."
   "Opening an unloaded indexed session starts replay without sync load."
   (let* ((directory (make-temp-file "e-chat-open-index-" t))
          (store (e-session-persistent-store-create directory))
+         indexed-store
          buffer
          started)
     (unwind-protect
@@ -2689,8 +2707,11 @@ selected/sibling isolation boundary."
           (e-session-append-message
            store "async-open"
            '(:id "msg-2" :role assistant :content "open response"))
-          (let* ((indexed-store
-                  (e-session-persistent-index-store-create directory))
+          (e-session-storage-close store)
+          (setq store nil
+                indexed-store
+                (e-session-persistent-index-store-create directory))
+          (let* ((indexed-store indexed-store)
                  (harness (e-harness-create
                            :backend (e-backend-fake-create :items nil)
                            :sessions indexed-store)))
@@ -2714,6 +2735,10 @@ selected/sibling isolation boundary."
                   (should-not (string-match-p "open response" text)))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
+      (when store
+        (e-session-storage-close store))
+      (when indexed-store
+        (e-session-storage-close indexed-store))
       (delete-directory directory t))))
 
 
@@ -2777,6 +2802,7 @@ selected/sibling isolation boundary."
          ;; Keep this cooperatively multi-step without relying on hundreds of
          ;; zero-delay timers completing inside a two-second test deadline.
          (e-session-load-chunk-bytes 128)
+         indexed-store
          buffer)
     (unwind-protect
         (progn
@@ -2791,18 +2817,31 @@ selected/sibling isolation boundary."
           (e-chat-test--seed-board-log-from-private-fixture
            (e-harness-create
             :backend (e-backend-fake-create :items nil)
-            :sessions store)
+           :sessions store)
            "async-render")
           (e-session-flush-write-queue store)
-          (let* ((indexed-store
-                  (e-session-persistent-index-store-create directory))
+          (e-session-storage-close store)
+          (setq store nil
+                indexed-store
+                (e-session-persistent-index-store-create directory))
+          ;; Model process restart: no live Board may retain the closed
+          ;; writer's adapter while the indexed store reconstructs bindings.
+          (e-board-e2e-reset-runtime)
+          (let* ((indexed-store indexed-store)
                  (harness (e-harness-create
                            :backend (e-backend-fake-create :items nil)
                            :sessions indexed-store)))
             (setq buffer (e-chat-open-session harness "async-render"))
             (with-current-buffer buffer
-              (should e-chat--session-load-request)
-              (should (string-match-p "Loading transcript" (buffer-string))))
+              ;; A zero-delay cooperative page may finish while the shell is
+              ;; displaying the buffer.  If it is still pending, only the
+              ;; loading projection is visible; otherwise the exact committed
+              ;; transcript is already the valid completed state.
+              (if e-chat--session-load-request
+                  (should (string-match-p "Loading transcript"
+                                          (buffer-string)))
+                (should (string-match-p "render response"
+                                        (buffer-string)))))
             (let ((deadline (+ (float-time) 2.0)))
               (while (and (buffer-live-p buffer)
                           (with-current-buffer buffer
@@ -2817,6 +2856,10 @@ selected/sibling isolation boundary."
                 (should-not (string-match-p "Loading transcript" text))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
+      (when store
+        (e-session-storage-close store))
+      (when indexed-store
+        (e-session-storage-close indexed-store))
       (delete-directory directory t))))
 
 

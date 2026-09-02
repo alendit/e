@@ -11,13 +11,7 @@
 ;;; Code:
 
 (require 'e-runtime-store)
-(require 'e-runtime-store-codec)
 (require 'e-task-storage)
-
-(defun e-task-storage-sqlite--stable-id (prefix value)
-  "Return a stable command id for PREFIX and causal VALUE."
-  (format "%s:%s" prefix
-          (secure-hash 'sha256 (e-runtime-store-codec-encode value))))
 
 (defun e-task-storage-sqlite--call (runtime operation arguments)
   "Dispatch task OPERATION ARGUMENTS through RUNTIME."
@@ -26,54 +20,50 @@
      (e-runtime-store-call
       runtime 'write (list :op 'task-queue-open :queue-id (car arguments))))
     ('enqueue
-     (pcase-let ((`(,queue-id ,expected ,position ,record) arguments))
+     (pcase-let ((`(,queue-id ,position ,record) arguments))
        (e-runtime-store-call
         runtime 'write
         (list :op 'task-enqueue :queue-id queue-id
-              :expected-revision expected :position position :record record)
-        (e-task-storage-sqlite--stable-id
-         "task-enqueue" (list queue-id (plist-get record :task-id))))))
+              :position position :record record))))
     ('claim
      (pcase-let
-         ((`(,queue-id ,expected ,task-id ,attempt-id ,started-at ,instance-id)
+         ((`(,queue-id ,task-id ,attempt-id ,started-at ,instance-id)
            arguments))
        (e-runtime-store-call
         runtime 'write
         (list :op 'task-claim :queue-id queue-id
-              :expected-revision expected :task-id task-id
-              :attempt-id attempt-id :started-at started-at
-              :harness-instance-id instance-id)
-        (e-task-storage-sqlite--stable-id
-         "task-claim" (list queue-id attempt-id)))))
+              :task-id task-id :attempt-id attempt-id :started-at started-at
+              :harness-instance-id instance-id))))
     ('transition
      (pcase-let
-         ((`(,queue-id ,expected ,task-id ,expected-status ,event-id ,record)
+         ((`(,queue-id ,task-id ,expected-status ,record)
            arguments))
        (e-runtime-store-call
         runtime 'write
         (list :op 'task-transition :queue-id queue-id
-              :expected-revision expected :task-id task-id
-              :expected-status expected-status :event-id event-id
-              :record record)
-        (e-task-storage-sqlite--stable-id
-         "task-transition" (list queue-id event-id)))))
+              :task-id task-id :expected-status expected-status
+              :record record))))
     ('set-paused
-     (pcase-let ((`(,queue-id ,expected ,paused-p) arguments))
+     (pcase-let ((`(,queue-id ,paused-p) arguments))
        (e-runtime-store-call
         runtime 'write
-        (list :op 'task-queue-pause :queue-id queue-id
-              :expected-revision expected :paused-p paused-p))))
+        (list :op 'task-queue-pause :queue-id queue-id :paused-p paused-p))))
     ('snapshot
      (pcase-let ((`(,queue-id ,limit) arguments))
        (e-runtime-store-call
         runtime 'read
         (list :op 'task-snapshot :queue-id queue-id :limit limit))))
     ('delete-history
-     (pcase-let ((`(,queue-id ,expected) arguments))
+     (pcase-let ((`(,queue-id) arguments))
        (e-runtime-store-call
         runtime 'write
-        (list :op 'task-history-delete :queue-id queue-id
-              :expected-revision expected))))
+        (list :op 'task-history-delete :queue-id queue-id))))
+    ('import-legacy-snapshot
+     (pcase-let ((`(,queue-id ,snapshot) arguments))
+       (e-runtime-store-call
+        runtime 'write
+        (list :op 'task-import-legacy-snapshot :queue-id queue-id
+              :snapshot snapshot))))
     (_ (signal 'e-task-storage-error
                (list "Unknown task storage operation" operation)))))
 

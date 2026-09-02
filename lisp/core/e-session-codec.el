@@ -387,23 +387,6 @@ empty plist as nil and never mutates its input."
   "Return catalog ENTRY with board routing attributes encoded."
   (e-session-codec-record-for-json entry))
 
-(defun e-session-codec--provider-anchor-fingerprints-for-json (fingerprints)
-  "Return provider FINGERPRINTS with repeated plist rows as JSON arrays.
-
-Emacs's JSON encoder treats a list of keyword plists as an object-shaped
-alist, collapsing repeated keys.  The established session format uses arrays
-for the `:segments' and `:tools' rows, so make that shape explicit at this
-pure mapping boundary."
-  (if (not (e-session-codec--keyword-plist-p fingerprints))
-      (e-session-codec--copy-value fingerprints)
-    (let ((copy (e-session-codec--copy-value fingerprints)))
-      (dolist (key '(:segments :tools))
-        (when (plist-member copy key)
-          (let ((value (plist-get copy key)))
-            (when (proper-list-p value)
-              (plist-put copy key (vconcat value))))))
-      copy)))
-
 (defun e-session-codec-record-for-entry (session-id entry &optional parent-id)
   "Return the durable record for semantic ENTRY in SESSION-ID.
 
@@ -454,9 +437,11 @@ entry's own parent."
              :provider-id (plist-get entry :provider-id)
              :model (plist-get entry :model)
              :covered-entry-id (plist-get entry :covered-entry-id)
-             :fingerprints
-             (e-session-codec--provider-anchor-fingerprints-for-json
-              (plist-get entry :fingerprints))
+             ;; Current SQLite framing has a canonical tagged value codec and
+             ;; therefore preserves list/vector identity directly.  The
+             ;; JSONL-only array coercion remains isolated in the legacy JSON
+             ;; mapping used by offline migration.
+             :fingerprints (copy-tree (plist-get entry :fingerprints))
              :metadata (copy-tree (plist-get entry :metadata))))
       ('process-report
        (let ((report (copy-tree entry)))

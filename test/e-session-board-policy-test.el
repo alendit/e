@@ -146,6 +146,19 @@
       (should-not
        (e-session-board-policy--value-budget-valid-p wide)))))
 
+(ert-deftest e-session-board-routing-policy-copy-allows-shared-finite-values ()
+  "Copying a finite policy DAG does not mistake sharing for a cycle."
+  (let* ((selector '(:tags (main)))
+         (policy (list :participant-id "participant"
+                       :pickup-selector selector
+                       :observer-selector selector
+                       :default-tags '(main)
+                       :default-to nil))
+         (copy (e-session-board-routing-policy-copy-value policy)))
+    (should (equal copy policy))
+    (should-not (eq (plist-get copy :pickup-selector)
+                    (plist-get copy :observer-selector)))))
+
 (provide 'e-session-board-policy-test)
 
 ;;; e-session-board-policy-test.el ends here

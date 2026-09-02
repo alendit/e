@@ -21,7 +21,7 @@
 (cl-defstruct (e-session-board-input-admission
                (:constructor e-session-board-input-admission--create)
                (:conc-name e-session-board-input-admission--))
-  store session-id delivery-id lane stage entry record expected-revision)
+  store session-id delivery-id lane stage entry record)
 
 (cl-defun e-session-board-input-admission-prepare
     (store session-id delivery-id lane content &key metadata)
@@ -39,23 +39,15 @@
            (list :delivery-id (copy-tree delivery-id) :lane lane
                  :content (copy-tree content) :metadata (copy-tree metadata))
            :write-index nil))
-         (record (e-session-codec-record-for-entry session-id entry))
-         (revision
-          (plist-get (e-session-storage-session-header store session-id)
-                     :revision)))
+         (record (e-session-codec-record-for-entry session-id entry)))
     (e-session-storage-prepare-mutation store session-id record)
     (e-session-board-input-admission--create
      :store store :session-id session-id :delivery-id (copy-tree delivery-id)
-     :lane lane :stage stage :entry entry :record record
-     :expected-revision revision)))
+     :lane lane :stage stage :entry entry :record record)))
 
 (defun e-session-board-input-admission-record (admission)
   "Return ADMISSION's detached preflighted record."
   (copy-tree (e-session-board-input-admission--record admission)))
-
-(defun e-session-board-input-admission-expected-revision (admission)
-  "Return ADMISSION's expected session revision."
-  (e-session-board-input-admission--expected-revision admission))
 
 (defun e-session-board-input-admission-session-id (admission)
   "Return ADMISSION's session identity."

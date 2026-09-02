@@ -1822,7 +1822,12 @@ callback inert."
             (setq e-board-runtime--pending-pickup-head cell))
           (setq e-board-runtime--pending-pickup-tail cell))
         (e-board-runtime--unsettled-changed))))
-  (e-board-runtime--schedule-pickup-drain))
+  ;; A missed-wake scan may legitimately produce no unresolved pickups.  Do
+  ;; not publish scheduler authority without a queue head: if that empty timer
+  ;; is later fenced during process-local teardown, a stale scheduled bit can
+  ;; suppress the next real delivery.
+  (when e-board-runtime--pending-pickup-head
+    (e-board-runtime--schedule-pickup-drain)))
 
 (defun e-board-runtime--drain-pickups (&optional generation)
   "Attempt one bounded FIFO page of previously frozen pickup envelopes.
@@ -1843,17 +1848,34 @@ without it are direct owner drains and use the current generation."
         (while (and (= run-generation e-board-runtime--pickup-drain-generation)
                     e-board-runtime--pending-pickup-head
                     (< processed available-at-start))
-          (let ((key (pop e-board-runtime--pending-pickup-head)))
-            (unless e-board-runtime--pending-pickup-head
-              (setq e-board-runtime--pending-pickup-tail nil))
-            (let ((counted (gethash key e-board-runtime--pending-pickup-set)))
-              (remhash key e-board-runtime--pending-pickup-set)
-              (when counted
-                (e-board-runtime--unsettled-changed)))
-            (cl-incf processed)
-            (let ((board (condition-case nil
-                             (e-board-registry-get (car key))
-                           (e-board-registry-missing nil))))
+          (let* ((key (car e-board-runtime--pending-pickup-head))
+                 (board (condition-case nil
+                            (e-board-registry-get (car key))
+                          (e-board-registry-missing nil)))
+                 (source-board
+                  (and board (e-board-registry-board-source-board board))))
+            (if (and source-board (e-board-mutation-frozen-p source-board))
+                (progn
+                  ;; Keep the exact FIFO head and unsettled count intact.  A
+                  ;; timer may have fired inside another pickup/observer ACK;
+                  ;; retry only after that Board releases its owner barrier.
+                  (setq e-board-runtime--pickup-drain-scheduled t
+                        processed available-at-start)
+                  (e-board--defer-after-storage-barrier
+                   source-board
+                   (lambda ()
+                     (when (= run-generation
+                              e-board-runtime--pickup-drain-generation)
+                       (setq e-board-runtime--pickup-drain-scheduled nil)
+                       (e-board-runtime--drain-pickups run-generation)))))
+              (pop e-board-runtime--pending-pickup-head)
+              (unless e-board-runtime--pending-pickup-head
+                (setq e-board-runtime--pending-pickup-tail nil))
+              (let ((counted (gethash key e-board-runtime--pending-pickup-set)))
+                (remhash key e-board-runtime--pending-pickup-set)
+                (when counted
+                  (e-board-runtime--unsettled-changed)))
+              (cl-incf processed)
               (when board
                 (e-board-runtime--deliver-pickups board (list (cadr key)))))))
         (when (and (= run-generation e-board-runtime--pickup-drain-generation)
@@ -1862,11 +1884,19 @@ without it are direct owner drains and use the current generation."
 
 (defun e-board-runtime--drain-input-routing (board drain)
   "Run BOARD's bounded classifier, then queue only its finalized pickups."
-  (funcall drain)
-  (dolist (result (e-board-drain-routed-pickups
-                   (e-board-registry-board-source-board board)))
-    (e-board-runtime--producer-routing-finished board (car result) (cadr result))
-    (e-board-runtime--enqueue-pickups board (cadr result))))
+  (let ((source-board (e-board-registry-board-source-board board)))
+    (if (e-board-mutation-frozen-p source-board)
+        ;; Worker waits service timers.  Keep owner-scheduled classification
+        ;; behind the current commit instead of treating it as a conflicting
+        ;; caller mutation and losing the only scheduled drain.
+        (e-board--defer-after-storage-barrier
+         source-board
+         (lambda () (e-board-runtime--drain-input-routing board drain)))
+      (funcall drain)
+      (dolist (result (e-board-drain-routed-pickups source-board))
+        (e-board-runtime--producer-routing-finished
+         board (car result) (cadr result))
+        (e-board-runtime--enqueue-pickups board (cadr result))))))
 
 (defun e-board-runtime--enroll-work (harness handle callback)
   "Enroll HANDLE for its attached HARNESS session before runner entry.
@@ -2649,12 +2679,26 @@ When omitted, the conservative idle-only harness delivery port is used."
    :delivery-function delivery-function
    :defer-participant-publication defer-participant-publication))
 
+(cl-defun e-board-runtime-reattach
+    (board-or-id harness session-id participant-id
+                 &key author principal controller delivery-function)
+  "Attach HARNESS SESSION-ID to restored PARTICIPANT-ID on BOARD-OR-ID.
+The participant must already be the canonical durable Board projection.  This
+operation creates only process-local endpoint state and never republishes or
+removes the durable participant identity."
+  (e-board-runtime--require-admission)
+  (e-board-runtime--attach-resolved
+   board-or-id harness session-id
+   :participant-id participant-id :author author :principal principal
+   :controller controller :delivery-function delivery-function
+   :restored-participant-p t))
+
 (cl-defun e-board-runtime--attach-resolved
     (board-or-id harness session-id
                  &key participant-id author principal controller delivery-function
                  instance-id instance-catalog-generation harness-id
                  harness-object-generation endpoint-token
-                 defer-participant-publication)
+                 defer-participant-publication restored-participant-p)
   "Attach one already-resolved endpoint with optional qualified metadata."
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
@@ -2668,7 +2712,7 @@ When omitted, the conservative idle-only harness delivery port is used."
       (signal 'e-board-runtime-session-busy (list session-key))))
   (let* ((board (e-board-runtime--active-board board-or-id))
          (source-board (e-board-registry-board-source-board board))
-         participant attachment)
+         participant participant-created-p attachment)
     ;; A previous exact work admission may outlive its captured attachment.
     ;; Re-ensure cannot publish a replacement endpoint around that unfinished
     ;; board inverse; retry the same token before creating new participant
@@ -2676,11 +2720,27 @@ When omitted, the conservative idle-only harness delivery port is used."
     (e-board-runtime-admission-retry nil source-board t)
     (condition-case error
         (progn
-          (setq participant
-                (e-board-registry-add-participant
-                 board :id participant-id :author author :principal principal
-                 :controller controller
-                 :publish-event (not defer-participant-publication)))
+          (if restored-participant-p
+              (progn
+                (unless participant-id
+                  (signal 'e-board-runtime-error
+                          (list "Restored attachment requires participant id")))
+                (setq participant
+                      (e-board-registry-participant board participant-id))
+                (when (and principal
+                           (not (equal
+                                 principal
+                                 (e-board-registry-participant-principal
+                                  participant))))
+                  (signal 'e-board-registry-authorization-denied
+                          (list (e-board-registry-board-id board)
+                                participant-id 'restored-principal))))
+            (setq participant
+                  (e-board-registry-add-participant
+                   board :id participant-id :author author :principal principal
+                   :controller controller
+                   :publish-event (not defer-participant-publication))
+                  participant-created-p t))
           (let ((key (e-board-runtime--attachment-key board participant)))
             (when (gethash key e-board-runtime--attachments)
               (signal 'e-board-runtime-attachment-exists (list key))))
@@ -2692,11 +2752,15 @@ When omitted, the conservative idle-only harness delivery port is used."
                  :harness-id harness-id
                  :harness-object-generation harness-object-generation
                  :endpoint-token endpoint-token))
-          (e-board-runtime--activate-attachment attachment))
+          (e-board-runtime--activate-attachment attachment)
+          (when restored-participant-p
+            (e-board-registry-activate-restored-participant board participant)
+            (e-board-runtime--enqueue-ready-participant-pickup attachment))
+          attachment)
       (error
        (when attachment
          (e-board-runtime-abort-new-attachment attachment))
-       (when (and participant
+       (when (and participant-created-p participant
                   (gethash (e-board-registry-participant-id participant)
                            (e-board-registry-board-participants board)))
          (e-board-registry-abort-participant-admission board participant))
@@ -3597,11 +3661,18 @@ and pickup tombstones remain on the source board."
                                        (or (cadr result) 'delivery-failed))))
                             (e-board-runtime--enqueue-pickups board (list next-id))))
                          (_
-                          (when-let ((next-id
-                                      (e-board-pickup-complete-delivery
-                                       source-board delivery-id)))
-                            (e-board-runtime--enqueue-pickups
-                             board (list next-id))))))
+                          ;; A synchronous endpoint can publish its exact
+                          ;; consumption receipt before returning here.  That
+                          ;; receipt already owns terminalization; do not
+                          ;; attempt a second durable consume for the same
+                          ;; immutable pickup.
+                          (when (memq (e-board-pickup-state pickup)
+                                      '(delivering accepted cancelling))
+                            (when-let* ((next-id
+                                         (e-board-pickup-complete-delivery
+                                          source-board delivery-id)))
+                              (e-board-runtime--enqueue-pickups
+                               board (list next-id)))))))
                    (error
                     (if (eq (e-board-pickup-state pickup) 'accepted)
                         (e-board-pickup-mark-uncertain

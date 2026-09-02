@@ -110,7 +110,13 @@
                                 :type 'buffer-read-only))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
-      (set-window-configuration window-configuration))))
+      (set-window-configuration window-configuration)
+      (e-chat-test--kill-chat-buffers)
+      ;; This test exercises the process-global Board runtime and may leave
+      ;; zero-delay observer/input callbacks queued when the old window
+      ;; configuration is restored.  Model process teardown only after that
+      ;; restoration so later owner tests cannot inherit those callbacks.
+      (e-board-e2e-reset-runtime))))
 
 (ert-deftest e-chat-surface-integration-test-evil-escape-routes-transcript-commands ()
   "One real Evil Escape moves input focus to transcript navigation commands."

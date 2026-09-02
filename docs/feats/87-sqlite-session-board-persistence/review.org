@@ -1,0 +1,295 @@
+#+title: Review: SQLite Session and Board Persistence
+#+author: e implementation
+#+date: 2026-09-02
+#+startup: overview
+
+* Status
+
+In-review.  The Package 1--3 owner boundaries remain accepted, and parent
+read-back accepts the 2026-09-02 simplified failure protocol, Package 4
+cutover, and copied-operator-store proof.  =F87-GOAL= remains unavailable until
+the final independent same-revision review completes.
+
+* Review summary
+
+Package 4 makes the one-store SQLite composition the ordinary runtime backend,
+adds explicit offline migration and schema upgrade operations, removes the
+production Node/task/raw/cron/voice/Goodnite sidecar writers and the
+Board/session log-owner proxy, and adds bounded maintenance and cutover proof.
+This artifact records repository-side evidence; it does not self-approve the
+feature or claim live operator behavior.
+
+The final mechanism deliberately has no durable writer-command ledger,
+command hash, ordinary revision/CAS protocol, or automatic resubmission.
+Worker loss fails active and queued operations once and freezes that store
+object.  Because the interrupted write may have committed, recovery is an
+explicit close/reopen followed by owner reload from canonical SQLite state.
+A submitted timeout applies the same freeze.  Callback failure cannot interrupt
+failure fanout or publish a late success; it remains visible in bounded status.
+
+* Scope reviewed
+
+- Contracts =F87-C01=, =F87-C09=, =F87-C10=, and =F87-C11= and scenarios
+  =S1=, =S9=, =S10=, and =S11= from [[file:plan.org][plan.org]].
+- The operator-directed simple worker-loss model across =F87-C02=--=C08= and
+  =F87-C12=: no durable command reconciliation or ordinary revision CAS,
+  explicit failure, reopen, and canonical owner reload.
+- The runtime-store schema gate, typed maintenance commands, offline upgrade
+  worker, migration application, default composition, retired sidecar owners,
+  current-config isolation, architecture map, and focused P4 tests.
+- Preservation evidence for the accepted P1--P3 worker, session, Board, task,
+  cron, voice, Goodnite, raw-result, and resource contracts.
+
+* What looks good
+
+- Ordinary startup opens one current-schema store and injects owner-shaped
+  ports.  It neither upgrades an old store nor selects a legacy fallback.
+- One worker transaction remains the atomic mutation boundary.  Process-local
+  request IDs correlate responses only; worker death never triggers an
+  automatic retry of an ambiguous write.
+- Migration works from a copied source tree, hashes exact inputs, rejects
+  missing roots, incomplete session tails, conflicting Board roots, and any
+  unmapped file before installation.  It imports root and nested task snapshots
+  under deterministic queue identities, explicitly reports the preserved
+  retired chat-overview presentation sidecar, imports active session resume
+  checkpoints through the storage owner, source-preserves timestamped backups
+  and historical task output products, and atomically renames only a closed
+  and integrity-checked working directory.
+- Upgrade refuses a live owner, verifies a restrictive pre-upgrade backup,
+  changes only the supported prior schema inside one SQLite transaction, and
+  verifies the result.
+- The default composition owns one public task queue and one shutdown.  The
+  current-config harness uses a disposable =E_RUNTIME_STATE_DIRECTORY=.
+- Durable Board notifications no longer proxy canonical records through a
+  session-selected Board journal.
+
+* Verification performed during this review pass
+
+Repository-side evidence is stored below =/tmp/e-feature87-simple/=.  The
+running Emacs was not contacted or changed.
+
+- Simplified runtime-store loss/ownership/permissions/large-frame suite: 13
+  expected, 0 unexpected.  It proves worker-loss propagation exactly once,
+  no resubmission or ledger tables, explicit reopen, one canonical committed
+  row when the response is interrupted, submitted-timeout freeze, complete
+  callback-error fanout, visible success-callback failure, and second-runtime
+  rejection.
+- Combined SQLite domain/package suite: 50 expected, 0 unexpected.  Together
+  with the preceding S2 runtime suite and the owner/resource suite below, it
+  covers the repository-controlled S1--S11 paths.  Its
+  deterministic large witness restored 15,722 records and 37,851,478 content
+  bytes in 3.832069 seconds while 3,610 timer ticks and a queued commit
+  progressed.  Timing is observational.
+- Focused task owner/action/shell preservation: 49 expected, 0 unexpected.
+  Migration coverage proves the owner terminal spelling =done= and preserves a
+  nested terminal queue independently from =default=.
+- P4 migration/upgrade scenarios: 6 expected, 0 unexpected.  They include
+  nested task import, active checkpoint cursor translation and exact semantic
+  restore, retired/preserved artifact accounting, unknown-file rejection, and
+  bounded migration and upgrade CLI failures.
+- A disposable-store observation recorded 0.060741 seconds to open the worker,
+  0.000302 seconds for one session-record commit, and 0.000177 seconds for the
+  ordered status barrier.  The live WAL snapshot was 547,992 bytes and the
+  database was 282,624 bytes (69 pages of 4,096 bytes).  These are observations,
+  not thresholds.
+- Independently relevant task, cron, voice, Goodnite, raw-result, session
+  storage, and temporary-resource owners: 135 expected, 0 unexpected.
+- Board/runtime/admission/chat preservation: 315 expected, 0 unexpected, 2
+  declared skips.  A directly exercised routing-policy copy regression adds 4
+  expected, 0 unexpected and proves shared finite selector values are not
+  mistaken for cycles.
+- Complete restricted repository run: 2,678 tests, 2,655 expected results, 9
+  unexpected, and 14 skipped.  Six MCP/OpenAI local HTTP fixtures denied by the
+  sandbox pass 6/6 when rerun with loopback permission.  The remaining three
+  results are one pre-existing Emacs 31 OpenAI variable mismatch and two
+  pre-existing Emacs 31 Org fold-property expectations; none intersects a
+  Feature 87 source or owner path.  The effective preservation result is 2,661
+  expected, 3 baseline failures, and 14 skips.
+- Isolated graphical suite: 28 expected, 0 unexpected.  Current-config with a
+  disposable =E_RUNTIME_STATE_DIRECTORY=: 4 expected, 0 unexpected.
+- =eldev compile= succeeds.  Check-parens succeeds for all 75 changed/new
+  Emacs Lisp files; =git diff --check= is clean.  Added lines contain no
+  obsolete =when-let=/=if-let= forms.
+- Negative scans find no writer-command/revision ledger, automatic restart or
+  resubmission hook, ordinary expected-revision argument, generic SQL escape,
+  or production sidecar writer.  Legacy filenames remain only in targeted
+  migration detection and read-only import code.
+
+* Operator UX
+
+The entrypoints are deliberately offline and positional:
+
+#+begin_src sh
+scripts/e-runtime-migrate dry-run COPIED_LEGACY_SOURCE UNUSED_TARGET
+scripts/e-runtime-migrate install COPIED_LEGACY_SOURCE NEW_STATE_DIRECTORY
+scripts/e-runtime-upgrade CLOSED_STATE_DIRECTORY [BACKUP_FILE]
+#+end_src
+
+The source argument must be a copy, the migration target must not exist, and an
+upgrade target must be closed.  The later operator gate must copy the real
+legacy tree to =/tmp= and invoke only =dry-run=; neither command should point at
+the running operator store.  Both commands reduce failures to a bounded
+single-line operator message rather than emitting a decoded-state backtrace.
+
+* Findings
+
+** DONE High: Worker acknowledgement machinery exceeded the selected failure model
+
+Earlier packages retained stable command hashes, a durable writer-command
+ledger, owner revision preconditions, and automatic resubmission after worker
+loss.  The operator replaced that model with simple single-worker ownership.
+The adapter and worker now remove those relations and arguments; worker loss
+fails all outstanding requests once and freezes the store until explicit
+close/reopen and owner reload.  Runtime-store 13/13 and the unified SQLite
+50/50 suites cover the replacement behavior.
+
+** DONE Medium: Reentrant Board drains could run inside a durability wait
+
+A zero-delay input-routing or chat observer callback could run while its Board
+was mutation-frozen by the cooperative worker wait, reject itself, and lose the
+only wake.  Board durability now owns a process-local post-barrier callback
+queue.  Board runtime and chat service defer already-admitted drains behind
+that barrier and retain their generation fences.  The combined preservation
+suite passes 315 expected results with no unexpected result.
+
+The same gate exposed a stateless policy-copy defect: a completed node was
+never removed from the active path, so two fields sharing one finite selector
+were mistaken for a cycle.  The task-stack leave marker and a direct finite-DAG
+regression resolve it without adding state or a persistence abstraction.
+
+** DONE Medium: A retired legacy test wrote an opaque SQLite reference as a file
+
+The legacy-context compatibility test appended JSON to the value returned by
+=e-session-storage-session-reference=.  After cutover that value is an opaque
+=sqlite:session:*= reference, so the test left a root-level sidecar artifact.
+It now builds a copied =sessions/*.jsonl= fixture and invokes the read-only
+legacy decoder directly.  The focused regression and final full suite pass the
+test, leave no pseudo-reference file, and keep production legacy decoding
+offline-only.
+
+** DONE High: Copied-tree inventory silently omitted durable and retired state
+
+The first copied-operator dry run exposed two files absent from the migration
+mapping: a nested Grimoire Daily task queue and the retired chat-overview read
+marker sidecar.  Migration now discovers every =task-queue/**/records.eld=,
+maps the root to =default= and nested queues to stable relative identities, and
+imports their task-owned history.  The chat-overview file is explicitly
+classified as a preserved derived presentation artifact: commit =e28957c1=
+moved its useful high-watermark into session metadata, and current read markers
+are process-local presentation state.  Inventory rejects every file without an
+explicit import, validation/rebuild, or retirement disposition.
+
+The same operator attempt showed that an uncaught batch backtrace could print a
+large decoded snapshot.  Migration and upgrade entrypoints now catch and bound
+operator errors; a 256 KiB failing task payload produces less than 4 KiB of
+combined CLI output in the focused test.
+
+The corrected copied-tree rerun then enumerated 1,674 additional unmatched
+files in one bounded pass: 1,249 active session checkpoints, 300 checkpoint
+backups, 115 journal backups, 3 index backups, and 7 historical nested task
+=.org= fragments.  Active checkpoints are session-owned resume state.  The
+legacy decoder now validates them, translates each JSONL byte boundary to the
+equivalent SQLite record position, and the migration application persists the
+otherwise exact value through =e-session-storage=.  Timestamped backups remain
+inactive rollback inputs, and task =.org= fragments remain external historical
+products; both classes are hashed and reported as source-preserved instead of
+silently ignored or promoted to runtime authority.
+
+** TODO High: Independent same-revision acceptance is pending
+
+The implementation and repository evidence are present, but the operator
+rebaselined transport uncertainty after the earlier package reviews.  Parent
+read-back accepts the final simplified worktree, copied-store proof, complete
+repository result, and static gates.  The selected workflow still requires one
+fresh independent review of the exact committed revision.  Until that finishes,
+the mechanism remains =implemented-awaiting-review= and =F87-GOAL= remains
+unavailable.
+
+** DONE High: Copied operator-store dry run passes
+
+The representative test-owned legacy tree passes deterministic dry runs and
+installation.  The first two copied-store attempts identified and drove the
+bounded inventory corrections above.  The corrected command completed against
+the copied operator tree: 595,268 session records, 1,249 resume checkpoints,
+two task queues with 81 tasks, 42 Board roots, one cron entry, and six voice
+tells were imported, and full SQLite integrity returned =ok=.  The dry run
+removed its temporary store, created no target, and never opened or changed the
+live store.  Its roughly 21-minute duration is observational telemetry, not a
+deterministic acceptance threshold.
+
+* Plan coverage
+
+| Contract/scenario | Repository realization | Review disposition |
+|-------------------+------------------------+--------------------|
+| =C01 / S1= | One default composition, deterministic copied-tree migration, close/reopen reconstruction, no runtime sidecar writes | Implemented; review pending |
+| =C09 / S9= | Offline migration and v3-to-v4 upgrade, source hashes, manifests, integrity, backup, permissions, invalid-input no-install cases | Implemented; copied-operator dry run passed |
+| =C10 / S10= | Default SQLite cutover, retired Node/task files, injected auxiliary owners, no Board-log proxy, targeted old/new errors | Implemented; source/read-back review pending |
+| =C11 / S11= | Worker-only SQLite, typed indexed/paged reads, write priority, exact large witness with timer/commit progress, bounded metrics | Implemented; timing observational |
+
+The accepted P1--P3 owner boundaries continue to own =S2--S8=, while their
+simplified worker-loss behavior is part of this pending same-revision review.
+P4 does not add another transaction system or change those owner boundaries.
+
+* Architecture review
+
+The default composition is the sole process-level owner of the runtime store.
+Domain owners receive narrow ports; only worker-side owner modules know SQL.
+Migration is an application service over isolated legacy decoders and owner
+ports.  Upgrade is a separate offline worker because ordinary startup cannot
+own that side effect.  Reports, backups, exports, and subprocess pathname
+copies are explicit file products rather than a second runtime authority.
+
+The P4 source additions have distinct change reasons: runtime protocol/schema
+maintenance, offline upgrade, legacy decoding/import, default composition, and
+operator scripts.  Board/session association now owns only association and
+notification composition; it has no durable Board-log proxy or owner table.
+
+* Design self-check
+
+1. The package leaves a usable one-store default plus safe adoption and
+   maintenance operations, so stopping here is better than retaining split
+   sidecars.
+2. It reaches the accepted direction: one SQLite authority with semantic owner
+   ports and explicit offline adoption.
+3. Private schema details, report representation, and timing remain local and
+   reversible; the stable owner contracts and offline-only rule are modeled
+   directly.
+4. Runtime-store owns protocol and connection lifetime; each domain owns its
+   facts; migration owns legacy-to-current composition; defaults own process
+   assembly.
+5. Coupling is reduced by deleting file writers and injecting narrow ports;
+   removing cross-restart command reconciliation also removes a generic
+   protocol concern from every owner operation.
+6. Policy still points toward domain contracts.  SQL and filesystem upgrade
+   effects remain outward in worker/adapter modules.
+7. Database, backup, report, and rename effects are in physical adapters or
+   operator application services, not session/Board policy.
+8. New durable state is current schema metadata and migration identity.  It is
+   process/store lifetime state at the smallest cross-restart scope.
+9. Interactive work remains on the worker; reads are paged and write priority
+   is preserved.  Recorded wall-clock values are observational.
+10. Owner ports are consumer-shaped and substitutable for their accepted
+    contracts; unsupported old schemas fail explicitly rather than narrowing a
+    hidden fallback.
+11. Preserved legacy sources are inactive rollback input.  Ordinary legacy
+    writes and automatic compatibility paths are retired.
+12. Node session/task writers, raw-result files, cron/voice/Goodnite sidecars,
+    and Board-log ownership can be removed now; pure decoders remain only for
+    migration.
+13. Expected version, ownership, conflict, and malformed-input errors are
+    targeted.  Unexpected worker, codec, and filesystem errors surface;
+    worker loss freezes the store until explicit reopen/reload.
+14. Focused owner tests prove migration, nested-queue preservation, complete
+    inventory disposition, bounded operator errors, upgrade, restart,
+    permissions, cutover, and bounded progress independently; broad and
+    isolated E2E gates protect composition.
+
+* Live reload
+
+This package changes core runtime, storage, session/Board composition, and
+record/schema behavior.  It requires a full Emacs restart to use after
+acceptance.  No reload, live probe, emacsclient request, or restart was run.
+
+* Unresolved
+
+- Independent same-revision review of the simplified protocol.

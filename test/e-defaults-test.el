@@ -215,7 +215,11 @@
 (ert-deftest e-defaults-test-session-store-is-persistent-and-cached ()
   "The default session store is persistent and reused for the same directory."
   (let ((directory (make-temp-file "e-defaults-" t))
-        (e-default--chat-sessions nil))
+        (process-environment (copy-sequence process-environment))
+        (e-default--runtime nil)
+        (e-default--chat-sessions nil)
+        (e-runtime-sqlite--live-composition nil))
+    (setenv "E_RUNTIME_STATE_DIRECTORY" nil)
     (unwind-protect
         (let ((e-session-directory directory))
           (let ((first (e-default-session-store))
@@ -226,6 +230,7 @@
             (should (equal (file-name-as-directory
                             (expand-file-name directory))
                            (e-session-store-directory first)))))
+      (e-default-runtime-close)
       (delete-directory directory t))))
 
 (ert-deftest e-defaults-test-chat-harness-uses-unconfigured-backend-without-factory ()

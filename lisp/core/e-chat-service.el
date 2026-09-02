@@ -504,7 +504,7 @@ request, while a completed close is already terminal and returns nil."
          (board-id (e-board-registry-board-id
                     (e-chat-service-binding-board binding))))
     (e-harness-reset harness session-id)
-    (e-board-session-association-reset-legacy-projection store session-id)
+    (e-board-session-association-reset-projection store session-id)
     (dolist (current (gethash board-id e-chat-service--board-bindings))
       (dolist (projection
                (list (e-chat-service-binding-message-projection current)
@@ -848,25 +848,43 @@ so a sibling cannot settle a selected binding through a malformed projection."
             (funcall (e-chat-service-subscription-function subscription) event)
           (error nil))))))
 
+(defun e-chat-service--binding-mutation-frozen-p (binding)
+  "Return non-nil while BINDING's durable Board is committing."
+  (e-board-mutation-frozen-p
+   (e-board-registry-board-source-board
+    (e-chat-service-binding-board binding))))
+
 (defun e-chat-service--observer-drain-callback (binding generation)
   "Run BINDING's deferred drain only for its captured GENERATION."
   (when (= generation
            (or (e-chat-service-binding-lifecycle-generation binding) 0))
-    (setf (e-chat-service-binding-observer-drain-scheduled binding) nil
-          (e-chat-service-binding-observer-drain-timer binding) nil)
-    (if (and (e-chat-service--binding-live-p binding)
-             (let ((bindings
-                    (gethash (e-chat-service-binding-harness binding)
-                             e-chat-service--bindings)))
-               (and bindings
-                    (eq (gethash (e-chat-service-binding-session-id binding)
-                                 bindings)
-                        binding))))
-        (e-chat-service--drain-observer binding)
-      ;; A board can enter closing/closed independently of the service.  The
-      ;; queued observer callback is still the service's owner-local chance to
-      ;; release all exact leases and runtime attachment state.
-      (e-chat-service--retire-binding binding))))
+    (if (e-chat-service--binding-mutation-frozen-p binding)
+        ;; The cooperative worker wait may run this owner callback while an
+        ;; unrelated Board command is waiting for its durable ACK.  Preserve
+        ;; the drain as pending and retry after that commit instead of turning
+        ;; ordinary scheduling into a rejected dependent mutation.
+        (progn
+          (setf (e-chat-service-binding-observer-drain-timer binding) nil)
+          (e-board--defer-after-storage-barrier
+           (e-board-registry-board-source-board
+            (e-chat-service-binding-board binding))
+           (lambda ()
+             (e-chat-service--observer-drain-callback binding generation))))
+      (setf (e-chat-service-binding-observer-drain-scheduled binding) nil
+            (e-chat-service-binding-observer-drain-timer binding) nil)
+      (if (and (e-chat-service--binding-live-p binding)
+               (let ((bindings
+                      (gethash (e-chat-service-binding-harness binding)
+                               e-chat-service--bindings)))
+                 (and bindings
+                      (eq (gethash (e-chat-service-binding-session-id binding)
+                                   bindings)
+                          binding))))
+          (e-chat-service--drain-observer binding)
+        ;; A board can enter closing/closed independently of the service.  The
+        ;; queued observer callback is still the service's owner-local chance
+        ;; to release all exact leases and runtime attachment state.
+        (e-chat-service--retire-binding binding)))))
 
 (defun e-chat-service--subscription-drain-callback
     (subscription binding-generation subscription-generation)
@@ -880,16 +898,25 @@ so a sibling cannot settle a selected binding through a malformed projection."
                       0)))
       (setf (e-chat-service-subscription-drain-scheduled subscription) nil
             (e-chat-service-subscription-drain-timer subscription) nil)
-      (if (and (e-chat-service-subscription-active-p subscription)
-               (not (eq (e-chat-service-binding-lifecycle-state binding)
-                         'retired))
-               (memq subscription
-                     (e-chat-service-binding-subscribers binding)))
-          (if (e-chat-service--binding-live-p binding)
-              (e-chat-service--drain-subscription subscription)
-            ;; An external board close is a terminal binding event even when
-            ;; no main observer callback happened to run first.
-            (e-chat-service--retire-binding binding))))))
+      (if (e-chat-service--binding-mutation-frozen-p binding)
+          (progn
+            (setf (e-chat-service-subscription-drain-scheduled subscription) t)
+            (e-board--defer-after-storage-barrier
+             (e-board-registry-board-source-board
+              (e-chat-service-binding-board binding))
+             (lambda ()
+               (e-chat-service--subscription-drain-callback
+                subscription binding-generation subscription-generation))))
+        (if (and (e-chat-service-subscription-active-p subscription)
+                 (not (eq (e-chat-service-binding-lifecycle-state binding)
+                           'retired))
+                 (memq subscription
+                       (e-chat-service-binding-subscribers binding)))
+            (if (e-chat-service--binding-live-p binding)
+                (e-chat-service--drain-subscription subscription)
+              ;; An external board close is a terminal binding event even when
+              ;; no main observer callback happened to run first.
+              (e-chat-service--retire-binding binding)))))))
 
 (defun e-chat-service--schedule-observer-drain (binding)
   "Schedule one later bounded observer drain for BINDING."
@@ -1150,7 +1177,7 @@ resolved participant identity so restart never needs shell or caller policy."
            (pickup-selector '(:tags (main)))
            (observer-selector '(:tags (main)))
            (default-tags '(main)) default-to
-           defer-participant-publication)
+           defer-participant-publication restore-existing-participant)
   "Install one HARNESS SESSION-ID participant/client binding on BOARD."
   (or (e-chat-service-binding harness session-id)
       (progn
@@ -1168,12 +1195,17 @@ resolved participant identity so restart never needs shell or caller policy."
                       (e-board-registry-client-requester-context
                        board (e-board-registry-client-id client)))
                 (setq attachment
-                      (e-board-runtime-attach
-                       board harness session-id :participant-id participant-id
-                       :principal principal :controller principal
-                       :author "e-chat"
-                       :defer-participant-publication
-                       defer-participant-publication))
+                      (if restore-existing-participant
+                          (e-board-runtime-reattach
+                           board harness session-id participant-id
+                           :principal principal :controller principal
+                           :author "e-chat")
+                        (e-board-runtime-attach
+                         board harness session-id :participant-id participant-id
+                         :principal principal :controller principal
+                         :author "e-chat"
+                         :defer-participant-publication
+                         defer-participant-publication)))
                 (setq participant
                       (e-board-runtime-attachment-participant attachment))
                 (setq main-subscription
@@ -1217,7 +1249,7 @@ resolved participant identity so restart never needs shell or caller policy."
                 ;; independent of board notification publication.
                 (e-board-session-association-configure-notifications
                  (e-harness-sessions harness) session-id source-board
-                 (lambda (source message)
+                 (lambda (source _message)
                         (dolist (current (copy-sequence
                                           (gethash (e-board-id source)
                                                    e-chat-service--board-bindings)))
@@ -1281,7 +1313,14 @@ resolved participant identity so restart never needs shell or caller policy."
              :pickup-selector (plist-get routing-policy :pickup-selector)
              :observer-selector (plist-get routing-policy :observer-selector)
              :default-tags (plist-get routing-policy :default-tags)
-             :default-to (plist-get routing-policy :default-to))
+             :default-to (plist-get routing-policy :default-to)
+             :restore-existing-participant
+             (condition-case nil
+                 (progn
+                   (e-board-registry-participant
+                    board (plist-get routing-policy :participant-id))
+                   t)
+               (e-board-registry-participant-missing nil)))
           (e-chat-service--install-participant-binding
            board harness session-id :principal principal)))))
 

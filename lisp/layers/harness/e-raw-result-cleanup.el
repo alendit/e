@@ -30,8 +30,8 @@
 (defun e-raw-result-cleanup-reference (harness session-id reference)
   "Delete raw-result REFERENCE for HARNESS SESSION-ID.
 REFERENCE may be backed by session tmp resources or by the generic raw-result
-store.  Return the deleted file path, or nil when REFERENCE is not a known
-raw-result reference or the target is already absent."
+store.  Return the deleted owner reference, or nil when REFERENCE is not a
+known raw-result reference or the target is already absent."
   (pcase (e-raw-result-cleanup--storage reference)
     ('session-tmp
      (e-session-tmp-cleanup-reference harness session-id reference))
@@ -41,7 +41,7 @@ raw-result reference or the target is already absent."
 
 (defun e-raw-result-cleanup-references (harness session-id references)
   "Delete mixed raw-result REFERENCES for HARNESS SESSION-ID.
-Return the list of deleted file paths."
+Return the list of deleted owner references."
   (delq nil
         (mapcar (lambda (reference)
                   (e-raw-result-cleanup-reference

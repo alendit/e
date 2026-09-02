@@ -71,21 +71,21 @@ Falls back to lexical search when the index is absent or the program fails."
 (defcustom e-goodnite-track-access t
   "When non-nil, record goodnite:// reads and search hits as a demand signal.
 
-Each access appends one JSON line to `daydream_access.jsonl' under the
-knowledge base's `state/' directory.  The offline `dream' loop reads this log
-to rank mined-but-unreviewed knowledge an agent keeps consulting ahead of
-knowledge nothing has pulled up -- demand, not just recurrence."
+Each access commits one ordered demand event through the configured runtime
+storage port.  The offline `dream' loop consumes that named stream to rank
+mined-but-unreviewed knowledge an agent keeps consulting ahead of knowledge
+nothing has pulled up -- demand, not just recurrence."
   :type 'boolean
   :group 'e)
 
 (defvar e-goodnite-resources-storage nil
-  "Optional Goodnite demand-event SQLite storage port.")
+  "Goodnite demand-event SQLite storage port.")
 
 (defvar e-goodnite-resources--event-sequence 0
   "Process-local uniqueness sequence for demand observations.")
 
 (defun e-goodnite-resources-configure-storage (storage)
-  "Install Goodnite demand STORAGE, or nil for the legacy/default path."
+  "Install Goodnite demand STORAGE; nil is only for explicit in-memory tests."
   (unless (or (null storage) (e-goodnite-storage-p storage))
     (signal 'wrong-type-argument (list 'e-goodnite-storage-p storage)))
   (setq e-goodnite-resources-storage storage))
@@ -550,11 +550,6 @@ is always lexical, since it targets one known entry."
                        :truncated (and (plist-get result :truncated) t)))))
         (e-goodnite-resources--search-lexical uri query options))))
 
-(defun e-goodnite-resources--access-log-path ()
-  "Return the path of the daydream access log under the knowledge base."
-  (expand-file-name "state/daydream_access.jsonl"
-                    (e-goodnite-resources--home)))
-
 (defun e-goodnite-resources--scrub (text)
   "Return TEXT reduced to a single line with control characters removed.
 The query is logged as a demand signal, not stored verbatim; strip C0 control
@@ -573,9 +568,8 @@ characters so a stray NUL or newline never corrupts the JSONL line."
 (defun e-goodnite-resources--record-access (kind entry-uri query context)
   "Append one access record for a KIND consultation of ENTRY-URI.
 KIND is `read' or `search'.  QUERY is the search text (nil for a read).
-CONTEXT carries the registration `:session-id' and `:turn-id'.  The legacy log
-is best-effort; a configured SQLite demand write is authoritative and errors
-surface to the consultation caller."
+CONTEXT carries the registration `:session-id' and `:turn-id'.  The configured
+SQLite demand write is authoritative and failures surface to the caller."
   (when e-goodnite-track-access
     (let* ((record
             (list :kind (symbol-name kind)
@@ -587,20 +581,14 @@ surface to the consultation caller."
                   :ts (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
            (event-id
             ;; Each consultation is a distinct demand observation.  Generate
-            ;; once before submission; runtime command reconciliation retains
-            ;; this exact body if the worker response is lost.
+            ;; once before submission; worker uniqueness deduplicates only an
+            ;; exact resubmission chosen deliberately by this semantic owner.
             (e-goodnite-resources--new-event-id)))
-      (if e-goodnite-resources-storage
-          (e-goodnite-storage-append
-           e-goodnite-resources-storage event-id record)
-        (condition-case nil
-            (let ((path (e-goodnite-resources--access-log-path)))
-              (make-directory (file-name-directory path) t)
-              (let ((line
-                     (json-serialize record :null-object nil
-                                     :false-object nil)))
-                (write-region (concat line "\n") nil path 'append 'silent)))
-          (error nil))))))
+      (unless e-goodnite-resources-storage
+        (signal 'e-goodnite-storage-error
+                (list "Goodnite SQLite runtime is not configured")))
+      (e-goodnite-storage-append
+       e-goodnite-resources-storage event-id record))))
 
 (defun e-goodnite-resources-demand-page (&optional after limit)
   "Return one bounded durable Goodnite demand page."

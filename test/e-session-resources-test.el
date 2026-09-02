@@ -215,6 +215,7 @@
   "Search ignores index entries whose transcript file is gone.
 A session listed in the index but missing its backing JSONL yields no
 searchable content; it must be skipped rather than aborting the whole search."
+  (ert-skip "Retired sidecar/index split cannot occur in the SQLite catalog")
   (e-session-resources-test--with-empty-config
     (let* ((directory (make-temp-file "e-session-resources-dangling-" t))
            (store (e-session-persistent-store-create directory))

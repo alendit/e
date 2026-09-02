@@ -10,9 +10,10 @@ The current implementation is a capability-first runtime with stable
 application facades: `e-harness` for lifecycle and turn policy, `e-session` for
 durable session state, provider/MCP/base facades for external adapters, and
 presentation shells such as `e-chat`. Facades compose owner modules; they do
-not make one owner’s private state into a shared internal API. JSONL session
-persistence, board routing, provider adapters, context lifetime, tools,
-resources, hooks, and shell rendering are implemented. Feature 91's accepted
+not make one owner’s private state into a shared internal API. One subordinate
+SQLite worker is the ordinary durable authority for sessions, Boards,
+scheduled work, and e-managed resources; provider adapters, context lifetime,
+tools, hooks, and shell rendering remain separate. Feature 91's accepted
 Round 1--4 boundaries are reflected in the source tree; the Round 5 audit
 records the residual-topology and test-topology evidence for this map.
 
@@ -60,12 +61,17 @@ flowchart TD
     S --> SA["aggregate"]
     S --> SC["codec"]
     S --> SCat["catalog/checkpoint policy"]
-    S --> SS["JSONL storage adapter"]
+    S --> SS["session storage port"]
+    SS --> RS["one runtime-store worker"]
     H --> Ctx["context and loop"]
     H --> Tools["tools and resources"]
     H --> Board["e-board facade"]
     Board --> BoardState["e-board-state contract"]
     Board --> BoardAdmission["e-board-admission owner"]
+    Board --> BS["Board storage port"]
+    BS --> RS
+    H --> Aux["task / cron / voice / Goodnite / raw ports"]
+    Aux --> RS
     H --> Backends["backend adapters"]
     Backends --> OpenAI["OpenAI owners"]
     Backends --> MCP["MCP client/transports"]
@@ -111,10 +117,18 @@ The following are current boundaries, not a future proposal:
 - Provider request shapes, auth, retries, streaming, timeout, cancellation, and
   response diagnostics stay behind backend adapters. Context policy emits
   provider-neutral values.
-- Session JSONL file names, record spellings, ordering, queued-write semantics,
-  atomicity, retry behavior, recovery policy, and error conditions are current
-  compatibility requirements. Feature 87's future SQLite/migration/cutover
-  work remains Planned and is not implemented here.
+- One process-wide runtime composition opens one SQLite store and injects
+  consumer-shaped ports into session, Board, task, cron, voice, Goodnite, and
+  raw-result owners. Interactive Emacs opens no SQLite connection.
+- Domain publication is commit-first. Worker loss or a submitted request
+  timeout before a response fails all outstanding operations once, stops that
+  store, and never resubmits. Close/reopen reloads canonical SQLite state.
+  Uncertain external task, cron, tool, or pickup effects are not repeated.
+- Ordinary startup creates only the current schema. Legacy import and schema
+  upgrade are explicit offline actions; unsupported stores fail with targeted
+  guidance rather than fallback.
+- WAL uses `synchronous=NORMAL`. It establishes database consistency across
+  process failure, not survival of the latest acknowledgement after power loss.
 - Expected domain errors are handled by the owner with enough context.
   Unexpected errors surface to the application service or shell.
 - Core/session/harness/provider and record-shape changes require a full Emacs
@@ -131,11 +145,15 @@ The following are current boundaries, not a future proposal:
 - `docs/references/runtime_concepts.org`: terminology authority.
 - `docs/references/dev_work.org`: work-package and evidence conventions.
 - `docs/feats/91-improve-modularization/`: Feature 91 plan and round audits.
+- `docs/feats/87-sqlite-session-board-persistence/`: SQLite contracts,
+  migration/cutover decisions, and acceptance evidence.
 - `e.el`: package entry point, load paths, startup, version/status, and reload
   autoload.
 - `lisp/core/`: provider-neutral runtime, session, board, context, tool,
   resource, hook, MCP, and harness contracts.
 - `lisp/defaults/`: lazy default harness and layer assembly.
+- `lisp/defaults/e-runtime-sqlite.el`: one-store runtime composition.
+- `lisp/defaults/e-runtime-migration.el`: explicit offline legacy migration.
 - `lisp/layers/`: capability implementations and layer presets.
 - `lisp/adapters/openai/`: OpenAI facade and provider owners.
 - `lisp/shells/`: shell manifests, commands, keymaps, buffers, and rendering.
@@ -191,16 +209,24 @@ and semantic owners are:
 | `e-session-identity.el` | Session/entry IDs, monotonic ULIDs, and legacy entry-ID backfill | Process-local identity generator; no aggregate mutation |
 | `e-session-provider-anchor.el` | Provider-anchor compatibility over explicit path and fingerprint values | Stateless value policy; no aggregate or provider state |
 | `e-session-board-policy.el` | Declarative routing-policy validation, copying, normalization, and size bounds | Stateless value policy; aggregate retains association/journal mutation |
-| `e-session-codec.el` | Pure JSONL value/record encode, decode, normalization, and durable schema values | Stateless; no aggregate/store mutation |
+| `e-session-codec.el` | Pure durable value/record normalization, replay mapping, and legacy JSON decoding | Stateless; no aggregate/store mutation |
 | `e-session-catalog.el` | Bounded index/checkpoint projections and recovery policy over explicit values | Stateless/pure projection; no file or storage calls |
-| `e-session-storage.el` | JSONL/index/checkpoint files, queue/controller/outbox, timers, atomic writes, retries, and adapter-owned state | Session-store lifetime; physical I/O and Node writer side effects |
+| `e-session-storage.el` | Session-owned current physical port | Session-store lifetime; no SQL knowledge |
+| `e-session-legacy.el` | Read-only retired JSONL decoding for explicit offline migration | Operator-copy lifetime; no writer or runtime fallback |
+| `e-session-storage-sqlite.el` | Typed session record, checkpoint, catalog, tool-continuity, and barrier mapping | Borrows the one runtime store; no aggregate policy |
+| `e-runtime-store.el` | Process protocol, scheduling, liveness, failure propagation, and ownership | Process-wide runtime lifetime; interactive Emacs owns no SQLite handle |
+| `e-runtime-store-worker.el` | Connection, WAL, schema gate, atomic owner writes, integrity, backup, and typed dispatch | One subordinate batch Emacs owns all SQLite I/O |
+| owner `*-storage-sqlite-worker.el` modules | Board, task, cron, voice, Goodnite, and raw-result schema/query clusters | Worker lifetime; SQL remains owner-specific |
 
 The facade coordinates semantic mutations and storage commits with explicit
 values. Aggregate replay applies decoded data; codec replay mapping itself is
 pure. The policy owners return detached values and do not own aggregate
-representation. The storage adapter sees an opaque owner key and semantic
-records, not aggregate internals. Durable session and board-association
-formats retain their existing ordering and restart behavior.
+representation. The storage adapter sees semantic records, not aggregate
+internals. The facade stages SQLite mutations, commits the authoritative
+record, then publishes the live aggregate. Rebuildable projection failure is
+visible as pending durability status without misreporting the primary mutation
+as uncommitted. Feature 87 `F87-C02`, `F87-C03`, and `F87-C12` define the exact
+contracts.
 
 ### Boards and retained core state machines
 
@@ -230,13 +256,14 @@ receipt or queue representation. Splitting any remaining policy transition
 into a generic helper would either duplicate the sequence/admission state or
 break the aggregate's ordering boundary.
 
-The all-literal local-require inventory for the current source tree is 167
-modules and 719 unique edges, with no strongly connected component. Relative
-to the preceding 166/715 tree, the additional module is the independent
-runtime-admission error contract; explicit Board, Board-admission, and error
-imports in the runtime/admission owners account for the four new edges. The
-reproducible scanner and complete edge list are recorded in the current Round 5
-audit.
+Durable Board authority is behind `e-board-storage.el`. Canonical publications,
+source-key identity, final routing outcomes, immutable pickup identities and
+FIFO transitions, logical participant recovery, and replay progress use the
+SQLite Board adapter. Executable subscriptions, routing predicates, callbacks,
+endpoints, timers, Work handles, admission tokens, and presentation projections
+remain process-local. The sole cross-owner operation is the named pickup-
+admission service, which accepts one claimed pickup and appends its immutable
+session input record atomically (`F87-C05` and `F87-C06`).
 
 `e-board-runtime.el` is the board attachment adapter. It owns attachment
 admission/reconciliation, endpoint generations, producer/activity mailboxes,
@@ -403,13 +430,17 @@ sequenceDiagram
     participant P as shell/facade
     participant H as harness owners
     participant S as e-session facade
+    participant W as runtime-store worker
     participant C as context runtime
     participant L as e-loop
     participant B as backend adapter
     participant T as tools
     U->>P: command or capability action
     P->>H: semantic submit
-    H->>S: append semantic session mutation
+    H->>S: prepare semantic session mutation
+    S->>W: typed durable command
+    W-->>S: commit acknowledgement
+    S-->>H: publish committed mutation
     H->>C: prepare provider-neutral context
     C->>S: read durable projection
     H->>L: start one turn
@@ -426,16 +457,31 @@ sequenceDiagram
 Queued input and steering remain ordered by `e-harness-turn-state` and
 `e-harness-turn`; board-attached input first crosses board admission and the
 attached-turn port, so board publication and selected settlement are not
-reimplemented in the shell. Session restart replays JSONL through codec,
-aggregate, catalog, and storage composition, rebuilding process-local board,
+reimplemented in the shell. Session restart uses indexed, paged worker reads
+through codec, aggregate, catalog, and storage composition, rebuilding local board,
 turn, context, transport, and presentation state.
 
 Context attachment is durable user intent plus a live projection: canvas and
 buffer attachments are stored as session metadata references, and the
 chat-session context provider reads current live content on the next turn.
 Unsaved live-buffer text wins over disk content. Tool output protection runs in
-hooks and may create bounded `tmp://` resources; the resource method owns that
-file/resource side effect.
+hooks and may create bounded `tmp://` or `raw-result://` resources; the owning
+adapter commits content and fixed expiry before returning a reference. Explicit
+pathname-required products are disposable exports, not durable authority.
+
+Offline legacy migration inventories every copied file before opening a work
+store. Root =task-queue/records.eld= maps to task queue =default=; each nested
+=task-queue/**/records.eld= maps to its stable relative directory identity.
+The retired =sessions/chat-overview-state.json= file is reported as preserved
+derived presentation state rather than imported as a durable owner fact.
+Active session checkpoints are imported through the session storage port after
+their legacy byte offsets are mapped to SQLite record positions; the remaining
+checkpoint content is preserved exactly. Timestamped session backups and
+historical task =.org= products are hashed and reported as preserved source
+artifacts. Any file without an explicit import, validate/rebuild, preservation,
+or retirement disposition aborts the migration. Migration and upgrade CLI
+failures are single-line and bounded, so a malformed large snapshot cannot
+flood operator output.
 
 ## Public Surfaces
 
@@ -448,6 +494,10 @@ Stable public surfaces include:
   operations.
 - `e-session-*` creation, load/list, semantic mutations, metadata, branch,
   compaction, current-branch, catalog, and storage-facing application services.
+- `e-runtime-store-*` health, integrity, metrics, explicit backup, and close
+  operations; session storage exposes its ordered status barrier.
+  `e-runtime-migration-run` and
+  `e-runtime-store-offline-upgrade` are offline operator surfaces.
 - `e-capability-*`, `e-actions-*`, `e-resources-*`, `e-tools-*`, `e-work-*`,
   `e-request-*`, `e-hooks-*`, and `e-session-tmp-*` contracts.
 - `e-backend-*` plus the OpenAI, MCP, and base-tools facades.
@@ -470,8 +520,12 @@ provider profiles, context strategies/providers, capabilities, layer presets,
 resource methods, `e://` resources, hooks, model-facing tools, session stores,
 startup hooks, shell manifests, and the attached-turn board port.
 
-Future or unconfirmed directions remain local and explicitly labeled: SQLite
-storage/migrations/cutover (Feature 87 Planned), first-class permission/audit
+SQLite is not a generic persistence extension point. Domain owners expose
+narrow consumer-shaped ports, and the one-store composition supplies their
+adapters. Generic SQL, transaction builders, raw owner lists, and cross-owner
+access are intentionally absent.
+
+Future or unconfirmed directions remain local and explicitly labeled: first-class permission/audit
 policy, richer versioned canvas-state artifacts, harness self-modification
 tools, and a generic shell lifecycle. No broad abstraction is added until a
 second implementation gives one of those directions a stable semantic contract.
@@ -489,15 +543,16 @@ larger integration suites cover composition, public commands, restart/replay,
 board attachment, and graphical buffer behavior. Private mechanism assertions
 live in owner mechanism suites.
 
-Representative checks use fake backends, in-memory and temporary persistent
-stores, fake transports, deterministic board fixtures, bounded tool results,
+Representative checks use fake backends, in-memory policy owners, disposable
+SQLite stores, fake transports, deterministic board fixtures, bounded tool results,
 replacement attached-turn ports, and isolated graphical frames. The complete
 Round 5 command/results/evidence matrix is maintained in
 [`round-5-audit.org`](feats/91-improve-modularization/round-5-audit.org); the
 Round 1--4 boundaries and preservation evidence remain in their corresponding
-round audits. Credentialed provider calls are not required for this behavior-
-neutral architecture package, so live provider capability is unconfirmed/not
-applicable here.
+round audits. Feature 87 adds deterministic worker-loss, commit-first,
+Board/pickup, task/cron ambiguity, resource-boundary, offline migration/upgrade,
+default-cutover, and 15,722-record/37,851,478-byte paged-load evidence. Its
+S1-S11 mapping remains in the Feature plan rather than being copied here.
 
 Repository-side compilation, check-parens, static dependency/private-symbol
 sweeps, restart/replay tests, and the isolated graphical suite do not inspect or
@@ -535,8 +590,14 @@ application together because they share one loaded session and sequence
 invariant. Pure metadata, identity, provider-anchor, and board-policy values
 are separate because they have no aggregate mutation state.
 
+Feature 87 moves durability to one physical authority while preserving semantic
+ownership. `e-runtime-store` changes for process protocol and worker-loss failure;
+each worker-side owner module changes for its schema and typed commands; domain
+facades change only for their commit-first application boundary. Migration and
+upgrade are operator services and are never invoked by ordinary startup.
+
 Remaining gaps are deliberately explicit: permission/audit policy is not a
-first-class gate, canvas has no independent versioned state strategy, shell
-lifecycle is still manifest discovery, and SQLite replacement is Planned. These
+first-class gate, canvas has no independent versioned state strategy, and shell
+lifecycle is still manifest discovery. These
 gaps are cheaper to address after a concrete consumer requires them than by
 reintroducing generic shared state now.

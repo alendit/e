@@ -7,26 +7,17 @@
 
 (require 'e-raw-results-storage)
 (require 'e-runtime-store)
-(require 'e-runtime-store-codec)
-
-(defun e-raw-results-storage-sqlite--stable-id (prefix value)
-  "Return stable command identity for PREFIX and VALUE."
-  (format "%s:%s" prefix
-          (secure-hash 'sha256 (e-runtime-store-codec-encode value))))
 
 (defun e-raw-results-storage-sqlite--call (runtime operation arguments)
   "Dispatch raw-result OPERATION ARGUMENTS through RUNTIME."
   (pcase operation
     ('put
      (pcase-let ((`(,uri ,content ,metadata ,created-at ,expires-at) arguments))
-       (let ((body
-              (list :op 'raw-result-put :uri uri :content content
-                    :metadata metadata :created-at created-at
-                    :expires-at expires-at)))
-         (e-runtime-store-call
-          runtime 'write body
-          (e-raw-results-storage-sqlite--stable-id
-           "raw-result-put" body)))))
+       (e-runtime-store-call
+        runtime 'write
+        (list :op 'raw-result-put :uri uri :content content
+              :metadata metadata :created-at created-at
+              :expires-at expires-at))))
     ('read
      (pcase-let ((`(,uri ,now) arguments))
        (e-runtime-store-call

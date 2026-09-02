@@ -18,11 +18,11 @@
 (define-error 'e-runtime-store-worker-error "Runtime store worker error")
 (define-error 'e-runtime-store-owner-active "Runtime store already has a live owner"
   'e-runtime-store-worker-error)
-(define-error 'e-runtime-store-command-conflict "Runtime store command conflicts"
-  'e-runtime-store-worker-error)
-(define-error 'e-runtime-store-revision-conflict "Runtime store revision conflicts"
-  'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-resource-too-large "Runtime store resource is too large"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-schema-too-old "Runtime store schema requires explicit upgrade"
+  'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-schema-too-new "Runtime store schema is newer than this runtime"
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-board-conflict "Runtime store Board conflict"
   'e-runtime-store-worker-error)
@@ -42,7 +42,7 @@
 (require 'e-task-storage-sqlite-worker)
 (require 'e-voice-storage-sqlite-worker)
 
-(defconst e-runtime-store-worker-schema-version 3)
+(defconst e-runtime-store-worker-schema-version 4)
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
 (defconst e-runtime-store-worker-session-page-byte-limit (* 1024 1024)
@@ -126,27 +126,41 @@
                  (= (or (plist-get owner :pid) -1) (emacs-pid)))
         (delete-file e-runtime-store-worker--owner-file)))))
 
-(defun e-runtime-store-worker--schema ()
-  "Create the current new-store schema."
+(defun e-runtime-store-worker--schema (new-store-p)
+  "Create the current schema when NEW-STORE-P, otherwise verify it."
   ;; Inspect an existing store before creating current-version relations.  P4
   ;; owns explicit offline upgrades; ordinary startup must not mutate an older
   ;; P1 database and then report that it is unsupported.
+  (unless (or new-store-p
+              (car (sqlite-select
+                    e-runtime-store-worker--database
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_meta'")))
+    (signal 'e-runtime-store-schema-too-old
+            (list :actual 'legacy-or-unversioned
+                  :required e-runtime-store-worker-schema-version
+                  :operation 'e-runtime-migration-run)))
   (sqlite-execute
    e-runtime-store-worker--database
    "CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
   (let ((row (car (sqlite-select
                    e-runtime-store-worker--database
                    "SELECT value FROM store_meta WHERE key='schema_version'"))))
-    (when (and row
-               (/= (string-to-number (e-runtime-store-worker--column row 0))
-                   e-runtime-store-worker-schema-version))
-      (signal 'e-runtime-store-worker-error
-              (list "Unsupported schema version"
-                    (e-runtime-store-worker--column row 0)))))
+    (when row
+      (let ((version
+             (string-to-number (e-runtime-store-worker--column row 0))))
+        (cond
+         ((< version e-runtime-store-worker-schema-version)
+          (signal 'e-runtime-store-schema-too-old
+                  (list :actual version
+                        :required e-runtime-store-worker-schema-version
+                        :operation 'e-runtime-store-offline-upgrade)))
+         ((> version e-runtime-store-worker-schema-version)
+          (signal 'e-runtime-store-schema-too-new
+                  (list :actual version
+                        :supported e-runtime-store-worker-schema-version)))))))
   (dolist
       (statement
-       '("CREATE TABLE IF NOT EXISTS writer_commands (command_id TEXT PRIMARY KEY, command_hash TEXT NOT NULL, result TEXT NOT NULL, committed_at REAL NOT NULL)"
-         "CREATE TABLE IF NOT EXISTS owner_revisions (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL)"
+       '("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)"
          "CREATE TABLE IF NOT EXISTS session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, position))"
          "CREATE INDEX IF NOT EXISTS session_records_position ON session_records(session_id, position)"
          "CREATE TABLE IF NOT EXISTS session_checkpoints (session_id TEXT PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL)"
@@ -175,7 +189,12 @@
       (sqlite-execute e-runtime-store-worker--database
                       "INSERT INTO store_meta(key,value) VALUES('schema_version',?)"
                       (vector (number-to-string
-                               e-runtime-store-worker-schema-version))))))
+                               e-runtime-store-worker-schema-version)))
+      (sqlite-execute
+       e-runtime-store-worker--database
+       "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
+       (vector e-runtime-store-worker-schema-version "new-current-schema"
+               (secure-hash 'sha256 "feature87-schema-v4") (float-time))))))
 
 (defun e-runtime-store-worker--open (directory runtime-id)
   "Open DIRECTORY for RUNTIME-ID and return startup status."
@@ -187,6 +206,7 @@
         (expand-file-name "store.sqlite3" directory)
         e-runtime-store-worker--owner-file
         (expand-file-name "store.sqlite3.owner" directory))
+  (let ((new-store-p (not (file-exists-p e-runtime-store-worker--database-file))))
   (make-directory directory t)
   (set-file-modes directory #o700)
   (e-runtime-store-worker--claim-owner)
@@ -196,44 +216,26 @@
   (sqlite-select e-runtime-store-worker--database "PRAGMA journal_mode=WAL")
   (sqlite-execute e-runtime-store-worker--database "PRAGMA synchronous=NORMAL")
   (sqlite-execute e-runtime-store-worker--database "PRAGMA busy_timeout=2500")
-  (e-runtime-store-worker--schema)
+  (e-runtime-store-worker--schema new-store-p)
   (e-runtime-store-worker--permissions)
   (list :schema-version e-runtime-store-worker-schema-version
         :database-file e-runtime-store-worker--database-file
         :runtime-id runtime-id :pid (emacs-pid)
-        :journal-mode "wal" :synchronous "normal"))
+        :journal-mode "wal" :synchronous "normal")))
 
-(defun e-runtime-store-worker--revision (owner)
-  "Return current revision for OWNER."
-  (if-let* ((row (car (sqlite-select
-                       e-runtime-store-worker--database
-                       "SELECT revision FROM owner_revisions WHERE owner=?"
-                       (vector owner)))))
-      (e-runtime-store-worker--column row 0)
-    0))
-
-(defun e-runtime-store-worker--check-revision (owner expected)
-  "Return OWNER revision after verifying EXPECTED when supplied."
-  (let ((revision (e-runtime-store-worker--revision owner)))
-    (when (and expected (/= expected revision))
-      (signal 'e-runtime-store-revision-conflict
-              (list :owner owner :expected expected :actual revision)))
-    revision))
-
-(defun e-runtime-store-worker--advance-revision (owner revision)
-  "Set OWNER to REVISION and return it."
-  (sqlite-execute
-   e-runtime-store-worker--database
-   "INSERT INTO owner_revisions(owner,revision) VALUES(?,?) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision"
-   (vector owner revision))
-  revision)
+(defun e-runtime-store-worker--session-position (session-id)
+  "Return SESSION-ID's current monotonic record position."
+  (e-runtime-store-worker--column
+   (car (sqlite-select
+         e-runtime-store-worker--database
+         "SELECT COALESCE(MAX(position),0) FROM session_records WHERE session_id=?"
+         (vector session-id)))
+   0))
 
 (defun e-runtime-store-worker--session-append (body)
   "Append BODY's one session record."
   (let* ((session-id (plist-get body :session-id))
-         (owner (concat "session:" session-id))
-         (revision (e-runtime-store-worker--check-revision
-                    owner (plist-get body :expected-revision)))
+         (revision (e-runtime-store-worker--session-position session-id))
          (next (1+ revision))
          (payload (e-runtime-store-worker--sql-value
                    (plist-get body :record))))
@@ -247,15 +249,12 @@
      e-runtime-store-worker--database
      "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
      (vector session-id next payload))
-    (e-runtime-store-worker--advance-revision owner next)
     (list :session-id session-id :revision next :position next)))
 
 (defun e-runtime-store-worker--session-append-batch (body)
   "Append BODY's session record batch atomically."
   (let* ((session-id (plist-get body :session-id))
-         (owner (concat "session:" session-id))
-         (revision (e-runtime-store-worker--check-revision
-                    owner (plist-get body :expected-revision)))
+         (revision (e-runtime-store-worker--session-position session-id))
          (position revision))
     (dolist (record (append (plist-get body :records) nil))
       (let ((payload (e-runtime-store-worker--sql-value record)))
@@ -270,7 +269,6 @@
          e-runtime-store-worker--database
          "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
          (vector session-id position payload))))
-    (e-runtime-store-worker--advance-revision owner position)
     (list :session-id session-id :revision position
           :first-position (and (> position revision) (1+ revision))
           :last-position position)))
@@ -278,8 +276,7 @@
 (defun e-runtime-store-worker--checkpoint-put (body)
   "Persist a bounded session checkpoint from BODY."
   (let* ((session-id (plist-get body :session-id))
-         (revision (e-runtime-store-worker--revision
-                    (concat "session:" session-id))))
+         (revision (e-runtime-store-worker--session-position session-id)))
     (sqlite-execute
      e-runtime-store-worker--database
      "INSERT INTO session_checkpoints(session_id,payload,revision) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision"
@@ -290,12 +287,14 @@
 
 (defun e-runtime-store-worker--catalog-put (body)
   "Persist catalog projection from BODY."
-  (let* ((revision (1+ (e-runtime-store-worker--revision "catalog"))))
+  (let* ((row (car (sqlite-select
+                    e-runtime-store-worker--database
+                    "SELECT revision FROM catalog_projection WHERE singleton=1")))
+         (revision (1+ (if row (e-runtime-store-worker--column row 0) 0))))
     (sqlite-execute
      e-runtime-store-worker--database
      "INSERT INTO catalog_projection(singleton,payload,revision) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET payload=excluded.payload,revision=excluded.revision"
      (vector (e-runtime-store-worker--sql-value (plist-get body :value)) revision))
-    (e-runtime-store-worker--advance-revision "catalog" revision)
     (list :revision revision)))
 
 (defun e-runtime-store-worker--session-delete (body)
@@ -305,9 +304,6 @@
       (sqlite-execute e-runtime-store-worker--database
                       (format "DELETE FROM %s WHERE session_id=?" table)
                       (vector session-id)))
-    (sqlite-execute e-runtime-store-worker--database
-                    "DELETE FROM owner_revisions WHERE owner=?"
-                    (vector (concat "session:" session-id)))
     (list :session-id session-id :deleted t)))
 
 (defun e-runtime-store-worker--tool-transition (body)
@@ -315,9 +311,11 @@
   (let* ((session-id (plist-get body :session-id))
          (call-id (plist-get body :call-id))
          (state (plist-get body :state))
-         (owner (format "tool:%s:%s" session-id call-id))
-         (revision (1+ (e-runtime-store-worker--check-revision
-                        owner (plist-get body :expected-revision)))))
+         (prior (car (sqlite-select
+                      e-runtime-store-worker--database
+                      "SELECT revision FROM tool_followups WHERE session_id=? AND call_id=?"
+                      (vector session-id call-id))))
+         (revision (1+ (if prior (e-runtime-store-worker--column prior 0) 0))))
     (sqlite-execute
      e-runtime-store-worker--database
      "INSERT INTO tool_followups(session_id,call_id,state,payload,revision) VALUES(?,?,?,?,?) ON CONFLICT(session_id,call_id) DO UPDATE SET state=excluded.state,payload=excluded.payload,revision=excluded.revision"
@@ -325,7 +323,6 @@
              (and (plist-member body :payload)
                   (e-runtime-store-worker--sql-value (plist-get body :payload)))
              revision))
-    (e-runtime-store-worker--advance-revision owner revision)
     (list :session-id session-id :call-id call-id :state state
           :revision revision)))
 
@@ -395,7 +392,7 @@
      (e-board-storage-sqlite-worker-write
       e-runtime-store-worker--database body))
     ((or 'task-queue-open 'task-enqueue 'task-claim 'task-transition
-         'task-queue-pause 'task-history-delete)
+         'task-queue-pause 'task-history-delete 'task-import-legacy-snapshot)
      (e-task-storage-sqlite-worker-write
       e-runtime-store-worker--database body))
     ((or 'cron-register 'cron-claim 'cron-settle 'cron-history-delete)
@@ -414,34 +411,16 @@
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown write operation" (plist-get body :op))))))
 
-(cl-defun e-runtime-store-worker--write (request)
-  "Execute idempotent write REQUEST and return its committed result."
-  (let* ((id (plist-get request :id))
-         (hash (plist-get request :hash))
-         (body (plist-get request :body))
-         (prior (car (sqlite-select
-                      e-runtime-store-worker--database
-                      "SELECT command_hash,result FROM writer_commands WHERE command_id=?"
-                      (vector id)))))
-    (when prior
-      (unless (equal hash (e-runtime-store-worker--column prior 0))
-        (signal 'e-runtime-store-command-conflict (list id)))
-      (cl-return-from e-runtime-store-worker--write
-        (e-runtime-store-worker--value (e-runtime-store-worker--column prior 1))))
-    (unless (equal hash (secure-hash 'sha256
-                                    (e-runtime-store-codec-encode body)))
-      (signal 'e-runtime-store-command-conflict (list id "hash mismatch")))
+(defun e-runtime-store-worker--write (request)
+  "Execute one transactional write REQUEST and return its committed result."
+  (let ((body (plist-get request :body)))
     ;; Modes are a precondition for mutation.  Once COMMIT succeeds, response
-    ;; formation is deliberately in-memory and non-fallible; transport loss is
-    ;; reconciled by this command's stable id/hash on the replacement worker.
+    ;; formation is deliberately in-memory and non-fallible.  Transport loss
+    ;; fails the client and never causes automatic resubmission.
     (e-runtime-store-worker--permissions)
     (sqlite-execute e-runtime-store-worker--database "BEGIN IMMEDIATE")
     (condition-case err
         (let ((result (e-runtime-store-worker--write-dispatch body)))
-          (sqlite-execute
-           e-runtime-store-worker--database
-           "INSERT INTO writer_commands(command_id,command_hash,result,committed_at) VALUES(?,?,?,?)"
-          (vector id hash (e-runtime-store-worker--sql-value result) (float-time)))
           (sqlite-execute e-runtime-store-worker--database "COMMIT")
           result)
       (error
@@ -456,11 +435,60 @@
      (list :schema-version e-runtime-store-worker-schema-version
            :database-file e-runtime-store-worker--database-file
            :runtime-id e-runtime-store-worker--runtime-id
-           :pid (emacs-pid)
-           :quick-check
+        :pid (emacs-pid)
+        :quick-check
            (e-runtime-store-worker--column
-            (car (sqlite-select e-runtime-store-worker--database
-                                "PRAGMA quick_check")) 0)))
+         (car (sqlite-select e-runtime-store-worker--database
+                             "PRAGMA quick_check")) 0)))
+    ('store-integrity
+     (let* ((full (and (plist-get body :full) t))
+            (pragma (if full "PRAGMA integrity_check" "PRAGMA quick_check"))
+            (rows (sqlite-select e-runtime-store-worker--database pragma)))
+       (list :kind (if full 'integrity-check 'quick-check)
+             :ok (and (= (length rows) 1)
+                      (equal (e-runtime-store-worker--column (car rows) 0)
+                             "ok"))
+             :rows (mapcar (lambda (row)
+                             (e-runtime-store-worker--column row 0))
+                           rows))))
+    ('store-metrics
+     (let ((page-size
+            (e-runtime-store-worker--column
+             (car (sqlite-select e-runtime-store-worker--database
+                                 "PRAGMA page_size")) 0))
+           (page-count
+            (e-runtime-store-worker--column
+             (car (sqlite-select e-runtime-store-worker--database
+                                 "PRAGMA page_count")) 0)))
+       (list :schema-version e-runtime-store-worker-schema-version
+             :page-size page-size :page-count page-count
+             :database-bytes (* page-size page-count)
+             :wal-bytes
+             (let ((wal (concat e-runtime-store-worker--database-file "-wal")))
+               (if (file-exists-p wal)
+                   (file-attribute-size (file-attributes wal))
+                 0)))))
+    ('store-backup
+     (let ((destination (expand-file-name (plist-get body :destination))))
+       (when (file-exists-p destination)
+         (signal 'file-already-exists (list destination)))
+       (make-directory (file-name-directory destination) t)
+       (set-file-modes (file-name-directory destination) #o700)
+       (sqlite-execute e-runtime-store-worker--database
+                       "VACUUM INTO ?" (vector destination))
+       (set-file-modes destination #o600)
+       (let ((backup (sqlite-open destination)))
+         (unwind-protect
+             (let ((check
+                    (e-runtime-store-worker--column
+                     (car (sqlite-select backup "PRAGMA quick_check")) 0)))
+               (unless (equal check "ok")
+                 (signal 'e-runtime-store-worker-error
+                         (list "Backup verification failed" check))))
+           (sqlite-close backup)))
+       (list :destination destination
+             :bytes (file-attribute-size (file-attributes destination))
+             :verified t)))
     ('session-header
      (let* ((session-id (plist-get body :session-id))
             (row (car (sqlite-select

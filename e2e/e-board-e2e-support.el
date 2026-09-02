@@ -18,8 +18,68 @@
 (require 'e-chat-service)
 (require 'e-harness)
 
+(defun e-board-e2e--cancel-runtime-timers ()
+  "Cancel process-local e callbacks before modeling a fresh process."
+  (let ((seen (make-hash-table :test 'eq)))
+    (cl-labels
+        ((cancel-binding
+          (binding)
+          (when (and (e-chat-service-binding-p binding)
+                     (not (gethash binding seen)))
+            (puthash binding t seen)
+            (cl-incf (e-chat-service-binding-lifecycle-generation binding))
+            (dolist (timer
+                     (list (e-chat-service-binding-observer-drain-timer binding)
+                           (e-chat-service-binding-idle-close-timer binding)))
+              (when (timerp timer) (cancel-timer timer)))
+            (setf (e-chat-service-binding-observer-drain-timer binding) nil
+                  (e-chat-service-binding-observer-drain-scheduled binding) nil
+                  (e-chat-service-binding-idle-close-timer binding) nil)
+            (dolist (subscription
+                     (e-chat-service-binding-subscribers binding))
+              (cl-incf
+               (e-chat-service-subscription-lifecycle-generation subscription))
+              (when-let* ((timer
+                           (e-chat-service-subscription-drain-timer
+                            subscription)))
+                (when (timerp timer) (cancel-timer timer)))
+              (setf (e-chat-service-subscription-drain-timer subscription) nil
+                    (e-chat-service-subscription-drain-scheduled subscription)
+                    nil)))))
+      (maphash
+       (lambda (_harness bindings)
+         (maphash (lambda (_session-id binding) (cancel-binding binding))
+                  bindings))
+       e-chat-service--bindings)
+      (maphash
+       (lambda (_board-id bindings)
+         (dolist (binding bindings) (cancel-binding binding)))
+       e-chat-service--board-bindings)))
+  (dolist (function '(e-board-runtime--drain-deferred-hooks
+                      e-board-runtime--drain-pickups
+                      e-chat-service--observer-drain-callback
+                      e-chat-service--subscription-drain-callback))
+    (cancel-function-timers function))
+  (dolist (timer
+           (append (and (sequencep timer-list) (append timer-list nil))
+                   (and (sequencep timer-idle-list)
+                        (append timer-idle-list nil))))
+    (when (timerp timer)
+      (let* ((function (timer--function timer))
+             (print-circle t)
+             (print-level 4)
+             (print-length 8)
+             (description (prin1-to-string function)))
+        (when (or (and (symbolp function)
+                       (string-prefix-p "e-" (symbol-name function)))
+                  (string-match-p
+                   "e-\\(?:board\\|chat\\|harness\\|runtime\\|session\\)-"
+                   description))
+          (cancel-timer timer))))))
+
 (defun e-board-e2e-reset-runtime ()
   "Put the batch-only board runtime in an open board-native test state."
+  (e-board-e2e--cancel-runtime-timers)
   (setq e-board--registry (make-hash-table :test 'equal)
         e-board--id-sequence 0
         e-board-registry--boards (make-hash-table :test 'equal)
@@ -36,9 +96,10 @@
         e-board-runtime--producer-inputs (make-hash-table :test 'equal)
         e-board-runtime--producer-deliveries (make-hash-table :test 'equal)
         e-board-runtime--producer-turns (make-hash-table :test 'equal)
+        e-board--post-storage-barrier-callbacks
+        (make-hash-table :test 'eq :weakness 'key)
         e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key)
         e-chat-service--board-bindings (make-hash-table :test 'equal)
-        e-chat-service--board-log-owners (make-hash-table :test 'equal)
         e-board-runtime--admission-open-p t
         e-board-runtime--quiescence-current nil
         e-board-runtime--pending-pickup-head nil
@@ -88,9 +149,26 @@
 
 (defun e-board-e2e-prompt-async (harness session-id prompt)
   "Submit PROMPT board-first and return the resulting active turn id."
-  (let ((message-id (e-chat-service-submit-session harness session-id prompt)))
-    (e-board-e2e-drain-session harness session-id)
-    (let ((entry (gethash session-id (e-harness-active-turns harness))))
+  (let ((remove-active-turn
+         (symbol-function 'e-harness-turn-state-remove-active-turn))
+        protected-entry message-id)
+    ;; A synchronous fake backend can settle and queue its zero-delay cleanup
+    ;; while the durable pickup transition cooperatively waits for an ACK.
+    ;; Preserve that exact settled plist until `e-board-e2e-wait-batch' consumes
+    ;; it, matching the production waiter's capture-before-cleanup invariant.
+    (cl-letf (((symbol-function 'e-harness-turn-state-remove-active-turn)
+               (lambda (owner id entry)
+                 (if (and (eq owner harness) (equal id session-id))
+                     (setq protected-entry entry)
+                   (funcall remove-active-turn owner id entry)))))
+      (setq message-id
+            (e-chat-service-submit-session harness session-id prompt))
+      (e-board-e2e-drain-session harness session-id))
+    (let ((entry (or (gethash session-id (e-harness-active-turns harness))
+                     protected-entry)))
+      (when (and protected-entry
+                 (not (gethash session-id (e-harness-active-turns harness))))
+        (puthash session-id protected-entry (e-harness-active-turns harness)))
       (when (and entry
                  (eq (plist-get entry :status) 'running)
                  (null (plist-get entry :context))

@@ -27,7 +27,6 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-task-storage)
-(require 'e-task-queue-legacy)
 (require 'e-work)
 
 (defgroup e-task-queue nil
@@ -48,18 +47,6 @@ default a new chat uses."
                  (symbol :tag "Harness instance id"))
   :group 'e-task-queue)
 
-(defcustom e-task-queue-directory (locate-user-emacs-file "e/task-queue/")
-  "Default directory the persistent task queue writes its records to.
-Mirrors `e-session-directory'.  A queue constructed without a directory stays
-in-memory."
-  :type 'directory
-  :group 'e-task-queue)
-
-(defcustom e-task-queue-write-delay 0.1
-  "Seconds to coalesce persistent task-queue writes before flushing."
-  :type 'number
-  :group 'e-task-queue)
-
 (defcustom e-task-queue-max-records 128
   "Maximum retained records in one task queue."
   :type 'integer
@@ -73,21 +60,6 @@ in-memory."
 (defcustom e-task-queue-record-node-limit 512
   "Maximum Lisp value nodes retained by one durable task record."
   :type 'integer
-  :group 'e-task-queue)
-
-(defcustom e-task-queue-snapshot-byte-limit (* 2 1024 1024)
-  "Maximum encoded size of one durable task snapshot."
-  :type 'integer
-  :group 'e-task-queue)
-
-(defcustom e-task-queue-snapshot-node-limit 32768
-  "Maximum Lisp value nodes inspected before encoding a task snapshot."
-  :type 'integer
-  :group 'e-task-queue)
-
-(defcustom e-task-queue-node-executable "node"
-  "Node executable used by the asynchronous task snapshot writer."
-  :type 'string
   :group 'e-task-queue)
 
 (defcustom e-task-queue-max-retries 1
@@ -167,12 +139,10 @@ RECORDS maps task ids to mutable task plists.  ORDER lists task ids in enqueue
 order (oldest first).  MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, and RUNNER
 override the module defaults when non-nil.  EXPOSE-AWAIT-REFERENCES-P marks the
 one public queue whose task ids the global =task:= resolver can resolve.
-DISPATCHING guards dispatch
-re-entrancy so a synchronous runner settle does not recurse.  PAUSED-P is the
-queue-level gate that stops the dispatcher from starting new work.  DIRECTORY,
-when non-nil, makes the queue durable and names where records are written;
-LOADED-P records successful rehydration of that queue instance; WRITE-TIMER
-coalesces durable writes."
+DISPATCHING guards dispatch re-entrancy so a synchronous runner settle does
+not recurse.  PAUSED-P is the queue-level gate that stops the dispatcher from
+starting new work.  STORAGE is the only durable authority; LOADED-P records
+successful rehydration of that queue instance."
   (records (make-hash-table :test 'equal))
   (order nil)
   (sequence 0)
@@ -184,16 +154,13 @@ coalesces durable writes."
   paused-p
   max-retries
   expose-await-references-p
+  ;; Retained as an always-nil compatibility accessor; file-backed
+  ;; construction is rejected above and no runtime path reads this slot.
   directory
   id
   storage
   (revision 0)
-  loaded-p
-  write-timer
-  write-process
-  write-dirty-p
-  write-failed-p
-  write-callbacks)
+  loaded-p)
 
 (cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
                                     runner producer-binding max-retries directory
@@ -205,11 +172,11 @@ module defaults for this queue when non-nil.  Without RUNNER, PRODUCER-BINDING
 must name current process-local board authority and queued tasks publish facts.
 EXPOSE-AWAIT-REFERENCES-P is reserved for a queue whose task ids are registered
 with the global waitable resolver; private scheduler queues must leave it nil.
-DIRECTORY retains the legacy file backend.  STORAGE selects the opt-in SQLite
-port; supplying both is an error so SQLite never falls back or dual-writes."
-  (when (and directory storage)
+DIRECTORY is retired and signals with migration guidance.  STORAGE is the only
+durable port; omitting both creates an explicitly in-memory queue."
+  (when directory
     (signal 'e-task-queue-error
-            (list "Task queue cannot use file and SQLite storage together")))
+            (list "Task file persistence was retired; run offline migration")))
   (let ((root (and storage (e-task-storage-open-queue storage id))))
     (e-task-queue--create
      :id id
@@ -222,8 +189,7 @@ port; supplying both is an error so SQLite never falls back or dual-writes."
      :runner runner
      :producer-binding producer-binding
      :max-retries max-retries
-     :expose-await-references-p expose-await-references-p
-     :directory directory)))
+     :expose-await-references-p expose-await-references-p)))
 
 (defun e-task-queue-storage-backed-p (queue)
   "Return non-nil when QUEUE uses its typed SQLite storage port."
@@ -329,24 +295,16 @@ truncated prompt prefix in `:prompt-summary'."
     (setq target (plist-put target key (copy-tree (plist-get durable key)))))
   target)
 
-(defun e-task-queue--transition-id (queue record suffix)
-  "Return stable owner transition identity for RECORD and SUFFIX.
-The expected queue revision distinguishes repeated semantic cycles, while the
-same submitted transition retains one identity for lost-ACK reconciliation."
-  (format "%s:%s:r%d:%s" (plist-get record :task-id)
-          (or (plist-get record :attempt-id) "no-attempt")
-          (e-task-queue-revision queue) suffix))
-
 (defun e-task-queue--commit-record
-    (queue current expected-status staged event-id)
+    (queue current expected-status staged)
   "Commit STAGED transition and publish it into CURRENT."
   (if (not (e-task-queue-storage-backed-p queue))
       (e-task-queue--publish-durable-record current staged)
     (let* ((result
             (e-task-storage-transition
              (e-task-queue-storage queue) (e-task-queue-id queue)
-             (e-task-queue-revision queue) (plist-get current :task-id)
-             expected-status event-id (e-task-queue--durable-record staged)))
+             (plist-get current :task-id) expected-status
+             (e-task-queue--durable-record staged)))
            (durable (plist-get result :record)))
       (setf (e-task-queue-revision queue) (plist-get result :revision))
       (e-task-queue--publish-durable-record current durable))))
@@ -554,11 +512,7 @@ retry.  Re-dispatches QUEUE after a real transition."
           (plist-put staged :status status)
           (plist-put staged :finished-at (e-task-queue--timestamp))
           (setq terminal-status status)))
-        (e-task-queue--commit-record
-         queue record expected-status staged
-         (e-task-queue--transition-id
-          queue staged (format "settle:%s:%d" status
-                         (or (plist-get staged :retries) 0))))
+        (e-task-queue--commit-record queue record expected-status staged)
         (plist-put record :handle nil)
         (when terminal-status
           (e-task-queue--settle-work-handle record terminal-status)
@@ -574,9 +528,7 @@ retry.  Re-dispatches QUEUE after a real transition."
       (plist-put staged :status 'interrupted)
       (plist-put staged :finished-at (e-task-queue--timestamp))
       (plist-put staged :error message)
-      (e-task-queue--commit-record
-       queue record 'pausing staged
-       (e-task-queue--transition-id queue staged "pause-interrupted"))
+      (e-task-queue--commit-record queue record 'pausing staged)
       (plist-put record :handle nil)
       (e-task-queue--settle-work-handle record 'interrupted)
       (run-hook-with-args 'e-task-queue-terminal-functions
@@ -604,8 +556,7 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
              (result
               (e-task-storage-claim
                (e-task-queue-storage queue) (e-task-queue-id queue)
-               (e-task-queue-revision queue) task-id attempt-id started-at
-               instance-id)))
+               task-id attempt-id started-at instance-id)))
         (setf (e-task-queue-revision queue) (plist-get result :revision))
         (e-task-queue--publish-durable-record
          record (plist-get result :record))))
@@ -732,7 +683,7 @@ may already be running when this returns."
       (let ((result
              (e-task-storage-enqueue
               (e-task-queue-storage queue) (e-task-queue-id queue)
-              (e-task-queue-revision queue) (e-task-queue-sequence queue)
+              (e-task-queue-sequence queue)
               (e-task-queue--durable-record record))))
         (setf (e-task-queue-revision queue) (plist-get result :revision))
         (setq record (e-task-queue--publish-durable-record
@@ -759,9 +710,7 @@ settle.  Terminal tasks are returned unchanged."
          (plist-put staged :status 'cancelled)
          (plist-put staged :pausing nil)
          (plist-put staged :finished-at (e-task-queue--timestamp))
-         (e-task-queue--commit-record
-          queue record expected staged
-          (e-task-queue--transition-id queue staged "cancel")))
+         (e-task-queue--commit-record queue record expected staged))
        (e-task-queue--settle-work-handle record 'cancelled)
        (e-task-queue--notify queue))
       ('running
@@ -770,9 +719,7 @@ settle.  Terminal tasks are returned unchanged."
            (plist-put staged :status 'cancelled)
            (plist-put staged :pausing nil)
            (plist-put staged :finished-at (e-task-queue--timestamp))
-           (e-task-queue--commit-record
-            queue record 'running staged
-            (e-task-queue--transition-id queue staged "cancel")))
+           (e-task-queue--commit-record queue record 'running staged))
          (plist-put record :handle nil)
          (when (and (listp handle) (functionp (plist-get handle :cancel)))
            (ignore-errors (funcall (plist-get handle :cancel))))
@@ -793,9 +740,7 @@ returned unchanged."
       ('queued
        (let ((staged (copy-tree record)))
          (plist-put staged :status 'paused)
-         (e-task-queue--commit-record
-          queue record 'queued staged
-          (e-task-queue--transition-id queue staged "pause")))
+         (e-task-queue--commit-record queue record 'queued staged))
        (e-task-queue--notify queue))
       ('running
        (let ((handle (plist-get record :handle)))
@@ -803,10 +748,7 @@ returned unchanged."
              (progn
                (let ((staged (copy-tree record)))
                  (plist-put staged :status 'pausing)
-                 (e-task-queue--commit-record
-                  queue record 'running staged
-                  (e-task-queue--transition-id
-                   queue staged "pause-request")))
+                 (e-task-queue--commit-record queue record 'running staged))
                (unless (and (listp handle)
                             (functionp (plist-get handle :cancel)))
                  (e-task-queue--interrupt-pausing
@@ -848,11 +790,7 @@ under the normal cap.  A non-paused task is returned unchanged."
         (plist-put staged :status 'queued)
         (plist-put staged :started-at nil)
         (plist-put staged :finished-at nil)
-        (e-task-queue--commit-record
-         queue record 'paused staged
-         (e-task-queue--transition-id
-          queue staged (format "resume:%d"
-                               (or (plist-get staged :retries) 0)))))
+        (e-task-queue--commit-record queue record 'paused staged))
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue))
     (e-task-queue--normalize queue record)))
@@ -863,8 +801,7 @@ While the gate is set the dispatcher starts no new work.  Returns QUEUE."
   (when (e-task-queue-storage-backed-p queue)
     (let ((result
            (e-task-storage-set-paused
-            (e-task-queue-storage queue) (e-task-queue-id queue)
-            (e-task-queue-revision queue) t)))
+            (e-task-queue-storage queue) (e-task-queue-id queue) t)))
       (setf (e-task-queue-revision queue) (plist-get result :revision))))
   (setf (e-task-queue-paused-p queue) t)
   (dolist (task-id (copy-sequence (e-task-queue-order queue)))
@@ -880,8 +817,7 @@ Returns QUEUE."
   (when (e-task-queue-storage-backed-p queue)
     (let ((result
            (e-task-storage-set-paused
-            (e-task-queue-storage queue) (e-task-queue-id queue)
-            (e-task-queue-revision queue) nil)))
+            (e-task-queue-storage queue) (e-task-queue-id queue) nil)))
       (setf (e-task-queue-revision queue) (plist-get result :revision))))
   (setf (e-task-queue-paused-p queue) nil)
   (dolist (task-id (copy-sequence (e-task-queue-order queue)))
@@ -892,11 +828,7 @@ Returns QUEUE."
               (plist-put staged :status 'queued)
               (plist-put staged :started-at nil)
               (plist-put staged :finished-at nil)
-              (e-task-queue--commit-record
-               queue record 'paused staged
-               (e-task-queue--transition-id
-                queue staged (format "resume-all:%d"
-                               (or (plist-get staged :retries) 0)))))
+              (e-task-queue--commit-record queue record 'paused staged))
           (plist-put record :status 'queued)
           (plist-put record :started-at nil)
           (plist-put record :finished-at nil)))))
@@ -946,214 +878,26 @@ and application runners retain the historical runner signature."
 
 ;; --- persistence ------------------------------------------------------------
 
-(defconst e-task-queue--persist-fields
-  e-task-queue--durable-fields
-  "Durable task record fields.
-The transient `:handle', `:pausing', and the live harness are never persisted.")
-
-(defun e-task-queue--record-file (queue)
-  "Return the on-disk records file for QUEUE, or nil when in-memory."
-  (when-let ((directory (e-task-queue-directory queue)))
-    (expand-file-name "records.eld" directory)))
-
-(defun e-task-queue--persistable-record (record)
-  "Return a durable copy of RECORD carrying only persisted fields."
-  (let (durable)
-    (dolist (key e-task-queue--persist-fields)
-      (setq durable (plist-put durable key (plist-get record key))))
-    durable))
-
-(defun e-task-queue--serialize (queue)
-  "Return QUEUE's durable state as a plist."
-  (list :sequence (e-task-queue-sequence queue)
-        :order (e-task-queue-order queue)
-        :records (mapcar (lambda (task-id)
-                           (e-task-queue--persistable-record
-                            (gethash task-id (e-task-queue-records queue))))
-                         (e-task-queue-order queue))))
-
-(defun e-task-queue--snapshot-string (queue)
-  "Return QUEUE's bounded durable snapshot string."
-  (let ((value (e-task-queue--serialize queue)))
-    (unless (e-task-queue--value-within-budget-p
-             value e-task-queue-snapshot-node-limit
-             e-task-queue-snapshot-byte-limit)
-      (signal 'e-task-queue-error
-              (list "Task queue snapshot exceeds pre-encoding budget")))
-    (let ((snapshot (let ((print-length nil) (print-level nil))
-                      (prin1-to-string value))))
-      (when (> (string-bytes snapshot) e-task-queue-snapshot-byte-limit)
-        (signal 'e-task-queue-error
-                (list "Task queue snapshot exceeds byte limit")))
-      snapshot)))
-
-(defun e-task-queue--writer-script ()
-  "Return the bundled asynchronous task writer path."
-  (expand-file-name
-   "e-task-queue-writer.mjs"
-   (file-name-directory
-    (file-truename (or load-file-name buffer-file-name
-                       (locate-library "e-task-queue") default-directory)))))
-
-(defun e-task-queue--set-write-failure (queue failed)
-  "Set QUEUE's FAILED writer state and its quiescence counter."
-  (unless (eq failed (e-task-queue-write-failed-p queue))
-    (setf (e-task-queue-write-failed-p queue) failed)
-    (e-task-queue--adjust-writer-state 'failures (if failed 1 -1))))
-
-(defun e-task-queue--finish-callbacks (queue succeeded error-value)
-  "Finish QUEUE callbacks with SUCCEEDED and ERROR-VALUE."
-  (let ((callbacks (nreverse (e-task-queue-write-callbacks queue))))
-    (setf (e-task-queue-write-callbacks queue) nil)
-    (dolist (callback callbacks)
-      (if succeeded
-          (when (car callback) (funcall (car callback) queue))
-        (when (cdr callback) (funcall (cdr callback) error-value))))))
-
-(defun e-task-queue--writer-finished (queue process)
-  "Handle terminal PROCESS state for QUEUE's current writer."
-  (when (and (memq (process-status process) '(exit signal))
-             (eq process (e-task-queue-write-process queue)))
-    (setf (e-task-queue-write-process queue) nil)
-    (let ((failed (not (zerop (process-exit-status process)))))
-      (when failed
-        (setf (e-task-queue-write-dirty-p queue) nil))
-      (e-task-queue--set-write-failure queue failed)
-      (if (and (not failed) (e-task-queue-write-dirty-p queue))
-          (progn
-            (setf (e-task-queue-write-dirty-p queue) nil)
-            (condition-case err
-                (e-task-queue--start-async-write queue)
-              (error
-               (e-task-queue--set-write-failure queue t)
-               (e-task-queue--adjust-writer-state 'writes -1)
-               (e-task-queue--finish-callbacks queue nil err))))
-        (e-task-queue--adjust-writer-state 'writes -1)
-        (e-task-queue--finish-callbacks
-         queue (not failed)
-         (and failed
-              (list 'e-task-queue-error "Task queue writer failed")))))))
-
-(defun e-task-queue--start-async-write (queue)
-  "Send one bounded QUEUE snapshot to the external writer."
-  (let ((exec-path (default-value 'exec-path))
-        (process-environment (default-value 'process-environment)))
-    (let* ((file (e-task-queue--record-file queue))
-           (node (executable-find e-task-queue-node-executable))
-           (snapshot (e-task-queue--snapshot-string queue)))
-      (unless node
-        (signal 'e-task-queue-error
-                (list "Cannot find task queue Node writer")))
-      (make-directory (file-name-directory file) t)
-      (let ((process
-             (make-process
-              :name "e-task-queue-writer" :buffer nil :noquery t
-              :command (list node (e-task-queue--writer-script) file)
-              :connection-type 'pipe :coding 'utf-8-unix
-              :sentinel (lambda (process _event)
-                          (e-task-queue--writer-finished queue process)))))
-        (setf (e-task-queue-write-process queue) process)
-        (condition-case err
-            (progn
-              (process-send-string process snapshot)
-              (process-send-eof process))
-          (error
-           (setf (e-task-queue-write-process queue) nil)
-           (when (process-live-p process) (delete-process process))
-           (signal (car err) (cdr err))))))))
-
-(defun e-task-queue--schedule-write (queue)
-  "Schedule a coalesced durable write for QUEUE.
-No-op for an in-memory queue.  Reuses a pending timer so a burst of mutations
-collapses into one write off the hot enqueue/settle path."
-  (when (and (e-task-queue-directory queue)
-             (not (timerp (e-task-queue-write-timer queue))))
-    (if (process-live-p (e-task-queue-write-process queue))
-        (setf (e-task-queue-write-dirty-p queue) t)
-      (e-task-queue--adjust-writer-state 'writes 1)
-      (setf (e-task-queue-write-timer queue)
-            (run-at-time
-             (max 0 (or e-task-queue-write-delay 0)) nil
-             (lambda ()
-               (when (e-task-queue-p queue)
-                 (setf (e-task-queue-write-timer queue) nil)
-                 (condition-case err
-                     (e-task-queue--start-async-write queue)
-                   (error
-                    (e-task-queue--set-write-failure queue t)
-                    (e-task-queue--adjust-writer-state 'writes -1)
-                    (signal (car err) (cdr err)))))))))))
-
 (defun e-task-queue-finalize (queue on-done on-error)
   "Asynchronously finalize QUEUE's current durability boundary.
 Call ON-DONE with QUEUE after the worker commits the current snapshot, or call
 ON-ERROR with the writer error.  Return QUEUE immediately."
-  (unless (or (e-task-queue-directory queue)
-              (e-task-queue-storage-backed-p queue))
+  (unless (e-task-queue-storage-backed-p queue)
     (signal 'e-task-queue-error (list "In-memory task queue is not durable")))
-  (if (e-task-queue-storage-backed-p queue)
-      (condition-case err
-          (progn
-            ;; A read submitted after all preceding synchronous owner commits
-            ;; is the task owner's narrow ordered durability barrier.
-            (e-task-storage-snapshot
-             (e-task-queue-storage queue) (e-task-queue-id queue) 1)
-            (when on-done (funcall on-done queue)))
-        (error (when on-error (funcall on-error err))))
-    (push (cons on-done on-error) (e-task-queue-write-callbacks queue))
-    (cond
-     ((process-live-p (e-task-queue-write-process queue)) nil)
-     ((timerp (e-task-queue-write-timer queue))
-      (cancel-timer (e-task-queue-write-timer queue))
-      (setf (e-task-queue-write-timer queue) nil)
-      (condition-case err
-          (e-task-queue--start-async-write queue)
-        (error
-         (e-task-queue--set-write-failure queue t)
-         (e-task-queue--adjust-writer-state 'writes -1)
-         (e-task-queue--finish-callbacks queue nil err))))
-     (t
-      (e-task-queue--adjust-writer-state 'writes 1)
-      (condition-case err
-          (e-task-queue--start-async-write queue)
-        (error
-         (e-task-queue--set-write-failure queue t)
-         (e-task-queue--adjust-writer-state 'writes -1)
-         (e-task-queue--finish-callbacks queue nil err))))))
+  (condition-case err
+      (progn
+        ;; A read submitted after all preceding synchronous owner commits is
+        ;; the task owner's narrow ordered durability barrier.
+        (e-task-storage-snapshot
+         (e-task-queue-storage queue) (e-task-queue-id queue) 1)
+        (when on-done (funcall on-done queue)))
+    (error (when on-error (funcall on-error err))))
   queue)
 
-(defun e-task-queue--persist-on-change (queue)
-  "Persist QUEUE on a change event.
-Bound to `e-task-queue-change-functions' so durable queues write off every
-task mutation without the core knowing about disk on its hot path."
-  (when (e-task-queue-directory queue)
-    (e-task-queue--schedule-write queue)))
-
-(add-hook 'e-task-queue-change-functions #'e-task-queue--persist-on-change)
-
-(defun e-task-queue--load-record (queue durable)
-  "Return a live internal record from a DURABLE persisted record.
-A task that was `running' at shutdown could not have survived its turn, so it
-is normalized to `queued' for a best-effort re-run."
-  (let ((record (copy-sequence durable))
-        (persisted-status (plist-get durable :status)))
-    (when (eq (plist-get record :status) 'running)
-      (setq record (plist-put record :status 'queued))
-      (setq record (plist-put record :started-at nil))
-      (setq record (plist-put record :finished-at nil)))
-    (setq record (plist-put record :handle nil))
-    (setq record (plist-put record :pausing nil))
-    (setq record
-          (plist-put record :work-handle
-                     (e-task-queue--work-handle-for-status record)))
-    (run-hook-with-args 'e-task-queue-rehydrate-functions queue record persisted-status)
-    record))
-
 (defun e-task-queue-load (queue)
-  "Load QUEUE's persisted records from disk and re-dispatch.  Return QUEUE.
-A `running' record loads as `queued'; `paused', terminal, and `queued' states
-load unchanged.  A queue with no directory or no records file is left empty.
-`e-task-queue-loaded-p' becomes non-nil only after the complete load succeeds."
+  "Restore QUEUE through its typed storage port and re-dispatch.
+An explicitly in-memory queue is simply marked loaded.  Durable `running' or
+`pausing' records restore as interrupted and never auto-retry."
   (if (e-task-queue-storage-backed-p queue)
       (let ((snapshot
            (e-task-storage-snapshot
@@ -1175,10 +919,7 @@ load unchanged.  A queue with no directory or no records file is left empty.
               (let ((result
                      (e-task-storage-transition
                       (e-task-queue-storage queue) (e-task-queue-id queue)
-                      (e-task-queue-revision queue) (plist-get record :task-id)
-                      (plist-get record :status)
-                      (e-task-queue--transition-id
-                       queue staged "restart-interrupted")
+                      (plist-get record :task-id) (plist-get record :status)
                       (e-task-queue--durable-record staged))))
                 (setf (e-task-queue-revision queue)
                       (plist-get result :revision))
@@ -1196,18 +937,6 @@ load unchanged.  A queue with no directory or no records file is left empty.
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue)
       queue)
-    (when-let* ((file (e-task-queue--record-file queue))
-                ((file-exists-p file)))
-      (let ((state (e-task-queue-legacy-decode-file file)))
-        (clrhash (e-task-queue-records queue))
-        (setf (e-task-queue-order queue) (plist-get state :order))
-        (setf (e-task-queue-sequence queue) (or (plist-get state :sequence) 0))
-        (dolist (durable (plist-get state :records))
-          (let ((record (e-task-queue--load-record queue durable)))
-            (puthash (plist-get record :task-id) record
-                     (e-task-queue-records queue))))
-        (e-task-queue--notify queue)
-        (e-task-queue--dispatch queue)))
     (setf (e-task-queue-loaded-p queue) t))
   queue)
 
@@ -1218,8 +947,7 @@ load unchanged.  A queue with no directory or no records file is left empty.
             (list "History deletion requires SQLite task storage")))
   (let ((result
          (e-task-storage-delete-history
-          (e-task-queue-storage queue) (e-task-queue-id queue)
-          (e-task-queue-revision queue))))
+          (e-task-queue-storage queue) (e-task-queue-id queue))))
     (setf (e-task-queue-revision queue) (plist-get result :revision)
           (e-task-queue-sequence queue) (plist-get result :sequence)
           (e-task-queue-order queue) nil)

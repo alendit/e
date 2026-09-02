@@ -1262,6 +1262,24 @@ Removal remains the terminal operation in `e-board-registry-remove-participant'.
            :from from :state state))
     participant))
 
+(defun e-board-registry-activate-restored-participant
+    (board-or-id participant-or-id)
+  "Make a canonical dormant PARTICIPANT-OR-ID locally deliverable.
+SQLite restoration deliberately hydrates durable participant identity as
+`dormant' until its process-local endpoint has been reattached.  This narrow
+restart operation changes only that local availability projection; it emits no
+new Board fact and does not republish the already committed identity."
+  (let* ((board (e-board-registry--require-active board-or-id))
+         (participant (e-board-registry--participant board participant-or-id))
+         (source-participant
+          (e-board-registry-participant-source-participant participant)))
+    (unless (eq (e-board-participant-state source-participant) 'dormant)
+      (signal 'e-board-registry-error
+              (list "Restored participant is not dormant"
+                    (e-board-registry-participant-id participant))))
+    (setf (e-board-participant-state source-participant) 'active)
+    participant))
+
 (cl-defun e-board-registry-install-subscription
     (board-or-id participant-or-id selector &key id (state 'active)
                 (effect 'create-pickup) (delivery 'normal) priority

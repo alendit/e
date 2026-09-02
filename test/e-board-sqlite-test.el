@@ -385,7 +385,7 @@
         (should-error
          (e-board-storage-commit-routing
           storage (e-board-id board) (e-board-generation board)
-          (e-board-revision board) "one" '(:state unrouted) nil)
+          "one" '(:state unrouted) nil)
          :type 'e-board-storage-conflict)))))
 
 (ert-deftest e-board-sqlite-s5-no-recipient-outcome-is-final ()
@@ -409,10 +409,10 @@
       (should-error
        (e-board-storage-commit-routing
         storage (e-board-id board) (e-board-generation board)
-        (e-board-revision board) "input" '(:state routed) nil)
+        "input" '(:state routed) nil)
        :type 'e-board-storage-conflict))))
 
-(ert-deftest e-board-sqlite-s5-restart-reconciles-ambiguous-fifo-head ()
+(ert-deftest e-board-sqlite-s5-restart-marks-ambiguous-fifo-head-uncertain ()
   "Restore makes the ambiguous head uncertain and its successor ready."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let* ((registry
@@ -610,8 +610,8 @@
        (e-board-session-association-restore sessions session)
        :type 'e-board-storage-error))))
 
-(ert-deftest e-board-sqlite-s6-composite-lost-ack-publishes-after-ack-once ()
-  "The composite reconciles a lost ACK without a Board/session tear."
+(ert-deftest e-board-sqlite-s6-composite-publishes-after-ack-once ()
+  "The composite publishes neither owner before its transaction ACK."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (e-session-create sessions :id "session")
     (let ((board (e-board-sqlite-test--board storage)))
@@ -645,9 +645,7 @@
               0.02 nil
               (lambda ()
                 (set-process-filter worker ordinary-filter)
-                ;; Discard the committed response and lose the worker.  The
-                ;; stable composite command must reconcile automatically.
-                (delete-process worker))))))
+                (funcall ordinary-filter worker captured))))))
         (e-board-pickup-admission-commit
          board delivery-id sessions "session" 'idle)
         (should response-seen)
@@ -660,14 +658,14 @@
         (should-error
          (e-board-storage-admit-pickup
           storage (e-board-id board) (e-board-generation board) delivery-id
-          1 "session" 1 '(:different-record t) 'idle)
-         :type 'e-runtime-store-command-conflict)
+          "session" '(:different-record t) 'idle)
+         :type 'e-board-storage-conflict)
         (e-session-sqlite-store-close sessions)
         (setq sessions (e-session-sqlite-store-create directory))
         (should (= (length (e-session-activity-events sessions "session")) 1))))))
 
-(ert-deftest e-board-sqlite-s6-composite-revision-conflict-has-no-tear ()
-  "A stale session precondition publishes neither side of the composite."
+(ert-deftest e-board-sqlite-s6-composite-invalid-state-has-no-tear ()
+  "A pickup that is not claimed publishes neither side of the composite."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (e-session-create sessions :id "session")
     (let ((board (e-board-sqlite-test--board storage)))
@@ -678,7 +676,6 @@
                board :id "input" :to "member" :content "deliver"
                :source-input-key '(client 1 1)))
              (delivery-id (car (e-board-publication-pickup-ids publication)))
-             (_claim (e-board-pickup-start-delivery board delivery-id))
              (pickup (e-board-pickup board delivery-id))
              (admission
               (e-session-board-input-admission-prepare
@@ -687,11 +684,9 @@
         (should-error
          (e-board-storage-admit-pickup
           storage (e-board-id board) (e-board-generation board) delivery-id
-          (e-board-pickup-revision pickup) "session"
-          (1- (e-session-board-input-admission-expected-revision admission))
-          (e-session-board-input-admission-record admission) 'idle)
-         :type 'e-runtime-store-revision-conflict)
-        (should (eq (e-board-pickup-state pickup) 'delivering))
+          "session" (e-session-board-input-admission-record admission) 'idle)
+         :type 'e-board-storage-conflict)
+        (should (eq (e-board-pickup-state pickup) 'ready))
         (should-not (e-session-activity-events sessions "session"))))))
 
 (provide 'e-board-sqlite-test)

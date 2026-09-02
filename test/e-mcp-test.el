@@ -1128,12 +1128,17 @@ echoed back on `tools/list' and `tools/call'."
         (progn
           (e-harness-create-session harness :id "s1")
           (e-mcp-capability--activate harness "s1" "fixture" '("echo"))
-          (let ((loaded-harness
-                 (e-harness-create
-                  :backend (e-backend-fake-create :items nil)
-                  :sessions (e-session-persistent-store-create directory))))
-            (should (equal (e-mcp-capability--active-set loaded-harness "s1")
-                           '(("fixture" "echo"))))))
+          (e-session-storage-close store)
+          (let* ((loaded-store (e-session-persistent-store-create directory))
+                 (loaded-harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions loaded-store)))
+            (unwind-protect
+                (should
+                 (equal (e-mcp-capability--active-set loaded-harness "s1")
+                        '(("fixture" "echo"))))
+              (e-session-storage-close loaded-store))))
       (delete-directory directory t))))
 
 (ert-deftest e-mcp-test-list-tools-memoizes-catalog ()

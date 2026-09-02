@@ -1,11 +1,11 @@
-;;; e-runtime-sqlite.el --- Opt-in one-store runtime composition -*- lexical-binding: t; -*-
+;;; e-runtime-sqlite.el --- One-store runtime composition -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 
-;; This is the sole opt-in composition root for Feature 87 before P4 cutover.
+;; This is the sole ordinary composition root for Feature 87 after P4 cutover.
 ;; It opens one runtime-store worker, lends that physical runtime to every
 ;; owner-shaped adapter, and owns the only close.  It contains no domain policy.
 
@@ -77,7 +77,7 @@
 (cl-defun e-runtime-sqlite-open
     (directory &key load-sessions load-task-queue task-runner
                task-producer-binding (task-queue-id "default"))
-  "Open one opt-in SQLite runtime rooted at DIRECTORY.
+  "Open one SQLite runtime rooted at DIRECTORY.
 
 The returned composition injects one shared physical runtime through separate
 session, Board, task, cron, voice, Goodnite, and raw-result owner ports.
@@ -107,7 +107,10 @@ provides process-local execution authority."
                 task-queue
                 (e-task-queue-create
                  :id task-queue-id :storage task-storage
-                 :runner task-runner :producer-binding task-producer-binding)
+                 :runner task-runner :producer-binding task-producer-binding
+                 ;; A live composition is process-global, so its task queue is
+                 ;; the one public queue eligible for =task:= waitable links.
+                 :expose-await-references-p t)
                 cron-storage
                 (e-cron-storage-sqlite-create runtime-store)
                 voice-storage

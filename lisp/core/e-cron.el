@@ -16,14 +16,14 @@
 ;;
 ;; Definitions vs. state.  A schedule *definition* (id, recurrence, action) is
 ;; declarative configuration: the owning layer or init re-registers it on every
-;; load.  The *last-fire* time is runtime state, persisted to
-;; `e-cron-state-file' under the user emacs directory.  Registration is
-;; therefore idempotent in timing: the next fire is anchored on the persisted
-;; last-fire (or a persisted first-registration anchor), never on the moment of
-;; re-registration, so reloading a layer does not push an interval schedule's
-;; fire out and a schedule that came due while Emacs was down fires once on the
-;; next start.  The due time is last-fire plus the recurrence's interval; the
-;; interval is derived once from the definition and cached on the schedule.
+;; load.  When the ordinary runtime is active, its SQLite cron port owns the
+;; durable anchor and last-fire state.  Explicitly in-memory schedules retain
+;; only a process-local compatibility cache.  Registration is therefore
+;; idempotent in timing: the next fire is anchored on the restored last-fire (or
+;; first-registration anchor), never on the moment of re-registration, so
+;; reloading a layer does not push an interval schedule's fire out.  The due
+;; time is last-fire plus the recurrence's interval; the interval is derived
+;; once from the definition and cached on the schedule.
 ;;
 ;; Two knobs shape a fire:
 ;;
@@ -47,20 +47,11 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-cron-storage)
-(require 'e-cron-legacy)
 
 (defgroup e-cron nil
   "Cron-like schedule engine for e."
   :group 'e
   :prefix "e-cron-")
-
-(defcustom e-cron-state-file (locate-user-emacs-file "e/cron-state.eld")
-  "File persisting per-schedule runtime state (last-fire and anchor).
-The engine reads it once and rewrites it after each fire, so a schedule's
-cadence survives Emacs restarts and layer reloads.  Nil disables persistence
-(state stays in memory only); tests bind it nil."
-  :type '(choice (const :tag "No persistence" nil) file)
-  :group 'e-cron)
 
 (defvar e-cron-current-time-function #'current-time
   "Function returning the current time as an Emacs time value.
@@ -75,7 +66,7 @@ tests); handlers must not mutate the schedule.")
   "Optional process-wide cron-owned durable storage port.")
 
 (defun e-cron-configure-storage (storage)
-  "Install cron STORAGE, or nil for the legacy/default path."
+  "Install cron STORAGE, or nil while no runtime is active."
   (unless (or (null storage) (e-cron-storage-p storage))
     (signal 'wrong-type-argument (list 'e-cron-storage-p storage)))
   (setq e-cron-storage storage))
@@ -109,7 +100,6 @@ guard evaluation.  ENABLED gates arming."
   (catch-up 'skip)
   metadata
   storage
-  reconcile
   revision
   definition-revision
   anchor
@@ -127,12 +117,12 @@ guard evaluation.  ENABLED gates arming."
   "Registered schedules keyed by id.")
 
 (defvar e-cron--state (make-hash-table :test 'equal)
-  "In-memory cron runtime state: id -> plist of persisted floats.
-Each plist holds `:last-fire' and `:anchor' as `float-time' values.  Loaded
-lazily from `e-cron-state-file' and rewritten after each fire.")
+  "Process-local cron state for explicitly in-memory schedules.
+Each plist holds `:last-fire' and `:anchor' as `float-time' values.  The
+ordinary runtime instead restores these values through its SQLite port.")
 
 (defvar e-cron--state-loaded nil
-  "Non-nil once `e-cron--state' has been hydrated from disk this session.")
+  "Non-nil once the process-local cron cache has been initialized.")
 
 (defvar e-cron--active-firings (make-hash-table :test 'equal)
   "Process-local durable firing identities currently executing an action.")
@@ -269,29 +259,14 @@ recurrence has no constant span and defers to the calendar scan."
 ;; --- runtime state persistence ----------------------------------------------
 
 (defun e-cron--state-load ()
-  "Hydrate `e-cron--state' from `e-cron-state-file' once per session.
-A malformed or missing file leaves the state empty rather than signaling."
+  "Return the process-local cadence cache when no SQLite port is active."
   (unless e-cron--state-loaded
-    (setq e-cron--state-loaded t)
-    (when (and e-cron-state-file (file-readable-p e-cron-state-file))
-      (ignore-errors
-        (setq e-cron--state
-              (e-cron-legacy-decode-file e-cron-state-file)))))
+    (setq e-cron--state-loaded t))
   e-cron--state)
 
 (defun e-cron--state-write ()
-  "Persist `e-cron--state' to `e-cron-state-file' atomically.
-No-op when persistence is disabled (`e-cron-state-file' nil)."
-  (when e-cron-state-file
-    (ignore-errors
-      (make-directory (file-name-directory e-cron-state-file) t)
-      (let ((tmp (make-temp-file
-                  (expand-file-name ".cron-state-"
-                                    (file-name-directory e-cron-state-file)))))
-        (with-temp-file tmp
-          (let ((print-length nil) (print-level nil))
-            (prin1 e-cron--state (current-buffer))))
-        (rename-file tmp e-cron-state-file t)))))
+  "Retain the process-local compatibility cache without disk persistence."
+  nil)
 
 (defun e-cron--state-get (id)
   "Return the persisted state plist for ID, or nil."
@@ -335,7 +310,7 @@ keep pushing the first fire forward."
                    (format "%s" (e-cron-schedule-id b))))))
 
 (cl-defun e-cron-register (&key id when action guard (catch-up 'skip)
-                                metadata (enabled t) reconcile
+                                metadata (enabled t)
                                 (storage e-cron-storage))
   "Register a schedule entry and return it.
 An existing schedule with the same ID is stopped and replaced.  See
@@ -370,7 +345,6 @@ entry is armed immediately."
                     :catch-up catch-up
                     :metadata metadata
                     :storage storage
-                    :reconcile reconcile
                     :revision (plist-get durable :revision)
                     :definition-revision
                     (plist-get durable :definition-revision)
@@ -393,18 +367,11 @@ entry is armed immediately."
                  (e-cron--active-firing-key
                   storage id (plist-get firing :firing-id))
                  e-cron--active-firings)
-          (let* ((state (plist-get firing :state))
-                 (resolution
-                  (and reconcile (funcall reconcile schedule firing))))
-            (cond
-             (resolution
-              (e-cron-storage-settle
-               storage id (plist-get firing :firing-id) state 'reconciled
-               resolution))
-             ((eq state 'claimed)
+          (let ((state (plist-get firing :state)))
+            (when (eq state 'claimed)
               (e-cron-storage-settle
                storage id (plist-get firing :firing-id) 'claimed 'unsafe
-               '(:reason interrupted-action-unknown)))))))
+               '(:reason interrupted-action-unknown))))))
       (setf (e-cron-schedule-unresolved-firings schedule)
             (plist-get (e-cron-storage-cadence storage id) :unresolved)))
     ;; Anchor the initial next-fire on persisted history (last-fire or the
@@ -484,8 +451,7 @@ has already chosen to run."
     (when storage
       (let ((claim
              (e-cron-storage-claim
-              storage (e-cron-schedule-id schedule)
-              (e-cron-schedule-revision schedule) firing-id
+              storage (e-cron-schedule-id schedule) firing-id
               (float-time due) (float-time now) (float-time next))))
         (setf (e-cron-schedule-revision schedule)
               (plist-get claim :revision)
@@ -557,8 +523,7 @@ has already chosen to run."
                   (format "%.6f" (float-time due))))
          (claim
           (e-cron-storage-claim
-           storage (e-cron-schedule-id schedule)
-           (e-cron-schedule-revision schedule) firing-id
+           storage (e-cron-schedule-id schedule) firing-id
            (float-time due) (float-time now) (float-time next))))
     (e-cron-storage-settle
      storage (e-cron-schedule-id schedule) firing-id
@@ -611,8 +576,7 @@ has passed, `skip' advances to the next future occurrence and arms, while
       (signal 'e-cron-storage-error
               (list "Cron history deletion requires SQLite storage")))
     (e-cron-storage-delete-history
-     (e-cron-schedule-storage schedule) id
-     (e-cron-schedule-revision schedule))))
+     (e-cron-schedule-storage schedule) id)))
 
 (provide 'e-cron)
 

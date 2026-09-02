@@ -17,7 +17,7 @@
 (require 'e-session-storage)
 
 (cl-defun e-session-tool-followup-transition
-    (store session-id call-id state &optional payload expected-revision)
+    (store session-id call-id state &optional payload)
   "Commit typed durable tool CALL-ID STATE for SESSION-ID."
   (unless (memq state '(admitted claimed started resulted follow-up-ready
                                  promoted settled attention-required cancelled))
@@ -26,7 +26,7 @@
     (signal 'e-session-storage-error
             (list "Tool follow-up storage requires SQLite")))
   (e-session-storage-sqlite-tool-transition
-   store session-id call-id state (copy-tree payload) expected-revision))
+   store session-id call-id state (copy-tree payload)))
 
 (defun e-session-tool-followup-classifications (store session-id)
   "Return bounded durable tool restart classifications for SESSION-ID."

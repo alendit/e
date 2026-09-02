@@ -22,6 +22,8 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-task-queue)
+(require 'e-runtime-store)
+(require 'e-task-storage-sqlite)
 (require 'e-board-orchestration)
 (require 'e-board-orchestration-actions)
 
@@ -450,77 +452,6 @@ tests need a runner whose handle carries one."
                                :status)
                     'running))))))
 
-(ert-deftest e-task-queue-test-persistence-round-trip ()
-  "Records round-trip through a directory, preserving order and statuses."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let ((dir (make-temp-file "e-task-queue-test" t)))
-      (unwind-protect
-          (let* ((recorder (make-e-task-queue-test--recorder))
-                 (queue (e-task-queue-create
-                         :max-parallel 1
-                         :directory dir
-                         :runner (e-task-queue-test--fake-runner recorder)))
-                 (a (e-task-queue-enqueue queue :prompt "first"))
-                 (b (e-task-queue-enqueue queue :prompt "second")))
-            ;; a is running under the cap, b is queued.
-            (e-task-queue-test--await-durable queue)
-            (let ((reloaded (e-task-queue-create
-                             :max-parallel 1
-                             :directory dir
-                             ;; A runner that never settles keeps re-queued
-                             ;; work observable as running after load.
-                             :runner (e-task-queue-test--fake-runner
-                                      (make-e-task-queue-test--recorder)))))
-              (e-task-queue-load reloaded)
-              (should (equal (mapcar (lambda (r) (plist-get r :task-id))
-                                     (e-task-queue-list reloaded))
-                             (list (plist-get b :task-id)
-                                   (plist-get a :task-id))))
-              ;; The task that was running at "shutdown" re-runs; the queued
-              ;; one waits under the cap of 1.
-              (should (eq (plist-get (e-task-queue-get reloaded
-                                                       (plist-get a :task-id))
-                                     :status)
-                          'running))
-              (should (eq (plist-get (e-task-queue-get reloaded
-                                                       (plist-get b :task-id))
-                                     :status)
-                          'queued))))
-        (delete-directory dir t)))))
-
-(ert-deftest e-task-queue-test-persistence-preserves-terminal-and-paused ()
-  "Terminal tasks keep their status on load; paused tasks stay paused."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let ((dir (make-temp-file "e-task-queue-test" t)))
-      (unwind-protect
-          (let* ((recorder (make-e-task-queue-test--recorder))
-                 (queue (e-task-queue-create
-                         :directory dir
-                         :runner (e-task-queue-test--fake-runner recorder)))
-                 (done (e-task-queue-enqueue queue :prompt "done"))
-                 (paused (e-task-queue-enqueue queue :prompt "paused")))
-            (funcall (plist-get (car (last (e-task-queue-test--recorder-calls
-                                            recorder)))
-                                :settle)
-                     :status 'done)
-            (e-task-queue-pause queue (plist-get paused :task-id))
-            (e-task-queue-test--await-durable queue)
-            (let ((reloaded (e-task-queue-create :directory dir)))
-              ;; Keep the gate set so paused/done tasks are not re-dispatched.
-              (setf (e-task-queue-paused-p reloaded) t)
-              (e-task-queue-load reloaded)
-              (should (eq (plist-get (e-task-queue-get
-                                      reloaded (plist-get done :task-id))
-                                     :status)
-                          'done))
-              (should (eq (plist-get (e-task-queue-get
-                                      reloaded (plist-get paused :task-id))
-                                     :status)
-                          'paused))))
-        (delete-directory dir t)))))
-
 (ert-deftest e-task-queue-test-in-memory-queue-writes-nothing ()
   "A queue with no directory persists nothing."
   (e-task-queue-test--with-instances
@@ -530,7 +461,6 @@ tests need a runner whose handle carries one."
                    :runner (e-task-queue-test--fake-runner recorder))))
       (e-task-queue-enqueue queue :prompt "a")
       (should (null (e-task-queue-directory queue)))
-      (should (null (e-task-queue--record-file queue)))
       (should-error (e-task-queue-finalize queue #'ignore #'ignore)
                     :type 'e-task-queue-error))))
 
@@ -549,19 +479,10 @@ tests need a runner whose handle carries one."
       (should-error (e-task-queue-enqueue queue :prompt "next")
                     :type 'e-task-queue-error))))
 
-(ert-deftest e-task-queue-test-snapshot-budget-precedes-serialization ()
-  "An oversized snapshot is rejected before printer allocation."
-  (let* ((queue (e-task-queue-create))
-         (e-task-queue-snapshot-byte-limit 8)
-         printed)
-    (puthash "one" (list :task-id "one" :prompt "123456789")
-             (e-task-queue-records queue))
-    (setf (e-task-queue-order queue) '("one"))
-    (cl-letf (((symbol-function 'prin1-to-string)
-               (lambda (_value) (setq printed t) "ignored")))
-      (should-error (e-task-queue--snapshot-string queue)
-                    :type 'e-task-queue-error)
-      (should-not printed))))
+(ert-deftest e-task-queue-test-file-construction-requires-offline-migration ()
+  "The retired file-backed constructor is never an ordinary fallback."
+  (should-error (e-task-queue-create :directory "/tmp/retired-task-store")
+                :type 'e-task-queue-error))
 
 (ert-deftest e-task-queue-test-failed-task-auto-retries ()
   "A failed task with retries left is re-armed as a fresh queued attempt.
@@ -655,117 +576,6 @@ without one there is nothing to analyze, so the task terminates."
       (should (eq (plist-get (e-task-queue-get queue task-id) :status)
                   'failed)))))
 
-(ert-deftest e-task-queue-test-retry-persists-fields ()
-  "Retry counter and origin prompt round-trip through persistence."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let ((dir (make-temp-file "e-task-queue-test" t)))
-      (unwind-protect
-          (let* ((recorder (make-e-task-queue-test--recorder))
-                 (queue (e-task-queue-create
-                         :max-retries 1
-                         :directory dir
-                         :runner (e-task-queue-test--fake-runner-with-session
-                                  recorder)))
-                 (task (e-task-queue-enqueue queue :prompt "do the thing"))
-                 (task-id (plist-get task :task-id))
-                 (settle (plist-get (car (e-task-queue-test--recorder-calls
-                                          recorder))
-                                    :settle)))
-            (funcall settle :status 'failed :error "boom")
-            (e-task-queue-test--await-durable queue)
-            (let ((reloaded (e-task-queue-create
-                             :max-retries 1
-                             :directory dir
-                             :runner (e-task-queue-test--fake-runner-with-session
-                                      (make-e-task-queue-test--recorder)))))
-              (e-task-queue-load reloaded)
-              (let ((record (e-task-queue-get reloaded task-id)))
-                (should (= (plist-get record :retries) 1))
-                (should (equal (plist-get record :origin-prompt)
-                               "do the thing")))))
-        (delete-directory dir t)))))
-
-(ert-deftest e-task-queue-test-write-timer-owns-quiescence-slot ()
-  "A coalesced domain write remains visible until its callback returns."
-  (let ((e-task-queue--unsettled-write-count 0)
-        (e-task-queue--failed-write-count 0)
-        (e-task-queue--unsettled-generation 0)
-        callback
-        wrote)
-    (cl-letf (((symbol-function 'run-at-time)
-               (lambda (_seconds _repeat function &rest arguments)
-                 (setq callback (lambda () (apply function arguments)))
-                 (timer-create)))
-              ((symbol-function 'e-task-queue--start-async-write)
-               (lambda (_queue)
-                 (setq wrote t)
-                 (e-task-queue--adjust-writer-state 'writes -1))))
-      (let ((queue (e-task-queue-create :directory "/tmp/task-writer-test")))
-        (e-task-queue--schedule-write queue)
-        (should (equal (e-task-queue-unsettled-state)
-                       '(:generation 1 :writes 1 :failures 0)))
-        (funcall callback)
-        (should wrote)
-        (should (= (plist-get (e-task-queue-unsettled-state) :writes) 0))))))
-
-(ert-deftest e-task-queue-test-dirty-writer-keeps-one-quiescence-slot ()
-  "A dirty worker handoff never exposes a false quiescent edge."
-  (let* ((queue (e-task-queue-create :directory "/tmp/task-writer-test"))
-         (e-task-queue--unsettled-write-count 1)
-         (e-task-queue--failed-write-count 0)
-         (e-task-queue--unsettled-generation 1)
-         (first 'first)
-         (second 'second)
-         started)
-    (setf (e-task-queue-write-process queue) first
-          (e-task-queue-write-dirty-p queue) t)
-    (cl-letf (((symbol-function 'process-status) (lambda (_process) 'exit))
-              ((symbol-function 'process-exit-status) (lambda (_process) 0))
-              ((symbol-function 'e-task-queue--start-async-write)
-               (lambda (target)
-                 (setq started t)
-                 (setf (e-task-queue-write-process target) second))))
-      (e-task-queue--writer-finished queue first)
-      (should started)
-      (should (= (plist-get (e-task-queue-unsettled-state) :writes) 1))
-      (e-task-queue--writer-finished queue second)
-      (should (= (plist-get (e-task-queue-unsettled-state) :writes) 0)))))
-
-(ert-deftest e-task-queue-test-writer-uses-global-process-environment ()
-  "Writer discovery and launch ignore unrelated buffer-local process state."
-  (let ((directory (make-temp-file "e-task-queue-writer-environment-" t))
-        (global-exec-path (default-value 'exec-path))
-        (global-process-environment (default-value 'process-environment))
-        discovery-environment
-        launch-environment
-        sent)
-    (unwind-protect
-        (with-temp-buffer
-          (setq-local exec-path '("/buffer-only"))
-          (setq-local process-environment '("PATH=/buffer-only"))
-          (let ((queue (e-task-queue-create :directory directory)))
-            (cl-letf (((symbol-function 'executable-find)
-                       (lambda (_executable)
-                         (setq discovery-environment
-                               (list exec-path process-environment))
-                         "/global/node"))
-                      ((symbol-function 'make-process)
-                       (lambda (&rest _arguments)
-                         (setq launch-environment
-                               (list exec-path process-environment))
-                         'writer))
-                      ((symbol-function 'process-send-string)
-                       (lambda (_process snapshot) (setq sent snapshot)))
-                      ((symbol-function 'process-send-eof) #'ignore))
-              (e-task-queue--start-async-write queue)))
-          (should (equal discovery-environment
-                         (list global-exec-path global-process-environment)))
-          (should (equal launch-environment
-                         (list global-exec-path global-process-environment)))
-          (should (stringp sent)))
-      (delete-directory directory t))))
-
 (provide 'e-task-queue-test)
 
 ;;; e-task-queue-test.el ends here
@@ -818,31 +628,10 @@ without one there is nothing to analyze, so the task terminates."
           (should (eq (plist-get retried :status) 'running))
           (should (= (plist-get (plist-get retried :metadata) :board-attempt) 1)))))))
 
-(ert-deftest e-task-queue-test-orchestration-metadata-survives-save-load ()
-  "Durable queue snapshots retain run, task, and attempt bridge metadata."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let ((dir (make-temp-file "e-task-queue-orchestration" t)))
-      (unwind-protect
-          (let* ((recorder (make-e-task-queue-test--recorder))
-                 (queue (e-task-queue-create
-                         :directory dir :runner (e-task-queue-test--fake-runner recorder)))
-                 (task (e-task-queue-enqueue
-                        queue :prompt "do" :metadata '(:board-run-id "run-1"
-                                                        :board-task-key "task"
-                                                        :board-attempt 0)))
-                 (task-id (plist-get task :task-id)))
-            (e-task-queue-test--await-durable queue)
-            (let ((reloaded (e-task-queue-create
-                             :directory dir :runner (e-task-queue-test--fake-runner recorder))))
-              (e-task-queue-load reloaded)
-              (should (equal (plist-get (plist-get (e-task-queue-get reloaded task-id)
-                                                  :metadata)
-                                        :board-task-key)
-                             "task"))))
-        (delete-directory dir t)))))
-
-(ert-deftest e-task-queue-test-orchestration-restart-restores-required-and-optional-work ()
+(when nil
+  ;; Retired file-store fixture.  SQLite task restart and Board derived-fact
+  ;; retry are covered by `e-runtime-sqlite-p3-test'.
+  (ert-deftest e-task-queue-test-orchestration-restart-restores-required-and-optional-work ()
   "A restored journal and queue accept one report per task and reconcile once."
   (e-task-queue-test--with-instances
     (e-task-queue-test--register-instance :chat-a t)
@@ -921,4 +710,4 @@ without one there is nothing to analyze, so the task terminates."
                   (should (= (length queued) 1))
                   (should (equal (plist-get (nthcdr 3 (car queued)) :source-input-key)
                                  '("orchestration-continuation" "continuation-1" 0))))))
-        (delete-directory directory t))))))
+        (delete-directory directory t)))))))

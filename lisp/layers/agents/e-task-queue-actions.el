@@ -53,11 +53,14 @@
    "\n")
   "Detailed Task Queue action reference.")
 
-(defvar e-task-queue-actions-default-queue
-  (e-task-queue-create :directory e-task-queue-directory
-                       :expose-await-references-p t)
-  "Default durable task queue backing the capability actions.
-It persists to `e-task-queue-directory'; `e-task-queue-load' rehydrates it.")
+(defvar e-task-queue-actions-default-queue nil
+  "Process-local task queue injected by the one-store composition root.")
+
+(defun e-task-queue-actions-configure-queue (queue)
+  "Install composition-owned durable QUEUE for capability actions."
+  (unless (or (null queue) (e-task-queue-p queue))
+    (signal 'wrong-type-argument (list 'e-task-queue-p queue)))
+  (setq e-task-queue-actions-default-queue queue))
 
 (defun e-task-queue-actions-ensure-loaded ()
   "Rehydrate the default durable queue once.
@@ -67,6 +70,9 @@ alike -- calls this, so rehydration and re-dispatch of persisted queued work
 never depend on a harness happening to build the task-queue layer first.
 Malformed or unreadable persistence remains visible to the caller and leaves
 the queue eligible for a later retry."
+  (unless (e-task-queue-p e-task-queue-actions-default-queue)
+    (signal 'e-task-queue-error
+            (list "Default SQLite task queue is not configured")))
   (unless (e-task-queue-loaded-p e-task-queue-actions-default-queue)
     (e-task-queue-load e-task-queue-actions-default-queue))
   e-task-queue-actions-default-queue)

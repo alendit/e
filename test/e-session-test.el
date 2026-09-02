@@ -17,6 +17,7 @@
 (require 'e-dev-profile)
 (require 'e-session)
 (require 'e-session-storage)
+(require 'e-session-legacy)
 (require 'e-context-lifetime)
 (require 'e-board)
 
@@ -30,6 +31,19 @@
     (cons (e-session-test--copy-value (car value))
           (e-session-test--copy-value (cdr value))))
    (t value)))
+
+(defun e-session-test--replay-legacy-copy (directory session-id)
+  "Replay SESSION-ID from copied legacy DIRECTORY through pure boundaries."
+  (let* ((decoded (e-session-legacy-decode directory))
+         (records (cdr (assoc session-id (plist-get decoded :sessions))))
+         (store (e-session-store-create)))
+    (unless records
+      (signal 'e-session-missing (list session-id)))
+    (let ((e-session--load-in-progress t))
+      (dolist (record records)
+        (e-session--apply-physical-record store record)))
+    (e-session--finish-replay store session-id)
+    store))
 
 (ert-deftest e-session-test-semantic-storage-port-does-not-require-jsonl-details ()
   "The facade composes a storage double through typed mutation operations.
@@ -48,9 +62,8 @@ knowledge; those remain adapter details behind the storage owner."
         (progn
           (e-session-storage-register
            store :directory directory
-           :sessions-directory (expand-file-name "sessions" directory)
-           :index-file (expand-file-name "index.json" directory)
-           :persistent t)
+           :persistent t :backend 'sqlite :runtime-store 'storage-double
+           :owns-runtime-store nil)
           (cl-letf (((symbol-function 'e-session-storage-prepare-mutation)
                    (lambda (_store session-id record)
                      (push (list session-id (plist-get record :type)) prepared)
@@ -267,8 +280,7 @@ stand in for the pure curation preparation path."
 (ert-deftest e-session-test-board-routing-policy-attributes-reject-before-mutation ()
   "Invalid attribute clauses fail before queue, JSON, or association changes."
   (let* ((directory (make-temp-file "e-session-routing-attributes-" t))
-         (store (e-session-persistent-index-store-create
-                 directory :write-mode 'queued))
+         (store (e-session-persistent-index-store-create directory))
          (session-id "routing-attributes")
          (base-policy (e-session-test--routing-policy "attribute-participant"))
          (invalid-attributes
@@ -654,8 +666,7 @@ stand in for the pure curation preparation path."
                          (e-session-current-path store session-id)))
                        1)))
           (e-session-flush-write-queue store)
-          (let* ((journal (e-session-storage-session-reference store session-id))
-                 (reopened (e-session-persistent-store-create directory))
+          (let* ((reopened (e-session-persistent-store-create directory))
                  (package-entry
                   (seq-find
                    (lambda (entry)
@@ -703,16 +714,13 @@ stand in for the pure curation preparation path."
                             :response-entry-id)
                            response-id))
             (should (=
-                     (with-temp-buffer
-                       (insert-file-contents journal)
-                       (let (count)
-                         (goto-char (point-min))
-                         (while (search-forward
-                                 "\"type\":\"context-curation-package\""
-                                 nil t)
-                           (setq count (1+ (or count 0))))
-                         count))
-                       1))
+                     (cl-count-if
+                      (lambda (record)
+                        (equal (plist-get record :type)
+                               "context-curation-package"))
+                      (e-session-storage-read-session-records
+                       reopened session-id))
+                     1))
             (should (string-match-p "selected package semantic"
                                     source-projection))
             (should (string-match-p "selected package semantic"
@@ -726,7 +734,10 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 
-(ert-deftest e-session-test-context-curation-package-retry-survives-audit-and-backends ()
+(when nil
+  ;; Retired direct/queued/Node-controller matrix.  Exact SQLite replay and
+  ;; worker-loss propagation are covered by the Feature 87 session suite.
+  (ert-deftest e-session-test-context-curation-package-retry-survives-audit-and-backends ()
   "Exact package retries survive audit failure, queueing, and controller writes."
   (let* ((v3-record
           '(:record-version 3
@@ -786,7 +797,7 @@ stand in for the pure curation preparation path."
                         reopened session-id package)
                        :already-present))))
           (let* ((store (e-session-persistent-index-store-create
-                         queued-directory :write-mode 'queued))
+                         queued-directory))
                  (session-id "retry-queued"))
             (funcall install store session-id)
             (should (plist-get
@@ -820,7 +831,7 @@ stand in for the pure curation preparation path."
                          1)))))
       (delete-directory direct-directory t)
       (delete-directory queued-directory t)
-      (delete-directory controller-directory t))))
+      (delete-directory controller-directory t)))))
 
 (ert-deftest e-session-test-context-erasure-query-is-path-scoped-and-not-forked ()
   "Erasure identities follow a selected path but are not copied to a clean fork."
@@ -1049,46 +1060,32 @@ stand in for the pure curation preparation path."
               (with-key record :record-version '(2))))
        (replay-fails
         (type context-record)
-        (let ((directory (make-temp-file "e-session-context-corrupt-" t)))
-          (unwind-protect
-              (let* ((store (e-session-persistent-store-create directory))
-                     (session-id (format "corrupt-%s"
-                                         (substring (symbol-name type)
-                                                    9)))
-                     (session (e-session-create store :id session-id))
-                     (parent-id (plist-get session :root-event-id)))
-                (when (eq type 'context-promotion)
-                  (setq parent-id
-                        (plist-get
-                         (e-session-append-context-generation
-                          store session-id
-                          (e-context-lifetime-generation-create
-                           :id "replay-generation"
-                           :checkpoint '((:role system :content "policy"))
-                           :covered-session-boundary parent-id))
-                         :id)))
-                (with-temp-buffer
-                  (insert
-                   (json-encode
-                    (list :type (symbol-name type)
-                          :session-id session-id
-                          :id (format "corrupt-entry-%s"
-                                      (substring (symbol-name type) 9))
-                          :parent-id parent-id
-                          :timestamp "2026-08-24T00:00:01Z"
-                          :context-record
-                          (plist-get
-                           (e-session-codec-record-for-json
-                            (list :context-record context-record))
-                           :context-record)))
-                   "\n")
-                  (write-region (point-min) (point-max)
-                                (e-session-storage-session-reference store session-id)
-                                t 'silent))
-                (should-error
-                 (e-session-persistent-store-create directory)
-                 :type 'e-session-error))
-            (delete-directory directory t)))))
+        (let* ((store (e-session-store-create))
+               (session-id (format "corrupt-%s"
+                                   (substring (symbol-name type) 9)))
+               (session (e-session-create store :id session-id))
+               (parent-id (plist-get session :root-event-id)))
+          (when (eq type 'context-promotion)
+            (setq parent-id
+                  (plist-get
+                   (e-session-append-context-generation
+                    store session-id
+                    (e-context-lifetime-generation-create
+                     :id "replay-generation"
+                     :checkpoint '((:role system :content "policy"))
+                     :covered-session-boundary parent-id))
+                   :id)))
+          (should-error
+           (e-session--apply-physical-record
+            store
+            (list :type (symbol-name type)
+                  :session-id session-id
+                  :id (format "corrupt-entry-%s"
+                              (substring (symbol-name type) 9))
+                  :parent-id parent-id
+                  :timestamp "2026-08-24T00:00:01Z"
+                  :context-record context-record))
+           :type 'e-session-error))))
     (let* ((generation
             (e-context-lifetime-generation-create
              :id "append-generation"
@@ -1135,64 +1132,53 @@ stand in for the pure curation preparation path."
 (ert-deftest e-session-test-legacy-context-records-do-not-restore-runtime-frames ()
   "Legacy context lifetime journal lines preserve ordinary transcript only."
   (let* ((directory (make-temp-file "e-session-context-legacy-" t))
-         (store (e-session-persistent-store-create directory))
-         (session-id "legacy-context"))
+         (sessions-directory (expand-file-name "sessions" directory))
+         (session-id "legacy-context")
+         (journal (expand-file-name
+                   (concat session-id ".jsonl") sessions-directory)))
     (unwind-protect
         (progn
-          (e-session-create store :id session-id)
-          (let ((message
-                 (e-session-append-message
-                  store session-id
-                  '(:id "ordinary-entry" :role user :content "retain me"))))
-            (with-temp-buffer
-              (dolist (record
-                       (list
-                        (list :type "context-generation"
-                              :session-id session-id
-                              :id "legacy-generation"
-                              :parent-id (plist-get message :id)
-                              :timestamp "2026-08-24T00:00:00Z"
-                              :context-record
-                              '(:record-version 1
-                                :type "context-generation"
-                                :id "legacy-generation"
-                                :checkpoint nil))
-                        (list :type "context-frame"
-                              :session-id session-id
-                              :id "legacy-frame"
-                              :parent-id "legacy-generation"
-                              :timestamp "2026-08-24T00:00:01Z"
-                              :context-record
-                              '(:record-version 1
-                                :type "context-frame"
-                                :id "legacy-frame"
-                                :generation-id "legacy-generation"
-                                :state "open"))
-                        (list :type "context-promotion"
-                              :session-id session-id
-                              :id "legacy-promotion"
-                              :parent-id "legacy-frame"
-                              :timestamp "2026-08-24T00:00:02Z"
-                              :context-record
-                              '(:record-version 1
-                                :type "context-promotion"
-                                :id "legacy-promotion"
-                                :frame-id "legacy-frame"))
-                        (list :type "context-frame-settlement"
-                              :session-id session-id
-                              :id "legacy-settlement"
-                              :parent-id "legacy-frame"
-                              :timestamp "2026-08-24T00:00:03Z"
-                              :context-record
-                              '(:record-version 1
-                                :type "context-frame-settlement"
-                                :frame-id "legacy-frame"
-                                :status "acknowledged"))))
-                (insert (json-encode record) "\n"))
-              (write-region (point-min) (point-max)
-                            (e-session-storage-session-reference store session-id)
-                            t 'silent)))
-          (let ((reopened (e-session-persistent-store-create directory)))
+          (make-directory sessions-directory)
+          (with-temp-file journal
+            (dolist
+                (record
+                 (list
+                  (list :type "session" :session-id session-id :id "root"
+                        :timestamp "2026-08-23T23:59:58Z")
+                  (list :type "message" :session-id session-id
+                        :id "ordinary-entry" :parent-id "root"
+                        :timestamp "2026-08-23T23:59:59Z"
+                        :message '(:id "ordinary-entry" :role "user"
+                                   :content "retain me"))
+                  (list :type "context-generation" :session-id session-id
+                        :id "legacy-generation" :parent-id "ordinary-entry"
+                        :timestamp "2026-08-24T00:00:00Z"
+                        :context-record
+                        '(:record-version 1 :type "context-generation"
+                          :id "legacy-generation" :checkpoint nil))
+                  (list :type "context-frame" :session-id session-id
+                        :id "legacy-frame" :parent-id "legacy-generation"
+                        :timestamp "2026-08-24T00:00:01Z"
+                        :context-record
+                        '(:record-version 1 :type "context-frame"
+                          :id "legacy-frame" :generation-id "legacy-generation"
+                          :state "open"))
+                  (list :type "context-promotion" :session-id session-id
+                        :id "legacy-promotion" :parent-id "legacy-frame"
+                        :timestamp "2026-08-24T00:00:02Z"
+                        :context-record
+                        '(:record-version 1 :type "context-promotion"
+                          :id "legacy-promotion" :frame-id "legacy-frame"))
+                  (list :type "context-frame-settlement"
+                        :session-id session-id :id "legacy-settlement"
+                        :parent-id "legacy-frame"
+                        :timestamp "2026-08-24T00:00:03Z"
+                        :context-record
+                        '(:record-version 1 :type "context-frame-settlement"
+                          :frame-id "legacy-frame" :status "acknowledged"))))
+              (insert (json-encode record) "\n")))
+          (let ((reopened
+                 (e-session-test--replay-legacy-copy directory session-id)))
             (should (equal (mapcar (lambda (message)
                                      (plist-get message :content))
                                    (e-session-messages reopened session-id))
@@ -1349,7 +1335,7 @@ stand in for the pure curation preparation path."
 (ert-deftest e-session-test-board-log-freezes-input-and-returned-envelopes ()
   "Board journal state remains private across input and return-value mutation."
   (let* ((directory (make-temp-file "e-session-board-freeze-" t))
-         (store (e-session-persistent-index-store-create directory :write-mode 'queued))
+         (store (e-session-persistent-index-store-create directory))
          (id (copy-sequence "frozen"))
          (value (copy-sequence "top-level"))
          (nested-value (copy-sequence "original"))
@@ -1798,6 +1784,22 @@ stand in for the pure curation preparation path."
                    :role 'user
                    :content (format "chunked message %d with enough bytes"
                                     index))))
+          ;; Leave a deterministic suffix beyond the latest checkpoint so the
+          ;; cooperative current-store reader must issue several bounded pages.
+          (dotimes (offset 4)
+            (let* ((index (+ 8 offset))
+                   (id (format "msg-%d" index))
+                   (parent-id (format "msg-%d" (1- index))))
+              (e-session-storage-commit-mutation
+               store session-id
+               (list :type "message" :session-id session-id
+                     :id id :parent-id parent-id
+                     :timestamp "2026-09-02T00:00:00Z"
+                     :message
+                     (list :id id :parent-id parent-id :role 'user
+                           :content (format
+                                     "chunked message %d with enough bytes"
+                                     index))))))
           (let ((loaded (e-session-persistent-index-store-create directory))
                 result
                 failure
@@ -1806,7 +1808,7 @@ stand in for the pure curation preparation path."
             (setq request
                   (e-session-load-session-start
                    loaded session-id
-                   :chunk-bytes 256
+                   :chunk-bytes 2
                    :on-progress (lambda (payload)
                                   (push payload progress))
                    :on-done (lambda (session)
@@ -1830,23 +1832,21 @@ stand in for the pure curation preparation path."
                                      (format
                                       "chunked message %d with enough bytes"
                                       index))
-                                   (number-sequence 0 7))))))
+                                   (number-sequence 0 11))))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-load-requires-explicit-resume-checkpoint ()
   "Normal session load never falls back to a full checkpoint-less replay."
   (let* ((directory (make-temp-file "e-session-no-checkpoint-" t))
-         (sessions-directory (expand-file-name "sessions" directory))
-         (journal (expand-file-name "legacy.jsonl" sessions-directory)))
+         (store (e-session-persistent-index-store-create directory)))
     (unwind-protect
         (progn
-          (make-directory sessions-directory t)
-          (with-temp-file journal
-            (insert
-             "{\"type\":\"session\",\"session-id\":\"legacy\",\"id\":\"root\",\"timestamp\":\"2026-08-10T00:00:00Z\"}\n"))
-          (let ((store (e-session-persistent-index-store-create directory)))
-            (should-error (e-session-load-session store "legacy")
-                          :type 'e-session-checkpoint-missing)))
+          (e-session-storage-commit-mutation
+           store "checkpoint-less"
+           '(:type "session" :session-id "checkpoint-less" :id "root"
+             :timestamp "2026-08-10T00:00:00Z"))
+          (should-error (e-session-load-session store "checkpoint-less")
+                        :type 'e-session-checkpoint-missing))
       (delete-directory directory t))))
 
 
@@ -1885,10 +1885,8 @@ stand in for the pure curation preparation path."
              "{\"type\":\"session\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:00Z\"}\n"
              "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n"
              "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:02Z\",\"message\":{\"role\":\"assistant\",\"content\":\"hi\"}}\n"))
-          (let ((migration-store
-                 (e-session-persistent-index-store-create directory)))
-            (e-session-migrate-session-checkpoint migration-store "legacy"))
-          (let* ((loaded (e-session-persistent-store-create directory))
+          (let* ((loaded (e-session-test--replay-legacy-copy
+                          directory "legacy"))
                  (events (e-session-session-events loaded "legacy"))
                  (root (car events))
                  (messages (e-session-messages loaded "legacy")))
@@ -1906,7 +1904,7 @@ stand in for the pure curation preparation path."
 
 
 (ert-deftest e-session-test-index-store-lists-without-loading-transcripts ()
-  "Index-backed persistent stores list sessions before transcript replay."
+  "Indexed SQLite stores list sessions without replaying record pages."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-store-create directory))
          (session-id (plist-get (e-session-create store :id "session-1") :id)))
@@ -1916,25 +1914,16 @@ stand in for the pure curation preparation path."
            store session-id '(:id "msg-1" :role user :content "indexed hello"))
           (e-session-append-message
            store session-id '(:id "msg-2" :role tool :content (:payload "large")))
-          (should (string-prefix-p
-                   "["
-                   (with-temp-buffer
-                     (insert-file-contents
-                      (expand-file-name "index.json" directory))
-                     (buffer-string))))
-          (let ((original-insert (symbol-function 'insert-file-contents)))
-            (cl-letf (((symbol-function 'insert-file-contents)
-                       (lambda (filename &rest args)
-                         (when (string-suffix-p ".jsonl" filename)
-                           (error "index store loaded transcript"))
-                         (apply original-insert filename args))))
+          (cl-letf (((symbol-function 'e-session-load-session)
+                     (lambda (&rest _args)
+                       (error "index store replayed session records"))))
               (let* ((indexed (e-session-persistent-index-store-create directory))
                      (sessions (e-session-list indexed))
                      (session (car sessions)))
                 (should (equal (plist-get session :id) session-id))
                 (should (equal (plist-get session :summary) "indexed hello"))
                 (should (= (plist-get session :message-count) 2))
-                (should-not (plist-get session :loaded)))))
+                (should-not (plist-get session :loaded))))
           (let ((indexed (e-session-persistent-index-store-create directory)))
             (should (equal (mapcar (lambda (message) (plist-get message :id))
                                    (e-session-messages indexed session-id))
@@ -1967,7 +1956,7 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-index-store-loads-object-shaped-index ()
-  "Old object-shaped indexes still provide useful session metadata."
+  "A legacy-only index receives a targeted offline-migration error."
   (let ((directory (make-temp-file "e-session-" t)))
     (unwind-protect
         (progn
@@ -1984,17 +1973,9 @@ stand in for the pure curation preparation path."
              "\"last-message-at\":\"2026-05-24T17:21:00Z\""
              "}"
              "}\n"))
-          (let* ((store (e-session-persistent-index-store-create directory))
-                 (sessions (e-session-list store))
-                 (session (car sessions)))
-            (should (= (length sessions) 1))
-            (should (equal (plist-get session :id) "session-1"))
-            (should (equal (plist-get session :title)
-                           "object index prompt"))
-            (should (equal (plist-get session :summary)
-                           "object index prompt"))
-            (should (= (plist-get session :message-count) 3))
-            (should-not (plist-get session :loaded))))
+          (should-error
+           (e-session-persistent-index-store-create directory)
+           :type 'e-runtime-store-schema-too-old))
       (delete-directory directory t))))
 
 
@@ -2077,11 +2058,8 @@ stand in for the pure curation preparation path."
                            "chat-updated"
                            "harness-instance-id"]))
              "\n"))
-          (let ((migration-store
-                 (e-session-persistent-index-store-create directory)))
-            (e-session-migrate-session-checkpoint
-             migration-store "legacy-array"))
-          (let* ((store (e-session-persistent-store-create directory))
+          (let* ((store (e-session-test--replay-legacy-copy
+                         directory "legacy-array"))
                  (metadata (plist-get (e-session-get store "legacy-array")
                                       :metadata)))
             (should (e-session-aggregate-keyword-plist-shape-p metadata))
@@ -2196,10 +2174,8 @@ stand in for the pure curation preparation path."
                                         :last-scope "document"
                                         :last-focus (:point 42)))))
              "\n"))
-          (let ((migration-store
-                 (e-session-persistent-index-store-create directory)))
-            (e-session-migrate-session-checkpoint migration-store "legacy"))
-          (let* ((store (e-session-persistent-store-create directory))
+          (let* ((store (e-session-test--replay-legacy-copy
+                         directory "legacy"))
                  (metadata (plist-get (e-session-get store "legacy")
                                       :metadata))
                  (canvas (plist-get metadata :org-canvas)))
@@ -2555,7 +2531,7 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-state-records-are-identifiable-session-events ()
-  "Session state JSONL records are first-class identifiable session events."
+  "Session state records remain identifiable across bounded checkpointing."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-store-create directory))
          (session-id (plist-get (e-session-create store :id "session-1") :id)))
@@ -2572,11 +2548,9 @@ stand in for the pure curation preparation path."
                  (path-types (mapcar (lambda (entry)
                                        (plist-get entry :event-type))
                                      (e-session-current-path loaded session-id))))
-            (should (equal types
-                           '(session-created
-                             session-info
-                             session-info
-                             current-branch)))
+            ;; The current root folds superseded metadata/options; the
+            ;; identity-bearing branch event remains on the resumed path.
+            (should (equal types '(session-created current-branch)))
             (dolist (event events)
               (should (plist-get event :id)))
             (should-not (plist-get (car events) :parent-id))
@@ -2618,12 +2592,10 @@ stand in for the pure curation preparation path."
                            (plist-get right :id)))))))
 
 (ert-deftest e-session-test-clear-messages-is-append-only ()
-  "Clearing a session empties replayed transcript without truncating JSONL."
+  "Clearing a session appends a durable reset without deleting old records."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-store-create directory))
-         (session-id (plist-get (e-session-create store :id "session-1") :id))
-         (path (expand-file-name "session-1.jsonl"
-                                 (expand-file-name "sessions" directory))))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
     (unwind-protect
         (progn
           (e-session-append-message
@@ -2631,14 +2603,12 @@ stand in for the pure curation preparation path."
           (e-session-clear-messages store session-id)
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (e-session-messages loaded session-id) nil))
-            (should (string-match-p "\"type\":\"message\""
-                                    (with-temp-buffer
-                                      (insert-file-contents path)
-                                      (buffer-string))))
-            (should (string-match-p "\"type\":\"messages-cleared\""
-                                    (with-temp-buffer
-                                      (insert-file-contents path)
-                                      (buffer-string))))))
+            (let ((types
+                   (mapcar
+                    (lambda (record) (plist-get record :type))
+                    (e-session-storage-read-session-records loaded session-id))))
+              (should (member "message" types))
+              (should (member "messages-cleared" types)))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-clear-messages-creates-reset-boundary-root ()
@@ -2665,11 +2635,19 @@ stand in for the pure curation preparation path."
                                          (plist-get entry :role)))
                                    path)
                            '(session-created messages-cleared user)))
+            ;; The bounded checkpoint folds the reset event into its root, but
+            ;; the visible post-reset path and durable journal remain exact.
             (should (equal (mapcar (lambda (entry)
                                      (or (plist-get entry :event-type)
                                          (plist-get entry :role)))
                                    loaded-path)
-                           '(session-created messages-cleared user)))))
+                           '(session-created user)))
+            (should (member
+                     "messages-cleared"
+                     (mapcar
+                      (lambda (record) (plist-get record :type))
+                      (e-session-storage-read-session-records
+                       loaded session-id))))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-activity-events-persist-and-clear-with-messages ()
@@ -2842,7 +2820,7 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-list-sessions-sorted-with-display-metadata ()
-  "Session list returns recent sessions with title, counts, and file path."
+  "Session list returns recent sessions with current durable references."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-store-create directory)))
     (unwind-protect
@@ -2863,9 +2841,7 @@ stand in for the pure curation preparation path."
             (should (equal (plist-get (cadr sessions) :title)
                            "older prompt"))
             (should (= (plist-get (car sessions) :message-count) 1))
-            (should (string-suffix-p
-                     "sessions/newer.jsonl"
-                     (plist-get (car sessions) :file)))))
+            (should-not (plist-get (car sessions) :file))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-list-roots-excludes-worker-sessions ()
@@ -3211,16 +3187,11 @@ stand in for the pure curation preparation path."
           (let ((ids (mapcar (lambda (session) (plist-get session :id))
                              (e-session-list store))))
             (should (equal ids '("newer" "older"))))
-          (let* ((index-json
-                  (with-temp-buffer
-                    (insert-file-contents
-                     (expand-file-name "index.json" directory))
-                    (buffer-string)))
-                 (newer-position (string-match "\"newer\"" index-json))
-                 (older-position (string-match "\"older\"" index-json)))
-            (should newer-position)
-            (should older-position)
-            (should (< newer-position older-position))))
+          (should
+           (equal
+            (mapcar (lambda (entry) (plist-get entry :id))
+                    (e-session-storage-read-catalog-projection store))
+            '("newer" "older"))))
       (delete-directory directory t))))
 
 (provide 'e-session-test)
