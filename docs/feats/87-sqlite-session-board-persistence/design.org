@@ -164,10 +164,12 @@ P4 implements the accepted cutover:
 
 - =e-default-harnesses= opens and caches one =e-runtime-sqlite= composition in
   =E_RUNTIME_STATE_DIRECTORY= when explicitly overridden.  Otherwise it
-  derives the common e state root as the parent of the established
-  =e-session-directory=; it never mistakes the legacy =sessions/= child for
-  the whole runtime root.  It injects its task queue into the task capability
-  and closes the composition once;
+  derives the common e state root only when the normalized
+  =e-session-directory= has the established =sessions= leaf identity; it never
+  mistakes that owner child for the whole runtime root or guesses from an
+  arbitrary custom child.  A custom layout must set
+  =E_RUNTIME_STATE_DIRECTORY= to its actual common root.  It injects its task
+  queue into the task capability and closes the composition once;
 - =e-runtime-migration= is the only legacy import application service.  It
   inventories a copied source tree, hashes exact bytes, decodes each accepted
   legacy owner, canonically deduplicates Board facts, imports through typed
@@ -181,12 +183,16 @@ P4 implements the accepted cutover:
   Historical nested task =.org= fragments are likewise reported as preserved
   task output products, not queue authority.  Any other unmapped file aborts
   before installation, and the operator CLI bounds error output rather than
-  printing large decoded values in a backtrace.  Its explicit =cutover=
+  printing source-load warnings or large decoded values in a backtrace, even
+  from an uncompiled relocated checkout.  Its explicit =cutover=
   operation requires Emacs stopped, an exact copied source, the current common
   root, and a nonexistent sibling backup.  It verifies a sibling SQLite stage,
   rechecks the legacy bytes, renames the complete legacy root to the backup,
   and installs the stage at the original root.  If installation fails after
-  rotation, it restores the original root;
+  rotation, it restores the original root.  Keyboard quit is inhibited across
+  the two renames and explicit =quit= follows the same rollback path as an
+  install error; once the staging rename completes, SQLite remains canonical
+  even if the caller does not observe acknowledgement;
 - =e-runtime-store-offline= launches a private batch worker for the sole
   supported v3-to-v4 schema upgrade.  The worker rejects a live owner, verifies
   the source, creates and verifies a restrictive pre-upgrade backup, applies
@@ -466,14 +472,20 @@ and integrity checks, and atomically installs the verified store.  Conflicting
 identities, unexplained loss, missing roots, and non-round-tripping values abort
 cutover.  Source files remain inactive rollback material and are not deleted.
 The ordinary runtime path is the common e root, not its legacy =sessions/=
-child.  Same-root adoption is a separate explicit cutover step: after a copied
+child.  Defaults derive that root only from the conventional
+=<root>/sessions= shape; a differently named custom session directory requires
+an explicit =E_RUNTIME_STATE_DIRECTORY= rather than a guessed parent.
+Same-root adoption is a separate explicit cutover step: after a copied
 source verifies, the application service requires a sibling backup path,
 confirms the copy still exactly matches the stopped legacy root, rotates that
 entire root to the backup, then renames the verified sibling stage into the
 original path.  Both renames stay on one parent filesystem.  A failed install
-rename restores the backup before returning the error.  A legacy-only startup
-does none of this work; it raises =e-runtime-store-migration-required= with the
-source, target, copied-source requirement, cutover command, and restart step.
+rename or explicit quit restores the backup before returning the condition.
+Quit is deferred across the critical pair, and a completed staging rename is
+never rolled back merely because acknowledgement is interrupted.  A
+legacy-only startup does none of this work; it raises
+=e-runtime-store-migration-required= with the source, target, copied-source
+requirement, cutover command, and restart step.
 
 Ordinary startup creates a new current-version schema but never upgrades an
 older SQLite schema.  An older version reports a targeted migration-required

@@ -132,9 +132,10 @@ The following are current boundaries, not a future proposal:
 - Ordinary startup creates only the current schema. Legacy import and schema
   upgrade are explicit offline actions; unsupported stores fail with targeted
   guidance rather than fallback. The default SQLite directory is the common e
-  state root (the parent of the historical session directory), with
-  `E_RUNTIME_STATE_DIRECTORY` as an explicit override. A legacy-only common
-  root is never mutated by startup.
+  state root derived only from the conventional `<root>/sessions` identity,
+  with `E_RUNTIME_STATE_DIRECTORY` as an explicit override. Defaults refuse to
+  guess the parent of an arbitrarily named custom session directory. A
+  legacy-only common root is never mutated by startup.
 - WAL uses `synchronous=NORMAL`. It establishes database consistency across
   process failure, not survival of the latest acknowledgement after power loss.
 - Expected domain errors are handled by the owner with enough context.
@@ -488,8 +489,9 @@ checkpoint content is preserved exactly. Timestamped session backups and
 historical task =.org= products are hashed and reported as preserved source
 artifacts. Any file without an explicit import, validate/rebuild, preservation,
 or retirement disposition aborts the migration. Migration and upgrade CLI
-failures are single-line and bounded, so a malformed large snapshot cannot
-flood operator output.
+entrypoints suppress load-time warning chatter in their private batch process;
+actual failures remain single-line and bounded, so a cold source checkout or a
+malformed large snapshot cannot flood operator output.
 
 The ordinary SQLite store occupies the same common e root that historically
 contained `sessions/`, `task-queue/`, and the other owner sidecars. Adoption is
@@ -499,8 +501,11 @@ sibling backup path, and runs `scripts/e-runtime-migrate cutover`. The
 migration service builds and verifies a sibling stage, confirms that the copy
 still exactly matches the legacy root, renames the complete legacy tree to the
 backup, and atomically installs SQLite at the original path. If the install
-rename fails, it restores the original root. The backup retains rollback data
-and retired file products; startup never performs this operation.
+rename fails or explicitly signals quit before completion, it restores the
+original root. Keyboard quit is deferred across the rename pair; after the
+staging rename completes, SQLite stays canonical even if acknowledgement is
+interrupted. The backup retains rollback data and retired file products;
+startup never performs this operation.
 
 ## Public Surfaces
 

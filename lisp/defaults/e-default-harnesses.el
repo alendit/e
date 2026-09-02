@@ -103,12 +103,29 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
   "Return the common e state root established by session configuration.
 
 The retired session owner used a dedicated child directory while the other
-owners used siblings below the common root.  Keeping this derivation here
-lets defaults assemble the process without teaching storage adapters about
-another owner's configuration."
-  (file-name-as-directory
-   (file-name-directory
-    (directory-file-name (expand-file-name e-session-directory)))))
+owners used siblings below the common root.  Derive that root only from the
+established `sessions' child identity; an arbitrary customized child does not
+identify its parent as the common runtime root."
+  (let* ((session-directory
+          (file-name-as-directory
+           (expand-file-name e-session-directory)))
+         (leaf
+          (file-name-nondirectory
+           (directory-file-name session-directory))))
+    (unless (equal leaf "sessions")
+      (signal
+       'e-runtime-store-migration-required
+       (list
+        (format
+         (concat
+          "Cannot derive the common e runtime root from e-session-directory "
+          "%s because its leaf is not sessions. Set "
+          "E_RUNTIME_STATE_DIRECTORY to the actual common e root, or restore "
+          "the conventional <root>/sessions layout")
+         session-directory))))
+    (file-name-as-directory
+     (file-name-directory
+      (directory-file-name session-directory)))))
 
 (defun e-default-runtime-directory ()
   "Return the ordinary runtime state directory.

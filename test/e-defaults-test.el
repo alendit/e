@@ -252,6 +252,37 @@
       (delete-directory root t)
       (delete-directory override t))))
 
+(ert-deftest e-defaults-test-custom-session-leaf-requires-runtime-override ()
+  "Defaults do not guess a common root from an arbitrary session child."
+  (let* ((root (make-temp-file "e-defaults-custom-root-" t))
+         (custom (expand-file-name "my-sessions" root))
+         (process-environment (copy-sequence process-environment))
+         (e-session-directory custom)
+         (e-default--runtime nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil))
+    (make-directory custom t)
+    (with-temp-file (expand-file-name "index.json" custom)
+      (insert "{}"))
+    (setenv "E_RUNTIME_STATE_DIRECTORY" nil)
+    (unwind-protect
+        (let ((err
+               (should-error
+                (e-default-session-store)
+                :type 'e-runtime-store-migration-required)))
+          (should (string-match-p
+                   "E_RUNTIME_STATE_DIRECTORY"
+                   (error-message-string err)))
+          (should (string-match-p
+                   "<root>/sessions"
+                   (error-message-string err)))
+          (should-not
+           (file-exists-p (expand-file-name "store.sqlite3" root)))
+          (should-not
+           (file-exists-p (expand-file-name "store.sqlite3" custom))))
+      (e-default-runtime-close)
+      (delete-directory root t))))
+
 (ert-deftest e-defaults-test-chat-harness-uses-unconfigured-backend-without-factory ()
   "Default chat creates no provider-backed harness without user configuration."
   (let ((e-default-chat-harness-factory nil)

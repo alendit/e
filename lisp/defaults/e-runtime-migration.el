@@ -586,23 +586,43 @@ original ROOT is restored.  Neither SOURCE nor BACKUP is deleted."
             (signal 'e-runtime-migration-cutover-error
                     (list "Legacy root changed during offline verification"
                           root)))
-          (rename-file root backup nil)
-          (condition-case install-error
-              (progn
-                (rename-file staging root nil)
-                (setq installed t)
-                report)
-            (error
-             (let (restore-error)
-               (condition-case caught
-                   (rename-file backup root nil)
-                 (error (setq restore-error caught)))
-               (if restore-error
-                   (signal
-                    'e-runtime-migration-cutover-error
-                    (list "SQLite install and legacy-root restore both failed"
-                          install-error restore-error root backup))
-                 (signal (car install-error) (cdr install-error)))))))
+          ;; A keyboard quit is deferred across the two same-parent renames.
+          ;; Explicitly signalled quit still enters the same rollback path as
+          ;; an install error, while a rename that already completed remains
+          ;; canonical even if its caller did not observe acknowledgement.
+          (let ((inhibit-quit t)
+                (root-moved nil))
+            (condition-case install-error
+                (progn
+                  (rename-file root backup nil)
+                  (setq root-moved t)
+                  (rename-file staging root nil)
+                  (setq installed t)
+                  report)
+              ((error quit)
+               (cond
+                ((and (file-directory-p root)
+                      (not (file-exists-p staging))
+                      (file-regular-p
+                       (expand-file-name "store.sqlite3" root)))
+                 (setq installed t)
+                 (signal (car install-error) (cdr install-error)))
+                ((or root-moved
+                     (and (file-directory-p backup)
+                          (not (file-exists-p root))))
+                 (let (restore-error)
+                   (condition-case caught
+                       (rename-file backup root nil)
+                     ((error quit) (setq restore-error caught)))
+                   (if restore-error
+                       (signal
+                        'e-runtime-migration-cutover-error
+                        (list
+                         "SQLite install and legacy-root restore both failed"
+                         install-error restore-error root backup))
+                     (signal (car install-error) (cdr install-error)))))
+                (t
+                 (signal (car install-error) (cdr install-error))))))))
       (when (and staging (file-directory-p staging) (not installed))
         (delete-directory staging t)))))
 

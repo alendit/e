@@ -161,26 +161,38 @@
 
 (ert-deftest e-runtime-sqlite-p4-s9-cli-errors-are-bounded ()
   "The migration CLI reports an operator error without a payload backtrace."
-  (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
+  (let* ((repo (locate-dominating-file default-directory "scripts"))
+         (source (e-runtime-sqlite-p4-test--legacy-fixture))
          (target (concat source "-target"))
          (script (expand-file-name "scripts/e-runtime-migrate"
-                                   (locate-dominating-file
-                                    default-directory "scripts")))
+                                   repo))
+         (cold-root (make-temp-file "e-runtime-p4-cold-cli-" t))
+         (cold-script (expand-file-name "scripts/e-runtime-migrate"
+                                        cold-root))
          (snapshot
           (format "(:sequence 1 :order (\"bad\") :records ((:task-id \"bad\" :status unknown :prompt %S)))"
                   (make-string (* 256 1024) ?x)))
          (stdout (generate-new-buffer " *e-runtime-migrate-cli-output*"))
          (stderr (make-temp-file "e-runtime-migrate-cli-stderr-"))
          (upgrade-script (expand-file-name "scripts/e-runtime-upgrade"
-                                           (locate-dominating-file
-                                            default-directory "scripts")))
+                                           repo))
          exit output upgrade-output)
     (unwind-protect
         (progn
+          ;; Reproduce an archive checkout with no adjacent bytecode.  The
+          ;; entrypoint itself must keep load-time warning chatter bounded.
+          (copy-directory (expand-file-name "lisp" repo)
+                          (expand-file-name "lisp" cold-root) nil nil t)
+          (dolist (file
+                   (directory-files-recursively cold-root "\\.elc\\'"))
+            (delete-file file))
+          (make-directory (file-name-directory cold-script) t)
+          (copy-file script cold-script t)
+          (set-file-modes cold-script #o755)
           (e-runtime-sqlite-p4-test--write
            (expand-file-name "task-queue/records.eld" source) snapshot)
           (setq exit
-                (process-file script nil (list stdout stderr) nil
+                (process-file cold-script nil (list stdout stderr) nil
                               "dry-run" source target))
           (setq output
                 (concat
@@ -209,7 +221,7 @@
           (should-not (string-match-p "Debugger entered" upgrade-output)))
       (kill-buffer stdout)
       (when (file-exists-p stderr) (delete-file stderr))
-      (dolist (directory (list source target))
+      (dolist (directory (list source target cold-root))
         (when (file-directory-p directory) (delete-directory directory t))))))
 
 (ert-deftest e-runtime-sqlite-p4-s9-explicit-upgrade-backs-up-before-install ()
@@ -464,6 +476,38 @@
                     (funcall real-rename old new ok-if-already-exists)))))
             (should-error (e-runtime-migration-cutover source root backup)
                           :type 'file-error))
+          (should (file-directory-p root))
+          (should-not (file-exists-p backup))
+          (should (equal before (e-runtime-migration-inventory root)))
+          (should-not
+           (file-exists-p (expand-file-name "store.sqlite3" root))))
+      (dolist (directory (list root source backup))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-cutover-quit-before-install-restores-root ()
+  "An ordinary quit before the install rename cannot strand the logical root."
+  (let* ((root (e-runtime-sqlite-p4-test--legacy-fixture))
+         (source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (backup (concat root ".backup"))
+         (before (e-runtime-migration-inventory root))
+         (real-rename (symbol-function 'rename-file))
+         caught)
+    (unwind-protect
+        (progn
+          (cl-letf
+              (((symbol-function 'rename-file)
+                (lambda (old new &optional ok-if-already-exists)
+                  (if (and (equal (directory-file-name (expand-file-name new))
+                                  root)
+                           (not (equal
+                                 (directory-file-name (expand-file-name old))
+                                 backup)))
+                      (signal 'quit nil)
+                    (funcall real-rename old new ok-if-already-exists)))))
+            (condition-case err
+                (e-runtime-migration-cutover source root backup)
+              (quit (setq caught err))))
+          (should (eq (car caught) 'quit))
           (should (file-directory-p root))
           (should-not (file-exists-p backup))
           (should (equal before (e-runtime-migration-inventory root)))

@@ -258,19 +258,22 @@ containing every owner.  The mismatch prevented an existing operator from
 following one coherent cutover path.
 
 Defaults now derive the common root from the parent of
-=e-session-directory=, while preserving =E_RUNTIME_STATE_DIRECTORY= as an
-explicit isolation override.  Runtime-store rejects a legacy-only root before
-creating SQLite and reports one bounded command naming the copied source,
-common root, sibling backup, and restart requirement.  The migration
-application owns the offline exact-copy verification and same-parent
-backup/install swap.  Focused tests prove preflight immutability, full backup
-preservation, rollback after a failed install rename, and ordinary default
+=e-session-directory= only when its normalized leaf is the conventional
+=sessions=.  An arbitrary custom child fails before opening or creating a
+store and names =E_RUNTIME_STATE_DIRECTORY= as the explicit common-root
+override.  Runtime-store rejects a legacy-only root before creating SQLite and
+reports one bounded command naming the copied source, common root, sibling
+backup, and restart requirement.  The migration application owns the offline
+exact-copy verification and same-parent backup/install swap.  Focused tests
+prove preflight immutability, full backup preservation, rollback after a failed
+install rename or explicit quit, custom-path non-mutation, and ordinary default
 session restore at the unchanged logical root.  Feature status remains =Done=;
 this is a bounded correction to =C01/C09/C10=, not a new persistence model.
 
-Correction evidence on the final worktree state: 8/8 narrow startup/cutover
-regressions, 11/11 complete P4 migration/upgrade tests, 14/14 runtime-store
-ownership/failure tests, and 30/30 defaults tests pass.  The defaults fixture
+Correction evidence on the final worktree state: 10/10 narrow startup/cutover
+regressions, 12/12 complete P4 migration/upgrade tests (including a relocated
+source tree with all adjacent bytecode removed), 14/14 runtime-store
+ownership/failure tests, and 31/31 defaults tests pass.  The defaults fixture
 that reopens an index store now closes its writer first, so it observes the
 same exclusive one-store rule as production.  =eldev compile=, check-parens for
 all changed Lisp files, =bash -n scripts/e-runtime-migrate=, and
@@ -349,7 +352,3 @@ notification composition; it has no durable Board-log proxy or owner table.
 This package changes core runtime, storage, session/Board composition, and
 record/schema behavior.  It requires a full Emacs restart to use after
 acceptance.  No reload, live probe, emacsclient request, or restart was run.
-
-* Unresolved
-
-- Independent same-revision review of the simplified protocol.

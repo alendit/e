@@ -32,13 +32,17 @@ from the existing tree to SQLite at the path ordinary startup would use.
 * Resolution
 
 =e-default-harnesses= now owns a narrow derivation from the established
-=e-session-directory= to its common parent root.  An explicit
-=E_RUNTIME_STATE_DIRECTORY= still wins for disposable or operator-selected
-composition.  =e-runtime-store= detects a legacy-only directory before
-creating it and raises =e-runtime-store-migration-required= with a bounded
-message naming the root, copied-source requirement, =scripts/e-runtime-migrate
-cutover= command, sibling backup, and restart step.  Older SQLite schemas keep
-their separate explicit-upgrade condition.
+=e-session-directory= to its common parent root only when the normalized leaf
+is =sessions=.  It refuses to guess a root from an arbitrarily named custom
+child and directs that operator to set =E_RUNTIME_STATE_DIRECTORY= to the
+actual common root (or restore the conventional =<root>/sessions= layout)
+before any store is created.  The explicit environment override still wins
+for disposable or operator-selected composition.  =e-runtime-store= detects a
+legacy-only directory before creating it and raises
+=e-runtime-store-migration-required= with a bounded message naming the root,
+copied-source requirement, =scripts/e-runtime-migrate cutover= command,
+sibling backup, and restart step.  Older SQLite schemas keep their separate
+explicit-upgrade condition.
 
 =e-runtime-migration-cutover= is the sole filesystem rotation application
 service.  With Emacs stopped, it requires an exact copied legacy source, the
@@ -46,19 +50,25 @@ current common root, and a nonexistent sibling backup.  It builds and verifies
 SQLite in a sibling stage, rechecks the original bytes, renames the complete
 legacy root to the backup, and atomically installs the stage at the original
 path.  If the install rename fails after the move, it restores the original
-root.  It never deletes the legacy copy or backup and adds no runtime retry or
-reconciliation protocol.
+root.  Keyboard quit is inhibited across the rename pair; an explicitly
+signalled =quit= before install follows the same rollback path, while a
+completed staging rename remains canonical even if acknowledgement is
+interrupted.  It never deletes the legacy copy or backup and adds no runtime
+retry or reconciliation protocol.
 
 * Validation
 
 Focused repository-side tests cover common-root derivation, explicit override,
+custom session-leaf rejection without filesystem mutation,
 non-mutating actionable startup failure, lower-level legacy-only rejection,
 successful same-path cutover and default session restore, complete backup
 preservation, preflight failure, post-move rollback, and invalid cutover paths.
-The narrow regressions pass 8/8, the complete P4 file passes 11/11,
-runtime-store passes 14/14, and defaults passes 30/30.  Compilation,
-check-parens, shell syntax, documentation/diff checks also pass.  Exact commands
-and counts are recorded in the Feature 87 review follow-up.
+The narrow regressions pass 10/10, the complete P4 file passes 12/12,
+runtime-store passes 14/14, and defaults passes 31/31.  Compilation,
+check-parens, shell syntax, documentation/diff checks also pass.  The P4 CLI
+test copies the source tree, removes every adjacent =.elc=, and proves combined
+stdout/stderr remains below 4 KiB while the real bounded error is preserved.
+Exact commands and counts are recorded in the Feature 87 review follow-up.
 
 The user's running Emacs was not contacted, reloaded, restarted, or migrated by
 the correction.  The supported live-probe socket failure remained the final
