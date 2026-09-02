@@ -304,6 +304,14 @@ and 3,378.  Final repository evidence passes 3/3 correction regressions, 7/7
 legacy decoder/session preservation tests, 13/13 P4 migration tests, 10/10
 SQLite session-owner tests, and 31/31 isolated defaults tests.
 
+The final corrected operator install imported 595,271 session records with
+SQLite integrity =ok=.  Full ordinary default composition opened and closed
+the generated sibling twice and the installed canonical root once, restoring
+all three normalized sessions with 148, 653, and 378 messages.  The permanent
+legacy backup and rejected first SQLite result remain separate; only the
+temporary source copy was removed after installed-path validation.  Emacs
+remained stopped, so a normal restart is required to use the installed store.
+
 * Plan coverage
 
 | Contract/scenario | Repository realization | Review disposition |

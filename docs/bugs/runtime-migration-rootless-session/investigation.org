@@ -80,3 +80,29 @@ the two checkpoint root ids, inferred the first journal's historical missing
 parent id, derived =2026-08-07T10:13:47Z=, and shifted checkpoint positions to
 7,250 and 3,378.  Detailed bounded evidence is in
 =/tmp/e-feature87-rootless-enumeration=.
+
+* Operator resolution
+
+The correction landed in =719496ed= and its deterministic timestamp follow-up
+in =8169b297=.  The final independent review accepted =8169b297= with no
+remaining P0--P2 finding.
+
+A fresh install from the preserved working copy completed with source hash
+=1c5bb4b8d1fb95ce2cf921a61ebf7ee2fcde6ff3362c96cf33934c947ff840ef=,
+semantic hash
+=145eae644138fd6ffd2707e4eb6282a085a9a7bf745c11d20ce4f64299d8750b=,
+595,271 imported session records, and SQLite integrity =ok=.  Ordinary default
+composition opened and closed that sibling twice.  After installation at the
+canonical =e/= path, the same full default startup passed again.  The three
+normalized sessions restored 148, 653, and 378 messages, with creation times
+=2026-08-07T10:13:47Z=, =2026-08-13T07:54:14Z=, and
+=2026-08-14T07:56:14Z= respectively.
+
+The canonical runtime is
+=/Users/dvorona/.config/emacs/.local/cache/e=.  The permanent legacy backup is
+=/Users/dvorona/.config/emacs/.local/cache/e.legacy-backup-20260902T171948Z=.
+The rejected first SQLite result remains available for diagnosis at
+=/Users/dvorona/.config/emacs/.local/cache/e.invalid-sqlite-20260902T210000Z=.
+The temporary copied source and its empty =/private/tmp= placeholder were
+deleted only after installed-path validation.  Emacs remained stopped
+throughout; using the corrected runtime requires starting Emacs normally.
