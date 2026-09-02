@@ -109,24 +109,33 @@ second time."
                item))
            (if (vectorp items) (append items nil) items))))
 
-(defun e-openai-responses--message-replay-items (message &optional immediate-followup-p)
-  "Return input-safe OpenAI opaque replay items attached to MESSAGE.
+(defun e-openai-responses--provider-replay-items
+    (records &optional immediate-followup-p)
+  "Return input-safe OpenAI opaque replay RECORDS.
 
-When IMMEDIATE-FOLLOWUP-P is non-nil, omit replay records marked
+When IMMEDIATE-FOLLOWUP-P is non-nil, omit records marked
 `:full-replay-only'.  Such records are needed to reconstruct an unanchored
 Responses request, but an anchored response already contains them."
-  (let* ((role (plist-get message :role))
-         (carrier (if (eq role 'tool-call)
-                      (plist-get message :content)
-                    (plist-get message :metadata)))
-         (records (plist-get carrier :provider-replay-items)))
-    (cl-loop for record in records
+  (cl-loop for record in (if (vectorp records) (append records nil) records)
              when (and (member (plist-get record :provider-id)
                                '(openai "openai"))
                        (or (not immediate-followup-p)
                            (not (plist-get record :full-replay-only))))
              collect (e-openai-responses--input-replay-item
-                      (plist-get record :item)))))
+                      (plist-get record :item))))
+
+(defun e-openai-responses--message-replay-items (message &optional immediate-followup-p)
+  "Return input-safe OpenAI opaque replay items attached to MESSAGE.
+
+IMMEDIATE-FOLLOWUP-P has the meaning described by
+`e-openai-responses--provider-replay-items'."
+  (let* ((role (plist-get message :role))
+         (carrier (if (eq role 'tool-call)
+                      (plist-get message :content)
+                    (plist-get message :metadata))))
+    (e-openai-responses--provider-replay-items
+     (plist-get carrier :provider-replay-items)
+     immediate-followup-p)))
 
 (defun e-openai-responses--system-message-p (message)
   "Return non-nil when MESSAGE is a backend-neutral system message."
@@ -487,30 +496,45 @@ retained response already carries the stable segment and its earlier marker."
 
 (defun e-openai-responses--request-input-items
     (messages options continuation-response-id)
-  "Return provider input items, including opaque compact output when selected."
-  (if (plist-member options :provider-compaction-output)
-      (let* ((output (plist-get options :provider-compaction-output))
-             (output (if (vectorp output) (append output nil) output))
-             (stable-messages
-              (if (e-openai-profile-segmented-prompt-layout-p options)
-                  (e-openai-responses--provider-compaction-stable-messages
-                   options)))
-             (stable-items
-              (if stable-messages
-                  (append
-                   (e-openai-responses--input-items
-                    stable-messages options nil)
-                   nil)))
-             (delta (plist-get options :provider-compaction-delta-messages)))
-        (e-openai-responses--normalize-input-items
-         (append output
-                 stable-items
-                 (mapcar #'e-openai-responses--input-message delta))))
+  "Return provider input items for MESSAGES under OPTIONS.
+
+CONTINUATION-RESPONSE-ID selects the anchored immediate replay shape; a nil
+value selects full stateless replay."
+  (let ((ordinary-items
+         (if (plist-member options :provider-compaction-output)
+             (let* ((output (plist-get options :provider-compaction-output))
+                    (output (if (vectorp output) (append output nil) output))
+                    (stable-messages
+                     (if (e-openai-profile-segmented-prompt-layout-p options)
+                         (e-openai-responses--provider-compaction-stable-messages
+                          options)))
+                    (stable-items
+                     (if stable-messages
+                         (append
+                          (e-openai-responses--input-items
+                           stable-messages options nil)
+                          nil)))
+                    (delta
+                     (plist-get options :provider-compaction-delta-messages)))
+               (append output
+                       stable-items
+                       (mapcar #'e-openai-responses--input-message delta)))
+           (append
+            (e-openai-responses--input-items
+             (e-openai-responses--request-input-messages messages options)
+             options
+             continuation-response-id)
+            nil)))
+        (request-replay-items
+         (e-openai-responses--provider-replay-items
+          (plist-get options :provider-request-replay-items)
+          continuation-response-id)))
+    ;; A curation-only response has no semantic message carrier.  Its opaque
+    ;; call/output pair follows the ordinary stateless input; an anchored
+    ;; acknowledgement filters the already-retained call and sends only the
+    ;; immediate output delta.
     (e-openai-responses--normalize-input-items
-     (e-openai-responses--input-items
-      (e-openai-responses--request-input-messages messages options)
-      options
-      continuation-response-id))))
+     (append ordinary-items request-replay-items))))
 
 (defun e-openai-responses--without-provider-anchor (options)
   "Return OPTIONS without provider-anchor continuation state."

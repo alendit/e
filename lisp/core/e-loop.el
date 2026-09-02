@@ -316,6 +316,10 @@ metadata, before tool execution begins."
         ;; provider continuation for its opaque function-call acknowledgement.
         ;; This is turn-local protocol state, not durable response history.
         (curation-only-followups 0)
+        ;; A curation-only response has no semantic message to carry its opaque
+        ;; provider acknowledgement.  Hold that wire state only until the next
+        ;; request captures it; each request receives its own options snapshot.
+        (next-request-provider-replay-items nil)
         (active-lifetime-frame lifetime-frame))
     (cl-labels
         ((cancelled ()
@@ -445,6 +449,17 @@ metadata, before tool execution begins."
                   (provider-request-ordinal nil)
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
+                  (provider-request-options
+                   (let ((request-options (copy-sequence turn-options)))
+                     (when next-request-provider-replay-items
+                       (setq request-options
+                             (plist-put
+                              request-options
+                              :provider-request-replay-items
+                              (copy-tree
+                               next-request-provider-replay-items)))
+                       (setq next-request-provider-replay-items nil))
+                     request-options))
                   (response-complete-notified nil)
                   (response-preflight-run nil)
                   (response-preflight-result nil)
@@ -482,6 +497,16 @@ metadata, before tool execution begins."
                    (finish-provider-request
                     (status)
                     (clear-provider-compaction-request-state)
+                    ;; Opaque curation acknowledgement state is valid for one
+                    ;; provider request only.  Remove it at settlement even
+                    ;; though this request's lexical snapshot cannot be reused
+                    ;; by a later request.
+                    (when (plist-member provider-request-options
+                                        :provider-request-replay-items)
+                      (setq provider-request-options
+                            (copy-sequence provider-request-options))
+                      (cl-remf provider-request-options
+                               :provider-request-replay-items))
                     (when (and provider-request
                                (not provider-request-finished))
                       (setq provider-request-finished t)
@@ -634,7 +659,8 @@ metadata, before tool execution begins."
                                     ;; delta so a retained connection receives
                                     ;; the opaque acknowledgement too.
                                     (list request-message)))
-                            (setq pending-provider-replay-items nil))))))
+                            (setq pending-provider-replay-items nil)
+                            t)))))
                    (fail-provider
                     (err)
                     (finish-provider-request 'error)
@@ -681,12 +707,7 @@ metadata, before tool execution begins."
                                 (list 'curation
                                       :repeated-empty-response
                                       provider-request-id)))
-                      (unless
-                          (and pending-provider-replay-items
-                               (seq-some
-                                (lambda (message)
-                                  (eq (plist-get message :role) 'tool))
-                                turn-messages))
+                      (unless pending-provider-replay-items
                         (signal 'e-loop-empty-output
                                 (list 'curation :missing-ack-target)))
                       ;; This response has no assistant message to carry the
@@ -702,7 +723,15 @@ metadata, before tool execution begins."
                       ;; Commit/consume through the existing completion
                       ;; callback before dispatching the acknowledgement.
                       (notify-response-complete)
-                      (attach-pending-provider-replay-items)
+                      ;; Preserve the established tool-result carrier when one
+                      ;; exists.  A fresh curation-only response instead hands
+                      ;; its opaque call/output pair to exactly the immediate
+                      ;; provider request, without fabricating or persisting a
+                      ;; semantic message.
+                      (unless (attach-pending-provider-replay-items)
+                        (setq next-request-provider-replay-items
+                              (copy-tree pending-provider-replay-items))
+                        (setq pending-provider-replay-items nil))
                       ;; The response id is usable only for this immediate
                       ;; acknowledgement continuation, even when the frame
                       ;; makes it unsafe as a durable anchor.
@@ -1168,7 +1197,7 @@ metadata, before tool execution begins."
                                   :messages (lambda (_arguments _context)
                                               turn-messages)
                                   :options (lambda (_arguments _context)
-                                             turn-options)
+                                             provider-request-options)
                                   :request-handler
                                   (lambda (handle _request _arguments _context)
                                     (let ((request

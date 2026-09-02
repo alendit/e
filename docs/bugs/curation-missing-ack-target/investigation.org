@@ -1,0 +1,86 @@
+#+title: First-Turn Curation Missing Acknowledgement Target Investigation
+#+startup: overview
+
+* Evidence
+
+The user supplied a successful bounded live chat probe of the first ordinary
+turn.  It reached a valid OpenAI =context-curate= response with a provider call
+identity, then failed at =e-loop-empty-output (curation :missing-ack-target)=.
+No further live request was made, and the running Emacs was not changed.
+
+Source inspection found that =e-loop= already kept curation replay records out
+of the semantic effect and durable transcript.  Before starting the immediate
+follow-up, however, it required an existing =tool= message and installed the
+records only in that message's in-memory metadata.  A curation-only first
+response has no such message, so the loop rejected valid provider output even
+though the decoder had supplied the complete opaque call/output replay pair.
+
+The OpenAI adapter already distinguished full stateless replay from an
+anchored immediate continuation: records marked =:full-replay-only= restore the
+provider call only without an anchor, while the anchored request sends just
+the function output.  The missing boundary was a one-request carrier that did
+not pretend the provider exchange was a semantic session message.
+
+* Root Cause
+
+The loop treated a prior tool-result message as a required acknowledgement
+target.  That was an internal wire-carrier accident, not part of the accepted
+curation contract.  Consequently the first curation-only response could not
+use the same acknowledgement semantics already available after a tool result.
+
+* Resolution
+
+=e-loop= now preserves the established tool-message carrier when one exists.
+Otherwise it moves the opaque replay records into a private options snapshot
+owned by exactly the immediate provider request.  The snapshot is captured
+only after the curation completion callback has committed/consumed the
+response, and its replay field is removed when that request settles.  Later
+requests are built from the unchanged turn options, so the protocol state
+cannot leak into durable messages or subsequent calls.
+
+=e-openai-responses= serializes that request-local state after the ordinary
+input.  Stateless requests therefore send full semantic input followed by the
+=context-curate= call and matching output.  Anchored requests omit the
+already-retained call and send only the immediate matching output delta.  No
+synthetic tool message, new durable state, retry path, or duplicate-recovery
+mechanism was added; the existing one-curation-follow-up bound remains.
+
+* Validation
+
+Focused repository-side tests prove fresh stateless and anchored first-turn
+curation, provider call-before-output order, one-shot cleanup, absence from the
+durable transcript, a normal final assistant answer, preservation of the
+existing tool-result carrier, and the repeated-empty-response bound.  The
+affected loop and OpenAI suites, compilation, check-parens, and diff checks are
+recorded in the implementation handoff.
+
+The running Emacs was left unchanged.  Because this changes core loop and
+provider-adapter behavior, using the fix requires a full Emacs restart.
+
+* Architecture Self-Check
+
+1. The package fixes a complete first-turn behavior without depending on later
+   work.
+2. It moves toward provider-neutral semantic curation with provider wire state
+   confined to the loop/adapter boundary.
+3. The OpenAI replay encoding remains adapter-owned; the small request-local
+   carrier is reversible and tied to the demonstrated variation.
+4. The loop owns follow-up sequencing and lifetime; the OpenAI adapter owns
+   wire serialization.
+5. Coupling is reduced because a provider acknowledgement no longer depends on
+   the accidental presence of an unrelated semantic tool message.
+6. Core still carries opaque records and does not depend on OpenAI wire shapes.
+7. Provider serialization remains at the adapter edge.
+8. The only new state is process-local, request-scoped, and discarded at
+   settlement; it is neither durable nor rebuildable state.
+9. The change copies one bounded replay list for one follow-up and adds no
+   transcript scan or persistence work.
+10. The existing backend options boundary already carries request context;
+    no public interface or unsupported operation is introduced.
+11. Existing tool-carrier behavior is preserved, while the invalid carrier
+    precondition is removed.
+12. The =:missing-ack-target= tool-message requirement is removed.
+13. Missing provider replay data and repeated empty curation still fail
+    visibly; ordinary adapter/loop errors continue to surface.
+14. Focused loop tests prove both continuation modes independently of a live
+    provider, while existing composition tests preserve the tool path.

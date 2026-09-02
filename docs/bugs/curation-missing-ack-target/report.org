@@ -1,0 +1,20 @@
+#+title: First-Turn Curation Fails Without a Tool Message
+#+startup: overview
+
+* Report
+
+The user reported that a fresh ordinary chat turn failed after the OpenAI
+Responses backend returned a valid =context-curate= call.  The supported live
+chat probe reached the provider response, then the loop stopped with
+=e-loop-empty-output (curation :missing-ack-target)= instead of acknowledging
+the curation and continuing to the assistant answer.
+
+Expected behavior: a fresh session receiving a curation-only response sends
+the provider's opaque acknowledgement exactly once and continues normally,
+without inventing a tool message, persisting provider protocol state, or
+replaying that state on later requests.
+
+Goal ID: =BUG-CURATION-FIRST-ACK=.  The behavioral goal is a fresh chat turn
+that accepts valid curation-only output and continues to a normal assistant
+answer.  The direct scenario is user =Hi=, OpenAI =context-curate= with a call
+ID, one opaque acknowledgement request, then an assistant answer.

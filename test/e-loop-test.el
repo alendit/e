@@ -2202,10 +2202,9 @@
     (should (= completion-count 1))))
 
 (ert-deftest e-loop-test-stateless-curation-replays-call-and-ack-only-once ()
-  "Stateless curation replay includes its call/output pair, then drops it."
+  "Fresh stateless curation replays its call/output pair exactly once."
   (let* ((request-count 0)
          (requests nil)
-         (started-tools nil)
          (curation-count 0)
          (durable-messages nil)
          (backend
@@ -2220,11 +2219,6 @@
               (setq request-count (1+ request-count))
               (pcase request-count
                 (1
-                 (funcall on-item
-                          '(:type tool-call :id "inspect-call"
-                            :name "inspect" :arguments nil))
-                 (funcall on-item '(:type done :reason tool-use)))
-                (2
                  (dolist
                      (item
                       (e-openai-codex-parse-stream
@@ -2241,21 +2235,10 @@
                            :response (:id "response-curation")))
                         "")))
                    (funcall on-item item)))
-                (3
+                (2
                  (funcall on-item
                           '(:type assistant-message :content "answer"))
                  (funcall on-item '(:type done :reason stop))))))))
-         (tool-lifecycle
-          (e-tool-lifecycle-create
-           :start
-           (cl-function
-            (lambda (tool-call &key on-done &allow-other-keys)
-              (push (plist-get tool-call :name) started-tools)
-              (funcall on-done
-                       (list :tool-call-id (plist-get tool-call :id)
-                             :name (plist-get tool-call :name)
-                             :status 'ok :content "inspected"))
-              nil))))
          (options '(:model "gpt-test"
                     :provider-continuation nil
                     :context-lifetime-enabled t
@@ -2269,7 +2252,6 @@
      :messages '((:role user :content "inspect"))
      :backend backend
      :tools (e-tools-registry-create)
-     :tool-lifecycle tool-lifecycle
      :options options
      :on-response-complete
      (lambda (payload)
@@ -2280,13 +2262,12 @@
      (lambda (message)
        (setq durable-messages
              (append durable-messages (list (copy-tree message))))))
-    (should (= request-count 3))
+    (should (= request-count 2))
     (should (= curation-count 1))
-    (should (equal started-tools '("inspect")))
-    (let* ((third (nth 2 (nreverse requests)))
+    (let* ((second (nth 1 (nreverse requests)))
            (body (e-openai-codex-request-body
-                  :messages (plist-get third :messages)
-                  :options (plist-get third :options)
+                  :messages (plist-get second :messages)
+                  :options (plist-get second :options)
                   :tools nil))
            (input (append (plist-get body :input) nil))
            (call-position
@@ -2303,18 +2284,23 @@
                     (equal (plist-get item :call_id) "curation-call")
                     (equal (plist-get item :output) "")))
              input))
-           (ordinary-output-position
+           (user-position
             (cl-position-if
              (lambda (item)
-               (and (equal (plist-get item :type) "function_call_output")
-                    (equal (plist-get item :call_id) "inspect-call")))
+               (and (equal (plist-get item :role) "user")
+                    (equal (plist-get
+                            (aref (plist-get item :content) 0)
+                            :text)
+                           "inspect")))
              input)))
       (should-not (plist-member body :previous_response_id))
-      (should (integerp ordinary-output-position))
+      (should (integerp user-position))
       (should (integerp call-position))
       (should (integerp ack-position))
-      (should (< ordinary-output-position call-position))
+      (should (< user-position call-position))
       (should (< call-position ack-position)))
+    (should-not (string-match-p "provider-request-replay-items"
+                                (prin1-to-string durable-messages)))
     (let* ((next-body
             (e-openai-codex-request-body
              :messages durable-messages
@@ -2329,6 +2315,89 @@
                (or (equal (plist-get item :name) "context-curate")
                    (equal (plist-get item :call_id) "curation-call"))))
         next-input)))))
+
+(ert-deftest e-loop-test-anchored-first-curation-sends-immediate-ack-only ()
+  "Fresh anchored curation sends one request-local acknowledgement delta."
+  (let* ((request-count 0)
+         (requests nil)
+         (durable-messages nil)
+         (backend
+          (e-backend-create
+           :name "anchored-first-curation"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item &allow-other-keys)
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (setq request-count (1+ request-count))
+              (pcase request-count
+                (1
+                 (dolist
+                     (item
+                      (e-openai-codex-parse-stream
+                       (mapconcat
+                        (lambda (event)
+                          (format "data: %s\n\n" (json-encode event)))
+                        (list
+                         '(:type "response.output_item.done"
+                           :item (:type "function_call"
+                                  :call_id "curation-call"
+                                  :name "context-curate"
+                                  :arguments "{\"keep\":[1],\"summaries\":[]}"))
+                         '(:type "response.completed"
+                           :response (:id "response-curation")))
+                        "")
+                       nil
+                       (e-openai-responses-reasoning-identity options)))
+                   (funcall on-item item)))
+                (2
+                 (funcall on-item
+                          '(:type assistant-message :content "answer"))
+                 (funcall on-item '(:type done :reason stop))))))))
+         (options '(:model "gpt-test"
+                    :provider-continuation t
+                    :provider-anchor-provider-id openai
+                    :context-lifetime-enabled t
+                    :context-capabilities
+                    (:continuation linear
+                     :observation-delivery request-local-replaceable
+                     :reserved-effect-carrier context-curate-wire))))
+    (e-loop-run-turn-batch
+     :session-id "session-anchored-first-curation"
+     :turn-id "turn-anchored-first-curation"
+     :messages '((:role user :content "Hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options options
+     :on-response-complete #'ignore
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       (setq durable-messages
+             (append durable-messages (list (copy-tree message))))))
+    (should (= request-count 2))
+    (let* ((second (nth 1 (nreverse requests)))
+           (body (e-openai-codex-request-body
+                  :messages (plist-get second :messages)
+                  :options (plist-get second :options)
+                  :tools nil))
+           (input (append (plist-get body :input) nil)))
+      (should (equal (plist-get body :previous_response_id)
+                     "response-curation"))
+      (should (= (length input) 1))
+      (should (equal (plist-get (car input) :type)
+                     "function_call_output"))
+      (should (equal (plist-get (car input) :call_id)
+                     "curation-call"))
+      (should-not
+       (seq-find (lambda (item)
+                   (equal (plist-get item :type) "function_call"))
+                 input)))
+    (should (= (length durable-messages) 1))
+    (should (equal (plist-get (car durable-messages) :role) 'assistant))
+    (should-not (string-match-p "curation-call\|provider-replay"
+                                (prin1-to-string durable-messages)))))
 
 (ert-deftest e-loop-test-response-preflight-precedes-assistant-append ()
   "A completion preflight runs before the assistant append callback."
