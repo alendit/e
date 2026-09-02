@@ -460,26 +460,33 @@ directory to TARGET.  SOURCE is never written."
     (unwind-protect
         (progn
           (setq runtime (e-runtime-sqlite-open work))
-          (let ((imported
-                 (list
-                  :session-records
-                  (e-runtime-migration--import-sessions runtime decoded)
-                  :session-checkpoints
+          (let* ((session-records
+                  (e-runtime-migration--import-sessions runtime decoded))
+                 (session-checkpoints
                   (e-runtime-migration--import-session-checkpoints
-                   runtime decoded)
-                  :boards (e-runtime-migration--import-boards runtime decoded)
-                  :tasks (e-runtime-migration--import-tasks
-                          runtime (plist-get decoded :tasks))
-                  :cron (e-runtime-migration--import-cron
-                         runtime (plist-get decoded :cron))
-                  :voice (e-runtime-migration--import-voice
-                          runtime (plist-get decoded :voice))
-                  :goodnite (e-runtime-migration--import-goodnite
-                             runtime (plist-get decoded :goodnite))
-                  :raw (e-runtime-migration--import-raw
-                        runtime source (plist-get decoded :raw-files))
-                  :tmp (e-runtime-migration--import-tmp
-                        runtime source (plist-get decoded :tmp-files)))))
+                   runtime decoded)))
+            ;; The retired catalog is only an input-quality witness.  Rebuild
+            ;; the installed projection from canonical imported records, one
+            ;; aggregate at a time, before importing unrelated owners.
+            (e-session-rebuild-catalog
+             (e-runtime-sqlite-session-store runtime))
+            (let ((imported
+                   (list
+                    :session-records session-records
+                    :session-checkpoints session-checkpoints
+                    :boards (e-runtime-migration--import-boards runtime decoded)
+                    :tasks (e-runtime-migration--import-tasks
+                            runtime (plist-get decoded :tasks))
+                    :cron (e-runtime-migration--import-cron
+                           runtime (plist-get decoded :cron))
+                    :voice (e-runtime-migration--import-voice
+                            runtime (plist-get decoded :voice))
+                    :goodnite (e-runtime-migration--import-goodnite
+                               runtime (plist-get decoded :goodnite))
+                    :raw (e-runtime-migration--import-raw
+                          runtime source (plist-get decoded :raw-files))
+                    :tmp (e-runtime-migration--import-tmp
+                          runtime source (plist-get decoded :tmp-files)))))
             (setq report
                   (list :operation (if dry-run 'dry-run 'install)
                         :manifest
@@ -488,7 +495,7 @@ directory to TARGET.  SOURCE is never written."
                         :inventory inventory
                         :integrity
                         (e-runtime-store-integrity
-                         (e-runtime-sqlite-runtime-store runtime) t))))
+                         (e-runtime-sqlite-runtime-store runtime) t)))))
           (e-runtime-sqlite-close runtime)
           (setq runtime nil)
           (e-runtime-migration--write-report work report)

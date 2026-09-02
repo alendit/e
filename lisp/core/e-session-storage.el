@@ -300,6 +300,19 @@ caller receives the targeted error instead of an opaque keyword failure."
         (e-session-storage-checkpoint-mark-clean store session-ids))
       (e-session-storage-clear-projection-error store))))
 
+(defun e-session-storage-publish-catalog-projection (store index-projection)
+  "Publish only STORE's rebuildable catalog INDEX-PROJECTION.
+
+Offline migration uses this narrow operation after translated checkpoints are
+already authoritative.  It deliberately neither writes nor cleans checkpoints."
+  (when (e-session-storage-persistent-p store)
+    (let* ((state (e-session-storage--state store))
+           (projection (copy-tree index-projection)))
+      (e-session-storage-sqlite-write-catalog store projection)
+      (setf (e-session-storage--state-index-projection state) projection)
+      (e-session-storage-clear-projection-error store)))
+  index-projection)
+
 (defun e-session-storage--write-index (store)
   "Publish STORE's current rebuildable session projections."
   (when (e-session-storage-persistent-p store)

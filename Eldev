@@ -64,6 +64,7 @@
 (setf eldev-test-fileset
       (list :or eldev-test-fileset
             "./e2e/e-context-lifetime-e2e-test.el"
+            "./e2e/e-post-cutover-e2e-test.el"
             "./test/e-sqlite-test-store-support.el"))
 (when (and (getenv "E_E2E")
            (not (getenv "CI")))

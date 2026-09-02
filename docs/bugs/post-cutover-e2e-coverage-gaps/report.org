@@ -1,0 +1,36 @@
+#+title: Post-cutover startup lacked a repository-owned end-to-end gate
+#+startup: overview
+
+* Goal record
+
+- Goal ID: =BUG-E2E-POSTCUTOVER-COVERAGE=
+- Behavioral goal: repository-owned isolated E2E exercises the ordinary
+  post-migration startup and chat composition deeply enough to reject common
+  root selection and eager transcript replay regressions before live use.
+- Direct scenario: =S-E2E-CUTOVER-LAZY=.
+- Owning contract: =E2E-C01=.
+- Product authority: the admitted Feature 87 post-cutover behavior.
+- Glossary: opt-out; the plan adds test evidence without changing runtime
+  vocabulary.
+
+* Report
+
+Feature 87 owner tests proved migration, default composition, and lazy session
+loading separately.  They did not run the complete operator-shaped sequence in
+one isolated scenario: copy a conventional legacy root, perform the actual
+offline same-root cutover, construct =:chat-default= with the environment
+override absent, observe catalog-only startup, load one transcript on demand,
+and repeat after a cold reopen.
+
+That missing composition gate allowed two production regressions to reach live
+use before narrower tests were connected: selecting the retired =sessions/=
+child as the SQLite root, and eagerly replaying every migrated transcript at
+startup.  This report scopes only the missing deterministic repository E2E; it
+does not add provider, graphical, current-configuration, or live-state claims.
+
+The new scenario also exposed one migration omission before P1 completion:
+canonical session records and translated checkpoints were imported, but the
+rebuildable SQLite catalog was not published.  Cold startup therefore had to
+read the first record page of every session to reconstruct stubs.  The bounded
+fix rebuilds and publishes only that catalog during offline migration, loading
+and unloading one session at a time and leaving checkpoints unchanged.

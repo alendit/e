@@ -1254,6 +1254,33 @@ never touches durable files or another session's aggregate state."
         (e-session-aggregate-merge-index-session store replacement))))
   store)
 
+(defun e-session-rebuild-catalog (store)
+  "Rebuild STORE's detached catalog without rewriting checkpoints.
+
+This is an offline-maintenance operation for a store whose canonical session
+records and any translated resume checkpoints have already been imported.  It
+loads at most one session aggregate at a time, derives its owner projection,
+then immediately replaces it with an unloaded stub.  A checkpoint-less session
+uses the existing one-session full-replay fallback."
+  (unless (e-session--persistent-p store)
+    (signal 'e-session-persistence-unavailable
+            (list "Catalog rebuild requires persistent session storage")))
+  (e-session-aggregate-reset store)
+  (let (entries)
+    (dolist (session-id (e-session-storage-session-ids store))
+      (condition-case err
+          (e-session-load-session store session-id)
+        (e-session-checkpoint-missing
+         (e-session--load-session-journal-fully store session-id))
+        (error (signal (car err) (cdr err))))
+      (let ((entry (e-session-index-entry store session-id)))
+        (push entry entries)
+        (e-session-unload-session store session-id entry)))
+    (setq entries
+          (e-session-catalog-sort-index-entries (nreverse entries)))
+    (e-session-storage-publish-catalog-projection store entries)
+    entries))
+
 (defun e-session-refresh-index (store)
   "Publish STORE's current index and deferred checkpoint projection.
 

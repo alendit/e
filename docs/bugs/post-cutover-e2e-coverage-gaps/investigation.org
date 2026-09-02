@@ -1,0 +1,120 @@
+#+title: Investigation and P1 acceptance evidence
+#+startup: overview
+
+* Plan identity and status
+
+- Goal: =BUG-E2E-POSTCUTOVER-COVERAGE=
+- Contract: =E2E-C01=
+- Scenario: =S-E2E-CUTOVER-LAZY=
+- Plan identity: =implementation-plan-fixed-point= at base
+  =d8861d5f6828f882b963379f829c7119dfa1f81c=.
+- Behavioral status before P1: unproved.
+- Mechanism status before P1: not started.
+- Package scope: P1 only; no P2 work is included.
+
+* Ownership and physical boundary
+
+Migration remains the semantic owner of copied-source validation, verified
+same-root cutover, and sibling backup preservation.  Default composition owns
+runtime-root selection and lazy =:chat-default= construction.  The session
+facade owns detached catalog stubs and first-access transcript restoration.
+
+The new physical test boundary is
+=e2e/e-post-cutover-e2e-test.el=.  It owns only a deterministic disposable
+legacy fixture and cross-owner assertions.  This is cohesive because its one
+reason to change is the operator-shaped post-cutover composition contract;
+production owners and their dependency direction are unchanged.
+
+* Source finding and correction
+
+The first focused run failed the zero-read assertion with all 64 session IDs.
+=e-runtime-migration--import-sessions= had committed canonical record batches
+and =e-runtime-migration--import-session-checkpoints= had installed translated
+checkpoints, but migration closed the runtime without publishing a catalog.
+The next ordinary open therefore entered
+=e-session--reconcile-journal-roots= and read one page per session.
+
+The correction keeps policy in the session owner:
+
+- =e-session-rebuild-catalog= enumerates durable session IDs, restores one
+  session through the checkpoint-aware replay path, falls back to full replay
+  only for that one checkpoint-less session, derives its detached index entry,
+  and immediately unloads it before continuing;
+- =e-session-storage-publish-catalog-projection= is a narrow catalog-only
+  storage port.  It neither writes nor marks checkpoints clean;
+- offline migration calls that owner operation after record and checkpoint
+  import and before unrelated owner imports and final verification.
+
+Copying the legacy =index.json= directly was rejected: it is a rebuildable
+input-quality witness and can be stale.  Calling =e-session-load= followed by
+=e-session-refresh-index= was also rejected because it would materialize every
+session concurrently and rewrite translated checkpoints.
+
+* P1 audit matrix
+
+| Contract fact | Source path exercised | Structural assertion |
+|---------------+-----------------------+----------------------|
+| Conventional common root | =e-default-runtime-directory= | env unset plus =e-session-directory=<root>/sessions= resolves to =<root>/= |
+| Actual offline cutover | =e-runtime-migration-cutover= | installed root is original common root and contains current SQLite |
+| Exact rollback material | migration inventory | copied source and sibling backup equal the pre-cutover root inventory |
+| Complete catalog startup | normal =:chat-default= registry factory | all 64 sessions exist as unloaded stubs |
+| No eager transcript I/O | session storage page/record ports | zero transcript page or full-record calls before semantic access |
+| Selective lazy restore | =e-session-messages= | one exact representative transcript loads; another remains unloaded |
+| Cold reconstruction | close, clear registry instance, recreate =:chat-default= | zero startup reads recur, then the representative restores exactly again |
+| Isolation | test-owned temporary directory | source, root, backup, SQLite, worker, and cleanup stay disposable |
+
+The private fixture cardinality is 64 small sessions.  Cardinality is a
+structural guard, not a performance threshold.  Cutover/open/load durations are
+printed as observational evidence only.
+
+Owner-focused tests separately prove that catalog rebuild alternates load and
+unload with at most one loaded session, preserves an opaque checkpoint exactly,
+leaves a checkpoint-less session checkpoint-less, and makes the next cold open
+catalog-only.  Existing rootless-checkpoint coverage proves the translated
+position remains shifted exactly.  A migration-side injected catalog write
+failure proves the copied source remains exact and no target is installed.
+
+* Gate integration
+
+=Eldev= includes the deterministic E2E module in the ordinary ERT fileset, so
+the existing repository CI batch command runs it without credentials.  The
+=e2e/README.org= tier description distinguishes this repository-owned scenario
+from graphical, current-configuration, and live-provider suites.
+
+* Local evidence
+
+- Focused contract and mechanism selectors: 5/5 passed.
+- Deterministic post-cutover E2E file: 1/1 passed with 64 sessions.  The latest
+  observational run reported cutover 0.184 s, cold open 0.206 s, selected first
+  load 0.001 s, and cold reopen 0.067 s.  These are not thresholds.
+- SQLite session owner suite: 14/14 passed, including the existing
+  15,722-record / 37,851,478-byte bounded-load witness.
+- Feature 87 P4 migration/cutover suite: 14/14 passed.
+- Default composition suite with a disposable explicit runtime root: 32/32
+  passed.
+- Rootless legacy normalization selectors: 3/3 passed.
+- Production byte compilation completed without errors; changed Lisp files
+  passed =check-parens= and the complete diff passed whitespace validation.
+
+An additional run of the whole historical =test/e-session-test.el= file was
+not a valid preservation gate: 45 of 100 cases try to open a second live
+runtime owner without first closing the store they created, and fail at the
+existing single-runtime ownership guard.  The three legacy-decoder cases
+relevant to this package were rerun independently and passed.
+
+* Exclusions
+
+- No schema, worker operation, checkpoint rewrite, eager all-session replay,
+  alternate storage owner, or recovery protocol.
+- No fake storage owner or alternate composition path.
+- No graphical/current-configuration/live-provider claims.
+- No operator state or running Emacs access.
+
+* Acceptance ledger
+
+| Item | Status after local implementation |
+|------+-----------------------------------|
+| =E2E-C01= source realization | implemented; focused proof passed locally |
+| =S-E2E-CUTOVER-LAZY= | passed locally with 64 sessions |
+| Behavioral goal | proved repository-side, awaiting parent acceptance |
+| P1 mechanism | implemented, awaiting parent acceptance |

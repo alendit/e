@@ -424,6 +424,8 @@
                  (physical
                   (e-session-storage-read-session-records store session-id))
                  (session (e-session-get store session-id)))
+            (should-not
+             (e-session-storage-resume-checkpoint-present-p store session-id))
             (should (= (length physical) (1+ (length original))))
             (should (equal (plist-get (car physical) :type) "session"))
             (should (equal (plist-get (car physical) :id) "legacy-root-id"))
@@ -443,6 +445,27 @@
       (e-default-runtime-close)
       (dolist (directory (list source target))
         (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-catalog-failure-does-not-install ()
+  "A catalog publication failure preserves source and leaves no target."
+  (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (target (concat source "-catalog-failure"))
+         (before (e-runtime-migration-inventory source)))
+    (unwind-protect
+        (progn
+          (cl-letf
+              (((symbol-function
+                 'e-session-storage-publish-catalog-projection)
+                (lambda (&rest _args)
+                  (signal 'e-session-storage-error
+                          '("injected catalog publication failure")))))
+            (should-error (e-runtime-migration-run source target)
+                          :type 'e-session-storage-error))
+          (should (equal before (e-runtime-migration-inventory source)))
+          (should-not (file-exists-p target)))
+      (dolist (directory (list source target))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
 
 (ert-deftest e-runtime-sqlite-p4-cutover-preserves-root-backup-and-default-restores ()
   "Offline same-root cutover preserves legacy state and feeds ordinary startup."

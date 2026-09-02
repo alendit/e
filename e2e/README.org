@@ -11,10 +11,15 @@ Run unit and deterministic integration coverage with:
 eldev test
 #+end_src
 
-The integration files under =test/= cross real harness, adapter, persistence,
-tool, work, and chat-surface boundaries.  They use fake providers and require
-no credentials.  Batch chat tests prove buffer/window structure and command
-routing, but do not claim graphical redisplay or viewport behavior.
+The integration files under =test/= and deterministic modules under =e2e/=
+cross real harness, adapter, persistence, tool, work, and chat-surface
+boundaries.  They use fake providers or no provider and require no credentials.
+The post-cutover scenario performs an actual test-owned offline same-root
+migration before opening the ordinary =:chat-default= composition.  It gates
+the parent SQLite root, catalog-only startup, single-session lazy restore,
+restart reconstruction, and exact sibling backup without touching operator
+state.  Batch chat tests prove buffer/window structure and command routing, but
+do not claim graphical redisplay or viewport behavior.
 
 * Graphical behavioral tests
 
