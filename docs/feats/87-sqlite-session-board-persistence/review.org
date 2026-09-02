@@ -5,10 +5,9 @@
 
 * Status
 
-In-review.  The Package 1--3 owner boundaries remain accepted, and parent
-read-back accepts the 2026-09-02 simplified failure protocol, Package 4
-cutover, and copied-operator-store proof.  =F87-GOAL= remains unavailable until
-the final independent same-revision review completes.
+Done.  Independent review reached a deterministic fixed point at exact revision
+=c7ceeb45f65532c42068ba087732b32428a220bb=.  All contracts are accepted and
+=F87-GOAL= is =passing=.
 
 * Review summary
 
@@ -100,12 +99,12 @@ running Emacs was not contacted or changed.
   declared skips.  A directly exercised routing-policy copy regression adds 4
   expected, 0 unexpected and proves shared finite selector values are not
   mistaken for cycles.
-- Complete restricted repository run: 2,678 tests, 2,655 expected results, 9
+- Complete restricted repository run: 2,683 tests, 2,660 expected results, 9
   unexpected, and 14 skipped.  Six MCP/OpenAI local HTTP fixtures denied by the
   sandbox pass 6/6 when rerun with loopback permission.  The remaining three
   results are one pre-existing Emacs 31 OpenAI variable mismatch and two
   pre-existing Emacs 31 Org fold-property expectations; none intersects a
-  Feature 87 source or owner path.  The effective preservation result is 2,661
+  Feature 87 source or owner path.  The effective preservation result is 2,666
   expected, 3 baseline failures, and 14 skips.
 - Isolated graphical suite: 28 expected, 0 unexpected.  Current-config with a
   disposable =E_RUNTIME_STATE_DIRECTORY=: 4 expected, 0 unexpected.
@@ -222,15 +221,16 @@ inactive rollback inputs, and task =.org= fragments remain external historical
 products; both classes are hashed and reported as source-preserved instead of
 silently ignored or promoted to runtime authority.
 
-** TODO High: Independent same-revision acceptance is pending
+** DONE High: Independent same-revision acceptance reached fixed point
 
-The implementation and repository evidence are present, but the operator
-rebaselined transport uncertainty after the earlier package reviews.  Parent
-read-back accepts the final simplified worktree, copied-store proof, complete
-repository result, and static gates.  The selected workflow still requires one
-fresh independent review of the exact committed revision.  Until that finishes,
-the mechanism remains =implemented-awaiting-review= and =F87-GOAL= remains
-unavailable.
+Independent review of exact revision
+=c7ceeb45f65532c42068ba087732b32428a220bb= found no P0--P3 finding, required
+unknown, or non-blocking follow-up.  It independently closed the runtime-close,
+pickup/session publication, task claim-control, cron stale-definition, and voice
+publication findings.  Its focused evidence passed 52/52 repository tests,
+79/79 ordinary task/cron/voice tests, and 4/4 disposable held-claim probes,
+including direct task pause, cancel-over-pause, cron disable, and cron removal.
+The worktree was exact and clean, and the running Emacs was untouched.
 
 ** DONE High: Copied operator-store dry run passes
 
@@ -248,14 +248,15 @@ deterministic acceptance threshold.
 
 | Contract/scenario | Repository realization | Review disposition |
 |-------------------+------------------------+--------------------|
-| =C01 / S1= | One default composition, deterministic copied-tree migration, close/reopen reconstruction, no runtime sidecar writes | Implemented; review pending |
-| =C09 / S9= | Offline migration and v3-to-v4 upgrade, source hashes, manifests, integrity, backup, permissions, invalid-input no-install cases | Implemented; copied-operator dry run passed |
-| =C10 / S10= | Default SQLite cutover, retired Node/task files, injected auxiliary owners, no Board-log proxy, targeted old/new errors | Implemented; source/read-back review pending |
-| =C11 / S11= | Worker-only SQLite, typed indexed/paged reads, write priority, exact large witness with timer/commit progress, bounded metrics | Implemented; timing observational |
+| =C01 / S1= | One default composition, deterministic copied-tree migration, close/reopen reconstruction, no runtime sidecar writes | Accepted |
+| =C09 / S9= | Offline migration and v3-to-v4 upgrade, source hashes, manifests, integrity, backup, permissions, invalid-input no-install cases | Accepted; copied-operator dry run passed |
+| =C10 / S10= | Default SQLite cutover, retired Node/task files, injected auxiliary owners, no Board-log proxy, targeted old/new errors | Accepted |
+| =C11 / S11= | Worker-only SQLite, typed indexed/paged reads, write priority, exact large witness with timer/commit progress, bounded metrics | Accepted; timing observational |
 
-The accepted P1--P3 owner boundaries continue to own =S2--S8=, while their
-simplified worker-loss behavior is part of this pending same-revision review.
-P4 does not add another transaction system or change those owner boundaries.
+The accepted P1--P3 owner boundaries continue to own =S2--S8=.  Independent
+same-revision review accepted their simplified worker-loss behavior and the P4
+cutover without adding another transaction system or changing those owner
+boundaries.
 
 * Architecture review
 
