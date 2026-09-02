@@ -101,7 +101,10 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   path.  A failed post-rotation install restores the legacy root.  An
   actual-cutover follow-up normalizes the three demonstrated rootless journals
   in the copied operator tree before import and proves ordinary default
-  restore from the migrated result.
+  restore from the migrated result.  A post-cutover performance correction
+  makes ordinary composition restore only catalog stubs, defers transcript
+  replay to first session access, and limits missing-catalog root inspection to
+  one record per session after eager replay exhausted production Emacs memory.
 - Simplification correction :: Implemented and parent-accepted on 2026-09-02;
   independently accepted at the exact completed revision.  The runtime
   protocol now uses process-local response correlation only: worker loss fails
@@ -412,7 +415,7 @@ Gate:
   presentation defects remain owned by Feature 86.  If Feature 87 adds a
   graphical persistence scenario, its exact named selector must also pass with
   =E_E2E_EMACS_CONFIG=current=;
-- performance evidence covers catalog startup, session resume, Board replay,
+- performance evidence covers lazy catalog startup, session resume, Board replay,
   commit/finalization, worker startup, resource limits, WAL/database size, and
   main-thread responsiveness.
 

@@ -46,6 +46,71 @@
       (setq store (e-session-sqlite-store-create directory))
       (should-not (e-session-messages store "source")))))
 
+(ert-deftest e-session-sqlite-missing-catalog-reads-only-first-record-pages ()
+  "Journal-root reconciliation reads one bounded record from each journal."
+  (e-session-sqlite-test--with-store (store directory)
+    (let ((runtime (e-session-storage-runtime-store store)))
+      (e-runtime-store-call
+       runtime 'write
+       '(:op session-append-batch :session-id "missing-catalog"
+         :records [(:type "session" :session-id "missing-catalog"
+                    :id "root" :timestamp "2026-09-02T00:00:00Z")
+                   (:type "message" :session-id "missing-catalog"
+                    :id "message" :parent-id "root"
+                    :timestamp "2026-09-02T00:00:01Z"
+                    :message (:role user :content "not replayed"))])))
+    (e-session-sqlite-store-close store)
+    (let ((read-page (symbol-function 'e-session-storage-read-session-page))
+          page-calls)
+      (cl-letf (((symbol-function 'e-session-storage-read-session-records)
+                 (lambda (&rest _args)
+                   (ert-fail "root reconciliation materialized a journal")))
+                ((symbol-function 'e-session-storage-read-session-page)
+                 (lambda (candidate session-id after limit)
+                   (push (list session-id after limit) page-calls)
+                   (funcall read-page candidate session-id after limit))))
+        (setq store (e-session-sqlite-store-create directory)))
+      (should (equal page-calls '(("missing-catalog" nil 1))))
+      (should (e-session-session-present-p store "missing-catalog"))
+      (should-not
+       (plist-get
+        (e-session-aggregate-peek-session store "missing-catalog") :loaded)))))
+
+(ert-deftest e-session-sqlite-catalog-startup-is-lazy-until-first-access ()
+  "Catalog startup installs stubs; first transcript access restores one."
+  (e-session-sqlite-test--with-store (store directory)
+    (e-session-create store :id "catalog-lazy")
+    (e-session-append-message
+     store "catalog-lazy" '(:role user :content "restored on access"))
+    (e-session-sqlite-store-close store)
+    (let ((read-page (symbol-function 'e-session-storage-read-session-page))
+          (read-records
+           (symbol-function 'e-session-storage-read-session-records))
+          (page-count 0)
+          (record-count 0))
+      (cl-letf (((symbol-function 'e-session-storage-read-session-page)
+                 (lambda (&rest args)
+                   (cl-incf page-count)
+                   (apply read-page args)))
+                ((symbol-function 'e-session-storage-read-session-records)
+                 (lambda (&rest args)
+                   (cl-incf record-count)
+                   (apply read-records args))))
+        (setq store (e-session-sqlite-store-create directory))
+        (should (e-session-session-present-p store "catalog-lazy"))
+        (should-not
+         (plist-get
+          (e-session-aggregate-peek-session store "catalog-lazy") :loaded))
+        (should (= page-count 0))
+        (should (= record-count 0))
+        (should (equal
+                 (mapcar (lambda (message) (plist-get message :content))
+                         (e-session-messages store "catalog-lazy"))
+                 '("restored on access")))
+        (should
+         (plist-get
+          (e-session-aggregate-peek-session store "catalog-lazy") :loaded))))))
+
 (ert-deftest e-session-sqlite-s3-tool-cut-points-restore-classification ()
   "Production session/activity paths and explicit later transitions persist."
   (e-session-sqlite-test--with-store (store directory)

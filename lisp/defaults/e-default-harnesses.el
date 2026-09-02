@@ -139,7 +139,7 @@ contains the established session directory and its sibling legacy owners."
         (e-default-common-state-directory)))))
 
 (defun e-default-runtime ()
-  "Return the process-wide default SQLite runtime, opening it once."
+  "Return the process-wide default SQLite runtime, opening lazy sessions once."
   (let ((directory (e-default-runtime-directory)))
     (unless (and (e-runtime-sqlite-p e-default--runtime)
                  (not (e-runtime-sqlite--closed e-default--runtime))
@@ -152,7 +152,7 @@ contains the established session directory and its sibling legacy owners."
                       (e-runtime-sqlite--directory e-default--runtime)
                       directory)))
       (setq e-default--runtime
-            (e-runtime-sqlite-open directory :load-sessions t)
+            (e-runtime-sqlite-open directory)
             e-default--chat-sessions
             (e-runtime-sqlite-session-store e-default--runtime)))
     (e-task-queue-actions-configure-queue

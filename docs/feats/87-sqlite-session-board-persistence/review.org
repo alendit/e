@@ -312,6 +312,31 @@ legacy backup and rejected first SQLite result remain separate; only the
 temporary source copy was removed after installed-path validation.  Emacs
 remained stopped, so a normal restart is required to use the installed store.
 
+** DONE High: Default composition eagerly replayed every migrated session
+
+The first post-cutover Daily invocation left Emacs near 99 percent CPU while a
+bounded ping still responded, then crashed after about ten minutes.  The
+supplied five-second OS sample placed the entire main-thread sample below
+=grimoire-daily= and agentic-session startup, with synchronous process output,
+allocation, and garbage collection.  The crash report records =SIGABRT= from
+=memory_full=/=xmalloc= during garbage collection under
+=accept-process-output= in the same command.  Source inspection found that
+=e-default-runtime= passed =:load-sessions t=, causing =e-session-load= to
+replay all 595,271 migrated session records.  Isolated opens of the copied
+store took about three minutes.
+
+Ordinary defaults now install catalog-backed unloaded session stubs and replay
+one transcript only at its first semantic access.  The missing-catalog fallback
+also reads only the first record through the established bounded page port
+instead of materializing each complete journal.  No storage protocol, schema,
+transaction, or durable state changed.  Focused tests cover the default
+composition argument, catalog-backed no-replay startup, lazy first access, and
+one-record root reconciliation.  The final repository state passes 3/3 focused
+regressions, 45/45 combined defaults and P4 tests, and 12/12 SQLite session-owner
+tests.  A disposable 15,722-record / 37,851,478-content-byte store opened lazily
+in 0.061760 seconds with zero transcript page reads and an unloaded session
+stub; timing is observational.
+
 * Plan coverage
 
 | Contract/scenario | Repository realization | Review disposition |

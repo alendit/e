@@ -1,0 +1,74 @@
+#+title: Investigation: Daily post-cutover eager session replay
+#+startup: overview
+
+* Scope and safety
+
+This investigation used the supplied bounded ping result, the five-second OS
+sample at =/tmp/e-daily-hang-86580.sample.txt=, and the 69,179-byte macOS crash
+report at
+=/Users/dvorona/Library/Logs/DiagnosticReports/Emacs-2026-09-02-221221.ips=.
+It did not send another request to Emacs, inspect or mutate the operator
+runtime, or read the external Grimoire repository.  Implementation and
+validation use only the repository and disposable test stores.
+
+* Evidence and cause
+
+The sample attributes every captured main-thread stack to the foreground
+=grimoire-daily= -> =grimoire-topic--start-agentic-session= command chain and
+contains substantial garbage-collector stacks.  Its sampled physical footprint
+was 855.7 MiB with a 1.3 GiB peak.  The later crash report records =SIGABRT= on
+PID 86580 at 22:12:21, with =memory_full=, =xmalloc=, garbage collection,
+=read_process_output=, and =accept-process-output= on the triggered thread;
+the Lisp stack remains rooted in the same Daily command.  This confirms memory
+exhaustion during the foreground replay, rather than an indefinitely blocked
+SQLite worker.  It matches the supplied isolated-store observation: ordinary
+default composition took roughly three minutes to open the migrated store
+containing 595,271 session records.
+
+The repository path was direct:
+
+1. Daily's agentic-session startup obtains the default e harness and session
+   store.
+2. =e-default-runtime= opened =e-runtime-sqlite= with =:load-sessions t=.
+3. The SQLite session composition passed that request as =:load-all=.
+4. =e-session-load= synchronously iterated every durable session and replayed
+   its checkpoint plus journal suffix, or its complete journal when no
+   checkpoint was available.
+
+SQLite I/O remained in the subordinate worker, but decoding and aggregate
+publication allocated the complete session population in the foreground Emacs.
+The cooperative waits explain why a bounded ping could still run; they do not
+make hundreds of thousands of replayed records an acceptable startup cost.
+
+A second read-amplification path existed when the catalog projection was
+absent.  =e-session--reconcile-journal-roots= needed only each journal's first
+root record to create an unloaded stub, but called the all-record compatibility
+reader and discarded the rest.
+
+* Resolution
+
+Ordinary defaults now open the existing SQLite composition without the eager
+load option.  Store construction reads the bounded catalog projection and
+installs unloaded session stubs.  Catalog-backed startup does not read any
+transcript page.  The first semantic access continues through
+=e-session--ensure-loaded= and restores that one session from its checkpoint
+and journal suffix.
+
+When no catalog exists, journal-root reconciliation calls the existing bounded
+page port with limit one and inspects only the returned first record.  This
+changes no schema, worker operation, durable state, or session semantics.
+The crash-left SQLite owner/WAL files are not modified here; existing
+stale-owner startup handling remains a separate runtime concern.
+
+* Validation
+
+Focused regressions prove that default composition omits eager loading,
+catalog-backed startup reads no transcripts, first access restores the exact
+message, and missing-catalog reconciliation issues only one-record page reads.
+The final repository state passes 3/3 focused regressions, 45/45 combined
+defaults and P4 tests, and 12/12 SQLite session-owner tests.  The latter's
+existing 15,722-record / 37,851,478-content-byte load witness completed in
+4.003680 seconds while 3,667 timer ticks advanced.  A separate disposable
+fixture of that same record and content size opened lazily in 0.061760 seconds,
+read zero transcript pages, and retained an unloaded session stub.  Timings are
+observations, not thresholds.

@@ -238,6 +238,48 @@
       (e-default-runtime-close)
       (delete-directory directory t))))
 
+(ert-deftest e-defaults-test-runtime-opens-session-store-lazily ()
+  "Ordinary default composition never requests eager transcript replay."
+  (let* ((directory (make-temp-file "e-defaults-lazy-runtime-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-default--runtime nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil)
+         (open (symbol-function 'e-runtime-sqlite-open))
+         (read-page (symbol-function 'e-session-storage-read-session-page))
+         arguments
+         (page-count 0))
+    (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
+    (unwind-protect
+        (progn
+          (let* ((setup (e-runtime-sqlite-open directory))
+                 (store (e-runtime-sqlite-session-store setup)))
+            (e-session-create store :id "lazy-default")
+            (e-session-append-message
+             store "lazy-default" '(:role user :content "not read at startup"))
+            (e-runtime-sqlite-close setup))
+          (cl-letf (((symbol-function 'e-runtime-sqlite-open)
+                     (lambda (&rest args)
+                       (setq arguments args)
+                       (apply open args)))
+                    ((symbol-function 'e-session-storage-read-session-page)
+                     (lambda (&rest args)
+                       (cl-incf page-count)
+                       (apply read-page args))))
+            (let ((store (e-runtime-sqlite-session-store
+                          (e-default-runtime))))
+              (should (e-session-session-present-p store "lazy-default"))
+              (should-not
+               (plist-get
+                (e-session-aggregate-peek-session store "lazy-default")
+                :loaded))))
+          (should (equal (car arguments)
+                         (file-name-as-directory directory)))
+          (should-not (plist-member (cdr arguments) :load-sessions))
+          (should (= page-count 0)))
+      (e-default-runtime-close)
+      (delete-directory directory t))))
+
 (ert-deftest e-defaults-test-runtime-directory-honors-explicit-override ()
   "The explicit runtime directory overrides the derived common e root."
   (let* ((root (make-temp-file "e-defaults-root-" t))

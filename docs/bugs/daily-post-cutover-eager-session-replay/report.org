@@ -1,0 +1,26 @@
+#+title: Daily crashes while default SQLite startup replays every session
+#+startup: overview
+
+* Report
+
+After the Feature 87 cutover, starting Daily left Emacs near 99 percent CPU
+while the supported bounded ping still responded.  It then crashed after about
+ten minutes.  A five-second operating system sample showed the foreground
+command under =grimoire-daily= and =grimoire-topic--start-agentic-session=
+spending its time in synchronous process output, allocation, and garbage
+collection.  The crash report records =SIGABRT= from =memory_full=/=xmalloc=
+during garbage collection under =accept-process-output= in the same command.
+
+* Expected
+
+Ordinary default runtime construction should restore only the bounded session
+catalog needed for selection.  It should replay an individual transcript only
+when a caller first accesses that session.
+
+* Actual
+
+=e-default-runtime= explicitly requested =:load-sessions t=.  Opening the
+post-cutover store therefore replayed all 595,271 durable session records
+before Daily could continue.  Isolated opens of the same copied store took
+about three minutes, and the production attempt exhausted memory before
+completion.

@@ -160,24 +160,25 @@ the storage owner's state representation."
         (and entries t)))))
 
 (defun e-session--reconcile-journal-roots (store &optional only-missing)
-  "Add session stubs for journals missing from STORE's catalog projection."
+  "Add stubs for journals missing from STORE's catalog using first records."
   (dolist (session-id (e-session-storage-session-ids store))
     (when (or (not only-missing)
               (not (e-session-aggregate-session-present-p store session-id)))
       (unless (e-session-aggregate-session-present-p store session-id)
         (condition-case nil
-            (let ((root (car (e-session-storage-read-session-records
-                              store session-id))))
+            (let* ((page (e-session-storage-read-session-page
+                          store session-id nil 1))
+                   (root (plist-get (car (plist-get page :records)) :value)))
               (when (equal (plist-get root :type) "session")
-                (when-let ((session
-                           (e-session--index-entry-session
-                            store
-                            (list :id session-id
-                                  :created-at (or (plist-get root :created-at)
-                                                  (plist-get root :timestamp))
-                                  :updated-at (or (plist-get root :updated-at)
-                                                  (plist-get root :timestamp))
-                                  :message-count 0))))
+                (when-let* ((session
+                            (e-session--index-entry-session
+                             store
+                             (list :id session-id
+                                   :created-at (or (plist-get root :created-at)
+                                                   (plist-get root :timestamp))
+                                   :updated-at (or (plist-get root :updated-at)
+                                                   (plist-get root :timestamp))
+                                   :message-count 0))))
                   (e-session-aggregate-install-index-session store session))))
           (file-error nil)
           (json-parse-error nil))))))

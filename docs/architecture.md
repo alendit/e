@@ -119,7 +119,9 @@ The following are current boundaries, not a future proposal:
   provider-neutral values.
 - One process-wide runtime composition opens one SQLite store and injects
   consumer-shaped ports into session, Board, task, cron, voice, Goodnite, and
-  raw-result owners. Interactive Emacs opens no SQLite connection.
+  raw-result owners. Interactive Emacs opens no SQLite connection. Ordinary
+  composition restores bounded catalog stubs; transcript state is replayed
+  only when a caller first accesses that session.
 - Domain publication is commit-first. Worker loss or a submitted request
   timeout before a response fails all outstanding operations once, stops that
   store, and never resubmits. Close/reopen reloads canonical SQLite state.
@@ -231,7 +233,10 @@ The facade coordinates semantic mutations and storage commits with explicit
 values. Aggregate replay applies decoded data; codec replay mapping itself is
 pure. The policy owners return detached values and do not own aggregate
 representation. The storage adapter sees semantic records, not aggregate
-internals. The facade stages SQLite mutations, commits the authoritative
+internals. SQLite composition installs unloaded catalog stubs at startup and
+uses a one-record page only when it must recover a missing catalog root; the
+facade lazily restores a transcript at first semantic access. The facade
+stages SQLite mutations, commits the authoritative
 record, then publishes the live aggregate. Rebuildable projection failure is
 visible as pending durability status without misreporting the primary mutation
 as uncommitted. Feature 87 `F87-C02`, `F87-C03`, and `F87-C12` define the exact
