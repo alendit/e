@@ -5,10 +5,12 @@
 
 - Goal ID: =BUG-E2E-POSTCUTOVER-COVERAGE=
 - Behavioral goal: repository-owned isolated E2E exercises the ordinary
-  post-migration startup and chat composition deeply enough to reject common
-  root selection and eager transcript replay regressions before live use.
-- Direct scenario: =S-E2E-CUTOVER-LAZY=.
-- Owning contract: =E2E-C01=.
+  post-migration startup and first chat turn deeply enough to reject common
+  root selection, eager transcript replay, and first-response curation
+  acknowledgement regressions before live use.
+- Direct scenarios: =S-E2E-CUTOVER-LAZY= and
+  =S-E2E-CUTOVER-CURATION-ACK=.
+- Owning contracts: =E2E-C01= and =E2E-C02=.
 - Product authority: the admitted Feature 87 post-cutover behavior.
 - Glossary: opt-out; the plan adds test evidence without changing runtime
   vocabulary.
@@ -34,3 +36,10 @@ rebuildable SQLite catalog was not published.  Cold startup therefore had to
 read the first record page of every session to reconstruct stubs.  The bounded
 fix rebuilds and publishes only that catalog during offline migration, loading
 and unloading one session at a time and leaving checkpoints unchanged.
+
+P2 extends the same disposable cutover boundary through the normal
+=:chat-default= Board/chat turn and real OpenAI Responses adapter.  A fake HTTP
+transport returns a valid curation-only first response.  Both stateless and
+anchored continuations must send one immediate opaque acknowledgement, produce
+the final assistant answer, survive a cold reopen, and keep that wire-only
+carrier out of durable messages and every later request.

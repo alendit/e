@@ -506,6 +506,14 @@ entrypoints suppress load-time warning chatter in their private batch process;
 actual failures remain single-line and bounded, so a cold source checkout or a
 malformed large snapshot cannot flood operator output.
 
+After canonical session records and translated checkpoints import, migration
+asks the session owner to rebuild and publish only its derived catalog. The
+owner enumerates durable session IDs, restores one session at a time through
+checkpoint-aware replay, derives a detached index entry, and unloads it before
+continuing. It does not refresh transcripts or rewrite checkpoints. This makes
+the first ordinary cold open proportional to catalog stubs rather than
+transcript pages.
+
 The ordinary SQLite store occupies the same common e root that historically
 contained `sessions/`, `task-queue/`, and the other owner sidecars. Adoption is
 therefore an explicit offline rotation, not a configuration-path change. With
@@ -590,6 +598,13 @@ round audits. Feature 87 adds deterministic worker-loss, commit-first,
 Board/pickup, task/cron ambiguity, resource-boundary, offline migration/upgrade,
 default-cutover, and 15,722-record/37,851,478-byte paged-load evidence. Its
 S1-S11 mapping remains in the Feature plan rather than being copied here.
+The repository-owned post-cutover E2E performs the real offline same-root
+cutover before resolving `:chat-default`. One scenario gates catalog-only cold
+startup and selective lazy restore. A second creates a current Board-backed
+chat and drives the real Responses adapter with a fake HTTP transport, gating
+curation-only acknowledgement serialization and one-request replay lifetime
+across close/reopen. Graphical fake-backend tests, no-send current-config
+checks, and opt-in live-provider tests retain their narrower evidence roles.
 
 Repository-side compilation, check-parens, static dependency/private-symbol
 sweeps, restart/replay tests, and the isolated graphical suite do not inspect or

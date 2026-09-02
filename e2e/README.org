@@ -18,8 +18,21 @@ The post-cutover scenario performs an actual test-owned offline same-root
 migration before opening the ordinary =:chat-default= composition.  It gates
 the parent SQLite root, catalog-only startup, single-session lazy restore,
 restart reconstruction, and exact sibling backup without touching operator
-state.  Batch chat tests prove buffer/window structure and command routing, but
-do not claim graphical redisplay or viewport behavior.
+state.  Its companion post-cutover chat scenario creates a Board-associated
+session through that composition and drives the real OpenAI Responses adapter
+with an injected HTTP transport.  Stateless and anchored variants gate a
+curation-only first response, its one immediate opaque acknowledgement, the
+ordinary final answer, cold reopen, and absence of replay-carrier leakage on a
+later turn.  Batch chat tests prove buffer/window structure and command routing,
+but do not claim graphical redisplay or viewport behavior.
+
+The deterministic post-cutover tests own cross-boundary regressions that the
+other tiers cannot decide.  Graphical tests use a semantic fake backend and do
+not inspect provider serialization.  Current-configuration tests construct a
+fresh explicitly rooted harness but send no request.  Live-provider scenarios
+are opt-in and model-dependent.  Focused loop/adapter tests continue to own the
+larger provenance and multi-tool matrices; the post-cutover chat test covers
+only the production first-response and one-request-lifetime path.
 
 * Graphical behavioral tests
 

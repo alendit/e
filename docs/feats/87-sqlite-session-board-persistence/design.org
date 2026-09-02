@@ -180,8 +180,13 @@ P4 implements the accepted cutover:
   legacy owner, canonically deduplicates Board facts, imports through typed
   owner ports into a private current-schema store, compares a deterministic
   semantic manifest, verifies integrity, and atomically renames the closed
-  work directory into place.  Dry-run performs the same import and proof but
-  removes the working store.  The root task snapshot maps to queue =default=;
+  work directory into place.  After importing session records and translated
+  checkpoints, it asks =e-session= to rebuild and publish the catalog through
+  the narrow session storage port.  That owner operation loads at most one
+  session at a time, uses checkpoint-aware replay, unloads it immediately, and
+  neither rewrites nor marks checkpoints clean.  Dry-run performs the same
+  import and proof but removes the working store.  The root task snapshot maps
+  to queue =default=;
   nested task snapshots map to their stable relative directory identities.
   The retired =sessions/chat-overview-state.json= presentation sidecar is
   explicitly reported as preserved derived input, not imported as authority.
@@ -477,6 +482,11 @@ and integrity checks, and atomically installs the verified store.  Conflicting
 identities, unexplained loss, non-round-tripping values, and missing roots
 outside the validated historical normalization above abort cutover.  Source
 files remain inactive rollback material and are not deleted.
+After records and translated checkpoints are imported, the session owner
+rebuilds and publishes the complete derived catalog one loaded session at a
+time.  Ordinary cold startup therefore installs unloaded stubs without reading
+transcript pages; migration does not create or clean checkpoints as a side
+effect of catalog publication.
 The ordinary runtime path is the common e root, not its legacy =sessions/=
 child.  Defaults derive that root only from the conventional
 =<root>/sessions= shape; a differently named custom session directory requires

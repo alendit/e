@@ -105,6 +105,9 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   makes ordinary composition restore only catalog stubs, defers transcript
   replay to first session access, and limits missing-catalog root inspection to
   one record per session after eager replay exhausted production Emacs memory.
+  Offline migration derives and publishes the complete rebuildable catalog
+  after importing records and translated checkpoints, loading and unloading
+  one session at a time without rewriting checkpoint state.
   A process-local per-session fence rejects same-session facade reentry during
   that first cooperative replay and is cleared on every exit.
 - Simplification correction :: Implemented and parent-accepted on 2026-09-02;
@@ -394,7 +397,9 @@ Gate:
   and historical task output products are explicitly source-preserved, retired
   presentation state is reported, and operator failures from compiled or cold
   source trees emit bounded diagnostics rather than load-warning chatter or
-  decoded snapshot backtraces;
+  decoded snapshot backtraces.  After session records and checkpoints import,
+  the session owner rebuilds and publishes only the catalog projection one
+  loaded session at a time; it does not rewrite or mark checkpoints clean;
 - S9 verifies restrictive permissions for every migration, upgrade, backup,
   export, report, and disposable-path artifact;
 - a dry migration of a copy of the current user store passes without touching

@@ -344,6 +344,21 @@ returns the exact two-record session, a later append succeeds, and an injected
 load error clears the fence before the next access.  The fence adds no durable
 state, retry, revision check, or transaction behavior.
 
+A later deterministic post-cutover E2E exposed an adjacent migration omission:
+records and translated checkpoints were imported, but the rebuildable catalog
+was not published.  Cold startup therefore read one first-record page for every
+session to reconstruct its stubs.  Migration now invokes a catalog-only session
+owner operation after checkpoint import.  It restores one session at a time
+through checkpoint-aware replay, derives a detached sorted index entry, unloads
+the session immediately, and publishes only the catalog projection.  Focused
+mechanism evidence proves complete checkpointed and checkpoint-less catalogs,
+at most one loaded aggregate, exact opaque checkpoint preservation, no new
+checkpoint for a checkpoint-less session, zero transcript reads at the next
+cold startup, and no installation when catalog publication fails.  The
+repository-owned 64-session same-root cutover scenario then proves zero cold
+transcript reads, one selected lazy restore, one untouched stub, and exact
+reconstruction after reopen.
+
 * Plan coverage
 
 | Contract/scenario | Repository realization | Review disposition |

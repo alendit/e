@@ -4,13 +4,16 @@
 * Plan identity and status
 
 - Goal: =BUG-E2E-POSTCUTOVER-COVERAGE=
-- Contract: =E2E-C01=
-- Scenario: =S-E2E-CUTOVER-LAZY=
+- Contracts: =E2E-C01= and =E2E-C02=
+- Scenarios: =S-E2E-CUTOVER-LAZY= and =S-E2E-CUTOVER-CURATION-ACK=
 - Plan identity: =implementation-plan-fixed-point= at base
   =d8861d5f6828f882b963379f829c7119dfa1f81c=.
 - Behavioral status before P1: unproved.
 - Mechanism status before P1: not started.
-- Package scope: P1 only; no P2 work is included.
+- P1 status: parent-accepted at
+  =0885eb019ab084983f05d5600a0d44166dc92e68= after independent 2/2 E2E and
+  mechanism reruns.
+- P2 mechanism status: implemented locally, awaiting parent acceptance.
 
 * Ownership and physical boundary
 
@@ -19,11 +22,12 @@ same-root cutover, and sibling backup preservation.  Default composition owns
 runtime-root selection and lazy =:chat-default= construction.  The session
 facade owns detached catalog stubs and first-access transcript restoration.
 
-The new physical test boundary is
-=e2e/e-post-cutover-e2e-test.el=.  It owns only a deterministic disposable
-legacy fixture and cross-owner assertions.  This is cohesive because its one
-reason to change is the operator-shaped post-cutover composition contract;
-production owners and their dependency direction are unchanged.
+The shared physical fixture boundary is
+=e2e/e-post-cutover-e2e-support.el=.  It owns only deterministic retired-tree
+construction.  =e2e/e-post-cutover-e2e-test.el= owns the startup/lazy-load
+scenario, while =e2e/e-post-cutover-chat-e2e-test.el= owns the first-turn
+Responses scenario.  Each test module changes with one cross-owner contract;
+production owners and their dependency direction remain unchanged.
 
 * Source finding and correction
 
@@ -116,5 +120,67 @@ relevant to this package were rerun independently and passed.
 |------+-----------------------------------|
 | =E2E-C01= source realization | implemented; focused proof passed locally |
 | =S-E2E-CUTOVER-LAZY= | passed locally with 64 sessions |
-| Behavioral goal | proved repository-side, awaiting parent acceptance |
-| P1 mechanism | implemented, awaiting parent acceptance |
+| Behavioral goal | proved repository-side and parent-accepted |
+| P1 mechanism | accepted at =0885eb019ab084983f05d5600a0d44166dc92e68= |
+
+* P2 root-cause matrix
+
+| Earlier tier | What it proved | Why it missed the production failure |
+|--------------+----------------+--------------------------------------|
+| Default and SQLite owner tests | Migration, root selection, lazy composition, and session restore in separate fixtures | No one test continued from actual cutover through an ordinary provider-backed chat turn |
+| Graphical chat E2E | Shell, Board, harness, streaming, and presentation behavior | Its fake backend emitted semantic loop items and never exercised Responses acknowledgement serialization |
+| Current-configuration E2E | The configured default harness could be constructed against a fresh explicit runtime root | It intentionally sent no provider request and did not perform same-root cutover |
+| Live-provider E2E | Opt-in behavior of the selected model and endpoint | It is credentialed, model-dependent compatibility evidence rather than a deterministic repository gate |
+| Existing deterministic Responses E2E | Real adapter behavior around tool observation and curation | Its curation response followed an ordinary tool result and also carried assistant text, so it always had a semantic carrier and never reached the first-response =:missing-ack-target= partition |
+
+The focused loop and adapter tests remain the correct layer for historical-tool
+provenance, multiple same-turn tool causes, repeated empty curation rejection,
+and exact request-option cleanup.  Reentrant first lazy load remains a focused
+session-owner test because it concerns one session's process-local load fence,
+not provider acknowledgement serialization.
+
+* P2 realization and assertions
+
+=E2E-C02= uses the same 64-session copied-source cutover fixture, then creates
+one new chat session through =e-chat-service-create-session= in the migrated
+default composition.  This is intentional: P1 owns exact restoration of a
+retired plain session journal, while P2 owns a Board-associated chat created by
+the current service after cutover.
+
+For both stateless and anchored profiles, the test:
+
+- resolves the registered =:chat-default= factory with the migrated SQLite
+  session store;
+- submits =Hi= through durable Board routing and the attached turn port;
+- injects only the Responses HTTP transport, whose first SSE response contains
+  one valid =context-curate= call and no assistant output;
+- requires exactly one immediate follow-up.  Stateless input contains the
+  matching call before its acknowledgement; anchored input contains exactly
+  the matching acknowledgement and names the retained response ID;
+- observes one durable curation record, no tool-call/tool-result message, no
+  tool continuity classification, and no =tool-started=/=tool-finished=
+  activity;
+- observes the final assistant answer in both the session transcript and Board
+  output;
+- closes the default runtime, clears process-local Board/chat state, recreates
+  =:chat-default= on the same SQLite root, and verifies the curation and answer;
+- sends =Later= and proves the new request input contains neither the old
+  curation call nor its acknowledgement identity, while its assistant answer
+  persists normally.
+
+The injected transport is the only fake owner boundary.  Migration, default
+composition, session storage, Board/chat delivery, harness loop, curation
+preflight/commit, and OpenAI request construction are production code.  Before
+=d3df89b0= the first response would terminate at
+=e-loop-empty-output (curation :missing-ack-target)=.  The cold-reopen/later
+request assertions additionally cover the request-local lifetime corrected by
+=d8861d5f= without duplicating its focused provenance matrix.
+
+* P2 acceptance ledger
+
+| Item | Status after local implementation |
+|------+-----------------------------------|
+| =E2E-C02= source realization | implemented; focused proof passed locally |
+| =S-E2E-CUTOVER-CURATION-ACK= | stateless and anchored variants passed locally |
+| Behavioral goal | proved by deterministic repository scenario, awaiting parent acceptance |
+| P2 mechanism | implemented, awaiting parent acceptance |
