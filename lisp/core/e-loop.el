@@ -617,11 +617,31 @@ metadata, before tool execution begins."
                     ;; metadata is wire-only and must not leak into durable
                     ;; transcript state.
                     (when pending-provider-replay-items
-                      (let ((tool-message
+                      (let* ((causes
+                              ;; Results produced by this response will cause
+                              ;; the request about to start.  Otherwise the
+                              ;; current request's captured causes identify
+                              ;; the only historical results eligible to carry
+                              ;; its acknowledgement.
+                              (if provider-followup-messages
+                                  next-request-causes
+                                provider-request-causes))
+                             (cause-ids
+                              (delq nil
+                                    (mapcar (lambda (cause)
+                                              (plist-get cause :id))
+                                            causes)))
+                             (tool-message
                              (car (last
                                    (cl-remove-if-not
                                     (lambda (message)
-                                      (eq (plist-get message :role) 'tool))
+                                      (and
+                                       (eq (plist-get message :role) 'tool)
+                                       (member
+                                        (plist-get
+                                         (plist-get message :content)
+                                         :tool-call-id)
+                                        cause-ids)))
                                     (or provider-followup-messages
                                         turn-messages))))))
                         (when tool-message

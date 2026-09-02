@@ -2249,7 +2249,17 @@
     (e-loop-run-turn-batch
      :session-id "session-stateless-curation"
      :turn-id "turn-stateless-curation"
-     :messages '((:role user :content "inspect"))
+     :messages '((:role user :content "old request")
+                 (:role tool-call
+                  :content (:id "historical-call"
+                            :name "historical-tool"
+                            :arguments nil))
+                 (:role tool
+                  :content (:tool-call-id "historical-call"
+                            :name "historical-tool"
+                            :status ok
+                            :content "historical output"))
+                 (:role user :content "Hi"))
      :backend backend
      :tools (e-tools-registry-create)
      :options options
@@ -2265,6 +2275,14 @@
     (should (= request-count 2))
     (should (= curation-count 1))
     (let* ((second (nth 1 (nreverse requests)))
+           (historical-tool
+            (seq-find
+             (lambda (message)
+               (and (eq (plist-get message :role) 'tool)
+                    (equal (plist-get (plist-get message :content)
+                                      :tool-call-id)
+                           "historical-call")))
+             (plist-get second :messages)))
            (body (e-openai-codex-request-body
                   :messages (plist-get second :messages)
                   :options (plist-get second :options)
@@ -2291,9 +2309,19 @@
                     (equal (plist-get
                             (aref (plist-get item :content) 0)
                             :text)
-                           "inspect")))
+                           "Hi")))
+             input))
+           (historical-output-count
+            (cl-count-if
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "historical-call")))
              input)))
       (should-not (plist-member body :previous_response_id))
+      (should historical-tool)
+      (should-not (plist-get (plist-get historical-tool :metadata)
+                             :provider-replay-items))
+      (should (= historical-output-count 1))
       (should (integerp user-position))
       (should (integerp call-position))
       (should (integerp ack-position))
@@ -2366,7 +2394,17 @@
     (e-loop-run-turn-batch
      :session-id "session-anchored-first-curation"
      :turn-id "turn-anchored-first-curation"
-     :messages '((:role user :content "Hi"))
+     :messages '((:role user :content "old request")
+                 (:role tool-call
+                  :content (:id "historical-call"
+                            :name "historical-tool"
+                            :arguments nil))
+                 (:role tool
+                  :content (:tool-call-id "historical-call"
+                            :name "historical-tool"
+                            :status ok
+                            :content "historical output"))
+                 (:role user :content "Hi"))
      :backend backend
      :tools (e-tools-registry-create)
      :options options
@@ -2378,6 +2416,14 @@
              (append durable-messages (list (copy-tree message))))))
     (should (= request-count 2))
     (let* ((second (nth 1 (nreverse requests)))
+           (historical-tool
+            (seq-find
+             (lambda (message)
+               (and (eq (plist-get message :role) 'tool)
+                    (equal (plist-get (plist-get message :content)
+                                      :tool-call-id)
+                           "historical-call")))
+             (plist-get second :messages)))
            (body (e-openai-codex-request-body
                   :messages (plist-get second :messages)
                   :options (plist-get second :options)
@@ -2385,6 +2431,9 @@
            (input (append (plist-get body :input) nil)))
       (should (equal (plist-get body :previous_response_id)
                      "response-curation"))
+      (should historical-tool)
+      (should-not (plist-get (plist-get historical-tool :metadata)
+                             :provider-replay-items))
       (should (= (length input) 1))
       (should (equal (plist-get (car input) :type)
                      "function_call_output"))

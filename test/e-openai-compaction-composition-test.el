@@ -303,6 +303,12 @@
                                           '(:target "state"))))
             (list :type "response.output_item.done"
                   :item (list :type "function_call"
+                              :call_id "call-second"
+                              :name "inspect-second"
+                              :arguments (json-encode
+                                          '(:target "other-state"))))
+            (list :type "response.output_item.done"
+                  :item (list :type "function_call"
                               :call_id "curation-call"
                               :name "context-curate"
                               :arguments curation-arguments))
@@ -412,14 +418,20 @@
              (lambda (item)
                (and (equal (plist-get item :type) "function_call_output")
                     (equal (plist-get item :call_id) "curation-call")))
+             input))
+           (second-output-position
+            (cl-position-if
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "call-second")))
              input)))
       ;; The actual adapter stream order is ordinary call, reserved control,
       ;; then completion; the reserved control never enters ordinary tools.
       (should (< (cl-position 'tool-call first-types)
                  (cl-position 'context-curate first-types)))
       (should (member 'done first-types))
-      (should (equal started-tools '("inspect")))
-      (should (= (length outputs) 2))
+      (should (equal started-tools '("inspect-second" "inspect")))
+      (should (= (length outputs) 3))
       (should (seq-find (lambda (item)
                           (and (equal (plist-get item :call_id)
                                       "call-ordinary")
@@ -432,8 +444,10 @@
                                (equal (plist-get item :output) "")))
                         outputs))
       (should (integerp ordinary-output-position))
+      (should (integerp second-output-position))
       (should (integerp curation-output-position))
       (should (< ordinary-output-position curation-output-position))
+      (should (< second-output-position curation-output-position))
       (should (equal (plist-get body :previous_response_id) "resp-A"))
       (should-not (string-match-p "provider-replay-item"
                                   (prin1-to-string durable-messages)))
