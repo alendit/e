@@ -625,7 +625,9 @@
              (runtime (e-session-storage-runtime-store sessions))
              (process (e-runtime-store--process runtime))
              (ordinary-filter (process-filter process))
-             (captured "") response-seen state-during events-during)
+             (captured "") response-seen state-during events-during
+             session-mutation-during board-mutation-during
+             session-callback-ran board-callback-ran callback-error)
         (e-board-pickup-start-delivery board delivery-id)
         (set-process-filter
          process
@@ -640,7 +642,59 @@
                       (e-board-pickup-state
                        (e-board-pickup board delivery-id))
                       events-during
-                      (e-session-activity-events sessions "session"))))
+                      (condition-case nil
+                          (e-session-activity-events sessions "session")
+                        (e-session-persistence-unavailable :frozen))
+                      session-mutation-during
+                      (condition-case err
+                          (progn
+                            (e-session-append-activity-event
+                             sessions "session" "too-early" 'dependent nil
+                             :write-index nil)
+                            :published)
+                        (error (car err)))
+                      board-mutation-during
+                      (condition-case err
+                          (progn
+                            (e-board-post-fact
+                             board :id "too-early" :content "blocked"
+                             :source-fact-key '(dependent 1 0))
+                            :published)
+                        (error (car err))))
+                ;; These already-admitted Board-owned callbacks must wait for
+                ;; both owner publications, even when one mutates the session.
+                (e-board--defer-after-storage-barrier
+                 board
+                 (lambda ()
+                   (condition-case err
+                       (progn
+                         (should
+                          (eq (e-board-pickup-state
+                               (e-board-pickup board delivery-id))
+                              'accepted))
+                         (should
+                          (= (length
+                              (e-session-activity-events sessions "session"))
+                             1))
+                         (e-session-append-activity-event
+                          sessions "session" "after-ack" 'dependent nil
+                          :write-index nil)
+                         (setq session-callback-ran t))
+                     (error (setq callback-error err)))))
+                (e-board--defer-after-storage-barrier
+                 board
+                 (lambda ()
+                   (condition-case err
+                       (progn
+                         (should
+                          (eq (e-board-pickup-state
+                               (e-board-pickup board delivery-id))
+                              'accepted))
+                         (e-board-post-fact
+                          board :id "after-ack" :content "published"
+                          :source-fact-key '(dependent 1 1))
+                         (setq board-callback-ran t))
+                     (error (setq callback-error err)))))))
              (run-at-time
               0.02 nil
               (lambda ()
@@ -650,11 +704,26 @@
          board delivery-id sessions "session" 'idle)
         (should response-seen)
         (should (eq state-during 'delivering))
-        (should-not events-during)
+        (should (eq events-during :frozen))
+        (should (eq session-mutation-during 'e-session-persistence-unavailable))
+        (should (eq board-mutation-during 'e-board-mutation-frozen))
         (should (eq (e-board-pickup-state
                      (e-board-pickup board delivery-id))
                     'accepted))
-        (should (= (length (e-session-activity-events sessions "session")) 1))
+        (let ((deadline (+ (float-time) 5.0)))
+          (while (and (not (and session-callback-ran board-callback-ran))
+                      (not callback-error)
+                      (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (when callback-error
+          (signal (car callback-error) (cdr callback-error)))
+        (should session-callback-ran)
+        (should board-callback-ran)
+        (should (= (length (e-session-activity-events sessions "session")) 2))
+        (should (equal (e-board-message-content
+                        (e-board-message board "after-ack"))
+                       "published"))
+        (should-not (e-board-message board "too-early"))
         (should-error
          (e-board-storage-admit-pickup
           storage (e-board-id board) (e-board-generation board) delivery-id
@@ -662,7 +731,7 @@
          :type 'e-board-storage-conflict)
         (e-session-sqlite-store-close sessions)
         (setq sessions (e-session-sqlite-store-create directory))
-        (should (= (length (e-session-activity-events sessions "session")) 1))))))
+        (should (= (length (e-session-activity-events sessions "session")) 2))))))
 
 (ert-deftest e-board-sqlite-s6-composite-invalid-state-has-no-tear ()
   "A pickup that is not claimed publishes neither side of the composite."

@@ -124,6 +124,11 @@ The following are current boundaries, not a future proposal:
   timeout before a response fails all outstanding operations once, stops that
   store, and never resubmits. Close/reopen reloads canonical SQLite state.
   Uncertain external task, cron, tool, or pickup effects are not repeated.
+- Owner-local live fences span cooperative waits: the pickup/session composite
+  holds both owners through both publications; task cancel/pause control and cron
+  replacement are revalidated before executable work; voice record/clear
+  publication is ordered. Closing a runtime detaches process callbacks and
+  settles every owned request once before any late response can be observed.
 - Ordinary startup creates only the current schema. Legacy import and schema
   upgrade are explicit offline actions; unsupported stores fail with targeted
   guidance rather than fallback.

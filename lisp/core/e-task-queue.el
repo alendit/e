@@ -537,6 +537,57 @@ retry.  Re-dispatches QUEUE after a real transition."
       (e-task-queue--dispatch queue)))
   record)
 
+(defun e-task-queue--invoke-claimed-runner
+    (queue task-id record instance-id)
+  "Invoke TASK-ID's runner after RECORD's durable claim is live."
+  (let ((harness
+         (if (null (e-task-queue-runner queue))
+             :board-producer
+           (condition-case err
+               (if instance-id
+                   (e-harness-instance-get-or-create instance-id)
+                 (signal 'e-task-queue-unknown-task
+                         (list "No harness instance for task")))
+             (error
+              (e-task-queue--settle
+               queue task-id 'failed
+               :error (format "Cannot resolve harness instance %s: %s"
+                              instance-id (e-work-error-message err)))
+              nil)))))
+    (when harness
+      (let* ((owner-attempt-id (plist-get record :attempt-id))
+             (handle
+              (condition-case err
+                  (funcall (e-task-queue--runner queue)
+                           (e-task-queue--normalize queue record)
+                           (if (e-task-queue-runner queue) harness queue)
+                           (lambda (&rest settle-args)
+                             (apply #'e-task-queue--settle queue task-id
+                                    (or (plist-get settle-args :status) 'done)
+                                    :owner-attempt-id owner-attempt-id
+                                    settle-args)))
+                (error
+                 ;; The claim is authoritative and the runner may have begun
+                 ;; an irreversible effect before signalling.  Without a
+                 ;; returned handle there is no safe cancellation or retry
+                 ;; boundary, so preserve uncertainty before surfacing the
+                 ;; original synchronous error.
+                 (when (eq (plist-get record :status) 'running)
+                   (e-task-queue--settle
+                    queue task-id 'interrupted
+                    :owner-attempt-id owner-attempt-id
+                    :error
+                    (format "Task runner signalled after durable claim; external effect is uncertain: %s"
+                            (error-message-string err))))
+                 (signal (car err) (cdr err))))))
+        (when-let* ((session-id (and (listp handle)
+                                     (plist-get handle :session-id))))
+          (plist-put record :session-id session-id))
+        ;; A synchronous runner may already have settled the task and cleared
+        ;; its handle; only a still-running task keeps a live handle.
+        (when (eq (plist-get record :status) 'running)
+          (plist-put record :handle handle))))))
+
 (defun e-task-queue--start (queue task-id)
   "Transition TASK-ID in QUEUE to running and invoke the runner.
 Resolves the task's harness instance at this moment.  A task whose instance id
@@ -548,18 +599,25 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
     ;; retain the resolved target so its completed session can be identified
     ;; after a restart even if the queue default later changes.
     (when (e-task-queue-storage-backed-p queue)
-      (let* ((started-at (e-task-queue--timestamp))
-             (attempt-number
-              (1+ (or (plist-get record :attempt-number) 0)))
-             (attempt-id
-              (format "%s:a:%d" task-id attempt-number))
-             (result
-              (e-task-storage-claim
-               (e-task-queue-storage queue) (e-task-queue-id queue)
-               task-id attempt-id started-at instance-id)))
-        (setf (e-task-queue-revision queue) (plist-get result :revision))
-        (e-task-queue--publish-durable-record
-         record (plist-get result :record))))
+      ;; CLAIMING and the two CLAIM-*-REQUESTED values are process-local owner
+      ;; fences.  A timer may request cancellation or pause while the
+      ;; cooperative worker wait is running; it must not submit a stale queued
+      ;; transition or let the claimed external runner start.
+      (plist-put record :claiming t)
+      (unwind-protect
+          (let* ((started-at (e-task-queue--timestamp))
+                 (attempt-number
+                  (1+ (or (plist-get record :attempt-number) 0)))
+                 (attempt-id
+                  (format "%s:a:%d" task-id attempt-number))
+                 (result
+                  (e-task-storage-claim
+                   (e-task-queue-storage queue) (e-task-queue-id queue)
+                   task-id attempt-id started-at instance-id)))
+            (setf (e-task-queue-revision queue) (plist-get result :revision))
+            (e-task-queue--publish-durable-record
+             record (plist-get result :record)))
+        (plist-put record :claiming nil)))
     (unless (e-task-queue-storage-backed-p queue)
       (when instance-id
         (plist-put record :harness-instance-id instance-id))
@@ -567,54 +625,31 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
       (plist-put record :started-at (e-task-queue--timestamp)))
     (when instance-id
       (plist-put record :harness-instance-id instance-id))
-    (e-task-queue--notify queue)
-    (let ((harness
-           (if (null (e-task-queue-runner queue))
-               :board-producer
-             (condition-case err
-                 (if instance-id
-                     (e-harness-instance-get-or-create instance-id)
-                   (signal 'e-task-queue-unknown-task
-                           (list "No harness instance for task")))
-               (error
-                (e-task-queue--settle
-                 queue task-id 'failed
-                 :error (format "Cannot resolve harness instance %s: %s"
-                                instance-id (e-work-error-message err)))
-                nil)))))
-      (when harness
-        (let* ((owner-attempt-id (plist-get record :attempt-id))
-               (handle
-                (condition-case err
-                    (funcall (e-task-queue--runner queue)
-                             (e-task-queue--normalize queue record)
-                             (if (e-task-queue-runner queue) harness queue)
-                             (lambda (&rest settle-args)
-                               (apply #'e-task-queue--settle queue task-id
-                                      (or (plist-get settle-args :status) 'done)
-                                      :owner-attempt-id owner-attempt-id
-                                      settle-args)))
-                  (error
-                   ;; The claim is authoritative and the runner may have begun
-                   ;; an irreversible effect before signalling.  Without a
-                   ;; returned handle there is no safe cancellation or retry
-                   ;; boundary, so preserve uncertainty before surfacing the
-                   ;; original synchronous error.
-                   (when (eq (plist-get record :status) 'running)
-                     (e-task-queue--settle
-                      queue task-id 'interrupted
-                      :owner-attempt-id owner-attempt-id
-                      :error
-                      (format "Task runner signalled after durable claim; external effect is uncertain: %s"
-                              (error-message-string err))))
-                   (signal (car err) (cdr err))))))
-          (when-let ((session-id (and (listp handle)
-                                      (plist-get handle :session-id))))
-            (plist-put record :session-id session-id))
-          ;; A synchronous runner may already have settled the task and
-          ;; cleared its handle; only a still-running task keeps a live handle.
-          (when (eq (plist-get record :status) 'running)
-            (plist-put record :handle handle)))))))
+    (cond
+     ((and (e-task-queue-storage-backed-p queue)
+           (plist-get record :claim-cancel-requested))
+      ;; Cancellation dominates a concurrent pause request.
+      (plist-put record :claim-cancel-requested nil)
+      (plist-put record :claim-pause-requested nil)
+      ;; Publish the claim only to the task owner, then immediately commit the
+      ;; already-requested cancellation before any runner entry.
+      (e-task-queue-cancel queue task-id))
+     ((and (e-task-queue-storage-backed-p queue)
+           (plist-get record :claim-pause-requested))
+      (plist-put record :claim-pause-requested nil)
+      ;; No runner has been invoked, so this is a known paused task rather than
+      ;; an interrupted external effect and needs no cancellation handle.
+      (let ((staged (copy-tree record)))
+        (plist-put staged :status 'paused)
+        (plist-put staged :started-at nil)
+        (plist-put staged :finished-at nil)
+        (e-task-queue--commit-record queue record 'running staged))
+      (plist-put record :handle nil)
+      (e-task-queue--notify queue))
+     (t
+      (e-task-queue--notify queue)
+      (e-task-queue--invoke-claimed-runner
+       queue task-id record instance-id)))))
 
 (defun e-task-queue--dispatch (queue)
   "Start queued tasks in QUEUE up to the parallelism cap.
@@ -703,29 +738,32 @@ A queued or paused task becomes `cancelled' without ever running.  A running
 task is interrupted through its runner handle and its result is dropped on
 settle.  Terminal tasks are returned unchanged."
   (let ((record (e-task-queue--record queue task-id)))
-    (pcase (plist-get record :status)
-      ((or 'queued 'paused)
-       (let ((staged (copy-tree record))
-             (expected (plist-get record :status)))
-         (plist-put staged :status 'cancelled)
-         (plist-put staged :pausing nil)
-         (plist-put staged :finished-at (e-task-queue--timestamp))
-         (e-task-queue--commit-record queue record expected staged))
-       (e-task-queue--settle-work-handle record 'cancelled)
-       (e-task-queue--notify queue))
-      ('running
-       (let ((handle (plist-get record :handle)))
-         (let ((staged (copy-tree record)))
+    (if (and (e-task-queue-storage-backed-p queue)
+             (plist-get record :claiming))
+      (plist-put record :claim-cancel-requested t)
+      (pcase (plist-get record :status)
+        ((or 'queued 'paused)
+         (let ((staged (copy-tree record))
+               (expected (plist-get record :status)))
            (plist-put staged :status 'cancelled)
            (plist-put staged :pausing nil)
            (plist-put staged :finished-at (e-task-queue--timestamp))
-           (e-task-queue--commit-record queue record 'running staged))
-         (plist-put record :handle nil)
-         (when (and (listp handle) (functionp (plist-get handle :cancel)))
-           (ignore-errors (funcall (plist-get handle :cancel))))
+           (e-task-queue--commit-record queue record expected staged))
          (e-task-queue--settle-work-handle record 'cancelled)
-         (e-task-queue--notify queue)
-         (e-task-queue--dispatch queue))))
+         (e-task-queue--notify queue))
+        ('running
+         (let ((handle (plist-get record :handle)))
+           (let ((staged (copy-tree record)))
+             (plist-put staged :status 'cancelled)
+             (plist-put staged :pausing nil)
+             (plist-put staged :finished-at (e-task-queue--timestamp))
+             (e-task-queue--commit-record queue record 'running staged))
+           (plist-put record :handle nil)
+           (when (and (listp handle) (functionp (plist-get handle :cancel)))
+             (ignore-errors (funcall (plist-get handle :cancel))))
+           (e-task-queue--settle-work-handle record 'cancelled)
+           (e-task-queue--notify queue)
+           (e-task-queue--dispatch queue)))))
     (e-task-queue--normalize queue record)))
 
 (defun e-task-queue-pause (queue task-id)
@@ -736,48 +774,51 @@ its next turn boundary: the runner handle aborts the active turn and the
 in `paused' with any partial outputs preserved.  A paused or terminal task is
 returned unchanged."
   (let ((record (e-task-queue--record queue task-id)))
-    (pcase (plist-get record :status)
-      ('queued
-       (let ((staged (copy-tree record)))
-         (plist-put staged :status 'paused)
-         (e-task-queue--commit-record queue record 'queued staged))
-       (e-task-queue--notify queue))
-      ('running
-       (let ((handle (plist-get record :handle)))
-         (if (e-task-queue-storage-backed-p queue)
-             (progn
-               (let ((staged (copy-tree record)))
-                 (plist-put staged :status 'pausing)
-                 (e-task-queue--commit-record queue record 'running staged))
-               (unless (and (listp handle)
-                            (functionp (plist-get handle :cancel)))
-                 (e-task-queue--interrupt-pausing
-                  queue record
-                  "Task pause could not cancel the claimed runner; external effect is uncertain")
-                 (signal 'e-task-queue-error
-                         (list "Running task has no cancellation capability"
-                               task-id)))
-               (condition-case err
-                   (funcall (plist-get handle :cancel))
-                 (error
-                  (e-task-queue--interrupt-pausing
-                   queue record
-                   (format "Task pause cancellation failed; external effect is uncertain: %s"
-                           (error-message-string err)))
-                  (signal (car err) (cdr err))))
-               ;; An asynchronous cancellation remains durably `pausing' and
-               ;; retains its active slot until its owned settle callback.
-               (e-task-queue--notify queue))
-           ;; Preserve the legacy in-memory cancellation ordering.
-           (plist-put record :pausing t)
-           (if (and (listp handle) (functionp (plist-get handle :cancel)))
-               (ignore-errors (funcall (plist-get handle :cancel)))
-             (plist-put record :pausing nil)
-             (plist-put record :status 'paused)
-             (plist-put record :handle nil)
-             (plist-put record :started-at nil)
-             (e-task-queue--notify queue)
-             (e-task-queue--dispatch queue))))))
+    (if (and (e-task-queue-storage-backed-p queue)
+             (plist-get record :claiming))
+        (plist-put record :claim-pause-requested t)
+      (pcase (plist-get record :status)
+        ('queued
+         (let ((staged (copy-tree record)))
+           (plist-put staged :status 'paused)
+           (e-task-queue--commit-record queue record 'queued staged))
+         (e-task-queue--notify queue))
+        ('running
+         (let ((handle (plist-get record :handle)))
+           (if (e-task-queue-storage-backed-p queue)
+               (progn
+                 (let ((staged (copy-tree record)))
+                   (plist-put staged :status 'pausing)
+                   (e-task-queue--commit-record queue record 'running staged))
+                 (unless (and (listp handle)
+                              (functionp (plist-get handle :cancel)))
+                   (e-task-queue--interrupt-pausing
+                    queue record
+                    "Task pause could not cancel the claimed runner; external effect is uncertain")
+                   (signal 'e-task-queue-error
+                           (list "Running task has no cancellation capability"
+                                 task-id)))
+                 (condition-case err
+                     (funcall (plist-get handle :cancel))
+                   (error
+                    (e-task-queue--interrupt-pausing
+                     queue record
+                     (format "Task pause cancellation failed; external effect is uncertain: %s"
+                             (error-message-string err)))
+                    (signal (car err) (cdr err))))
+                 ;; An asynchronous cancellation remains durably `pausing' and
+                 ;; retains its active slot until its owned settle callback.
+                 (e-task-queue--notify queue))
+             ;; Preserve the legacy in-memory cancellation ordering.
+             (plist-put record :pausing t)
+             (if (and (listp handle) (functionp (plist-get handle :cancel)))
+                 (ignore-errors (funcall (plist-get handle :cancel)))
+               (plist-put record :pausing nil)
+               (plist-put record :status 'paused)
+               (plist-put record :handle nil)
+               (plist-put record :started-at nil)
+               (e-task-queue--notify queue)
+               (e-task-queue--dispatch queue)))))))
     (e-task-queue--normalize queue record)))
 
 (defun e-task-queue-resume (queue task-id)

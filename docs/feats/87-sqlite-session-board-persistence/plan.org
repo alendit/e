@@ -49,7 +49,8 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   routing outcomes, pickup identities and lifecycle transitions, participant
   recovery identity, and stable replay progress through =e-board-storage=.
   One typed pickup-admission operation commits the accepted pickup and session
-  input together before either owner publishes live state.  Correction evidence
+  input together while both owner barriers remain held through their live
+  publication.  Correction evidence
   covers post-ambiguity FIFO recovery, replay claim-before-effect, strict SQLite
   association restore, canonical source signatures and selectors, terminal
   pickup identity restore, and cleanup of unpublished participant admissions.
@@ -69,7 +70,10 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   BLOBs use owner-shaped commands; the raw boundary is 16 MiB exact with
   explicit one-over failure.  A process-local composition guard rejects a
   second live composition before it can open a store or replace owner ports.
-  Seventeen focused S7-S8/composition tests, 119 independently
+  Reentrant cancellation or pause during a task claim is applied before runner entry;
+  cron revalidates its exact live definition after claim; and voice record and
+  clear results publish under one process-local ordering generation.
+  Twenty-one focused S7-S8/composition tests, 119 independently
   relevant owner tests, and 39 P1-P2 preservation tests pass.  Ordinary runtime
   defaults and legacy files remain unchanged until P4, so =F87-GOAL= remains
   unavailable.
@@ -89,15 +93,18 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   changing the source.  Independent same-revision review remains acceptance
   work; =F87-GOAL= therefore remains unavailable.
 - Simplification correction :: Implemented and parent-accepted on 2026-09-02;
-  independent acceptance remains.  The runtime protocol now uses process-local response
-  correlation only: worker loss fails once, freezes the store object, and
-  requires explicit reopen plus canonical owner reload.  Durable command and
-  owner-revision ledgers, command hashes, ordinary revision preconditions,
+  independent acceptance remains.  The runtime protocol now uses process-local
+  response correlation only: worker loss fails once, freezes the store object,
+  and requires explicit reopen plus canonical owner reload.  Durable command
+  and owner-revision ledgers, command hashes, ordinary revision preconditions,
   automatic worker restart, and ambiguous-operation resubmission are removed.
-  Task and cron retain natural attempt/firing identities and restore in-flight
-  work as =interrupted= or =unsafe= without automatic execution.  The combined
-  SQLite domain/package suite passes 50/50, the S2 runtime suite passes 13/13,
-  and affected owner/resource suites pass 135/135;
+  Explicit close fails every active or queued request exactly once, detaches
+  process callbacks, and ignores late responses.  Task and cron retain natural
+  attempt/firing identities and restore in-flight work as =interrupted= or
+  =unsafe= without automatic execution.  The current owner-fence correction
+  passes 52/52 focused runtime/SQLite tests, 112/112 affected owner tests, and
+  58/58 combined P1--P4 SQLite tests.  Earlier affected owner/resource suites
+  pass 135/135;
   Board/runtime/admission/chat preservation passes 315 expected with 2 declared
   skips; graphical passes 28/28 and current-config passes 4/4.  The complete
   final 2,678-test restricted repository gate has 2,655 expected, 9

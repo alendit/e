@@ -220,6 +220,63 @@
       (ignore-errors (e-runtime-store-close store))
       (delete-directory directory t))))
 
+(ert-deftest e-runtime-store-s2-close-settles-owned-requests-once ()
+  "Close fails active and queued work once and ignores a late response."
+  (let* ((directory (make-temp-file "e-runtime-store-close-" t))
+         (store (e-runtime-store-open directory))
+         (process (e-runtime-store--process store))
+         (ordinary-filter (process-filter process))
+         (captured "")
+         (done-count 0)
+         (error-count 0)
+         requests)
+    (unwind-protect
+        (progn
+          (set-process-filter
+           process
+           (lambda (_worker text)
+             (setq captured (concat captured text))))
+          (setq requests
+                (list
+                 (e-runtime-store-submit
+                  store 'write
+                  '(:op session-append :session-id "close" :record (:value one))
+                  :on-done (lambda (_result) (cl-incf done-count))
+                  :on-error (lambda (_error) (cl-incf error-count)))
+                 (e-runtime-store-submit
+                  store 'write
+                  '(:op session-append :session-id "close" :record (:value two))
+                  :on-done (lambda (_result) (cl-incf done-count))
+                  :on-error (lambda (_error) (cl-incf error-count)))
+                 (e-runtime-store-submit
+                  store 'read '(:op session-record-page :session-id "close")
+                  :on-done (lambda (_result) (cl-incf done-count))
+                  :on-error (lambda (_error) (cl-incf error-count)))))
+          (let ((deadline (+ (float-time) 5.0)))
+            (while (and (not (string-match-p "\n" captured))
+                        (< (float-time) deadline))
+              (accept-process-output process 0.01)))
+          (should (string-match-p "\n" captured))
+          (should (eq (e-runtime-store-request--state (car requests))
+                      'submitted))
+          (e-runtime-store-close store)
+          (should (= done-count 0))
+          (should (= error-count 3))
+          (dolist (request requests)
+            (should (eq (e-runtime-store-request--state request) 'failed))
+            (should (eq (car (e-runtime-store-request--error request))
+                        'e-runtime-store-unavailable)))
+          (should (= (hash-table-count (e-runtime-store--pending store)) 0))
+          (should (= (plist-get (e-runtime-store-status store) :pending-count) 0))
+          ;; Model a filter invocation already queued before close detached the
+          ;; process.  It cannot change settlement or publish success.
+          (funcall ordinary-filter process captured)
+          (should (= done-count 0))
+          (should (= error-count 3))
+          (should (= (hash-table-count (e-runtime-store--pending store)) 0)))
+      (ignore-errors (e-runtime-store-close store))
+      (delete-directory directory t))))
+
 (ert-deftest e-runtime-store-s2-failure-callback-cannot-break-fanout ()
   "One signaling error callback cannot leave later requests unsettled."
   (e-runtime-store-test--with-store (store directory)

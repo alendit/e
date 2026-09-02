@@ -139,6 +139,94 @@
                                :attempts))
                    2))))))
 
+(ert-deftest e-runtime-sqlite-p3-s7-task-cancel-during-claim-prevents-runner ()
+  "A reentrant cancellation after claim commit runs before the runner."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (calls 0)
+           (queue
+            (e-task-queue-create
+             :id "cancel-claim" :storage storage :max-parallel 0
+             :runner (lambda (&rest _args) (cl-incf calls))))
+           (record (e-task-queue-enqueue
+                    queue :prompt "must not start" :harness-instance-id 'test))
+           (task-id (plist-get record :task-id))
+           pause-status-during status-during)
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (setf (e-task-queue-max-parallel queue) 1)
+        (e-runtime-sqlite-p3-test--hold-one-response
+         runtime
+         (lambda ()
+           (setq pause-status-during
+                 (plist-get (e-task-queue-pause queue task-id) :status)
+                 status-during
+                 (plist-get (e-task-queue-cancel queue task-id) :status)))
+         0.02)
+        (e-task-queue--dispatch queue)
+        (should (eq pause-status-during 'queued))
+        (should (eq status-during 'queued))
+        (should (= calls 0))
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                    'cancelled))
+        (let* ((snapshot (e-task-storage-snapshot storage "cancel-claim"))
+               (durable (car (plist-get snapshot :records)))
+               (attempt (car (plist-get snapshot :attempts))))
+          (should (eq (plist-get durable :status) 'cancelled))
+          (should (eq (plist-get attempt :state) 'cancelled)))))))
+
+(ert-deftest e-runtime-sqlite-p3-s7-task-pause-all-during-claim-prevents-runner ()
+  "A pause-all reentering a claim commits pause before runner entry."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-task-storage-sqlite-create runtime))
+           (calls 0)
+           (queue
+            (e-task-queue-create
+             :id "pause-claim" :storage storage :max-parallel 0
+             :runner
+             (lambda (_task _harness settle)
+               (cl-incf calls)
+               (funcall settle :status 'done)
+               nil)))
+           (record (e-task-queue-enqueue
+                    queue :prompt "pause before start"
+                    :harness-instance-id 'test))
+           (task-id (plist-get record :task-id))
+           status-during)
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_id) :test-harness)))
+        (setf (e-task-queue-max-parallel queue) 1)
+        (e-runtime-sqlite-p3-test--hold-one-response
+         runtime
+         (lambda ()
+           (e-task-queue-pause-all queue)
+           (setq status-during
+                 (plist-get (e-task-queue-get queue task-id) :status)))
+         0.02)
+        (e-task-queue--dispatch queue)
+        (should (eq status-during 'queued))
+        (should (= calls 0))
+        (should (e-task-queue-paused-p queue))
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                    'paused))
+        (let* ((snapshot (e-task-storage-snapshot storage "pause-claim"))
+               (durable (car (plist-get snapshot :records)))
+               (attempt (car (plist-get snapshot :attempts))))
+          (should (plist-get snapshot :paused-p))
+          (should (eq (plist-get durable :status) 'paused))
+          (should-not (plist-get durable :started-at))
+          (should (eq (plist-get attempt :state) 'paused)))
+        ;; Explicitly releasing the queue gate creates the next attempt and is
+        ;; the only point at which the runner may start.
+        (e-task-queue-resume-all queue)
+        (should (= calls 1))
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status) 'done))
+        (let ((attempts
+               (plist-get (e-task-storage-snapshot storage "pause-claim")
+                          :attempts)))
+          (should (= (length attempts) 2))
+          (should (eq (plist-get (car (last attempts)) :state) 'done)))))))
+
 (ert-deftest e-runtime-sqlite-p3-s7-task-pause-waits-for-owned-settlement ()
   "A pause request retains its slot until the claimed runner confirms it."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
@@ -389,6 +477,44 @@
         (should (= arms 0))
         (should-not (eq old (e-cron-get 'replace)))))))
 
+(ert-deftest e-runtime-sqlite-p3-s7-cron-replacement-during-claim-skips-old-action ()
+  "A definition replaced during claim cannot start its retired action."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-cron-storage-sqlite-create runtime))
+           (e-cron--schedules (make-hash-table :test 'equal))
+           (now (seconds-to-time 2500))
+           (e-cron-current-time-function (lambda () now))
+           (old-actions 0)
+           (new-actions 0)
+           (old
+            (e-cron-register
+             :id 'claim-replace :when '(:every 10) :enabled nil
+             :storage storage
+             :action (lambda (_schedule) (cl-incf old-actions))))
+           replacement)
+      (e-runtime-sqlite-p3-test--hold-one-response
+       runtime
+       (lambda ()
+         (setq replacement
+               (e-cron-register
+                :id 'claim-replace :when '(:every 20) :enabled nil
+                :storage storage
+                :action (lambda (_schedule) (cl-incf new-actions)))))
+       0.02)
+      (should-not (e-cron-fire old))
+      (should (= old-actions 0))
+      (should (= new-actions 0))
+      (should (eq replacement (e-cron-get 'claim-replace)))
+      (should-not (eq old replacement))
+      (should (= (e-cron-schedule-definition-revision replacement) 2))
+      (let ((unresolved
+             (plist-get (e-cron-storage-cadence storage 'claim-replace)
+                        :unresolved)))
+        (should (= (length unresolved) 1))
+        (should (equal (plist-get (car unresolved) :firing-id)
+                       "claim-replace:1:2510.000000"))
+        (should (eq (plist-get (car unresolved) :state) 'unsafe))))))
+
 (ert-deftest e-runtime-sqlite-p3-s7-cron-failure-and-history-delete ()
   "Known action failure settles once and history deletion is explicit."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
@@ -424,6 +550,43 @@
       (should (= (plist-get (e-voice-storage-list storage) :count) 2))
       (e-voice-storage-clear storage)
       (should-not (plist-get (e-voice-storage-list storage) :tells)))))
+
+(ert-deftest e-runtime-sqlite-p3-s8-voice-reentrant-record-clear-stays-canonical ()
+  "Held record/clear acknowledgements cannot publish stale live LRU state."
+  (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
+    (let* ((storage (e-voice-storage-sqlite-create runtime))
+           (e-voice-adjustment-storage storage)
+           (e-voice-adjustment--loaded t)
+           (e-voice-adjustment--tells nil)
+           (e-voice-adjustment--mutation-generation 0))
+      ;; The clear is later in worker order but returns inside the record's
+      ;; cooperative wait.  The older record result must not repopulate cache.
+      (e-runtime-sqlite-p3-test--hold-one-response
+       runtime (lambda () (e-voice-adjustment--clear)) 0.02)
+      (e-voice-adjustment--record "outer" "must be cleared")
+      (should-not (plist-get (e-voice-adjustment--list) :tells))
+      (should-not (plist-get (e-voice-storage-list storage) :tells))
+      ;; Reverse the order: the later record owns both DB and live projection.
+      (e-voice-adjustment--record "seed" "before clear")
+      (e-runtime-sqlite-p3-test--hold-one-response
+       runtime
+       (lambda () (e-voice-adjustment--record "later" "after clear"))
+       0.02)
+      (e-voice-adjustment--clear)
+      (let ((live (plist-get (e-voice-adjustment--list) :tells))
+            (durable (plist-get (e-voice-storage-list storage) :tells)))
+        (should (equal live durable))
+        (should (equal (mapcar (lambda (tell) (plist-get tell :key)) live)
+                       '("later"))))
+      (e-runtime-store-close runtime)
+      (setq runtime (e-runtime-store-open directory)
+            storage (e-voice-storage-sqlite-create runtime)
+            e-voice-adjustment-storage storage
+            e-voice-adjustment--loaded nil
+            e-voice-adjustment--tells nil)
+      (should
+       (equal (plist-get (e-voice-adjustment--list) :tells)
+              (plist-get (e-voice-storage-list storage) :tells))))))
 
 (ert-deftest e-runtime-sqlite-p3-s8-goodnite-checkpoint-before-bounded-cleanup ()
   "Goodnite dedupes demand and resumes cleanup after an ACK-only crash."

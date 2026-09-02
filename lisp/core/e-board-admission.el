@@ -536,7 +536,11 @@ The token is finalized only after the event append commits, and is never
 reconstructed from an event type or sequence number.  When RECEIPT-HOLDER is a
 mutable one-element list, retain the exact append receipt for a caller that
 must finish semantic settlement after a callback error."
-  (when (e-board-mutation-frozen-p board)
+  ;; A durable adapter publishes its already-committed event while retaining
+  ;; the owner barrier against every reentrant caller.  That narrow replay is
+  ;; the only mutation permitted while the Board is frozen.
+  (when (and (e-board-mutation-frozen-p board)
+             (not (bound-and-true-p e-board--storage-replay-p)))
     (signal 'e-board-mutation-frozen (list (e-board-id board) type)))
   (if (e-board-admission--admission-p admission)
       (condition-case err

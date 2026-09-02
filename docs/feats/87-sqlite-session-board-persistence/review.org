@@ -26,6 +26,8 @@ object.  Because the interrupted write may have committed, recovery is an
 explicit close/reopen followed by owner reload from canonical SQLite state.
 A submitted timeout applies the same freeze.  Callback failure cannot interrupt
 failure fanout or publish a late success; it remains visible in bounded status.
+Explicit close also detaches process callbacks before settling all active and
+queued requests once, so buffered responses cannot publish after ownership ends.
 
 * Scope reviewed
 
@@ -68,17 +70,17 @@ failure fanout or publish a late success; it remains visible in bounded status.
 Repository-side evidence is stored below =/tmp/e-feature87-simple/=.  The
 running Emacs was not contacted or changed.
 
-- Simplified runtime-store loss/ownership/permissions/large-frame suite: 13
+- Simplified runtime-store loss/ownership/permissions/large-frame suite: 14
   expected, 0 unexpected.  It proves worker-loss propagation exactly once,
   no resubmission or ledger tables, explicit reopen, one canonical committed
   row when the response is interrupted, submitted-timeout freeze, complete
   callback-error fanout, visible success-callback failure, and second-runtime
   rejection.
-- Combined SQLite domain/package suite: 50 expected, 0 unexpected.  Together
+- Combined SQLite domain/package suite: 58 expected, 0 unexpected.  Together
   with the preceding S2 runtime suite and the owner/resource suite below, it
   covers the repository-controlled S1--S11 paths.  Its
   deterministic large witness restored 15,722 records and 37,851,478 content
-  bytes in 3.832069 seconds while 3,610 timer ticks and a queued commit
+  bytes in 3.903260 seconds while 3,669 timer ticks and a queued commit
   progressed.  Timing is observational.
 - Focused task owner/action/shell preservation: 49 expected, 0 unexpected.
   Migration coverage proves the owner terminal spelling =done= and preserves a
@@ -140,8 +142,8 @@ ledger, owner revision preconditions, and automatic resubmission after worker
 loss.  The operator replaced that model with simple single-worker ownership.
 The adapter and worker now remove those relations and arguments; worker loss
 fails all outstanding requests once and freezes the store until explicit
-close/reopen and owner reload.  Runtime-store 13/13 and the unified SQLite
-50/50 suites cover the replacement behavior.
+close/reopen and owner reload.  Runtime-store 14/14 and the unified SQLite
+58/58 suites cover the replacement behavior.
 
 ** DONE Medium: Reentrant Board drains could run inside a durability wait
 
@@ -156,6 +158,31 @@ The same gate exposed a stateless policy-copy defect: a completed node was
 never removed from the active path, so two fields sharing one finite selector
 were mistaken for a cycle.  The task-stack leave marker and a direct finite-DAG
 regression resolve it without adding state or a persistence abstraction.
+
+** DONE High: Owner publication and executable claims had reentrancy gaps
+
+The pickup/session composite previously staged and waited without holding both
+semantic owners, so a timer could observe or mutate one owner before both live
+projections were canonical.  The application service now acquires the target
+session and Board barriers before staging, retains both through the SQLite ACK
+and both publications, and releases already-admitted Board callbacks only
+afterward.  Direct dependent work receives the owners' explicit frozen result.
+
+Task cancellation or pause that reenters during a claim is now retained by the
+task owner and committed before runner invocation.  A claim-time pause becomes
+=paused= directly because no runner effect has started; cancellation dominates
+when both controls arrive.  Cron revalidates the exact live
+schedule, enabled state, definition revision, and firing identity after claim;
+a replacement keeps the retired firing conservatively =unsafe= and runs no old
+action.  Voice record and clear publication use one owner-local generation, so
+the later durable result wins the live cache.  Runtime close detaches process
+callbacks and fails every active, queued, or pending request exactly once before
+terminating the worker.
+
+Correction evidence passes 52/52 focused runtime/SQLite tests, 112/112 affected
+owner tests, and 58/58 combined P1--P4 SQLite tests.  The combined witness
+restored 15,722 records and 37,851,478 content bytes in 3.903260 seconds while
+3,669 timer ticks progressed; timing is observational.
 
 ** DONE Medium: A retired legacy test wrote an opaque SQLite reference as a file
 

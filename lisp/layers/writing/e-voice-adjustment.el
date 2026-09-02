@@ -86,10 +86,14 @@ Each entry is a plist with :key, :label, :description, :count, :last.")
 (defvar e-voice-adjustment-storage nil
   "Optional voice-owned SQLite storage port.")
 
+(defvar e-voice-adjustment--mutation-generation 0
+  "Process-local ordering fence for voice record and clear publication.")
+
 (defun e-voice-adjustment-configure-storage (storage)
   "Install voice STORAGE, or nil while no runtime is active."
   (unless (or (null storage) (e-voice-storage-p storage))
     (signal 'wrong-type-argument (list 'e-voice-storage-p storage)))
+  (cl-incf e-voice-adjustment--mutation-generation)
   (setq e-voice-adjustment-storage storage
         e-voice-adjustment--loaded nil
         e-voice-adjustment--tells nil))
@@ -130,14 +134,28 @@ front; a new tell is prepended and the store is truncated to
                              e-voice-adjustment--tells))
          (now (e-voice-adjustment--timestamp)))
     (if e-voice-adjustment-storage
-        (let ((result
-               (e-voice-storage-record
-                e-voice-adjustment-storage key label
-                (and description
-                     (not (string-empty-p (string-trim description)))
-                     (string-trim description))
-                now e-voice-adjustment-max-tells)))
-          (setq e-voice-adjustment--tells (plist-get result :tells)))
+        (let ((generation (cl-incf e-voice-adjustment--mutation-generation)))
+          (condition-case err
+              (let ((result
+                     (e-voice-storage-record
+                      e-voice-adjustment-storage key label
+                      (and description
+                           (not (string-empty-p (string-trim description)))
+                           (string-trim description))
+                      now e-voice-adjustment-max-tells)))
+                ;; A clear or later record can reenter during the cooperative
+                ;; worker wait.  Only the latest durable owner operation may
+                ;; publish its returned LRU projection.
+                (when (= generation e-voice-adjustment--mutation-generation)
+                  (setq e-voice-adjustment--tells
+                        (plist-get result :tells))))
+            (error
+             (when (= generation e-voice-adjustment--mutation-generation)
+               ;; The cache has no authority after a failed latest operation.
+               ;; A healthy replacement store must reload canonical state.
+               (setq e-voice-adjustment--loaded nil
+                     e-voice-adjustment--tells nil))
+             (signal (car err) (cdr err)))))
       (setq e-voice-adjustment--tells
             (seq-remove (lambda (tell) (equal key (plist-get tell :key)))
                         e-voice-adjustment--tells))
@@ -173,10 +191,21 @@ front; a new tell is prepended and the store is truncated to
 
 (defun e-voice-adjustment--clear ()
   "Drop every cached tell and clear the persistent store."
-  (when e-voice-adjustment-storage
-    (e-voice-storage-clear e-voice-adjustment-storage))
-  (setq e-voice-adjustment--tells nil
-        e-voice-adjustment--loaded t)
+  (if (not e-voice-adjustment-storage)
+      (setq e-voice-adjustment--tells nil
+            e-voice-adjustment--loaded t)
+    (let ((generation (cl-incf e-voice-adjustment--mutation-generation)))
+      (condition-case err
+          (progn
+            (e-voice-storage-clear e-voice-adjustment-storage)
+            (when (= generation e-voice-adjustment--mutation-generation)
+              (setq e-voice-adjustment--tells nil
+                    e-voice-adjustment--loaded t)))
+        (error
+         (when (= generation e-voice-adjustment--mutation-generation)
+           (setq e-voice-adjustment--loaded nil
+                 e-voice-adjustment--tells nil))
+         (signal (car err) (cdr err))))))
   (list :count 0))
 
 ;;;; Compact passive context

@@ -76,7 +76,10 @@ P1 adds an opt-in realization without changing the ordinary backend:
 
 - =e-runtime-store= owns typed worker scheduling, failure propagation, ordered
   barriers, and runtime ownership; =e-runtime-store-worker= alone owns SQLite
-  and schema details, and =e-runtime-store-codec= owns exact tagged values;
+  and schema details, and =e-runtime-store-codec= owns exact tagged values.
+  Explicit close first detaches process callbacks, then fails every active,
+  queued, or pending request once, so buffered responses cannot publish after
+  runtime ownership ends;
 - =e-session-storage-sqlite= maps the existing session storage port to typed
   runtime-store commands, while =e-session-sqlite= composes opt-in creation and
   paged replay;
@@ -99,7 +102,9 @@ P2 adds the accepted opt-in Board realization:
   progress before =e-board= publishes the corresponding live semantic state;
 - =e-board-pickup-admission= owns the one accepted cross-owner operation, using
   =e-session-board-input-admission= to prepare a detached session record and one
-  typed worker command to accept the pickup and append that record atomically;
+  typed worker command to accept the pickup and append that record atomically.
+  It holds both owner barriers from staging through both post-ACK live
+  publications;
 - =e-board-session-association= owns the remaining legacy Board/session journal
   compatibility and SQLite Board restore association, leaving presentation
   bindings, subscribers, timers, and projections in =e-chat-service=; and
@@ -134,11 +139,18 @@ P3 adds the accepted opt-in realization:
   runner may have begun an irreversible effect before returning its handle;
   and Board publication remains a separate owner effect identified by the task
   attempt;
+- reentrant cancellation or pause during a task claim remains a process-local
+  owner request and commits before runner entry.  Because a claim-time pause
+  precedes every external effect, it becomes =paused= directly rather than
+  uncertain; cancellation wins when both controls arrive;
 - =e-cron= retains cadence, catch-up, guard, and action policy.  Its port commits
   the firing claim and cadence advance before guard/action execution; a claimed
   firing without a live process is =unsafe= and never auto-runs.  Definitions,
-  guards, actions, active-firing fences, and timers remain process-local;
-- voice uses one atomic tell-update/LRU-cap command; Goodnite gives each
+  guards, actions, active-firing fences, and timers remain process-local.  After
+  claim, the owner revalidates the exact schedule, enabled state, definition
+  revision, and firing identity before invoking the action;
+- voice uses one atomic tell-update/LRU-cap command and one process-local
+  ordering generation across record and clear publication; Goodnite gives each
   observed access a unique stable event identity, appends ordered demand events,
   and advances the named =goodnite-demand-consumer= checkpoint
   before bounded physical cleanup; raw results use immutable URI/content

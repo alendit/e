@@ -440,6 +440,9 @@ missed-fire decision belongs to the caller (`e-cron-start'), not to a fire it
 has already chosen to run."
   (let* ((now (e-cron--now))
          (storage (e-cron-schedule-storage schedule))
+         (owner-enabled (e-cron-schedule-enabled schedule))
+         (owner-definition-revision
+          (e-cron-schedule-definition-revision schedule))
          (due (or (e-cron-schedule-next-fire schedule) now))
          (next (e-cron--next-after schedule now))
          (firing-id
@@ -447,7 +450,8 @@ has already chosen to run."
                (format "%s:%d:%s"
                        (e-cron-schedule-id schedule)
                        (or (e-cron-schedule-definition-revision schedule) 1)
-                       (format "%.6f" (float-time due))))))
+                       (format "%.6f" (float-time due)))))
+         claim-current-p)
     (when storage
       (let ((claim
              (e-cron-storage-claim
@@ -456,11 +460,41 @@ has already chosen to run."
         (setf (e-cron-schedule-revision schedule)
               (plist-get claim :revision)
               (e-cron-schedule-last-fire schedule) now
-              (e-cron-schedule-next-fire schedule) next)))
-    (setf (e-cron-schedule-last-guard-at schedule) now)
-    (let ((guard (e-cron-schedule-guard schedule)))
-      (if (and guard (not (setf (e-cron-schedule-last-guard-result schedule)
-                                (funcall guard))))
+              (e-cron-schedule-next-fire schedule) next)
+        (setq claim-current-p
+              (and (eq schedule (e-cron-get
+                                 (e-cron-schedule-id schedule)))
+                   (eq owner-enabled (e-cron-schedule-enabled schedule))
+                   (equal owner-definition-revision
+                          (e-cron-schedule-definition-revision schedule))
+                   (equal owner-definition-revision
+                          (plist-get claim :definition-revision))
+                   (equal firing-id (plist-get claim :firing-id))))))
+    (if (and storage (not claim-current-p))
+        (progn
+          ;; A replacement, retirement, or disable may reenter while the
+          ;; worker claim waits.  A replacement can already have classified
+          ;; the old claim as unsafe while restoring its cadence.  Only settle
+          ;; a claim that still belongs to this exact pre-action boundary; in
+          ;; either case its retired executable authority must never run.
+          (let* ((cadence
+                  (e-cron-storage-cadence
+                   storage (e-cron-schedule-id schedule)))
+                 (firing
+                  (cl-find firing-id (plist-get cadence :unresolved)
+                           :key (lambda (item)
+                                  (plist-get item :firing-id))
+                           :test #'equal)))
+            (when (eq (plist-get firing :state) 'claimed)
+              (e-cron-storage-settle
+               storage (e-cron-schedule-id schedule) firing-id
+               'claimed 'skipped
+               '(:reason live-definition-replaced-before-start))))
+          nil)
+      (setf (e-cron-schedule-last-guard-at schedule) now)
+      (let ((guard (e-cron-schedule-guard schedule)))
+        (if (and guard (not (setf (e-cron-schedule-last-guard-result schedule)
+                                  (funcall guard))))
           (progn
             (when storage
               (e-cron-storage-settle
@@ -510,7 +544,7 @@ has already chosen to run."
                       (plist-get
                        (e-cron-storage-cadence
                         storage (e-cron-schedule-id schedule))
-                       :unresolved))))))))))
+                       :unresolved)))))))))))
 
 (defun e-cron--skip-due-firing (schedule due now)
   "Durably skip SCHEDULE's missed DUE firing at NOW."

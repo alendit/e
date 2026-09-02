@@ -23,13 +23,30 @@
                (:conc-name e-session-board-input-admission--))
   store session-id delivery-id lane stage entry record)
 
+(defvar e-session-board-input-admission--owner-barrier-held-p nil
+  "Non-nil while the pickup application service owns the target session.")
+
+(defun e-session-board-input-admission-ensure-ready (store session-id)
+  "Load SESSION-ID before the pickup application acquires both owner barriers."
+  (e-session-get store session-id))
+
+(defun e-session-board-input-admission-call-with-owner-barrier
+    (store session-id operation)
+  "Call OPERATION while SESSION-ID rejects reentrant semantic mutation."
+  (e-session--call-with-commit-barrier
+   store session-id
+   (lambda ()
+     (let ((e-session-board-input-admission--owner-barrier-held-p t))
+       (funcall operation)))))
+
 (cl-defun e-session-board-input-admission-prepare
     (store session-id delivery-id lane content &key metadata)
   "Prepare one detached session admission for DELIVERY-ID on LANE."
   (unless (e-session-storage-sqlite-p store)
     (signal 'e-session-storage-error
             (list "Board pickup admission requires SQLite" session-id)))
-  (e-session-get store session-id)
+  (unless e-session-board-input-admission--owner-barrier-held-p
+    (e-session-board-input-admission-ensure-ready store session-id))
   (let* ((stage (e-session-aggregate-stage-session-mutation store session-id))
          (turn-id (format "board-pickup:%s"
                           (secure-hash 'sha256 (prin1-to-string delivery-id))))

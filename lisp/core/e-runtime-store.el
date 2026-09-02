@@ -162,17 +162,20 @@ deleting or rewriting those unrelated artifacts."
 
 (defun e-runtime-store--consume-output (store text)
   "Consume worker protocol TEXT for STORE."
-  ;; Store each remainder before decoding or settling.  A large flushed frame
-  ;; can make process filters reentrant; leaving the prior fragment installed
-  ;; until the outer invocation returned duplicated prefixes and corrupted an
-  ;; otherwise complete frame.
-  (setf (e-runtime-store--input-fragment store)
-        (concat (or (e-runtime-store--input-fragment store) "") text))
-  (while (string-match "\n" (e-runtime-store--input-fragment store))
-    (let* ((input (e-runtime-store--input-fragment store))
-           (line (substring input 0 (match-beginning 0))))
-      (setf (e-runtime-store--input-fragment store)
-            (substring input (match-end 0)))
+  ;; A filter invocation may already be queued when close takes ownership of
+  ;; the process.  Once closed, no response may settle or publish a callback.
+  (unless (e-runtime-store--closed store)
+    ;; Store each remainder before decoding or settling.  A large flushed frame
+    ;; can make process filters reentrant; leaving the prior fragment installed
+    ;; until the outer invocation returned duplicated prefixes and corrupted an
+    ;; otherwise complete frame.
+    (setf (e-runtime-store--input-fragment store)
+          (concat (or (e-runtime-store--input-fragment store) "") text))
+    (while (string-match "\n" (e-runtime-store--input-fragment store))
+      (let* ((input (e-runtime-store--input-fragment store))
+             (line (substring input 0 (match-beginning 0))))
+        (setf (e-runtime-store--input-fragment store)
+              (substring input (match-end 0)))
         (unless (string-empty-p line)
           (condition-case err
               (let* ((response (e-runtime-store--unpack line))
@@ -189,28 +192,33 @@ deleting or rewriting those unrelated artifacts."
              ;; Fail this runtime; callers must reopen and reload canonical DB
              ;; state rather than resubmit the operation.
              (when (e-runtime-store--live-p store)
-               (delete-process (e-runtime-store--process store)))))))))
+               (delete-process (e-runtime-store--process store))))))))))
 
 (defun e-runtime-store--fail-all (store error)
   "Fail STORE and every outstanding request with ERROR exactly once."
-  (let ((requests
-         (delq nil
-               (append (list (e-runtime-store--active-request store))
-                       (e-runtime-store--write-queue store)
-                       (e-runtime-store--read-queue store))))
-        callback-errors)
-    (setf (e-runtime-store--active-request store) nil
-          (e-runtime-store--write-queue store) nil
-          (e-runtime-store--read-queue store) nil
-          (e-runtime-store--opened-process store) nil
-          (e-runtime-store--unavailable store) t
-          (e-runtime-store--last-error store) error)
-    (dolist (request requests)
-      (unless (memq (e-runtime-store-request--state request)
-                    '(committed failed cancelled))
-        (when-let* ((callback-error
-                     (e-runtime-store--fail-request store request error)))
-          (push callback-error callback-errors))))
+  (let (pending-requests callback-errors)
+    (maphash (lambda (_id request) (push request pending-requests))
+             (e-runtime-store--pending store))
+    (let ((requests
+           (cl-delete-duplicates
+            (delq nil
+                  (append (list (e-runtime-store--active-request store))
+                          (e-runtime-store--write-queue store)
+                          (e-runtime-store--read-queue store)
+                          pending-requests))
+            :test #'eq)))
+      (setf (e-runtime-store--active-request store) nil
+            (e-runtime-store--write-queue store) nil
+            (e-runtime-store--read-queue store) nil
+            (e-runtime-store--opened-process store) nil
+            (e-runtime-store--unavailable store) t
+            (e-runtime-store--last-error store) error)
+      (dolist (request requests)
+        (unless (memq (e-runtime-store-request--state request)
+                      '(committed failed cancelled))
+          (when-let* ((callback-error
+                       (e-runtime-store--fail-request store request error)))
+            (push callback-error callback-errors)))))
     (when callback-errors
       (setf
        (e-runtime-store--last-error store)
@@ -473,15 +481,28 @@ Return `dropped' for provisional work or `in-flight' once transport began."
        (signal (car err) (cdr err))))))
 
 (defun e-runtime-store-close (store)
-  "Close STORE and its worker without affecting another runtime."
-  (setf (e-runtime-store--closed store) t)
-  (when (e-runtime-store--live-p store)
-    (process-send-eof (e-runtime-store--process store))
-    (accept-process-output (e-runtime-store--process store) 0.2))
-  (when (processp (e-runtime-store--process store))
-    (delete-process (e-runtime-store--process store)))
-  (when (buffer-live-p (e-runtime-store--stderr-buffer store))
-    (kill-buffer (e-runtime-store--stderr-buffer store)))
+  "Close STORE, failing all owned requests before detaching its worker."
+  (unless (e-runtime-store--closed store)
+    (let ((process (e-runtime-store--process store))
+          (error '(e-runtime-store-unavailable "Store is closed")))
+      ;; Close owns the lifetime boundary before callbacks run.  Detach both
+      ;; process callbacks first so buffered output cannot overtake failure
+      ;; fanout or publish a late success.
+      (setf (e-runtime-store--closed store) t)
+      (when (processp process)
+        (set-process-filter process #'ignore)
+        (set-process-sentinel process #'ignore))
+      (unwind-protect
+          (progn
+            (e-runtime-store--fail-all store error)
+            (when (and (processp process) (process-live-p process))
+              (process-send-eof process)
+              (accept-process-output process 0.2)))
+        (when (processp process)
+          (when (process-live-p process)
+            (delete-process process)))
+        (when (buffer-live-p (e-runtime-store--stderr-buffer store))
+          (kill-buffer (e-runtime-store--stderr-buffer store))))))
   t)
 
 (defun e-runtime-store-status (store)
