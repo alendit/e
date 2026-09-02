@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'parse-time)
 (require 'seq)
 (require 'subr-x)
 (require 'e-session-codec)
@@ -129,7 +130,9 @@ reported so an operator receives a complete source-quality assessment."
   (condition-case nil
       (cond
        ((numberp value) (float value))
-       ((stringp value) (float-time (date-to-time value))))
+       ((and (stringp value)
+             (integerp (nth 8 (parse-time-string value))))
+        (float-time (date-to-time value))))
     (error nil)))
 
 (defun e-session-legacy--format-timestamp (value)

@@ -104,6 +104,30 @@
                      "session exact"))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-legacy-rootless-rejects-timezone-less-timestamp ()
+  "Root synthesis never interprets a legacy timestamp in the host timezone."
+  (let* ((directory (make-temp-file "e-session-rootless-timezone-" t))
+         (session-id "rootless-timezone")
+         (records
+          `((:type "message" :session-id ,session-id :id "message-1"
+             :parent-id "root-from-history"
+             :timestamp "2026-08-07T10:13:47"
+             :message (:id "message-1" :parent-id "root-from-history"
+                       :role "user" :content "timezone-less")))))
+    (unwind-protect
+        (progn
+          (e-session-test--write-legacy-records directory session-id records)
+          (e-session-test--write-legacy-catalog
+           directory (list (list :id session-id :message-count 1)))
+          (should-error (e-session-legacy-decode directory)
+                        :type 'e-session-legacy-error)
+          (should (= (e-session-legacy--timestamp-seconds
+                      "2026-08-07T10:13:47Z")
+                     1786097627.0))
+          (should (= (e-session-legacy--timestamp-seconds 1786097627)
+                     1786097627.0)))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-legacy-rootless-checkpoint-root-shifts-position ()
   "A checkpoint root is prepended and its SQLite position advances once."
   (let* ((directory (make-temp-file "e-session-rootless-checkpoint-" t))
