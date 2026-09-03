@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | reasoning-fragments-persisted-and-rendered/ | Reasoning fragments became durable transcript rows |
 | Closed | test-suite-nonzero-exceptions/ | The ordinary repository test suite retained failures and skips |
 | Closed | context-curation-erasure-label-eligibility/ | Context curation erase label lacked model-visible eligibility |
 | Closed | board-manifest-drops-recovery-descriptor/ | Board manifest drops application recovery descriptor |

@@ -2103,35 +2103,52 @@
               :source-event-id "retry-event"))))))))
 
 (ert-deftest e-board-runtime-test-reasoning-deltas-coalesce-on-board ()
-  "Latest reasoning is board-visible without appending every high-rate delta."
+  "One combined reasoning record replaces per-fragment board writes."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
-           (harness (e-harness-create))
-           scheduled)
+           (harness (e-harness-create)))
       (e-harness-create-session harness :id "session")
       (let ((attachment
              (e-board-runtime-attach
               board harness "session" :participant-id "participant")))
-        (cl-letf (((symbol-function 'run-at-time)
-                   (lambda (_seconds _repeat function &rest arguments)
-                     (push (lambda () (apply function arguments)) scheduled))))
-          (dolist (content '("first" "latest"))
-            (e-board-runtime--handle-harness-event
-             attachment
-             (e-events-make :type 'reasoning-delta :session-id "session"
-                            :turn-id "turn"
-                            :payload (list :type 'reasoning-delta
-                                           :stream-kind 'summary
-                                           :content content))))
-          (should (= (hash-table-count e-board-runtime--pending-activity-set) 1))
-          (e-board-runtime--drain-activity-mailboxes)
-          (let ((message
-                 (car (e-board-messages
-                       (e-board-registry-board-source-board board)))))
-            (should (eq (e-board-message-activity-kind message)
-                        'reasoning-delta))
+        (dolist (content '("first" " latest"))
+          (e-board-runtime--handle-harness-event
+           attachment
+           (e-events-make :type 'reasoning-delta :session-id "session"
+                          :turn-id "turn"
+                          :payload (list :type 'reasoning-delta
+                                         :stream-kind 'summary
+                                         :content content))))
+        (should (= (hash-table-count e-board-runtime--pending-activity-set) 0))
+        (should-not (e-board-messages
+                     (e-board-registry-board-source-board board)))
+        (e-board-runtime--handle-harness-event
+         attachment
+         (e-events-make
+          :type 'reasoning-delta :session-id "session"
+          :turn-id "turn"
+          :payload '(:type reasoning-delta :stream-kind summary
+                     :content "first latest" :content-mode snapshot
+                     :combined t :provider-request-id "request-1")
+          :board-activity-sequence 1))
+        (let* ((messages
+                (e-board-messages
+                 (e-board-registry-board-source-board board)))
+               (reasoning
+                (seq-filter
+                 (lambda (message)
+                   (eq (e-board-message-activity-kind message)
+                       'reasoning-delta))
+                 messages)))
+          (should (= (length reasoning) 1))
+          (let ((message (car reasoning)))
             (should (equal (e-board-message-tags message) '(main)))
-            (should (equal (e-board-message-content message) "latest"))))))))
+            (should (equal (e-board-message-content message) "first latest"))
+            (should (eq (plist-get (e-board-message-attributes message)
+                                   :content-mode)
+                        'snapshot))
+            (should (plist-get (e-board-message-attributes message)
+                               :combined))))))))
 
 (ert-deftest e-board-runtime-test-reasoning-follows-durable-lifecycle-watermark ()
   "Reasoning activity remains publishable after durable lifecycle edges."
@@ -2154,20 +2171,28 @@
                   (e-events-make
                    :type 'reasoning-delta :session-id "session" :turn-id "turn"
                    :payload '(:type reasoning-delta :stream-kind summary
-                              :content "visible progress")
-                   :board-activity-sequence 3)))
+                              :content "visible progress"
+                              :content-mode snapshot :combined t
+                              :provider-request-id "request-1")
+                   :board-activity-sequence 3)
+                  (e-events-make
+                   :type 'provider-request-finished
+                   :session-id "session" :turn-id "turn"
+                   :payload '(:provider-request-id "request-1" :status done)
+                   :board-activity-sequence 4)))
           (e-board-runtime--handle-harness-event attachment event))
         (e-board-runtime--drain-activity-mailboxes)
         (let* ((source (e-board-registry-board-source-board board))
                (messages (e-board-messages source)))
           (should (equal (mapcar #'e-board-message-activity-kind messages)
                          '(turn-started provider-request-started
-                           reasoning-delta)))
+                           reasoning-delta provider-request-finished)))
           (should (equal (mapcar #'e-board-message-source-activity-key messages)
                          '(("participant" 1 2)
                            ("participant" 1 4)
-                           ("participant" 1 6))))
-          (should (equal (e-board-message-content (car (last messages)))
+                           ("participant" 1 6)
+                           ("participant" 1 8))))
+          (should (equal (e-board-message-content (nth 2 messages))
                          "visible progress")))))))
 
 (ert-deftest e-board-runtime-test-authorized-exact-input-checks-requester-before-post ()

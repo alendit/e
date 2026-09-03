@@ -140,7 +140,8 @@
 
 (ert-deftest e-chat-test-activity-rerender-keeps-running-status-tail ()
   "Activity redraws keep following output when focus was at the active tail."
-  (let ((buffer (e-chat-test--buffer nil "chat-activity-status-tail"))
+  (let ((e-chat-activity-reasoning-visible-line-limit 3)
+        (buffer (e-chat-test--buffer nil "chat-activity-status-tail"))
         (window nil)
         (composer-window nil))
     (unwind-protect
@@ -1108,7 +1109,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
 
 (ert-deftest e-chat-test-reasoning-has-space-after-thought-row ()
   "Reasoning text has a small visual gap after the thought row."
-  (let ((buffer (e-chat-test--buffer nil "chat-reasoning-spacer")))
+  (let ((e-chat-activity-reasoning-visible-line-limit 3)
+        (buffer (e-chat-test--buffer nil "chat-reasoning-spacer")))
     (unwind-protect
         (with-current-buffer buffer
           (cl-letf (((symbol-function 'float-time)
@@ -1142,9 +1144,46 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-reasoning-is-hidden-by-default-but-retained-in-details ()
+  "Normal transcript omits reasoning while explicit activity detail retains it."
+  (let ((buffer (e-chat-test--buffer nil "chat-reasoning-hidden-default")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat-render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:content "private combined reasoning"
+                                      :content-mode snapshot
+                                      :combined t)))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)))
+          (should-not (string-match-p "private combined reasoning"
+                                      (buffer-string)))
+          (let ((display (e-chat-activity-turn-display "turn-1")))
+            (should (string-match-p "private combined reasoning"
+                                    (plist-get display :expanded-text)))
+            (should (string-match-p "private combined reasoning"
+                                    (plist-get display :details-text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-reasoning-snapshots-render-as-markdown-lines ()
   "Board reasoning snapshots stay separate and receive Markdown presentation."
-  (let ((buffer (e-chat-test--buffer nil "chat-reasoning-snapshots")))
+  (let ((e-chat-activity-reasoning-visible-line-limit 3)
+        (buffer (e-chat-test--buffer nil "chat-reasoning-snapshots")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-render-event

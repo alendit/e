@@ -96,6 +96,36 @@
              (equal (e-board-message-content message) expected-answer)))
       (e-board-messages source)))))
 
+(defun e-post-cutover-chat-e2e--assert-combined-reasoning
+    (harness session-id expected-reasoning)
+  "Assert SESSION-ID stores and publishes one combined reasoning summary."
+  (let* ((store (e-harness-sessions harness))
+         (activities
+          (seq-filter
+           (lambda (event)
+             (eq (plist-get event :event-type) 'reasoning-delta))
+           (e-session-activity-events store session-id)))
+         (binding (e-chat-service-binding harness session-id))
+         (source (e-board-registry-board-source-board
+                  (e-chat-service-binding-board binding)))
+         (board-reasoning
+          (seq-filter
+           (lambda (message)
+             (eq (e-board-message-activity-kind message) 'reasoning-delta))
+           (e-board-messages source))))
+    (should (= (length activities) 1))
+    (should (= (length board-reasoning) 1))
+    (let ((payload (plist-get (car activities) :payload))
+          (message (car board-reasoning)))
+      (should (equal (plist-get payload :content) expected-reasoning))
+      (should (eq (plist-get payload :content-mode) 'snapshot))
+      (should (plist-get payload :combined))
+      (should (equal (e-board-message-content message) expected-reasoning))
+      (should (eq (plist-get (e-board-message-attributes message)
+                             :content-mode)
+                  'snapshot))
+      (should (plist-get (e-board-message-attributes message) :combined)))))
+
 (defun e-post-cutover-chat-e2e--assert-no-tool-lifecycle (store session-id)
   "Assert SESSION-ID has no durable model-facing tool lifecycle in STORE."
   (should-not
@@ -202,6 +232,12 @@
                                 (cons 'status "completed"))))))
                  (2
                   (e-post-cutover-chat-e2e--sse
+                   (list (cons 'type "response.reasoning_summary_text.delta")
+                         (cons 'delta "Inspecting"))
+                   (list (cons 'type "response.reasoning_summary_text.delta")
+                         (cons 'delta " context"))
+                   (list (cons 'type "response.reasoning_summary_text.delta")
+                         (cons 'delta "."))
                    (list (cons 'type "response.output_text.done")
                          (cons 'text first-answer))
                    (list
@@ -268,6 +304,8 @@
              (e-session-messages store session-id) first-answer)
             (e-post-cutover-chat-e2e--assert-board-output
              harness session-id first-answer)
+            (e-post-cutover-chat-e2e--assert-combined-reasoning
+             harness session-id "Inspecting context.")
             (should-not (e-post-cutover-e2e--loaded-p store untouched-id))
             (let* ((first (nth 0 requests))
                    (ack (nth 1 requests))
@@ -328,6 +366,8 @@
                          1))
               (e-post-cutover-chat-e2e--assert-no-tool-lifecycle
                reopened-store session-id)
+              (e-post-cutover-chat-e2e--assert-combined-reasoning
+               reopened session-id "Inspecting context.")
               (e-board-e2e-prompt-batch reopened session-id "Later")
               (should (= request-count 3))
               (let ((later (nth 2 requests)))

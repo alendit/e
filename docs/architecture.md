@@ -117,6 +117,13 @@ The following are current boundaries, not a future proposal:
 - Provider request shapes, auth, retries, streaming, timeout, cancellation, and
   response diagnostics stay behind backend adapters. Context policy emits
   provider-neutral values.
+- The harness activity owner keeps provider reasoning fragments process-local
+  in reverse-order lists, appends each fragment in constant time, and joins
+  each summary/raw stream once at the provider-request boundary. Session and
+  Board durability each receive at most one combined snapshot per stream and
+  request; raw fragments are never individual durable entries. Chat omits
+  reasoning from its normal transcript projection and exposes the retained
+  combined text only through explicit activity details or an opt-in preview.
 - One process-wide runtime composition opens one SQLite store and injects
   consumer-shaped ports into session, Board, task, cron, voice, Goodnite, and
   raw-result owners. Interactive Emacs opens no SQLite connection. Ordinary

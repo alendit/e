@@ -1,0 +1,111 @@
+#+title: Reasoning Fragment Persistence and Rendering Investigation
+#+startup: overview
+
+* Runtime evidence
+
+The supplied trace
+=/tmp/e-profile/20260901-123426-000001.jsonl= and the affected persisted
+session =20260903T115545-eeb34c371dd5= were inspected without changing the
+running Emacs.  The first provider request lasted 69.954 seconds and the second
+3.787 seconds.  The affected Board contained 80 reasoning activity messages,
+including individual token fragments such as =" thinking"= and =" we"=.
+
+The persisted timestamps do not prove that Emacs spent the 69 seconds on its
+main thread: most of that interval preceded the first processed provider
+delta.  They do prove a separate local amplification defect at the end of the
+request: every reasoning fragment became durable Board/session and rendering
+work.  A read-only OS check after the report found the running Emacs idle; it
+was not reloaded, signaled, or restarted.
+
+* Root cause
+
+=e-board-runtime--capture-turn-progress= described its mailbox as coalescing
+latest values, but the zero-delay drain could run between provider callbacks.
+That made each raw delta the latest value of a separate drain and therefore a
+separate Board activity.  Chat then classified every one of those activities
+as snapshot content, so it rendered each fragment as an independent Markdown
+line.  The regression tests supplied already-complete synthetic snapshots and
+therefore never exercised a fragmented adapter stream through persistence,
+Board publication, restart, and presentation.
+
+* Fix and ownership
+
+The harness activity module is now the sole fragment accumulator.  It retains
+summary and raw fragments in reverse-order lists, so accepting a fragment is
+constant time, and joins each list once when its provider request finishes.
+Only the resulting combined snapshot is appended to session activity and
+published to subscribers.  Board ignores raw fragment notifications and
+persists the harness-combined event under the event's existing durable source
+sequence; it has no second fragment accumulator.
+
+The chat activity projection defaults its reasoning line limit to zero.  The
+normal transcript therefore omits reasoning.  The complete combined text is
+still part of expanded/details projections, and an explicit positive preview
+limit remains available for tests or users that opt into transcript previews.
+
+* Regression coverage
+
+- Harness composition sends 512 summary fragments plus raw fragments and
+  asserts one combined durable entry for each stream.
+- Board runtime asserts that raw fragments publish nothing and one combined
+  durable event publishes exactly one Board activity with a valid source key.
+- Chat composition asserts default omission and full explicit details.
+- The deterministic post-cutover E2E sends three real OpenAI SSE reasoning
+  deltas through decoding, harness, SQLite, Board/chat, close/reopen, and
+  verifies one combined session and Board record before and after restart.
+- The isolated graphical E2E verifies the normal transcript contains no
+  reasoning while session and Board each retain one combined record.
+- The current-configuration live E2E now rejects any locally configured
+  adapter output that is not combined or that duplicates a stream/request key.
+
+* Design self-check
+
+1. The package removes measured write/render amplification while preserving
+   useful reasoning data, so stopping here is an improvement.
+2. It moves toward one semantic activity owner and derived Board/presentation
+   projections.
+3. The default preview limit is local and reversible.  One combined durable
+   record per stream/request is the stable contract.
+4. Harness activity owns fragment lifecycle and session persistence; Board
+   owns its durable projection; chat owns visibility.
+5. Coupling is reduced because Board consumes a combined semantic event and no
+   longer reconstructs provider streams.
+6. Harness policy has no dependency on Board or chat presentation.
+7. Rendering remains entirely in the chat shell; durable append remains in
+   the activity and Board owners.
+8. Raw fragments live only for one provider request and are discarded after a
+   single join.  Only the combined cross-restart fact is durable.
+9. Fragment admission is O(1), combination is one O(n) pass, and there is one
+   session plus one Board write per available stream/request.
+10. The combined marker is a real event contract shared by the durable session
+    projection and its Board consumer.
+11. Existing combined snapshot records remain readable.  Per-fragment durable
+    publication is removed without a compatibility writer.
+12. Board's duplicate stream accumulator and per-fragment mailbox scheduling
+    are removed.
+13. Malformed combined content and Board publication errors surface; ordinary
+    missing reasoning produces no record.
+14. Unit, persistent E2E, restart, graphical, and current-adapter checks prove
+    the behavior at progressively wider boundaries.
+
+* Reload note
+
+Repository-side validation uses private batch and graphical Emacs processes.
+The fix changes a core harness activity-state record, so the user's running
+Emacs needs a full restart to use it.  It was left untouched.
+
+* Validation
+
+- Focused harness, Board, and chat regressions: 240/240 passed.
+- The 512-fragment harness regression passed in 0.016 seconds and produced one
+  combined summary record plus one combined raw record.
+- Deterministic post-cutover OpenAI SSE, SQLite, Board, and restart E2E: 1/1
+  passed.
+- Real current-configuration adapter E2E: 1/1 passed in 8.532 seconds against
+  the locally configured Responses adapter.
+- Full repository ERT suite: 2,705/2,705 passed, zero unexpected and zero
+  skipped results.
+- Full isolated graphical E2E suite: 29/29 passed, zero unexpected and zero
+  skipped results.
+- Batch compilation of the four changed runtime modules passed; only existing
+  Emacs 31 obsolete-macro warnings were reported.

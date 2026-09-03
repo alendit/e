@@ -1,0 +1,18 @@
+#+title: Reasoning Fragments Became Durable Transcript Rows
+#+startup: overview
+
+* Report
+
+The user reported that a basic chat took 1 minute 14 seconds and that its
+reasoning appeared as hundreds of narrow, malformed lines.  The visible output
+showed individual token fragments such as =I=, ='m=, =thinking=, and =we= as
+separate transcript entries instead of one coherent reasoning summary.
+
+The required behavior is:
+
+- retain the complete combined reasoning summary and raw reasoning stream;
+- store at most one entry for each stream per provider request, never one
+  durable entry per delta;
+- keep per-fragment processing cheap; and
+- do not render reasoning in the normal chat transcript by default, while
+  retaining it for explicit activity details.

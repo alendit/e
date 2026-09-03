@@ -124,6 +124,77 @@ The value is available only while a completed tool event is projected.  It is
 never copied into the transcript, public event payload, or durable activity
 payload as provenance; the durable receipt may include the URI itself.")
 
+(cl-defstruct (e-harness-activity--reasoning-stream
+               (:constructor e-harness-activity--reasoning-stream-create))
+  "Process-local fragments for one active provider request.
+
+Fragments are retained in reverse arrival order so each stream update is O(1).
+The activity owner joins and persists them once at the provider-request
+boundary; raw streaming events remain transient subscriber notifications."
+  provider-request-id
+  summary-fragments summary-payload
+  raw-fragments raw-payload)
+
+(defun e-harness-activity--reasoning-streams (harness)
+  "Return HARNESS's activity-owned reasoning stream table."
+  (or (e-harness-activity-state-reasoning-streams
+       (e-harness-activity-state harness))
+      (setf (e-harness-activity-state-reasoning-streams
+             (e-harness-activity-state harness))
+            (make-hash-table :test 'equal))))
+
+(defun e-harness-activity--reasoning-stream-key (session-id turn-id)
+  "Return the activity-owned stream key for SESSION-ID and TURN-ID."
+  (cons session-id turn-id))
+
+(defun e-harness-activity--begin-reasoning-stream
+    (harness session-id turn-id payload)
+  "Begin one provider reasoning stream for SESSION-ID and TURN-ID.
+PAYLOAD is the provider-request-started payload."
+  (puthash
+   (e-harness-activity--reasoning-stream-key session-id turn-id)
+   (e-harness-activity--reasoning-stream-create
+    :provider-request-id (plist-get payload :provider-request-id))
+   (e-harness-activity--reasoning-streams harness)))
+
+(defun e-harness-activity--record-reasoning-fragment
+    (harness session-id turn-id type payload)
+  "Retain one transient reasoning PAYLOAD fragment of TYPE.
+The fragment is stored in reverse arrival order and is not persisted yet."
+  (let* ((streams (e-harness-activity--reasoning-streams harness))
+         (key (e-harness-activity--reasoning-stream-key session-id turn-id))
+         (stream (or (gethash key streams)
+                     (e-harness-activity--reasoning-stream-create)))
+         (content (plist-get payload :content)))
+    (when (and (stringp content) (not (string-empty-p content)))
+      (pcase type
+        ('reasoning-delta
+         (push content
+               (e-harness-activity--reasoning-stream-summary-fragments stream))
+         (setf (e-harness-activity--reasoning-stream-summary-payload stream)
+               (copy-sequence payload)))
+        ('reasoning-raw-delta
+         (push content
+               (e-harness-activity--reasoning-stream-raw-fragments stream))
+         (setf (e-harness-activity--reasoning-stream-raw-payload stream)
+               (copy-sequence payload))))
+      (puthash key stream streams))))
+
+(defun e-harness-activity--combined-reasoning-payload
+    (stream fragments payload)
+  "Return one combined durable PAYLOAD for STREAM FRAGMENTS."
+  (when fragments
+    (let ((combined (copy-sequence payload)))
+      (plist-put combined :content
+                 (mapconcat #'identity (nreverse fragments) ""))
+      (plist-put combined :content-mode 'snapshot)
+      (plist-put combined :combined t)
+      (when-let* ((request-id
+                   (e-harness-activity--reasoning-stream-provider-request-id
+                    stream)))
+        (plist-put combined :provider-request-id request-id))
+      combined)))
+
 
 (defun e-harness-activity--durable-activity-event-p (type)
   "Return non-nil when TYPE should be stored as session activity."
@@ -447,11 +518,78 @@ fields outside that error contract."
          (e-session-refresh-index store))
        event))))
 
+(defun e-harness-activity--flush-reasoning-stream
+    (harness session-id turn-id)
+  "Persist at most one combined reasoning entry per stream for this request.
+Return the appended activity entries in summary/raw order."
+  (let* ((streams (e-harness-activity--reasoning-streams harness))
+         (key (e-harness-activity--reasoning-stream-key session-id turn-id))
+         (stream (gethash key streams))
+         appended)
+    (when stream
+      (remhash key streams)
+      (dolist
+          (spec
+           (list
+            (list 'reasoning-delta
+                  (e-harness-activity--reasoning-stream-summary-fragments stream)
+                  (e-harness-activity--reasoning-stream-summary-payload stream))
+            (list 'reasoning-raw-delta
+                  (e-harness-activity--reasoning-stream-raw-fragments stream)
+                  (e-harness-activity--reasoning-stream-raw-payload stream))))
+        (when-let* ((payload
+                     (e-harness-activity--combined-reasoning-payload
+                      stream (nth 1 spec) (nth 2 spec))))
+          (setq appended
+                (append
+                 appended
+                 (list
+                  (e-harness-activity--append-durable-activity-event
+                   harness session-id turn-id (car spec) payload)))))))
+    appended))
+
+(defun e-harness-activity--flush-and-emit-reasoning-stream
+    (harness session-id turn-id)
+  "Persist and publish the one combined reasoning entry for the active stream."
+  (dolist (entry
+           (e-harness-activity--flush-reasoning-stream
+            harness session-id turn-id))
+    (e-harness-activity--emit
+     harness
+     (e-events-make
+      :type (plist-get entry :event-type)
+      :session-id session-id
+      :turn-id turn-id
+      :payload (plist-get entry :payload)
+      :activity-entry-id (plist-get entry :id)
+      :board-activity-sequence
+      (plist-get entry :board-activity-sequence)))))
+
 (defun e-harness-activity-emit-turn-event (harness session-id turn-id type payload)
   "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."
+  (when (and session-id turn-id (eq type 'provider-request-started))
+    ;; A replacement request is an ordinary lifecycle boundary.  Preserve any
+    ;; completed fragments from the preceding request before installing the
+    ;; new O(1) accumulator.
+    (e-harness-activity--flush-and-emit-reasoning-stream
+     harness session-id turn-id)
+    (e-harness-activity--begin-reasoning-stream
+     harness session-id turn-id payload))
+  (when (and session-id
+             turn-id
+             (memq type '(reasoning-delta reasoning-raw-delta)))
+    (e-harness-activity--record-reasoning-fragment
+     harness session-id turn-id type payload))
+  (when (and session-id
+             turn-id
+             (memq type '(provider-request-finished
+                          turn-finished turn-failed turn-cancelled)))
+    (e-harness-activity--flush-and-emit-reasoning-stream
+     harness session-id turn-id))
   (let ((activity-entry
          (when (and session-id
                     turn-id
+                    (not (memq type '(reasoning-delta reasoning-raw-delta)))
                     (e-harness-activity--durable-activity-event-p type)
                     (ignore-errors
                       (e-session-get (e-harness-sessions harness) session-id)))

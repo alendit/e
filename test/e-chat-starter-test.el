@@ -224,7 +224,8 @@
 
 (ert-deftest e-chat-starter-test-running-activity-uses-chat-rendering ()
   "Starter running activity uses the normal chat activity formatter and face."
-  (let* ((buffer (get-buffer-create "*e-chat-starter-running-activity*"))
+  (let* ((e-chat-activity-reasoning-visible-line-limit 3)
+         (buffer (get-buffer-create "*e-chat-starter-running-activity*"))
          (state (make-e-chat-starter-state
                  :session-id "starter-session"
                  :question "Explain"

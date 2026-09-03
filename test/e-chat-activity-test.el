@@ -74,6 +74,7 @@
 (ert-deftest e-chat-activity-owner-live-rounds-are-bounded ()
   "Live activity bounds recent rounds while details retain the complete set."
   (let* ((e-chat-live-activity-round-limit 5)
+         (e-chat-activity-reasoning-visible-line-limit 20)
          (rounds
           (cl-loop
            for index from 1 to 8

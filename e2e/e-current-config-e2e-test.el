@@ -64,6 +64,41 @@ rewrite the user's file."
       (goto-char (point-max))
       (insert (apply #'format format-string arguments)))))
 
+(defun e-current-config-e2e-test--assert-reasoning-is-combined
+    (harness session-id board)
+  "Assert any real-adapter reasoning is one combined record per request."
+  (let* ((types '(reasoning-delta reasoning-raw-delta))
+         (activities
+          (seq-filter
+           (lambda (event) (memq (plist-get event :event-type) types))
+           (e-session-activity-events (e-harness-sessions harness) session-id)))
+         (board-reasoning
+          (seq-filter
+           (lambda (message)
+             (memq (e-board-message-activity-kind message) types))
+           (e-board-messages board)))
+         activity-keys
+         board-keys)
+    (dolist (event activities)
+      (let* ((payload (plist-get event :payload))
+             (key (list (plist-get event :event-type)
+                        (plist-get payload :provider-request-id))))
+        (should (stringp (plist-get payload :content)))
+        (should (eq (plist-get payload :content-mode) 'snapshot))
+        (should (plist-get payload :combined))
+        (should-not (member key activity-keys))
+        (push key activity-keys)))
+    (dolist (message board-reasoning)
+      (let* ((attributes (e-board-message-attributes message))
+             (key (list (e-board-message-activity-kind message)
+                        (plist-get attributes :provider-request-id))))
+        (should (stringp (e-board-message-content message)))
+        (should (eq (plist-get attributes :content-mode) 'snapshot))
+        (should (plist-get attributes :combined))
+        (should-not (member key board-keys))
+        (push key board-keys)))
+    (should (= (length activities) (length board-reasoning)))))
+
 (ert-deftest e-current-config-e2e-test-first-file-hooks-succeed ()
   "The first file opens with the current configuration's real persisted state."
   (let ((file
@@ -173,20 +208,12 @@ persistence, or response delivery fails.  It never skips."
                       ""))
                  (messages
                   (e-session-messages (e-harness-sessions harness) session-id))
-                 (curation-responses
-                  (seq-filter
-                   (lambda (event)
-                     (eq (plist-get event :event-type)
-                         'context-curation-response))
-                   (e-session-activity-events
-                    (e-harness-sessions harness) session-id)))
                  (binding (e-chat-service-binding harness session-id))
                  (board
                   (e-board-registry-board-source-board
                    (e-chat-service-binding-board binding))))
             (should (eq (plist-get result :status) 'done))
             (should (string-match-p (regexp-quote nonce) assistant))
-            (should (= (length curation-responses) 1))
             (should
              (seq-some
               (lambda (message)
@@ -202,7 +229,9 @@ persistence, or response delivery fails.  It never skips."
                      (string-match-p
                       (regexp-quote nonce)
                       (format "%s" (e-board-message-content message)))))
-              (e-board-messages board)))))
+              (e-board-messages board)))
+            (e-current-config-e2e-test--assert-reasoning-is-combined
+             harness session-id board)))
       (e-board-e2e-reset-runtime))))
 
 (defun e-current-config-e2e-test-run-to-file (path &optional selector)

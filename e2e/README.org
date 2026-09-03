@@ -140,12 +140,16 @@ directory.  It takes the exact backend adapter, endpoint/auth configuration,
 model defaults, and SQLite store from the locally configured =:chat-default=,
 then places them in a fresh harness containing only one test-owned dynamic
 non-tool context source.  No unrelated local layers, tools, or instructions
-are sent.  The test requires one durable curation-response audit plus the exact
-assistant token in the settled result, SQLite-backed session transcript, and
-Board output.  It does not require the model to retain or summarize the source,
-and it does not substitute an =E_E2E_CONFIG= fixture or injected transport.
-Missing configuration, authentication, provider availability, invalid
-curation, or persistence failure is a failed test; this mode has no skip path.
+are sent.  The test requires the exact assistant token in the settled result,
+SQLite-backed session transcript, and Board output.  It also verifies that any
+reasoning emitted by the configured adapter is combined once per stream and
+provider request.  It does not require the model to retain or summarize the
+source, and it does not substitute an =E_E2E_CONFIG= fixture or injected
+transport.
+The model may answer without choosing the optional curation action; deterministic
+post-cutover coverage owns that protocol.  Missing configuration,
+authentication, provider availability, or persistence failure is a failed
+test; this mode has no skip path.
 
 * Live provider E2E
 

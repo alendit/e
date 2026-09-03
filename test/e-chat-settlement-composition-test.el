@@ -200,7 +200,8 @@
 
 (ert-deftest e-chat-test-activity-rerender-preserves-running-status-focus ()
   "Activity redraws preserve point/window focus inside active output."
-  (let ((buffer (e-chat-test--buffer nil "chat-activity-status-focus"))
+  (let ((e-chat-activity-reasoning-visible-line-limit 20)
+        (buffer (e-chat-test--buffer nil "chat-activity-status-focus"))
         (window nil))
     (unwind-protect
         (progn
@@ -251,7 +252,8 @@
 
 (ert-deftest e-chat-test-activity-rerender-does-not-delete-whole-status ()
   "Streamed activity redraws update changed status text without full deletion."
-  (let ((buffer (e-chat-test--buffer nil "chat-activity-status-minimal-delete")))
+  (let ((e-chat-activity-reasoning-visible-line-limit 20)
+        (buffer (e-chat-test--buffer nil "chat-activity-status-minimal-delete")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-render-event

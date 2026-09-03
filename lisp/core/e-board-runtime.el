@@ -1591,14 +1591,49 @@ ownership table so retirement does not scan unrelated global mailboxes."
   "Return bounded board content for ACTIVITY-KIND and PAYLOAD.
 Reasoning events carry presentation text in their `:content' field.  Other
 work activity remains a diagnostic snapshot of its arbitrary payload."
-  (let ((content
-         (if (memq activity-kind '(reasoning-delta reasoning-raw-delta))
-             (let ((value (plist-get payload :content)))
-               (unless (stringp value)
-                 (signal 'wrong-type-argument (list 'stringp value)))
-               value)
-           (e-prin1-safe payload))))
-    (truncate-string-to-width content 512 nil nil "...")))
+  (if (memq activity-kind '(reasoning-delta reasoning-raw-delta))
+      (let ((value (plist-get payload :content)))
+        (unless (stringp value)
+          (signal 'wrong-type-argument (list 'stringp value)))
+        value)
+    (truncate-string-to-width (e-prin1-safe payload) 512 nil nil "...")))
+
+(defun e-board-runtime--publish-activity-mailbox (mailbox)
+  "Publish one materialized work-activity MAILBOX when its owner is current."
+  (let* ((attachment (plist-get mailbox :attachment))
+         (activity-kind (or (plist-get mailbox :activity-kind)
+                            'work-progress)))
+    (when (and (e-board-runtime--current-active-attachment-p attachment)
+               (= (or (plist-get mailbox :generation)
+                      (e-board-runtime-attachment-generation attachment))
+                  (e-board-runtime-attachment-generation attachment)))
+      (let* ((payload (plist-get mailbox :payload))
+             (board (e-board-registry-board-source-board
+                     (e-board-runtime-attachment-board attachment)))
+             (participant-id
+              (e-board-registry-participant-id
+               (e-board-runtime-attachment-participant attachment))))
+        (e-board-post-activity
+         board
+         :author (format "participant:%s" participant-id)
+         :subject-participant-id participant-id
+         :source-turn-id (plist-get mailbox :turn-id)
+         :activity-kind activity-kind
+         :tags (copy-tree (plist-get mailbox :tags))
+         :attributes
+         (append (when-let ((work-id (plist-get mailbox :work-id)))
+                   (list :work-id work-id))
+                 (when-let ((subagent-id
+                             (plist-get payload :subagent-id)))
+                   (list :subagent-id subagent-id))
+                 (when-let ((request-id (plist-get mailbox :provider-request-id)))
+                   (list :provider-request-id request-id)))
+         :content (e-board-runtime--activity-content activity-kind payload)
+         :caused-by-delivery-ids
+         (copy-tree
+          (gethash (plist-get mailbox :turn-id)
+                   (e-board-runtime-attachment-turn-delivery-ids attachment)))
+         :source-activity-key (plist-get mailbox :source-key))))))
 
 (defun e-board-runtime--drain-activity-mailboxes (&optional generation)
   "Publish one bounded page of latest work activity mailbox snapshots."
@@ -1620,44 +1655,11 @@ work activity remains a diagnostic snapshot of its arbitrary payload."
               (e-board-runtime--unsettled-changed)))
           (remhash mailbox-id e-board-runtime--work-activity-mailboxes)
           (when mailbox
-            (let* ((attachment (plist-get mailbox :attachment))
-                   (board (e-board-registry-board-source-board
-                           (e-board-runtime-attachment-board attachment)))
-                   (participant-id
-                    (e-board-registry-participant-id
-                     (e-board-runtime-attachment-participant attachment))))
+            (let ((attachment (plist-get mailbox :attachment)))
               (remhash mailbox-id
                        (e-board-runtime-attachment-activity-mailbox-keys
                         attachment))
-              (when (and (e-board-runtime--current-active-attachment-p attachment)
-                         (= (or (plist-get mailbox :generation)
-                                (e-board-runtime-attachment-generation attachment))
-                            (e-board-runtime-attachment-generation attachment)))
-                (e-board-post-activity
-                 board
-                 :author (format "participant:%s" participant-id)
-                 :subject-participant-id participant-id
-                 :source-turn-id (plist-get mailbox :turn-id)
-                 :activity-kind (or (plist-get mailbox :activity-kind)
-                                    'work-progress)
-                 :tags (copy-tree (plist-get mailbox :tags))
-                 :attributes
-                 (append (when-let ((work-id (plist-get mailbox :work-id)))
-                           (list :work-id work-id))
-                         (when-let ((subagent-id
-                                     (plist-get (plist-get mailbox :payload)
-                                                :subagent-id)))
-                           (list :subagent-id subagent-id)))
-                 :content
-                 (e-board-runtime--activity-content
-                  (or (plist-get mailbox :activity-kind) 'work-progress)
-                  (plist-get mailbox :payload))
-                 :caused-by-delivery-ids
-                 (copy-tree
-                  (gethash (plist-get mailbox :turn-id)
-                           (e-board-runtime-attachment-turn-delivery-ids
-                            attachment)))
-                 :source-activity-key (plist-get mailbox :source-key)))))
+              (e-board-runtime--publish-activity-mailbox mailbox)))
           (cl-incf processed)))
       (when e-board-runtime--pending-activity-head
         (e-board-runtime--schedule-activity-drain)))))
@@ -1690,34 +1692,37 @@ will consume the mailbox under its own bounded drain."
       (e-board-runtime--enqueue-activity-flush mailbox-id attachment))))
 
 (defun e-board-runtime--capture-turn-progress (attachment event)
-  "Coalesce high-frequency reasoning EVENT into one latest-value mailbox."
+  "Publish only a harness-combined reasoning EVENT to the Board."
   (let* ((turn-id (plist-get event :turn-id))
          (activity-kind (e-events-type event))
          (participant-id
           (e-board-registry-participant-id
            (e-board-runtime-attachment-participant attachment)))
-         (mailbox-id
-          (list (e-board-runtime-attachment-identity-token attachment)
-                (e-board-runtime-attachment-generation attachment)
-                'turn-progress participant-id
-                turn-id activity-kind))
-         (source-key
-          (e-board-runtime--event-activity-source-key
-           attachment event activity-kind)))
-    (puthash mailbox-id
-             (list :attachment attachment
-                   :generation (e-board-runtime-attachment-generation attachment)
-                   :work-id nil :turn-id turn-id
-                   :activity-kind activity-kind
-                   :tags (or (copy-tree
-                              (gethash
-                               turn-id
-                               (e-board-runtime-attachment-turn-tags attachment)))
-                             '(main))
-                   :payload (plist-get event :payload)
-                   :source-key source-key)
-             e-board-runtime--work-activity-mailboxes)
-    (e-board-runtime--enqueue-activity-flush mailbox-id attachment)))
+         (payload (plist-get event :payload)))
+    (when (plist-get payload :combined)
+      (e-board-post-activity
+       (e-board-registry-board-source-board
+        (e-board-runtime-attachment-board attachment))
+       :author (format "participant:%s" participant-id)
+       :subject-participant-id participant-id
+       :source-turn-id turn-id
+       :activity-kind activity-kind
+       :tags (or (copy-tree
+                  (gethash turn-id
+                           (e-board-runtime-attachment-turn-tags attachment)))
+                 '(main))
+       :attributes
+       (list :content-mode 'snapshot
+             :combined t
+             :provider-request-id (plist-get payload :provider-request-id))
+       :content (e-board-runtime--activity-content activity-kind payload)
+       :caused-by-delivery-ids
+       (copy-tree
+        (gethash turn-id
+                 (e-board-runtime-attachment-turn-delivery-ids attachment)))
+       :source-activity-key
+       (e-board-runtime--event-activity-source-key
+        attachment event activity-kind)))))
 
 (defun e-board-runtime--install-work-hooks (attachment handle)
   "Install the private board-runtime hook classification on prepared HANDLE."

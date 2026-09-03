@@ -202,7 +202,36 @@ Return a plist containing its stream, harness, transcript, and visible windows."
   "Emit ITEM through FIXTURE and wait until transcript contains NEEDLE."
   (let ((stream (plist-get fixture :stream))
         (transcript (plist-get fixture :transcript)))
-    (e-graphical-test-stream-emit stream item)
+    (if (memq (plist-get item :type)
+              '(reasoning-delta reasoning-raw-delta))
+        ;; Presentation tests opt into completed reasoning previews.  Raw
+        ;; provider fragmentation is exercised through the real stream by
+        ;; `e-chat-behavior-test-reasoning-is-combined-and-hidden-by-default'.
+        (let* ((harness (plist-get fixture :harness))
+               (session-id (plist-get fixture :session-id))
+               (binding (e-chat-service-binding harness session-id))
+               (attachment (e-chat-service-binding-attachment binding))
+               (participant-id
+                (e-board-registry-participant-id
+                 (e-board-runtime-attachment-participant attachment)))
+               (turn-id
+                (plist-get (e-board-runtime-attachment-active-turn attachment)
+                           :id))
+               (board (e-board-registry-board-source-board
+                       (e-chat-service-binding-board binding))))
+          (e-board-post-activity
+           board
+           :author (format "participant:%s" participant-id)
+           :subject-participant-id participant-id
+           :source-turn-id turn-id
+           :activity-kind (plist-get item :type)
+           :tags '(main)
+           :attributes '(:content-mode snapshot :combined t)
+           :content (plist-get item :content)
+           :source-activity-key
+           (list (format "graphical-reasoning:%s" session-id)
+                 1 (length (e-board-messages board)))))
+      (e-graphical-test-stream-emit stream item))
     (condition-case err
         (e-graphical-test-wait-until
          (lambda ()
@@ -640,6 +669,7 @@ than the invisible insertion position."
   (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-activity-reasoning-visible-line-limit 3)
         fixture)
     (unwind-protect
         (progn
@@ -869,6 +899,7 @@ than the invisible insertion position."
   (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-activity-reasoning-visible-line-limit 3)
         fixture)
     (unwind-protect
         (progn
@@ -902,6 +933,55 @@ than the invisible insertion position."
            (eq (selected-window)
                (cdr (e-chat-behavior-test--fixture-windows fixture))))
           (e-chat-behavior-test--finish fixture "reasoned graphical answer"))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-reasoning-is-combined-and-hidden-by-default ()
+  "Fragmented reasoning is stored once but omitted from the normal transcript."
+  (should (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "hidden reasoning prompt")
+          (dolist (fragment '("Combining" " streamed" " reasoning."))
+            (e-graphical-test-stream-emit
+             (plist-get fixture :stream)
+             (list :type 'reasoning-delta
+                   :stream-kind 'summary
+                   :content fragment)
+             0.01))
+          (e-chat-behavior-test--finish fixture "visible graphical answer")
+          (let* ((harness (plist-get fixture :harness))
+                 (session-id (plist-get fixture :session-id))
+                 (activities
+                  (seq-filter
+                   (lambda (event)
+                     (eq (plist-get event :event-type) 'reasoning-delta))
+                   (e-harness-session-activity-events harness session-id)))
+                 (binding (e-chat-service-binding harness session-id))
+                 (board (e-board-registry-board-source-board
+                         (e-chat-service-binding-board binding)))
+                 (board-reasoning
+                  (seq-filter
+                   (lambda (message)
+                     (eq (e-board-message-activity-kind message)
+                         'reasoning-delta))
+                   (e-board-messages board))))
+            (should (= (length activities) 1))
+            (should (= (length board-reasoning) 1))
+            (should (equal (plist-get (plist-get (car activities) :payload)
+                                      :content)
+                           "Combining streamed reasoning."))
+            (should (equal (e-board-message-content (car board-reasoning))
+                           "Combining streamed reasoning."))
+            (with-current-buffer (plist-get fixture :transcript)
+              (should-not (string-match-p
+                           (regexp-quote "Combining streamed reasoning.")
+                           (buffer-string))))
+            (e-chat-behavior-test--capture-state
+             "reasoning-combined-hidden-by-default")))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-settled-output-follows-after-tall-transient ()
@@ -1016,6 +1096,7 @@ than the invisible insertion position."
   (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-activity-reasoning-visible-line-limit 3)
         fixture)
     (unwind-protect
         (progn
@@ -1088,6 +1169,7 @@ than the invisible insertion position."
   (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-activity-reasoning-visible-line-limit 3)
         fixture)
     (unwind-protect
         (progn
@@ -1261,6 +1343,7 @@ than the invisible insertion position."
   (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
+        (e-chat-activity-reasoning-visible-line-limit 3)
         fixture)
     (unwind-protect
         (progn
@@ -1309,6 +1392,7 @@ than the invisible insertion position."
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (e-chat-live-activity-round-limit 6)
+        (e-chat-activity-reasoning-visible-line-limit 100)
         fixture)
     (unwind-protect
         (progn

@@ -1383,12 +1383,18 @@ Return request options, persisted anchors, and the final context."
     (should (string-match-p "writable://<id>" description))))
 
 (ert-deftest e-harness-test-persists-activity-events-and-tags_turn_messages ()
-  "Harness turn events persist as activity, and messages keep their turn id."
-  (let* ((backend (e-backend-fake-create
-                   :items '((:type reasoning-delta :content "thinking")
-                            (:type reasoning-raw-delta :content "raw thinking")
-                            (:type assistant-message :content "done")
-                            (:type done :reason stop))))
+  "Reasoning is combined once per request and messages keep their turn id."
+  (let* ((summary-fragment-count 512)
+         (backend
+          (e-backend-fake-create
+           :items
+           (append
+            (cl-loop repeat summary-fragment-count
+                     collect '(:type reasoning-delta :content "x"))
+            '((:type reasoning-raw-delta :content "raw ")
+              (:type reasoning-raw-delta :content "thinking")
+              (:type assistant-message :content "done")
+              (:type done :reason stop)))))
          (store (e-session-store-create))
          (harness (e-harness-create :backend backend :sessions store)))
     (e-harness-create-session harness :id "session-1")
@@ -1403,12 +1409,21 @@ Return request options, persisted anchors, and the final context."
       (should (equal (mapcar (lambda (event)
                                (plist-get event :event-type))
                              events)
-                     '(turn-started
-                       provider-request-started
-                       reasoning-delta
-                       reasoning-raw-delta
-                       provider-request-finished
-                       turn-finished))))))
+                      '(turn-started
+                        provider-request-started
+                        reasoning-delta
+                        reasoning-raw-delta
+                        provider-request-finished
+                        turn-finished)))
+      (let ((summary (nth 2 events))
+            (raw (nth 3 events)))
+        (should (equal (plist-get (plist-get summary :payload) :content)
+                       (make-string summary-fragment-count ?x)))
+        (should (equal (plist-get (plist-get raw :payload) :content)
+                       "raw thinking"))
+        (should (eq (plist-get (plist-get summary :payload) :content-mode)
+                    'snapshot))
+        (should (plist-get (plist-get summary :payload) :combined))))))
 
 (ert-deftest e-harness-test-activity-index-write-is-coalesced ()
   "Harness activity events flush the session index once at turn settlement."
@@ -1429,6 +1444,9 @@ Return request options, persisted anchors, and the final context."
                                   '(:type reasoning-delta
                                     :content "thinking"))
       (e-harness-activity-emit-turn-event harness "session-1" "turn-1"
+                                          'provider-request-finished
+                                          '(:status done))
+      (e-harness-activity-emit-turn-event harness "session-1" "turn-1"
                                   'tool-started
                                   '(:name "read" :arguments nil))
       (e-harness-activity-emit-turn-event harness "session-1" "turn-1"
@@ -1441,6 +1459,7 @@ Return request options, persisted anchors, and the final context."
     (should (= write-count 1))
     (should (equal '(provider-request-started
                      reasoning-delta
+                     provider-request-finished
                      tool-started
                      tool-finished
                      turn-finished)

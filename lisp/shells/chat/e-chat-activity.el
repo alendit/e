@@ -46,9 +46,11 @@ See `e-chat-activity-redraw-large-block-chars'."
   :type 'number
   :group 'e-chat)
 
-(defcustom e-chat-activity-reasoning-visible-line-limit 3
+(defcustom e-chat-activity-reasoning-visible-line-limit 0
   "Maximum non-empty reasoning lines shown in compact activity summaries.
-The complete reasoning text remains available from response details."
+The default keeps model reasoning out of the transcript.  A positive value
+opts into a bounded live preview; complete combined reasoning remains
+available from explicitly expanded response details."
   :type 'natnum
   :group 'e-chat)
 
@@ -544,8 +546,9 @@ ACTIVE-AT is used for active thinking duration."
               right)
     left))
 
-(defun e-chat-activity--activity-round-visible-reasoning-lines (round)
-  "Return compact visible reasoning lines for semantic activity ROUND."
+(defun e-chat-activity--activity-round-visible-reasoning-lines (round &optional complete)
+  "Return visible reasoning lines for semantic activity ROUND.
+When COMPLETE is non-nil, return the complete explicitly requested detail."
   (let ((lines nil))
     (dolist (reasoning (plist-get round :reasoning))
       (when-let ((content (plist-get reasoning :content)))
@@ -554,8 +557,10 @@ ACTIVE-AT is used for active thinking duration."
           (unless (string-empty-p line)
             (push line lines)))))
     (setq lines (nreverse lines))
-    (let ((limit e-chat-activity-reasoning-visible-line-limit))
+    (let ((limit (and (not complete)
+                      e-chat-activity-reasoning-visible-line-limit)))
       (cond
+       (complete lines)
        ((and (integerp limit) (= limit 0))
         nil)
        ((and (integerp limit)
@@ -650,10 +655,12 @@ request settles and before a tool or the next provider request starts."
              (plist-get round :started-at)
              (e-chat-activity--current-time-seconds)))))
 
-(defun e-chat-activity--activity-round-visible-text (round &optional active-tail)
+(defun e-chat-activity--activity-round-visible-text
+    (round &optional active-tail complete)
   "Return visible text for semantic activity ROUND.
 When ACTIVE-TAIL is non-nil, ROUND is the latest settled round of the
-harness-confirmed active turn."
+harness-confirmed active turn.  COMPLETE exposes explicitly requested
+reasoning detail rather than the default compact preview."
   (let* ((running-text (e-chat-activity--round-running-tools-text round))
          ;; While tools are running, replace the frozen \"Thought for ...\"
          ;; left cell with a live spinner naming the running tool and its
@@ -692,7 +699,8 @@ harness-confirmed active turn."
                      (list (e-chat-activity--activity-round-row-text
                             thought tool-text))))
          (reasoning-lines
-          (e-chat-activity--activity-round-visible-reasoning-lines round)))
+          (e-chat-activity--activity-round-visible-reasoning-lines
+           round complete)))
     (when reasoning-lines
       (setq lines (append lines (list "") reasoning-lines)))
     (when lines
@@ -738,7 +746,7 @@ offsets and markers are deliberately not part of this owner-to-owner value."
         (push summary chunks)))
     (dolist (round rounds)
       (when-let ((text (e-chat-activity--activity-round-visible-text
-                        round (and active-tail (eq round latest)))))
+                        round (and active-tail (eq round latest)) complete)))
         (when (and active-tail (eq round latest))
           (setq progress-tail-text text))
         (push text chunks)))
