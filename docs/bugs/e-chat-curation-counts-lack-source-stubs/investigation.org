@@ -1,0 +1,54 @@
+#+title: Context Curation Source Stub Investigation
+#+startup: overview
+
+* Conclusion
+
+The original Addendum 9 projection intentionally retained only four counts.
+That protected private source data but discarded safe descriptive metadata
+that the context-lifetime owner already possessed: the semantic source kind
+and, for an ordinary tool-result envelope, the tool name.  Both chat shells
+therefore received enough information to render =kept 5= but nothing that
+could explain what those five sources were.
+
+The correction derives one bounded content-free stub for every explicitly
+disposed source.  A stub contains its disposition and semantic source kind,
+plus an optional safe agreeing tool name only for tool results.  Board and chat
+service validate the same allowlist and require stub totals to match the four
+existing counts.  The shared formatter groups repeated equivalent sources in
+first-seen order, for example:
+
+#+begin_example
+kept 5 — tool output · run_elisp ×3, tool output · bash ×2
+#+end_example
+
+Previously persisted count-only activities remain valid and render with their
+old summary.  Missing, malformed, or disagreeing tool-name metadata falls back
+to =tool output= and cannot fail semantic curation.  New stubs never contain
+source bodies, tool arguments/output, summary text, labels, IDs, fingerprints,
+or provider material.
+
+* Repository evidence
+
+- =e-context-lifetime--curation-source-descriptors= already owned the trusted
+  source kind and tool-result envelope during preparation, but
+  =e-context-lifetime-curation-activity-projection= previously discarded both.
+- =e-board-runtime--curation-activity-attributes= and
+  =e-chat-service--curation-counts= accepted only the four count keys, so no
+  presentation consumer could reconstruct safe source descriptions.
+- The classic and ModernChat surfaces already share
+  =e-chat-service-format-context-curation=, making it the cohesive owner for
+  source-stub wording and grouping.
+
+* Validation
+
+- Focused core, harness, Board, chat activity, ModernChat, and post-cutover
+  composition portfolio: 226/226 passed.
+- The complete graphical run passed the curation scenario and 28 other tests.
+  One unrelated workspace-layout test failed once and passed on an exact
+  isolated rerun.  Curation artifacts show source-stub detail above active
+  =Working= and =Thinking= rows without disturbing settlement or the composer.
+- The full 2729-test repository run passed 2722 tests in the sandbox, exposed
+  one stale affected-test expectation that was corrected and passed in its
+  40-test owner file, and hit six loopback restrictions.  All six socket tests
+  passed outside the sandbox.
+- The user's running Emacs was not reloaded or changed.

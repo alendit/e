@@ -4,16 +4,17 @@
 
 * Status
 
-Done (the original implementation through =02fd61be= and the accepted
-follow-up correction at =0f7da154= pass deterministic, full graphical, and
-classified full-suite evidence.  The literal warnings-as-errors gate remains
-baseline-blocked by Emacs 31 obsolete-macro warnings that predate this package).
+Done (the original implementation through =02fd61be=, the activity-order
+correction at =0f7da154=, and the source-stub follow-up at =445bba69= pass
+focused, classified full-suite, and isolated graphical evidence.  The literal
+warnings-as-errors gate remains baseline-blocked by Emacs 31 obsolete-macro
+warnings that predate this package).
 
 This addendum extends [[file:addendum7.org][Addendum 7]] with a presentation
 contract for successfully committed non-empty curation packages.  It does not
-change the current
-=keep=, =summaries=, =erase=, omission, durability, or provider-carrier
-semantics.  It is compatible with the frame-scoped repeated-curation design in
+change the current =keep=, =summaries=, =erase=, omission, durability, or
+provider-carrier semantics.  It is compatible with the frame-scoped
+repeated-curation design in
 [[file:addendum8.org][Addendum 8]]: if Addendum 8 is implemented, each
 successfully committed non-empty curation package is visualized separately in
 occurrence order.  A valid all-label omission still creates no package and
@@ -46,19 +47,24 @@ summarized, or erased sources.  A missing visible indication makes a
 successfully committed non-empty curation package indistinguishable from no
 package-bearing curation during ordinary use.
 
-The shell must expose the accepted package-bearing decision without presenting the reserved
-carrier as a normal tool, leaking source content or internal identities, or
-making presentation part of semantic correctness.
+The shell must expose the accepted package-bearing decision without presenting
+the reserved carrier as a normal tool, leaking source content or internal
+identities, or making presentation part of semantic correctness.
 
 * Decision
 
 Visualize every successfully committed non-empty curation package as a compact
 turn activity named =Context curated=.
 
-The activity summarizes only non-zero explicit dispositions:
+The activity summarizes only non-zero explicit dispositions and names the safe
+kind of each disposed source.  Tool-result sources also include the ordinary
+tool name when the trusted result envelope supplies one.  Repeated identical
+stubs are grouped in first-seen order:
 
 #+begin_example
-Context curated · kept 1 · summarized 2 sources into 1 summary · erased 1
+Context curated
+kept 5 — tool output · run_elisp ×3, tool output · bash ×2
+summarized 2 sources into 1 summary — current state, tool output · read
 #+end_example
 
 The wording may use singular or plural forms appropriate to the counts, but it
@@ -80,7 +86,8 @@ tool or action counts.  In classic chat it participates in the existing turn
 activity presentation: it is visible while the turn is active, remains in the
 expanded settled details, and contributes a compact =1 curation= count to the
 settled turn summary.  ModernChat receives the equivalent generic activity DTO
-with title =Context curated=, status =ok=, and the same count summary.
+with title =Context curated=, status =ok=, and the same disposition and source
+summary.
 
 Multiple successfully committed non-empty curation packages in one turn produce
 multiple ordered activities and the settled summary reports their total.  A
@@ -97,9 +104,10 @@ the visible transcript projection.
 
 * Presentation data contract
 
-The context-lifetime owner already computes the source and disposition counts
-while preparing a valid non-empty decision.  Reuse those values to attach a nested,
-content-free presentation projection to the existing
+The context-lifetime owner already has the trusted source descriptors while
+preparing a valid non-empty decision.  Reuse their safe classifications and
+the disposition counts to attach a nested, content-free presentation
+projection to the existing
 =context-frame-consumed= event only when a curation package was accepted:
 
 #+begin_src emacs-lisp
@@ -107,7 +115,19 @@ content-free presentation projection to the existing
  (:kept-source-count 1
   :summary-count 1
   :summarized-source-count 2
-  :erased-source-count 1))
+  :erased-source-count 1
+  :source-stubs
+  ((:disposition kept
+    :source-kind "tool-result"
+    :tool-name "run_elisp")
+   (:disposition summarized
+    :source-kind "current-state")
+   (:disposition summarized
+    :source-kind "tool-result"
+    :tool-name "read")
+   (:disposition erased
+    :source-kind "tool-result"
+    :tool-name "bash"))))
 #+end_src
 
 All four fields are required non-negative integers when =:curation= is
@@ -116,9 +136,19 @@ present.  At least one of =:kept-source-count=,
 =:summary-count= must be zero exactly when =:summarized-source-count= is zero
 and must not exceed the summarized source count.
 
+New package-bearing decisions also carry one ordered =:source-stubs= entry per
+explicitly kept, summarized, or erased source.  Each stub has exactly
+=:disposition= and =:source-kind=, plus optional =:tool-name= only for a
+=tool-result= source.  Stub disposition totals must equal the corresponding
+counts, and the existing curation ceiling bounds the list to 16 entries.
+Missing, malformed, or disagreeing tool-name metadata is presentation-only and
+falls back to =tool output=; it never changes semantic curation success.
+Persisted count-only activities from the earlier Addendum 9 implementation
+remain valid and retain their original count-only rendering.
+
 The projection contains no:
 
-- source body or generated summary text;
+- source body, tool arguments/output, or generated summary text;
 - frame-local numeric label;
 - tool-call identity, observation identity, source reference, or fingerprint;
 - provider request or carrier payload; or
@@ -138,15 +168,17 @@ carrier-call telemetry.
 
 * Ownership and dependency direction
 
-- Core context lifetime owns deriving and validating the disposition counts
-  because it alone knows the accepted non-empty semantic package.  The projection is a
-  detached value, not access to a live frame or durable record.
+- Core context lifetime owns deriving and validating the disposition counts and
+  safe source stubs because it alone knows the accepted non-empty semantic
+  package and trusted source descriptors.  The projection is a detached value,
+  not access to a live frame or durable record.
 - Harness context runtime attaches that projection only after the semantic
   package has been accepted and the frame has been consumed.  It never emits a
   successful presentation for failed preparation or persistence.
 - Board runtime maps a consumed event carrying =:curation= to one public
-  =context-curated= activity and publishes only the four safe counts.  It does
-  not interpret =keep=, =summaries=, or =erase= arguments.
+  =context-curated= activity and publishes only the four safe counts and the
+  bounded source-stub allowlist.  It does not interpret =keep=, =summaries=, or
+  =erase= arguments.
 - Chat service transports the generic activity through its existing bounded
   activity projection.  It does not query private session curation records or
   reconstruct policy.
@@ -171,8 +203,8 @@ Presentation never reads or mutates context-lifetime state.
 - Goal ID :: =F88A9-ACTIVITY=
 - Behavioral goal :: Users can distinguish each successfully committed
   non-empty curation package from no package-bearing curation in both chat
-  shells, while seeing only disposition counts and without changing semantic
-  success.
+  shells, while seeing only disposition counts and content-free source stubs
+  and without changing semantic success.
 - Direct scenario :: An actual reserved OpenAI response produces
   provider-supplied reasoning-summary prose and at least one submitted =keep=,
   =summaries=, or =erase= disposition.  Context lifetime commits the non-empty
@@ -182,19 +214,20 @@ Presentation never reads or mutates context-lifetime state.
   current mutable =Thinking for ...= row; raw provider reasoning is absent, the
   composer and viewport remain intact, and the turn does not settle until
   normal terminal output.  The same curation reaches ModernChat with identical
-  safe counts and unchanged tool/action totals.
+  safe counts and source descriptions and unchanged tool/action totals.
 - Product authority :: The user/operator through this addendum.
 - Owning contracts :: =F88A9-PROJECTION=, =F88A9-BOARD=,
   =F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-LANGUAGE=,
   =F88A9-PRIVACY=, =F88A9-ORDERING=, =F88A9-GRAPHICAL=, and
-  =F88A9-PRESERVATION=.
-- Behavioral status :: Passing at =0f7da154=.  Classic chat presents bounded
-  provider-summary prose and committed curation above the mutable live tail,
-  including the between-round =Working= state, while raw provider reasoning
-  remains absent.
-- Mechanism status :: Complete.  The correction is local to classic activity
-  projection and tests; provider decoding, durable activity, Board projection,
-  and semantic context ownership are unchanged.
+  =F88A9-PRESERVATION=, plus =F88A9-SOURCE-STUBS=.
+- Behavioral status :: Passing at =445bba69=.  Focused, real-adapter, and
+  isolated graphical evidence show both shells receiving the same safe source
+  description.  Classic chat keeps it above the mutable live tail, and raw
+  provider reasoning remains absent.
+- Mechanism status :: Complete.  Context lifetime derives source stubs, Board
+  and chat service validate their public allowlists, and the shared formatter
+  groups them for both shells.  Provider decoding and curation semantics are
+  unchanged.
 - External compatibility :: Not applicable because request, carrier, and
   provider material are unchanged; real-adapter evidence is deterministic
   repository composition.
@@ -207,8 +240,8 @@ to the matrix as follows; they do not define independent observable outcomes.
 |---------+-----------------------------------|
 | =Status= and =Problem= | Goal rationale for =F88A9-ACTIVITY= |
 | =Decision= | =F88A9-LANGUAGE=, =F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-ORDERING=, and =F88A9-PRESERVATION= |
-| =Presentation data contract= | =F88A9-PROJECTION= and =F88A9-PRIVACY= |
-| =Ownership and dependency direction= | Owner detail for =F88A9-PROJECTION=, =F88A9-BOARD=, =F88A9-CLASSIC=, and =F88A9-MODERN= |
+| =Presentation data contract= | =F88A9-PROJECTION=, =F88A9-SOURCE-STUBS=, and =F88A9-PRIVACY= |
+| =Ownership and dependency direction= | Owner detail for =F88A9-PROJECTION=, =F88A9-SOURCE-STUBS=, =F88A9-BOARD=, =F88A9-CLASSIC=, and =F88A9-MODERN= |
 | =Rendering behavior= | Implementation detail for =F88A9-CLASSIC=, =F88A9-MODERN=, and =F88A9-GRAPHICAL= |
 | =Failure and delivery model= | Recovery boundary for =F88A9-PROJECTION= and =F88A9-PRESERVATION= |
 | =Delivery package= | The implementation-plan relation from every contract row to =F88A9-DP1= |
@@ -218,29 +251,30 @@ to the matrix as follows; they do not define independent observable outcomes.
 
 | Contract | Observable | Semantic owner and public composition | Establishing package | Deterministic evidence | External evidence | Telemetry | Status |
 |----------+------------+---------------------------------------+----------------------+------------------------+-------------------+-----------+--------|
-| =F88A9-PROJECTION= | One successfully committed non-empty keep, summary, erase, or mixed package attaches one validated four-count projection.  No-call, all-label omission, and failed decisions attach none. | Context lifetime derives facts; harness attaches them to successful frame completion. | =F88A9-DP1= | =A9-OWNER=, =A9-NEGATIVE=, =A9-DIRECT= | N/A: repository-owned projection | None required | Passing at =02fd61be= |
-| =F88A9-BOARD= | A projected consumption publishes exactly one =context-curated= Board activity; unprojected consumption publishes none. | Board runtime consumes the attached-turn activity port and emits one allowlisted activity. | =F88A9-DP1= | =A9-BOARD=, =A9-DIRECT= | N/A: repository-owned adapter | Board activity is product output, not acceptance telemetry | Passing at =02fd61be= |
-| =F88A9-CLASSIC= | Classic chat shows the activity live, retains ordered settled detail, reports the curation count, and leaves tool/action counts unchanged.  With ordinary defaults, completed curation and a bounded non-empty provider-summary preview appear above the current mutable progress row.  An explicit zero preview setting suppresses summary prose without exposing raw reasoning or changing curation ordering. | Chat service transports the Board event; classic activity owns its presentation state. | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= | N/A | None required | Passing at =0f7da154= |
-| =F88A9-MODERN= | ModernChat receives a stable Board-backed DTO identity, title =Context curated=, status =ok=, and the same safe disposition summary; its activity surface can select and inspect it. | Chat service transports the Board event; view model maps the DTO; Rust renders it. | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= | N/A | None required | Passing at =02fd61be=; rendered click remains source-inspected |
-| =F88A9-LANGUAGE= | Kept, summarized-source/summary, and erased counts retain Addendum 7 meanings; zero categories are omitted and omission is never called =drop=. | One shell-family formatter below shell renderers. | =F88A9-DP1= | =A9-OWNER= | N/A | None required | Passing at =02fd61be= |
-| =F88A9-PRIVACY= | Only the four counts enter the public activity; content, labels, tool/observation identities, fingerprints, provider material, and private correlation identities do not. | Core projection plus Board allowlist. | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= | N/A | None required | Passing at =02fd61be= |
+| =F88A9-PROJECTION= | One successfully committed non-empty keep, summary, erase, or mixed package attaches one validated count-and-stub projection.  No-call, all-label omission, and failed decisions attach none. | Context lifetime derives facts; harness attaches them to successful frame completion. | =F88A9-DP1= | =A9-OWNER=, =A9-NEGATIVE=, =A9-DIRECT= | N/A: repository-owned projection | None required | Passing at =445bba69= |
+| =F88A9-SOURCE-STUBS= | Each newly projected disposed source identifies its disposition and source kind; a safe agreeing tool-result name is included when available, otherwise the description remains =tool output=.  Repeated equivalent stubs group as =×N=. | Context lifetime owns trusted derivation; the shared chat formatter owns grouping and wording. | =F88A9-DP1= | =A9-OWNER=, =A9-PRIVACY=, =A9-CLASSIC=, =A9-MODERN=, =A9-GRAPHICAL= | N/A | None required | Passing at =445bba69= |
+| =F88A9-BOARD= | A projected consumption publishes exactly one =context-curated= Board activity with validated counts and optional stubs; unprojected consumption publishes none. | Board runtime consumes the attached-turn activity port and emits one allowlisted activity. | =F88A9-DP1= | =A9-BOARD=, =A9-DIRECT= | N/A: repository-owned adapter | Board activity is product output, not acceptance telemetry | Passing at =445bba69= |
+| =F88A9-CLASSIC= | Classic chat shows the activity and safe source descriptions live, retains ordered settled detail, reports the curation count, and leaves tool/action counts unchanged.  With ordinary defaults, completed curation and a bounded non-empty provider-summary preview appear above the current mutable progress row.  An explicit zero preview setting suppresses summary prose without exposing raw reasoning or changing curation ordering. | Chat service transports the Board event; classic activity owns its presentation state. | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= | N/A | None required | Passing at =445bba69= |
+| =F88A9-MODERN= | ModernChat receives a stable Board-backed DTO identity, title =Context curated=, status =ok=, and the same safe disposition and source summary; its activity surface can select and inspect it. | Chat service transports the Board event; view model maps the DTO; Rust renders it. | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= | N/A | None required | Passing at =445bba69= |
+| =F88A9-LANGUAGE= | Kept, summarized-source/summary, and erased counts retain Addendum 7 meanings; zero categories are omitted, omission is never called =drop=, and safe source descriptions follow each non-zero disposition. | One shell-family formatter below shell renderers. | =F88A9-DP1= | =A9-OWNER= | N/A | None required | Passing at =445bba69= |
+| =F88A9-PRIVACY= | Only the four counts, disposition, source kind, and optional safe agreeing tool name enter new public activity.  Source/tool content, labels, call/observation identities, fingerprints, provider material, and private correlation identities do not. | Core projection plus Board and service allowlists. | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= | N/A | None required | Passing at =445bba69= |
 | =F88A9-ORDERING= | Two committed packages produce two Board-ordered activities and =2 curations= without live/replay duplication. | Board sequence/source key and shell activity state. | =F88A9-DP1= | =A9-ORDERING= | N/A | None required | Passing at =02fd61be= |
-| =F88A9-GRAPHICAL= | Compact and expanded classic states remain readable without disturbing composer, viewport, or settlement; completed activity stays above the active mutable progress tail. | Classic presentation shell. | =F88A9-DP1= | =A9-GRAPHICAL= | N/A | None required | Passing at =0f7da154= |
+| =F88A9-GRAPHICAL= | Compact and expanded classic states retain readable source descriptions without disturbing composer, viewport, or settlement; completed activity stays above the active mutable progress tail. | Classic presentation shell. | =F88A9-DP1= | =A9-GRAPHICAL= | N/A | None required | Passing at =445bba69= |
 | =F88A9-PRESERVATION= | Visualization does not change semantic success, transcript shape, tool/action counts, compaction, terminal, or unread behavior.  Provider-supplied summary prose remains distinct from raw reasoning: the former has a bounded classic preview and the latter never enters the visible activity path. | Existing semantic and presentation owners retain their responsibilities. | =F88A9-DP1= | =A9-NEGATIVE=, =A9-PRESERVATION=, =A9-DIRECT= | N/A: request/provider material unchanged | Existing telemetry is observational only | Passing at =0f7da154=; warnings-as-errors baseline-blocked |
 
 ** Scenario portfolio
 
 | Scenario | Required path and assertions | Evidence class |
 |----------+------------------------------+----------------|
-| =A9-OWNER= | Pure count derivation covers keep-only, summary-only, erase-only, mixed, singular/plural, zero-category omission, malformed projections, and exact count invariants. | Cheap deterministic owner evidence |
+| =A9-OWNER= | Pure projection derivation covers keep-only, summary-only, erase-only, mixed, singular/plural, zero-category omission, safe source stubs, legacy count-only input, malformed projections, and exact count/stub invariants. | Cheap deterministic owner evidence |
 | =A9-NEGATIVE= | No carrier call, valid explicit all-label omission, rejected preparation, and persistence failure publish no =context-curated= activity.  Existing all-empty real-adapter coverage remains here. | Deterministic negative composition |
 | =A9-BOARD= | One projected consumed event publishes one allowlisted Board activity; repeated handling of the same durable source key still yields one row. | Deterministic owner composition |
-| =A9-CLASSIC= | With ordinary defaults, service-produced live and replay events create one intermittent row, one settled detail, the correct curation total, and unchanged tool/action totals.  Between-round curation and bounded provider-summary prose precede the current mutable progress row.  Separate owner checks cover positive-limit truncation and explicit-zero suppression. | Deterministic shell composition |
-| =A9-MODERN= | A service-produced Board activity becomes a DTO with its real Board message identity; selecting it in the Rust activity surface exposes the correct title, status, and summary. | Deterministic DTO and rendered-view evidence |
+| =A9-CLASSIC= | With ordinary defaults, service-produced live and replay events create one intermittent row with grouped source descriptions, one settled detail, the correct curation total, and unchanged tool/action totals.  Between-round curation and bounded provider-summary prose precede the current mutable progress row.  Separate owner checks cover positive-limit truncation and explicit-zero suppression. | Deterministic shell composition |
+| =A9-MODERN= | A service-produced Board activity becomes a DTO with its real Board message identity; selecting it in the Rust activity surface exposes the correct title, status, and grouped source summary. | Deterministic DTO and rendered-view evidence |
 | =A9-ORDERING= | Two package-bearing frame decisions appear in Board order, settle as =2 curations=, and remain two after live/replay overlap. | Deterministic multi-event composition; conditional on Addendum 8 for real multi-frame production |
-| =A9-PRIVACY= | Hostile sentinels placed in private source, summary, label, tool/observation identity, fingerprint, provider, and correlation fields are absent from the consumed public projection, Board message, classic text, and ModernChat DTO. | Deterministic cross-boundary privacy evidence |
-| =A9-DIRECT= | An actual OpenAI Responses reserved carrier containing at least one submitted =keep=, =summaries=, or =erase= label passes decoder, context preparation, package commit, frame consumption, harness activity, Board publication, and chat service.  It produces one ordered classic activity and one ModernChat DTO with identical safe counts, no private sentinel, and no tool/action-count change.  A fabricated shell event cannot satisfy this scenario. | Credential-free real-adapter composition |
-| =A9-GRAPHICAL= | The isolated graphical classic-chat scenario captures the between-round state and proves summary then curation then mutable =Working=; after the next provider-round start it proves summary then completed =Thought= then curation then exactly one mutable =Thinking=; it then captures settled-collapsed and settled-expanded states and verifies composer, window, point, viewport, and settlement invariants. | Deterministic graphical evidence with artifacts |
+| =A9-PRIVACY= | Safe agreeing tool names reach the public stub, unsuitable names fall back without failing curation, and hostile sentinels placed in source/tool content, summary, label, call/observation identity, fingerprint, provider, and correlation fields remain absent from the public projection, Board message, classic text, and ModernChat DTO. | Deterministic cross-boundary privacy evidence |
+| =A9-DIRECT= | An actual OpenAI Responses reserved carrier containing at least one submitted =keep=, =summaries=, or =erase= label passes decoder, context preparation, package commit, frame consumption, harness activity, Board publication, and chat service.  It produces one ordered classic activity and one ModernChat DTO with identical safe counts and source stubs, no private sentinel, and no tool/action-count change.  A fabricated shell event cannot satisfy this scenario. | Credential-free real-adapter composition |
+| =A9-GRAPHICAL= | The isolated graphical classic-chat scenario captures readable source stubs in the between-round state and proves summary then curation then mutable =Working=; after the next provider-round start it proves summary then completed =Thought= then curation then exactly one mutable =Thinking=; it then captures settled-collapsed and settled-expanded states and verifies composer, window, point, viewport, and settlement invariants. | Deterministic graphical evidence with artifacts |
 | =A9-PRESERVATION= | Focused existing-owner regressions, =cargo test --manifest-path ui/modernchat/Cargo.toml=, Org parsing, whitespace validation, and =eldev -p -dtT test= pass.  Warnings-as-errors compilation is attempted and classified against the pre-existing Emacs 31 warning baseline. | Layered repository evidence |
 
 * Rendering behavior
@@ -249,10 +283,10 @@ to the matrix as follows; they do not define independent observable outcomes.
 
 The activity owner records =context-curated= as one intermittent turn entry.
 Its compact title is =Context curated= and its body is produced from the safe
-count projection.  While the turn is active, the normal activity transient
-makes the entry discoverable.  After settlement, the ordinary summary includes
-the curation count alongside duration, tool count, and action count; expanding
-the summary shows each curation entry in Board order.
+count-and-stub projection.  While the turn is active, the normal activity
+transient makes the entry discoverable.  After settlement, the ordinary summary
+includes the curation count alongside duration, tool count, and action count;
+expanding the summary shows each curation entry in Board order.
 
 The row must not be inserted as a =System= transcript message.  It must not
 move the response separator, mark the assistant response as complete, restore
@@ -274,19 +308,19 @@ The service exposes =context-curated= through the same bounded activity list as
 other public activity.  The view model preserves the durable Board activity
 =:message-id= as the generic DTO =id= for all public activities; it does not
 synthesize, omit, or render that identity.  It supplies the stable title and
-formats the safe counts rather than printing the event plist.  The Rust activity
-surface keys selection and inspector lookup by that preserved identity.  No
-curation-specific selection path or context-lifetime policy enters the egui
-shell.
+formats the safe counts and source descriptions rather than printing the event
+plist.  The Rust activity surface keys selection and inspector lookup by that
+preserved identity.  No curation-specific selection path or context-lifetime
+policy enters the egui shell.
 
 ** Resource and audit views
 
 Existing session activity and context-curation resources remain the detailed
 audit surface.  This addendum does not add a second detailed curation browser
-or make the chat row a deletion/privacy control.  If a future UI needs source-
-level inspection, it must use an explicit read-only resource with the existing
-authorization and lifetime rules rather than expanding the public activity
-payload.
+or make the chat row a deletion/privacy control.  If a future UI needs deeper
+source-level inspection, it must use an explicit read-only resource with the
+existing authorization and lifetime rules rather than expanding the public
+activity payload.
 
 * Failure and delivery model
 
@@ -297,50 +331,52 @@ to use the existing visible turn-failure path and must not emit
 
 Publishing the derived Board activity is an ordinary presentation side effect.
 Failure to deliver or render it must not roll back, retry, or reinterpret an
-already committed non-empty curation package.  Normal Board persistence and replay make
-an activity visible after reopening when publication completed.  This
-addendum does not add a cross-owner transaction, outbox, acknowledgement
+already committed non-empty curation package.  Normal Board persistence and
+replay make an activity visible after reopening when publication completed.
+This addendum does not add a cross-owner transaction, outbox, acknowledgement
 protocol, reconciliation catalog, or automatic resubmission for a process loss
 between semantic commit and Board publication.
 
-Unexpected malformed public count projections fail visibly at their owning
-adapter or renderer.  Shells do not silently print raw internal event plists as
-a successful curation fallback.
+Unexpected malformed public count-and-stub projections fail visibly at their
+owning adapter or renderer.  Shells do not silently print raw internal event
+plists as a successful curation fallback.
 
 * Delivery package
 
 ** =F88A9-DP1=: End-to-end context-curation activity
 
-Establishes :: =F88A9-PROJECTION=, =F88A9-BOARD=, =F88A9-CLASSIC=,
-=F88A9-MODERN=, =F88A9-LANGUAGE=, =F88A9-PRIVACY=, =F88A9-ORDERING=,
-=F88A9-GRAPHICAL=, and =F88A9-PRESERVATION=.
+Establishes :: =F88A9-PROJECTION=, =F88A9-SOURCE-STUBS=, =F88A9-BOARD=,
+=F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-LANGUAGE=, =F88A9-PRIVACY=,
+=F88A9-ORDERING=, =F88A9-GRAPHICAL=, and =F88A9-PRESERVATION=.
 
-Entry state :: Addendum 9 through =02fd61be= already publishes and renders
-committed curation activities, but classic transient projection appends them
-after all provider rounds and its ordinary provider-summary preview defaults to
-zero lines.
+Entry state :: Addendum 9 through =0f7da154= publishes correctly ordered
+curation activities and concise provider summaries, but its public projection
+contains only counts.  A row such as =kept 5= does not tell the user which
+source kinds were retained or which tools produced tool-result sources.
 
 Dependencies :: Rebaseline against Feature 91's accepted boundaries, Addendum
 7's unchanged curation semantics, Addendum 8's implemented
 =context-curate-v8= multi-round behavior, and Addendum 9 through =02fd61be=.
-This correction changes neither provider material nor external adoption.
+This source-stub correction changes neither provider material nor external
+adoption.
 
 Owner-complete work ::
 
-1. Core context lifetime derives the four validated, content-free counts from an
-   already prepared non-empty decision.
+1. Core context lifetime derives the four validated counts and one bounded,
+   content-free source stub per disposed source from an already prepared
+   non-empty decision.
 2. Harness context completion attaches the projection only after the package is
    accepted and the frame is consumed.
 3. Board runtime maps the projected event to one allowlisted
    =context-curated= activity while preserving Board sequence and source-key
-   deduplication.
-4. One shell-family presentation formatter owns disposition language without
-   importing context policy into either shell.
+   deduplication and validates that stub dispositions agree with the counts.
+4. One shell-family presentation formatter owns disposition language and
+   repeated-source grouping without importing context policy into either shell.
 5. Classic activity owns live and replay state, compact curation count,
    expansion, settlement, and preservation of tool/action counts.
 6. The ModernChat view model preserves the durable Board activity identity,
-   title, status, and formatted counts; the Rust activity surface renders and
-   selects that DTO.
+   title, status, and formatted counts and stubs; the Rust activity surface
+   renders and selects that DTO.
 7. The acceptance scenarios above prove the complete composition.
 8. Classic transient projection interleaves curation at its observed provider
    round boundary and leaves bounded provider-summary prose above the current
@@ -357,8 +393,8 @@ shell-event path establishes the package.
 
 Useful stopping point :: After this package, a successfully committed non-empty
 curation package is visibly distinct from no package-bearing curation in both
-chat shells, with only safe counts and unchanged semantic, tool, and action
-behavior.
+chat shells, and its count is explained by safe source descriptions without
+changing semantic, tool, or action behavior.
 
 Package-size tradeoff :: A smaller core or Board package leaves the behavioral
 goal unavailable and creates unused presentation state.  Splitting the two
@@ -370,16 +406,18 @@ repository-owned presentation package is the smallest faithful stopping point.
 
 * Compatibility and performance
 
-No durable curation-package, promotion, erasure, transcript, provider, or
-carrier format changes.  The existing durable activity schema gains only a
-bounded nested scalar projection, and the Board gains one public activity
-kind.  Older sessions without the projection remain readable and simply have
-no curation visualization for historical decisions.
+No curation-package, promotion, erasure, transcript, provider, or carrier
+format changes.  The existing activity projection gains one optional bounded
+source-stub list.  Count-only activities written by the earlier Addendum 9
+implementation remain readable and retain their count-only text.  Older
+sessions without any curation projection remain readable and have no
+historical curation visualization.
 
-The normal cost is constant work over values already counted during curation,
-one bounded activity publication per successfully committed non-empty package,
-and one small shell
-entry.  Rendering must not scan the session, curation catalog, transcript, or
+The normal cost is one pass over the explicitly disposed sources, already
+bounded by the existing 16-source curation ceiling, plus one bounded activity
+publication per successfully committed non-empty package and one small shell
+entry.  Rendering groups only that stub list and must not scan the session,
+curation catalog, transcript, or
 tool receipts.  Replay remains bounded by the existing Board activity
 projection.  No timer, polling loop, synchronous redraw, or new database query
 is added to the chat hot path.
@@ -392,8 +430,8 @@ remains authoritative while this presentation contract stays unchanged.
 * Non-goals
 
 - Rendering =context-curate= as an ordinary model-facing tool call.
-- Showing source values, generated summary text, frame labels, provenance, or
-  internal identities in the chat activity.
+- Showing source values, tool arguments/output, generated summary text, frame
+  labels, provenance, or internal identities in the chat activity.
 - Treating ordinary omission, explicit all-label omission, or no carrier call
   as a package-bearing curation decision.
 - Adding manual keep, summarize, erase, undo, or replay controls.
@@ -430,8 +468,51 @@ Affected test dispositions:
   raw-reasoning classic-presentation exclusion, privacy, settled-detail, replay
   deduplication, composer, viewport, and settlement evidence.
 
+* Accepted source-stub follow-up rebaseline
+
+The user/operator accepted safe source descriptions after live use showed that
+a count such as =kept 5= did not explain what was curated.  This adds
+=F88A9-SOURCE-STUBS= and strengthens =F88A9-PROJECTION=,
+=F88A9-BOARD=, =F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-LANGUAGE=,
+=F88A9-PRIVACY=, and =F88A9-GRAPHICAL=.  Curation semantics, provider
+material, source values, and private identities remain unchanged.
+
+The smallest faithful design extends the existing projection rather than
+adding a source browser or asking shells to reconstruct source meaning.  Core
+context lifetime already owns trusted source descriptors, Board already owns
+the public activity boundary, and the shared service formatter already owns
+the text shown by both shells.  The only added activity state is a detached
+list bounded by the existing 16-source disposition ceiling and retained with
+the ordinary activity event.
+
+Affected test dispositions:
+
+- Strengthen core, harness, Board, direct-composition, classic, ModernChat, and
+  graphical scenarios to require safe source stubs and grouped tool names.
+- Retain count-only formatter and validator scenarios as compatibility evidence
+  for activities persisted by the original Addendum 9 implementation.
+- Strengthen privacy evidence so tool names pass while tool arguments/output,
+  generated summaries, labels, IDs, fingerprints, and provider material do
+  not.
+- Retain ordering, live/replay deduplication, tool/action counts, composer,
+  viewport, settlement, raw-reasoning exclusion, and failure semantics.
+
 * Completion evidence
 
+- =445bba69= implements the accepted source-stub follow-up from context
+  lifetime through Board and the shared classic/ModernChat formatter.
+- Focused core, harness, Board, classic activity, ModernChat, and real-adapter
+  composition portfolio: 226/226 passed.
+- The complete graphical run passed the curation scenario and 28 other tests;
+  one unrelated workspace-layout round-trip missed its window signature and
+  then passed 1/1 on an exact isolated rerun.  Captured states under
+  =/tmp/e-chat-a9-source-stubs= show readable source descriptions above active
+  =Working= and =Thinking= rows and in settled views.
+- The full =eldev -p -dtT test= run executed 2729 tests.  It passed 2722 in the
+  sandbox, exposed one stale count-only expectation in an affected harness
+  test, and hit six loopback-socket restrictions.  After correcting the stale
+  assertion, its 40-test owner file passed; all six socket tests passed in
+  outside-sandbox reruns.
 - =0f7da154= implements the accepted follow-up entirely in classic activity
   projection and its repository-side tests.
 - Activity owner and composition portfolio: 48/48 passed.
@@ -442,10 +523,6 @@ Affected test dispositions:
   between rounds and summary, =Thought=, curation, then =Thinking= after the
   next provider start.  The separate reasoning scenario confirms that raw
   reasoning remains absent after settlement.
-- The full =eldev -p -dtT test= run executed 2727 tests: 2721 passed in the
-  sandbox and six loopback-socket tests were blocked by sandbox policy.  All
-  six passed when rerun outside the socket sandbox, including the separately
-  verified backend-cancellation case.
 - =git diff --check= and batch parenthesis validation pass.  Emacs 31's
   repository-wide obsolete-macro warnings continue to block a literal
   warnings-as-errors compilation gate and are not introduced by this package.
@@ -462,28 +539,31 @@ Affected test dispositions:
    means.
 2. It moves toward observable provider-neutral context lifetime while keeping
    harness semantics and presentation separate.
-3. Exact wording and visual styling may change and remain local to the shared
-   formatter and shells.  Disposition meanings, safe fields, and success
-   timing are stable contracts.
-4. Context lifetime owns accepted decision facts; harness owns completion;
-   Board owns public activity; each shell owns rendering.
-5. One four-field projection and one activity kind reduce the current hidden
-   coupling to private session records.  Shell interfaces remain narrow and
-   content-free.
+3. Exact wording and grouping may change and remain local to the shared
+   formatter.  Disposition meanings, source kinds, the optional safe agreeing
+   tool name, and success timing are stable contracts.
+4. Context lifetime owns accepted decision facts and safe stub derivation;
+   harness owns completion; Board owns public activity; chat service owns
+   shared text; each shell owns rendering.  These responsibilities remain in
+   their existing cohesive source boundaries.
+5. One optional bounded field on the existing projection preserves narrow,
+   content-free shell interfaces and avoids coupling them to private session
+   records.
 6. Core does not depend on Board or UI, and shells do not depend on provider,
    frame, session-codec, promotion, erasure, or receipt internals.
 7. Semantic mutation remains inside context/session owners; Board publication
    and rendering remain outward side effects.
-8. No new semantic state is added.  A bounded durable activity projection is
-   retained only for ordinary activity replay and can be evicted with that
-   existing tail.
-9. Successfully committed non-empty packages add constant formatting and
-   publication work, with no scan, polling, synchronous redraw, or provider
-   request.
+8. No new semantic state is added.  The source-stub list is detached
+   presentation state retained only with ordinary activity replay and can be
+   evicted with that existing tail.
+9. Successfully committed non-empty packages add one pass over at most 16
+   disposed sources plus bounded grouping, with no session scan, polling,
+   synchronous redraw, or provider request.
 10. =context-curated= has one meaning in every shell: a curation package was
-    accepted, with the reported explicit disposition counts.
-11. Older sessions remain readable; absent historical projections are not
-    reconstructed through speculative compatibility logic.
+    accepted, with the reported explicit disposition counts and any attached
+    safe source descriptions.
+11. Older sessions remain readable; count-only activities keep their original
+    rendering and absent historical projections are not reconstructed.
 12. No legacy code is required.  Any raw-event fallback test that treated
     curation as an unknown shell event can be removed when semantic rendering
     is accepted.

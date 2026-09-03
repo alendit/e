@@ -1,0 +1,13 @@
+#+title: Context Curation Counts Lack Useful Source Stubs
+#+startup: overview
+
+* Report
+
+The user reported that a =Context curated= activity whose body only says, for
+example, =kept 5= is not useful enough.  The activity should identify the safe
+kind of source that was kept, summarized, or erased and, for a tool result,
+identify the tool when that metadata is available.
+
+The added detail must not expose tool arguments or output, generated summary
+text, frame-local labels, call or observation identities, fingerprints,
+provider payloads, or private correlation state.
