@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-activity-order-and-hidden-summary/ | Chat activity appears below Thinking and summary reasoning is hidden |
 | Closed | empty-curation-disposition-fails-basic-chat/ | Empty curation disposition fails a basic chat |
 | Closed | reasoning-fragments-persisted-and-rendered/ | Reasoning fragments became durable transcript rows |
 | Closed | test-suite-nonzero-exceptions/ | The ordinary repository test suite retained failures and skips |

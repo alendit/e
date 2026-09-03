@@ -1,0 +1,64 @@
+#+title: Chat Activity Order and Hidden Summary Investigation
+#+startup: overview
+
+* Conclusion
+
+The provider summary stream was healthy.  Classic chat suppressed it with a
+zero-line ordinary default, appended committed curation after the entire live
+round projection, and treated that whole projection as the mutable redraw
+tail.  Raw reasoning was separately classified upstream but was not claimed by
+the classic activity owner, so the facade's unknown-event fallback exposed it
+as a generic System event.
+
+The correction restores a bounded three-line provider-summary preview by
+default, preserves explicit zero as an opt-out, orders each curation at its
+provider-round boundary, and restricts progress reticks to the current status
+row.  The activity owner now consumes raw-reasoning events without recording
+them in the visible projection, preventing both live and settlement fallback
+rendering.
+
+* Repository evidence
+
+- =lisp/shells/chat/e-chat-activity.el= defined
+  =e-chat-activity-reasoning-visible-line-limit= as zero, which directly hid
+  summary prose in the normal transcript.
+- The graphical test
+  =e-chat-behavior-test-reasoning-is-combined-and-hidden-by-default= encoded
+  that suppression as expected behavior.
+- The transient projection appended =context-curated= entries after all
+  provider rounds and exposed the complete latest round as
+  =:progress-tail-text=.  That made committed activity appear below the current
+  progress row and let a timer replace stable summary text.
+- =reasoning-raw-delta= had no activity-handler case and therefore reached the
+  facade's generic =Event:= renderer.
+
+The corrected owner and composition tests cover bounded ordinary visibility,
+explicit-zero suppression, raw exclusion, round-boundary ordering, one current
+=Thinking= row, and progress-tail replacement boundaries.
+
+* Live evidence
+
+On 2026-09-03, =scripts/e-live-probe chat= identified the active chat session
+without mutating the user's Emacs.  A read-only query of its current SQLite
+runtime store found multiple non-empty =reasoning-delta= records classified as
+=:stream-kind summary=.  This proved that the backend/provider path was still
+delivering concise summaries and localized the disappearance to classic chat
+presentation.
+
+The user's running Emacs was not reloaded or changed during the investigation.
+
+* Validation
+
+- Activity owner and composition portfolio: 48/48 passed.
+- Broader classic chat, preservation, presentation, surface, and OpenAI stream
+  portfolio: 237/237 passed.
+- Complete isolated graphical portfolio: 30/30 passed.
+- Captured between-round graphical state shows provider summary, curation, then
+  mutable =Working=; a progress retick changes only that tail.
+- Captured active graphical state shows provider summary, settled =Thought=,
+  =Context curated=, then exactly one current =Thinking= row.
+- Captured summary-reasoning state shows the concise summary above =Thinking=;
+  raw reasoning is absent during the turn and after settlement.
+- The full 2727-test suite passed 2721 tests in the sandbox; all six failures
+  were loopback-socket restrictions and passed in outside-sandbox reruns.
+- =git diff --check= and batch parenthesis validation pass.

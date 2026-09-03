@@ -4,10 +4,10 @@
 
 * Status
 
-In-review (repository-controlled implementation complete through =02fd61be=;
-deterministic behavior and graphical evidence pass; the literal
-warnings-as-errors gate remains baseline-blocked by Emacs 31 obsolete-macro
-warnings that predate this package).
+Done (the original implementation through =02fd61be= and the accepted
+follow-up correction at =0f7da154= pass deterministic, full graphical, and
+classified full-suite evidence.  The literal warnings-as-errors gate remains
+baseline-blocked by Emacs 31 obsolete-macro warnings that predate this package).
 
 This addendum extends [[file:addendum7.org][Addendum 7]] with a presentation
 contract for successfully committed non-empty curation packages.  It does not
@@ -85,6 +85,15 @@ with title =Context curated=, status =ok=, and the same count summary.
 Multiple successfully committed non-empty curation packages in one turn produce
 multiple ordered activities and the settled summary reports their total.  A
 live event followed by replay must not produce duplicate rows.
+
+While a turn remains active, completed activity belongs above the current
+mutable progress tail.  A =Context curated= row that occurs between provider
+rounds therefore appears after the completed earlier round and before the later
+=Thinking for ...= row.  Provider-supplied reasoning-summary prose follows the
+same rule: a bounded concise preview is visible above its round's mutable
+progress row.  Raw provider reasoning is not summary prose: adapters continue
+to classify it separately, and classic activity must not record or render it in
+the visible transcript projection.
 
 * Presentation data contract
 
@@ -164,21 +173,28 @@ Presentation never reads or mutates context-lifetime state.
   non-empty curation package from no package-bearing curation in both chat
   shells, while seeing only disposition counts and without changing semantic
   success.
-- Direct scenario :: An actual reserved OpenAI carrier response with at least
-  one submitted =keep=, =summaries=, or =erase= disposition is decoded,
-  accepted by context lifetime, projected through the harness and Board, and
-  rendered as one ordered =Context curated= activity in classic chat and the
-  equivalent ModernChat DTO.  No private source data appears and tool/action
-  counts do not change.
+- Direct scenario :: An actual reserved OpenAI response produces
+  provider-supplied reasoning-summary prose and at least one submitted =keep=,
+  =summaries=, or =erase= disposition.  Context lifetime commits the non-empty
+  package and Board publishes one =Context curated= activity.  After
+  acknowledgement starts the next provider round, classic chat renders the
+  completed summary and =Context curated=, in occurrence order, above the
+  current mutable =Thinking for ...= row; raw provider reasoning is absent, the
+  composer and viewport remain intact, and the turn does not settle until
+  normal terminal output.  The same curation reaches ModernChat with identical
+  safe counts and unchanged tool/action totals.
 - Product authority :: The user/operator through this addendum.
 - Owning contracts :: =F88A9-PROJECTION=, =F88A9-BOARD=,
   =F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-LANGUAGE=,
   =F88A9-PRIVACY=, =F88A9-ORDERING=, =F88A9-GRAPHICAL=, and
   =F88A9-PRESERVATION=.
-- Behavioral status :: Passing for the deterministic direct and graphical
-  scenarios at =02fd61be=.
-- Mechanism status :: Complete.  Independent implementation review found no
-  actionable product or architecture defect.
+- Behavioral status :: Passing at =0f7da154=.  Classic chat presents bounded
+  provider-summary prose and committed curation above the mutable live tail,
+  including the between-round =Working= state, while raw provider reasoning
+  remains absent.
+- Mechanism status :: Complete.  The correction is local to classic activity
+  projection and tests; provider decoding, durable activity, Board projection,
+  and semantic context ownership are unchanged.
 - External compatibility :: Not applicable because request, carrier, and
   provider material are unchanged; real-adapter evidence is deterministic
   repository composition.
@@ -204,13 +220,13 @@ to the matrix as follows; they do not define independent observable outcomes.
 |----------+------------+---------------------------------------+----------------------+------------------------+-------------------+-----------+--------|
 | =F88A9-PROJECTION= | One successfully committed non-empty keep, summary, erase, or mixed package attaches one validated four-count projection.  No-call, all-label omission, and failed decisions attach none. | Context lifetime derives facts; harness attaches them to successful frame completion. | =F88A9-DP1= | =A9-OWNER=, =A9-NEGATIVE=, =A9-DIRECT= | N/A: repository-owned projection | None required | Passing at =02fd61be= |
 | =F88A9-BOARD= | A projected consumption publishes exactly one =context-curated= Board activity; unprojected consumption publishes none. | Board runtime consumes the attached-turn activity port and emits one allowlisted activity. | =F88A9-DP1= | =A9-BOARD=, =A9-DIRECT= | N/A: repository-owned adapter | Board activity is product output, not acceptance telemetry | Passing at =02fd61be= |
-| =F88A9-CLASSIC= | Classic chat shows the activity live, retains ordered settled detail, reports the curation count, and leaves tool/action counts unchanged. | Chat service transports the Board event; classic activity owns its presentation state. | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= | N/A | None required | Passing at =02fd61be= |
+| =F88A9-CLASSIC= | Classic chat shows the activity live, retains ordered settled detail, reports the curation count, and leaves tool/action counts unchanged.  With ordinary defaults, completed curation and a bounded non-empty provider-summary preview appear above the current mutable progress row.  An explicit zero preview setting suppresses summary prose without exposing raw reasoning or changing curation ordering. | Chat service transports the Board event; classic activity owns its presentation state. | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= | N/A | None required | Passing at =0f7da154= |
 | =F88A9-MODERN= | ModernChat receives a stable Board-backed DTO identity, title =Context curated=, status =ok=, and the same safe disposition summary; its activity surface can select and inspect it. | Chat service transports the Board event; view model maps the DTO; Rust renders it. | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= | N/A | None required | Passing at =02fd61be=; rendered click remains source-inspected |
 | =F88A9-LANGUAGE= | Kept, summarized-source/summary, and erased counts retain Addendum 7 meanings; zero categories are omitted and omission is never called =drop=. | One shell-family formatter below shell renderers. | =F88A9-DP1= | =A9-OWNER= | N/A | None required | Passing at =02fd61be= |
 | =F88A9-PRIVACY= | Only the four counts enter the public activity; content, labels, tool/observation identities, fingerprints, provider material, and private correlation identities do not. | Core projection plus Board allowlist. | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= | N/A | None required | Passing at =02fd61be= |
 | =F88A9-ORDERING= | Two committed packages produce two Board-ordered activities and =2 curations= without live/replay duplication. | Board sequence/source key and shell activity state. | =F88A9-DP1= | =A9-ORDERING= | N/A | None required | Passing at =02fd61be= |
-| =F88A9-GRAPHICAL= | Compact and expanded classic states remain readable without disturbing composer, viewport, or settlement. | Classic presentation shell. | =F88A9-DP1= | =A9-GRAPHICAL= | N/A | None required | Passing at =02fd61be= |
-| =F88A9-PRESERVATION= | Visualization does not change semantic success, transcript shape, tool/action counts, or existing reasoning, compaction, terminal, and unread behavior. | Existing semantic and presentation owners retain their responsibilities. | =F88A9-DP1= | =A9-NEGATIVE=, =A9-PRESERVATION=, =A9-DIRECT= | N/A: request/provider material unchanged | Existing telemetry is observational only | Behavior passing; warnings-as-errors baseline-blocked |
+| =F88A9-GRAPHICAL= | Compact and expanded classic states remain readable without disturbing composer, viewport, or settlement; completed activity stays above the active mutable progress tail. | Classic presentation shell. | =F88A9-DP1= | =A9-GRAPHICAL= | N/A | None required | Passing at =0f7da154= |
+| =F88A9-PRESERVATION= | Visualization does not change semantic success, transcript shape, tool/action counts, compaction, terminal, or unread behavior.  Provider-supplied summary prose remains distinct from raw reasoning: the former has a bounded classic preview and the latter never enters the visible activity path. | Existing semantic and presentation owners retain their responsibilities. | =F88A9-DP1= | =A9-NEGATIVE=, =A9-PRESERVATION=, =A9-DIRECT= | N/A: request/provider material unchanged | Existing telemetry is observational only | Passing at =0f7da154=; warnings-as-errors baseline-blocked |
 
 ** Scenario portfolio
 
@@ -219,13 +235,13 @@ to the matrix as follows; they do not define independent observable outcomes.
 | =A9-OWNER= | Pure count derivation covers keep-only, summary-only, erase-only, mixed, singular/plural, zero-category omission, malformed projections, and exact count invariants. | Cheap deterministic owner evidence |
 | =A9-NEGATIVE= | No carrier call, valid explicit all-label omission, rejected preparation, and persistence failure publish no =context-curated= activity.  Existing all-empty real-adapter coverage remains here. | Deterministic negative composition |
 | =A9-BOARD= | One projected consumed event publishes one allowlisted Board activity; repeated handling of the same durable source key still yields one row. | Deterministic owner composition |
-| =A9-CLASSIC= | Service-produced live and replay events create one intermittent row, one settled detail, the correct curation total, and unchanged tool/action totals. | Deterministic shell composition |
+| =A9-CLASSIC= | With ordinary defaults, service-produced live and replay events create one intermittent row, one settled detail, the correct curation total, and unchanged tool/action totals.  Between-round curation and bounded provider-summary prose precede the current mutable progress row.  Separate owner checks cover positive-limit truncation and explicit-zero suppression. | Deterministic shell composition |
 | =A9-MODERN= | A service-produced Board activity becomes a DTO with its real Board message identity; selecting it in the Rust activity surface exposes the correct title, status, and summary. | Deterministic DTO and rendered-view evidence |
 | =A9-ORDERING= | Two package-bearing frame decisions appear in Board order, settle as =2 curations=, and remain two after live/replay overlap. | Deterministic multi-event composition; conditional on Addendum 8 for real multi-frame production |
 | =A9-PRIVACY= | Hostile sentinels placed in private source, summary, label, tool/observation identity, fingerprint, provider, and correlation fields are absent from the consumed public projection, Board message, classic text, and ModernChat DTO. | Deterministic cross-boundary privacy evidence |
 | =A9-DIRECT= | An actual OpenAI Responses reserved carrier containing at least one submitted =keep=, =summaries=, or =erase= label passes decoder, context preparation, package commit, frame consumption, harness activity, Board publication, and chat service.  It produces one ordered classic activity and one ModernChat DTO with identical safe counts, no private sentinel, and no tool/action-count change.  A fabricated shell event cannot satisfy this scenario. | Credential-free real-adapter composition |
-| =A9-GRAPHICAL= | The isolated graphical classic-chat scenario captures active, settled-collapsed, and settled-expanded states and verifies composer, window, point, and viewport invariants. | Deterministic graphical evidence with artifacts |
-| =A9-PRESERVATION= | Focused existing-owner regressions, warnings-as-errors compilation for changed Elisp, =cargo test --manifest-path ui/modernchat/Cargo.toml=, Org parsing, whitespace validation, and =eldev -p -dtT test= pass. | Layered repository evidence |
+| =A9-GRAPHICAL= | The isolated graphical classic-chat scenario captures the between-round state and proves summary then curation then mutable =Working=; after the next provider-round start it proves summary then completed =Thought= then curation then exactly one mutable =Thinking=; it then captures settled-collapsed and settled-expanded states and verifies composer, window, point, viewport, and settlement invariants. | Deterministic graphical evidence with artifacts |
+| =A9-PRESERVATION= | Focused existing-owner regressions, =cargo test --manifest-path ui/modernchat/Cargo.toml=, Org parsing, whitespace validation, and =eldev -p -dtT test= pass.  Warnings-as-errors compilation is attempted and classified against the pre-existing Emacs 31 warning baseline. | Layered repository evidence |
 
 * Rendering behavior
 
@@ -242,6 +258,15 @@ The row must not be inserted as a =System= transcript message.  It must not
 move the response separator, mark the assistant response as complete, restore
 the composer early, or settle the selected turn.  Provider-started,
 assistant-output, and terminal events retain those responsibilities.
+
+The active transient is ordered by semantic occurrence.  Completed provider
+rounds and intermittent activities render before the current round.  Within an
+active round, a bounded provider-supplied summary preview renders before the
+mutable progress row, leaving that row as the final incrementally redrawn tail.
+The ordinary default preview is three non-empty lines.  This number is a private
+presentation default rather than a durable protocol limit; an explicit value of
+zero remains a supported user opt-out.  Complete summary prose remains available
+in expanded response details.
 
 ** ModernChat
 
@@ -290,15 +315,15 @@ Establishes :: =F88A9-PROJECTION=, =F88A9-BOARD=, =F88A9-CLASSIC=,
 =F88A9-MODERN=, =F88A9-LANGUAGE=, =F88A9-PRIVACY=, =F88A9-ORDERING=,
 =F88A9-GRAPHICAL=, and =F88A9-PRESERVATION=.
 
-Entry state :: Addendum 7 curation is semantically accepted, but a committed
-non-empty package has no public Board activity and neither chat shell can
-distinguish it from no package-bearing curation.
+Entry state :: Addendum 9 through =02fd61be= already publishes and renders
+committed curation activities, but classic transient projection appends them
+after all provider rounds and its ordinary provider-summary preview defaults to
+zero lines.
 
-Dependencies :: Rebaseline against the accepted Feature 91 module boundaries.
-Use Addendum 7 and =context-curate-v7= as the implemented semantic baseline.
-Addendum 8 is conditional: if present, its multiple independently committed
-packages use the same activity contract.  This package neither requires nor
-advances external provider adoption.
+Dependencies :: Rebaseline against Feature 91's accepted boundaries, Addendum
+7's unchanged curation semantics, Addendum 8's implemented
+=context-curate-v8= multi-round behavior, and Addendum 9 through =02fd61be=.
+This correction changes neither provider material nor external adoption.
 
 Owner-complete work ::
 
@@ -317,6 +342,9 @@ Owner-complete work ::
    title, status, and formatted counts; the Rust activity surface renders and
    selects that DTO.
 7. The acceptance scenarios above prove the complete composition.
+8. Classic transient projection interleaves curation at its observed provider
+   round boundary and leaves bounded provider-summary prose above the current
+   mutable progress row; raw reasoning remains outside this path.
 
 The numbered items are internal implementation and verification checkpoints,
 not independent delivery packages.  They may be committed as coherent semantic
@@ -335,8 +363,9 @@ behavior.
 Package-size tradeoff :: A smaller core or Board package leaves the behavioral
 goal unavailable and creates unused presentation state.  Splitting the two
 shells leaves one required public composition incomplete.  A larger package
-that also implements Addendum 8, changes provider material, or adds curation
-controls combines unrelated policy and compatibility risk.  One end-to-end
+that changes Addendum 8's frame or recovery semantics, changes provider
+material, or adds curation controls combines unrelated policy and compatibility
+risk.  One end-to-end
 repository-owned presentation package is the smallest faithful stopping point.
 
 * Compatibility and performance
@@ -373,6 +402,58 @@ remains authoritative while this presentation contract stays unchanged.
 - Adding cross-owner transactionality or recovery for presentation delivery.
 - Building a new curation history browser when existing read-only resources
   already own detailed audit access.
+- Displaying raw provider reasoning or hidden chain-of-thought.
+
+* Accepted follow-up rebaseline
+
+The user/operator accepted the active-tail ordering and concise provider-summary
+visibility above after live use contradicted the original presentation result.
+This changes =F88A9-CLASSIC=, =F88A9-GRAPHICAL=, and
+=F88A9-PRESERVATION= without changing =F88A9-ACTIVITY=, provider request
+material, durable records, Board schema, or either shell boundary.
+
+The current aggregate already has the smallest faithful semantic owners.  The
+correction does not add another public activity type or durable ordering field.
+Classic activity records a private round boundary on curation entries and
+projects its existing round/reasoning/curation state in occurrence order.  A
+transcript-only concatenation workaround would preserve the same defect after the
+next redraw or replay, while moving ordering into core, Board, or context
+lifetime would couple semantic owners to one shell's mutable tail.
+
+Affected test dispositions:
+
+- Replace the graphical test that requires combined provider summaries to be
+  hidden by default with bounded-visible-default evidence.
+- Strengthen active curation graphical evidence with the completed-activity
+  before-current-progress order.
+- Retain raw-versus-summary decoder classification, combined durable summary,
+  raw-reasoning classic-presentation exclusion, privacy, settled-detail, replay
+  deduplication, composer, viewport, and settlement evidence.
+
+* Completion evidence
+
+- =0f7da154= implements the accepted follow-up entirely in classic activity
+  projection and its repository-side tests.
+- Activity owner and composition portfolio: 48/48 passed.
+- Broader classic chat, preservation, presentation, surface, and OpenAI stream
+  portfolio: 237/237 passed.
+- Complete isolated graphical portfolio: 30/30 passed.  Captured states under
+  =/tmp/e-chat-a9-order-remediated= show summary, curation, then =Working=
+  between rounds and summary, =Thought=, curation, then =Thinking= after the
+  next provider start.  The separate reasoning scenario confirms that raw
+  reasoning remains absent after settlement.
+- The full =eldev -p -dtT test= run executed 2727 tests: 2721 passed in the
+  sandbox and six loopback-socket tests were blocked by sandbox policy.  All
+  six passed when rerun outside the socket sandbox, including the separately
+  verified backend-cancellation case.
+- =git diff --check= and batch parenthesis validation pass.  Emacs 31's
+  repository-wide obsolete-macro warnings continue to block a literal
+  warnings-as-errors compilation gate and are not introduced by this package.
+- The implementation received an independent specification review, one
+  remediation round for the between-round tail, and a final fixed-point review
+  with no actionable findings.
+- The user's running Emacs was inspected only through supported read-only
+  probes and was not reloaded or mutated.
 
 * Design self-check
 

@@ -1,0 +1,17 @@
+#+title: Chat Activity Appears Below Thinking and Summary Reasoning Is Hidden
+#+startup: overview
+
+* Report
+
+The user reported that committed =Context curated= activity appeared below the
+current live =Thinking for ...= row.  Completed activity and concise
+provider-supplied reasoning summaries should instead appear above the one
+mutable progress row.
+
+The user also reported that concise reasoning summaries were no longer shown.
+They explicitly want provider-supplied summary reasoning, not raw reasoning or
+private chain-of-thought material.
+
+During verification, raw reasoning was additionally found to fall through to a
+generic =System / Event:= transcript block after settlement.  That material
+must remain non-visible in the ordinary classic chat transcript.
