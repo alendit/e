@@ -39,6 +39,15 @@ present.  Facade operations that need a loaded session fail explicitly at the
 barrier; direct read-only aggregate projections continue to see committed-old
 state.")
 
+(defvar e-session--post-commit-callbacks (make-hash-table :test 'equal)
+  "Already-admitted owner callbacks waiting for a session commit barrier.")
+
+(defvar e-session--callback-drain-pending (make-hash-table :test 'equal)
+  "Session callback FIFOs with a scheduled or active drain.")
+
+(defvar e-session--active-admitted-callback nil
+  "Dynamically bound session key for the callback currently being drained.")
+
 (defvar e-session--lazy-load-in-progress (make-hash-table :test 'equal)
   "Session ids whose first lazy replay is in progress.")
 
@@ -253,6 +262,58 @@ the next mutation or explicit finalize barrier."
     (e-session--write-index store))
   record)
 
+(defun e-session-dispatch-admitted-callback (store session-id callback)
+  "Dispatch CALLBACK now or after SESSION-ID's current commit.
+
+This is the narrow scheduling seam for an asynchronous callback already
+admitted by an active session turn.  It does not allow a new facade mutation
+to bypass the commit barrier."
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (let ((key (cons store session-id)))
+    (if (or (gethash key e-session--commit-in-progress)
+            (gethash key e-session--callback-drain-pending))
+        (puthash key
+                 (nconc (gethash key e-session--post-commit-callbacks)
+                        (list callback))
+                 e-session--post-commit-callbacks)
+      (funcall callback))))
+
+(defun e-session--drain-admitted-callbacks (store session-id)
+  "Drain SESSION-ID's admitted callback FIFO when no commit owns it."
+  (let ((key (cons store session-id)))
+    (if (gethash key e-session--commit-in-progress)
+        ;; The owning commit's release path will schedule a fresh drain.
+        (remhash key e-session--callback-drain-pending)
+      (unwind-protect
+          (while-let ((callback
+                       (pop (gethash key e-session--post-commit-callbacks))))
+            (let ((e-session--active-admitted-callback key))
+              (funcall callback)))
+        (remhash key e-session--callback-drain-pending)
+        (if (gethash key e-session--post-commit-callbacks)
+            (e-session--schedule-callback-drain store session-id)
+          (remhash key e-session--post-commit-callbacks))))))
+
+(defun e-session--schedule-callback-drain (store session-id)
+  "Schedule one ordered admitted-callback drain for SESSION-ID."
+  (let ((key (cons store session-id)))
+    (when (and (gethash key e-session--post-commit-callbacks)
+               (not (gethash key e-session--callback-drain-pending)))
+      (puthash key t e-session--callback-drain-pending)
+      (run-at-time 0 nil #'e-session--drain-admitted-callbacks
+                   store session-id))))
+
+(defun e-session--release-commit-barrier (store session-id)
+  "Release SESSION-ID's commit barrier and schedule admitted callbacks."
+  (let ((key (cons store session-id)))
+    (remhash key e-session--commit-in-progress)
+    ;; Leave the persistence call stack before running work whose own session
+    ;; mutations may acquire a fresh barrier.  Drain-pending remains owner
+    ;; state across that release gap, so later arrivals cannot overtake the
+    ;; callbacks already queued by the commit.
+    (e-session--schedule-callback-drain store session-id)))
+
 (defun e-session--call-with-commit-barrier (store session-id operation)
   "Call OPERATION while SESSION-ID rejects dependent facade work."
   (let ((key (cons store session-id)))
@@ -262,9 +323,13 @@ the next mutation or explicit finalize barrier."
     (when (gethash key e-session--commit-in-progress)
       (signal 'e-session-persistence-unavailable
               (list "Session commit is in progress" session-id)))
+    (when (and (gethash key e-session--callback-drain-pending)
+               (not (equal key e-session--active-admitted-callback)))
+      (signal 'e-session-persistence-unavailable
+              (list "Session callback drain is in progress" session-id)))
     (puthash key t e-session--commit-in-progress)
     (unwind-protect (funcall operation)
-      (remhash key e-session--commit-in-progress))))
+      (e-session--release-commit-barrier store session-id))))
 
 (cl-defun e-session--commit-session-mutation
     (store session-id mutate make-record &key before-commit write-index)

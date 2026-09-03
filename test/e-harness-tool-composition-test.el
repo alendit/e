@@ -957,6 +957,105 @@ Return request options, persisted anchors, and the final context."
         (should (eq (plist-get tool-result :status) 'error))
         (should (equal (plist-get tool-result :content) "Cancelled"))))))
 
+(ert-deftest e-harness-test-streamed-tool-result-defers-past-session-commit ()
+  "A fast streamed tool result waits for the active session commit barrier."
+  (let* ((directory (make-temp-file "e-harness-tool-commit-race-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend-calls 0)
+         first-backend-callbacks
+         tool-done
+         turn-entry
+         trigger-tool-during-commit
+         tool-triggered-with-barrier
+         (backend
+          (e-backend-create
+           :name "streamed-tool-commit-race"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error)
+              (cl-incf backend-calls)
+              (funcall on-request-start
+                       (e-backend-request-create :cancel #'ignore))
+              (if (= backend-calls 1)
+                  (setq first-backend-callbacks
+                        (list :on-item on-item :on-done on-done))
+                (funcall on-item
+                         '(:type assistant-message :content "finished"))
+                (funcall on-item '(:type done :reason stop))
+                (funcall on-done '(:status done)))
+              nil))))
+         (tools (e-tools-registry-create))
+         (harness (e-harness-create :backend backend :sessions store))
+         (events nil)
+         (ordinary-commit
+          (symbol-function 'e-session-storage-commit-mutation)))
+    (unwind-protect
+        (progn
+          (e-tools-test-register
+           tools :name "fast-tool" :description "Finish on demand."
+           :start
+           (cl-function
+            (lambda (&key arguments on-done on-error on-request-start)
+              (ignore arguments on-error on-request-start)
+              (setq tool-done on-done)
+              nil)))
+          (cl-letf
+              (((symbol-function 'e-harness-tools)
+                (lambda (_harness &optional _session-id _turn-id) tools))
+               ((symbol-function 'e-session-storage-commit-mutation)
+                (lambda (commit-store session-id record)
+                  (when (and trigger-tool-during-commit
+                             (eq (plist-get record :event-type) 'token-usage))
+                    (setq trigger-tool-during-commit nil
+                          tool-triggered-with-barrier
+                          (gethash (cons commit-store session-id)
+                                   e-session--commit-in-progress))
+                    (funcall tool-done "fast result"))
+                  (funcall ordinary-commit commit-store session-id record))))
+            (e-harness-activity-subscribe
+             harness (lambda (event) (push event events))
+             :session-id "session-1")
+            (e-harness-create-session harness :id "session-1")
+            (e-harness-test-prompt-async harness "session-1" "question")
+            (setq turn-entry
+                  (gethash "session-1" (e-harness-active-turns harness)))
+            (should first-backend-callbacks)
+            (funcall
+             (plist-get first-backend-callbacks :on-item)
+             '(:type tool-call :id "call-1" :name "fast-tool"
+               :arguments (:stated_purpose "Prove callback ordering.")))
+            (should tool-done)
+            (setq trigger-tool-during-commit t)
+            (funcall
+             (plist-get first-backend-callbacks :on-item)
+             '(:type token-usage
+               :usage (:input-tokens 10 :output-tokens 2 :total-tokens 12)))
+            (should tool-triggered-with-barrier)
+            (funcall (plist-get first-backend-callbacks :on-item)
+                     '(:type done :reason tool-use))
+            (funcall (plist-get first-backend-callbacks :on-done)
+                     '(:status done))
+            (let ((deadline (+ (float-time) 2.0)))
+              (while (and (eq (plist-get turn-entry :status) 'running)
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (should (eq (plist-get turn-entry :status) 'done))
+            (should-not (plist-get turn-entry :error))
+            (should-not (plist-get turn-entry :condition))
+            (should (= backend-calls 2))
+            (should
+             (equal
+              (mapcar (lambda (message) (plist-get message :role))
+                      (e-harness-messages harness "session-1"))
+              '(user tool-call tool assistant)))
+            (should-not
+             (seq-find (lambda (event)
+                         (eq (plist-get event :type) 'turn-failed))
+                       events))))
+      (delete-directory directory t))))
+
 (ert-deftest e-harness-test-follow-up-appends-user-message ()
   "Follow-up submits another turn against the same session."
   (let* ((backend (e-backend-fake-create

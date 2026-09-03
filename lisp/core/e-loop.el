@@ -269,7 +269,7 @@ CAUSES lists every completed tool call that induced a follow-up request."
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
             append-message refresh-context refresh-messages on-request-start
-            on-done on-error
+            on-done on-error callback-dispatcher
             cancelled-p drain-pending-input segments turn-work-handle
             board-enroll-work lifetime-frame on-response-preflight
             on-response-complete
@@ -294,7 +294,9 @@ when supplied, receives the fresh frame and both in-memory provider message
 projections after a tool result is observed; it returns those projections with
 the frame-local presentation installed.  ON-TOOL-CALL-START receives the
 bounded transcript call, plus an optional detached archival call and rejection
-metadata, before tool execution begins."
+metadata, before tool execution begins.  CALLBACK-DISPATCHER, when supplied,
+receives one already-admitted asynchronous callback and either runs it now or
+schedules it behind the owning session's active commit barrier."
   (let ((turn-messages (copy-sequence messages))
         ;; Session identity is runtime request context, not provider input.  It
         ;; lets stateful backend adapters isolate connection/request ownership
@@ -326,7 +328,12 @@ metadata, before tool execution begins."
         (next-request-provider-replay-items nil)
         (active-lifetime-frame lifetime-frame))
     (cl-labels
-        ((cancelled ()
+        ((dispatch-callback
+          (callback)
+          (if callback-dispatcher
+              (funcall callback-dispatcher callback)
+            (funcall callback)))
+         (cancelled ()
            (and cancelled-p (funcall cancelled-p)))
          (fail
           (err)
@@ -1099,19 +1106,34 @@ metadata, before tool execution begins."
                                         archival-received-arguments
                                         :on-request-start
                                         (lambda (request)
-                                          (publish-tool-request
-                                           tool-token request))
+                                          (dispatch-callback
+                                           (lambda ()
+                                             (condition-case err
+                                                 (publish-tool-request
+                                                  tool-token request)
+                                               (error (fail err))))))
                                         :on-event
                                         (lambda (type payload)
-                                          (e-loop--emit
-                                           :on-event on-event
-                                           :type type
-                                           :payload payload))
+                                          (dispatch-callback
+                                           (lambda ()
+                                             (condition-case err
+                                                 (e-loop--emit
+                                                  :on-event on-event
+                                                  :type type
+                                                  :payload payload)
+                                               (error (fail err))))))
                                         :on-done
                                         (lambda (result)
-                                          (finish-tool
-                                           tool-token tool-call result))
-                                        :on-error #'fail)
+                                          (dispatch-callback
+                                           (lambda ()
+                                             (condition-case err
+                                                 (finish-tool
+                                                  tool-token tool-call result)
+                                               (error (fail err))))))
+                                        :on-error
+                                        (lambda (err)
+                                          (dispatch-callback
+                                           (lambda () (fail err)))))
                                      (e-tools-start
                                       tools
                                       tool-call
@@ -1129,19 +1151,34 @@ metadata, before tool execution begins."
                                               (plist-get turn-options :deadline))
                                       :on-request-start
                                       (lambda (request)
-                                        (publish-tool-request
-                                         tool-token request))
+                                        (dispatch-callback
+                                         (lambda ()
+                                           (condition-case err
+                                               (publish-tool-request
+                                                tool-token request)
+                                             (error (fail err))))))
                                       :on-event
                                       (lambda (type payload)
-                                        (e-loop--emit
-                                         :on-event on-event
-                                         :type type
-                                         :payload payload))
+                                        (dispatch-callback
+                                         (lambda ()
+                                           (condition-case err
+                                               (e-loop--emit
+                                                :on-event on-event
+                                                :type type
+                                                :payload payload)
+                                             (error (fail err))))))
                                       :on-done
                                       (lambda (result)
-                                        (finish-tool
-                                         tool-token tool-call result))
-                                      :on-error #'fail))))
+                                        (dispatch-callback
+                                         (lambda ()
+                                           (condition-case err
+                                               (finish-tool
+                                                tool-token tool-call result)
+                                             (error (fail err))))))
+                                      :on-error
+                                      (lambda (err)
+                                        (dispatch-callback
+                                         (lambda () (fail err))))))))
                               (when (and request
                                          (current-tool-p tool-token)
                                          (not settled)
@@ -1324,10 +1361,17 @@ metadata, before tool execution begins."
                                            (e-loop--backend-work-request
                                             handle)))
                                       (setq reported-request request)
-                                      (publish-provider-request request)))
+                                      (dispatch-callback
+                                       (lambda ()
+                                         (condition-case err
+                                             (publish-provider-request request)
+                                           (error
+                                            (fail-provider err)))))))
                                   :item-handler
                                   (lambda (_handle item _arguments _context)
-                                    (handle-backend-item item)))
+                                    (dispatch-callback
+                                     (lambda ()
+                                       (handle-backend-item item)))))
                                  nil
                                   :context (list :session-id session-id
                                                  :turn-id turn-id
@@ -1341,9 +1385,11 @@ metadata, before tool execution begins."
                                                  (plist-get turn-options :deadline))
                                  :on-done
                                  (lambda (_backend-result)
-                                   (unless (or settled (cancelled))
-                                     (condition-case err
-                                         (progn
+                                   (dispatch-callback
+                                    (lambda ()
+                                      (unless (or settled (cancelled))
+                                        (condition-case err
+                                            (progn
                                            (finish-provider-request 'done)
                                            (setq provider-done t)
                                            (if tool-called
@@ -1391,9 +1437,12 @@ metadata, before tool execution begins."
                                                      (start-request)
                                                    (finish done-reason
                                                            (response-text)))))))
-                                       (error
-                                        (fail-provider err)))))
-                                 :on-error #'fail-provider))))
+                                          (error
+                                           (fail-provider err)))))))
+                                 :on-error
+                                 (lambda (err)
+                                   (dispatch-callback
+                                    (lambda () (fail-provider err))))))))
                             (request
                              (or reported-request
                                  (when (and work-handle (not settled))
@@ -1419,6 +1468,7 @@ metadata, before tool execution begins."
 (cl-defun e-loop-run-turn-batch
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
             append-message refresh-context refresh-messages on-request-start
+            callback-dispatcher
             segments turn-work-handle
             board-enroll-work lifetime-frame on-response-preflight
             on-response-complete
@@ -1428,7 +1478,9 @@ metadata, before tool execution begins."
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
 REFRESH-CONTEXT, and REFRESH-MESSAGES define the turn context and output
-callbacks.  REFRESH-CONTEXT returns one atomic request projection; the
+callbacks.  CALLBACK-DISPATCHER preserves admitted asynchronous callback
+ordering across an owning persistence barrier.  REFRESH-CONTEXT returns one
+atomic request projection; the
 messages-only callback remains for compatibility.
 ON-REQUEST-START receives the backend request handle when an adapter exposes
 one.  ON-RESPONSE-PREFLIGHT, when supplied, runs before an assistant append
@@ -1454,6 +1506,7 @@ and returns the pure completion value passed to ON-RESPONSE-COMPLETE."
      :refresh-context refresh-context
      :refresh-messages refresh-messages
      :on-request-start on-request-start
+     :callback-dispatcher callback-dispatcher
      :lifetime-frame lifetime-frame
      :on-response-preflight on-response-preflight
      :on-response-complete on-response-complete

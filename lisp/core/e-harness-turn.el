@@ -1353,6 +1353,10 @@ When a turn produced multiple assistant messages, return the last one."
                         (e-harness-activity-emit-turn-event
                          harness session-id turn-id type payload)))
         :on-request-start on-request-start
+        :callback-dispatcher
+        (lambda (callback)
+          (e-session-dispatch-admitted-callback
+           (e-harness-sessions harness) session-id callback))
         :cancelled-p cancelled-p
         :on-done on-done
         :on-error on-error

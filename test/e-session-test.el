@@ -1429,6 +1429,48 @@ stand in for the pure curation preparation path."
                              '("outer"))))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-admitted-callback-defers-past-commit-barrier ()
+  "An admitted callback retains FIFO order without weakening facade rejection."
+  (let ((directory (make-temp-file "e-session-callback-barrier-" t))
+        observed)
+    (unwind-protect
+        (let* ((store (e-session-persistent-store-create directory))
+               (session-id "callback-session"))
+          (e-session-create store :id session-id)
+          (e-session--call-with-commit-barrier
+           store session-id
+           (lambda ()
+             (e-session-dispatch-admitted-callback
+              store session-id
+              (lambda ()
+                (push 'first observed)
+                (e-session-append-message
+                 store session-id '(:role assistant :content "stored"))))
+             (e-session-dispatch-admitted-callback
+              store session-id (lambda () (push 'second observed)))
+             (should-error
+              (e-session-append-message
+               store session-id '(:role assistant :content "reentrant"))
+             :type 'e-session-persistence-unavailable)
+             (should-not observed)))
+          (should-error
+           (e-session-append-message
+            store session-id '(:role assistant :content "overtaking"))
+           :type 'e-session-persistence-unavailable)
+          (e-session-dispatch-admitted-callback
+           store session-id (lambda () (push 'after-release observed)))
+          (should-not observed)
+          (let ((deadline (+ (float-time) 1.0)))
+            (while (and (< (length observed) 3)
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
+          (should (equal (nreverse observed) '(first second after-release)))
+          (should (equal
+                   (mapcar (lambda (message) (plist-get message :content))
+                           (e-session-messages store session-id))
+                   '("stored"))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-board-journal-is-private-from-generic-session-view ()
   "Generic session mutation cannot alter the private board journal or its index."
   (let ((store (e-session-store-create))
