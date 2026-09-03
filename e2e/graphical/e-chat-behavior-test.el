@@ -206,7 +206,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
               '(reasoning-delta reasoning-raw-delta))
         ;; Presentation tests opt into completed reasoning previews.  Raw
         ;; provider fragmentation is exercised through the real stream by
-        ;; `e-chat-behavior-test-reasoning-is-combined-and-hidden-by-default'.
+        ;; `e-chat-behavior-test-reasoning-summary-is-bounded-and-visible'.
         (let* ((harness (plist-get fixture :harness))
                (session-id (plist-get fixture :session-id))
                (binding (e-chat-service-binding harness session-id))
@@ -774,6 +774,11 @@ than the invisible insertion position."
         (progn
           (setq fixture (e-chat-behavior-test--open-surface))
           (e-chat-behavior-test--submit fixture "curation presentation prompt")
+          (e-chat-behavior-test--emit
+           fixture
+           '(:type reasoning-delta :stream-kind summary
+             :content "provider summary before curation")
+           "provider summary before curation")
           (let* ((transcript (plist-get fixture :transcript))
                  (windows (e-chat-behavior-test--fixture-windows fixture))
                  (composer-window (cdr windows))
@@ -785,10 +790,128 @@ than the invisible insertion position."
                   (composer-text
                    (with-current-buffer composer
                      (buffer-substring-no-properties (point-min) (point-max)))))
-              (e-chat-behavior-test--post-context-curation
-               fixture
-               '(:kept-source-count 1 :summary-count 1
-                 :summarized-source-count 2 :erased-source-count 1))
+              (let* ((harness (plist-get fixture :harness))
+                     (session-id (plist-get fixture :session-id))
+                     (binding (e-chat-service-binding harness session-id))
+                     (attachment (e-chat-service-binding-attachment binding))
+                     (participant-id
+                      (e-board-registry-participant-id
+                       (e-board-runtime-attachment-participant attachment)))
+                     (board
+                      (e-board-registry-board-source-board
+                       (e-chat-service-binding-board binding)))
+                     (turn-id
+                      (plist-get
+                       (e-board-runtime-attachment-active-turn attachment)
+                       :id)))
+                ;; Model the accepted boundary explicitly: the first provider
+                ;; round settles before the committed curation, then the next
+                ;; provider request creates the mutable Thinking row.
+                ;; Publish the lifecycle edge through the same Board/service
+                ;; path as curation, so a later curation refresh cannot replay
+                ;; an older service snapshot and lose the settled round.
+                (e-board-post-activity
+                 board
+                 :id "graphical-provider-finished"
+                 :author (format "participant:%s" participant-id)
+                 :subject-participant-id participant-id
+                 :source-turn-id turn-id
+                 :activity-kind 'provider-request-finished
+                 :tags '(main)
+                 :attributes '(:status done)
+                 :source-activity-key
+                 (list participant-id turn-id 2))
+                (e-chat-service-drain-binding binding)
+                ;; Apply the drained lifecycle event before projecting the
+                ;; curation boundary.  A settled latest round is temporarily
+                ;; shown as Working until the follow-up request makes it a
+                ;; completed earlier round.
+                (with-current-buffer transcript
+                  (e-chat--render-event
+                   (car
+                    (last
+                     (seq-filter
+                      (lambda (event)
+                        (eq (plist-get event :event-type)
+                            'provider-request-finished))
+                      (e-chat-service-activity-events
+                       harness session-id))))))
+                (e-chat-behavior-test--post-context-curation
+                 fixture
+                 '(:kept-source-count 1 :summary-count 1
+                   :summarized-source-count 2 :erased-source-count 1))
+                ;; Before the follow-up request starts, the completed round's
+                ;; summary and curation stay stable above the mutable Working
+                ;; tail.  One progress tick must preserve that prefix.
+                (with-current-buffer transcript
+                  (let* ((content (buffer-string))
+                         (summary-position
+                          (string-match-p
+                           (regexp-quote "provider summary before curation")
+                           content))
+                         (curation-position
+                          (string-match-p (regexp-quote "Context curated")
+                                          content))
+                         (working-position
+                          (string-match (regexp-quote "Working")
+                                        content)))
+                    (should summary-position)
+                    (should curation-position)
+                    (should working-position)
+                    (should (< summary-position curation-position))
+                    (should (< curation-position working-position)))
+                  (let* ((tail-start
+                          (car (e-chat-transcript--activity-progress-bounds)))
+                         (stable-prefix
+                          (buffer-substring-no-properties (point-min) tail-start))
+                         changes)
+                    (add-hook 'before-change-functions
+                              (lambda (start end)
+                                (push (cons start end) changes))
+                              nil t)
+                    (e-chat-activity-advance-progress)
+                    (e-ui-work-with-batch-drain
+                      (e-ui-work-drain-batch :buffer (current-buffer)))
+                    (should changes)
+                    (should (cl-every (lambda (change)
+                                        (>= (car change) tail-start))
+                                      changes))
+                    (should (equal stable-prefix
+                                   (buffer-substring-no-properties
+                                    (point-min) tail-start))))
+                  (e-chat-behavior-test--capture-state
+                   "context-curation-between-rounds"))
+                (let ((curation-event
+                       (car
+                        (last
+                         (seq-filter
+                          (lambda (event)
+                            (eq (plist-get event :event-type)
+                                'context-curated))
+                          (e-chat-service-activity-events
+                           harness session-id))))))
+                  (should curation-event)
+                  (e-board-post-activity
+                   board
+                   :id "graphical-provider-started-follow-up"
+                   :author (format "participant:%s" participant-id)
+                   :subject-participant-id participant-id
+                   :source-turn-id turn-id
+                   :activity-kind 'provider-request-started
+                   :tags '(main)
+                   :attributes '(:status started)
+                   :source-activity-key
+                   (list participant-id turn-id 3))
+                  (e-chat-service-drain-binding binding)
+                  (e-graphical-test-wait-until
+                   (lambda ()
+                     (with-current-buffer transcript
+                       (let ((content (buffer-string)))
+                         (and (string-match-p
+                               (regexp-quote "Context curated") content)
+                              (string-match-p
+                               (regexp-quote "Thinking") content)))))
+                   2.0 "follow-up provider progress after curation"))
               (should (eq (selected-window)
                           (cdr (e-chat-behavior-test--fixture-windows fixture))))
               (should (= (length (window-list nil 'nomini))
@@ -804,7 +927,39 @@ than the invisible insertion position."
                 (should (string-match-p
                          (regexp-quote
                           "Context curated\nkept 1 · summarized 2 sources into 1 summary · erased 1")
-                         (buffer-string))))
+                         (buffer-string)))
+                (let* ((content (buffer-string))
+                       (summary-position
+                        (string-match-p
+                         (regexp-quote "provider summary before curation")
+                         content))
+                       (thought-position
+                        (string-match-p (regexp-quote "Thought for")
+                                        content))
+                       (curation-position
+                        (string-match-p (regexp-quote "Context curated")
+                                        content))
+                       (thinking-position
+                        (and curation-position
+                             (string-match (regexp-quote "Thinking")
+                                           content curation-position)))
+                       (thinking-count
+                        (let ((start 0)
+                              (count 0))
+                          (while (string-match (regexp-quote "Thinking")
+                                               content start)
+                            (setq count (1+ count)
+                                  start (match-end 0)))
+                          count)))
+                  (should summary-position)
+                  (should thought-position)
+                  (should curation-position)
+                  (should thinking-position)
+                  (should (= thinking-count 1))
+                  (should (< summary-position curation-position))
+                  (should (< summary-position thought-position))
+                  (should (< thought-position curation-position))
+                  (should (< curation-position thinking-position))))
               (e-chat-behavior-test--assert-tail-near-bottom fixture)
               (e-chat-behavior-test--capture-state
                "context-curation-active")
@@ -848,7 +1003,7 @@ than the invisible insertion position."
                 (call-interactively #'e-chat-response-navigation-insert))
               (should (eq (selected-window)
                           (cdr (e-chat-behavior-test--fixture-windows fixture)))))))
-      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size)))))
 
 (ert-deftest e-chat-behavior-test-intermediate-assistant-keeps-live-progress ()
   "An intermediate assistant block never presents a settled turn summary."
@@ -1082,8 +1237,8 @@ than the invisible insertion position."
           (e-chat-behavior-test--finish fixture "reasoned graphical answer"))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
-(ert-deftest e-chat-behavior-test-reasoning-is-combined-and-hidden-by-default ()
-  "Fragmented reasoning is stored once but omitted from the normal transcript."
+(ert-deftest e-chat-behavior-test-reasoning-summary-is-bounded-and-visible ()
+  "Provider summaries are visible in a bounded live preview while raw stays hidden."
   (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
@@ -1091,22 +1246,27 @@ than the invisible insertion position."
     (unwind-protect
         (progn
           (setq fixture (e-chat-behavior-test--open-surface))
-          (e-chat-behavior-test--submit fixture "hidden reasoning prompt")
-          (dolist (fragment '("Combining" " streamed" " reasoning."))
-            (e-graphical-test-stream-emit
-             (plist-get fixture :stream)
-             (list :type 'reasoning-delta
-                   :stream-kind 'summary
-                   :content fragment)
-             0.01))
-          (e-chat-behavior-test--finish fixture "visible graphical answer")
+          (e-chat-behavior-test--submit fixture "visible reasoning prompt")
+          (e-chat-behavior-test--emit
+           fixture
+           '(:type reasoning-delta :stream-kind summary
+             :content "Combining streamed reasoning.")
+           "Combining streamed reasoning.")
+          (e-graphical-test-stream-emit
+           (plist-get fixture :stream)
+           '(:type reasoning-raw-delta :stream-kind raw :content "raw secret")
+           0.01)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (with-current-buffer (plist-get fixture :transcript)
+               (and (string-match-p
+                     (regexp-quote "Combining streamed reasoning.")
+                     (buffer-string))
+                    (not (string-match-p (regexp-quote "raw secret")
+                                         (buffer-string))))))
+           2.0 "bounded provider reasoning summary")
           (let* ((harness (plist-get fixture :harness))
                  (session-id (plist-get fixture :session-id))
-                 (activities
-                  (seq-filter
-                   (lambda (event)
-                     (eq (plist-get event :event-type) 'reasoning-delta))
-                   (e-harness-session-activity-events harness session-id)))
                  (binding (e-chat-service-binding harness session-id))
                  (board (e-board-registry-board-source-board
                          (e-chat-service-binding-board binding)))
@@ -1116,19 +1276,27 @@ than the invisible insertion position."
                      (eq (e-board-message-activity-kind message)
                          'reasoning-delta))
                    (e-board-messages board))))
-            (should (= (length activities) 1))
             (should (= (length board-reasoning) 1))
-            (should (equal (plist-get (plist-get (car activities) :payload)
-                                      :content)
-                           "Combining streamed reasoning."))
             (should (equal (e-board-message-content (car board-reasoning))
                            "Combining streamed reasoning."))
             (with-current-buffer (plist-get fixture :transcript)
-              (should-not (string-match-p
-                           (regexp-quote "Combining streamed reasoning.")
-                           (buffer-string))))
-            (e-chat-behavior-test--capture-state
-             "reasoning-combined-hidden-by-default")))
+              (should (string-match-p
+                       (regexp-quote "Combining streamed reasoning.")
+                       (buffer-string)))
+              (should-not (string-match-p (regexp-quote "raw secret")
+                                          (buffer-string))))
+           (e-chat-behavior-test--capture-state
+             "reasoning-summary-visible-bounded")
+          (e-chat-behavior-test--finish fixture "visible graphical answer")
+          (with-current-buffer (plist-get fixture :transcript)
+            ;; Raw provider reasoning remains excluded after the terminal
+            ;; redraw/replay path instead of falling through as a generic
+            ;; System event.  The concise preview above established the
+            ;; separately classified provider-summary path.
+            (should-not (string-match-p (regexp-quote "raw secret")
+                                        (buffer-string)))
+            (should-not (string-match-p (regexp-quote "Event:")
+                                        (buffer-string))))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-settled-output-follows-after-tall-transient ()

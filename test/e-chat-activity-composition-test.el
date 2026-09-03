@@ -33,6 +33,13 @@
                               :turn-id "turn-1"
                               :created-at started-at
                               :payload '(:status started)))
+              (when (= index 22)
+                (e-chat-render-event
+                 (e-events-make :type 'reasoning-delta
+                                :session-id e-chat-session-id
+                                :turn-id "turn-1"
+                                :created-at (1+ started-at)
+                                :payload '(:content "stable summary"))))
               (unless (= index 23)
                 (e-chat-render-event
                  (e-events-make :type 'provider-request-finished
@@ -42,10 +49,12 @@
                                 :payload '(:status done))))))
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)))
-          (let* ((tail-start (car (e-chat-surface-running-status-bounds)))
+          (let* ((tail-start
+                  (car (e-chat-transcript--activity-progress-bounds)))
                  (stable-prefix
                   (buffer-substring-no-properties (point-min) tail-start))
                  changes)
+            (should (string-match-p "stable summary" stable-prefix))
             (add-hook 'before-change-functions
                       (lambda (start end)
                         (push (cons start end) changes))
@@ -833,7 +842,8 @@ the orphaned region and appeared to vanish."
 
 (ert-deftest e-chat-test-progress-rerender-updates-between-provider-and-tool ()
   "Progress redraw keeps counting after a provider settles within a live turn."
-  (let ((buffer (e-chat-test--buffer nil "chat-between-step-progress")))
+  (let ((e-chat-activity-reasoning-visible-line-limit 3)
+        (buffer (e-chat-test--buffer nil "chat-between-step-progress")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-render-event
@@ -864,6 +874,27 @@ the orphaned region and appeared to vanish."
                      "⠙ Working for 0min 8sec" content))
             (should-not (string-match-p
                          "Thought for 0min 1sec" content)))
+          (let* ((tail-start
+                  (car (e-chat-transcript--activity-progress-bounds)))
+                 (stable-prefix
+                  (buffer-substring-no-properties (point-min) tail-start))
+                 changes)
+            (add-hook 'before-change-functions
+                      (lambda (start end)
+                        (push (cons start end) changes))
+                      nil t)
+            (cl-letf (((symbol-function 'float-time)
+                       (lambda (&optional _time) 9.0)))
+              (e-chat-activity-advance-progress)
+              (e-ui-work-with-batch-drain
+                (e-ui-work-drain-batch :buffer (current-buffer))))
+            (should changes)
+            (should (cl-every (lambda (change)
+                                (>= (car change) tail-start))
+                              changes))
+            (should (equal stable-prefix
+                           (buffer-substring-no-properties
+                            (point-min) tail-start))))
           (e-chat-activity-stop-progress "turn-1")
           (let ((content (buffer-string)))
             (should (string-match-p
@@ -1210,8 +1241,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-reasoning-has-space-after-thought-row ()
-  "Reasoning text has a small visual gap after the thought row."
+(ert-deftest e-chat-test-reasoning-has-space-before-thought-row ()
+  "Reasoning text has a small visual gap before the thought row."
   (let ((e-chat-activity-reasoning-visible-line-limit 3)
         (buffer (e-chat-test--buffer nil "chat-reasoning-spacer")))
     (unwind-protect
@@ -1239,17 +1270,18 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (e-ui-work-drain-batch :buffer (current-buffer))))
           (let ((content (buffer-string)))
             (should (string-match-p
-                     "⠋ Thinking for 0min 8sec\n\nplanning"
+                     "planning\n\n⠋ Thinking for 0min 8sec"
                      content))
             (should-not (string-match-p
-                         "⠋ Thinking for 0min 8sec\nplanning"
+                         "planning\n⠋ Thinking for 0min 8sec"
                          content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-reasoning-is-hidden-by-default-but-retained-in-details ()
-  "Normal transcript omits reasoning while explicit activity detail retains it."
-  (let ((buffer (e-chat-test--buffer nil "chat-reasoning-hidden-default")))
+(ert-deftest e-chat-test-reasoning-zero-suppresses-but-retains-details ()
+  "Explicit zero omits reasoning while activity detail retains it."
+  (let ((e-chat-activity-reasoning-visible-line-limit 0)
+        (buffer (e-chat-test--buffer nil "chat-reasoning-hidden-default")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-render-event

@@ -46,11 +46,12 @@ See `e-chat-activity-redraw-large-block-chars'."
   :type 'number
   :group 'e-chat)
 
-(defcustom e-chat-activity-reasoning-visible-line-limit 0
+(defcustom e-chat-activity-reasoning-visible-line-limit 3
   "Maximum non-empty reasoning lines shown in compact activity summaries.
-The default keeps model reasoning out of the transcript.  A positive value
-opts into a bounded live preview; complete combined reasoning remains
-available from explicitly expanded response details."
+The default shows a bounded provider-supplied summary.  Explicit zero hides
+provider-summary previews, while a positive value opts into a bounded live
+preview; complete provider-summary history remains available from explicitly
+expanded response details."
   :type 'natnum
   :group 'e-chat)
 
@@ -661,12 +662,9 @@ request settles and before a tool or the next provider request starts."
              (plist-get round :started-at)
              (e-chat-activity--current-time-seconds)))))
 
-(defun e-chat-activity--activity-round-visible-text
-    (round &optional active-tail complete)
-  "Return visible text for semantic activity ROUND.
-When ACTIVE-TAIL is non-nil, ROUND is the latest settled round of the
-harness-confirmed active turn.  COMPLETE exposes explicitly requested
-reasoning detail rather than the default compact preview."
+(defun e-chat-activity--activity-round-progress-row-text
+    (round &optional active-tail)
+  "Return the mutable progress/status row for semantic activity ROUND."
   (let* ((running-text (e-chat-activity--round-running-tools-text round))
          ;; While tools are running, replace the frozen \"Thought for ...\"
          ;; left cell with a live spinner naming the running tool and its
@@ -700,15 +698,26 @@ reasoning detail rather than the default compact preview."
                                               count-text)))
                            (if progress-text
                                (format "%s, %s" count-text progress-text)
-                             count-text))))
-         (lines (and thought
-                     (list (e-chat-activity--activity-round-row-text
-                            thought tool-text))))
+                             count-text)))))
+    (and thought
+         (e-chat-activity--activity-round-row-text thought tool-text))))
+
+(defun e-chat-activity--activity-round-visible-text
+    (round &optional active-tail complete)
+  "Return visible text for semantic activity ROUND.
+When ACTIVE-TAIL is non-nil, ROUND is the latest settled round of the
+harness-confirmed active turn.  COMPLETE exposes explicitly requested
+reasoning detail rather than the default compact preview."
+  (let* ((progress-row
+          (e-chat-activity--activity-round-progress-row-text round active-tail))
          (reasoning-lines
           (e-chat-activity--activity-round-visible-reasoning-lines
-           round complete)))
+           round complete))
+         (lines (and progress-row (list progress-row))))
     (when reasoning-lines
-      (setq lines (append lines (list "") reasoning-lines)))
+      (setq lines
+            (append reasoning-lines
+                    (and progress-row (list "" progress-row)))))
     (when lines
       (string-join lines "\n"))))
 
@@ -724,6 +733,15 @@ When COMPLETE is non-nil, include every durable round."
         rounds
       (last rounds (min (length rounds)
                         (max 1 e-chat-live-activity-round-limit))))))
+
+(defun e-chat-activity--curation-entries-for-round (record round)
+  "Return curation entries observed after provider ROUND in RECORD."
+  (let ((ordinal (plist-get round :round)))
+    (cl-remove-if-not
+     (lambda (entry)
+       (and (eq (plist-get entry :kind) 'context-curated)
+            (equal (plist-get entry :round) ordinal)))
+     (plist-get record :intermittent-entries))))
 
 (defun e-chat-activity--activity-record-transient-data (record &optional complete)
   "Return transient render data for semantic activity RECORD.
@@ -745,26 +763,74 @@ offsets and markers are deliberately not part of this owner-to-owner value."
          chunks
          progress-tail-text)
     (when (> omitted-count 0)
-      (let ((summary
-             (format "… %d earlier activity %s omitted"
-                     omitted-count
-                     (if (= omitted-count 1) "round" "rounds"))))
-        (push summary chunks)))
+      (setq chunks
+            (list (format "… %d earlier activity %s omitted"
+                          omitted-count
+                          (if (= omitted-count 1) "round" "rounds")))))
+    ;; A curation is observed at a provider-round boundary.  Entries belonging
+    ;; to omitted rounds remain immediately after the omission marker.
+    (dolist (entry (plist-get record :intermittent-entries))
+      (when (and (eq (plist-get entry :kind) 'context-curated)
+                 (plist-get entry :round)
+                 (not (cl-some
+                       (lambda (round)
+                         (equal (plist-get round :round)
+                                (plist-get entry :round)))
+                       rounds)))
+        (setq chunks
+              (append chunks
+                      (list (e-chat-activity--intermittent-entry-text entry))))))
+    ;; Render each visible round followed by the curation entries observed at
+    ;; that boundary.  This keeps the mutable current Thinking row last.
     (dolist (round rounds)
-      (when-let ((text (e-chat-activity--activity-round-visible-text
-                        round (and active-tail (eq round latest)) complete)))
-        (when (and active-tail (eq round latest))
-          (setq progress-tail-text text))
-        (push text chunks)))
-    (setq chunks (nreverse chunks))
-    (setq chunks
-          (append chunks
-                  (mapcar
-                   #'e-chat-activity--intermittent-entry-text
-                   (cl-remove-if-not
-                    (lambda (entry)
-                      (eq (plist-get entry :kind) 'context-curated))
-                    (plist-get record :intermittent-entries)))))
+      (let* ((latest-active-p (and active-tail (eq round latest)))
+             (curations (e-chat-activity--curation-entries-for-round
+                         record round))
+             ;; Between provider requests the latest completed round is still
+             ;; the live tail.  Its summary and boundary activity are stable;
+             ;; only the synthetic Working row remains mutable.
+             (between-tail-p
+              (and latest-active-p
+                   (eq (e-chat-activity--normalize-round-status
+                        (plist-get round :status))
+                       'done))))
+        (if between-tail-p
+            (progn
+              (when-let ((reasoning-lines
+                          (e-chat-activity--activity-round-visible-reasoning-lines
+                           round complete)))
+                (setq chunks
+                      (append chunks (list (string-join reasoning-lines "\n")))))
+              (dolist (entry curations)
+                (setq chunks
+                      (append chunks
+                              (list (e-chat-activity--intermittent-entry-text
+                                     entry)))))
+              (when-let ((progress-row
+                          (e-chat-activity--activity-round-progress-row-text
+                           round t)))
+                (setq progress-tail-text progress-row
+                      chunks (append chunks (list progress-row)))))
+          (when-let ((text (e-chat-activity--activity-round-visible-text
+                            round latest-active-p complete)))
+            (when latest-active-p
+              (setq progress-tail-text
+                    (e-chat-activity--activity-round-progress-row-text
+                     round t)))
+            (setq chunks (append chunks (list text))))
+          (dolist (entry curations)
+            (setq chunks
+                  (append chunks
+                          (list (e-chat-activity--intermittent-entry-text
+                                 entry))))))))
+    ;; Legacy/replayed entries without a round boundary retain their previous
+    ;; fallback position after the ordered provider activity.
+    (dolist (entry (plist-get record :intermittent-entries))
+      (when (and (not (plist-get entry :round))
+                 (eq (plist-get entry :kind) 'context-curated))
+        (setq chunks
+              (append chunks
+                      (list (e-chat-activity--intermittent-entry-text entry))))))
     (let ((text (and chunks
                      (concat (string-join chunks separator) "\n\n"))))
       (list :chunks chunks
@@ -1041,7 +1107,15 @@ later navigation."
                           :text text
                           :action-text text
                           :tool-items (e-chat-activity--semantic-tool-items items))
-                    children))))))
+                    children)))))
+      (dolist (entry (e-chat-activity--curation-entries-for-round record round))
+        (let ((text (format "%s: %s"
+                            (plist-get entry :title)
+                            (plist-get entry :content))))
+          (push (list :kind 'activity-context-curation
+                      :text text
+                      :action-text text)
+                children))))
     (dolist (entry (plist-get record :intermittent-entries))
       (cond
        ((equal (plist-get entry :title) "Action call")
@@ -1050,7 +1124,8 @@ later navigation."
                       :text text
                       :action-text text)
                 children)))
-       ((eq (plist-get entry :kind) 'context-curated)
+       ((and (eq (plist-get entry :kind) 'context-curated)
+             (not (plist-get entry :round)))
         (let ((text (format "%s: %s"
                             (plist-get entry :title)
                             (plist-get entry :content))))
@@ -1889,7 +1964,12 @@ function records only lifecycle audit text."
 
 (defun e-chat-activity--record-context-curated (record activity-event)
   "Record one Board-backed context curation from ACTIVITY-EVENT in RECORD."
-  (let ((identity (plist-get activity-event :message-id)))
+  (let ((identity (plist-get activity-event :message-id))
+        ;; Curation is committed after a provider response and before the
+        ;; follow-up request starts.  Retain that observed round ordinal only
+        ;; in this ephemeral projection so replay and live delivery compose in
+        ;; the same chronological position.
+        (round (e-chat-activity--last-round-record record)))
     (unless identity
       (signal 'e-chat-service-invalid-activity
               (list 'context-curated :missing-message-id)))
@@ -1903,6 +1983,7 @@ function records only lifecycle audit text."
              (e-chat-service-format-context-curation
               (plist-get activity-event :payload))
              :kind 'context-curated
+             :round (and round (plist-get round :round))
              :activity-id identity
              :source 'activity))))
   (e-chat-activity--refresh-turn-details record))
@@ -2445,6 +2526,11 @@ provider/tool activity does not require a central per-record dispatch branch."
         (plist-get (plist-get event :payload) :status))
        (e-chat-activity--request-activity-redraw turn-id))
      t)
+    ;; Raw reasoning is an audit/provider event, not classic visible activity.
+    ;; Claim it here so the facade does not fall through to its generic System
+    ;; event renderer on live delivery; replay already ignores this event in
+    ;; the activity record owner above.
+    ('reasoning-raw-delta t)
     ('turn-retrying
      (let* ((turn-id (e-chat-transcript-presentation-turn-id
                       (plist-get event :turn-id) event))

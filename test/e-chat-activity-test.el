@@ -150,6 +150,139 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-activity-owner-shows-bounded-summary-before-current-thinking ()
+  "Visible provider summaries and curations precede the mutable next round."
+  (let ((buffer (e-chat-activity-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let* ((events
+                  '((:event-type provider-request-started :created-at 0)
+                    (:event-type reasoning-delta :created-at 1
+                     :payload (:stream-kind summary :content-mode snapshot
+                               :combined t
+                               :content "summary one\nsummary two\nsummary three\nsummary four"))
+                    (:event-type reasoning-raw-delta :created-at 2
+                     :payload (:stream-kind raw :content "raw secret"))
+                    (:event-type provider-request-finished :created-at 3
+                     :payload (:status done))
+                    (:event-type context-curated :created-at 4
+                     :message-id "curation-1"
+                     :payload (:kept-source-count 1 :summary-count 0
+                               :summarized-source-count 0 :erased-source-count 0))
+                    (:event-type provider-request-started :created-at 5)))
+                 (display (e-chat-activity-replay-events "turn-1" events))
+                 (record (e-chat-activity--existing-turn-record "turn-1"))
+                 (text (plist-get display :transient-text)))
+            (should (string-match-p
+                    (concat "summary two" "\n" "summary three" "\n"
+                            "summary four")
+                    text))
+            (should-not (string-match-p "summary one" text))
+            (should-not (string-match-p "raw secret" text))
+            (should (< (string-match-p "Thought for" text)
+                       (string-match-p "Context curated" text)))
+            (should (< (string-match-p "summary three" text)
+                       (string-match-p "Thought for" text)))
+            (should (< (string-match-p "Thought for" text)
+                       (string-match-p "Context curated" text)))
+            (should (< (string-match-p "Context curated" text)
+                       (string-match-p "Thinking" text)))
+            (should
+             (= 1
+                (let ((start 0)
+                      (count 0))
+                  (while (string-match "Thinking" text start)
+                    (setq count (1+ count)
+                          start (match-end 0)))
+                  count)))
+            (should
+             (equal
+              (plist-get
+               (cl-find-if (lambda (entry)
+                             (eq (plist-get entry :kind) 'context-curated))
+                           (plist-get record :intermittent-entries))
+               :round)
+              1))
+            ;; The redraw port owns only the mutable status row.  The stable
+            ;; summary and curation prefix must not be part of its replacement
+            ;; range when the progress timer reticks.
+            (let ((e-chat-activity--progress-turn-id "turn-1"))
+              (cl-letf (((symbol-function
+                          'e-chat-activity--service-active-turn-matches-p)
+                         (lambda (_turn-id) t)))
+                (let* ((transient
+                        (e-chat-activity--activity-record-transient-data
+                         record))
+                       (tail (plist-get transient :progress-tail-text)))
+                  (should (string-match-p "Thinking" tail))
+                  (should-not (string-match-p "summary" tail))
+                  (should-not (string-match-p "Context curated" tail))))))
+      (e-chat-owner-test--kill-buffer buffer)))))
+
+(ert-deftest e-chat-activity-owner-reasoning-visibility-limits-are-explicit ()
+  "Zero suppresses summaries while a positive limit keeps only the tail."
+  (let ((buffer (e-chat-activity-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((record '(:id "turn-1"
+                          :activity-records
+                          ((:kind round :round 1 :status done
+                            :reasoning ((:content "line one\nline two\nline three")))))))
+            (let ((e-chat-activity-reasoning-visible-line-limit 0))
+              (should-not
+               (string-match-p
+                "line one\\|line two\\|line three"
+                (or (plist-get
+                     (e-chat-activity--activity-record-transient-data record)
+                     :text)
+                    ""))))
+            (let* ((e-chat-activity-reasoning-visible-line-limit 2)
+                   (text (plist-get
+                          (e-chat-activity--activity-record-transient-data record)
+                          :text)))
+              (should-not (string-match-p "line one" text))
+              (should (string-match-p (concat "line two" "\n" "line three")
+                                      text)))))
+      (e-chat-owner-test--kill-buffer buffer))))
+
+(ert-deftest e-chat-activity-owner-between-round-orders-stable-prefix-before-working ()
+  "A completed round's summary and curation precede mutable Working progress."
+  (let ((e-chat-activity-reasoning-visible-line-limit 3)
+        (buffer (e-chat-activity-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((record
+                 '(:id "turn-1"
+                   :activity-records
+                   ((:kind round :round 1 :status done
+                     :started-at 0 :ended-at 1
+                     :reasoning ((:content "stable summary"))))
+                   :intermittent-entries
+                   ((:kind context-curated :round 1
+                     :title "Context curated"
+                     :content "kept 1")))))
+            (let ((e-chat-activity--progress-turn-id "turn-1"))
+              (cl-letf (((symbol-function
+                          'e-chat-activity--service-active-turn-matches-p)
+                         (lambda (_turn-id) t))
+                        ((symbol-function 'float-time)
+                         (lambda (&optional _time) 8.0)))
+                (let* ((display
+                        (e-chat-activity--activity-record-transient-data
+                         record))
+                       (text (plist-get display :text))
+                       (summary (string-match-p "stable summary" text))
+                       (curation (string-match-p "Context curated" text))
+                       (working (string-match-p "Working for" text)))
+                  (should summary)
+                  (should curation)
+                  (should working)
+                  (should (< summary curation))
+                  (should (< curation working))
+                  (should (equal (plist-get display :progress-tail-text)
+                                 "⠋ Working for 0min 8sec")))))))
+      (e-chat-owner-test--kill-buffer buffer))))
+
 (ert-deftest e-chat-activity-owner-live-rounds-are-bounded ()
   "Live activity bounds recent rounds while details retain the complete set."
   (let* ((e-chat-live-activity-round-limit 5)
