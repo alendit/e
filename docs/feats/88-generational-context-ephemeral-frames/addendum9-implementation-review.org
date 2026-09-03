@@ -1,0 +1,272 @@
+#+title: Implementation Review: Feature 88 Addendum 9
+#+date: 2026-09-03
+#+startup: overview
+
+* Status and decision
+
+In-review.  The repository-controlled Addendum 9 implementation is complete
+through exact candidate =02fd61bed497f6aa58575338c82da2b1d7ef477d=, reviewed
+against the implementation-plan fixed point at =8a4f8f73= and the accepted
+=addendum9.org= contract blob
+=a18059b3901e7cbcc6d8f8b39d10843345bf5dd4=.
+
+An independent implementation pass found no actionable correctness,
+privacy, architecture, performance, or UX defect in =8a4f8f73..02fd61be=.
+The goal =F88A9-ACTIVITY= is behaviorally available in both chat shells, and
+its deterministic direct and graphical scenarios pass.  External
+compatibility remains not applicable because this package changes no provider
+request or carrier material.
+
+The package remains =In-review= rather than claiming an unqualified
+deterministic fixed point for two evidence reasons:
+
+- the literal changed-Elisp warnings-as-errors gate is blocked by Emacs 31
+  obsolete =when-let=/=if-let= warnings already present in several touched
+  compilation units and their dependencies; ordinary compilation passes and
+  the newly added units introduce no warning;
+- the Rust test resolves and inspects the selected durable Board identity but
+  does not synthesize an egui pointer click or inspect a rendered widget tree.
+  Source inspection covers the direct click-to-identity assignment.  This is
+  an evidence-strength limitation, not a product finding.
+
+- P0: none.
+- P1: none.
+- P2: none.
+- P3: none.
+- Open product findings: none.
+
+* Scope reviewed
+
+The review inspected all production and test changes in
+=8a4f8f73..02fd61be=:
+
+- core projection derivation and validation in
+  =lisp/core/e-context-lifetime.el=;
+- commit, frame-consumption, and activity ordering in
+  =lisp/core/e-harness-context-runtime.el=;
+- public allowlisting and durable-source deduplication in
+  =lisp/core/e-board-runtime.el=;
+- the shared formatter and classic/ModernChat projections in
+  =lisp/core/e-chat-service.el=, =lisp/shells/chat/e-chat-activity.el=, and
+  =lisp/shells/modernchat/e-modernchat-view-model.el=;
+- ModernChat selection and inspection in =ui/modernchat/src/lib.rs=;
+- owner, composition, direct OpenAI Responses, and isolated graphical tests.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  Its harness,
+session, turn, tool, shell, and backend-adapter meanings remain applicable.
+“Context-curation activity” remains the local material term accepted by the
+plan; no glossary edit is required.
+
+The reviewer made no provider request, did not contact or reload the user's
+running Emacs, and changed no repository file.
+
+* Contract and evidence disposition
+
+| Contract | Implementation and evidence | Disposition |
+|----------+-----------------------------+-------------|
+| =F88A9-PROJECTION= | Context lifetime derives the exact four-count value from a package-bearing prepared decision and validates non-negative, non-empty, summary-consistent counts.  Harness computes it before mutation but attaches it only after the package append and frame consumption.  No-call, all-label omission, rejected preparation, and failed persistence paths publish none. | clear |
+| =F88A9-BOARD= | Board maps only a projected =context-frame-consumed= event to =context-curated=, validates the exact allowlist again, and uses the durable harness activity identity in its source key.  Reprocessing is idempotent. | clear |
+| =F88A9-CLASSIC= | Classic chat records one Board-identity-backed intermittent row, deduplicates live/replay overlap, adds singular/plural settled counts, retains expanded details, and does not change tool/action totals. | clear |
+| =F88A9-MODERN= | The view model preserves Board =:message-id= as DTO =id= and emits title =Context curated=, status =ok=, and the shared safe summary.  Rust selection resolves that same identity. | clear; rendered click path source-inspected rather than interaction-driven |
+| =F88A9-LANGUAGE= | One shared formatter omits zero categories, distinguishes summarized sources from produced summaries, pluralizes each, and never says =dropped=. | clear |
+| =F88A9-PRIVACY= | Only the four counts cross the public Board boundary.  The direct test places hostile source, summary, call, response, and correlation sentinels upstream and proves they are absent from Board, classic, and ModernChat output. | clear |
+| =F88A9-ORDERING= | Board sequence order is retained.  Two activity identities remain two ordered rows and settle as =2 curations= after live/replay overlap. | clear |
+| =F88A9-GRAPHICAL= | The isolated native graphical scenario captures active, settled-collapsed, and settled-expanded states and asserts composer text/point, focus, window count, settlement, and followed viewport. | clear |
+| =F88A9-PRESERVATION= | Focused behavior, direct adapter composition, Rust, full batch, and full graphical evidence pass after accounting for local fixture permissions.  Transcript, semantic success, tool/action counts, and provider material are unchanged. | behavior clear; literal warnings-as-errors gate baseline-blocked |
+
+The implementation therefore establishes =F88A9-DP1= as a coherent semantic
+package.  The evidence limitations above do not imply missing runtime behavior,
+but they are retained so later review does not silently convert source
+inspection or a baseline exception into stronger proof.
+
+* Independent review result
+
+The independent reviewer found no actionable issue.  It confirmed the exact
+projection and privacy boundary, commit-before-consume-before-publication
+ordering, Board allowlist and deduplication, shared language, classic shell
+state, ModernChat identity preservation, and Rust identity lookup.
+
+The only review note is the Rust evidence limitation already recorded: the
+unit test installs =selected_activity= with the durable Board ID and verifies
+the inspector result, while the short egui click handler is inspected in
+source.  A future interactive UI harness could strengthen this evidence, but
+the current package does not need speculative test infrastructure for that
+single assignment.
+
+* Verification
+
+Repository-side validation ran outside the user's running Emacs.
+
+** Focused deterministic portfolio
+
+#+begin_src sh
+E_E2E=1 eldev test -B \
+  --file test/e-context-lifetime-test.el \
+  --file test/e-harness-context-lifetime-composition-test.el \
+  --file test/e-harness-runtime-mechanism-test.el \
+  --file test/e-board-runtime-test.el \
+  --file test/e-chat-activity-test.el \
+  --file test/e-chat-activity-composition-test.el \
+  --file test/e-modernchat-test.el \
+  --file e2e/e-post-cutover-chat-e2e-test.el
+#+end_src
+
+#+begin_example
+Ran 252 tests, 252 results as expected, 0 unexpected.
+#+end_example
+
+The direct credential-free OpenAI Responses file also passed independently:
+
+#+begin_example
+Ran 2 tests, 2 results as expected, 0 unexpected.
+#+end_example
+
+** Rust surface
+
+The repository does not contain the tracked =ui/emacs-egui= path dependency.
+Validation therefore used a temporary checkout of the historical gitlink
+=ba6d54aed38ff2fc9049798157974dd9a81d050e= beside an exact copy of the
+candidate ModernChat crate.  No dependency file entered the repository.
+
+#+begin_src sh
+cargo test --manifest-path \
+  /private/tmp/e-a9-rust-validation.XGYUEp/ui/modernchat/Cargo.toml
+#+end_src
+
+#+begin_example
+3 passed; 0 failed.  Doc-tests: 0 passed; 0 failed.
+#+end_example
+
+** Compilation
+
+Ordinary compilation of every changed Elisp production and E2E unit passed.
+Emacs 31 reported only pre-existing obsolete-macro warnings.  The literal
+=eldev compile --warnings-as-errors= gate stops first in existing
+=lisp/core/e-session-codec.el= code from =408c3216b=; changed harness, Board,
+chat-service, classic, and ModernChat units also contain older =when-let= or
+=if-let= forms predating this package.  The new context-lifetime and E2E units
+pass their focused warnings-as-errors compilation, and no new warning is
+attributable to =a4ccdeaf..02fd61be=.
+
+This review records the baseline instead of mixing a broad Emacs 31 macro
+migration into the presentation package.
+
+** Full batch and fixture isolation
+
+#+begin_src sh
+eldev -p -dtT test
+#+end_src
+
+The managed sandbox produced 2,707 expected results and six loopback-fixture
+failures: four MCP HTTP tests and two OpenAI URL-process tests could not start
+their local servers.  The complete run had no other unexpected result.
+
+Re-running the affected files with loopback permission passed:
+
+#+begin_example
+MCP and OpenAI owner files: 43/43 expected.
+OpenAI composition files: 35/35 expected.
+#+end_example
+
+The six full-suite failures are therefore execution-environment denials rather
+than implementation regressions.
+
+** Graphical UX
+
+#+begin_src sh
+bash e2e/run-graphical-tests.sh
+#+end_src
+
+#+begin_example
+Graphical E2E complete: 30 tests, 0 unexpected.
+#+end_example
+
+The focused run additionally produced and visually inspected these temporary
+artifacts:
+
+- =011-context-curation-active.png=;
+- =018-context-curation-settled-collapsed.png=;
+- =019-context-curation-settled-expanded.png=.
+
+Their matching =.state.el= sidecars confirmed the two-window chat surface,
+selected window, exact composer text and point, and viewport state.  Active
+state showed =Context curated= with the full disposition summary; collapsed
+state showed =1 curation=; expanded state showed the ordered detail.  Focus,
+draft text, window geometry, and settlement remained stable.
+
+** Structural checks
+
+- =git diff --check 8a4f8f73..02fd61be= passed.
+- Batch Org parsing of the Addendum 9 plan and implementation review passed.
+- The implementation range contains 16 files, 916 insertions, and 48
+  deletions across the three semantic commits.
+- No live probe, live reload, or provider request was performed.
+
+* Architecture review
+
+Ownership remains local and dependency direction remains inward-to-outward:
+
+#+begin_example
+context lifetime -> harness event -> Board runtime -> chat service
+                                                    -> classic shell
+                                                    -> ModernChat DTO -> Rust view
+#+end_example
+
+Context lifetime alone derives accepted semantic facts.  Harness owns the
+side-effect sequence.  Board owns the public count-only activity and durable
+source-key idempotence.  The service owns shared presentation language, and
+each shell owns only its state and rendering.  Presentation reads no frame,
+curation record, provider payload, or session-private identity.
+
+The package adds one detached four-integer projection and one existing-tail
+Board activity per successfully committed non-empty package.  It performs no
+scan, polling, provider request, synchronous redraw, or cross-owner recovery.
+Old sessions need no reconstruction; absent projections simply produce no
+historical curation UI.  Unexpected malformed projections surface at core,
+Board, or service boundaries instead of being swallowed.
+
+No architecture or performance finding remains.
+
+* Design self-check
+
+1. Yes.  If work stops here, committed non-empty curation is observable in
+   both shells while semantic behavior stays unchanged.
+2. It moves toward observable, provider-neutral context lifetime with strict
+   harness/presentation separation.
+3. Wording and styling remain local and reversible; accepted counts, privacy,
+   and success timing are direct stable contracts.
+4. Context lifetime owns facts, harness owns completion, Board owns public
+   activity, and shells own presentation.
+5. Coupling is reduced: shells consume one narrow detached count projection
+   instead of private session or frame state.
+6. No stable policy depends on Board, shells, Rust, or the OpenAI adapter.
+7. Persistence and publication remain outward side effects around pure count
+   derivation and validation.
+8. No semantic state is added.  Activity state uses the existing bounded,
+   replayable Board lifetime.
+9. Cost is constant per accepted package and requires no extra request, scan,
+   or polling loop.
+10. =context-curated= has one substitutable meaning across both shells and its
+    four-field contract needs no unsupported operation.
+11. Older sessions remain readable; no speculative backfill or compatibility
+    fallback was added.
+12. No new legacy path is needed or newly removable within this package.
+13. Expected invalid decisions use existing turn failure; malformed public
+    values signal at their owner and are not swallowed.
+14. Pure owner, composition, direct adapter, Rust, graphical, and full-suite
+    tests isolate behavior so future design changes remain narrow.
+
+* Live reload and unresolved items
+
+The user's running Emacs was left unchanged.  This package changes core
+context-lifetime, harness, and Board runtime behavior, so using it immediately
+requires a normal full Emacs restart; =e-dev-reload= deliberately does not
+apply the complete slice.
+
+No product or architecture finding remains.  The warnings-as-errors baseline
+and rendered-click evidence limitation remain explicitly recorded.  Feature 88
+as a whole remains =In-review= under its existing broader status policy.
+
+The final clear-technical-writing pass used the selected runtime glossary and
+changed no contract, finding, evidence classification, or architecture
+decision.

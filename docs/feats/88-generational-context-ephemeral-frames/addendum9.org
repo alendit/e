@@ -4,7 +4,10 @@
 
 * Status
 
-Ready.
+In-review (repository-controlled implementation complete through =02fd61be=;
+deterministic behavior and graphical evidence pass; the literal
+warnings-as-errors gate remains baseline-blocked by Emacs 31 obsolete-macro
+warnings that predate this package).
 
 This addendum extends [[file:addendum7.org][Addendum 7]] with a presentation
 contract for successfully committed non-empty curation packages.  It does not
@@ -172,8 +175,10 @@ Presentation never reads or mutates context-lifetime state.
   =F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-LANGUAGE=,
   =F88A9-PRIVACY=, =F88A9-ORDERING=, =F88A9-GRAPHICAL=, and
   =F88A9-PRESERVATION=.
-- Behavioral status :: Unavailable before implementation.
-- Mechanism status :: Not started.
+- Behavioral status :: Passing for the deterministic direct and graphical
+  scenarios at =02fd61be=.
+- Mechanism status :: Complete.  Independent implementation review found no
+  actionable product or architecture defect.
 - External compatibility :: Not applicable because request, carrier, and
   provider material are unchanged; real-adapter evidence is deterministic
   repository composition.
@@ -197,15 +202,15 @@ to the matrix as follows; they do not define independent observable outcomes.
 
 | Contract | Observable | Semantic owner and public composition | Establishing package | Deterministic evidence | External evidence | Telemetry | Status |
 |----------+------------+---------------------------------------+----------------------+------------------------+-------------------+-----------+--------|
-| =F88A9-PROJECTION= | One successfully committed non-empty keep, summary, erase, or mixed package attaches one validated four-count projection.  No-call, all-label omission, and failed decisions attach none. | Context lifetime derives facts; harness attaches them to successful frame completion. | =F88A9-DP1= | =A9-OWNER=, =A9-NEGATIVE=, =A9-DIRECT= | N/A: repository-owned projection | None required | Unavailable |
-| =F88A9-BOARD= | A projected consumption publishes exactly one =context-curated= Board activity; unprojected consumption publishes none. | Board runtime consumes the attached-turn activity port and emits one allowlisted activity. | =F88A9-DP1= | =A9-BOARD=, =A9-DIRECT= | N/A: repository-owned adapter | Board activity is product output, not acceptance telemetry | Unavailable |
-| =F88A9-CLASSIC= | Classic chat shows the activity live, retains ordered settled detail, reports the curation count, and leaves tool/action counts unchanged. | Chat service transports the Board event; classic activity owns its presentation state. | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= | N/A | None required | Unavailable |
-| =F88A9-MODERN= | ModernChat receives a stable Board-backed DTO identity, title =Context curated=, status =ok=, and the same safe disposition summary; its activity surface can select and inspect it. | Chat service transports the Board event; view model maps the DTO; Rust renders it. | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= | N/A | None required | Unavailable |
-| =F88A9-LANGUAGE= | Kept, summarized-source/summary, and erased counts retain Addendum 7 meanings; zero categories are omitted and omission is never called =drop=. | One shell-family formatter below shell renderers. | =F88A9-DP1= | =A9-OWNER= | N/A | None required | Unavailable |
-| =F88A9-PRIVACY= | Only the four counts enter the public activity; content, labels, tool/observation identities, fingerprints, provider material, and private correlation identities do not. | Core projection plus Board allowlist. | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= | N/A | None required | Unavailable |
-| =F88A9-ORDERING= | Two committed packages produce two Board-ordered activities and =2 curations= without live/replay duplication. | Board sequence/source key and shell activity state. | =F88A9-DP1= | =A9-ORDERING= | N/A | None required | Unavailable |
-| =F88A9-GRAPHICAL= | Compact and expanded classic states remain readable without disturbing composer, viewport, or settlement. | Classic presentation shell. | =F88A9-DP1= | =A9-GRAPHICAL= | N/A | None required | Unavailable |
-| =F88A9-PRESERVATION= | Visualization does not change semantic success, transcript shape, tool/action counts, or existing reasoning, compaction, terminal, and unread behavior. | Existing semantic and presentation owners retain their responsibilities. | =F88A9-DP1= | =A9-NEGATIVE=, =A9-PRESERVATION=, =A9-DIRECT= | N/A: request/provider material unchanged | Existing telemetry is observational only | Unavailable |
+| =F88A9-PROJECTION= | One successfully committed non-empty keep, summary, erase, or mixed package attaches one validated four-count projection.  No-call, all-label omission, and failed decisions attach none. | Context lifetime derives facts; harness attaches them to successful frame completion. | =F88A9-DP1= | =A9-OWNER=, =A9-NEGATIVE=, =A9-DIRECT= | N/A: repository-owned projection | None required | Passing at =02fd61be= |
+| =F88A9-BOARD= | A projected consumption publishes exactly one =context-curated= Board activity; unprojected consumption publishes none. | Board runtime consumes the attached-turn activity port and emits one allowlisted activity. | =F88A9-DP1= | =A9-BOARD=, =A9-DIRECT= | N/A: repository-owned adapter | Board activity is product output, not acceptance telemetry | Passing at =02fd61be= |
+| =F88A9-CLASSIC= | Classic chat shows the activity live, retains ordered settled detail, reports the curation count, and leaves tool/action counts unchanged. | Chat service transports the Board event; classic activity owns its presentation state. | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= | N/A | None required | Passing at =02fd61be= |
+| =F88A9-MODERN= | ModernChat receives a stable Board-backed DTO identity, title =Context curated=, status =ok=, and the same safe disposition summary; its activity surface can select and inspect it. | Chat service transports the Board event; view model maps the DTO; Rust renders it. | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= | N/A | None required | Passing at =02fd61be=; rendered click remains source-inspected |
+| =F88A9-LANGUAGE= | Kept, summarized-source/summary, and erased counts retain Addendum 7 meanings; zero categories are omitted and omission is never called =drop=. | One shell-family formatter below shell renderers. | =F88A9-DP1= | =A9-OWNER= | N/A | None required | Passing at =02fd61be= |
+| =F88A9-PRIVACY= | Only the four counts enter the public activity; content, labels, tool/observation identities, fingerprints, provider material, and private correlation identities do not. | Core projection plus Board allowlist. | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= | N/A | None required | Passing at =02fd61be= |
+| =F88A9-ORDERING= | Two committed packages produce two Board-ordered activities and =2 curations= without live/replay duplication. | Board sequence/source key and shell activity state. | =F88A9-DP1= | =A9-ORDERING= | N/A | None required | Passing at =02fd61be= |
+| =F88A9-GRAPHICAL= | Compact and expanded classic states remain readable without disturbing composer, viewport, or settlement. | Classic presentation shell. | =F88A9-DP1= | =A9-GRAPHICAL= | N/A | None required | Passing at =02fd61be= |
+| =F88A9-PRESERVATION= | Visualization does not change semantic success, transcript shape, tool/action counts, or existing reasoning, compaction, terminal, and unread behavior. | Existing semantic and presentation owners retain their responsibilities. | =F88A9-DP1= | =A9-NEGATIVE=, =A9-PRESERVATION=, =A9-DIRECT= | N/A: request/provider material unchanged | Existing telemetry is observational only | Behavior passing; warnings-as-errors baseline-blocked |
 
 ** Scenario portfolio
 
