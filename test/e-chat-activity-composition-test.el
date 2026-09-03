@@ -148,6 +148,28 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-activity-composition-test-summary-only-replay-keeps-aggregates ()
+  "A retained Board summary alone preserves provider aggregate details."
+  (let ((buffer (e-chat-test--buffer nil "chat-summary-only-replay")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-activity-reset)
+          (let ((display
+                 (e-chat-activity-replay-events
+                  "turn-summary-only"
+                  '((:event-type turn-summary
+                     :created-at 100
+                     :payload (:status finished
+                               :duration-seconds 5
+                               :tool-count 2
+                               :action-count 1))))))
+            (should (equal (plist-get display :summary-text)
+                           "Turn took 0min 5sec, 2 tool calls, 1 action."))
+            (should (= (plist-get display :tool-count) 2))
+            (should (= (plist-get display :action-count) 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-replayed-stale-provider-activity-stays-off-tail ()
   "Replayed non-terminal provider activity is hidden when the turn is not active."
   (let* ((store (e-session-store-create))

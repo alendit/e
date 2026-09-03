@@ -757,13 +757,10 @@ so a sibling cannot settle a selected binding through a malformed projection."
            (puthash (list subject-participant-id source-turn-id)
                     causal-input-id
                     (e-chat-service-binding-turn-map binding)))
-         (when (eq activity-kind 'turn-summary)
-           (setq activity-kind
-                 (pcase (plist-get (e-board-message-attributes message) :status)
-                   ('finished 'turn-finished)
-                   ((or 'turn-failed 'failed) 'turn-failed)
-                   ((or 'turn-cancelled 'cancelled) 'turn-cancelled)
-                   (_ 'turn-failed))))
+         ;; Board publishes a detailed terminal activity and a separate
+         ;; aggregate turn-summary row.  Preserve those distinct meanings:
+         ;; translating the summary into another terminal event renders a
+         ;; duplicate failure/cancellation notice in presentation shells.
          (when activity-kind
            (append identity
                    (list :type activity-kind :session-id session-id
@@ -1926,6 +1923,18 @@ identity so existing indexes remain readable without mutation."
                                    :status 'running))))
         ((or 'turn-finished 'turn-failed 'turn-cancelled)
          (when (and (e-chat-service--event-selected-participant-p event)
+                    (equal (plist-get active-turn :id)
+                           (plist-get event :turn-id)))
+           (setq active-turn nil)))
+        ('turn-summary
+         ;; A summary is not a second shell-facing terminal event, but its
+         ;; status is the durable terminal witness used to reconcile bounded
+         ;; service state after the detailed row or successful output falls
+         ;; outside the retained activity page.
+         (when (and (memq (plist-get (plist-get event :payload) :status)
+                          '(finished failed turn-failed
+                            cancelled turn-cancelled))
+                    (e-chat-service--event-selected-participant-p event)
                     (equal (plist-get active-turn :id)
                            (plist-get event :turn-id)))
            (setq active-turn nil)))))

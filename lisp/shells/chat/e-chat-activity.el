@@ -827,16 +827,18 @@ Count tool invocations after the reasoning chunk they followed."
 
 (defun e-chat-activity--activity-tool-count (record)
   "Return number of tool calls recorded for RECORD."
-  (if (e-chat-activity--activity-records record)
-      (e-chat-activity--activity-record-tool-count record)
-    (cl-count-if
-     (lambda (entry)
-       (equal (plist-get entry :title) "Tool call"))
-     (plist-get record :intermittent-entries))))
+  (or (plist-get record :summary-tool-count)
+      (if (e-chat-activity--activity-records record)
+          (e-chat-activity--activity-record-tool-count record)
+        (cl-count-if
+         (lambda (entry)
+           (equal (plist-get entry :title) "Tool call"))
+         (plist-get record :intermittent-entries)))))
 
 (defun e-chat-activity--activity-action-count (record)
   "Return number of action calls recorded for RECORD."
-  (or (plist-get record :action-count)
+  (or (plist-get record :summary-action-count)
+      (plist-get record :action-count)
       (cl-count-if
        (lambda (entry)
          (equal (plist-get entry :title) "Action call"))
@@ -877,9 +879,13 @@ Count tool invocations after the reasoning chunk they followed."
   (when (and (plist-get record :started-at)
              (plist-get record :ended-at)
              (plist-get record :has-provider-activity))
-    (let* ((duration (e-chat-activity--format-duration
-                      (plist-get record :started-at)
-                      (plist-get record :ended-at)))
+    (let* ((duration
+            (if (numberp (plist-get record :summary-duration-seconds))
+                (e-chat-activity--format-duration
+                 0 (plist-get record :summary-duration-seconds))
+              (e-chat-activity--format-duration
+               (plist-get record :started-at)
+               (plist-get record :ended-at))))
            (tool-count (e-chat-activity--activity-tool-count record))
            (action-count (e-chat-activity--activity-action-count record))
            (curation-count (e-chat-activity--context-curation-count record))
@@ -1901,6 +1907,29 @@ function records only lifecycle audit text."
              :source 'activity))))
   (e-chat-activity--refresh-turn-details record))
 
+(defun e-chat-activity--record-turn-summary (record activity-event)
+  "Record aggregate Board ACTIVITY-EVENT data in RECORD without settling twice."
+  (let ((payload (plist-get activity-event :payload)))
+    ;; Board emits this row only for provider-active turns.  Retain that
+    ;; authoritative fact when bounded replay no longer includes the earlier
+    ;; provider activity rows.
+    (plist-put record :has-provider-activity t)
+    (dolist (mapping '((:duration-seconds . :summary-duration-seconds)
+                       (:tool-count . :summary-tool-count)
+                       (:action-count . :summary-action-count)))
+      (when (plist-member payload (car mapping))
+        (plist-put record (cdr mapping) (plist-get payload (car mapping)))))
+    (when-let ((created-at (plist-get activity-event :created-at)))
+      (plist-put record :ended-at created-at)
+      (unless (plist-get record :started-at)
+        (when-let* ((duration (plist-get payload :duration-seconds))
+                    (created-seconds
+                     (e-chat-activity--time-seconds created-at)))
+          (when (numberp duration)
+            (plist-put record :started-at
+                       (- created-seconds duration)))))))
+  (e-chat-activity--refresh-turn-details record))
+
 (defun e-chat-activity--record-activity-event (turn-id activity-event)
   "Record durable ACTIVITY-EVENT for TURN-ID without re-emitting it."
   (let ((record (e-chat-activity--turn-record turn-id)))
@@ -1959,6 +1988,11 @@ function records only lifecycle audit text."
                                   'activity))
       ('context-curated
        (e-chat-activity--record-context-curated record activity-event))
+      ;; Board summaries are aggregate data, not a second terminal edge.  The
+      ;; detailed terminal activity above remains the failure/cancellation
+      ;; authority, while successful output already carries its terminal fact.
+      ('turn-summary
+       (e-chat-activity--record-turn-summary record activity-event))
       ('tool-progress
        (e-chat-activity--record-tool-progress
         record
@@ -2497,6 +2531,13 @@ provider/tool activity does not require a central per-record dispatch branch."
        (e-chat-surface-request-mode-line-status-refresh t))
      t)
     ('provider-anchor-candidate t)
+    ('turn-summary
+     (let* ((turn-id (e-chat-transcript-presentation-turn-id
+                      (plist-get event :turn-id) event))
+            (record (e-chat-activity--turn-record turn-id)))
+       (e-chat-activity--record-turn-summary record event)
+       (e-chat-activity--request-activity-redraw turn-id 'activity))
+     t)
     ('session-reset
      (e-chat-activity-reset)
      (e-chat-surface-set-status "idle")

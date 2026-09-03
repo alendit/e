@@ -1327,8 +1327,8 @@ or transient state individually."
 
 (defun e-chat--settle-successful-turn-presentation (_turn-id _ended-at)
   "Settle successful turn presentation.
-Board-final output and the later terminal summary are independent delivery
-rows, so either may establish this idempotent presentation boundary."
+Board-final output carries the successful terminal fact.  The later Board
+turn-summary is aggregate data and does not repeat this transition."
   (e-chat-surface-refresh-mode-line-status t)
   (e-chat-overview-mark-selected-session-read)
   (e-chat-surface-set-status "done")

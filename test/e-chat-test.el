@@ -28,6 +28,59 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest e-chat-test-board-failure-summary-is-not-a-second-terminal-notice ()
+  "Detailed Board failure plus aggregate summary renders one failure live and on replay."
+  (let* ((backend
+          (e-backend-fake-create
+           :items '((:type backend-error
+                     :content "provider failed"
+                     :payload (:provider-error test)))))
+         (harness (e-harness-create :backend backend))
+         (session-id "board-failure-summary")
+         (buffer (e-chat-open :harness harness :session-id session-id)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-submit "fail once")
+          (should
+           (e-chat-test--wait-until
+            (lambda () (equal (e-chat-surface-status) "error"))
+            1.0))
+          (let* ((binding (e-chat-service-binding harness session-id))
+                 (source
+                  (e-board-registry-board-source-board
+                   (e-chat-service-binding-board binding)))
+                 (activity-kinds
+                  (delq nil
+                        (mapcar #'e-board-message-activity-kind
+                                (e-board-messages source))))
+                 (service-types
+                  (mapcar
+                   (lambda (event) (plist-get event :event-type))
+                   (e-chat-service-activity-events harness session-id))))
+            (should (= (cl-count 'turn-failed activity-kinds) 1))
+            (should (= (cl-count 'turn-summary activity-kinds) 1))
+            (should (= (cl-count 'turn-failed service-types) 1))
+            (should (= (cl-count 'turn-summary service-types) 1)))
+          (cl-labels
+              ((occurrence-count
+                (pattern)
+                (let ((content (buffer-string))
+                      (start 0)
+                      (count 0))
+                  (while (string-match pattern content start)
+                    (setq count (1+ count)
+                          start (match-end 0)))
+                  count)))
+            (should (= (occurrence-count "Turn failed:") 1))
+            (should (= (occurrence-count "Turn took ") 1))
+            (should (string-match-p "Turn failed: provider failed"
+                                    (buffer-string)))
+            (e-chat--rerender-transcript)
+            (should (= (occurrence-count "Turn failed:") 1))
+            (should (= (occurrence-count "Turn took ") 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 
 
 (ert-deftest e-chat-test-buffer-owns-explicit-board-client-observer-identity ()
@@ -948,7 +1001,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                                  restored-private-participant)
                  :subject-participant-id restored-private-participant
                  :source-turn-id "sibling-failure"
-                 :activity-kind 'turn-summary :tags '(main)
+                 :activity-kind 'turn-failed :tags '(main)
                  :attributes '(:status failed :error "sibling failure")
                  :reply-to-message-ids (list restarted-main-input)
                  :source-activity-key '(routing sibling-failure 1))
@@ -958,7 +1011,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                                  restored-private-participant)
                  :subject-participant-id restored-private-participant
                  :source-turn-id "sibling-cancel"
-                 :activity-kind 'turn-summary :tags '(main)
+                 :activity-kind 'turn-cancelled :tags '(main)
                  :attributes '(:status cancelled)
                  :reply-to-message-ids (list restarted-main-input)
                  :source-activity-key '(routing sibling-cancel 1))
@@ -1122,7 +1175,7 @@ selected/sibling isolation boundary."
                       :author (format "participant:%s" sibling-id)
                       :subject-participant-id sibling-id
                       :source-turn-id "sibling-turn"
-                      :activity-kind 'turn-summary :tags '(main)
+                      :activity-kind 'turn-failed :tags '(main)
                       :attributes '(:status failed :error "sibling failure")
                       :reply-to-message-ids (list input-id)
                       :source-activity-key '(f009-failure 1 1)))
@@ -1132,7 +1185,7 @@ selected/sibling isolation boundary."
                       :author (format "participant:%s" sibling-id)
                       :subject-participant-id sibling-id
                       :source-turn-id "sibling-cancel"
-                      :activity-kind 'turn-summary :tags '(main)
+                      :activity-kind 'turn-cancelled :tags '(main)
                       :attributes '(:status cancelled)
                       :reply-to-message-ids (list input-id)
                       :source-activity-key '(f009-cancel 1 1)))))
