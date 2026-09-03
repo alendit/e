@@ -67,6 +67,87 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-activity-composition-test-service-curations-live-and-replay ()
+  "Service-produced Board curations stay ordered and deduplicate on replay."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (buffer (e-chat-open :harness harness :session-id "curation-classic")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-surface-set-redraw-visible t)
+          (let* ((binding (e-chat-service-binding harness e-chat-session-id))
+                 (registry-board (e-chat-service-binding-board binding))
+                 (board (e-board-registry-board-source-board registry-board))
+                 (participant-id
+                  (e-board-registry-participant-id
+                   (e-board-runtime-attachment-participant
+                    (e-chat-service-binding-attachment binding))))
+                 (source-turn "curation-source-turn")
+                 (sequence 0))
+            (cl-labels
+                ((post (id kind attributes)
+                   (cl-incf sequence)
+                   (e-board-post-activity
+                    board :id id
+                    :author (format "participant:%s" participant-id)
+                    :subject-participant-id participant-id
+                    :source-turn-id source-turn :activity-kind kind
+                    :tags '(main) :attributes attributes
+                    :source-activity-key
+                    (list participant-id 1 sequence))))
+              (post "start" 'turn-started nil)
+              (post "provider" 'provider-request-started nil)
+              (post "tool" 'tool-started '(:id "tool-1" :name "run_elisp"))
+              (post "action" 'action-started
+                    '(:parent-tool-call-id "tool-1"
+                      :capability-id "test" :action :inspect))
+              (post "curation-a" 'context-curated
+                    '(:kept-source-count 1 :summary-count 0
+                      :summarized-source-count 0 :erased-source-count 0))
+              (post "curation-b" 'context-curated
+                    '(:kept-source-count 0 :summary-count 1
+                      :summarized-source-count 2 :erased-source-count 1))
+              (post "finished" 'turn-summary
+                    '(:status finished :duration-seconds 0
+                      :tool-count 1 :action-count 1)))
+            (e-chat-service-drain-binding binding)
+            (let* ((events (e-chat-service-activity-events
+                            harness e-chat-session-id))
+                   (curations
+                    (cl-remove-if-not
+                     (lambda (event)
+                       (eq (plist-get event :event-type) 'context-curated))
+                     events))
+                   (turn-id (plist-get (car events) :turn-id)))
+              (should (equal (mapcar (lambda (event)
+                                      (plist-get event :message-id))
+                                    curations)
+                             '("curation-a" "curation-b")))
+              ;; The live path uses the same service event and must not settle
+              ;; or require a transcript row to expose its activity.
+              (e-chat-activity-reset)
+              (e-chat-activity-handle-event (car curations))
+              (let ((transient
+                     (or (plist-get (e-chat-activity-turn-display turn-id)
+                                    :transient-text)
+                         "")))
+                (should (string-match-p "Context curated" transient))
+                (should (string-match-p "kept 1" transient)))
+              ;; Rebuild from durable events and include one live/replay overlap.
+              (e-chat-activity-reset)
+              (let* ((display
+                      (e-chat-activity-replay-events
+                       turn-id (append events (list (car curations)))))
+                     (expanded (plist-get display :expanded-text)))
+                (should (equal (plist-get display :summary-text)
+                               "Turn took 0min 0sec, 1 tool call, 1 action, 2 curations."))
+                (should (= (plist-get display :tool-count) 1))
+                (should (= (plist-get display :action-count) 1))
+                (should (< (string-match-p "kept 1" expanded)
+                           (string-match-p "summarized 2 sources" expanded)))
+                (should-not (string-match-p "drop" expanded))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-replayed-stale-provider-activity-stays-off-tail ()
   "Replayed non-terminal provider activity is hidden when the turn is not active."
   (let* ((store (e-session-store-create))

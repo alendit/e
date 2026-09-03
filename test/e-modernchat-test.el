@@ -138,6 +138,48 @@
     (should (equal (plist-get payload :content) "**Inspecting state**"))
     (should (eq (plist-get payload :content-mode) 'snapshot))))
 
+(ert-deftest e-chat-service-test-board-curation-reaches-modernchat-count-only ()
+  "Service transports a Board curation and ModernChat preserves its identity."
+  (let* ((harness (e-harness-create :enabled-layer-ids nil))
+         (session (e-chat-service-create-session
+                   :harness harness :id "curation-service"))
+         (binding (e-chat-service-binding harness (plist-get session :id)))
+         (registry-board (e-chat-service-binding-board binding))
+         (board (e-board-registry-board-source-board registry-board))
+         (participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant
+            (e-chat-service-binding-attachment binding)))))
+    (e-board-post-activity
+     board :id "board-curation-service-1"
+     :author (format "participant:%s" participant-id)
+     :subject-participant-id participant-id :source-turn-id "source-turn"
+     :activity-kind 'context-curated :tags '(main)
+     :attributes '(:kept-source-count 1
+                   :summary-count 1
+                   :summarized-source-count 2
+                   :erased-source-count 1)
+     :source-activity-key (list participant-id 1 2))
+    (e-chat-service-drain-binding binding)
+    (let* ((event (car (e-chat-service-activity-events
+                        harness "curation-service")))
+           (dto (e-modernchat-view-model-activity event)))
+      (should (eq (plist-get event :event-type) 'context-curated))
+      (should (equal (plist-get event :message-id)
+                     "board-curation-service-1"))
+      (should
+       (equal (plist-get event :payload)
+              '(:kept-source-count 1
+                :summary-count 1
+                :summarized-source-count 2
+                :erased-source-count 1)))
+      (should (equal (cdr (assq 'id dto)) "board-curation-service-1"))
+      (should (equal (cdr (assq 'title dto)) "Context curated"))
+      (should (equal (cdr (assq 'status dto)) "ok"))
+      (should
+       (equal (cdr (assq 'summary dto))
+              "kept 1 · summarized 2 sources into 1 summary · erased 1")))))
+
 (ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
   "Snapshots include recent bounded messages and session metadata."
   (let ((harness (e-harness-create
@@ -242,12 +284,34 @@ messages so the transcript reads as one clean answer."
 
 (ert-deftest e-modernchat-view-model-test-exposes-generic-hook-audit-summary ()
   "A shell renders generic audit metadata without importing claim policy."
-  (let* ((event '(:id "audit-1" :turn-id "turn-1" :event-type hook-audit
+  (let* ((event '(:message-id "audit-1" :turn-id "turn-1" :event-type hook-audit
                   :created-at "2026-07-30T00:00:00Z"
                   :payload (:summary "Claim check needs revision")))
          (dto (e-modernchat-view-model-activity event)))
+    (should (equal (cdr (assq 'id dto)) "audit-1"))
     (should (equal (cdr (assq 'title dto)) "Hook audit"))
     (should (equal (cdr (assq 'summary dto)) "Claim check needs revision"))))
+
+(ert-deftest e-modernchat-view-model-test-context-curation-keeps-board-identity ()
+  "A Board curation becomes an identity-stable safe generic activity DTO."
+  (let* ((event
+          '(:message-id "board-curation-1" :turn-id "turn-1"
+            :event-type context-curated
+            :created-at "2026-09-03T00:00:00Z"
+            :payload (:kept-source-count 1
+                      :summary-count 1
+                      :summarized-source-count 2
+                      :erased-source-count 1)))
+         (dto (e-modernchat-view-model-activity event)))
+    (should (equal (cdr (assq 'id dto)) "board-curation-1"))
+    (should (equal (cdr (assq 'title dto)) "Context curated"))
+    (should (equal (cdr (assq 'status dto)) "ok"))
+    (should
+     (equal (cdr (assq 'summary dto))
+            "kept 1 · summarized 2 sources into 1 summary · erased 1"))
+    (should-not
+     (string-match-p "message-id\\|source-label\\|drop"
+                     (prin1-to-string dto)))))
 
 (ert-deftest e-modernchat-test-runtime-missing-is-command-time-error ()
   "The module loads without emacs-egui; command use reports missing runtime."

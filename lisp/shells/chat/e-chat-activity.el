@@ -270,6 +270,12 @@ here so activity changes do not mutate a transcript record.")
   "Return collapsed display text for COUNT action invocations."
   (format "%d action%s" count (if (= count 1) "" "s")))
 
+(defun e-chat-activity--context-curation-count (record)
+  "Return the number of distinct context-curation entries in RECORD."
+  (cl-count-if
+   (lambda (entry) (eq (plist-get entry :kind) 'context-curated))
+   (plist-get record :intermittent-entries)))
+
 (defun e-chat-activity--activity-records (record)
   "Return semantic activity records for RECORD."
   (plist-get record :activity-records))
@@ -751,6 +757,14 @@ offsets and markers are deliberately not part of this owner-to-owner value."
           (setq progress-tail-text text))
         (push text chunks)))
     (setq chunks (nreverse chunks))
+    (setq chunks
+          (append chunks
+                  (mapcar
+                   #'e-chat-activity--intermittent-entry-text
+                   (cl-remove-if-not
+                    (lambda (entry)
+                      (eq (plist-get entry :kind) 'context-curated))
+                    (plist-get record :intermittent-entries)))))
     (let ((text (and chunks
                      (concat (string-join chunks separator) "\n\n"))))
       (list :chunks chunks
@@ -801,6 +815,9 @@ Count tool invocations after the reasoning chunk they followed."
                    (append (or current nil)
                            (list (format "Action: %s" content)))))
             ("Action")
+            ("Context curated"
+             (finish-current)
+             (push (e-chat-activity--intermittent-entry-text entry) chunks))
             (_
              (finish-current)
              (when (and content (not (string-empty-p content)))
@@ -865,6 +882,7 @@ Count tool invocations after the reasoning chunk they followed."
                       (plist-get record :ended-at)))
            (tool-count (e-chat-activity--activity-tool-count record))
            (action-count (e-chat-activity--activity-action-count record))
+           (curation-count (e-chat-activity--context-curation-count record))
            (tool-text (cond
                        ((= tool-count 0) "")
                        ((= tool-count 1) ", 1 tool call")
@@ -873,8 +891,13 @@ Count tool invocations after the reasoning chunk they followed."
                          ((= action-count 0) "")
                          ((= action-count 1) ", 1 action")
                          (t (format ", %d actions" action-count))))
+           (curation-text (cond
+                           ((= curation-count 0) "")
+                           ((= curation-count 1) ", 1 curation")
+                           (t (format ", %d curations" curation-count))))
            (detail-text (e-chat-activity--message-detail-summary-text record)))
-      (format "Turn took %s%s%s%s." duration tool-text action-text detail-text))))
+      (format "Turn took %s%s%s%s%s."
+              duration tool-text action-text curation-text detail-text))))
 
 (defun e-chat-activity--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
@@ -1014,12 +1037,21 @@ later navigation."
                           :tool-items (e-chat-activity--semantic-tool-items items))
                     children))))))
     (dolist (entry (plist-get record :intermittent-entries))
-      (when (equal (plist-get entry :title) "Action call")
+      (cond
+       ((equal (plist-get entry :title) "Action call")
         (let ((text (format "Action: %s" (plist-get entry :content))))
           (push (list :kind 'activity-action
                       :text text
                       :action-text text)
-                children))))
+                children)))
+       ((eq (plist-get entry :kind) 'context-curated)
+        (let ((text (format "%s: %s"
+                            (plist-get entry :title)
+                            (plist-get entry :content))))
+          (push (list :kind 'activity-context-curation
+                      :text text
+                      :action-text text)
+                children)))))
     (nreverse children)))
 
 (defun e-chat-activity--failure-details-text (record)
@@ -1849,6 +1881,26 @@ function records only lifecycle audit text."
                       pending-summary))))
   (e-chat-activity--refresh-turn-details record))
 
+(defun e-chat-activity--record-context-curated (record activity-event)
+  "Record one Board-backed context curation from ACTIVITY-EVENT in RECORD."
+  (let ((identity (plist-get activity-event :message-id)))
+    (unless identity
+      (signal 'e-chat-service-invalid-activity
+              (list 'context-curated :missing-message-id)))
+    (unless (cl-find identity (plist-get record :intermittent-entries)
+                     :key (lambda (entry) (plist-get entry :activity-id))
+                     :test #'equal)
+      (e-chat-activity--append-activity-entry
+       record
+       (list :title "Context curated"
+             :content
+             (e-chat-service-format-context-curation
+              (plist-get activity-event :payload))
+             :kind 'context-curated
+             :activity-id identity
+             :source 'activity))))
+  (e-chat-activity--refresh-turn-details record))
+
 (defun e-chat-activity--record-activity-event (turn-id activity-event)
   "Record durable ACTIVITY-EVENT for TURN-ID without re-emitting it."
   (let ((record (e-chat-activity--turn-record turn-id)))
@@ -1905,6 +1957,8 @@ function records only lifecycle audit text."
       ('hook-audit
        (e-chat-activity--record-hook-audit record (plist-get activity-event :payload)
                                   'activity))
+      ('context-curated
+       (e-chat-activity--record-context-curated record activity-event))
       ('tool-progress
        (e-chat-activity--record-tool-progress
         record
@@ -2385,7 +2439,8 @@ provider/tool activity does not require a central per-record dispatch branch."
        (e-chat-surface-set-status "streaming"))
      t)
     ((or 'reasoning-delta 'tool-started 'tool-finished 'action-started
-         'action-finished 'action-failed 'hook-audit 'tool-progress)
+         'action-finished 'action-failed 'hook-audit 'context-curated
+         'tool-progress)
      (let* ((turn-id (e-chat-transcript-presentation-turn-id
                       (plist-get event :turn-id) event))
             (payload (plist-get event :payload))
@@ -2420,6 +2475,8 @@ provider/tool activity does not require a central per-record dispatch branch."
             (e-chat-surface-set-status "action done")))
          ('hook-audit
           (e-chat-activity--record-hook-audit record payload 'activity))
+         ('context-curated
+          (e-chat-activity--record-context-curated record event))
          ('tool-progress
           (e-chat-activity--record-tool-progress record payload)
           (when (e-chat-transcript-event-selected-participant-p event)

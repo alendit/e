@@ -136,6 +136,15 @@ impl ModernChatApp {
         }
         emacs_post_message("ui-action", serde_json::Value::Object(map));
     }
+
+    fn selected_activity(&self) -> Option<&ActivityState> {
+        self.selected_activity.as_ref().and_then(|selected| {
+            self.state
+                .activities
+                .iter()
+                .find(|activity| activity.id.as_ref() == Some(selected))
+        })
+    }
 }
 
 impl EguiEmacsApp for ModernChatApp {
@@ -210,13 +219,8 @@ impl EguiEmacsApp for ModernChatApp {
             .default_width(260.0)
             .show(ctx, |ui| {
                 ui.heading("Inspector");
-                if let Some(selected) = &self.selected_activity {
-                    if let Some(activity) = self
-                        .state
-                        .activities
-                        .iter()
-                        .find(|a| a.id.as_ref() == Some(selected))
-                    {
+                if self.selected_activity.is_some() {
+                    if let Some(activity) = self.selected_activity() {
                         ui.label(activity.title.as_deref().unwrap_or("activity"));
                         ui.label(activity.status.as_deref().unwrap_or(""));
                         ui.separator();
@@ -318,5 +322,31 @@ mod tests {
         let state: ModernChatState =
             serde_json::from_str(r#"{"session":{"id":"s1"},"messages":[]}"#).unwrap();
         assert_eq!(state.session.id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn selects_and_inspects_activity_by_preserved_board_identity() {
+        let state: ModernChatState = serde_json::from_str(
+            r#"{
+              "activities": [{
+                "id": "board-activity-7",
+                "turnId": "turn-1",
+                "kind": "context-curated",
+                "status": "ok",
+                "title": "Context curated",
+                "summary": "kept 1 · erased 2"
+              }]
+            }"#,
+        )
+        .unwrap();
+        let mut app = ModernChatApp::new();
+        app.state = state;
+        app.selected_activity = Some("board-activity-7".to_string());
+
+        let selected = app.selected_activity().unwrap();
+        assert_eq!(selected.id.as_deref(), Some("board-activity-7"));
+        assert_eq!(selected.title.as_deref(), Some("Context curated"));
+        assert_eq!(selected.status.as_deref(), Some("ok"));
+        assert_eq!(selected.summary.as_deref(), Some("kept 1 · erased 2"));
     }
 }

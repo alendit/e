@@ -71,6 +71,85 @@
     (should (equal (e-chat-activity--activity-summary-text record)
                    "Turn took 12min 42sec, 9 actions (2 claims)."))))
 
+(ert-deftest e-chat-activity-owner-formats-curation-language-strictly ()
+  "One shared formatter omits zero categories and preserves count meanings."
+  (dolist
+      (case
+       '(((:kept-source-count 1 :summary-count 0
+           :summarized-source-count 0 :erased-source-count 0)
+          "kept 1")
+         ((:kept-source-count 0 :summary-count 1
+           :summarized-source-count 1 :erased-source-count 0)
+          "summarized 1 source into 1 summary")
+         ((:kept-source-count 0 :summary-count 2
+           :summarized-source-count 3 :erased-source-count 0)
+          "summarized 3 sources into 2 summaries")
+         ((:kept-source-count 0 :summary-count 0
+           :summarized-source-count 0 :erased-source-count 2)
+          "erased 2")
+         ((:kept-source-count 1 :summary-count 1
+           :summarized-source-count 2 :erased-source-count 1)
+          "kept 1 · summarized 2 sources into 1 summary · erased 1")))
+    (let ((formatted (e-chat-service-format-context-curation (car case))))
+      (should (equal formatted (cadr case)))
+      (should-not (string-match-p "drop" formatted))))
+  (should-error
+   (e-chat-service-format-context-curation
+    '(:kept-source-count 1 :summary-count 0
+      :summarized-source-count 0 :erased-source-count 0
+      :source-labels (1)))
+   :type 'e-chat-service-invalid-activity))
+
+(ert-deftest e-chat-activity-owner-curation-is-ordered-deduplicated-and-counted ()
+  "Board identities deduplicate curation without changing tool/action totals."
+  (let ((buffer (e-chat-activity-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let* ((curation-a
+                  '(:event-type context-curated :message-id "curation-a"
+                    :payload (:kept-source-count 1 :summary-count 0
+                              :summarized-source-count 0
+                              :erased-source-count 0)))
+                 (curation-b
+                  '(:event-type context-curated :message-id "curation-b"
+                    :payload (:kept-source-count 0 :summary-count 1
+                              :summarized-source-count 2
+                              :erased-source-count 1)))
+                 (events
+                  (append
+                   (e-chat-activity-test--events)
+                   (list curation-a curation-a curation-b)))
+                 (display (e-chat-activity-replay-events "turn-1" events))
+                 (expanded (plist-get display :expanded-text))
+                 (curation-children
+                  (seq-filter
+                   (lambda (child)
+                     (eq (plist-get child :kind)
+                         'activity-context-curation))
+                   (e-chat-activity--activity-summary-child-records
+                    (e-chat-activity--existing-turn-record "turn-1")))))
+            (should (equal (plist-get display :summary-text)
+                           "Turn took 0min 6sec, 1 tool call, 1 action, 2 curations."))
+            (should (= (plist-get display :tool-count) 1))
+            (should (= (plist-get display :action-count) 1))
+            (should
+             (= (cl-loop with start = 0
+                         while (string-match "Context curated" expanded start)
+                         count t
+                         do (setq start (match-end 0)))
+                2))
+            (should (< (string-match-p "kept 1" expanded)
+                       (string-match-p "summarized 2 sources" expanded)))
+            (should
+             (equal
+              (mapcar (lambda (child) (plist-get child :text))
+                      curation-children)
+              '("Context curated: kept 1"
+                "Context curated: summarized 2 sources into 1 summary · erased 1")))
+            (should-not (string-match-p "drop" expanded))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-activity-owner-live-rounds-are-bounded ()
   "Live activity bounds recent rounds while details retain the complete set."
   (let* ((e-chat-live-activity-round-limit 5)

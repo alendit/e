@@ -118,13 +118,15 @@ capability-owned message details."
          (tool-name (or (plist-get payload :tool-name)
                         (plist-get payload :name)
                         (plist-get payload :action))))
-    (if (eq type 'hook-audit)
-        "Hook audit"
-      (string-trim
-       (mapconcat #'identity
-                  (delq nil (list (e-modernchat-view-model--string type)
-                                  (e-modernchat-view-model--string tool-name)))
-                  " ")))))
+    (pcase type
+      ('hook-audit "Hook audit")
+      ('context-curated "Context curated")
+      (_
+       (string-trim
+        (mapconcat #'identity
+                   (delq nil (list (e-modernchat-view-model--string type)
+                                   (e-modernchat-view-model--string tool-name)))
+                   " "))))))
 
 (defun e-modernchat-view-model--activity-status (event)
   "Return display status for activity EVENT."
@@ -141,7 +143,7 @@ capability-owned message details."
 (defun e-modernchat-view-model-activity (event)
   "Return JSON DTO for activity EVENT."
   (let ((type (plist-get event :event-type)))
-    `((id . ,(e-modernchat-view-model--string (plist-get event :id)))
+    `((id . ,(e-modernchat-view-model--string (plist-get event :message-id)))
       (turnId . ,(e-modernchat-view-model--string (plist-get event :turn-id)))
       (kind . ,(e-modernchat-view-model--string type))
       (status . ,(e-modernchat-view-model--activity-status event))
@@ -149,9 +151,12 @@ capability-owned message details."
                      (plist-get event :created-at)))
       (title . ,(e-modernchat-view-model--activity-title event))
       (summary . ,(e-modernchat-view-model--string
-                   (or (plist-get (plist-get event :payload) :summary)
-                       (plist-get (plist-get event :payload) :message)
-                       ""))))))
+                   (if (eq type 'context-curated)
+                       (e-chat-service-format-context-curation
+                        (plist-get event :payload))
+                     (or (plist-get (plist-get event :payload) :summary)
+                         (plist-get (plist-get event :payload) :message)
+                         "")))))))
 
 (defun e-modernchat-view-model--attachment-kind (attachment)
   "Return display kind for ATTACHMENT."

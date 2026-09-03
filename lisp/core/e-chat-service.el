@@ -24,12 +24,16 @@
 (require 'e-harness-registry)
 (require 'e-session)
 (require 'e-session-board-policy)
+(require 'subr-x)
 
 (defvar e-chat-default-harness-id)
 
 (defgroup e-chat-service nil
   "Shell-neutral chat service operations."
   :group 'e)
+
+(define-error 'e-chat-service-invalid-activity
+  "e chat service activity has invalid public attributes")
 
 (defcustom e-chat-service-default-harness-id :chat-default
   "Harness registry id used by shell-neutral default chat commands."
@@ -49,6 +53,62 @@
   "Seconds without a presentation client before an idle board closes."
   :type 'number
   :group 'e-chat-service)
+
+(defconst e-chat-service--curation-activity-keys
+  '(:kept-source-count :summary-count :summarized-source-count
+    :erased-source-count)
+  "Exact count fields accepted by the shell-family curation formatter.")
+
+(defun e-chat-service--curation-counts (projection)
+  "Return validated curation counts from public PROJECTION."
+  (unless (and (proper-list-p projection) (= (length projection) 8))
+    (signal 'e-chat-service-invalid-activity
+            (list 'context-curated :shape projection)))
+  (let ((tail projection)
+        keys)
+    (while tail
+      (let ((key (pop tail)))
+        (unless (and (keywordp key) tail)
+          (signal 'e-chat-service-invalid-activity
+                  (list 'context-curated :shape projection)))
+        (push key keys)
+        (pop tail)))
+    (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every (lambda (key)
+                             (memq key e-chat-service--curation-activity-keys))
+                           keys)
+                 (cl-every (lambda (key) (plist-member projection key))
+                           e-chat-service--curation-activity-keys))
+      (signal 'e-chat-service-invalid-activity
+              (list 'context-curated :keys (nreverse keys))))
+    (let ((kept (plist-get projection :kept-source-count))
+          (summaries (plist-get projection :summary-count))
+          (summarized (plist-get projection :summarized-source-count))
+          (erased (plist-get projection :erased-source-count)))
+      (unless (and (cl-every (lambda (value)
+                               (and (integerp value) (>= value 0)))
+                             (list kept summaries summarized erased))
+                   (or (> kept 0) (> summarized 0) (> erased 0))
+                   (eq (= summaries 0) (= summarized 0))
+                   (<= summaries summarized))
+        (signal 'e-chat-service-invalid-activity
+                (list 'context-curated :counts projection)))
+      (list kept summaries summarized erased))))
+
+(defun e-chat-service-format-context-curation (projection)
+  "Format count-only public context-curation PROJECTION for chat shells."
+  (pcase-let ((`(,kept ,summaries ,summarized ,erased)
+               (e-chat-service--curation-counts projection)))
+    (string-join
+     (delq nil
+           (list
+            (and (> kept 0) (format "kept %d" kept))
+            (and (> summarized 0)
+                 (format "summarized %d source%s into %d summar%s"
+                         summarized (if (= summarized 1) "" "s")
+                         summaries (if (= summaries 1) "y" "ies")))
+            (and (> erased 0) (format "erased %d" erased))))
+     " · ")))
 
 (cl-defstruct (e-chat-service-binding
                (:constructor e-chat-service--binding-create))
