@@ -1,0 +1,136 @@
+#+title: Streamed Tool Result Session Commit Reentry Investigation
+#+startup: overview
+
+* Finding
+
+The failure is a callback-scheduling defect at the loop/harness/session
+composition boundary.  It is not a failed shell command and it is not a
+process-marker persistence failure.
+
+=e-loop= intentionally starts an ordinary tool as soon as its complete
+streamed call item arrives, before the provider response finishes.  Provider
+items and tool completion can therefore become ready independently.  SQLite
+session mutations wait cooperatively for the subordinate runtime-store
+acknowledgement while holding a same-session commit barrier.  A fast tool
+completion can run during that wait and attempt to append its result while a
+provider activity or frame-completion record owns the barrier.
+
+The direct session facade correctly rejects that reentrant mutation with
+=e-session-persistence-unavailable=.  The missing behavior is an owner-aware
+dispatch seam for the callbacks already admitted by the active turn.
+
+* Live evidence
+
+The bounded read-only =scripts/e-live-probe chat= command identified session
+=20260903T170053-ba1a4065d3c5= in =error= state.  The initial sandboxed probe
+could not access the Emacs server socket; the same supported probe succeeded
+with local socket permission.  No raw Emacs evaluation, reload, or mutation
+was performed.
+
+A read-only query of the canonical SQLite store shows this order:
+
+1. The provider request started.
+2. A =bash= tool-call message and =tool-started= activity committed.
+3. Provider token usage, reasoning, request completion, and
+   =context-frame-consumed= activity then committed.
+4. No tool-result message or =tool-finished= activity committed.
+
+The response reasoning also said it intended to record a routine success
+marker after listing the directories.  That independently corroborates the
+reported over-broad process-marker policy, but the one visible tool call in
+this failed turn was =bash=.
+
+* Source evidence
+
+- =e-loop='s =enqueue-tool-call= starts streamed ordinary tools immediately.
+- Tool completion appends its result and emits =tool-finished= through the
+  harness callbacks.
+- Provider token, completion, and context-frame events use the same session
+  append boundary.
+- =e-runtime-store-await= is cooperative, so other process or timer callbacks
+  may run before the current storage acknowledgement returns.
+- =e-session--call-with-commit-barrier= deliberately rejects a direct
+  same-session facade mutation while that acknowledgement is pending.
+
+* Correction direction
+
+Preserve streamed early tool dispatch.  The session owner should retain a
+FIFO of already-admitted callbacks that become ready during its commit barrier
+and schedule them only after the barrier is released.  The harness should
+compose that owner seam into the loop's provider and tool callback dispatch.
+Direct callers must continue to receive the existing reentrancy error; this is
+not a generic retry or a way to bypass session ownership.
+
+The regression must hold one same-session SQLite acknowledgement, complete a
+started tool during that hold, and prove that the turn later commits the tool
+result and final assistant answer without =turn-failed=.
+
+* Remediation implemented
+
+Commit =2971cbc9= implements the correction.  The loop now accepts an optional
+owner-supplied callback dispatcher and routes provider and tool lifecycle
+callbacks through it.  The harness composes that port with the owning session
+store and session id; the loop remains independent of persistence.
+
+The session application service retains already-admitted callbacks in one
+per-session FIFO while a commit owns the session.  Barrier release schedules
+the FIFO outside the persistence call stack.  The drain remains explicit owner
+state until empty, so callbacks arriving after release cannot overtake queued
+work, and it rechecks ownership if another commit begins before the timer runs.
+The active admitted callback may perform its normal session commit; unrelated
+facade mutation remains rejected both during the commit and during the pending
+drain.  This preserves early streamed tool dispatch without adding retry,
+swallowing a persistence error, or weakening direct reentrancy detection.
+
+The session regression proves in-barrier FIFO order, release-gap FIFO order,
+successful mutation from the active owner callback, and rejection of unrelated
+facade mutation on both sides of release.  The composed SQLite regression
+finishes a started tool from inside the provider token-usage commit, then proves
+two provider requests, durable =user/tool-call/tool/assistant= order, successful
+turn settlement, and no =turn-failed= event.
+
+The focused session/loop/harness/process-reporting portfolio passes 211/211,
+batch compilation succeeds, and structural and whitespace checks are clean.
+Independent review found and drove closure of two additional FIFO edges: a
+callback arriving between barrier release and the scheduled drain, and a
+direct facade mutation attempting to overtake that drain.  Re-review found no
+remaining actionable defect.
+
+The full repository run passes 2719/2725 under the filesystem sandbox.  Its
+only six failures are the known loopback-network restrictions in four MCP HTTP
+and two OpenAI URL tests; the exact six pass 6/6 with local socket permission.
+The isolated off-screen graphical suite passes 30/30.  No validation command
+connected to, reloaded, or changed the user's running Emacs.
+
+* Design self-check
+
+1. The package is independently useful because an ordinary fast streamed tool
+   no longer fails an otherwise valid chat turn.
+2. It moves toward one session-owned serialization boundary for independently
+   ready provider and tool callbacks.
+3. Early streamed execution and strict direct reentrancy are stable.  Callback
+   timing is variable, so the small dispatcher/FIFO seam keeps it local and
+   reversible without a generic scheduler abstraction.
+4. The session application service owns persistence serialization; the loop
+   owns turn sequencing; the harness only composes those responsibilities.
+5. Coupling is reduced: the loop depends on one callback-shaped function, not
+   the session store or SQLite adapter.
+6. No stable loop policy points at concrete persistence.  The unstable harness
+   composition depends on the stable session dispatch contract.
+7. Timer scheduling and persistence remain outside turn policy in the session
+   application service.
+8. The FIFO and drain flag are ephemeral per-session coordination state.  They
+   live only until admitted callbacks drain and are never persisted.
+9. The collision path adds one zero-delay timer and a short FIFO; ordinary
+   callbacks with no barrier retain immediate dispatch.
+10. The dispatcher accepts exactly one already-admitted callback.  It neither
+    narrows callback behavior nor pretends to support new facade operations.
+11. Existing early tool dispatch and direct barrier errors remain compatible;
+    no obsolete retry or fallback path was retained.
+12. No legacy code became removable beyond replacing direct callback delivery
+    at the loop boundary.
+13. Expected direct reentrancy still surfaces as
+    =e-session-persistence-unavailable=.  Errors from turn callbacks continue
+    through the loop's normal turn-failure boundaries.
+14. A session unit test proves ownership and ordering without the harness; a
+    composed persistent-harness test proves the full provider/tool race.

@@ -258,6 +258,10 @@ The first parent-side slice was accepted as complete on 2026-07-13.
   request-shape cost report, automatic =session://= links, checkpoint/call ids,
   redacted telemetry evidence, default-layer registration, and focused tests.
 - =d33be0c= documents the tool, action, store, triage, and accounting surfaces.
+- =b1ad23aa= narrows invocation to one coarse, reusable observation from a
+  substantive multi-step flow.  It explicitly excludes routine success,
+  one-off minor failures or retries, ordinary and self-referential
+  corrections, and marker-frequency requests; most turns create no marker.
 - The session-ownership simplification replaces the standalone marker JSONL,
   advisory lock, and process-local indexes with dedicated =process-report=
   records in each session's existing store. Focused tests prove replay,

@@ -1,0 +1,22 @@
+#+title: Streamed Tool Result Reenters a Session Commit
+#+startup: overview
+
+* Report
+
+An ordinary chat turn asked the agent to list home-directory names.  The
+provider streamed one =bash= tool call, but the turn failed instead of showing
+the result:
+
+#+begin_example
+Turn failed: Session persistence is unavailable: "Session commit is in progress",
+"20260903T170053-ba1a4065d3c5"
+#+end_example
+
+The visible summary reported ten seconds and one tool call.
+
+* Expected behavior
+
+A streamed tool may finish while the provider is still completing its
+response.  Both callbacks are already admitted parts of the same active turn.
+They must preserve their order across the session persistence boundary rather
+than treating one as a conflicting new facade mutation and failing the turn.

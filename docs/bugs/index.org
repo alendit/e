@@ -13,8 +13,9 @@ State values for coding agents:
 | Closed | test-suite-nonzero-exceptions/ | The ordinary repository test suite retained failures and skips |
 | Closed | context-curation-erasure-label-eligibility/ | Context curation erase label lacked model-visible eligibility |
 | Closed | board-manifest-drops-recovery-descriptor/ | Board manifest drops application recovery descriptor |
-| New    | repeated-empty-curation-fails-turn/ | Repeated empty curation fails the turn and renders twice |
-| New    | process-marker-correction-invalid-erasure/ | Process marker correction triggers invalid context erasure |
+| Closed | repeated-empty-curation-fails-turn/ | Repeated empty curation fails the turn and renders twice |
+| Closed | process-marker-correction-invalid-erasure/ | Process marker correction triggers invalid context erasure |
+| Closed | streamed-tool-result-session-commit-reentry/ | Streamed tool result reenters a session commit |
 | Closed | chat-resume-lists-private-board-participants/ | Chat resume lists private board participants |
 | Closed | session-persistence-valid-manifest-node-budget/ | Valid session checkpoint exceeds structural command budget |
 | Closed | current-config-graphical-contract-drift/ | Current config graphical contract drift |

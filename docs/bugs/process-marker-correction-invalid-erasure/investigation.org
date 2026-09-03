@@ -116,4 +116,21 @@ Treat the two owning domains separately during remediation:
    followed by an ordinary tool result, because that is the source mixture in
    which this incident occurred.
 
-No implementation change was made during this investigation.
+* Remediation implemented
+
+The two owning domains were corrected independently.
+
+Commits =8a957b0b= and =046a6b7d= replaced turn-wide curation recovery with
+request-frame-scoped recovery, retained strict validation on duplicates, and
+prevented curation-bearing responses from becoming durable provider anchors.
+Commit =b1ad23aa= corrected the process-reporting policy itself: markers are
+now reserved for substantive, multi-step observations that are likely to be
+reusable.  Routine success, minor retries, ordinary or self-referential
+corrections, and requests about marker frequency do not qualify.  Most turns
+should create no marker, and one underlying observation receives at most one.
+
+Focused regressions prove the coarse policy, frame-scoped duplicate recovery,
+strict validation, and anchor safety.  The full Addendum 9 repository and
+graphical validation recorded in the feature ledger passed apart from the
+documented sandbox-only loopback restrictions, whose exact tests passed with
+local socket permission.  The user's running Emacs was left unchanged.
