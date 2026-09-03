@@ -1,0 +1,26 @@
+#+title: Consumed Context Frame Labels Remain Visible
+
+* Report
+
+During a tool-heavy chat turn, a later curation response failed after the
+provider request had completed:
+
+#+begin_example
+Turn failed: Invalid context lifetime record: curation-keep,
+:unknown-label, 4, 3
+#+end_example
+
+The model's concise reasoning immediately before the failure referred to
+sources 1, 5, and 4 even though the active context-lifetime frame contained
+only three sources.
+
+* Expected behavior
+
+- Model-visible numeric source labels belong only to the live frame that
+  introduced them.
+- After successful curation consumes a frame, later provider requests must not
+  display that frame's markers beside a fresh frame's labels.
+- A valid selection from the currently displayed label set must not fail
+  because the prompt retained labels from a consumed frame.
+- Genuinely unknown labels, malformed dispositions, and failed curation
+  preparation must remain strict pre-mutation errors.

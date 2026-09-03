@@ -1,0 +1,135 @@
+#+title: Consumed Context Frame Label Investigation
+
+* Finding
+
+The context-lifetime owner correctly consumed the old frame and created a new
+three-source frame.  The loop nevertheless retained the consumed frame's
+model-facing marker messages in its in-memory request projections.  Because
+OpenAI stateless requests rebuild their input from those projections, the next
+request displayed old numeric labels together with the new frame's labels.
+The model selected one of those stale visible labels, and the strict validator
+correctly rejected label 4 against the live three-source frame.
+
+This was a presentation-lifetime defect, not an invalid durable record and not
+a reason to weaken unknown-label validation.
+
+* Live and persisted evidence
+
+The bounded read-only =scripts/e-live-probe chat= command reached the user's
+running Emacs.  At inspection time the selected chat session
+=20260903T184117-16c15eb39e86= was already settled with status =done= and had no
+active progress turn.  The probe changed no live state.
+
+The canonical SQLite store at
+=~/.config/emacs/.local/cache/e/store.sqlite3= contains the reported failure in
+session =20260903T182406-84398f6b9009=:
+
+1. Request 1 received a curation response, consumed its frame, and started the
+   acknowledgement request.
+2. Later =read= tool calls and results created a fresh three-source frame.
+3. Request 4 started with 59 input messages.
+4. Its persisted reasoning summary referred to sources 1 and 5 and considered
+   source 4 useful.
+5. Provider completion was immediately followed by
+   =curation-keep :unknown-label 4 3=.
+
+The provider's reserved function arguments are not persisted verbatim, but the
+reasoning summary, the validator's exact live-frame count, and the request
+projection source trace establish the causal chain.
+
+* Source cause
+
+=e-harness-context-runtime= inserts one provider-neutral system marker before
+each ephemeral source.  =e-loop= owns the mutable message and option
+projections reused across provider requests.  Successful frame completion
+updated =active-lifetime-frame= but did not retire the matching markers from:
+
+- =turn-messages=;
+- semantic =:segments= and =:context-segment-message-count=;
+- =:replaceable-current-state=;
+- =:provider-anchor-delta-messages=; or
+- =:provider-compaction-delta-messages=.
+
+The frame was therefore semantically closed while its label vocabulary
+remained visible on the wire.  Carrier prose already said labels were
+frame-local, but the actual prompt contradicted it.
+
+* Remediation implemented
+
+Commit =67ebb2be= implements the correction.  After the completion callback
+successfully commits a curation and returns the matching consumed frame,
+=e-loop= now retires that frame's marker messages from
+every persistent in-memory request projection before starting its
+acknowledgement.  Ordinary source values remain under their existing semantic
+owners; the correction changes only the lifetime of the invalid numeric label
+vocabulary.
+
+Retirement removes one earlier marker occurrence per source and projection.
+This matters when tool work creates a descendant frame before producer-frame
+completion: a fresh marker may have identical presentation text and must
+survive.  Failed preparation never reaches retirement, so its frame and labels
+remain live.  The strict unknown-label, duplicate-label, erasure-eligibility,
+and size checks are unchanged.
+
+The owner regression proves all five projections are updated, source content
+and a non-system message containing the same text survive, and later identical
+markers survive.  The composed regression exercises the actual sequence that
+failed:
+
+#+begin_example
+two-source frame -> omit all -> acknowledge
+                 -> three tool results -> three-source frame
+                 -> keep label 3 -> acknowledge -> normal answer
+#+end_example
+
+It runs every request through the real OpenAI Responses request builder and
+asserts marker counts =2, 0, 3, 0=.  The turn completes with one non-empty
+durable curation package.
+
+* Validation
+
+- Focused owner regression: 1/1 passed.
+- Focused composed real-adapter regression: 1/1 passed.
+- =test/e-loop-test.el= plus
+  =test/e-harness-context-lifetime-composition-test.el=: 72/72 passed.
+- Full =eldev -p -dtT test=: 2,725/2,731 passed.  The six failures are the
+  environment-bound baseline: four MCP HTTP fixture tests whose local server
+  cannot bind, plus two OpenAI URL-network tests reporting =Cannot bind server
+  socket: Operation not permitted=.  None imports or exercises the changed
+  context-label path.
+- =git diff --check=: passed.
+
+The running Emacs was left unchanged.  This changes =e-loop= core runtime
+behavior and therefore requires a full Emacs restart to use; =e-dev-reload=
+does not apply it.
+
+* Required design self-check
+
+1. If work stopped here, stale consumed labels could no longer induce a valid
+   model choice that the current frame rejects, so the repository is better.
+2. This moves toward genuinely frame-owned ephemeral context presentation.
+3. The stable rule is direct: labels end when their frame is consumed.  The
+   cleanup is local turn state and introduces no speculative extension point.
+4. Context lifetime owns label meaning; the loop owns the in-memory request
+   projections and therefore owns retiring them after successful completion.
+5. Coupling is reduced between a consumed frame and later requests.  The
+   helper accepts only the projections and exact frame it must update.
+6. No stable policy depends on an OpenAI detail.  The loop remains
+   provider-neutral; OpenAI is used only as composition evidence.
+7. No new side effect is introduced.  Durable commit remains in the harness
+   callback and wire translation remains in the adapter.
+8. Only existing turn-local projections mutate.  No durable or cross-turn
+   state is added, and the values are already rebuilt per turn.
+9. Retirement is linear in the bounded frame source count and current request
+   projections.  The curation source ceiling is 16, and no provider request is
+   added.
+10. No interface or substitute implementation changes.
+11. Session and provider wire formats remain compatible.  The obsolete stale
+    prompt material is removed.
+12. The stale label messages themselves are the legacy state removed now.
+13. Expected malformed dispositions still fail in context lifetime before
+    mutation; unexpected completion or projection errors surface through the
+    existing provider failure boundary.
+14. The pure owner test isolates projection behavior, while the composed test
+    proves request sequencing, real-adapter partitioning, two frame lifetimes,
+    strict selection, acknowledgement, durability, and terminal success.

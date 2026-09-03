@@ -9,6 +9,13 @@ evidence are complete.  Independent implementation review reached no remaining
 actionable finding after corrections for frame-bound duplicate validation and
 the one-over diagnostic count.
 
+A later live regression exposed stale marker messages from already consumed
+frames in stateless provider requests.  Commit =67ebb2be= retires each
+successfully consumed frame's labels from every loop-owned request projection
+before continuation, while preserving strict rejection of genuinely unknown
+labels.  The real-adapter regression now proves marker counts =2, 0, 3, 0=
+across omit/acknowledge/tool/curate/acknowledge/answer sequencing.
+
 This addendum extends [[file:addendum7.org][Addendum 7]] without changing its
 =keep=, =summaries=, =erase=, omission, durability, or storage semantics.  It
 changes when the reserved =context-curate= effect may be used during one turn,
@@ -161,7 +168,8 @@ reported as invalid durable state and must never start an acknowledgement loop.
   =F88A8-MULTI-FRAME=, =F88A8-DUPLICATE=, =F88A8-RECOVERY=,
   =F88A8-STRICTNESS=, =F88A8-DURABILITY=, and =F88A8-USABILITY=.
 - Behavioral status :: Passing in deterministic owner, composed harness, and
-  real Responses stateless/anchored scenarios.
+  real Responses stateless/anchored scenarios, including consumed-label
+  retirement before a later frame.
 - Mechanism status :: Complete.  Independent implementation review found no
   remaining actionable defect after two corrections.
 - External compatibility :: Not required for deterministic acceptance.  The
