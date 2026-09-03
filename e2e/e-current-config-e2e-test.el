@@ -7,19 +7,31 @@
 
 ;;; Commentary:
 
-;; Focused compatibility checks for a private Emacs started through the
-;; developer's normal user configuration.  No provider request is sent.
+;; Focused checks for a private Emacs started through the developer's normal
+;; user configuration.  The default compatibility selector sends no provider
+;; request.  The explicit live selector exercises the configured default chat
+;; backend against test-owned runtime state.
 
 ;;; Code:
 
+(add-to-list 'load-path
+             (file-name-directory (or load-file-name buffer-file-name)))
+
 (require 'cl-lib)
 (require 'ert)
+(require 'seq)
 (require 'e-e2e-bootstrap)
 (require 'e-backend)
+(require 'e-board)
+(require 'e-board-e2e-support)
+(require 'e-capabilities)
+(require 'e-context)
+(require 'e-context-lifetime)
 (require 'e-core)
 (require 'e-default-harnesses)
 (require 'e-harness-registry)
 (require 'e-project-local)
+(require 'e-session)
 
 (defvar e-current-config-e2e-test--output nil
   "Dynamically bound buffer collecting the current-config ERT report.")
@@ -96,6 +108,102 @@ rewrite the user's file."
     (let ((inspection (e-project-local--inspection root)))
       (when (plist-get inspection :has-extensions)
         (should (e-layer-p (e-project-local-prime-project root)))))))
+
+(ert-deftest e-current-config-live-e2e-test-basic-assistant-response ()
+  "A first chat turn completes through the machine's configured adapter.
+
+The private current-config Emacs owns its runtime directory.  This test takes
+the backend and model defaults from the actual `:chat-default' factory loaded
+by normal startup, adds only test-owned context, submits through the Board/chat
+boundary, and fails normally when configuration, transport, curation,
+persistence, or response delivery fails.  It never skips."
+  (should (e-e2e-current-config-p))
+  (should e-e2e-current-config-loaded-e-p)
+  (let* ((configured-harness
+          (e-harness-registry-get-or-create :chat-default))
+         (backend (e-harness-backend configured-harness))
+         (nonce (format "E-CURRENT-%08x" (random #x100000000)))
+         (provider
+          (e-context-provider-create
+           :name 'current-config-e2e-dynamic-context
+           :cache-placement 'dynamic-context
+           :build
+           (lambda (&rest _)
+             (list
+              (list :role 'system
+                    :content
+                    (format "The required reply token is %s." nonce))))))
+         (capability
+          (e-capability-create
+           :id 'current-config-e2e-dynamic-context
+           :context-providers (list provider)))
+         (harness
+          (e-harness-create
+           :backend backend
+           :default-options
+           (copy-tree (e-harness-default-options configured-harness))
+           :project-root
+           (e-harness-default-project-root configured-harness)
+           :sessions (e-harness-sessions configured-harness)
+           :intrinsic-capabilities (list capability)))
+         session-id)
+    (should (e-harness-p harness))
+    (should (e-backend-p backend))
+    (should-not (equal (e-backend--name backend)
+                       "Unconfigured default chat backend"))
+    (should (e-context-lifetime-shadow-enabled-p))
+    (e-current-config-e2e-test--print
+     "Current-config live backend: %s\n" (e-backend--name backend))
+    (unwind-protect
+        (progn
+          (setq session-id
+                (e-board-e2e-create-session
+                 harness
+                 :metadata
+                 (list :project-root
+                       e-current-config-e2e-test--state-directory)))
+          (let* ((result
+                  (e-board-e2e-prompt-batch
+                   harness session-id
+                   "Use the supplied test context. Reply with its required token and no extra words."))
+                 (assistant
+                  (or (plist-get result :assistant-content)
+                      (plist-get (plist-get result :result)
+                                 :assistant-content)
+                      ""))
+                 (messages
+                  (e-session-messages (e-harness-sessions harness) session-id))
+                 (curation-responses
+                  (seq-filter
+                   (lambda (event)
+                     (eq (plist-get event :event-type)
+                         'context-curation-response))
+                   (e-session-activity-events
+                    (e-harness-sessions harness) session-id)))
+                 (binding (e-chat-service-binding harness session-id))
+                 (board
+                  (e-board-registry-board-source-board
+                   (e-chat-service-binding-board binding))))
+            (should (eq (plist-get result :status) 'done))
+            (should (string-match-p (regexp-quote nonce) assistant))
+            (should (= (length curation-responses) 1))
+            (should
+             (seq-some
+              (lambda (message)
+                (and (eq (plist-get message :role) 'assistant)
+                     (string-match-p
+                      (regexp-quote nonce)
+                      (format "%s" (plist-get message :content)))))
+              messages))
+            (should
+             (seq-some
+              (lambda (message)
+                (and (eq (e-board-message-kind message) 'output)
+                     (string-match-p
+                      (regexp-quote nonce)
+                      (format "%s" (e-board-message-content message)))))
+              (e-board-messages board)))))
+      (e-board-e2e-reset-runtime))))
 
 (defun e-current-config-e2e-test-run-to-file (path &optional selector)
   "Run current-config ERT SELECTOR, write its report to PATH, and return status."

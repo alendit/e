@@ -19,6 +19,19 @@ export E_E2E_EMACS_CONFIG=current
 export E_CURRENT_CONFIG_E2E_STATE_DIR=$state_dir
 export E_RUNTIME_STATE_DIRECTORY=$state_dir
 
+case ${E_CURRENT_CONFIG_E2E_MODE:-compatibility} in
+  compatibility)
+    selector='^e-current-config-e2e-test-'
+    ;;
+  live-basic)
+    selector='^e-current-config-live-e2e-test-'
+    ;;
+  *)
+    echo "E_CURRENT_CONFIG_E2E_MODE must be compatibility or live-basic." >&2
+    exit 2
+    ;;
+esac
+
 emacs_command=(emacs)
 if [[ -n ${E_E2E_EMACS_INIT_DIRECTORY:-} ]]; then
   emacs_command+=(--init-directory "$E_E2E_EMACS_INIT_DIRECTORY")
@@ -37,6 +50,6 @@ eldev prepare emacs
 result=$(emacsclient --socket-name "$server_name" --eval "
   (progn
     (load \"$test_file\" nil nil t)
-    (e-current-config-e2e-test-run-to-file \"$report_file\"))")
+    (e-current-config-e2e-test-run-to-file \"$report_file\" \"$selector\"))")
 cat "$report_file"
 [[ $result == 0 ]]

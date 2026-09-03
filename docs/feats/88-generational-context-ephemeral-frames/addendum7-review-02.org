@@ -286,6 +286,15 @@ unchanged; no persistence or recovery protocol was added.
 - The post-cutover first-chat E2E asserts the literal ineligible marker and
   prohibition in the same request whose continuation reaches the assistant,
   Board, and reopened SQLite session.
+- The current-configuration runner now has an explicit =live-basic= mode that
+  loads normal machine configuration and reuses its actual =:chat-default=
+  adapter, endpoint/auth configuration, model defaults, and SQLite store in a
+  fresh harness containing only test-owned context.  It treats every
+  configuration or turn failure as a test failure rather than a skip.
+- Current-configuration compatibility checks pass 4/4.  The new source-bearing
+  live mode passes 1/1 through the locally configured Engineering AI Model
+  Gateway adapter, recording one durable curation-response audit and the exact
+  assistant token in the settled result, SQLite transcript, and Board output.
 - Focused core, harness, adapter, provider-continuation, and post-cutover tests
   pass 54/54 with zero skips.
 - The complete repository suite passes 2,704/2,704 with zero failures and zero
@@ -336,8 +345,10 @@ reverse, and the change adds no durable state.
     removed by fresh test ownership rather than compatibility behavior.
 13. Expected invalid dispositions still fail at strict preflight; unexpected
     errors still surface at the turn boundary.
-14. Owner tests prove derivation and rejection; the E2E proves the literal
-    request contract together with assistant, Board, and SQLite reopen behavior.
+14. Owner tests prove derivation and rejection; deterministic E2E proves the
+    literal request contract with assistant, Board, and SQLite reopen behavior;
+    current-config live E2E proves the source-bearing first turn through the
+    locally configured adapter and provider.
 
 * Unresolved
 

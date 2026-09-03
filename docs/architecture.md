@@ -614,8 +614,14 @@ cutover before resolving `:chat-default`. One scenario gates catalog-only cold
 startup and selective lazy restore. A second creates a current Board-backed
 chat and drives the real Responses adapter with a fake HTTP transport, gating
 curation-only acknowledgement serialization and one-request replay lifetime
-across close/reopen. Graphical fake-backend tests, no-send current-config
-checks, and opt-in live-provider tests retain their narrower evidence roles.
+across close/reopen. Graphical fake-backend tests and no-send current-config
+compatibility checks retain their narrower evidence roles. An explicit
+current-config `live-basic` mode reuses the locally configured default adapter,
+endpoint/auth configuration, model defaults, and SQLite store in an otherwise
+test-only harness. It sends only test-owned context and proves one source-
+bearing first turn through curation, assistant persistence, and Board output;
+configuration or provider failures fail the test rather than skipping it.
+Other opt-in live-provider scenarios continue to own profile-specific evidence.
 
 Repository-side compilation, check-parens, static dependency/private-symbol
 sweeps, restart/replay tests, and the isolated graphical suite do not inspect or

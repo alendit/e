@@ -107,6 +107,14 @@ The lower-level test suite separately asserted that =erase:[1]= raises
 the model-visible choice with the strict validator.  The missing assertion was
 therefore at the request contract boundary, not at SQLite storage.
 
+The current-configuration and live-provider tiers also failed to cover their
+intersection.  =run-current-config-tests.sh= loaded the machine's normal Emacs
+configuration and constructed its real =:chat-default= harness, but explicitly
+sent no request.  =e-live-e2e-test-basic-assistant-response= sent a real request
+through a real adapter, but that adapter came from a separate =E_E2E_CONFIG=
+fixture rather than the machine's loaded configuration.  Neither test proved a
+first turn through the exact adapter and profile selected by local startup.
+
 * Correction
 
 Keep the trusted runtime validation and make its eligibility decision visible
@@ -125,6 +133,15 @@ without exposing internal identities:
    asserts the literal ineligible marker and carrier prohibition on the same
    first request that later reaches the assistant, Board, and reopened SQLite
    session.
+6. An explicit =live-basic= current-configuration E2E mode starts a private
+   normally configured Emacs, takes the actual =:chat-default= backend adapter,
+   endpoint/auth configuration, model defaults, and SQLite store into a fresh
+   test-only harness, and adds one dynamic non-tool context source.  This avoids
+   sending unrelated local layers, tools, or instructions.  The test requires
+   one durable curation-response audit plus the first assistant response in the
+   settled result, persisted session transcript, and Board output.  It does not
+   constrain the model's valid disposition, and fails rather than skips when
+   the path is unavailable or broken.
 
 This deliberately does not add broad error swallowing or change the accepted
 strict-invalid-response policy.  It removes the contradictory model-facing
@@ -143,6 +160,9 @@ reconciliation, or transaction protocol was added.
 - The localhost MCP fixture tests pass when the test process is permitted to
   bind its private loopback port; the restricted sandbox reports =EPERM= before
   those tests enter e code.
+- Current-configuration compatibility coverage passes 4/4.  The new
+  =live-basic= mode passes 1/1 through the locally configured Engineering AI
+  Model Gateway adapter, with one durable curation-response audit and no skip.
 - Forced compilation of the two changed production owners, Org parsing, and
   whitespace checks pass.  The repository-wide compile command reaches an
   unrelated command-line migration utility and invokes its argument check;
