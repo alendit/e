@@ -73,7 +73,7 @@
                       (e-tools-definitions registry)))
            result)
       (should (equal (plist-get definition :description)
-                     "Save one task-relative tool or action observation."))
+                     "Save one coarse, reusable process observation."))
       (should (equal (plist-get (plist-get definition :parameters) :required)
                      ["signal" "note" "stated_purpose"]))
       (setq result
@@ -86,6 +86,19 @@
                    :turn-id "turn-1")))
       (should (equal (plist-get result :content) "ok"))
       (should-not (string-match-p "short method" (plist-get result :content))))))
+
+(ert-deftest e-process-reporting-test-guidance-selects-coarse-reusable-flows ()
+  "Marker guidance makes routine and self-referential capture exceptional."
+  (let ((guidance (e-capability-instructions
+                   (e-process-reporting-capability-create))))
+    (should (string-match-p "multi-step or complex flow" guidance))
+    (should (string-match-p "reusable process observation" guidance))
+    (should (string-match-p "most turns should have none" guidance))
+    (should (string-match-p "ordinary corrections" guidance))
+    (should (string-match-p "requests to change marker frequency" guidance))
+    (should-not (string-match-p "signals always qualify" guidance))
+    (should-not (string-match-p "scan the WHOLE turn" guidance))
+    (should-not (string-match-p "none.*rare" guidance))))
 
 (ert-deftest e-process-reporting-test-capture-attaches-content-free-evidence-and-links ()
   (e-process-reporting-test--with-store (store directory)

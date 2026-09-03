@@ -30,7 +30,7 @@
   :prefix "e-process-reporting-")
 
 (defconst e-process-reporting-instructions
-  "Call process_marker to record a task-relative process point the instant it happens, across the full range of signals -- not just tool failures. A process point is any of: something failed (failure); something caused friction, a retry, or a workaround (friction, workaround); you accepted a correction, including one to your own output or reasoning (correction); you repeated the same step several times (repetition); you found a reusable insight or an approach that worked well (effective, success); an operation you needed did not exist (missing-operation); a step was notably slow (performance). Record one marker per distinct point; do not weigh whether it is important enough -- these signals always qualify, and a self-corrected slip or an accepted correction counts as much as a tool error. Before you finalize ANY turn, scan the WHOLE turn for unrecorded process points of every signal above and record them now; most turns have at least one, so 'none' should be rare and deliberate. Do not narrate the marker or repeat unchanged evidence."
+  "Call process_marker only when a substantive multi-step or complex flow reveals a reusable process observation: a recurring failure or friction pattern, a workaround or method likely to help future tasks, a materially blocking missing capability, or a notable performance bottleneck. Do not mark routine successful steps, one-off minor failures or retries, ordinary corrections, self-corrections, or requests to change marker frequency. Do not scan every turn for a marker; most turns should have none. Record at most one marker for the same underlying observation, when its reusable significance becomes clear. Do not narrate the marker or repeat unchanged evidence."
   "Minimal parent-facing process marker guidance.")
 
 (defconst e-process-reporting-signals
@@ -879,7 +879,7 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
   (e-tools-register
    registry
    :name "process_marker"
-   :description "Save one task-relative tool or action observation."
+   :description "Save one coarse, reusable process observation."
    :parameters e-process-reporting--marker-parameters
    :blocking-class 'cheap
    :work
