@@ -4,7 +4,8 @@
 * Status
 
 In-review (origin-authoritative Addendum 7 integrated implementation;
-[[file:addendum8.org][Addendum 8]] planned).
+[[file:addendum8.org][Addendum 8]] and
+[[file:addendum9.org][Addendum 9]] planned).
 
 Read-only review may continue, but further implementation or review remediation
 is blocked until Feature 91, [[file:../91-improve-modularization/plan.org][Improve Modularization]], reaches =Done=.
@@ -41,6 +42,13 @@ tool work may create a new frame that can be curated again in the same turn.
 A duplicate against a closed opportunity is ignored with one bounded
 corrective continuation instead of being reported as an invalid context
 lifetime record.  This remains unimplemented; =context-curate-v6= is current.
+
+Addendum 9 plans a content-free =context-curated= activity for classic chat and
+ModernChat.  It visualizes successful keep, summary, and erase counts without
+turning the reserved carrier into an ordinary tool, exposing source content or
+internal identities, or changing provider request material.  The existing
+durable consumed-frame activity is the semantic source for the bounded Board
+and shell projection.
 
 The behaviorally coherent implementation now spans core preparation, atomic
 session persistence, harness commit, the actual carrier, Feature 90 receipt

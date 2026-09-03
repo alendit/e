@@ -1,0 +1,309 @@
+#+title: Addendum 9: Context Curation Activity Visualization
+#+date: 2026-09-03
+#+startup: overview
+
+* Status
+
+Planned.
+
+This addendum extends [[file:addendum7.org][Addendum 7]] with a presentation
+contract for successful context curation.  It does not change the current
+=keep=, =summaries=, =erase=, omission, durability, or provider-carrier
+semantics.  It is compatible with the frame-scoped repeated-curation design in
+[[file:addendum8.org][Addendum 8]]: if Addendum 8 is implemented, each accepted
+frame decision is visualized separately in occurrence order.
+
+This is a repository-controlled presentation change.  It does not change the
+OpenAI request, response schema, carrier revision, prompt fingerprint, provider
+anchor, or external model-adoption evidence.
+
+* Problem
+
+A successful =context-curate= response is intentionally not an ordinary
+model-facing tool call.  The loop extracts it as a reserved semantic effect,
+the context-lifetime owner prepares and commits its promotion or erasure, and
+the session retains an audit-only response control plus a
+=context-frame-consumed= activity event.
+
+That separation is correct, but the current presentation path stops too early:
+
+- =context-curation-response= stays in private session activity rather than
+  transcript messages;
+- =context-frame-consumed= is not published through the Board activity
+  projection used by chat shells;
+- classic chat has no semantic activity row for curation; and
+- ModernChat therefore receives no curation activity DTO.
+
+The user can see an invalid curation indirectly when it fails the turn, but
+cannot see that a valid decision succeeded or whether it kept, summarized, or
+erased sources.  A missing visible indication also makes a successful curation
+indistinguishable from no curation call at all during ordinary use.
+
+The shell must expose the accepted decision without presenting the reserved
+carrier as a normal tool, leaking source content or internal identities, or
+making presentation part of semantic correctness.
+
+* Decision
+
+Visualize every successfully committed curation as a compact turn activity
+named =Context curated=.
+
+The activity summarizes only non-zero explicit dispositions:
+
+#+begin_example
+Context curated · kept 1 · summarized 2 sources into 1 summary · erased 1
+#+end_example
+
+The wording may use singular or plural forms appropriate to the counts, but it
+must preserve Addendum 7's meanings:
+
+- =kept= means retained as exact durable context;
+- =summarized= reports both the number of selected sources and the number of
+  durable summaries produced; and
+- =erased= means automatic future context projections derived from those
+  ordinary tool results are suppressed.
+
+The activity must not say =dropped=.  Addendum 7 removed the =drop=
+disposition, and ordinary omission is not evidence that the model considered a
+source.  Unselected ephemeral sources expire according to the existing frame
+lifetime without being presented as an explicit model decision.
+
+The curation activity is not a transcript message and does not increment the
+tool or action counts.  In classic chat it participates in the existing turn
+activity presentation: it is visible while the turn is active, remains in the
+expanded settled details, and contributes a compact =1 curation= count to the
+settled turn summary.  ModernChat receives the equivalent generic activity DTO
+with title =Context curated=, status =ok=, and the same count summary.
+
+Multiple accepted frame decisions in one turn produce multiple ordered
+activities and the settled summary reports their total.  A live event followed
+by replay must not produce duplicate rows.
+
+* Presentation data contract
+
+The context-lifetime owner already computes the source and disposition counts
+while preparing a valid decision.  Reuse those values to attach a nested,
+content-free presentation projection to the existing
+=context-frame-consumed= event only when a curation package was accepted:
+
+#+begin_src emacs-lisp
+(:curation
+ (:kept-source-count 1
+  :summary-count 1
+  :summarized-source-count 2
+  :erased-source-count 1))
+#+end_src
+
+All four fields are required non-negative integers when =:curation= is
+present.  At least one of =:kept-source-count=,
+=:summarized-source-count=, or =:erased-source-count= must be positive.
+=:summary-count= must be zero exactly when =:summarized-source-count= is zero
+and must not exceed the summarized source count.
+
+The projection contains no:
+
+- source body or generated summary text;
+- frame-local numeric label;
+- tool-call identity, observation identity, source reference, or fingerprint;
+- provider request or carrier payload; or
+- transcript, receipt, or temporary-resource content.
+
+The existing response, frame, curation, and activity identities remain private
+audit/correlation fields.  Presentation uses the durable Board activity
+identity for live/replay deduplication and does not expose internal correlation
+IDs in ordinary UI text.
+
+A =context-frame-consumed= event without =:curation= remains an internal
+lifetime event and produces no curation UI.  This preserves the distinction
+between a valid curation decision and ordinary frame expiry after a response
+with no reserved carrier call.
+
+* Ownership and dependency direction
+
+- Core context lifetime owns deriving and validating the disposition counts
+  because it alone knows the accepted semantic decision.  The projection is a
+  detached value, not access to a live frame or durable record.
+- Harness context runtime attaches that projection only after the semantic
+  package has been accepted and the frame has been consumed.  It never emits a
+  successful presentation for failed preparation or persistence.
+- Board runtime maps a consumed event carrying =:curation= to one public
+  =context-curated= activity and publishes only the four safe counts.  It does
+  not interpret =keep=, =summaries=, or =erase= arguments.
+- Chat service transports the generic activity through its existing bounded
+  activity projection.  It does not query private session curation records or
+  reconstruct policy.
+- Classic chat activity owns its row, compact turn count, expansion text, and
+  live/replay deduplication.  The chat facade gains no curation-specific
+  dispatch branch.
+- ModernChat view-model code owns the generic DTO title and summary; its UI
+  renders the activity through the existing activity surface.
+
+This direction keeps stable curation semantics independent of either shell:
+
+#+begin_example
+context lifetime -> harness event -> Board activity -> chat service
+                                                    -> classic chat activity
+                                                    -> ModernChat activity DTO
+#+end_example
+
+Presentation never reads or mutates context-lifetime state.
+
+* Required observable behaviors
+
+| ID | Required behavior | Owning boundary | Acceptance evidence |
+|----+-------------------+-----------------+---------------------|
+| =F88A9-PROJECTION= | A successful keep, summary, erase, or mixed decision attaches one validated, content-free count projection to the consumed-frame event.  No-call and failed decisions attach none. | Core preparation and harness completion. | Focused pure-count and harness success/no-call/failure tests. |
+| =F88A9-BOARD= | Board publishes exactly one =context-curated= activity for a consumed event carrying the projection and publishes none for ordinary frame consumption. | Board runtime activity adapter. | Board publication, safe-field allowlist, and duplicate-source-key tests. |
+| =F88A9-CLASSIC= | Classic chat visibly identifies the curation during the active turn, retains it in expanded settled details, and reports the curation count without increasing tool/action counts. | Chat activity owner. | Focused live and replay composition tests. |
+| =F88A9-MODERN= | ModernChat exposes title =Context curated=, status =ok=, and the same disposition summary through its existing activity DTO and view. | ModernChat view model and activity surface. | DTO contract test plus rendered view test. |
+| =F88A9-LANGUAGE= | The UI distinguishes kept, summarized, and erased decisions, never calls omission =drop=, and omits zero-valued categories. | Shared presentation formatter owned below the shell-specific renderers. | Singular/plural, zero-category, mixed, and erase-only table tests. |
+| =F88A9-PRIVACY= | No source content, summary text, labels, tool/observation IDs, fingerprints, provider payloads, or private correlation IDs enter the public activity. | Core projection and Board allowlist. | Hostile sentinel test across event, Board message, classic buffer, and ModernChat DTO. |
+| =F88A9-ORDERING= | Two accepted frame decisions render as two ordered activities and settle as =2 curations= without live/replay duplication. | Board sequence and shell activity state. | Multi-frame composition test compatible with Addendum 8. |
+| =F88A9-GRAPHICAL= | The compact and expanded classic-chat states remain readable and do not disturb composer placement, viewport following, or turn settlement. | Classic chat presentation. | Isolated graphical E2E with before/after artifacts. |
+| =F88A9-PRESERVATION= | Existing tool, action, reasoning, compaction, terminal, and unread behavior is unchanged; curation visualization cannot change semantic success. | Existing owner boundaries. | Focused preservation tests and full repository suite. |
+
+* Rendering behavior
+
+** Classic chat
+
+The activity owner records =context-curated= as one intermittent turn entry.
+Its compact title is =Context curated= and its body is produced from the safe
+count projection.  While the turn is active, the normal activity transient
+makes the entry discoverable.  After settlement, the ordinary summary includes
+the curation count alongside duration, tool count, and action count; expanding
+the summary shows each curation entry in Board order.
+
+The row must not be inserted as a =System= transcript message.  It must not
+move the response separator, mark the assistant response as complete, restore
+the composer early, or settle the selected turn.  Provider-started,
+assistant-output, and terminal events retain those responsibilities.
+
+** ModernChat
+
+The service exposes =context-curated= through the same bounded activity list as
+other public activity.  The view model supplies a stable title and formats the
+safe counts rather than printing the event plist.  The UI uses its existing
+activity ordering and expansion behavior; no context-lifetime policy enters
+the egui shell.
+
+** Resource and audit views
+
+Existing session activity and context-curation resources remain the detailed
+audit surface.  This addendum does not add a second detailed curation browser
+or make the chat row a deletion/privacy control.  If a future UI needs source-
+level inspection, it must use an explicit read-only resource with the existing
+authorization and lifetime rules rather than expanding the public activity
+payload.
+
+* Failure and delivery model
+
+Semantic curation succeeds or fails before presentation.  A rejected
+disposition, ineligible erasure, persistence error, or invalid frame continues
+to use the existing visible turn-failure path and must not emit
+=context-curated=.
+
+Publishing the derived Board activity is an ordinary presentation side effect.
+Failure to deliver or render it must not roll back, retry, or reinterpret an
+already committed curation decision.  Normal Board persistence and replay make
+an activity visible after reopening when publication completed.  This
+addendum does not add a cross-owner transaction, outbox, acknowledgement
+protocol, reconciliation catalog, or automatic resubmission for a process loss
+between semantic commit and Board publication.
+
+Unexpected malformed public count projections fail visibly at their owning
+adapter or renderer.  Shells do not silently print raw internal event plists as
+a successful curation fallback.
+
+* Implementation package
+
+1. Add one pure context-lifetime helper that derives the four safe counts from
+   an already normalized/prepared decision, and owner-test its invariants.
+2. Attach the projection to successful =context-frame-consumed= events without
+   changing curation package, response-control, or frame-consumption ordering.
+3. Map projected consumption to bounded =context-curated= Board activity and
+   preserve Board sequence/source-key deduplication.
+4. Add one shared count-to-text formatter at the presentation-service boundary
+   or another equally narrow shell-neutral location; both shells must consume
+   the same meanings rather than duplicate curation policy.
+5. Add classic activity ownership, count aggregation, expansion, and
+   live/replay tests without adding a curation branch to the facade.
+6. Add the ModernChat DTO/view behavior and rendered contract test.
+7. Run the isolated graphical chat scenario with screenshot artifacts, the
+   credential-free real OpenAI-adapter curation composition path, focused owner
+   suites, warnings-as-errors compilation for changed modules, Org parsing,
+   whitespace validation, and the full repository suite.
+
+The real-adapter scenario must pass an actual reserved carrier response through
+the OpenAI decoder and the ordinary harness/Board/chat composition.  A test
+that injects only a fabricated =context-curated= shell event is useful owner
+coverage but is not sufficient end-to-end evidence.  New acceptance scenarios
+must pass in the supported test environment; this addendum introduces no
+skipped, quarantined, or expected-failure test.
+
+* Compatibility and performance
+
+No durable curation-package, promotion, erasure, transcript, provider, or
+carrier format changes.  The existing durable activity schema gains only a
+bounded nested scalar projection, and the Board gains one public activity
+kind.  Older sessions without the projection remain readable and simply have
+no curation visualization for historical decisions.
+
+The normal cost is constant work over values already counted during curation,
+one bounded activity publication per successful decision, and one small shell
+entry.  Rendering must not scan the session, curation catalog, transcript, or
+tool receipts.  Replay remains bounded by the existing Board activity
+projection.  No timer, polling loop, synchronous redraw, or new database query
+is added to the chat hot path.
+
+Because provider request material is unchanged, this addendum does not advance
+=context-curate-v6= by itself and does not invalidate current provider
+compatibility evidence.  If Addendum 8 lands first, its active carrier revision
+remains authoritative while this presentation contract stays unchanged.
+
+* Non-goals
+
+- Rendering =context-curate= as an ordinary model-facing tool call.
+- Showing source values, generated summary text, frame labels, provenance, or
+  internal identities in the chat activity.
+- Treating omission or no carrier call as an explicit model decision.
+- Adding manual keep, summarize, erase, undo, or replay controls.
+- Changing context semantics, carrier guidance, provider request shape, or
+  configured-model adoption evidence.
+- Adding cross-owner transactionality or recovery for presentation delivery.
+- Building a new curation history browser when existing read-only resources
+  already own detailed audit access.
+
+* Design self-check
+
+1. If work stops at this package, users can observe successful curation in both
+   chat shells without changing what curation means.
+2. It moves toward observable provider-neutral context lifetime while keeping
+   harness semantics and presentation separate.
+3. Exact wording and visual styling may change and remain local to the shared
+   formatter and shells.  Disposition meanings, safe fields, and success
+   timing are stable contracts.
+4. Context lifetime owns accepted decision facts; harness owns completion;
+   Board owns public activity; each shell owns rendering.
+5. One four-field projection and one activity kind reduce the current hidden
+   coupling to private session records.  Shell interfaces remain narrow and
+   content-free.
+6. Core does not depend on Board or UI, and shells do not depend on provider,
+   frame, session-codec, promotion, erasure, or receipt internals.
+7. Semantic mutation remains inside context/session owners; Board publication
+   and rendering remain outward side effects.
+8. No new semantic state is added.  A bounded durable activity projection is
+   retained only for ordinary activity replay and can be evicted with that
+   existing tail.
+9. Successful decisions add constant formatting/publication work and no scan,
+   polling, synchronous redraw, or provider request.
+10. =context-curated= has one meaning in every shell: a curation package was
+    accepted, with the reported explicit disposition counts.
+11. Older sessions remain readable; absent historical projections are not
+    reconstructed through speculative compatibility logic.
+12. No legacy code is required.  Any raw-event fallback test that treated
+    curation as an unknown shell event can be removed when semantic rendering
+    is accepted.
+13. Expected invalid dispositions use the existing turn-failure path;
+    unexpected projection/publication/rendering errors surface at their owner.
+14. Pure projection, harness, Board, each shell, graphical, real-adapter, and
+    full-suite tests isolate the behavior at narrow boundaries.
