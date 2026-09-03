@@ -7,7 +7,10 @@
 
 Done.  Independent review reached a deterministic fixed point at exact revision
 =c7ceeb45f65532c42068ba087732b32428a220bb=.  All contracts are accepted and
-=F87-GOAL= is =passing=.
+=F87-GOAL= is =passing=.  The later zero-exception preservation follow-up was
+independently reviewed, its one test-topology finding was corrected, and the
+parent accepted the final code and test revision
+=2275c427c70605e689c518f6e8482bfb894f9ed8=.
 
 * Review summary
 
@@ -419,6 +422,12 @@ that reproduced the same owner-active failure now require that fixture
 directly.  The exact modernchat-plus-session selector passes 140/140, the
 session file alone passes 100/100, and the nine-file standalone correction set
 passes 147/147, all with zero skipped results.
+
+Parent verification at the final code and test revision independently passed
+the mixed modernchat-plus-session selector 140/140 and the supported canonical
+gate 2,704/2,704 with zero unexpected and zero skipped results.  The final
+canonical run took 148.302690 seconds.  The running Emacs and operator database
+were not contacted.
 
 * Plan coverage
 

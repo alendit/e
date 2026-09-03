@@ -87,6 +87,11 @@ focused tests prove both the active binding/cleanup path and the inert path.
   were left unchanged.
 - Complete supported command, with a fresh disposable runtime directory:
   2,704/2,704 expected, 0 unexpected, 0 skipped.
+- Parent verification at final code and test revision
+  =2275c427c70605e689c518f6e8482bfb894f9ed8= independently passed the
+  modernchat-plus-session selector 140/140 and the complete supported command
+  2,704/2,704 with zero unexpected and zero skipped results in 148.302690
+  seconds.
 - Isolated graphical suite: 28/28 expected.
 - The reviewed blocking-site inventory remains current; the offline-only
   =e-session-rebuild-catalog= call is counted explicitly (1/1 expected).
