@@ -1,0 +1,205 @@
+#+title: Review 03: Addendum 9 Context Curation Activity Visualization
+#+date: 2026-09-03
+#+startup: overview
+
+* Status and decision
+
+Implementation-plan fixed point reached.
+
+This independent incremental Tick reviewed exact revision
+=915b3d7f5058c7d46d8df6a72d8002a17e63e5aa= against Review 02 at
+=ce498c9ee306b9511ca57d20c7bb54cf3b7a17ed= and its reviewed plan revision
+=1eda5193d511c9693dddbdf5cde3ca43705b8f22=.
+
+- P0: none.
+- P1: none.
+- P2: none; =F88A9.S1= and =F88A9.S3= are closed.
+- P3: none.
+- Required repository unknowns: none.
+
+The complete current Addendum 9 blob, its identity-bearing dependencies,
+normalized contract matrix, delivery-package relation, evidence topology,
+ModernChat Board identity path, glossary continuity, and architecture
+self-check clear at the implementation-plan review level.
+
+This result admits implementation.  It does not claim that the behavior is
+implemented or that a deterministic implementation fixed point has been
+reached.
+
+* Behavioral and mechanism status
+
+- Goal ID :: =F88A9-ACTIVITY=
+- Behavioral goal :: Users can distinguish each successfully committed
+  non-empty curation package from no package-bearing curation in both chat
+  shells, while seeing only disposition counts and without changing semantic
+  success.
+- Behavioral status :: Unavailable before implementation.
+- Direct scenario status :: Fully specified but not yet implemented or run.
+- First incomplete public boundary :: Harness frame consumption currently has
+  no safe Board =context-curated= projection.
+- Mechanism status :: Not started.
+- External compatibility :: Not applicable.  Request, carrier, and provider
+  material are unchanged; =A9-DIRECT= is credential-free deterministic
+  real-adapter composition evidence.
+
+The activity boundary is an accepted non-empty curation package.  No carrier
+call, rejected curation, ordinary frame consumption, and valid explicit
+all-label omission remain activity-free.
+
+* Prior finding dispositions
+
+** DONE Medium P2 =F88A9.S1=: accepted-package boundary
+
+The corrected Problem paragraph applies only to a =context-curate= response
+containing a valid non-empty disposition.  It identifies package preparation
+and commit before the audit control and frame-consumed event.  Status,
+Decision, the projection contract, negative scenario, and Non-goals preserve
+Addendum 7's package-free all-label omission.  The wording contradiction is
+closed without expanding behavior.
+
+** DONE High P1 =F88A9.S2=: delivery-package relation and closure
+
+Every contract maps to =F88A9-DP1=, and its =Establishes= field maps back to
+the same nine contracts.  The package defines entry state, dependencies,
+owner-complete work, acceptance, useful stopping point, checkpoint distinction,
+and split/combine tradeoff.
+
+** DONE Medium P2 =F88A9.S3=: behavioral trace and authority map
+
+The goal record names all nine owning contracts and separates behavioral,
+mechanism, and external-compatibility status.  The direct scenario uses an
+actual non-empty reserved carrier and reaches decoder, context lifetime,
+harness, Board, classic chat, and ModernChat DTO.
+
+The matrix is the sole normative authority.  Every retained section is assigned
+to its contract rows, goal rationale, delivery-package role, or architecture
+rationale, so no untracked normative outcome remains.
+
+** DONE Medium P2 =F88A9.S4=: real Board identity through ModernChat
+
+The ModernChat contract preserves durable Board =:message-id= as DTO =id=,
+forbids identity synthesis or omission, and requires service-produced DTO
+evidence plus Rust selection and inspector coverage.
+
+* Contract-to-delivery-package coverage
+
+| Contract | Establishing package | Required evidence |
+|----------+----------------------+-------------------|
+| =F88A9-PROJECTION= | =F88A9-DP1= | =A9-OWNER=, =A9-NEGATIVE=, =A9-DIRECT= |
+| =F88A9-BOARD= | =F88A9-DP1= | =A9-BOARD=, =A9-DIRECT= |
+| =F88A9-CLASSIC= | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= |
+| =F88A9-MODERN= | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= |
+| =F88A9-LANGUAGE= | =F88A9-DP1= | =A9-OWNER= |
+| =F88A9-PRIVACY= | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= |
+| =F88A9-ORDERING= | =F88A9-DP1= | =A9-ORDERING= |
+| =F88A9-GRAPHICAL= | =F88A9-DP1= | =A9-GRAPHICAL= |
+| =F88A9-PRESERVATION= | =F88A9-DP1= | =A9-NEGATIVE=, =A9-PRESERVATION=, =A9-DIRECT= |
+
+Conversely, =F88A9-DP1= explicitly establishes exactly those nine contracts.
+No orphan contract or unowned package outcome remains.  The package is the
+smallest useful stopping point: a smaller owner-only or one-shell package leaves
+the goal unavailable, while adding Addendum 8, provider changes, or curation
+controls mixes unrelated policy and compatibility risk.
+
+* Implementation-plan cell coverage
+
+| Required cell | Tick disposition |
+|---------------+------------------|
+| Single normative authority | Cleared |
+| Behavioral design trace | Cleared |
+| Durable contract boundary | Cleared |
+| Scenario diagnosability | Cleared |
+| Evidence topology | Cleared |
+| External freshness | N/A: no external capability changed |
+| Telemetry decision power | Cleared |
+| Exact-limit justification | Cleared: no new arbitrary limit |
+| Defensive actionability | Cleared |
+| Change locality | Cleared |
+| Workflow boundary | Cleared |
+| Decision level | Cleared: implementation-plan review |
+| Contract-to-package coverage | Cleared |
+| Useful stopping point | Cleared |
+| Cohesion and transaction closure | Cleared |
+| Dependency order | Cleared |
+| Package-size tradeoff | Cleared |
+| Acceptance-cost topology | Cleared |
+| Checkpoint/package distinction | Cleared |
+
+No required cell is unknown.
+
+* Scenario and evidence topology
+
+- =A9-DIRECT= requires an actual non-empty OpenAI Responses reserved carrier
+  through decoder, context preparation, package commit, harness activity, Board
+  publication, classic presentation, and ModernChat DTO projection.  It checks
+  equal safe counts, privacy, ordering, and unchanged tool/action totals.
+- =A9-NEGATIVE= retains the all-empty real-adapter path as negative evidence.
+- =A9-MODERN= requires a service-produced activity with its real Board identity
+  and Rust selection/inspector evidence.
+- Owner, Board, classic, ordering, privacy, graphical, and preservation
+  scenarios provide narrow diagnostic evidence around the direct composition.
+- External evidence is N/A because no request or provider material changes.
+
+* Architecture and glossary continuity
+
+The dependency direction remains:
+
+#+begin_example
+context lifetime -> harness activity -> Board runtime -> chat service
+                                                    -> classic activity
+                                                    -> ModernChat view model
+                                                       -> Rust view
+#+end_example
+
+Context lifetime owns accepted facts.  Harness owns successful completion,
+Board owns ordered public activity, chat service transports bounded detached
+projections, and each shell owns rendering.  The package adds no semantic
+state, polling, scan, cross-owner transaction, speculative abstraction, or
+compatibility fallback.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  Its terms fit
+this work.  “Context-curation activity” is a material candidate defined by
+Addendum 9; it is not an unresolved plan decision and does not require a
+glossary edit in this package.
+
+* Plan identity
+
+This Tick binds its result to these exact blobs:
+
+- =addendum9.org=: =a18059b3901e7cbcc6d8f8b39d10843345bf5dd4=
+- =addendum7.org=: =808b4869a257f63fac9548a7b26351d706d095ec=
+- =addendum8.org=: =ad6ceb75776c67962ba6e610245d4e97ff01c158=
+- =docs/architecture.md=: =48dc0e6e445a2a3a68630d40fba749f7444c58ae=
+- =docs/references/runtime_concepts.org=:
+  =c80fb8cade9100dac00c33ff7d43ffaac3a053f4=
+- =docs/feats/index.org=: =5690e828d660925421faf8a84b12747ff3505409=
+
+The identity-bearing Addendum 9 sections are Status, Decision, Presentation
+data contract, Ownership, Goal and normative contract matrix, Scenario
+portfolio, Rendering, Failure, Delivery package, Compatibility, Non-goals, and
+Design self-check.  Any future change to these blobs invalidates affected cells
+and requires a fresh Tick.
+
+* Verification performed
+
+- =git rev-parse HEAD= returned the reviewed revision.
+- =git status --short= returned no entries.
+- Dependency-path comparison found no changed identity-bearing dependency.
+- =git diff --check ce498c9e..915b3d7f -- addendum9.org= found no issue.
+- Batch Org parsing of Addenda 7, 8, 9 and Reviews 01/02 returned
+  =Org parse OK: 5 files=.
+- The current Addendum 9 blob, S1/S3 remediation, prior S2/S4 evidence, package
+  map, scenarios, ModernChat identity seam, glossary entries, and architecture
+  self-check were inspected.
+
+No live Emacs probe, reload, provider request, implementation suite, Rust
+build, or graphical run was performed.  The running Emacs was left unchanged,
+and the reviewer changed no repository file.
+
+* Unresolved
+
+None.
+
+Addendum 9 has reached =implementation-plan-fixed-point=.  Behavioral status
+remains unavailable until =F88A9-DP1= is implemented and its deterministic
+acceptance portfolio passes.
