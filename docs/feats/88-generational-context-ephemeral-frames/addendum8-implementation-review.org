@@ -1,0 +1,145 @@
+#+title: Implementation Review: Feature 88 Addendum 8
+#+date: 2026-09-03
+#+startup: overview
+
+* Status and decision
+
+In-review.  The frame-scoped recovery implementation is complete through
+candidate =046a6b7d= against the accepted plan at =f69a8ee8=.  The primary
+runtime package is =8a957b0b=; =046a6b7d= closes an anchor-safety defect found
+by the full-suite audit.  The separately owned duplicate-terminal projection
+fix is =51de7531=.
+
+Independent review found and verified corrections for duplicate strictness,
+diagnostic cardinality, terminal/service-state reconciliation, summary-only
+replay, and candidate-before-curation ordering.  The final review pass reports
+no actionable correctness, architecture, privacy, performance, or UX finding.
+
+- P0: none.
+- P1: none.
+- P2: none.
+- P3: none.
+- Open product findings: none.
+
+* Scope reviewed
+
+The review covered request/frame opportunity capture in =e-loop=, frame
+validation and consumption, normal and corrective OpenAI replay bundles,
+carrier v8 request shapes, durable package and activity ordering, provider
+anchor acceptance/persistence, and the classic/ModernChat terminal projection
+that surfaced the incident twice.
+
+No provider request was made.  The user's running Emacs was not reloaded or
+modified.
+
+* Contract disposition
+
+| Contract | Evidence | Disposition |
+|----------+----------+-------------|
+| =F88A8-GUIDANCE= | HTTP/WebSocket request-shape tests assert the v8 once-per-presented-frame guidance. | clear |
+| =F88A8-OPPORTUNITY= | Request-captured frames replace the obsolete turn-wide counter. | clear |
+| =F88A8-MULTI-FRAME= | Real Responses stateless and anchored compositions complete tool A, curate A, tool B, curate B, answer. | clear |
+| =F88A8-DUPLICATE= | Matching consumed-frame duplicate repeats strict validation, mutates nothing, and emits one diagnostic. | clear |
+| =F88A8-RECOVERY= | One corrective carrier-free request is permitted; a repeat reaches ordinary empty-output settlement. | clear |
+| =F88A8-STRICTNESS= | Unknown labels, erase eligibility, size bounds, malformed dispositions, and multiple effects remain strict. | clear |
+| =F88A8-DURABILITY= | Two packages retain order through reopen, fork, checkpoint, and compaction. | clear |
+| =F88A8-USABILITY= | Recovery is followed by a successful fresh user turn. | clear |
+| Anchor safety | Curation and one-shot replay candidates remain immediate-only for every backend item order. | clear |
+| Terminal projection | Detailed terminal activity renders once; summary remains replayable aggregate data and reconciles service state only. | clear |
+
+* Review corrections
+
+The initial implementation review rejected three subtle shortcuts:
+
+1. A duplicate could bypass ordinary frame-bound semantic validation.  The
+   loop now validates against the retained just-curated frame before ignoring
+   the effect.
+2. The duplicate diagnostic could be emitted more than once.  Emission now
+   occurs only on the first bounded correction.
+3. A curation-bearing response candidate was classified immediate-only when
+   received, but final promotion could discard that classification.  The loop
+   now retains request replay state and recomputes from the completed response,
+   so candidate-before-effect ordering is safe.
+
+The terminal projection review additionally found that preserving
+=turn-summary= could leave successful ModernChat state active, and that a
+summary-only bounded replay lacked its provider witness.  Service-state
+reconciliation and summary-owned aggregate state close both cases without
+making the summary a second presentation terminal.
+
+* Verification
+
+Repository validation ran outside the user's Emacs.
+
+- Primary frame-scoped package: 239 focused owner/composition tests passed.
+- Post-audit Addendum 8 portfolio: 129/129 passed across loop, lifetime,
+  harness composition, provider continuation, OpenAI carrier, and post-cutover
+  E2E files.
+- Terminal/service portfolio: 260/260 passed.
+- Focused terminal regression: one detailed Board failure plus one aggregate
+  summary renders exactly one failure and one =Turn took= line both live and
+  after transcript replay.
+- Structural validation: changed Elisp files pass =check-parens= and the full
+  diff passes =git diff --check=.
+
+The first post-change full suite produced 2,710/2,721 expected results.  Six
+were the existing sandbox loopback-fixture denials.  The other five were useful
+audit failures: three exposed the anchor defect and two retained the obsolete
+v7 carrier wording.  The implementation and expectations were corrected, and
+their focused portfolio passes.
+
+The final full suite produced 2,716/2,722 expected results.  Its only six
+failures were the known sandbox denials for local MCP/OpenAI HTTP fixture
+servers.  Re-running those exact six tests with loopback permission passed
+6/6.  The isolated graphical suite passed 30/30, including the context-curation
+activity scenario and chat settlement/window behavior.
+
+Emacs 31 continues to report repository-wide obsolete =when-let=/=if-let=
+warnings predating this package; they are not introduced by these changes.
+
+* Architecture review
+
+Frame validity remains core-owned.  The loop owns request sequencing, bounded
+recovery, and provider-candidate admission.  The adapter owns opaque wire
+bundles.  Session owns accepted durable packages and anchors.  Board owns
+public terminal/aggregate facts, while shells own rendering and composer
+state.  No presentation component reads private frame or provider payloads.
+
+The recovery state is one retained just-curated frame plus one turn-local
+correction bit.  Candidate safety is one request-local boolean combined with
+the completed response facts.  None is durable, unbounded, or scanned.  The
+ordinary path adds constant work and no provider request; only the duplicate
+path adds one bounded correction.
+
+* Design self-check
+
+1. Yes.  Stopping here leaves multi-frame curation useful and prevents the
+   reported whole-turn corruption failure.
+2. It moves toward frame-owned generational context with bounded,
+   provider-neutral recovery.
+3. Provider compliance remains uncertain and externally testable; frame
+   identity, strict validation, and the one-correction bound are direct stable
+   contracts.
+4. Core owns validity, loop owns sequencing/admission, adapter owns wire state,
+   session owns durability, and shells own presentation.
+5. Coupling is reduced by replacing a turn-wide heuristic with one captured
+   request/frame opportunity and narrow immediate-only candidate fact.
+6. Stable context policy has no dependency on OpenAI or presentation code.
+7. Opaque acknowledgement/correction serialization stays at the adapter edge.
+8. Accepted packages and compatible anchors alone are durable; opportunity,
+   correction, and candidate-order state end with the turn/request.
+9. Normal cost is constant; duplicate recovery adds at most one request.
+10. The same one-frame/one-decision contract applies to each adapter.
+11. Existing sessions remain readable; v8 intentionally fences incompatible
+    provider layout identities.
+12. The obsolete turn-wide counter and failure-accepting regression are gone.
+13. Recognized duplicates recover locally; malformed records and unexpected
+    failures still surface.
+14. Owner, composition, real-adapter, replay, shell, and graphical tests cover
+    the change without relying on the user's live Emacs.
+
+* Live use
+
+The user's running Emacs was left unchanged.  Because this package changes
+core loop and adapter behavior, a full Emacs restart is required to use it;
+=e-dev-reload= does not apply the complete fix.

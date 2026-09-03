@@ -319,6 +319,14 @@ Carrier removal changes the request layout, so both configured continuation
 modes correctly use complete stateless call/output replay for that immediate
 acknowledgement.
 
+The post-implementation full-suite audit found one missed anchor-ownership
+case.  A candidate from a response containing curation, or from its one-shot
+opaque replay request, could lose its immediate-only classification before
+final promotion and become reusable by a later frame.  The corrected loop now
+combines request-time replay state with completed-response curation state,
+independent of backend item order.  Such candidates may serve only the
+matching immediate continuation and are never persisted as durable anchors.
+
 Deterministic evidence includes 239 focused owner tests; a credential-free real
 Responses composition that runs stateless and anchored variants through
 =tool A -> curate A -> tool B -> curate B -> answer=; two post-cutover Responses

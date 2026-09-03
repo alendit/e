@@ -114,6 +114,40 @@ otherwise deduplicate both publications by their shared source event.  Add a
 board-derived chat regression proving that one runtime failure renders exactly
 one notice while its duration and counts remain available.
 
-No source or test remediation was made.  Feature 91 is =In-review= and the
-repository's current implementation gate prohibits implementation outside that
-feature until it reaches =Done=.
+* Remediation implemented
+
+The obsolete turn-wide failure policy and its accepting regression were
+removed in =8a957b0b=.  Each provider request now captures its own frame
+opportunity.  Two genuinely new frames may be curated in one turn, while a
+duplicate against the matching consumed frame receives one carrier-free
+corrective continuation and then falls through the ordinary bounded
+empty-output policy.  The duplicate path repeats strict frame-bound validation
+before ignoring the semantic effect, commits no second package, and does not
+raise invalid-record corruption.
+
+A full-suite audit then exposed a related continuation-safety defect: a
+response that contained curation could be promoted as a durable provider
+anchor when candidate and effect items arrived in particular orders.  Commit
+=046a6b7d= retains the response's immediate-only classification through final
+promotion, including candidate-before-curation and one-shot replay requests.
+Those response ids may serve only their matching immediate continuation and
+cannot contaminate a later frame.
+
+The duplicate terminal notice was fixed independently in =51de7531=.  Chat
+service preserves =turn-summary= as aggregate data instead of translating it
+into another terminal event.  Classic chat still renders duration, tool, and
+action totals exactly once, including summary-only bounded replay.  Service
+state uses the summary's terminal status only to reconcile the matching
+selected active turn, so ModernChat re-enables its composer after successful
+completion without rendering a second failure or cancellation.
+
+Repository regressions now cover tool/curate/tool/curate/answer, strict and
+bounded duplicate recovery, fresh-turn reuse, candidate-before-curation anchor
+safety, one live/replayed failure notice, summary-only aggregate replay, and
+completed ModernChat state.  Independent re-review found no remaining
+actionable implementation defect.
+
+The user's running Emacs was inspected only through the bounded read-only
+=scripts/e-live-probe chat= command and was left unchanged.  The current
+session was already settled in =error= at the time of inspection; repository
+validation used isolated batch and graphical Emacs processes.
