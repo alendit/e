@@ -50,7 +50,7 @@
     (should
      (equal
       (plist-get (aref enabled-tools 0) :description)
-      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."))
+      "Call context-curate at most once for the currently presented set of labeled ephemeral sources. After its acknowledgement, continue with ordinary tools or a normal answer. Call it again only after later tool work or context refresh presents a new set of labeled ephemeral sources; labels belong only to the currently presented frame and cannot be reused for an earlier frame. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."))
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
            (properties (plist-get parameters :properties))
            (summary-schema (plist-get properties :summaries))
@@ -187,7 +187,7 @@
               (should
                (equal
                 (plist-get tool :description)
-                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."))
+                "Call context-curate at most once for the currently presented set of labeled ephemeral sources. After its acknowledgement, continue with ordinary tools or a normal answer. Call it again only after later tool work or context refresh presents a new set of labeled ephemeral sources; labels belong only to the currently presented frame and cannot be reused for an earlier frame. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."))
               (should-not (plist-member parameters :required))
               (should (eq (plist-get parameters :additionalProperties)
                           :json-false))

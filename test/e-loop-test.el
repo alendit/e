@@ -2032,6 +2032,55 @@
                           messages))
     (should (equal (plist-get (car messages) :content) "answer"))))
 
+(ert-deftest e-loop-test-candidate-before-curation-stays-immediate-only ()
+  "A candidate cannot become durable when later output curates the response."
+  (let* ((events nil)
+         (backend
+          (e-backend-create
+           :name "candidate-before-curation"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              ;; Provider item order is not an ownership guarantee.  The
+              ;; completed response, rather than candidate arrival time,
+              ;; decides whether its state is safe to persist.
+              (funcall on-item
+                       '(:type provider-anchor-candidate
+                         :provider-id fake
+                         :metadata (:response-id "response-curated")))
+              (funcall on-item
+                       '(:type context-curate
+                         :arguments (:keep nil :summaries nil :erase nil)))
+              (funcall on-item
+                       '(:type assistant-message :content "answer"))
+              (funcall on-item '(:type done :reason stop)))))))
+    (e-loop-run-turn-batch
+     :session-id "session-candidate-before-curation"
+     :turn-id "turn-candidate-before-curation"
+     :messages '((:role user :content "prompt"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options '(:model "fake"
+                :provider-continuation t
+                :provider-anchor-provider-id fake
+                :context-capabilities
+                (:continuation linear
+                 :observation-delivery request-local-replaceable))
+     :on-event
+     (lambda (type payload)
+       (push (list :type type :payload payload) events))
+     :append-message #'ignore)
+    (let ((candidate
+           (plist-get
+            (seq-find
+             (lambda (event)
+               (eq (plist-get event :type) 'provider-anchor-candidate))
+             events)
+            :payload)))
+      (should candidate)
+      (should (plist-get candidate :immediate-followup-only))
+      (should-not (plist-get candidate :accepted-for-persistence)))))
+
 (ert-deftest e-loop-test-curation-only-response-continues-with-opaque-ack ()
   "A reserved-only response commits, acknowledges, then permits one answer."
   (let* ((request-count 0)

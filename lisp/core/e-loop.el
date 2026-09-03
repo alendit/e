@@ -446,6 +446,10 @@ metadata, before tool execution begins."
                   (token-usage nil)
                   (done-reason nil)
                   (provider-anchor-candidate nil)
+                  ;; Remember request facts that may be cleared before final
+                  ;; candidate promotion.  Final response facts are combined
+                  ;; again there so backend item order cannot weaken safety.
+                  (provider-anchor-candidate-immediate-only-p nil)
                   (pending-provider-replay-items nil)
                   (pending-provider-corrective-replay-items nil)
                   (provider-followup-messages nil)
@@ -551,32 +555,37 @@ metadata, before tool execution begins."
                         provider-request-causes))))
                   (promote-provider-anchor
                    (&optional immediate-only-p)
-                    (when (and provider-anchor-candidate
-                               (or (not context-refreshed-p)
-                                   (e-loop--continuation-projection-compatible-p
-                                    provider-request-projection-identity
-                                    turn-options)))
-                      (setq turn-options
-                             (e-loop--promote-continuation-candidate
-                             turn-options
-                             provider-anchor-candidate
-                             (length turn-messages)
-                             provider-followup-messages
-                             (or immediate-only-p tool-called)))
-                      ;; Only emit a candidate once this loop has accepted it
-                      ;; for the current request projection.  Raw provider
-                      ;; items are intentionally not durable ownership facts.
-                      (e-loop--emit
-                       :on-event on-event
-                       :type 'provider-anchor-candidate
-                       :payload
-                       (e-loop--accepted-continuation-candidate
-                        provider-anchor-candidate
-                        provider-request-projection-identity
-                        provider-request-id
-                        provider-request-ordinal
-                        (or immediate-only-p tool-called)))
-                      t))
+                    (let ((effective-immediate-only-p
+                           (or immediate-only-p
+                               tool-called
+                               response-curation-effects
+                               provider-anchor-candidate-immediate-only-p)))
+                      (when (and provider-anchor-candidate
+                                 (or (not context-refreshed-p)
+                                     (e-loop--continuation-projection-compatible-p
+                                      provider-request-projection-identity
+                                      turn-options)))
+                        (setq turn-options
+                              (e-loop--promote-continuation-candidate
+                               turn-options
+                               provider-anchor-candidate
+                               (length turn-messages)
+                               provider-followup-messages
+                               effective-immediate-only-p))
+                        ;; Only emit a candidate once this loop has accepted it
+                        ;; for the current request projection.  Raw provider
+                        ;; items are intentionally not durable ownership facts.
+                        (e-loop--emit
+                         :on-event on-event
+                         :type 'provider-anchor-candidate
+                         :payload
+                         (e-loop--accepted-continuation-candidate
+                          provider-anchor-candidate
+                          provider-request-projection-identity
+                          provider-request-id
+                          provider-request-ordinal
+                          effective-immediate-only-p))
+                        t)))
                   (response-completion-payload
                     ()
                     (list :frame provider-request-lifetime-frame
@@ -1236,11 +1245,17 @@ metadata, before tool execution begins."
                                :type 'token-usage
                                :payload token-usage))
                              ('provider-anchor-candidate
-                              (when (e-loop--continuation-candidate-p
-                                     turn-options item
+                              (let ((immediate-only-p
                                      (or tool-called
-                                         response-curation-effects))
-                                (setq provider-anchor-candidate item))
+                                         response-curation-effects
+                                         (plist-member
+                                          provider-request-options
+                                          :provider-request-replay-items))))
+                                (when (e-loop--continuation-candidate-p
+                                       turn-options item immediate-only-p)
+                                  (setq provider-anchor-candidate item
+                                        provider-anchor-candidate-immediate-only-p
+                                        (and immediate-only-p t))))
                               ;; Do not forward the raw item.  The accepted
                               ;; event is emitted by `promote-provider-anchor'
                               ;; only after the loop has checked the current
