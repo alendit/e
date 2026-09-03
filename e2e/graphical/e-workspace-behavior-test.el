@@ -134,6 +134,13 @@
         (progn
           (e-persp-test-config-apply save-directory)
           (set-frame-size (selected-frame) 140 48)
+          ;; NS applies frame resizing asynchronously.  Let the private test
+          ;; frame reach its actual geometry before any fixture records a
+          ;; window signature; otherwise a later resize can turn the same
+          ;; split topology into a false geometry mismatch.
+          (redisplay t)
+          (sit-for 0.05)
+          (redisplay t)
           (funcall function))
       (e-workspace-behavior-test--cleanup
        configuration frame-size save-directory))))
