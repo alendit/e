@@ -723,7 +723,10 @@ append precedes frame consumption and the next provider request."
            (frame (plist-get preflight :frame))
            (response-id (plist-get preflight :response-id))
            (record (plist-get preflight :record))
-           (package (plist-get preflight :package)))
+           (package (plist-get preflight :package))
+           (curation-projection
+            (e-context-lifetime-curation-activity-projection
+             (plist-get preflight :curation-preparation))))
       (when (and frame (e-context-lifetime-frame-p frame)
                  (not (e-context-lifetime-frame-consumed-p frame)))
         (let* ((consumer-id
@@ -760,7 +763,8 @@ append precedes frame consumption and the next provider request."
            (list :frame-id (e-context-lifetime-frame-id consumed)
                  :consumer-request-id consumer-id
                  :response-entry-id response-id
-                 :curation-ids (and record appended (list curation-id))))
+                 :curation-ids (and record appended (list curation-id))
+                 :curation curation-projection))
           consumed)))))
 
 (defun e-harness-context-lifetime-tool-observation-frame

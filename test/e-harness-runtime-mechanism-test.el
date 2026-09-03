@@ -1805,6 +1805,12 @@ backend-error-message helper must return only the bare reason."
             (should (equal (plist-get (plist-get consumed-event :payload)
                                       :frame-id)
                            (e-context-lifetime-frame-id frame)))
+            (should
+             (equal (plist-get (plist-get consumed-event :payload) :curation)
+                    '(:kept-source-count 0
+                      :summary-count 0
+                      :summarized-source-count 0
+                      :erased-source-count 1)))
             (should-not (e-session-context-curations store "erase-only"))
             (let* ((reopened-erasures
                     (e-session-context-erasures reopened "erase-only"))
@@ -1843,9 +1849,12 @@ backend-error-message helper must return only the bare reason."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
-         frame entry)
+         frame entry
+         events)
     (unwind-protect
         (progn
+          (e-harness-activity-subscribe
+           harness (lambda (event) (push event events)))
           (e-harness-create-session harness :id "mixed")
           (let ((generation
                  (e-harness-context-runtime--context-lifetime-ensure-generation
@@ -1951,7 +1960,13 @@ backend-error-message helper must return only the bare reason."
                  :type 'error)))
             (should-not (e-context-lifetime-frame-consumed-p failure-frame))
             (should-not (e-session-context-curations store "mixed-failure"))
-            (should-not (e-session-context-erasures store "mixed-failure"))))
+            (should-not (e-session-context-erasures store "mixed-failure"))
+            (should-not
+             (seq-find
+              (lambda (event)
+                (and (eq (plist-get event :type) 'context-frame-consumed)
+                     (equal (plist-get event :turn-id) "turn-mixed-failure")))
+              events))))
       (delete-directory directory t))))
 
 (ert-deftest e-harness-test-context-lifetime-curation-binds-payload-frame-over-descendant ()

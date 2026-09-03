@@ -801,6 +801,48 @@ the record-focused assertions concise without restoring the retired wrapper."
         "response-retain-17")
        :type 'e-context-lifetime-invalid-record))))
 
+(ert-deftest e-context-lifetime-test-curation-activity-is-package-scoped-counts ()
+  "Activity projection exposes counts only for a non-empty semantic package."
+  (let* ((frame (e-context-lifetime-test--multi-tool-source-frame 5))
+         (prepared
+          (e-context-lifetime-prepare-curation-disposition
+           frame
+           '(:keep (1)
+             :summaries ((:sources (2 3) :text "two sources"))
+             :erase (4))
+           "response-activity"))
+         (projection
+          (e-context-lifetime-curation-activity-projection prepared)))
+    (should (equal projection
+                   '(:kept-source-count 1
+                     :summary-count 1
+                     :summarized-source-count 2
+                     :erased-source-count 1)))
+    (should-not
+     (string-match-p
+      "tool-source-\\|observation-\\|entry-\\|fingerprint-\\|response-activity\\|two sources"
+      (prin1-to-string projection)))
+    (should-not
+     (e-context-lifetime-curation-activity-projection
+      (e-context-lifetime-prepare-curation-disposition
+       frame '(:keep nil :summaries nil :erase nil)
+       "response-all-omitted")))
+    (dolist (bad
+             '((:kept-source-count 0 :summary-count 0
+                :summarized-source-count 0 :erased-source-count 0)
+               (:kept-source-count 0 :summary-count 1
+                :summarized-source-count 0 :erased-source-count 1)
+               (:kept-source-count 0 :summary-count 2
+                :summarized-source-count 1 :erased-source-count 0)
+               (:kept-source-count -1 :summary-count 0
+                :summarized-source-count 0 :erased-source-count 1)
+               (:kept-source-count 1 :summary-count 0
+                :summarized-source-count 0 :erased-source-count 0
+                :source-labels (1))))
+      (should-error
+       (e-context-lifetime-validate-curation-activity-projection bad)
+       :type 'e-context-lifetime-invalid-record))))
+
 (ert-deftest e-context-lifetime-test-curation-disposition-bounds-live-frame ()
   "Disposition preparation rejects consumed frames and one-over records."
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))

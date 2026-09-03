@@ -1041,6 +1041,58 @@ into the normalized disposition or either record."
             :erased-source-count
             (length (plist-get normalized :erase))))))
 
+(defconst e-context-lifetime-curation-activity-keys
+  '(:kept-source-count :summary-count :summarized-source-count
+    :erased-source-count)
+  "Exact public fields in a context-curation activity projection.")
+
+(defun e-context-lifetime-validate-curation-activity-projection (projection)
+  "Return canonical safe count-only curation activity PROJECTION.
+
+The projection deliberately excludes source labels, bodies, provenance,
+provider material, response identities, and frame identities.  Invalid
+projections signal `e-context-lifetime-invalid-record'."
+  (e-context-lifetime--validate-exact-plist
+   projection e-context-lifetime-curation-activity-keys
+   'curation-activity-projection)
+  (let ((kept (plist-get projection :kept-source-count))
+        (summaries (plist-get projection :summary-count))
+        (summarized (plist-get projection :summarized-source-count))
+        (erased (plist-get projection :erased-source-count)))
+    (dolist (value (list kept summaries summarized erased))
+      (unless (and (integerp value) (>= value 0))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-activity-projection
+                      :non-negative-integer value))))
+    (unless (and (or (> kept 0) (> summarized 0) (> erased 0))
+                 (eq (= summaries 0) (= summarized 0))
+                 (<= summaries summarized))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-activity-projection :inconsistent-counts
+                    projection)))
+    (list :kept-source-count kept
+          :summary-count summaries
+          :summarized-source-count summarized
+          :erased-source-count erased)))
+
+(defun e-context-lifetime-curation-activity-projection (prepared)
+  "Return the safe activity projection for package-bearing PREPARED curation.
+
+An all-omitted disposition has no semantic package and therefore produces no
+activity projection."
+  (when (plist-get prepared :package)
+    (let* ((arguments (plist-get prepared :arguments))
+           (keep (plist-get arguments :keep))
+           (summaries (plist-get arguments :summaries))
+           (erase (plist-get arguments :erase)))
+      (e-context-lifetime-validate-curation-activity-projection
+       (list :kept-source-count (length keep)
+             :summary-count (length summaries)
+             :summarized-source-count
+             (cl-loop for summary in summaries
+                      sum (length (plist-get summary :sources)))
+             :erased-source-count (length erase))))))
+
 (defun e-context-lifetime--curation-source-for-label (sources label)
   "Return trusted SOURCE from SOURCES matching positive local LABEL."
   (let ((source (nth (1- label) sources)))

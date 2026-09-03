@@ -52,6 +52,9 @@
 (define-error 'e-board-runtime-invalid-work
   "e board runtime work has invalid provenance"
   'e-board-runtime-error)
+(define-error 'e-board-runtime-invalid-activity
+  "e board runtime activity has invalid public attributes"
+  'e-board-runtime-error)
 
 (cl-defstruct (e-board-runtime-admission-token
                (:constructor e-board-runtime--admission-token-create))
@@ -2211,12 +2214,63 @@ only the generic status fields presentation consumers need."
                append (list key (copy-tree (plist-get payload key))))
     (copy-tree payload)))
 
+(defconst e-board-runtime--curation-activity-keys
+  '(:kept-source-count :summary-count :summarized-source-count
+    :erased-source-count)
+  "Exact Board-visible fields for one committed curation package.")
+
+(defun e-board-runtime--curation-activity-attributes (projection)
+  "Return validated count-only Board attributes from PROJECTION."
+  (unless (and (proper-list-p projection)
+               (= (length projection) 8))
+    (signal 'e-board-runtime-invalid-activity
+            (list 'context-curated :shape projection)))
+  (let ((tail projection)
+        keys)
+    (while tail
+      (let ((key (pop tail)))
+        (unless (and (keywordp key) tail)
+          (signal 'e-board-runtime-invalid-activity
+                  (list 'context-curated :shape projection)))
+        (push key keys)
+        (pop tail)))
+    (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every (lambda (key)
+                             (memq key e-board-runtime--curation-activity-keys))
+                           keys)
+                 (cl-every (lambda (key) (plist-member projection key))
+                           e-board-runtime--curation-activity-keys))
+      (signal 'e-board-runtime-invalid-activity
+              (list 'context-curated :keys (nreverse keys))))
+    (let ((kept (plist-get projection :kept-source-count))
+          (summaries (plist-get projection :summary-count))
+          (summarized (plist-get projection :summarized-source-count))
+          (erased (plist-get projection :erased-source-count)))
+      (unless (and (cl-every (lambda (value)
+                               (and (integerp value) (>= value 0)))
+                             (list kept summaries summarized erased))
+                   (or (> kept 0) (> summarized 0) (> erased 0))
+                   (eq (= summaries 0) (= summarized 0))
+                   (<= summaries summarized))
+        (signal 'e-board-runtime-invalid-activity
+                (list 'context-curated :counts projection)))
+      (list :kept-source-count kept
+            :summary-count summaries
+            :summarized-source-count summarized
+            :erased-source-count erased))))
+
 (defun e-board-runtime--publish-harness-activity (attachment event)
   "Publish EVENT's bounded lifecycle edge without exposing its raw payload."
-  (let ((activity-kind (e-events-type event))
-        (turn-id (plist-get event :turn-id)))
+  (let* ((source-kind (e-events-type event))
+         (payload (plist-get event :payload))
+         (curation (and (eq source-kind 'context-frame-consumed)
+                        (plist-get payload :curation)))
+         (activity-kind (if curation 'context-curated source-kind))
+         (turn-id (plist-get event :turn-id)))
     (when (and turn-id
-               (memq activity-kind e-board-runtime--visible-harness-activity-types))
+               (or curation
+                   (memq source-kind
+                         e-board-runtime--visible-harness-activity-types)))
       (let* ((registry-board (e-board-runtime-attachment-board attachment))
              (board (e-board-registry-board-source-board registry-board))
              (participant-id
@@ -2231,12 +2285,14 @@ only the generic status fields presentation consumers need."
                    '(main))
          :activity-kind activity-kind
          :attributes
-         (append
-          (e-board-runtime--visible-harness-activity-attributes
-           activity-kind (plist-get event :payload))
-          (when-let ((source-event-id
-                      (plist-get event :activity-entry-id)))
-            (list :source-event-id source-event-id)))
+         (if curation
+             (e-board-runtime--curation-activity-attributes curation)
+           (append
+            (e-board-runtime--visible-harness-activity-attributes
+             activity-kind payload)
+            (when-let ((source-event-id
+                        (plist-get event :activity-entry-id)))
+              (list :source-event-id source-event-id))))
          :caused-by-delivery-ids
          (copy-tree
           (gethash turn-id

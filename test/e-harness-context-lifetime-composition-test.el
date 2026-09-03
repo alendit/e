@@ -566,6 +566,13 @@
               (should (equal control-id
                              (plist-get (plist-get consumed-event :payload)
                                         :response-entry-id)))
+              (should
+               (equal
+                (plist-get (plist-get consumed-event :payload) :curation)
+                '(:kept-source-count 0
+                  :summary-count 1
+                  :summarized-source-count 1
+                  :erased-source-count 0)))
               (should consumed-binding)
               (should (equal control-id
                              (e-context-lifetime-frame-consuming-response-entry-id
@@ -839,8 +846,10 @@
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (store (e-harness-sessions harness))
-         frame entry)
+         frame entry
+         events)
     (e-harness-create-session harness :id "session-1")
+    (e-harness-activity-subscribe harness (lambda (event) (push event events)))
     (setq frame (e-harness-test--curation-frame))
     (setq entry (list :status 'running :context-frame frame))
     (let ((e-context-lifetime-shadow-projection-enabled t)
@@ -857,7 +866,14 @@
     (should (e-context-lifetime-frame-consumed-p
              (plist-get entry :context-frame)))
     (should (e-context-lifetime-frame-observations frame))
-    (should-not (e-session-context-curations store "session-1"))))
+    (should-not (e-session-context-curations store "session-1"))
+    (let ((consumed-event
+           (seq-find (lambda (event)
+                       (eq (plist-get event :type) 'context-frame-consumed))
+                     events)))
+      (should consumed-event)
+      (should-not
+       (plist-get (plist-get consumed-event :payload) :curation)))))
 
 (ert-deftest e-harness-test-context-lifetime-invalid-curation-keeps-live-frame ()
   "Preparation failure leaves both the live source body and session untouched."
@@ -865,8 +881,10 @@
                    :backend (e-backend-fake-create :items nil)))
          (store (e-harness-sessions harness))
          (frame (e-harness-test--curation-frame))
-         (entry (list :status 'running :context-frame frame)))
+         (entry (list :status 'running :context-frame frame))
+         events)
     (e-harness-create-session harness :id "session-1")
+    (e-harness-activity-subscribe harness (lambda (event) (push event events)))
     (let ((e-context-lifetime-shadow-projection-enabled t))
       (should-error
        (e-harness-context-lifetime-commit-response
@@ -880,6 +898,10 @@
        :type 'e-context-lifetime-invalid-record))
     (should (eq (plist-get entry :context-frame) frame))
     (should-not (e-context-lifetime-frame-consumed-p frame))
+    (should-not
+     (seq-find (lambda (event)
+                 (eq (plist-get event :type) 'context-frame-consumed))
+               events))
     (should (equal (plist-get (car (e-context-lifetime-frame-observations frame))
                               :body)
                    '(:role system :content "HARNESS-EXACT-VALUE")))

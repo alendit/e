@@ -2074,6 +2074,73 @@
           (should (equal (e-board-message-source-activity-key activity)
                          '("participant" 1 34))))))))
 
+(ert-deftest e-board-runtime-test-context-curation-publishes-counts-only-once ()
+  "Committed curation becomes one deduplicated count-only Board activity."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (let* ((attachment
+              (e-board-runtime-attach
+               board harness "session" :participant-id "participant"))
+             (source-board (e-board-registry-board-source-board board))
+             (event
+              (e-events-make
+               :type 'context-frame-consumed :session-id "session"
+               :turn-id "turn"
+               :payload
+               '(:frame-id "private-frame"
+                 :response-entry-id "private-response"
+                 :curation
+                 (:kept-source-count 1
+                  :summary-count 1
+                  :summarized-source-count 2
+                  :erased-source-count 1)
+                 :private-body "never publish")
+               :activity-entry-id "private-event"
+               :board-activity-sequence 23)))
+        (e-harness-activity-emit harness event)
+        (e-harness-activity-emit harness event)
+        (let ((activity (car (e-board-messages source-board))))
+          (should (= (length (e-board-messages source-board)) 1))
+          (should (eq (e-board-message-activity-kind activity)
+                      'context-curated))
+          (should-not (e-board-message-content activity))
+          (should
+           (equal
+            (e-board-message-attributes activity)
+            '(:kept-source-count 1
+              :summary-count 1
+              :summarized-source-count 2
+              :erased-source-count 1)))
+          (should-not
+           (string-match-p
+            "private-frame\\|private-response\\|private-event\\|never publish"
+            (prin1-to-string activity)))
+          (should (equal (e-board-message-source-activity-key activity)
+                         '("participant" 1 46))))
+        ;; Consumption without a semantic package remains private.
+        (e-harness-activity-emit
+         harness
+         (e-events-make
+          :type 'context-frame-consumed :session-id "session" :turn-id "turn"
+          :payload '(:frame-id "omitted-frame")
+          :board-activity-sequence 24))
+        (should (= (length (e-board-messages source-board)) 1))
+        (should-error
+         (e-board-runtime--handle-harness-event
+          attachment
+          (e-events-make
+           :type 'context-frame-consumed :session-id "session" :turn-id "turn"
+           :payload
+           '(:curation
+             (:kept-source-count 1
+              :summary-count 0
+              :summarized-source-count 0
+              :erased-source-count 0
+              :source-labels (1)))))
+         :type 'e-board-runtime-invalid-activity)))))
+
 (ert-deftest e-board-runtime-test-retrying-activity-retains-bounded-error ()
   "Retry activity publishes its redacted error and retry schedule."
   (e-board-runtime-test--with-empty-state
