@@ -314,6 +314,67 @@ Return a plist containing its stream, harness, transcript, and visible windows."
    3.0 "settled assistant answer")
   (e-chat-behavior-test--fixture-windows fixture))
 
+(defun e-chat-behavior-test--post-context-curation (fixture attributes)
+  "Post projected curation ATTRIBUTES through FIXTURE's live Board binding."
+  (let* ((harness (plist-get fixture :harness))
+         (session-id (plist-get fixture :session-id))
+         (binding (e-chat-service-binding harness session-id))
+         (attachment (e-chat-service-binding-attachment binding))
+         (participant-id
+          (e-board-registry-participant-id
+           (e-board-runtime-attachment-participant attachment)))
+         (turn-id
+          (plist-get (e-board-runtime-attachment-active-turn attachment) :id))
+         (board
+          (e-board-registry-board-source-board
+           (e-chat-service-binding-board binding))))
+    (e-board-post-activity
+     board
+     :id "graphical-context-curation"
+     :author (format "participant:%s" participant-id)
+     :subject-participant-id participant-id
+     :source-turn-id turn-id
+     :activity-kind 'context-curated
+     :tags '(main)
+     :attributes attributes
+     :source-activity-key
+     (list participant-id 999 1))
+    (let (rendered-event rendered-turn-id)
+      (with-current-buffer (plist-get fixture :transcript)
+        (e-chat-service-drain-binding binding)
+        (let ((event
+               (car
+                (last
+                 (cl-remove-if-not
+                  (lambda (candidate)
+                    (eq (plist-get candidate :event-type) 'context-curated))
+                  (e-chat-service-activity-events harness session-id))))))
+          (should event)
+          (let ((presentation-turn-id
+                 (e-chat-transcript-presentation-turn-id
+                  (plist-get event :turn-id) event)))
+            (setq rendered-event event
+                  rendered-turn-id presentation-turn-id)
+            (e-chat--render-event event)
+            (e-chat-activity-render-turn-transient presentation-turn-id))))
+      (condition-case err
+          (e-graphical-test-wait-until
+           (lambda ()
+             (with-current-buffer (plist-get fixture :transcript)
+               (string-match-p "Context curated" (buffer-string))))
+           2.0 "live context-curation activity")
+        (error
+         (ert-fail
+          (with-current-buffer (plist-get fixture :transcript)
+            (format "%s\nevent: %S\nrender turn: %S\nprogress turn: %S\ndisplay: %S\ntranscript:\n%s"
+                    (error-message-string err)
+                    rendered-event
+                    rendered-turn-id
+                    (e-chat-activity-progress-turn-id)
+                    (e-chat-activity-turn-display rendered-turn-id)
+                    (buffer-string)))))))
+    (e-chat-behavior-test--fixture-windows fixture)))
+
 (defun e-chat-behavior-test--rendered-tail-position (&optional position)
   "Return the last rendered character at or before POSITION.
 Chat projections end records with newlines.  The buffer position after that
@@ -701,6 +762,92 @@ than the invisible insertion position."
           (e-chat-behavior-test--capture-state
            "short-output-after-settlement")
           (e-chat-behavior-test--assert-tail-near-bottom fixture))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
+(ert-deftest e-chat-behavior-test-context-curation-active-collapsed-and-expanded ()
+  "Curation activity preserves the graphical chat surface across its states."
+  (should (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "curation presentation prompt")
+          (let* ((transcript (plist-get fixture :transcript))
+                 (windows (e-chat-behavior-test--fixture-windows fixture))
+                 (composer-window (cdr windows))
+                 (composer (window-buffer composer-window))
+                 (window-count-before (length (window-list nil 'nomini))))
+            (select-window composer-window)
+            (e-graphical-test-type-text "curation draft")
+            (let ((composer-point (with-current-buffer composer (point)))
+                  (composer-text
+                   (with-current-buffer composer
+                     (buffer-substring-no-properties (point-min) (point-max)))))
+              (e-chat-behavior-test--post-context-curation
+               fixture
+               '(:kept-source-count 1 :summary-count 1
+                 :summarized-source-count 2 :erased-source-count 1))
+              (should (eq (selected-window)
+                          (cdr (e-chat-behavior-test--fixture-windows fixture))))
+              (should (= (length (window-list nil 'nomini))
+                         window-count-before))
+              (with-current-buffer composer
+                (should (= (point) composer-point))
+                (should (equal (buffer-substring-no-properties
+                                (point-min) (point-max))
+                               composer-text)))
+              (with-current-buffer transcript
+                (should (e-chat-activity-progress-turn-id))
+                (should-not (equal (e-chat-surface-status) "done"))
+                (should (string-match-p
+                         (regexp-quote
+                          "Context curated\nkept 1 · summarized 2 sources into 1 summary · erased 1")
+                         (buffer-string))))
+              (e-chat-behavior-test--assert-tail-near-bottom fixture)
+              (e-chat-behavior-test--capture-state
+               "context-curation-active")
+
+              (e-chat-behavior-test--finish fixture "curation graphical answer")
+              (with-current-buffer transcript
+                (should (string-match-p "1 curation" (buffer-string)))
+                (should-not (string-match-p "Context curated" (buffer-string))))
+              (should (= (length (window-list nil 'nomini))
+                         window-count-before))
+              (with-current-buffer composer
+                (should (= (point) composer-point))
+                (should (equal (buffer-substring-no-properties
+                                (point-min) (point-max))
+                               composer-text)))
+              (e-chat-behavior-test--assert-tail-near-bottom fixture)
+              (e-chat-behavior-test--capture-state
+               "context-curation-settled-collapsed")
+
+              (select-window
+               (car (e-chat-behavior-test--fixture-windows fixture)))
+              (with-current-buffer transcript
+                (goto-char (point-min))
+                (should (search-forward "1 curation" nil t))
+                (call-interactively #'e-chat-transcript-enter-response-navigation)
+                (call-interactively #'e-chat-response-navigation-activate)
+                (should (string-match-p
+                         (regexp-quote
+                          "Context curated: kept 1 · summarized 2 sources into 1 summary · erased 1")
+                         (buffer-string))))
+              (should (= (length (window-list nil 'nomini))
+                         window-count-before))
+              (with-current-buffer composer
+                (should (= (point) composer-point))
+                (should (equal (buffer-substring-no-properties
+                                (point-min) (point-max))
+                               composer-text)))
+              (e-chat-behavior-test--capture-state
+               "context-curation-settled-expanded")
+              (with-current-buffer transcript
+                (call-interactively #'e-chat-response-navigation-insert))
+              (should (eq (selected-window)
+                          (cdr (e-chat-behavior-test--fixture-windows fixture)))))))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
 (ert-deftest e-chat-behavior-test-intermediate-assistant-keeps-live-progress ()

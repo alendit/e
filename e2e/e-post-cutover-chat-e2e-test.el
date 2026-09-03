@@ -19,12 +19,14 @@
 (require 'seq)
 (require 'e-board)
 (require 'e-board-registry)
+(require 'e-chat-activity)
 (require 'e-chat-service)
 (require 'e-context-lifetime)
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
+(require 'e-modernchat-view-model)
 (require 'e-openai)
 (require 'e-runtime-migration)
 (require 'e-session)
@@ -134,8 +136,11 @@
       (memq (plist-get event :event-type) '(tool-started tool-finished)))
     (e-session-activity-events store session-id))))
 
-(defun e-post-cutover-chat-e2e--run-variant (mode)
-  "Run the post-cutover curation-only scenario for continuation MODE."
+(defun e-post-cutover-chat-e2e--run-variant
+    (mode &optional curation-arguments expected-curation)
+  "Run the post-cutover curation scenario for continuation MODE.
+CURATION-ARGUMENTS is the reserved carrier JSON and EXPECTED-CURATION is the
+safe public count projection for a non-empty package."
   (let* ((base (make-temp-file
                 (format "e-post-cutover-chat-%s-" mode) t))
          (root (expand-file-name "e" base))
@@ -224,7 +229,8 @@
                            (cons 'call_id curation-call-id)
                            (cons 'name "context-curate")
                            (cons 'arguments
-                                 "{\"keep\":[],\"summaries\":[],\"erase\":[]}"))))
+                                 (or curation-arguments
+                                     "{\"keep\":[],\"summaries\":[],\"erase\":[]}")))))
                    (list
                     (cons 'type "response.completed")
                     (cons 'response
@@ -292,9 +298,15 @@
                           :harness harness :id session-id)
                          :id)
               session-id))
-            (e-board-e2e-prompt-batch harness session-id "Hi")
+            (e-board-e2e-prompt-batch
+             harness session-id
+             (if expected-curation "PRIVATE-SOURCE-SENTINEL" "Hi"))
             (should (= request-count 2))
-            (should-not (e-session-context-curations store session-id))
+            (if expected-curation
+                (should (= (length (e-session-context-curations
+                                    store session-id))
+                           1))
+              (should-not (e-session-context-curations store session-id)))
             (should
              (= (seq-count
                  (lambda (event)
@@ -312,6 +324,63 @@
              harness session-id first-answer)
             (e-post-cutover-chat-e2e--assert-combined-reasoning
              harness session-id "Inspecting context.")
+            (when expected-curation
+              (let* ((binding (e-chat-service-binding harness session-id))
+                     (source (e-board-registry-board-source-board
+                              (e-chat-service-binding-board binding)))
+                     (board-curations
+                      (seq-filter
+                       (lambda (message)
+                         (eq (e-board-message-activity-kind message)
+                             'context-curated))
+                       (e-board-messages source)))
+                     (service-curations
+                      (seq-filter
+                       (lambda (event)
+                         (eq (plist-get event :event-type) 'context-curated))
+                       (e-chat-service-activity-events harness session-id)))
+                     (service-curation (car service-curations))
+                     (turn-id (plist-get service-curation :turn-id))
+                     (classic
+                      (with-temp-buffer
+                        (e-chat-activity-reset)
+                        (e-chat-activity-replay-events
+                         turn-id
+                         (e-chat-service-activity-events harness session-id))))
+                     (modern
+                      (e-modernchat-view-model-activity service-curation))
+                     (public-text
+                      (prin1-to-string
+                       (list expected-curation
+                             (e-board-message-attributes
+                              (car board-curations))
+                             service-curation classic modern))))
+                (should (= (length board-curations) 1))
+                (should (= (length service-curations) 1))
+                (should
+                 (equal (e-board-message-attributes (car board-curations))
+                        expected-curation))
+                (should (equal (plist-get service-curation :payload)
+                               expected-curation))
+                (should (equal (plist-get classic :tool-count) 0))
+                (should (equal (plist-get classic :action-count) 0))
+                (should (string-match-p "1 curation"
+                                        (plist-get classic :summary-text)))
+                (should (string-match-p "Context curated"
+                                        (plist-get classic :expanded-text)))
+                (should (equal (cdr (assq 'id modern))
+                               (plist-get service-curation :message-id)))
+                (should (equal (cdr (assq 'title modern)) "Context curated"))
+                (should (equal (cdr (assq 'status modern)) "ok"))
+                (should
+                 (equal (cdr (assq 'summary modern))
+                        (e-chat-service-format-context-curation
+                         expected-curation)))
+                (dolist (private
+                         (list "PRIVATE-SOURCE-SENTINEL"
+                               "PRIVATE-SUMMARY-SENTINEL"
+                               curation-call-id curation-response-id))
+                  (should-not (string-match-p private public-text)))))
             (should-not (e-post-cutover-e2e--loaded-p store untouched-id))
             (let* ((first (nth 0 requests))
                    (ack (nth 1 requests))
@@ -366,8 +435,12 @@
               (e-chat-service-ensure-binding reopened session-id)
               (e-post-cutover-chat-e2e--assert-clean-messages
                (e-session-messages reopened-store session-id) first-answer)
-              (should-not
-               (e-session-context-curations reopened-store session-id))
+              (if expected-curation
+                  (should (= (length (e-session-context-curations
+                                      reopened-store session-id))
+                             1))
+                (should-not
+                 (e-session-context-curations reopened-store session-id)))
               (should
                (= (seq-count
                    (lambda (event)
@@ -402,8 +475,12 @@
                   (e-post-cutover-chat-e2e--input-items later))))
               (e-post-cutover-chat-e2e--assert-clean-messages
                (e-session-messages reopened-store session-id) later-answer)
-              (should-not
-               (e-session-context-curations reopened-store session-id))
+              (if expected-curation
+                  (should (= (length (e-session-context-curations
+                                      reopened-store session-id))
+                             1))
+                (should-not
+                 (e-session-context-curations reopened-store session-id)))
               (e-post-cutover-chat-e2e--assert-board-output
                reopened session-id later-answer)
               (should-not
@@ -417,6 +494,16 @@
   "Post-cutover chat carries one curation ack in both continuation modes."
   (dolist (mode '(stateless anchored))
     (e-post-cutover-chat-e2e--run-variant mode)))
+
+(ert-deftest e-post-cutover-chat-e2e-test-nonempty-curation-reaches-both-shells ()
+  "A real reserved Responses carrier publishes one safe curation activity."
+  (e-post-cutover-chat-e2e--run-variant
+   'stateless
+   "{\"keep\":[],\"summaries\":[{\"sources\":[1],\"text\":\"PRIVATE-SUMMARY-SENTINEL\"}],\"erase\":[]}"
+   '(:kept-source-count 0
+     :summary-count 1
+     :summarized-source-count 1
+     :erased-source-count 0)))
 
 (provide 'e-post-cutover-chat-e2e-test)
 
