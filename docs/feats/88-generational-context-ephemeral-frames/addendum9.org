@@ -22,10 +22,10 @@ anchor, or external model-adoption evidence.
 
 * Problem
 
-A successful =context-curate= response is intentionally not an ordinary
-model-facing tool call.  The loop extracts it as a reserved semantic effect,
-the context-lifetime owner prepares and commits its promotion or erasure, and
-the session retains an audit-only response control plus a
+A =context-curate= response containing a valid non-empty disposition is
+intentionally not an ordinary model-facing tool call.  The loop extracts it as
+a reserved semantic effect, the context-lifetime owner prepares and commits its
+curation package, and the session retains an audit-only response control plus a
 =context-frame-consumed= activity event.
 
 That separation is correct, but the current presentation path stops too early:
@@ -168,11 +168,32 @@ Presentation never reads or mutates context-lifetime state.
   equivalent ModernChat DTO.  No private source data appears and tool/action
   counts do not change.
 - Product authority :: The user/operator through this addendum.
+- Owning contracts :: =F88A9-PROJECTION=, =F88A9-BOARD=,
+  =F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-LANGUAGE=,
+  =F88A9-PRIVACY=, =F88A9-ORDERING=, =F88A9-GRAPHICAL=, and
+  =F88A9-PRESERVATION=.
 - Behavioral status :: Unavailable before implementation.
+- Mechanism status :: Not started.
+- External compatibility :: Not applicable because request, carrier, and
+  provider material are unchanged; real-adapter evidence is deterministic
+  repository composition.
 
-The following matrix is the sole normative Addendum 9 contract authority.
-Other sections provide rationale or implementation detail and refer back to
-these IDs.
+The matrix is the sole normative Addendum 9 contract authority.  The remaining
+sections are rationale or contract-specific implementation appendices assigned
+to the matrix as follows; they do not define independent observable outcomes.
+
+| Section | Owning contract rows or plan role |
+|---------+-----------------------------------|
+| =Status= and =Problem= | Goal rationale for =F88A9-ACTIVITY= |
+| =Decision= | =F88A9-LANGUAGE=, =F88A9-CLASSIC=, =F88A9-MODERN=, =F88A9-ORDERING=, and =F88A9-PRESERVATION= |
+| =Presentation data contract= | =F88A9-PROJECTION= and =F88A9-PRIVACY= |
+| =Ownership and dependency direction= | Owner detail for =F88A9-PROJECTION=, =F88A9-BOARD=, =F88A9-CLASSIC=, and =F88A9-MODERN= |
+| =Rendering behavior= | Implementation detail for =F88A9-CLASSIC=, =F88A9-MODERN=, and =F88A9-GRAPHICAL= |
+| =Failure and delivery model= | Recovery boundary for =F88A9-PROJECTION= and =F88A9-PRESERVATION= |
+| =Delivery package= | The implementation-plan relation from every contract row to =F88A9-DP1= |
+| =Compatibility and performance= | Compatibility and cost detail for =F88A9-PRESERVATION= |
+| =Non-goals= | Scope boundary for =F88A9-ACTIVITY= and its owning rows |
+| =Design self-check= | Architecture rationale; no independent contract |
 
 | Contract | Observable | Semantic owner and public composition | Establishing package | Deterministic evidence | External evidence | Telemetry | Status |
 |----------+------------+---------------------------------------+----------------------+------------------------+-------------------+-----------+--------|
