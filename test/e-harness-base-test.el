@@ -23,6 +23,10 @@
 (require 'e-resources)
 (require 'e-session)
 (require 'e-session-tmp-resources)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 
 (declare-function e-harness-base-layer-create "e-harness-base")
 

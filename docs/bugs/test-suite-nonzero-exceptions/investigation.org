@@ -1,0 +1,122 @@
+#+title: Investigation and acceptance evidence
+#+startup: overview
+
+* Scope and ownership
+
+This package establishes =TEST-C01= without changing Feature 87's SQLite
+failure model.  Test-environment capability assertions and fresh-process owner
+checks live in =test/e-test-environment-support.el=.  Eldev owns deterministic
+test-only dependencies.  Individual owner tests retain their exact semantic
+assertions.  The production changes remain within presentation owners: the
+chat transcript owns the URL property consumed by chat link commands, the
+overview and composer own their optional Evil lifecycle, and Org Canvas owns
+its buffer-local Evil prompt bindings.
+
+The supported deterministic environment provides loopback bind/connect,
+=node=, =python3=, =tail=, the existing local org-annotate integration, and the
+test-only Evil and markdown-mode packages.  Missing capabilities fail
+actionably; they are not converted to passing or skipped results.  Credentialed
+live-provider E2E remains a separate opt-in compatibility tier and is not part
+of =S-FULL-SOURCE-GREEN=.
+
+* Exception disposition
+
+| Prior exception | Disposition | Current owner evidence |
+|-----------------+-------------+------------------------|
+| Online JSONL session upgrade | Deleted as obsolete | Explicit offline migration and current-schema startup suites |
+| Direct JSONL/sidecar participant admission | Deleted as obsolete | SQLite Board pickup/admission atomicity suites |
+| Queued JSONL writer participant admission | Deleted as obsolete | SQLite Board pickup/admission cut-point suites |
+| Session-proxied Board-log reopen | Deleted as obsolete | Board-owned SQLite restart and no-redelivery suites |
+| =index.json= association normalization | Deleted as obsolete | Typed SQLite catalog validation and offline legacy normalization |
+| Online attachment repair script | Deleted as obsolete | Explicit offline migration validation and restart suites |
+| Dangling sidecar/index resource entry | Deleted as obsolete | SQLite catalog/missing-session validation and resource-owner suites |
+| Five top-level disabled test blocks | Deleted as dead retired fixtures | Current SQLite session, Board, curation, orchestration, and task restart suites; one composed default-queue shell restart test |
+| SQLite reopen tests coupled to aggregate fileset order | Retained with an explicit lifecycle-fixture dependency | Each affected test file is independently runnable with =-f= |
+| Five owner tests conditional on aggregate load order | Retained in fresh =-Q --batch= children | Exact forbidden-facade and owner-symbol assertions |
+| Emacs 31 URL fixture | Retained; fixture binds the state real =url-retrieve= establishes | OpenAI HTTP composition suite |
+| Two private Org =invisible= values | Retained through public fold semantics | Org Canvas hide/reveal suite |
+| Evil Escape and Markdown rendering | Retained with deterministic test dependencies | Chat surface and transcript suites |
+| Node, Python, tail, and org-annotate checks | Retained with actionable capability assertions | Existing real helper/integration semantics unchanged |
+| Graphical display requirements | Retained as hard assertions in the isolated graphical runner | No batch fallback or skip |
+
+No production JSONL fallback, compatibility shim, fake loopback transport, or
+weakened assertion replaces a removed test.  The seven deleted forms asserted
+retired representations; the listed SQLite and migration suites own their
+still-valid behavioral contracts.  Five additional test implementations had
+remained unreachable beneath top-level =(when nil ...)= forms.  Four duplicated
+current owner coverage and are now absent.  The remaining default-queue shell
+contract is replaced by one current composed test: it persists a paused task
+through the SQLite runtime, closes and reopens the default composition, then
+opens =e-task-queue-list-buffer= without an explicit queue and observes exactly
+the restored task through =e-task-queue-actions-ensure-loaded=.
+
+* Markdown finding
+
+Installing the declared =markdown-mode= dependency made the retained test run
+against current package behavior.  The mode supplied semantic faces but did
+not preserve the private =e-chat-link-url= property.  Because chat navigation
+uses that property rather than markdown-mode internals, the smallest correction
+is a transcript-local pass over Markdown links after fontification.  Focused
+tests require the visible label and exact target on both the current-mode and
+fallback paths.
+
+Running real Evil on every pass exposed two adjacent optional-integration
+defects.  Overview mode called =evil-local-mode -1= from the same mode hook
+that Evil runs while disabling itself, causing unbounded recursion.  A
+buffer-local reentrancy guard now makes that operation finite.  Composer input
+focus called =evil-insert-state= merely because Evil was loaded; it now does so
+only when local Evil is enabled.  Real-Evil tests prove overview creation,
+enabled composer transition, deliberately disabled composer behavior, and
+cleanup of process-global test state.
+
+The same retained integration also showed that Org Canvas attempted to install
+Evil-local prompt keys in buffers where Evil had no local state maps.  It now
+installs and removes those keys only while buffer-local Evil is enabled;
+focused tests prove both the active binding/cleanup path and the inert path.
+
+* Validation
+
+- Fresh-process owner-isolation selectors: 5/5 expected.
+- Consolidated changed and affected deterministic selectors, including the
+  real loopback MCP/OpenAI integrations: 359/359 expected.
+- The formerly failing modernchat-plus-session standalone selector passes
+  140/140, and =e-session-test.el= alone passes 100/100.  A direct scan of
+  test files that create persistent session stores found nine more files with
+  the same missing lifecycle-fixture dependency; after declaring it, their
+  independent =-f= runs pass 147/147.  Files that already passed standalone
+  were left unchanged.
+- Complete supported command, with a fresh disposable runtime directory:
+  2,704/2,704 expected, 0 unexpected, 0 skipped.
+- Isolated graphical suite: 28/28 expected.
+- The reviewed blocking-site inventory remains current; the offline-only
+  =e-session-rebuild-catalog= call is counted explicitly (1/1 expected).
+- Changed production boundaries and shared test support pass byte compilation
+  in a disposable source copy.  All changed Lisp files pass check-parens, and
+  the complete diff passes whitespace validation.
+
+* Architecture self-check
+
+1. The package is useful alone because the ordinary suite becomes decisive.
+2. It moves toward a zero-exception deterministic repository gate.
+3. Environment capabilities are explicit and reversible test configuration;
+   no speculative runtime abstraction was added.
+4. Eldev owns dependencies, shared test support owns process isolation, and
+   each presentation owner retains its own link or optional-Evil behavior.
+5. One narrow helper reduces repeated load-order coupling, and each test file
+   that needs its worker-lifecycle fixture declares that dependency directly.
+6. Product owners do not depend on test support; test code depends inward on
+   public or deliberately reviewed owner symbols.
+7. Process and package side effects remain at the test-runner boundary.
+8. No durable product state is added; child processes and test stores are
+   disposable.
+9. Five small child processes add bounded test cost; product rendering adds one
+   bounded link scan only when markdown-mode succeeds.
+10. Capability checks assert their actual requirement instead of pretending
+    optional implementations substitute for missing tools.
+11. Retired representation tests are removed; supported SQLite behavior stays.
+12. Seven obsolete registered tests, five disabled remnants, and their
+    dead-only fixtures are gone.
+13. Missing capabilities and unexpected child failures surface with actionable
+    output.
+14. Focused owner, renderer, URL, Org, helper, and loopback tests localize each
+    correction before the complete suite.

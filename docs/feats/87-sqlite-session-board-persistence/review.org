@@ -97,17 +97,17 @@ running Emacs was not contacted or changed.
   not thresholds.
 - Independently relevant task, cron, voice, Goodnite, raw-result, session
   storage, and temporary-resource owners: 135 expected, 0 unexpected.
-- Board/runtime/admission/chat preservation: 315 expected, 0 unexpected, 2
-  declared skips.  A directly exercised routing-policy copy regression adds 4
-  expected, 0 unexpected and proves shared finite selector values are not
-  mistaken for cycles.
-- Complete restricted repository run: 2,683 tests, 2,660 expected results, 9
-  unexpected, and 14 skipped.  Six MCP/OpenAI local HTTP fixtures denied by the
-  sandbox pass 6/6 when rerun with loopback permission.  The remaining three
-  results are one pre-existing Emacs 31 OpenAI variable mismatch and two
-  pre-existing Emacs 31 Org fold-property expectations; none intersects a
-  Feature 87 source or owner path.  The effective preservation result is 2,666
-  expected, 3 baseline failures, and 14 skips.
+- Board/runtime/admission/chat preservation is retained in the canonical
+  source gate.  The routing-policy copy regression continues to prove shared
+  finite selector values are not mistaken for cycles.
+- The later =TEST-SUITE-ZERO-EXCEPTIONS= correction removes seven obsolete
+  representation-only tests, executes five owner-isolation contracts in fresh
+  batch children, declares Evil and markdown-mode as deterministic test
+  dependencies, and turns Node/Python/tail/org-annotate/display requirements
+  into actionable failures.  It also updates the Emacs 31 URL fixture and Org
+  fold assertions to public current behavior.  The supported gate now requires
+  zero unexpected and zero skipped; the prior restricted-run baseline
+  exceptions are no longer accepted.
 - Isolated graphical suite: 28 expected, 0 unexpected.  Current-config with a
   disposable =E_RUNTIME_STATE_DIRECTORY=: 4 expected, 0 unexpected.
 - =eldev compile= succeeds.  Check-parens succeeds for all 75 changed/new
@@ -375,6 +375,50 @@ synchronous transcript loads, exact committed transcript publication, cleared
 request state, and removal of the loading marker.  Cancellation, stale-success,
 setup-error, and same-session reentrancy evidence also passes.  No session
 fence, storage operation, durable state, retry, or transaction changed.
+
+** Full-suite zero-exception follow-up
+
+The ordinary full source suite is now a strict supported-environment gate:
+zero unexpected and zero skipped.  Seven tests that asserted retired JSONL,
+sidecar, online-repair, Board/session-proxy, and =index.json= representations
+were deleted; SQLite migration, catalog validation, Board admission, and
+restart suites retain their behavioral coverage.  Five architecture tests run
+their owner modules in fresh =emacs -Q --batch= children so aggregate load
+order cannot conceal facade dependencies.  Real loopback MCP/OpenAI fixtures
+remain unchanged in strength.
+
+Eldev declares Evil and markdown-mode as test-only dependencies.  Node,
+Python, tail, org-annotate, and graphical requirements fail actionably when the
+supported environment is incomplete.  Emacs 31 URL and Org-fold fixtures use
+the public state established by their owners.  Running the retained Markdown
+test found that current markdown-mode dropped the chat-owned URL property; a
+narrow transcript pass restores that exact link target while preserving both
+markdown-mode presentation and the existing fallback renderer.
+
+The retained Evil integrations exposed and localized three presentation-owner
+defects: recursive overview-mode disable, composer insert-state entry without
+local Evil, and Org Canvas key installation without local Evil state maps.
+Narrow buffer-local guards preserve the enabled paths and keep the optional
+runtime dependency optional.  The final supported command passes
+2,704/2,704 tests with zero unexpected and zero skipped results; the isolated
+graphical suite remains 28/28.
+
+A final test-topology audit found five retired implementations still hidden
+under top-level =(when nil ...)= forms.  Those dead Node-controller,
+direct/queued file-store, and file-backed restart blocks and their dead-only
+helper are removed.  Four behaviors remain owned by existing SQLite session,
+Board, curation, orchestration, and task restart suites.  One replacement
+composition test persists a task through the default SQLite queue, closes and
+reopens the runtime, and proves that the no-argument task-list shell restores
+exactly that row through =e-task-queue-actions-ensure-loaded=.
+
+Focused-file review also exposed an accidental topology dependency: session
+reopen tests relied on the aggregate Eldev fileset to preload the shared
+single-worker SQLite lifecycle fixture.  The session file and nine other files
+that reproduced the same owner-active failure now require that fixture
+directly.  The exact modernchat-plus-session selector passes 140/140, the
+session file alone passes 100/100, and the nine-file standalone correction set
+passes 147/147, all with zero skipped results.
 
 * Plan coverage
 

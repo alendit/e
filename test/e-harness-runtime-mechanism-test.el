@@ -22,6 +22,10 @@
 (require 'e-capability-config)
 (require 'e-context)
 (require 'e-dev-profile)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-emacs-tools)
 (require 'e-harness)

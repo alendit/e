@@ -21,6 +21,10 @@
 (require 'e-request)
 (require 'e-tools)
 (require 'e-work)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defconst e-mcp-test--schema
   '(:type "object" :properties (:text (:type "string")))
@@ -252,7 +256,7 @@
 
 (ert-deftest e-mcp-test-helper-request-times-out ()
   "A live helper process that never answers signals a backend timeout."
-  (skip-unless (executable-find "tail"))
+  (e-test-require-executable "tail")
   (let ((server (e-mcp-test--server)))
     (unwind-protect
         (cl-letf (((symbol-function 'e-mcp-stdio--helper-command)
@@ -639,7 +643,7 @@
 
 (ert-deftest e-mcp-test-real-helper-discovers-and-calls-fixture-server ()
   "The Node helper can discover and call a stdio MCP fixture server."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (expand-file-name
                    "test/fixtures/e-mcp-fixture-server.mjs"
                    default-directory))
@@ -664,7 +668,7 @@
 
 (ert-deftest e-mcp-test-real-helper-refresh-fetches-fresh-catalog ()
   "The Node helper refresh operation performs a fresh tools/list request."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (expand-file-name
                    "test/fixtures/e-mcp-fixture-server.mjs"
                    default-directory))
@@ -685,7 +689,7 @@
 
 (ert-deftest e-mcp-test-real-helper-reports-stale-after-list-changed-notification ()
   "A tools/list_changed notification marks diagnostics stale until refresh."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (expand-file-name
                    "test/fixtures/e-mcp-stale-after-list-server.mjs"
                    default-directory))
@@ -718,7 +722,7 @@
 
 (ert-deftest e-mcp-test-real-helper-respawns-exited-server ()
   "The Node helper starts a fresh MCP server after a clean server exit."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (expand-file-name
                    "test/fixtures/e-mcp-exit-after-list-server.mjs"
                    default-directory))
@@ -772,7 +776,7 @@ Blocks until the fixture prints its listening port."
 The fixture rejects any request that omits the `Mcp-Session-Id' header it
 issued during initialize, so success proves the session id is captured and
 echoed back on `tools/list' and `tools/call'."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (e-mcp-test--start-http-fixture))
          (process (car fixture))
          (url (cdr fixture))
@@ -798,7 +802,7 @@ echoed back on `tools/list' and `tools/call'."
 
 (ert-deftest e-mcp-test-http-generated-tool-starts-asynchronously ()
   "Generated HTTP MCP tools use async URL retrieval for tool calls."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (e-mcp-test--start-http-fixture))
          (process (car fixture))
          (url (cdr fixture))
@@ -860,7 +864,7 @@ echoed back on `tools/list' and `tools/call'."
 
 (ert-deftest e-mcp-test-http-refresh-starts-asynchronously ()
   "HTTP MCP refresh initializes and lists tools without synchronous URL waits."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (e-mcp-test--start-http-fixture))
          (process (car fixture))
          (url (cdr fixture))
@@ -898,7 +902,7 @@ echoed back on `tools/list' and `tools/call'."
 
 (ert-deftest e-mcp-test-http-list-tools-starts-asynchronously ()
   "HTTP MCP catalog discovery starts without synchronous URL waits."
-  (skip-unless (executable-find "node"))
+  (e-test-require-executable "node")
   (let* ((fixture (e-mcp-test--start-http-fixture))
          (process (car fixture))
          (url (cdr fixture))

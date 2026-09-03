@@ -15,6 +15,10 @@
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 (load (expand-file-name
        "../e2e/e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)

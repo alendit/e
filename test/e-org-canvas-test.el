@@ -178,48 +178,46 @@
 
 (ert-deftest e-org-canvas-test-open-current-buffer-focuses-composer ()
   "Opening an Org buffer leaves its chat composer selected and editable."
-  (let ((harness (e-org-canvas-test--harness))
-        insert-entered)
+  (let ((harness (e-org-canvas-test--harness)))
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :org-canvas-test))
             (e-harness-registry-register :org-canvas-test harness)
-            (cl-letf (((symbol-function 'evil-insert-state)
-                       (lambda () (setq insert-entered t))))
-              (with-temp-buffer
-                (rename-buffer "org-canvas-source" t)
-                (org-mode)
-                (insert "* Topic\nBody\n")
-                (let* ((source (current-buffer))
-                       (chat-buffer (e-org-canvas-open-for-current-buffer))
-                       (composer (e-chat-surface-composer-buffer chat-buffer)))
-                  (should (buffer-live-p chat-buffer))
-                  (should (buffer-live-p composer))
-                  (should (eq (window-buffer (selected-window)) composer))
-                  (should insert-entered)
-                  (let ((source-window (get-buffer-window source t))
-                        (chat-window (get-buffer-window chat-buffer t)))
-                    (should (window-live-p source-window))
-                    (should (window-live-p chat-window))
-                    (should (> (nth 1 (window-edges chat-window))
-                               (nth 1 (window-edges source-window)))))
-                  (with-current-buffer source
-                    (should e-org-canvas-mode)
-                    (should e-chat-context-mode-suppressed))
-                  (with-current-buffer chat-buffer
-                    (let* ((org-canvas (e-org-canvas-session-metadata
-                                        e-chat-harness
-                                        e-chat-session-id))
-                           (attachment (car (e-chat-session-attachments
-                                             e-chat-harness
-                                             e-chat-session-id))))
-                      (should (plist-get attachment :canvas))
-                      (should (equal (plist-get org-canvas :uri)
-                                     "buffer://org-canvas-source"))
-                      (should (equal (plist-get org-canvas :buffer-name)
-                                     "org-canvas-source"))
-                      (should (equal (plist-get org-canvas :mode) 'org))
-                      (should (plist-get org-canvas :root)))))))))
+            (with-temp-buffer
+              (rename-buffer "org-canvas-source" t)
+              (org-mode)
+              (insert "* Topic\nBody\n")
+              (let* ((source (current-buffer))
+                     (chat-buffer (e-org-canvas-open-for-current-buffer))
+                     (composer (e-chat-surface-composer-buffer chat-buffer)))
+                (should (buffer-live-p chat-buffer))
+                (should (buffer-live-p composer))
+                (should (eq (window-buffer (selected-window)) composer))
+                (with-current-buffer composer
+                  (should (e-chat-composer-point-in-composer-p)))
+                (let ((source-window (get-buffer-window source t))
+                      (chat-window (get-buffer-window chat-buffer t)))
+                  (should (window-live-p source-window))
+                  (should (window-live-p chat-window))
+                  (should (> (nth 1 (window-edges chat-window))
+                             (nth 1 (window-edges source-window)))))
+                (with-current-buffer source
+                  (should e-org-canvas-mode)
+                  (should e-chat-context-mode-suppressed))
+                (with-current-buffer chat-buffer
+                  (let* ((org-canvas (e-org-canvas-session-metadata
+                                      e-chat-harness
+                                      e-chat-session-id))
+                         (attachment (car (e-chat-session-attachments
+                                           e-chat-harness
+                                           e-chat-session-id))))
+                    (should (plist-get attachment :canvas))
+                    (should (equal (plist-get org-canvas :uri)
+                                   "buffer://org-canvas-source"))
+                    (should (equal (plist-get org-canvas :buffer-name)
+                                   "org-canvas-source"))
+                    (should (equal (plist-get org-canvas :mode) 'org))
+                    (should (plist-get org-canvas :root))))))))
       (e-org-canvas-test--kill-chat-buffers))))
 
 (ert-deftest e-org-canvas-test-open-current-buffer-activates-project-local-layer-for-file-project ()
@@ -968,6 +966,7 @@
   "Org Canvas mode overrides Evil normal-state keys with session context insertion."
   (with-temp-buffer
     (org-mode)
+    (setq-local evil-local-mode t)
     (let (calls)
       (cl-letf (((symbol-function 'evil-local-set-key)
                  (lambda (state key command)
@@ -986,11 +985,24 @@
         (should (member (list 'normal (kbd "s-i") nil) calls))
         (should (member (list 'normal (kbd "s-I") nil) calls))))))
 
+(ert-deftest e-org-canvas-test-mode-skips-evil-keys-without-local-state ()
+  "Loaded Evil APIs are inert when the buffer has no local Evil state."
+  (with-temp-buffer
+    (org-mode)
+    (setq-local evil-local-mode nil)
+    (let (calls)
+      (cl-letf (((symbol-function 'evil-local-set-key)
+                 (lambda (&rest arguments) (push arguments calls))))
+        (e-org-canvas-mode 1)
+        (e-org-canvas-mode -1)
+        (should-not calls)))))
+
 (ert-deftest e-org-canvas-test-startup-refreshes-existing-mode-evil_keys ()
   "Startup refresh reapplies live Org Canvas buffer-local presentation state."
   (with-temp-buffer
     (org-mode)
     (setq-local e-org-canvas-mode t)
+    (setq-local evil-local-mode t)
     (setq-local mode-name "Org")
     (let (calls)
       (cl-letf (((symbol-function 'evil-local-set-key)
@@ -2245,11 +2257,10 @@ relies on the activity owner's post-redraw hook to follow the bottom."
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (e-actions-call 'org-canvas :overview nil
                       (list :harness harness :session-id "org"))
-      (should (eq (get-char-property (line-end-position) 'invisible)
-                  'outline))
+      (should (org-fold-folded-p (line-end-position)))
       (e-actions-call 'org-canvas :show-all nil
                       (list :harness harness :session-id "org"))
-      (should-not (get-char-property (line-end-position) 'invisible))
+      (should-not (org-fold-folded-p (line-end-position)))
       (let ((state (e-actions-call 'org-canvas :visibility-state nil
                                    (list :harness harness :session-id "org"))))
         (should (string-match-p "Parent" state))))))
@@ -2276,8 +2287,7 @@ Body
        (list :harness harness :session-id "org"))
       (goto-char (point-min))
       (re-search-forward "^\*\* Child")
-      (should (eq (get-char-property (line-end-position) 'invisible)
-                  'outline))
+      (should (org-fold-folded-p (line-end-position)))
       (let ((result
              (e-actions-call
               'org-canvas
@@ -2287,7 +2297,7 @@ Body
         (should (string-match-p
                  "Revealed Org Canvas context"
                  result))
-        (should-not (get-char-property (line-end-position) 'invisible))))))
+        (should-not (org-fold-folded-p (line-end-position)))))))
 
 (ert-deftest e-org-canvas-test-visibility_tools_fail_outside_org_canvas ()
   "Org visibility tools report explicit errors for ordinary chat sessions."

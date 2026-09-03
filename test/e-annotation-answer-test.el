@@ -19,12 +19,18 @@
 (require 'e)
 (require 'e-annotation-org)
 (require 'e-annotation-answer)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defmacro e-annotation-answer-test--with-file (file-var &rest body)
   "Run BODY with a temp Org FILE-VAR carrying one open user-authored thread."
   (declare (indent 1) (debug (symbolp body)))
   `(progn
-     (skip-unless (e-annotation-org-available-p))
+     (e-test-require-capability
+      (e-annotation-org-available-p)
+      "Required org-annotate test integration is unavailable or incompatible")
      (let* ((dir (make-temp-file "e-annotation-answer-" t))
             (,file-var (expand-file-name "notes.org" dir)))
        (unwind-protect

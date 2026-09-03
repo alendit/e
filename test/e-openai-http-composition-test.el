@@ -93,6 +93,7 @@
                            url-http-proxy nil
                            url-http-referer nil
                            url-http-attempt-keepalives t
+                           url-http-extensions-header nil
                            url-extensions-header nil
                            url-mime-encoding-string nil
                            url-mime-charset-string nil

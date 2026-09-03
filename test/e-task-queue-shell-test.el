@@ -16,6 +16,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-task-queue)
@@ -120,49 +121,52 @@
         (remove-hook 'e-task-queue-change-functions
                      #'e-task-queue-shell--refresh-buffers)))))
 
-(when nil
-  ;; Retired file-backed list fixture; the shell consumes the same queue after
-  ;; the default SQLite composition restores it.
-  (ert-deftest e-task-queue-shell-test-list-buffer-rehydrates-default-queue ()
-  "Opening the list buffer for the default queue rehydrates persisted tasks.
-The buffer must show disk-backed tasks even when no harness built the
-task-queue layer to trigger rehydration first."
-  (e-task-queue-shell-test--with-instances
-    (let* ((dir (make-temp-file "e-task-queue-shell-rehydrate-" t))
-           (e-task-queue-directory (file-name-as-directory dir))
-           (e-task-queue-actions-default-queue
-            (e-task-queue-create
-             :directory (file-name-as-directory dir)
-             :runner (lambda (_t _h _s) (list :cancel #'ignore)))))
-      (unwind-protect
-          (progn
-            ;; Persist a task through a separate queue on the same directory.
-            (let ((writer (e-task-queue-create
-                           :directory (file-name-as-directory dir)
-                           :runner (lambda (_t _h _s) (list :cancel #'ignore)))))
-              (e-task-queue-enqueue writer :prompt "persisted")
-              (let ((deadline (+ (float-time) 5.0)) done failure)
-                (e-task-queue-finalize
-                 writer (lambda (_queue) (setq done t))
-                 (lambda (err) (setq failure err)))
-                (while (and (not done) (not failure) (< (float-time) deadline))
-                  (accept-process-output nil 0.02))
-                (should-not failure)
-                (should done)))
-            ;; Default queue is empty and unloaded, as after a restart.
-            (setf (e-task-queue-loaded-p
-                   e-task-queue-actions-default-queue)
-                  nil)
-            (clrhash (e-task-queue-records e-task-queue-actions-default-queue))
-            (let ((buffer (e-task-queue-list-buffer)))
-              (unwind-protect
-                  (with-current-buffer buffer
-                    (should (= (length tabulated-list-entries) 1)))
-                (kill-buffer buffer)
-                (remove-hook 'e-task-queue-change-functions
-                             #'e-task-queue-shell--refresh-buffers))))
-        (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil)
-        (delete-directory dir t))))))
+(ert-deftest e-task-queue-shell-test-default-list-reopens-sqlite-queue ()
+  "The default list action restores one task through the SQLite composition."
+  (let* ((directory (make-temp-file "e-task-queue-shell-sqlite-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-default--runtime nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil)
+         (e-task-queue-actions-default-queue nil)
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         record buffer)
+    (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
+    (unwind-protect
+        (progn
+          (let ((queue (e-runtime-sqlite-task-queue (e-default-runtime))))
+            (e-task-queue-load queue)
+            (e-task-queue-pause-all queue)
+            ;; Execution authority is process-local.  This task remains paused,
+            ;; but enqueue still requires a truthful runner capability.
+            (setf (e-task-queue-runner queue)
+                  (lambda (&rest _arguments)
+                    (ert-fail "A paused task must not start")))
+            (setq record
+                  (e-task-queue-enqueue
+                   queue :prompt "persisted through SQLite"
+                   :summary "Persisted task")))
+          (e-default-runtime-close)
+          (let ((queue (e-runtime-sqlite-task-queue (e-default-runtime))))
+            (should-not (e-task-queue-loaded-p queue)))
+          (setq buffer (e-task-queue-list-buffer))
+          (with-current-buffer buffer
+            (should (eq e-task-queue-shell--queue
+                        e-task-queue-actions-default-queue))
+            (should (e-task-queue-loaded-p e-task-queue-shell--queue))
+            (should (= (length tabulated-list-entries) 1))
+            (should (equal (caar tabulated-list-entries)
+                           (plist-get record :task-id)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (remove-hook 'e-task-queue-change-functions
+                   #'e-task-queue-shell--refresh-buffers)
+      (e-default-runtime-close)
+      (delete-directory directory t))))
+
 
 (ert-deftest e-task-queue-shell-test-shows-summary-stub-over-prompt ()
   "The Task column shows the agent-authored summary when present."

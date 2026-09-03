@@ -17,18 +17,22 @@
 (require 'e-session-identity)
 (require 'e-session-provider-anchor)
 (require 'e-session-board-policy)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (ert-deftest e-session-policy-test-pure-owners-load-without-facade-or-aggregate ()
   "Pure session policy owners do not pull in the composition roots."
-  (when (or (featurep 'e-session-aggregate)
-            (featurep 'e-session))
-    (ert-skip "fresh-load contract is exercised in an isolated process"))
-  (should (featurep 'e-session-metadata))
-  (should (featurep 'e-session-identity))
-  (should (featurep 'e-session-provider-anchor))
-  (should (featurep 'e-session-board-policy))
-  (should-not (featurep 'e-session-aggregate))
-  (should-not (featurep 'e-session)))
+  (e-test-run-fresh-owner-isolation
+   "session-policy owner isolation"
+   '(e-session-metadata e-session-identity e-session-provider-anchor
+     e-session-board-policy)
+   '(e-session-aggregate e-session)
+   '((featurep 'e-session-metadata)
+     (featurep 'e-session-identity)
+     (featurep 'e-session-provider-anchor)
+     (featurep 'e-session-board-policy))))
 
 (ert-deftest e-session-policy-test-metadata-schema-is-closed-and-replay-safe ()
   "Metadata validation and replay normalization keep the durable schema closed."

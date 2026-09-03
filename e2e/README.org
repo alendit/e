@@ -8,8 +8,15 @@ explicit opt-in for tests that call a real provider.
 Run unit and deterministic integration coverage with:
 
 #+begin_src sh
-eldev test
+E_RUNTIME_STATE_DIRECTORY=/tmp/e-test-runtime eldev test
 #+end_src
+
+Use a fresh disposable runtime directory for each run.  The supported runner
+provides loopback bind/connect, =node=, =python3=, =tail=, the repository's
+org-annotate integration, and Eldev's declared Evil and markdown-mode test
+dependencies.  The canonical result is zero unexpected and zero skipped.
+Missing capabilities fail with an actionable test error rather than silently
+reducing coverage.
 
 The integration files under =test/= and deterministic modules under =e2e/=
 cross real harness, adapter, persistence, tool, work, and chat-surface
@@ -49,7 +56,7 @@ native frame, set =E_GRAPHICAL_E2E_NATIVE_VISIBLE=1=.
 
 On Linux, the runner uses the current display or automatically starts
 =xvfb-run= when =DISPLAY= is unset.  A graphical frame is mandatory; the suite
-never falls back to batch mode.
+never falls back to batch mode or skips a graphical contract.
 
 The default is a hermetic Eldev-prepared Emacs.  To run the same graphical
 matrix after this machine's normal Emacs configuration has loaded, use:
@@ -130,6 +137,10 @@ E_E2E=1 \
 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 eldev -s test -f e2e/e-live-e2e-test.el
 #+end_src
+
+Those configuration/model classifications belong only to this explicitly
+opt-in external-evidence tier.  They are not exceptions to the deterministic
+ordinary suite's zero-skipped contract.
 
 The Codex sample uses the normal Codex auth file and sends no project-derived
 layers, tools, or context.  The canonical first-party API profile is selected

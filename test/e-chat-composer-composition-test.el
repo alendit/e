@@ -412,12 +412,19 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-composer-focus-enters-evil-insert-state ()
   "Showing the separate composer requests Evil's insert state."
-  (let (entered)
-    (cl-letf (((symbol-function 'evil-insert-state)
-               (lambda () (setq entered t))))
-      (with-temp-buffer
-        (e-chat-composer-enter-input-state)))
-    (should entered)))
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-evil-focus"))
+        entered)
+    (unwind-protect
+        (let ((composer (e-chat-test--composer buffer)))
+          (with-current-buffer composer
+            (setq-local evil-local-mode t))
+          (cl-letf (((symbol-function 'evil-insert-state)
+                     (lambda () (setq entered t))))
+            (with-current-buffer buffer
+              (e-chat-composer-enter-input-state)))
+          (should entered))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submits-composer-text-with-inline-references ()
   "Submitting converts inline reference atoms into ordered prompt context."

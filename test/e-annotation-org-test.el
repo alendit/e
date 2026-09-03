@@ -8,8 +8,8 @@
 ;;; Commentary:
 
 ;; ERT tests for the org-annotate annotation actions and the actionable
-;; predicate.  All tests run headless against a temp Org file.  They skip when
-;; org-annotate is not installed, since it is an optional backend.
+;; predicate.  All tests run headless against a temp Org file.  The supported
+;; test environment provides org-annotate even though it is optional at runtime.
 
 ;;; Code:
 
@@ -21,13 +21,19 @@
 (require 'e-annotations)
 (require 'e-backend)
 (require 'e-harness)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defmacro e-annotation-org-test--with-file (file-var &rest body)
   "Run BODY with a temp Org FILE-VAR carrying one user-authored annotation.
 The annotation is created headless with author `user' so it is actionable."
   (declare (indent 1) (debug (symbolp body)))
   `(progn
-     (skip-unless (e-annotation-org-available-p))
+     (e-test-require-capability
+      (e-annotation-org-available-p)
+      "Required org-annotate test integration is unavailable or incompatible")
      (let* ((dir (make-temp-file "e-annotation-org-" t))
             (,file-var (expand-file-name "notes.org" dir)))
        (unwind-protect
@@ -48,7 +54,9 @@ The annotation is created headless with author `user' so it is actionable."
 
 (ert-deftest e-annotation-org-test-guards-non-org-file ()
   "Actions error loudly on a non-Org file target."
-  (skip-unless (e-annotation-org-available-p))
+  (e-test-require-capability
+   (e-annotation-org-available-p)
+   "Required org-annotate test integration is unavailable or incompatible")
   (should-error (e-annotation-org-list :file "/tmp/notes.txt")
                 :type 'user-error)
   (should-error (e-annotation-org-list :file nil) :type 'user-error))
@@ -151,7 +159,9 @@ The annotation is created headless with author `user' so it is actionable."
 
 (ert-deftest e-annotation-org-test-actions-roundtrip-through-dispatch ()
   "The registered actions list, reply, and resolve through action dispatch."
-  (skip-unless (e-annotation-org-available-p))
+  (e-test-require-capability
+   (e-annotation-org-available-p)
+   "Required org-annotate test integration is unavailable or incompatible")
   (e-annotation-org-test--with-file file
     (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
            (capability (e-annotations-capability-create))

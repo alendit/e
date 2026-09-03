@@ -16,7 +16,7 @@
 
 (ert-deftest e-window-surface-behavior-test-keeps-ordinary-window ()
   "Replacing an ordinary surface is an identity operation."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (save-window-excursion
     (let ((ignore-window-parameters t))
       (delete-other-windows))
@@ -27,7 +27,7 @@
 
 (ert-deftest e-window-surface-behavior-test-replaces-atomic-surface-as-one-unit ()
   "A shell can replace an atomic surface without knowing who composed it."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (first-buffer (generate-new-buffer "*e surface first*"))

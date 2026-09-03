@@ -19,6 +19,10 @@
 (require 'e-mcp-protocol)
 (require 'e-mcp-stdio)
 (require 'e-mcp-transport)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defun e-mcp-owner-test--transport-args (args transport-function)
   "Replace explicit transport option in ARGS with TRANSPORT-FUNCTION."
@@ -32,16 +36,17 @@
 
 (ert-deftest e-mcp-owner-test-loads-without-facade ()
   "MCP owners are loadable without the facade composition root."
-  (when (featurep 'e-mcp)
-    (ert-skip "fresh-load contract is exercised in an isolated process"))
-  (should-not (featurep 'e-mcp))
-  (dolist (function '(e-mcp-server-create
-                      e-mcp-tool-create
-                      e-mcp-protocol-http-server-p
-                      e-mcp-transport-reserve
-                      e-mcp-list-tools
-                      e-capability-with-mcp-create))
-    (should (fboundp function))))
+  (e-test-run-fresh-owner-isolation
+   "MCP owner isolation"
+   '(e-mcp-capability e-mcp-client e-mcp-http e-mcp-protocol
+     e-mcp-stdio e-mcp-transport)
+   '(e-mcp)
+   '((fboundp 'e-mcp-server-create)
+     (fboundp 'e-mcp-tool-create)
+     (fboundp 'e-mcp-protocol-http-server-p)
+     (fboundp 'e-mcp-transport-reserve)
+     (fboundp 'e-mcp-list-tools)
+     (fboundp 'e-capability-with-mcp-create))))
 
 (ert-deftest e-mcp-owner-test-protocol-classifies-server-values ()
   "Transport classification is a protocol value concern."

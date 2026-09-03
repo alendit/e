@@ -1,0 +1,42 @@
+#+title: The ordinary repository test suite retained failures and skips
+#+startup: overview
+
+* Goal record
+
+- Goal ID :: =TEST-SUITE-ZERO-EXCEPTIONS=
+- Behavioral goal :: The documented ordinary repository test command exits
+  successfully with zero unexpected and zero skipped results in its supported
+  environment.
+- Direct scenario :: =S-FULL-SOURCE-GREEN= runs
+  =E_RUNTIME_STATE_DIRECTORY=<fresh> eldev test= with loopback networking and
+  the declared command/package capabilities available.
+- Owning contract :: =TEST-C01=.
+- Product authority :: the admitted zero-exception test policy and the
+  accepted Feature 87 preservation requirements.
+
+* Report
+
+The prior complete Feature 87 evidence treated three Emacs 31 failures and
+fourteen skips as an acceptable baseline.  That made the ordinary suite unable
+to distinguish a current regression from a retained exception.  Five owner
+isolation tests also depended on aggregate load order, six real HTTP
+integration tests could silently skip without their executables, and optional
+test packages made valid Evil, Markdown, and org-annotate behavior conditional.
+
+The correction keeps external live-provider evidence opt-in, but makes every
+deterministic repository test executable.  Obsolete filesystem-era persistence
+tests are removed instead of kept as skip shells.  Retained environment
+capabilities fail with actionable messages when absent, and fresh-process owner
+tests no longer depend on which facades the aggregate suite loaded first.
+
+One retained Markdown test exposed a product defect with the current
+=markdown-mode=: its renderer preserved the visible label but discarded the
+=e-chat-link-url= property required by chat link commands.  The transcript
+owner now restores that exact target after =markdown-mode= applies presentation
+properties; the existing deterministic fallback remains unchanged.
+
+Running the retained Evil integrations also exposed three presentation-boundary
+defects: overview shutdown recursively reentered its own hook, composer focus
+entered Evil state in a buffer where local Evil was disabled, and Org Canvas
+installed prompt bindings without local Evil state maps.  Each owner now
+checks or fences only its own buffer-local Evil lifecycle.

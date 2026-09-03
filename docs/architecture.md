@@ -588,6 +588,17 @@ larger integration suites cover composition, public commands, restart/replay,
 board attachment, and graphical buffer behavior. Private mechanism assertions
 live in owner mechanism suites.
 
+The canonical deterministic gate is
+`E_RUNTIME_STATE_DIRECTORY=<fresh-disposable-directory> eldev test`. Its
+supported repository environment provides loopback bind/connect, Node,
+Python 3, `tail`, the existing org-annotate integration, and Eldev's declared
+Evil and markdown-mode test dependencies. Every retained deterministic test
+runs: capability absence is an actionable failure, and acceptance requires
+zero unexpected and zero skipped results. Five dependency-isolation contracts
+run in fresh `emacs -Q --batch` children so aggregate feature load order cannot
+hide facade coupling. Credentialed, model-dependent live-provider E2E remains
+an explicitly separate tier and does not weaken this zero-exception gate.
+
 Representative checks use fake backends, in-memory policy owners, disposable
 SQLite stores, fake transports, deterministic board fixtures, bounded tool results,
 replacement attached-turn ports, and isolated graphical frames. The complete

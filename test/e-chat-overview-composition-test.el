@@ -927,7 +927,7 @@ surface; switch, resume, active-sessions, and overview list only root chats."
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
   "The active sessions command reports an empty session list."
-  (cl-letf (((symbol-function 'e-chat-overview-session-candidates)
+  (cl-letf (((symbol-function 'e-chat-overview-active-session-candidates)
              (lambda () nil)))
     (should-error (e-chat-active-sessions) :type 'user-error)))
 

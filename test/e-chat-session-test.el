@@ -21,6 +21,10 @@
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-session)
 (require 'e-work)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defun e-chat-session-test--drain-board (harness session-id)
   "Drain one chat board routing and pickup turn for HARNESS SESSION-ID."
@@ -409,89 +413,9 @@
     (should-error (e-chat-session-attachments harness "flattened")
                   :type 'user-error)))
 
-(ert-deftest e-chat-session-test-offline-migration-repairs-persistent-store ()
-  "The one-off migrator canonicalizes a real store before strict replay."
-  (ert-skip "Retired online repair; Feature 87 migration owns decoding and install")
-  (skip-unless (executable-find "python3"))
-  (let* ((directory (make-temp-file "e-chat-attachment-migration-" t))
-         (store (e-session-persistent-store-create directory))
-         (session-id "collapsed")
-         (journal (expand-file-name "sessions/collapsed.jsonl" directory))
-         (checkpoint
-          (expand-file-name "sessions/collapsed.checkpoint.json" directory))
-         (script
-          (expand-file-name
-           "docs/bugs/e-chat-resume-collapsed-attachment/migrate-chat-attachments.py"
-           (locate-dominating-file default-directory "Eldev")))
-         (canonical
-          "\"attachments\":[{\"uri\":\"file://old.org\",\"label\":\"old\",\"canvas\":true}]")
-         (collapsed
-          "\"attachments\":{\"uri\":[\"file://old.org\",\"label\",\"old\",\"canvas\",true]}")
-         before-dry-run)
-    (unwind-protect
-        (progn
-          (e-session-create store :id session-id)
-          (e-session-set-context-references
-           store session-id 'chat-session
-           '(:attachments
-             ((:uri "file://old.org" :label "old" :canvas t))))
-          (e-session-migrate-session-checkpoint store session-id)
-          (dolist (file (list journal checkpoint))
-            (with-temp-buffer
-              (insert-file-contents file)
-              (goto-char (point-min))
-              (should (search-forward canonical nil t))
-              (replace-match collapsed t t)
-              (write-region (point-min) (point-max) file nil 'silent)))
-          (let* ((loaded (e-session-persistent-store-create directory))
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions loaded)))
-            (should-error
-             (e-chat-session-attachments harness session-id)
-             :type 'user-error))
-          (setq before-dry-run (secure-hash 'sha256 journal))
-          (with-temp-buffer
-            (should
-             (zerop
-              (call-process "python3" nil t nil script
-                            "--session-root" directory
-                            "--session-id" session-id)))
-            (should (search-backward "\"mode\": \"dry-run\"" nil t))
-            (should (search-backward "\"changed-records\": 2" nil t)))
-          (should (equal (secure-hash 'sha256 journal) before-dry-run))
-          (with-temp-buffer
-            (should
-             (zerop
-              (call-process "python3" nil t nil script
-                            "--session-root" directory
-                            "--session-id" session-id
-                            "--apply" "--confirm-emacs-stopped")))
-            (should (search-backward "\"mode\": \"apply\"" nil t)))
-          (let* ((loaded (e-session-persistent-store-create directory))
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions loaded))
-                 (attachments
-                  (e-chat-session-attachments harness session-id)))
-            (should (= (length attachments) 1))
-            (should (equal (plist-get (car attachments) :uri)
-                           "file://old.org")))
-          (should
-           (directory-files (expand-file-name "sessions" directory) nil
-                            "collapsed\\..*\\.bak\\."))
-          (with-temp-buffer
-            (should
-             (zerop
-              (call-process "python3" nil t nil script
-                            "--session-root" directory
-                            "--session-id" session-id)))
-            (should (search-backward "\"changed-records\": 0" nil t))))
-      (delete-directory directory t))))
-
 (ert-deftest e-chat-session-test-offline-migration-translates-checkpoint-offset ()
   "Rewriting a journal preserves the checkpoint's logical record boundary."
-  (skip-unless (executable-find "python3"))
+  (e-test-require-executable "python3")
   (let* ((directory (make-temp-file "e-chat-attachment-offset-" t))
          (sessions (expand-file-name "sessions" directory))
          (journal (expand-file-name "offset.jsonl" sessions))
@@ -553,7 +477,7 @@
 
 (ert-deftest e-chat-session-test-offline-migration-covers-inventoried-shapes ()
   "The migrator rewrites every known shape in every session file format."
-  (skip-unless (executable-find "python3"))
+  (e-test-require-executable "python3")
   (let* ((directory (make-temp-file "e-chat-attachment-shapes-" t))
          (sessions (expand-file-name "sessions" directory))
          (journal (expand-file-name "collapsed.jsonl" sessions))

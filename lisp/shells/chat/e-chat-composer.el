@@ -158,7 +158,9 @@ may also derive a transient standalone input/result pane from this mode."
 
 (defun e-chat-composer--enter-insert-state ()
   "Put an Evil-enabled composer into insert state when focused."
-  (when (fboundp 'evil-insert-state)
+  (when (and (fboundp 'evil-insert-state)
+             (boundp 'evil-local-mode)
+             evil-local-mode)
     (evil-insert-state)))
 
 (defun e-chat-composer-enter-navigation ()

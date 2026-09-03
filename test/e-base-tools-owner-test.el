@@ -14,18 +14,22 @@
 (require 'ert)
 (require 'e-base-tools-bash)
 (require 'e-base-tools-file)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (ert-deftest e-base-tools-owner-test-loads-without-facade ()
   "The file and bash owners load without the base-tools facade."
-  (when (featurep 'e-base-tools)
-    (ert-skip "fresh-load contract is exercised in an isolated process"))
-  (should-not (featurep 'e-base-tools))
-  (dolist (function '(e-base-tools-file-resource-path
-                      e-base-tools-file-buffer-coherence-group
-                      e-base-tools-file--argument-string
-                      e-base-tools-bash--argument-string
-                      e-base-tools-bash--truncate-tail-lines))
-    (should (fboundp function))))
+  (e-test-run-fresh-owner-isolation
+   "base-tool owner isolation"
+   '(e-base-tools-bash e-base-tools-file)
+   '(e-base-tools)
+   '((fboundp 'e-base-tools-file-resource-path)
+     (fboundp 'e-base-tools-file-buffer-coherence-group)
+     (fboundp 'e-base-tools-file--argument-string)
+     (fboundp 'e-base-tools-bash--argument-string)
+     (fboundp 'e-base-tools-bash--truncate-tail-lines))))
 
 (ert-deftest e-base-tools-owner-test-file-path-stays-inside-root ()
   "File owner resolves a parsed resource address within its root."

@@ -1269,6 +1269,20 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
         (e-chat-transcript--conceal-markdown-syntax (match-beginning 0) label-start)
         (e-chat-transcript--conceal-markdown-syntax label-end (match-end 0))))))
 
+(defun e-chat-transcript--apply-markdown-link-targets (content-start content-end)
+  "Attach E's exact link targets between CONTENT-START and CONTENT-END.
+`markdown-mode' owns presentation faces and syntax visibility on this path;
+the chat transcript still owns the URL consumed by its link commands."
+  (save-excursion
+    (goto-char content-start)
+    (while (re-search-forward "\\[\\([^]\n]+\\)\\](\\([^) \n]+\\))"
+                              content-end t)
+      (let ((label-start (match-beginning 1))
+            (label-end (match-end 1))
+            (url (match-string-no-properties 2)))
+        (add-text-properties label-start label-end
+                             `(help-echo ,url e-chat-link-url ,url))))))
+
 (defun e-chat-transcript--apply-deterministic-markdown (content-start content-end)
   "Apply E's deterministic Markdown presentation from CONTENT-START to CONTENT-END."
   (when (< content-start content-end)
@@ -1285,7 +1299,8 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
 (defun e-chat-transcript--apply-assistant-markdown (content-start content-end)
   "Apply Markdown presentation between CONTENT-START and CONTENT-END."
   (when (< content-start content-end)
-    (unless (e-chat-transcript--apply-markdown-mode-properties content-start content-end)
+    (if (e-chat-transcript--apply-markdown-mode-properties content-start content-end)
+        (e-chat-transcript--apply-markdown-link-targets content-start content-end)
       (e-chat-clear-markdown-presentation content-start content-end)
       (e-chat-transcript--apply-deterministic-markdown
        content-start content-end))))

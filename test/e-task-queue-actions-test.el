@@ -197,54 +197,6 @@ pausing a running task lands it `paused' rather than leaving it running."
     (should (e-capabilities-action-spec capability :pause-all))
     (should (e-capabilities-action-spec capability :resume-all))))
 
-(when nil
-  ;; Retired file-backed rehydration fixture; shared SQLite queue restoration
-  ;; is covered by `e-runtime-sqlite-p3-test'.
-  (ert-deftest e-task-queue-actions-test-ensure-loaded-rehydrates-default ()
-  "`e-task-queue-actions-ensure-loaded' rehydrates the default queue from disk.
-It must load persisted records regardless of whether a harness built the
-task-queue layer, and stay idempotent afterward."
-  (let* ((dir (make-temp-file "e-task-queue-ensure-" t))
-         (e-task-queue-directory (file-name-as-directory dir))
-         ;; A fresh, empty default queue pointed at the durable dir, as if just
-         ;; constructed at load time before any layer build.
-         (e-task-queue-actions-default-queue
-          (e-task-queue-create
-           :directory (file-name-as-directory dir)
-           :runner (lambda (_task _harness _on-settle) (list :cancel #'ignore)))))
-    (unwind-protect
-        (progn
-          ;; Persist a task by writing through a separate queue on the same dir.
-          (let ((writer (e-task-queue-create
-                         :directory (file-name-as-directory dir)
-                         :runner (lambda (_t _h _s) (list :cancel #'ignore)))))
-            (e-task-queue-enqueue writer :prompt "persisted")
-            (let ((deadline (+ (float-time) 5.0)) done failure)
-              (e-task-queue-finalize
-               writer (lambda (_queue) (setq done t))
-               (lambda (err) (setq failure err)))
-              (while (and (not done) (not failure) (< (float-time) deadline))
-                (accept-process-output nil 0.02))
-              (should-not failure)
-              (should done)))
-          ;; The default queue starts empty and unloaded.
-          (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil)
-          (clrhash (e-task-queue-records e-task-queue-actions-default-queue))
-          (should (zerop (hash-table-count
-                          (e-task-queue-records
-                           e-task-queue-actions-default-queue))))
-          ;; Ensuring loaded rehydrates the persisted task.
-          (let ((queue (e-task-queue-actions-ensure-loaded)))
-            (should (eq queue e-task-queue-actions-default-queue))
-            (should (= (length (e-task-queue-list queue)) 1))
-            (should (e-task-queue-loaded-p queue)))
-          ;; Idempotent: a second call does not reload or duplicate.
-          (e-task-queue-actions-ensure-loaded)
-          (should (= (length (e-task-queue-list
-                              e-task-queue-actions-default-queue))
-                     1)))
-      (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil)
-      (delete-directory dir t)))))
 
 (ert-deftest e-task-queue-actions-test-ensure-loaded-does-not-reload-live-queue ()
   "Ensuring an already-loaded queue is an idempotent no-op."

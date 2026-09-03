@@ -20,6 +20,10 @@
 (require 'e-harness-turn-state)
 (require 'e-harness-turn)
 (require 'e-session)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defun e-harness-runtime-owner-test--harness (&optional items)
   "Return a fresh harness state with fake backend ITEMS."
@@ -51,19 +55,23 @@
 
 (ert-deftest e-harness-runtime-owner-test-loads-without-facade ()
   "Owner modules can be loaded without loading the application facade."
-  (when (featurep 'e-harness)
-    (ert-skip "fresh-load contract is exercised in an isolated process"))
-  (should-not (featurep 'e-harness))
-  (let ((harness (e-harness-runtime-owner-test--harness)))
-    (should (e-harness-p harness))
-    (should (e-harness-capability-state-p
-             (e-harness-capability-state harness)))
-    (should (e-harness-activity-state-p
-             (e-harness-activity-state harness)))
-    (should (e-harness-turn-state-p
-             (e-harness-turn-state harness)))
-    (should (e-harness-context-state-p
-             (e-harness-context-state harness)))))
+  (e-test-run-fresh-owner-isolation
+   "harness runtime owner isolation"
+   '(e-backend e-events e-harness-state e-harness-activity
+     e-harness-turn-state e-harness-turn e-session)
+   '(e-harness)
+   '((let ((harness
+            (e-harness-state-create
+             :backend (e-backend-fake-create :items nil))))
+       (and (e-harness-p harness)
+            (e-harness-capability-state-p
+             (e-harness-capability-state harness))
+            (e-harness-activity-state-p
+             (e-harness-activity-state harness))
+            (e-harness-turn-state-p
+             (e-harness-turn-state harness))
+            (e-harness-context-state-p
+             (e-harness-context-state harness)))))))
 
 (ert-deftest e-harness-runtime-owner-test-state-substates-have-distinct-owners ()
   "Capability, activity, turn, and context state are explicit substates."

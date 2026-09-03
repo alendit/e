@@ -363,7 +363,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-zz-debug-screenshots-capture-state-and-transition ()
   "Debug snapshots expose a visual state and a before/after transition pair."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (directory (make-temp-file "e-graphical-screenshots-" t))
         (before-buffer (get-buffer-create "*e screenshot before*"))
@@ -415,7 +415,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-settled-wait-crosses-event-loop ()
   "A settled graphical wait observes pending native/timer transitions."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((ready t)
         fired
         restore-timer)
@@ -437,7 +437,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-focus-and-paired-delete ()
   "Opening focuses the composer; C-x 0 closes the complete chat surface."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -472,7 +472,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-native-surface-replaces-as-one-unit ()
   "A consumer replaces a selected chat constituent without chat knowledge."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -503,7 +503,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-popup-preserves-dedicated-surface ()
   "A generic pop-up opens outside the owned atomic chat surface."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (popup (get-buffer-create "*e graphical popup*"))
@@ -539,7 +539,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-reload-refreshes-backend-and-keeps-composer ()
   "Reload refreshes a retained chat endpoint without losing composer state."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (e-harness-registry--instances (make-hash-table :test 'equal))
@@ -602,7 +602,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-large-index-summary-has-bounded-loading-view ()
   "A generated index summary cannot bury or stall the loading projection."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (e-chat-session-summary-preview-max-chars 512)
@@ -637,7 +637,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-short-output-stays-bottom-and-keeps-draft ()
   "Short streaming output stays low without stealing composer focus or draft."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -675,7 +675,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-intermediate-assistant-keeps-live-progress ()
   "An intermediate assistant block never presents a settled turn summary."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -757,7 +757,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-board-final-output-stops-live-progress ()
   "Board-final output removes the live tail before its summary event arrives."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -805,7 +805,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-retrying-provider-shows-error-and-retry ()
   "A retrying provider attempt visibly retains its error without claiming failure."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -866,7 +866,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-reasoning-renders-content-not-payload ()
   "Board-backed reasoning renders prose without its protocol payload."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -906,7 +906,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-settled-output-follows-after-tall-transient ()
   "Settling a tall transient keeps the much shorter durable answer at bottom."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (e-chat-activity-reasoning-visible-line-limit 120)
@@ -947,7 +947,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-focused-composer-shows-configured-context-limit ()
   "The focused composer shows the configured model context limit."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -1013,7 +1013,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-stream-unpins-and-repins-by-user-scroll ()
   "User scrolling unpins streamed output; reaching the tail repins it."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -1085,7 +1085,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-settlement-preserves-user-scrollback ()
   "A terminal render does not move a transcript the user explicitly unpinned."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -1119,7 +1119,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-large-transcript-minibuffer-keeps-provider-responsive ()
   "A large active chat does not repaint-loop while a minibuffer owns input."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (e-chat-progress-interval 0.05)
@@ -1198,7 +1198,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-progress-timer-edits-only-active-tail ()
   "A graphical progress timer leaves a long completed activity prefix unchanged."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (e-chat-progress-interval 0.05)
@@ -1258,7 +1258,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-reasoning-snapshots-render-as-markdown-lines ()
   "Board reasoning snapshots render as distinct emphasized status lines."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)
@@ -1305,7 +1305,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-live-activity-history-is-bounded ()
   "A long live turn projects recent rounds while retaining complete details."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (e-chat-live-activity-round-limit 6)
@@ -1385,7 +1385,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-persp-switch-restores-focused-surface ()
   "A real persp-mode round trip restores the chat pair and composer focus."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         (persp-was-enabled (bound-and-true-p persp-mode))
@@ -1429,7 +1429,7 @@ than the invisible insertion position."
 
 (ert-deftest e-chat-behavior-test-session-switch-after-noisy-tail-is-visible ()
   "Switching to a long live chat after noisy history keeps visible state."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (let ((configuration (current-window-configuration))
         (frame-size (cons (frame-width) (frame-height)))
         fixture)

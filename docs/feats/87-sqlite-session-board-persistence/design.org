@@ -546,6 +546,13 @@ approximately 0.07-second operator-store resume is comparison context only.
 Measurements without an accepted fixture/procedure/environment/threshold
 record are observational and do not independently decide acceptance.
 
+The ordinary deterministic source gate runs every retained test in a declared
+supported environment and accepts neither unexpected nor skipped results.
+Required loopback, executable, package, and graphical capabilities fail
+actionably when absent.  Credentialed live-provider checks remain a separate
+opt-in compatibility tier because their model and endpoint behavior is not a
+deterministic repository capability.
+
 * Compatibility and removal
 
 Persistent runtime storage requires Emacs with built-in SQLite support; the

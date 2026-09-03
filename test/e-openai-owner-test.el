@@ -19,20 +19,25 @@
 (require 'e-openai-http)
 (require 'e-openai-profile)
 (require 'e-openai-responses)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (ert-deftest e-openai-owner-test-loads-without-facade ()
   "The owner contracts are loadable without composing the provider facade."
-  (when (featurep 'e-openai)
-    (ert-skip "fresh-load contract is exercised in an isolated process"))
-  (should-not (featurep 'e-openai))
-  (dolist (function '(e-openai-provider-profile
-                      e-openai-codex-request-body
-                      e-openai-chat-completion-request-body
-                      e-openai-decoder-event-items
-                      e-openai-diagnostics-bounded-text
-                      e-openai-http-request-start
-                      e-openai-compaction-eligible-p))
-    (should (fboundp function))))
+  (e-test-run-fresh-owner-isolation
+   "OpenAI owner isolation"
+   '(e-openai-chat-completions e-openai-compaction e-openai-decoder
+     e-openai-diagnostics e-openai-http e-openai-profile e-openai-responses)
+   '(e-openai)
+   '((fboundp 'e-openai-provider-profile)
+     (fboundp 'e-openai-codex-request-body)
+     (fboundp 'e-openai-chat-completion-request-body)
+     (fboundp 'e-openai-decoder-event-items)
+     (fboundp 'e-openai-diagnostics-bounded-text)
+     (fboundp 'e-openai-http-request-start)
+     (fboundp 'e-openai-compaction-eligible-p))))
 
 (ert-deftest e-openai-owner-test-profile-returns-semantic-capabilities ()
   "Profile policy exposes normalized capability values, not owner state."

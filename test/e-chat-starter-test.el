@@ -190,7 +190,11 @@
             (let ((faces (ensure-list
                           (get-text-property (1- (point)) 'face))))
               (should (memq 'e-chat-final-assistant-face faces))
-              (should (memq 'e-chat-markdown-code-face faces))))
+              (should (seq-some
+                       (lambda (face)
+                         (memq face '(e-chat-markdown-code-face
+                                      markdown-inline-code-face)))
+                       faces))))
         (kill-buffer (current-buffer))))))
 
 (ert-deftest e-chat-starter-test-events-record-first-final-answer ()

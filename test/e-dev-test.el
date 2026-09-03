@@ -24,6 +24,10 @@
 (require 'e-harness)
 (require 'e-openai)
 (require 'e-work)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 
 (ert-deftest e-dev-test-mark-reload-required-records-status-and-clear ()
   "Reload-required notification records pending restart intent."

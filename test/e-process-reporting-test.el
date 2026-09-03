@@ -12,6 +12,10 @@
 (require 'e-process-reporting)
 (require 'e-session)
 (require 'e-tools)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 
 (cl-defmacro e-process-reporting-test--with-store ((store directory) &body body)
   "Run BODY with an isolated persistent session STORE in DIRECTORY."

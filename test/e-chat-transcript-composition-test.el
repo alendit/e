@@ -13,6 +13,9 @@
 (load (expand-file-name "e-chat-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (ert-deftest e-chat-test-after-display-clears-chat-navigation-modes ()
   "Displaying chat returns it to a plain composer input state."
@@ -311,7 +314,7 @@ one-answer transcript."
 
 (ert-deftest e-chat-test-assistant-markdown-renders-with-text-properties ()
   "Assistant messages keep Markdown text and use markdown-mode faces."
-  (skip-unless (require 'markdown-mode nil t))
+  (e-test-require-feature 'markdown-mode 'markdown-mode)
   (let ((buffer (e-chat-test--buffer nil "chat-markdown")))
     (unwind-protect
         (with-current-buffer buffer
@@ -328,7 +331,7 @@ one-answer transcript."
             (goto-char (point-min))
             (search-forward "##")
             (should-not (get-text-property (1- (point)) 'invisible))
-            (should (memq 'markdown-header-face-2
+            (should (memq 'markdown-header-delimiter-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
             (search-forward "Heading")
             (should (memq 'markdown-header-face-2
@@ -339,26 +342,27 @@ one-answer transcript."
             (should (memq 'markdown-bold-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
             (search-backward "**")
-            (should (memq 'markdown-bold-face
+            (should (memq 'markdown-markup-face
                           (ensure-list (get-text-property (point) 'face))))
             (should-not (get-text-property (point) 'invisible))
             (search-forward "italic")
             (should (memq 'markdown-italic-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
             (search-backward "*")
-            (should (memq 'markdown-italic-face
+            (should (memq 'markdown-markup-face
                           (ensure-list (get-text-property (point) 'face))))
             (should-not (get-text-property (point) 'invisible))
             (search-forward "code")
             (should (memq 'markdown-inline-code-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
             (search-backward "`")
-            (should (memq 'markdown-inline-code-face
+            (should (memq 'markdown-markup-face
                           (ensure-list (get-text-property (point) 'face))))
             (should-not (get-text-property (point) 'invisible))
             (search-forward "- item")
+            (search-backward "-")
             (should (memq 'markdown-list-face
-                          (ensure-list (get-text-property (1- (point)) 'face))))
+                          (ensure-list (get-text-property (point) 'face))))
             (search-forward "```elisp")
             (should (memq 'markdown-code-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
@@ -370,16 +374,47 @@ one-answer transcript."
             (should (memq 'markdown-code-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
             (search-forward "docs")
-            (should (memq 'markdown-link-face
-                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (should (seq-some
+                     (lambda (face)
+                       (memq face '(markdown-link-face markdown-markup-face)))
+                     (ensure-list
+                      (get-text-property (1- (point)) 'face))))
+            (should (equal (buffer-substring-no-properties
+                            (- (point) (length "docs")) (point))
+                           "docs"))
             (should (equal (get-text-property (1- (point)) 'help-echo)
                            "https://example.test"))
             (should (equal (get-text-property (1- (point)) 'e-chat-link-url)
                            "https://example.test"))
             (search-backward "[")
-            (should (memq 'markdown-link-face
-                          (ensure-list (get-text-property (point) 'face))))
+            (should (seq-some
+                     (lambda (face)
+                       (memq face '(markdown-link-face markdown-markup-face)))
+                     (ensure-list (get-text-property (point) 'face))))
             (should-not (get-text-property (point) 'invisible))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-assistant-markdown-fallback-keeps-exact-link-target ()
+  "The no-markdown-mode renderer retains its visible label and exact target."
+  (let ((buffer (e-chat-test--buffer nil "chat-markdown-fallback"))
+        (original-require (symbol-function 'require)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'require)
+                     (lambda (feature &rest args)
+                       (unless (eq feature 'markdown-mode)
+                         (apply original-require feature args)))))
+            (e-chat-transcript-insert-entry
+             "Assistant" "See [docs](https://example.test)."))
+          (save-excursion
+            (goto-char (point-min))
+            (search-forward "docs")
+            (should (equal (buffer-substring-no-properties
+                            (- (point) (length "docs")) (point))
+                           "docs"))
+            (should (equal (get-text-property (1- (point)) 'e-chat-link-url)
+                           "https://example.test"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -510,14 +545,22 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
           (let ((faces (ensure-list
                         (get-text-property (1- (point)) 'face))))
             (should (memq 'e-chat-final-assistant-face faces))
-            (should (memq 'e-chat-markdown-strong-face faces))
+            (should (seq-some
+                     (lambda (face)
+                       (memq face '(e-chat-markdown-strong-face
+                                    markdown-bold-face)))
+                     faces))
             (should-not (eq (get-text-property (1- (point)) 'font-lock-face)
                             'e-chat-final-assistant-face)))
           (search-forward "code")
           (let ((faces (ensure-list
                         (get-text-property (1- (point)) 'face))))
             (should (memq 'e-chat-final-assistant-face faces))
-            (should (memq 'e-chat-markdown-code-face faces))))
+            (should (seq-some
+                     (lambda (face)
+                       (memq face '(e-chat-markdown-code-face
+                                    markdown-inline-code-face)))
+                     faces))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

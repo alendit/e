@@ -76,17 +76,6 @@ tests need a runner whose handle carries one."
            (lambda (r) (eq (plist-get r :status) 'running))
            (e-task-queue-list queue))))
 
-(defun e-task-queue-test--await-durable (queue)
-  "Wait in this test process for QUEUE's asynchronous durability boundary."
-  (let ((deadline (+ (float-time) 5.0)) done failure)
-    (e-task-queue-finalize
-     queue (lambda (_queue) (setq done t)) (lambda (err) (setq failure err)))
-    (while (and (not done) (not failure) (< (float-time) deadline))
-      (accept-process-output nil 0.02))
-    (should-not failure)
-    (should done)
-    queue))
-
 (ert-deftest e-task-queue-test-enqueue-returns-record ()
   "Enqueue returns a record and the task is admitted under the cap."
   (e-task-queue-test--with-instances
@@ -627,87 +616,3 @@ without one there is nothing to analyze, so the task terminates."
         (let ((retried (e-task-queue-get queue (plist-get record :task-id))))
           (should (eq (plist-get retried :status) 'running))
           (should (= (plist-get (plist-get retried :metadata) :board-attempt) 1)))))))
-
-(when nil
-  ;; Retired file-store fixture.  SQLite task restart and Board derived-fact
-  ;; retry are covered by `e-runtime-sqlite-p3-test'.
-  (ert-deftest e-task-queue-test-orchestration-restart-restores-required-and-optional-work ()
-  "A restored journal and queue accept one report per task and reconcile once."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let ((directory (make-temp-file "e-task-queue-run-restart" t))
-          (e-board--registry (make-hash-table :test 'equal))
-          (e-board-registry--boards (make-hash-table :test 'equal))
-          (e-board-registry--board-index nil)
-          (e-board-orchestration-actions--queue-boards
-           (make-hash-table :test 'equal)))
-      (unwind-protect
-          (let* ((source-runtime (e-board-registry-create :id "restart-run"))
-                 (source (e-board-registry-board-source-board source-runtime))
-                 (initial-recorder (make-e-task-queue-test--recorder))
-                 (queue (e-task-queue-create
-                         :directory directory
-                         :runner (e-task-queue-test--fake-runner initial-recorder))))
-            (e-board-orchestration-publish-fact
-             source
-             (list :version 1 :type 'manifest :idempotency-key "manifest"
-                   :payload
-                   '(:run-id "run-1"
-                     :tasks ((:task-key "required" :required t :accepted-attempt 0)
-                             (:task-key "optional" :required nil :accepted-attempt 0))
-                     :deadline (:kind none)
-                     :continuation (:session-id "coordinator" :prompt "reconcile"
-                                    :publication-key "continuation-1"))))
-            (dolist (task '(("required" . "required work")
-                            ("optional" . "optional work")))
-              (e-board-orchestration-actions-dispatch-queue-task
-               queue source :run-id "run-1" :task-key (car task) :attempt 0
-               :prompt (cdr task)))
-            (e-task-queue-test--await-durable queue)
-            (let ((journal (mapcar #'e-board-message-envelope
-                                   (e-board-messages source))))
-              ;; A fresh process reconstructs only durable journal and queue state.
-              (setq e-board--registry (make-hash-table :test 'equal)
-                    e-board-registry--boards (make-hash-table :test 'equal)
-                    e-board-registry--board-index nil)
-              (let* ((restored-runtime (e-board-registry-create :id "restart-run"))
-                     (restored (e-board-registry-board-source-board restored-runtime))
-                     (restored-recorder (make-e-task-queue-test--recorder))
-                     (reloaded (e-task-queue-create
-                                :directory directory
-                                :runner (e-task-queue-test--fake-runner restored-recorder))))
-                (e-board-orchestration-mark-restoring restored)
-                (dolist (envelope journal)
-                  (e-board-import-message restored envelope))
-                (e-board-orchestration-mark-restored restored)
-                (e-task-queue-load reloaded)
-                (dolist (record (e-task-queue-list reloaded))
-                  (puthash (plist-get record :task-id) restored
-                           e-board-orchestration-actions--queue-boards))
-                ;; Load starts each restored task with the fake runner.  Settle
-                ;; each once, independent of call order.
-                (dolist (task-key '("required" "optional"))
-                  (let* ((call (cl-find task-key
-                                        (e-task-queue-test--recorder-calls restored-recorder)
-                                        :key (lambda (item)
-                                               (plist-get (plist-get item :task) :metadata))
-                                        :test (lambda (key metadata)
-                                                (equal key (plist-get metadata :board-task-key)))))
-                         (settle (plist-get call :settle)))
-                    (should settle)
-                    (funcall settle :status 'done
-                             :outputs (list (list :kind 'text :value task-key)))))
-                (let ((projection (e-board-orchestration-run-projection restored "run-1")))
-                  (should (eq (plist-get projection :terminal-status) 'done))
-                  (should (= (length (plist-get projection :reports)) 2)))
-                (let (queued)
-                  (cl-letf (((symbol-function 'e-chat-service-queue-session)
-                             (lambda (&rest arguments) (push arguments queued))))
-                    (e-chat-service-reconcile-board-continuation
-                     restored-runtime nil)
-                    (e-chat-service-reconcile-board-continuation
-                     restored-runtime nil))
-                  (should (= (length queued) 1))
-                  (should (equal (plist-get (nthcdr 3 (car queued)) :source-input-key)
-                                 '("orchestration-continuation" "continuation-1" 0))))))
-        (delete-directory directory t)))))))

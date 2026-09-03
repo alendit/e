@@ -11,6 +11,9 @@
 (load (expand-file-name "e-chat-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (ert-deftest e-chat-test-composed-surface-keeps-draft-outside-transcript ()
   "Transcript rendering must not recreate or alter the separate composer."
@@ -144,6 +147,28 @@
                         #'e-chat-overview-previous-session))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-overview-mode-disables-real-evil-without-recursion ()
+  "Overview mode disables real buffer-local Evil and restores global test state."
+  (e-test-require-feature 'evil 'evil)
+  (let ((evil-mode-was-enabled (bound-and-true-p evil-mode))
+        (buffer (generate-new-buffer " *e-chat-overview-real-evil-test*")))
+    (unwind-protect
+        (progn
+          (evil-mode 1)
+          (with-current-buffer buffer
+            (text-mode)
+            (evil-local-mode 1)
+            (should evil-local-mode)
+            (e-chat-overview-mode)
+            (should-not evil-local-mode)
+            (should-not evil-state)
+            (should-not e-chat-overview--disabling-modal-editing)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (unless evil-mode-was-enabled
+        (evil-mode -1)))
+    (should (eq (bound-and-true-p evil-mode) evil-mode-was-enabled))))
 
 (provide 'e-chat-presentation-integration-test)
 

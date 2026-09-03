@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | test-suite-nonzero-exceptions/ | The ordinary repository test suite retained failures and skips |
 | Closed | board-manifest-drops-recovery-descriptor/ | Board manifest drops application recovery descriptor |
 | New    | repeated-empty-curation-fails-turn/ | Repeated empty curation fails the turn and renders twice |
 | New    | process-marker-correction-invalid-erasure/ | Process marker correction triggers invalid context erasure |

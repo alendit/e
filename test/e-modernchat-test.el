@@ -20,12 +20,17 @@
 (require 'e-chat-service)
 (require 'e-emacs-tools)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+(load (expand-file-name
+       "../e2e/e-board-e2e-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-modernchat)
 (require 'e-modernchat-view-model)
 (require 'e-project-local)
 (require 'e-session)
 (require 'e-session-storage)
 (require 'e-structured-blocks)
+
+(declare-function e-board-e2e-reset-runtime "e-board-e2e-support")
 
 (defvar e-modernchat-test--project-action-result nil)
 
@@ -167,6 +172,7 @@
 The modernchat view model must honor the structured-block registry the same
 way the chat shell does, so a hidden reasoning block never reaches the egui
 client."
+  (e-board-e2e-reset-runtime)
   (let ((harness (e-harness-create
                   :backend (e-backend-create :name "noop")
                   :enabled-layer-ids nil)))
@@ -219,6 +225,7 @@ client."
 A superseded first attempt and a machine-authored corrective prompt both carry
 the hidden disposition; the modern chat client should see only the visible
 messages so the transcript reads as one clean answer."
+  (e-board-e2e-reset-runtime)
   (let ((harness (e-harness-create
                   :backend (e-backend-create :name "noop")
                   :enabled-layer-ids nil)))
@@ -578,145 +585,6 @@ messages so the transcript reads as one clean answer."
                               :participant-id)
                    "durable-id")))))))
 
-(ert-deftest e-chat-service-test-legacy-upgrade-preflights-occupancy-and-reopens ()
-  "Legacy upgrades fail before writes for occupied or attached admissions.
-
-An unused explicit upgrade succeeds before and after reopening the persistent
-store.  The byte snapshots make the preflight boundary observable rather than
-only checking the in-memory association."
-  (ert-skip "Retired online JSONL upgrade; covered by Feature 87 offline migration")
-  (let ((directory (make-temp-file "e-chat-legacy-upgrade-" t))
-        (e-board--registry (make-hash-table :test 'equal))
-        (e-board--id-sequence 0)
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--board-index
-         (avl-tree-create (lambda (left right) (string< (car left) (car right)))))
-        (e-board-registry--id-sequence 0)
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--invocations (make-hash-table :test 'equal))
-        (e-board-runtime--admission-open-p t)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-board-session-association--legacy-owners
-         (make-hash-table :test 'equal)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (harness (e-harness-create
-                         :enabled-layer-ids nil :sessions store))
-               (board (e-board-registry-create
-                       :id "legacy-upgrade-board"
-                       :principal "chat:legacy-upgrade"))
-               (board-id (e-board-registry-board-id board))
-               (principal (e-board-registry-board-principal board))
-               (occupied "occupied-legacy-id")
-               (queries 0)
-               (original-admission
-                (symbol-function 'e-board-runtime-admission-available-p)))
-          (e-board-registry-add-participant
-           board :id occupied :principal principal)
-          (dolist (session-id '("legacy-occupied" "legacy-attached"
-                                "legacy-after-reopen"))
-            (e-session-create store :id session-id)
-            (e-session-declare-board-state
-             store session-id principal board-id "participant"))
-          (let ((policy-arguments
-                 (lambda (participant-id)
-                   (list :participant-id participant-id
-                         :pickup-selector '(:tags (private))
-                         :observer-selector '(:tags (private))
-                         :default-tags '(private)
-                         :default-to nil)))
-                (journal
-                 (lambda (session-id)
-                   (e-modernchat-test--file-bytes
-                    (e-session-storage-session-reference store session-id))))
-                (index (e-modernchat-test--file-bytes
-                        (expand-file-name "index.json" directory))))
-            (cl-letf (((symbol-function 'e-board-runtime-admission-available-p)
-                       (lambda (&rest arguments)
-                         (setq queries (1+ queries))
-                         (apply original-admission arguments)))
-                      ((symbol-function 'e-chat-service--install-participant-binding)
-                       (lambda (&rest _arguments) :captured)))
-              (let* ((session (e-session-get store "legacy-occupied"))
-                     (association (copy-tree
-                                   (e-session-board-association session)))
-                     (before-journal (funcall journal "legacy-occupied"))
-                     (before-index index))
-                (should-error
-                 (apply #'e-chat-service-open-board
-                        board harness "legacy-occupied"
-                        (funcall policy-arguments occupied))
-                 :type 'e-board-registry-id-conflict)
-                (should (equal (funcall journal "legacy-occupied")
-                               before-journal))
-                (should (equal (e-modernchat-test--file-bytes
-                                (expand-file-name "index.json" directory))
-                               before-index))
-                (should (equal (e-session-board-association session)
-                               association))
-                (should-not (e-session-board-routing-policy session)))
-              (should (eq
-                       (apply #'e-chat-service-open-board
-                              board harness "legacy-occupied"
-                              (funcall policy-arguments "unused-before"))
-                       :captured))
-              (should (equal
-                       (plist-get
-                        (e-session-board-routing-policy
-                         (e-session-get store "legacy-occupied"))
-                        :participant-id)
-                       "unused-before"))
-              ;; A live endpoint using the same HARNESS/session is an
-              ;; independent public admission conflict.  It must be rejected
-              ;; before the legacy association is upgraded.
-              (e-board-runtime-attach
-               board harness "legacy-attached"
-               :participant-id "already-attached" :principal principal)
-              (let* ((session (e-session-get store "legacy-attached"))
-                     (association (copy-tree
-                                   (e-session-board-association session)))
-                     (before-journal (funcall journal "legacy-attached"))
-                     (before-index
-                     (e-modernchat-test--file-bytes
-                       (expand-file-name "index.json" directory))))
-                (should-error
-                 (apply #'e-chat-service-open-board
-                        board harness "legacy-attached"
-                        (funcall policy-arguments "unused-while-attached"))
-                 :type 'e-board-runtime-session-busy)
-                (should (equal (funcall journal "legacy-attached")
-                               before-journal))
-                (should (equal (e-modernchat-test--file-bytes
-                                (expand-file-name "index.json" directory))
-                               before-index))
-                (should (equal (e-session-board-association session)
-                               association))
-                (should-not (e-session-board-routing-policy session)))
-              (e-session-flush-write-queue store)
-              (let* ((reopened (e-session-persistent-store-create directory))
-                     (restarted (e-harness-create
-                                 :enabled-layer-ids nil :sessions reopened)))
-                (should (eq
-                         (apply #'e-chat-service-open-board
-                                board restarted "legacy-after-reopen"
-                                (funcall policy-arguments "unused-after"))
-                         :captured))
-                (should (equal
-                         (plist-get
-                          (e-session-board-routing-policy
-                           (e-session-get reopened "legacy-after-reopen"))
-                          :participant-id)
-                         "unused-after")))
-              (should (>= queries 4)))))
-      (delete-directory directory t))))
-
 (ert-deftest e-chat-service-test-participant-creation-failures-are-atomic ()
   "Participant admission failures leave no orphan session or board member."
   (let* ((store (e-session-store-create))
@@ -809,445 +677,6 @@ only checking the in-memory association."
     (should-not (gethash "attach-id"
                          (e-board-registry-board-participants board)))))
 
-(ert-deftest e-chat-service-test-participant-admission-direct-store-is-atomic ()
-  "Direct admission failures remove every target-side runtime and disk fact.
-
-The unrelated participant is established first so each failure must preserve
-an already attached client, source-board history, and the derived index.  The
-successful admission at the end verifies the same path remains replayable."
-  (ert-skip "Retired sidecar fixture; covered by SQLite admission cut-point tests")
-  (let ((directory (make-temp-file "e-chat-admission-direct-" t))
-        (e-board--registry (make-hash-table :test 'equal))
-        (e-board--id-sequence 0)
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--board-index
-         (avl-tree-create (lambda (left right) (string< (car left) (car right)))))
-        (e-board-registry--id-sequence 0)
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--invocations (make-hash-table :test 'equal))
-        (e-board-runtime--admission-open-p t)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-board-session-association--legacy-owners
-         (make-hash-table :test 'equal)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (harness (e-harness-create
-                         :enabled-layer-ids nil :sessions store))
-               (board (e-board-registry-create
-                       :id "direct-admission-board"
-                       :principal "chat:direct-admission"))
-               (source (e-board-registry-board-source-board board))
-               (unrelated
-                (e-chat-service-create-participant
-                 board harness :id "direct-unrelated"
-                 :participant-id "direct-unrelated-participant"))
-               (unrelated-binding
-                (e-chat-service-binding harness "direct-unrelated"))
-               (baseline-events (length (e-board-events source)))
-               (baseline-participant-events
-                (cl-count-if
-                 (lambda (event)
-                   (eq (e-board-event-type event) 'participant-added))
-                 (e-board-events source)))
-               (baseline-participants
-                (hash-table-count
-                 (e-board-registry-board-participants board)))
-               (baseline-source-participants
-                (hash-table-count (e-board-participants source)))
-               (baseline-subscriptions
-                (hash-table-count
-                 (e-board-subscription-id-table source)))
-               (baseline-clients
-                (hash-table-count (e-board-registry-board-clients board)))
-               (baseline-observers
-                (e-modernchat-test--active-observer-count source))
-               (baseline-attachments
-                (hash-table-count e-board-runtime--attachments))
-               (baseline-session-attachments
-                (hash-table-count e-board-runtime--session-attachments))
-               (baseline-endpoint-attachments
-                (hash-table-count e-board-runtime--endpoint-attachments))
-               (baseline-ids
-                (sort (mapcar (lambda (entry) (plist-get entry :id))
-                              (e-session-list store))
-                      #'string<))
-                 (index-file (expand-file-name "index.json" directory))
-               (baseline-index
-                (e-modernchat-test--file-bytes index-file)))
-          (cl-labels
-              ((target-event-p (participant-id)
-                 (cl-some
-                  (lambda (event)
-                    (and (eq (e-board-event-type event) 'participant-added)
-                         (equal
-                          (plist-get (e-board-event-data event) :participant-id)
-                          participant-id)))
-                  (e-board-events source)))
-               (assert-absent (session-id participant-id)
-                 (should-error (e-session-get store session-id)
-                               :type 'e-session-missing)
-                 (should-not (file-exists-p
-                              (e-session-storage-session-reference store session-id)))
-                 (should-not (gethash participant-id
-                                      (e-board-registry-board-participants board)))
-                 (should-not (e-board-participant source participant-id))
-                 (should-not (target-event-p participant-id))
-                 (should (equal
-                          (sort (mapcar (lambda (entry) (plist-get entry :id))
-                                        (e-session-list store))
-                                #'string<)
-                          baseline-ids))
-                 ;; Binding setup has its own transient lifecycle events; the
-                 ;; durable admission invariant is that no participant-added
-                 ;; event for the failed target was published.
-                 (should (= (cl-count-if
-                             (lambda (event)
-                               (eq (e-board-event-type event)
-                                   'participant-added))
-                             (e-board-events source))
-                            baseline-participant-events))
-                 (should (= (hash-table-count
-                             (e-board-registry-board-participants board))
-                            baseline-participants))
-                 (should (= (hash-table-count (e-board-participants source))
-                            baseline-source-participants))
-                 (should (= (hash-table-count
-                             (e-board-subscription-id-table source))
-                            baseline-subscriptions))
-                 (should (= (hash-table-count
-                             (e-board-registry-board-clients board))
-                            baseline-clients))
-                 (should (= (e-modernchat-test--active-observer-count source)
-                            baseline-observers))
-                 (should (= (hash-table-count e-board-runtime--attachments)
-                            baseline-attachments))
-                 (should (= (hash-table-count e-board-runtime--session-attachments)
-                            baseline-session-attachments))
-                 (should (= (hash-table-count e-board-runtime--endpoint-attachments)
-                            baseline-endpoint-attachments))
-                 (should-not (e-chat-service-binding harness session-id))
-                 (should (eq (e-chat-service-binding harness "direct-unrelated")
-                             unrelated-binding))
-                 (should (equal (e-modernchat-test--file-bytes index-file)
-                                baseline-index))))
-            ;; Detached record preparation fails before runtime attachment or
-            ;; any direct journal write.
-            (cl-letf (((symbol-function 'e-session-codec-record-for-json)
-                       (lambda (&rest _arguments)
-                         (signal 'e-session-error
-                                 (list "admission preparation rejected")))))
-              (should-error
-               (e-chat-service-create-participant
-                board harness :id "direct-preparation-failure"
-                :participant-id "direct-preparation-participant")
-               :type 'e-session-error))
-            (assert-absent "direct-preparation-failure"
-                           "direct-preparation-participant")
-            ;; Attachment failure happens after the deferred session reserve,
-            ;; but before a participant/client/binding becomes observable.
-            (cl-letf (((symbol-function
-                        'e-chat-service--install-participant-binding)
-                       (lambda (&rest _arguments)
-                         (signal 'e-session-error
-                                 (list "attachment rejected")))))
-              (should-error
-               (e-chat-service-create-participant
-                board harness :id "direct-attachment-failure"
-                :participant-id "direct-attachment-participant")
-               :type 'e-session-error))
-            (assert-absent "direct-attachment-failure"
-                           "direct-attachment-participant")
-            ;; Direct publication is deliberately injected to fail after the
-            ;; real deferred runtime attachment.  The assertion catches a
-            ;; hash-only rollback that leaves a built-in route or event behind.
-            (cl-letf (((symbol-function 'e-session-storage-publish-admission)
-                       (lambda (&rest _arguments)
-                         (signal 'e-session-error
-                                 (list "direct submission rejected")))))
-              (should-error
-               (e-chat-service-create-participant
-                board harness :id "direct-submission-failure"
-                :participant-id "direct-submission-participant")
-               :type 'e-session-error))
-            (assert-absent "direct-submission-failure"
-                           "direct-submission-participant")
-            ;; A normal direct admission remains durable and is restored from
-            ;; the journal rather than from the process-local binding map.
-            (e-chat-service-create-participant
-             board harness :id "direct-success"
-             :participant-id "direct-success-participant")
-            (should (target-event-p "direct-success-participant"))
-            (should (= (cl-count-if
-                        (lambda (event)
-                          (eq (e-board-event-type event) 'participant-added))
-                        (e-board-events source))
-                       (1+ baseline-participant-events)))
-            (e-session-flush-write-queue store)
-            (let* ((reopened (e-session-persistent-store-create directory))
-                   (restored (e-session-get reopened "direct-success")))
-              (should (equal
-                       (plist-get (e-session-board-association restored)
-                                  :association-role)
-                       "participant"))
-              (should (equal
-                       (plist-get (e-session-board-routing-policy restored)
-                                  :participant-id)
-                       "direct-success-participant")))
-            (should (equal (plist-get unrelated :id) "direct-unrelated"))))
-      (delete-directory directory t))))
-
-(ert-deftest e-chat-service-test-participant-admission-queued-store-is-atomic ()
-  "Queued admission failures preserve unrelated pending work.
-
-The target's two admission records are enqueued only after all detached and
-runtime checks succeed.  Each injected failure therefore has to remove only
-the target reservation, leaving the unrelated queue, timer, derived-index
-obligation, and attached participant intact.  A final successful admission
-proves both queued records reopen together."
-  (ert-skip "Retired queued JSONL writer; SQLite admission is commit-first")
-  (let ((directory (make-temp-file "e-chat-admission-queued-" t))
-        (store-holder nil)
-        (e-session-write-queue-delay 60)
-        (e-board--registry (make-hash-table :test 'equal))
-        (e-board--id-sequence 0)
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--board-index
-         (avl-tree-create (lambda (left right) (string< (car left) (car right)))))
-        (e-board-registry--id-sequence 0)
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--invocations (make-hash-table :test 'equal))
-        (e-board-runtime--admission-open-p t)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-board-session-association--legacy-owners
-         (make-hash-table :test 'equal)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-index-store-create directory))
-               (harness (e-harness-create
-                         :enabled-layer-ids nil :sessions store))
-               (board (e-board-registry-create
-                       :id "queued-admission-board"
-                       :principal "chat:queued-admission"))
-               (source (e-board-registry-board-source-board board)))
-          (setq store-holder store)
-          (e-chat-service-create-participant
-           board harness :id "queued-unrelated"
-           :participant-id "queued-unrelated-participant")
-          (let* ((unrelated-binding
-                  (e-chat-service-binding harness "queued-unrelated"))
-                 (baseline-events (length (e-board-events source)))
-                 (baseline-participant-events
-                  (cl-count-if
-                   (lambda (event)
-                     (eq (e-board-event-type event) 'participant-added))
-                   (e-board-events source)))
-                 (baseline-participants
-                  (hash-table-count
-                   (e-board-registry-board-participants board)))
-                 (baseline-source-participants
-                  (hash-table-count (e-board-participants source)))
-                 (baseline-subscriptions
-                  (hash-table-count
-                   (e-board-subscription-id-table source)))
-                 (baseline-clients
-                  (hash-table-count (e-board-registry-board-clients board)))
-                 (baseline-observers
-                  (e-modernchat-test--active-observer-count source))
-                 (baseline-ids
-                  (sort (mapcar (lambda (entry) (plist-get entry :id))
-                                (e-session-list store))
-                        #'string<))
-                 (durability-before
-                  (e-session-storage-durability-status store)))
-            (let* ((target-event-p
-                    (lambda (participant-id)
-                   (cl-some
-                    (lambda (event)
-                      (and (eq (e-board-event-type event) 'participant-added)
-                           (equal
-                            (plist-get (e-board-event-data event)
-                                       :participant-id)
-                            participant-id)))
-                    (e-board-events source))))
-                   (durability-summary
-                    (lambda ()
-                      (e-session-storage-durability-status store)))
-                   (assert-absent
-                    (lambda (session-id participant-id)
-                   (should-error (e-session-get store session-id)
-                                 :type 'e-session-missing)
-                   (should-not (file-exists-p
-                                (e-session-storage-session-reference store session-id)))
-                   (should-not (gethash participant-id
-                                        (e-board-registry-board-participants
-                                         board)))
-                   (should-not (e-board-participant source participant-id))
-                   (should-not (funcall target-event-p participant-id))
-                   (should (equal
-                            (sort (mapcar (lambda (entry) (plist-get entry :id))
-                                          (e-session-list store))
-                                  #'string<)
-                            baseline-ids))
-                   (should (= (cl-count-if
-                               (lambda (event)
-                                 (eq (e-board-event-type event)
-                                     'participant-added))
-                               (e-board-events source))
-                              baseline-participant-events))
-                   (should (= (hash-table-count
-                               (e-board-registry-board-participants board))
-                              baseline-participants))
-                   (should (= (hash-table-count (e-board-participants source))
-                              baseline-source-participants))
-                   (should (= (hash-table-count
-                               (e-board-subscription-id-table source))
-                              baseline-subscriptions))
-                   (should (= (hash-table-count
-                               (e-board-registry-board-clients board))
-                              baseline-clients))
-                   (should (= (e-modernchat-test--active-observer-count source)
-                              baseline-observers))
-                   (should-not (e-chat-service-binding harness session-id))
-                   (should (eq (e-chat-service-binding harness "queued-unrelated")
-                               unrelated-binding))
-                   (should (equal (funcall durability-summary)
-                                  durability-before)))))
-              ;; Detached admission preparation must not publish anything or
-              ;; disturb the already queued unrelated participant.
-              (cl-letf (((symbol-function 'e-session-codec-record-for-json)
-                         (lambda (&rest _arguments)
-                           (signal 'e-session-error
-                                   (list "queued preparation rejected")))))
-                (should-error
-                 (e-chat-service-create-participant
-                  board harness :id "queued-preparation-failure"
-                  :participant-id "queued-preparation-participant")
-                 :type 'e-session-error))
-              (funcall assert-absent "queued-preparation-failure"
-                       "queued-preparation-participant")
-              ;; Runtime attachment failure happens before the queue boundary.
-              (cl-letf (((symbol-function
-                          'e-chat-service--install-participant-binding)
-                         (lambda (&rest _arguments)
-                           (signal 'e-session-error
-                                   (list "queued attachment rejected")))))
-                (should-error
-                 (e-chat-service-create-participant
-                  board harness :id "queued-attachment-failure"
-                  :participant-id "queued-attachment-participant")
-                 :type 'e-session-error))
-              (funcall assert-absent "queued-attachment-failure"
-                       "queued-attachment-participant")
-              ;; Submission failure is injected after the target batch has
-              ;; entered the queue.  Rollback must remove just that batch and
-              ;; leave the shared timer/index obligation untouched.
-              (cl-letf (((symbol-function 'e-session-storage-publish-projections)
-                         (lambda (&rest _arguments)
-                           (signal 'e-session-error
-                                   (list "queued submission rejected")))))
-                (should-error
-                 (e-chat-service-create-participant
-                  board harness :id "queued-submission-failure"
-                  :participant-id "queued-submission-participant")
-                 :type 'e-session-error))
-              (funcall assert-absent "queued-submission-failure"
-                       "queued-submission-participant")
-              ;; The queue still contains the unrelated admission only; flush
-              ;; it together with a successful target and prove both replay.
-              (e-chat-service-create-participant
-               board harness :id "queued-success"
-               :participant-id "queued-success-participant")
-              (should (funcall target-event-p "queued-success-participant"))
-              (should (= (cl-count-if
-                          (lambda (event)
-                            (eq (e-board-event-type event)
-                                'participant-added))
-                          (e-board-events source))
-                         (1+ baseline-participant-events)))
-              (e-session-flush-write-queue store)
-              (let ((reopened (e-session-persistent-store-create directory)))
-                (dolist (session-id '("queued-unrelated" "queued-success"))
-                  (should (e-session-get reopened session-id)))
-                (dolist (session-id '("queued-preparation-failure"
-                                      "queued-attachment-failure"
-                                      "queued-submission-failure"))
-                  (should-error (e-session-get reopened session-id)
-                                :type 'e-session-missing))
-                (should (equal
-                         (plist-get
-                         (e-session-board-routing-policy
-                           (e-session-get reopened "queued-success"))
-                          :participant-id)
-                         "queued-success-participant"))))))
-      (ignore-errors
-        (when store-holder
-          (e-session-flush-write-queue store-holder)))
-      (delete-directory directory t))))
-
-(when nil
-  ;; Retired Node-controller fixture; SQLite admission cut points are covered
-  ;; by `e-board-sqlite-test'.
-  (ert-deftest e-chat-service-test-participant-admission-controller-is-atomic ()
-  "A controller submission failure leaves no visible participant state.
-
-The storage owner owns outbox/retry mechanics in its direct suite.  This
-composed service test only verifies the public admission boundary: preparation
-and attachment may run, but a rejected controller submission rolls back the
-session and board binding without exposing a participant-added event."
-  (let* ((directory (make-temp-file "e-chat-admission-controller-" t))
-         (store (e-session-persistent-store-create directory))
-         (harness (e-harness-create :enabled-layer-ids nil :sessions store))
-         (board (e-board-registry-create
-                 :id "controller-admission-board"
-                 :principal "chat:controller-admission"))
-         (source (e-board-registry-board-source-board board)))
-    (unwind-protect
-        (progn
-          (e-session-storage-enable store)
-          (cl-letf (((symbol-function 'e-session-storage-publish-admission)
-                   (lambda (&rest _arguments)
-                     (signal 'e-session-error
-                             (list "controller submission rejected")))))
-            (should-error
-             (e-chat-service-create-participant
-              board harness :id "controller-submission-failure"
-              :participant-id "controller-submission-participant")
-             :type 'e-session-error)
-            (should-error (e-session-get store "controller-submission-failure")
-                          :type 'e-session-missing)
-            (should-not
-             (file-exists-p
-              (e-session-storage-session-reference
-               store "controller-submission-failure")))
-            (should-not
-             (e-chat-service-binding harness "controller-submission-failure"))
-            (should-not
-             (e-board-participant source "controller-submission-participant"))
-            (should-not
-             (cl-some
-              (lambda (event)
-                (and (eq (e-board-event-type event) 'participant-added)
-                     (equal
-                      (plist-get (e-board-event-data event) :participant-id)
-                      "controller-submission-participant")))
-              (e-board-events source)))
-            (should (= (plist-get (e-session-storage-durability-status store)
-                                   :unsettled-write-count)
-                       0))))
-      (delete-directory directory t)))))
 
 (ert-deftest e-chat-service-test-root-catalog-role-survives-cross-store-id-reuse ()
   "A participant cannot become a root by reusing the owner's id in its store."
@@ -1270,7 +699,8 @@ session and board binding without exposing a participant-added event."
   (let* ((directory (make-temp-file "e-chat-role-index-" t))
          (writer-store (e-session-persistent-store-create directory))
          (writer-harness (e-harness-create
-                          :enabled-layer-ids nil :sessions writer-store)))
+                          :enabled-layer-ids nil :sessions writer-store))
+         indexed-store)
     (unwind-protect
         (let* ((binding (e-chat-service-create-board
                          :harness writer-harness :id "indexed-root"))
@@ -1281,8 +711,10 @@ session and board binding without exposing a participant-added event."
           (e-session-create writer-store :id "legacy-root")
           (e-session-declare-board-state
            writer-store "legacy-root" "chat:legacy-root" "legacy-board")
-          (let* ((indexed-store
-                  (e-session-persistent-index-store-create directory))
+          (e-session-storage-close writer-store)
+          (setq indexed-store
+                (e-session-persistent-index-store-create directory))
+          (let* (
                  (indexed-harness
                   (e-harness-create
                    :enabled-layer-ids nil :sessions indexed-store))
@@ -1297,6 +729,9 @@ session and board binding without exposing a participant-added event."
                                   indexed-harness)
                                  #'string<)
                            '("indexed-root" "legacy-root")))))
+      (when indexed-store
+        (ignore-errors (e-session-storage-close indexed-store)))
+      (ignore-errors (e-session-storage-close writer-store))
       (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-root-catalog-does-not-promote-malformed-role ()
@@ -1310,107 +745,6 @@ session and board binding without exposing a participant-added event."
      :type 'error)
     (should-not (plist-get (e-chat-service-session harness "malformed")
                            :board-session-state))))
-
-(ert-deftest e-chat-service-test-root-catalog-normalizes-index-association-presence ()
-  "Malformed nested index state stays unlisted without hiding valid roots."
-  (ert-skip "Retired index.json representation; current catalog validation is typed")
-  (let* ((directory (make-temp-file "e-chat-malformed-index-" t))
-         (index-file (expand-file-name "index.json" directory))
-         (json
-          (concat
-           "["
-           "{\"id\":\"explicit-owner\",\"board-state\":{"
-           "\"board-id\":\"owner-board\",\"principal\":\"chat:other\","
-           "\"association-role\":\"owner\"}},"
-           "{\"id\":\"explicit-participant\",\"board-state\":{"
-           "\"board-id\":\"owner-board\",\"principal\":\"chat:other\","
-           "\"association-role\":\"participant\"}},"
-           "{\"id\":\"legacy-root\",\"board-id\":\"legacy-board\","
-           "\"principal\":\"chat:legacy-root\"},"
-           "{\"id\":\"nonboard\",\"board-state\":null,"
-           "\"board-id\":null,\"principal\":null,"
-           "\"metadata\":{\"nullable\":null}},"
-           "{\"id\":\"flat-incomplete\",\"board-id\":\"flat-board\","
-           "\"principal\":null},"
-           "{\"id\":\"present-null\",\"board-state\":null,"
-           "\"board-id\":\"null-board\",\"principal\":\"chat:present-null\"},"
-           "{\"id\":\"present-null-missing-mirrors\","
-           "\"board-state\":null},"
-           "{\"id\":\"present-empty\",\"board-state\":{},"
-           "\"board-id\":null,\"principal\":null},"
-           "{\"id\":\"present-partial\",\"board-state\":{"
-           "\"board-id\":\"partial-board\",\"association-role\":\"owner\"},"
-           "\"principal\":\"chat:present-partial\"},"
-           "{\"id\":\"present-scalar\",\"board-state\":\"invalid\","
-           "\"board-id\":\"scalar-board\",\"principal\":\"chat:present-scalar\"},"
-           "{\"id\":\"present-list\",\"board-state\":[{"
-           "\"board-id\":\"list-board\",\"principal\":\"chat:present-list\"}],"
-           "\"board-id\":\"list-board\",\"principal\":\"chat:present-list\"}"
-           ","
-           "{\"id\":\"unknown-role\",\"board-state\":{"
-           "\"board-id\":\"unknown-role-board\","
-           "\"principal\":\"chat:unknown-role\","
-           "\"association-role\":\"unexpected\"}},"
-           "{\"id\":\"extra-key\",\"board-state\":{"
-           "\"board-id\":\"extra-board\",\"principal\":\"chat:extra-key\","
-           "\"association-role\":\"owner\",\"extra\":true}}"
-           "]")))
-    (unwind-protect
-        (progn
-          (make-directory (expand-file-name "sessions" directory) t)
-          (with-temp-file index-file (insert json))
-          (let* ((store (e-session-persistent-index-store-create directory))
-                 (harness (e-harness-create
-                           :enabled-layer-ids nil :sessions store))
-                 (before (with-temp-buffer
-                           (insert-file-contents index-file)
-                           (buffer-string)))
-                 (sessions (e-chat-service-session-list harness))
-                 (nonboard
-                  (seq-find (lambda (session)
-                              (equal (plist-get session :id) "nonboard"))
-                            sessions))
-                 (present-empty
-                  (seq-find (lambda (session)
-                              (equal (plist-get session :id) "present-empty"))
-                            sessions))
-                 (stored-nonboard
-                  (e-session-aggregate-peek-session store "nonboard"))
-                 (stored-present-empty
-                  (e-session-aggregate-peek-session store "present-empty"))
-                 (listed (sort (e-chat-service-test--session-ids harness)
-                               #'string<)))
-            (should (equal listed
-                           '("explicit-owner" "legacy-root" "nonboard")))
-            (should (= (length sessions) 13))
-            (should-not (plist-member nonboard :board-session-state))
-            (should-not (e-session-board-association nonboard))
-            (should-not
-             (plist-member stored-nonboard :board-session-state))
-            (should-not (plist-get (plist-get nonboard :metadata) :nullable))
-            (should-not
-             (plist-get (plist-get stored-nonboard :metadata) :nullable))
-            (should
-             (e-session-board-association-invalid-p
-              (e-session-board-association present-empty)))
-            (should
-             (e-session-board-association-invalid-p
-              (plist-get stored-present-empty :board-session-state)))
-            (dolist (id '("flat-incomplete" "present-null"
-                          "present-null-missing-mirrors" "present-empty"
-                          "present-partial" "present-scalar" "present-list"
-                          "unknown-role" "extra-key"))
-              (should
-               (e-session-board-association-invalid-p
-                (e-session-board-association
-                 (seq-find (lambda (session)
-                             (equal (plist-get session :id) id))
-                           sessions)))))
-            (should (equal before
-                           (with-temp-buffer
-                             (insert-file-contents index-file)
-                             (buffer-string))))))
-      (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-independent-observers-preserve-board-identity ()
   "Subscriber failure cannot advance another client's cursor or lose identity."
@@ -1887,6 +1221,7 @@ session and board binding without exposing a participant-added event."
 
 (ert-deftest e-chat-service-test-view-snapshot-continues-after-one-cursor ()
   "A view receives bounded history once and only later messages live."
+  (e-board-e2e-reset-runtime)
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
          (session (e-chat-service-create-session :harness harness :id "view"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
@@ -1948,78 +1283,6 @@ session and board binding without exposing a participant-added event."
                      '("durable-answer")))
       (should (= (length activities) e-chat-service-projection-capacity))
       (should (equal (plist-get (car activities) :message-id) "activity-005")))))
-
-(ert-deftest e-chat-service-test-persistent-board-log-reopens-without-redelivery ()
-  "A restarted service restores board history as board messages, not transcript."
-  (ert-skip "Retired session Board-log proxy; Board SQLite restart is covered directly")
-  (let ((directory (make-temp-file "e-chat-board-log-" t))
-        (e-board--registry (make-hash-table :test 'equal))
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
-        (e-chat-service--board-bindings (make-hash-table :test 'equal))
-        (e-board-session-association--legacy-owners
-         (make-hash-table :test 'equal))
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (harness (e-harness-create :sessions store :enabled-layer-ids nil))
-               (session (e-chat-service-create-session
-                         :harness harness :id "persistent-board"))
-               (binding (e-chat-service-binding harness (plist-get session :id)))
-               (board-id (e-board-registry-board-id
-                          (e-chat-service-binding-board binding))))
-          (e-modernchat-test--post-board-output
-           harness "persistent-board" "persisted-answer" "durable answer")
-          (should (= (length (e-session-board-messages
-                              store "persistent-board"))
-                     1))
-          (e-session-flush-write-queue store)
-          ;; Model a fresh Emacs process while retaining only the session store.
-          (setq e-board--registry (make-hash-table :test 'equal)
-                e-board-registry--boards (make-hash-table :test 'equal)
-                e-board-registry--unsettled-pickup-count 0
-                e-board-registry--unsettled-effect-count 0
-                e-board-registry--unsettled-routing-count 0
-                e-board-registry--unsettled-generation 0
-                e-board-registry--board-index
-                (avl-tree-create (lambda (left right)
-                                   (string< (car left) (car right))))
-                e-chat-service--bindings
-                (make-hash-table :test 'eq :weakness 'key)
-                e-chat-service--board-bindings (make-hash-table :test 'equal)
-                e-board-session-association--legacy-owners
-                (make-hash-table :test 'equal)
-                e-board-runtime--attachments (make-hash-table :test 'equal)
-                e-board-runtime--session-attachments (make-hash-table :test 'equal)
-                e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-          (let* ((loaded (e-session-persistent-store-create directory))
-                 (restarted (e-harness-create :sessions loaded
-                                              :enabled-layer-ids nil))
-                 (restored (e-chat-service-ensure-binding
-                            restarted "persistent-board")))
-            (should (= (length (e-session-board-messages
-                                loaded "persistent-board"))
-                       1))
-            (e-chat-service-drain-binding restored)
-            (should (equal (e-board-registry-board-id
-                            (e-chat-service-binding-board restored))
-                           board-id))
-            (should (equal (mapcar (lambda (message)
-                                     (plist-get message :content))
-                                   (e-chat-service-messages
-                                    restarted "persistent-board"))
-                           '("durable answer")))
-            (should-not
-             (e-board-input-classifications
-              (e-board-registry-board-source-board
-               (e-chat-service-binding-board restored))))))
-      (delete-directory directory t))))
 
 (ert-deftest e-chat-service-test-board-chat-end-to-end ()
   "Board ingress, harness delivery, board output, and observation round-trip."
@@ -2099,6 +1362,7 @@ session and board binding without exposing a participant-added event."
 
 (ert-deftest e-chat-service-test-bayesian-follow-up-stays-off-main-projection ()
   "A Bayesian corrective interaction uses a non-main board route end to end."
+  (e-board-e2e-reset-runtime)
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board--id-sequence 0)
         (e-board-registry--boards (make-hash-table :test 'equal))
@@ -2111,11 +1375,22 @@ session and board binding without exposing a participant-added event."
         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
         (e-board-runtime--invocations (make-hash-table :test 'equal))
+        (e-board-runtime--deferred-hook-head nil)
+        (e-board-runtime--deferred-hook-tail nil)
+        (e-board-runtime--deferred-hook-drain-scheduled nil)
+        (e-board-runtime--deferred-hook-generation 0)
+        (e-board-runtime--pending-activity-head nil)
+        (e-board-runtime--pending-activity-tail nil)
+        (e-board-runtime--pending-activity-set (make-hash-table :test 'equal))
+        (e-board-runtime--activity-drain-scheduled nil)
+        (e-board-runtime--activity-drain-generation 0)
         (e-board-runtime--pending-pickup-head nil)
         (e-board-runtime--pending-pickup-tail nil)
         (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
         (e-board-runtime--pickup-drain-scheduled nil)
+        (e-board-runtime--pickup-drain-generation 0)
         (e-board-runtime--admission-open-p t)
+        (e-board-runtime--unsettled-deferred-hook-count 0)
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
         (e-board-session-association--legacy-owners
@@ -2171,7 +1446,14 @@ session and board binding without exposing a participant-added event."
                     (< (cl-count 'output (e-board-messages source)
                                  :key #'e-board-message-kind)
                        2))
-          (accept-process-output nil 0.01)))
+          (accept-process-output nil 0.01)
+          ;; Aggregate suites can already have zero-delay Board work queued.
+          ;; Pump only this binding's public deterministic boundaries so the
+          ;; follow-up does not depend on ambient timer ordering.
+          (e-board-runtime--drain-input-routing
+           board (lambda () (e-board-drain-input-classifications source)))
+          (e-board-runtime--drain-pickups)
+          (e-chat-service-drain-binding binding)))
       (e-chat-service-drain-binding binding)
       (let ((inputs (cl-remove-if-not
                      (lambda (message)

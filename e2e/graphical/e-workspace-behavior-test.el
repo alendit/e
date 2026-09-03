@@ -140,7 +140,7 @@
 
 (ert-deftest e-workspace-behavior-test-agent-focus-preserves-workspace-configurations ()
   "Agent focus opens an updated buffer only in its owning perspective."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (e-workspace-behavior-test--with-basic-persp
    (lambda ()
      (let* ((owner-shell
@@ -192,7 +192,7 @@
 
 (ert-deftest e-workspace-behavior-test-chat-split-delete-survives-round-trip ()
   "Native atomic chat structure survives a perspective round trip."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (e-workspace-behavior-test--with-basic-persp
    (lambda ()
      (e-workspace-behavior-test--switch "e-chat-split")
@@ -266,7 +266,7 @@
 
 (ert-deftest e-workspace-behavior-test-chat-surface-restores-clean-target ()
   "Leaving a chat surface restores the target perspective exactly."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (e-workspace-behavior-test--with-basic-persp
    (lambda ()
      (let ((target
@@ -320,7 +320,7 @@
 
 (ert-deftest e-workspace-behavior-test-delete-chat-preserves-target-during-update ()
   "Deleting an updating chat perspective leaves the target perspective exact."
-  (skip-unless (display-graphic-p))
+  (should (display-graphic-p))
   (e-workspace-behavior-test--with-basic-persp
    (lambda ()
      (let* ((target-left

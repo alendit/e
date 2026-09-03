@@ -188,7 +188,9 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
 
 (defun e-org-canvas--set-evil-local-prompt-bindings (enable)
   "Install or clear buffer-local Evil context bindings when ENABLE is non-nil."
-  (when (fboundp 'evil-local-set-key)
+  (when (and (fboundp 'evil-local-set-key)
+             (boundp 'evil-local-mode)
+             evil-local-mode)
     (funcall #'evil-local-set-key
              'normal
              (kbd "s-i")

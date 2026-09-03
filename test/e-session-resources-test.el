@@ -211,67 +211,6 @@
         (should (equal (plist-get match :uri)
                        "session://e/sessions/session-1/activity"))))))
 
-(ert-deftest e-session-resources-test-search-skips-dangling-index-entries ()
-  "Search ignores index entries whose transcript file is gone.
-A session listed in the index but missing its backing JSONL yields no
-searchable content; it must be skipped rather than aborting the whole search."
-  (ert-skip "Retired sidecar/index split cannot occur in the SQLite catalog")
-  (e-session-resources-test--with-empty-config
-    (let* ((directory (make-temp-file "e-session-resources-dangling-" t))
-           (store (e-session-persistent-store-create directory))
-           (harness (e-harness-create
-                     :backend (e-backend-fake-create :items nil)
-                     :sessions store
-                     :intrinsic-capabilities
-                     (list (e-session-resources-capability-create)))))
-      (unwind-protect
-          (progn
-            (e-harness-create-session harness :id "live-session")
-            (e-session-append-message
-             store "live-session" '(:role user :content "needle body"))
-            (e-session-refresh-index store)
-            ;; Reopen through the public catalog/index constructor after
-            ;; adding a catalog-only entry whose backing journal is absent.
-            ;; This exercises the same index-backed listing path as a restart.
-            (let* ((index-file (e-session-store-index-file store))
-                   (entries
-                    (with-temp-buffer
-                      (insert-file-contents index-file)
-                      (json-parse-string
-                       (buffer-string)
-                       :object-type 'plist
-                       :array-type 'list
-                       :null-object nil
-                       :false-object :json-false))))
-              (with-temp-file index-file
-                (insert
-                 (json-encode
-                  (vconcat
-                   (append entries
-                           (list '(:id "dangling-session"
-                                   :file "/nonexistent/dangling-session.jsonl"
-                                   :last-message-at "2999-01-01T00:00:00Z"))))))))
-            (let* ((reopened (e-session-persistent-index-store-create directory))
-                   (reopened-harness
-                    (e-harness-create
-                     :backend (e-backend-fake-create :items nil)
-                     :sessions reopened
-                     :intrinsic-capabilities
-                     (list (e-session-resources-capability-create))))
-                   (resources (e-session-resources-test--resources
-                               reopened-harness)))
-              (should (cl-find "dangling-session" (e-session-list reopened)
-                               :key (lambda (entry) (plist-get entry :id))
-                               :test #'equal))
-              (let* ((search (e-resources-search
-                              resources "session://e/sessions/" "needle body"
-                              '(:limit 5)))
-                     (matches (append (plist-get search :matches) nil)))
-                (should (= (length matches) 1))
-                (should (equal (plist-get (car matches) :uri)
-                               "session://e/sessions/live-session/messages")))))
-        (delete-directory directory t)))))
-
 (ert-deftest e-session-resources-test-errors-and-read-only-contract ()
   "session:// reports invalid reads and remains read-only."
   (e-session-resources-test--with-empty-config

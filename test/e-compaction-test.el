@@ -19,6 +19,10 @@
 (require 'e-harness)
 (require 'e-openai)
 (require 'e-session)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 
 (defun e-compaction-test--provider-anchor-fingerprints (context)
   "Return the public continuation identity's stable anchor projection.

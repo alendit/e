@@ -218,14 +218,22 @@ depends on the facade."
   "Mark the workspace unread projection stale."
   (setq e-chat-overview--workspace-unread-cache-valid-p nil))
 
+(defvar-local e-chat-overview--disabling-modal-editing nil
+  "Non-nil while overview mode is disabling modal editing.")
+
 (defun e-chat-overview--disable-modal-editing ()
   "Keep Evil from intercepting overview navigation commands."
-  (when (fboundp 'evil-local-mode)
-    (evil-local-mode -1))
-  (when (boundp 'evil-local-mode)
-    (setq-local evil-local-mode nil))
-  (when (boundp 'evil-state)
-    (setq-local evil-state nil)))
+  (unless e-chat-overview--disabling-modal-editing
+    (setq-local e-chat-overview--disabling-modal-editing t)
+    (unwind-protect
+        (progn
+          (when (fboundp 'evil-local-mode)
+            (evil-local-mode -1))
+          (when (boundp 'evil-local-mode)
+            (setq-local evil-local-mode nil))
+          (when (boundp 'evil-state)
+            (setq-local evil-state nil)))
+      (setq-local e-chat-overview--disabling-modal-editing nil))))
 
 (define-derived-mode e-chat-overview-mode special-mode "e-chat-overview"
   "Major mode for the e chat session overview."

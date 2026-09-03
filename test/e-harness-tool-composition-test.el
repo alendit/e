@@ -11,6 +11,10 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 (load (expand-file-name "e-harness-composition-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)

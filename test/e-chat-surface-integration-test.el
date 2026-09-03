@@ -28,6 +28,9 @@
 (load (expand-file-name
        "../e2e/e-board-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+(load (expand-file-name
+       "e-test-environment-support.el"
+       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (declare-function e-board-e2e-reset-runtime "e-board-e2e-support")
 (declare-function e-board-e2e-drain-session "e-board-e2e-support")
@@ -120,20 +123,24 @@
 
 (ert-deftest e-chat-surface-integration-test-evil-escape-routes-transcript-commands ()
   "One real Evil Escape moves input focus to transcript navigation commands."
-  (skip-unless (e-chat-surface-integration--load-evil))
-  (evil-mode 1)
-  (e-chat-startup)
-  (e-board-e2e-reset-runtime)
-  (let* ((backend (e-backend-fake-create
+  (e-test-require-capability
+   (e-chat-surface-integration--load-evil)
+   "Required test-only Evil package is unavailable")
+  (let* ((evil-mode-was-enabled (bound-and-true-p evil-mode))
+         (backend (e-backend-fake-create
                    :items '((:type assistant-message :content "evil answer")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend))
          (session-id "chat-surface-evil-e2e")
-         (buffer (e-chat-open :harness harness :session-id session-id))
+         buffer
          (window-configuration (current-window-configuration))
          details-buffer)
     (unwind-protect
         (progn
+          (evil-mode 1)
+          (e-chat-startup)
+          (e-board-e2e-reset-runtime)
+          (setq buffer (e-chat-open :harness harness :session-id session-id))
           (switch-to-buffer buffer)
           (e-chat-surface-after-display-buffer buffer)
           (with-current-buffer buffer
@@ -184,7 +191,27 @@
         (kill-buffer details-buffer))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
-      (set-window-configuration window-configuration))))
+      (set-window-configuration window-configuration)
+      (unless evil-mode-was-enabled
+        (evil-mode -1)))))
+
+(ert-deftest e-chat-surface-integration-test-insert-state-requires-local-evil ()
+  "Loaded Evil changes state only for a composer with local Evil enabled."
+  (e-test-require-feature 'evil 'evil)
+  (let ((buffer (generate-new-buffer " *e-chat-local-evil-state-test*"))
+        (calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'evil-insert-state)
+                     (lambda () (setq calls (1+ calls)))))
+            (setq-local evil-local-mode nil)
+            (e-chat-composer--enter-insert-state)
+            (should (= calls 0))
+            (setq-local evil-local-mode t)
+            (e-chat-composer--enter-insert-state)
+            (should (= calls 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-surface-integration-test-new-chat-is-board-native ()
   "The real fresh-chat command creates only board-native persistent state."

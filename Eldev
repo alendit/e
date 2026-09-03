@@ -79,13 +79,14 @@
         (list :or eldev-test-fileset "./e2e/e-dev-bytecode-e2e-test.el")))
 
 (eldev-use-package-archive 'melpa)
-(eldev-add-extra-dependencies 'test '(simply-annotate (2 3 0)))
-(eldev-add-extra-dependencies 'emacs 'evil 'persp-mode)
+(eldev-add-extra-dependencies
+ 'test '(simply-annotate (2 3 0)) 'evil 'markdown-mode)
+(eldev-add-extra-dependencies 'emacs 'persp-mode)
 
 ;; org-annotate is not published to a package archive.  When a local checkout is
 ;; present (for example the straight.el clone in the user's Emacs), add it to
-;; the load path so the annotation tests can require it; otherwise those tests
-;; skip themselves.
+;; the load path so the annotation tests can require it.  Its absence is an
+;; actionable supported-test-environment failure, never a skipped test.
 (let ((org-annotate-dir
        (seq-find
         #'file-directory-p

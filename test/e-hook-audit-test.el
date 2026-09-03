@@ -15,6 +15,10 @@
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-sqlite-test-store-support
+         (expand-file-name
+          "e-sqlite-test-store-support.el"
+          (file-name-directory (or load-file-name buffer-file-name))))
 
 (ert-deftest e-hook-audit-test-persists-and-reloads ()
   "A generic hook audit survives session-store reload with its opaque details."
