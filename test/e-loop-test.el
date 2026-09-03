@@ -2681,11 +2681,11 @@
                          :id "call-before-invalid"
                          :name "before-invalid"
                          :arguments nil))
-              ;; An empty disposition is a malformed reserved control.  The later
-              ;; ordinary call must not be dispatched after this point.
+              ;; A duplicate disposition is a malformed reserved control.  The
+              ;; later ordinary call must not be dispatched after this point.
               (funcall on-item
                        '(:type context-curate
-                         :arguments (:keep nil :summaries nil)))
+                         :arguments (:keep (1) :erase (1))))
               (funcall on-item
                        '(:type tool-call
                          :id "call-after-invalid"

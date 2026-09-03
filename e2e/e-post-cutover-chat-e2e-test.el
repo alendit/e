@@ -224,7 +224,7 @@
                            (cons 'call_id curation-call-id)
                            (cons 'name "context-curate")
                            (cons 'arguments
-                                 "{\"keep\":[1],\"summaries\":[]}"))))
+                                 "{\"keep\":[],\"summaries\":[],\"erase\":[]}"))))
                    (list
                     (cons 'type "response.completed")
                     (cons 'response
@@ -294,8 +294,14 @@
               session-id))
             (e-board-e2e-prompt-batch harness session-id "Hi")
             (should (= request-count 2))
-            (should (= (length (e-session-context-curations store session-id))
-                       1))
+            (should-not (e-session-context-curations store session-id))
+            (should
+             (= (seq-count
+                 (lambda (event)
+                   (eq (plist-get event :event-type)
+                       'context-curation-response))
+                 (e-session-activity-events store session-id))
+                1))
             (should-not
              (e-session-tool-followup-classifications store session-id))
             (e-post-cutover-chat-e2e--assert-no-tool-lifecycle
@@ -360,10 +366,15 @@
               (e-chat-service-ensure-binding reopened session-id)
               (e-post-cutover-chat-e2e--assert-clean-messages
                (e-session-messages reopened-store session-id) first-answer)
-              (should (= (length
-                          (e-session-context-curations
-                           reopened-store session-id))
-                         1))
+              (should-not
+               (e-session-context-curations reopened-store session-id))
+              (should
+               (= (seq-count
+                   (lambda (event)
+                     (eq (plist-get event :event-type)
+                         'context-curation-response))
+                   (e-session-activity-events reopened-store session-id))
+                  1))
               (e-post-cutover-chat-e2e--assert-no-tool-lifecycle
                reopened-store session-id)
               (e-post-cutover-chat-e2e--assert-combined-reasoning
@@ -391,10 +402,8 @@
                   (e-post-cutover-chat-e2e--input-items later))))
               (e-post-cutover-chat-e2e--assert-clean-messages
                (e-session-messages reopened-store session-id) later-answer)
-              (should (= (length
-                          (e-session-context-curations
-                           reopened-store session-id))
-                         1))
+              (should-not
+               (e-session-context-curations reopened-store session-id))
               (e-post-cutover-chat-e2e--assert-board-output
                reopened session-id later-answer)
               (should-not

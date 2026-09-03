@@ -352,7 +352,28 @@ reverse, and the change adds no durable state.
 
 * Unresolved
 
-- Current =context-curate-v6=/presentation-v3 configured-model adoption and
+- Current =context-curate-v7=/presentation-v3 configured-model adoption and
   exact built-in ChatGPT/WebSocket remain =capability-unconfirmed=.
 
 The feature remains =In-review=.  The running Emacs was left unchanged.
+
+* Post-acceptance correction: explicit all-omission
+
+A 2026-09-03 first-turn =hi= exposed a remaining carrier/core contradiction.
+The JSON schema made every disposition field optional and the carrier said
+omitted labels lose exact content, while core rejected a result selecting no
+labels as =curation-disposition :no-disposition=.  The green deterministic E2E
+had hard-coded =keep:[1]=, and the earlier current-configuration live run did
+not choose the optional carrier branch.
+
+The corrected =context-curate-v7= contract accepts all-label omission.  It
+consumes the frame and preserves the normal acknowledgement continuation while
+creating no promotion, erasure, or curation-package record.  All strict
+validation for submitted labels and summaries remains.  The deterministic
+post-cutover test now uses this exact shape through assistant, Board, SQLite
+close/reopen, and a later turn.  Full final and configured-adapter validation
+is recorded in the linked bug investigation.
+
+See
+[[file:../../bugs/empty-curation-disposition-fails-basic-chat/investigation.org][Empty
+Curation Disposition Basic-Chat Failure Investigation]].

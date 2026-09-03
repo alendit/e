@@ -167,7 +167,7 @@ mode, native requester =e-openai-codex--http-request-start=, and model
 =gpt-5.6-sol=.  Material requests used =context-curate-v5= and
 =context-curation-presentation-v2=.  The model-facing marker did not yet expose
 erasure eligibility, so these records cannot establish current
-=context-curate-v6=/presentation-v3 adoption.  Exact built-in ChatGPT/WebSocket
+=context-curate-v7=/presentation-v3 adoption.  Exact built-in ChatGPT/WebSocket
 behavior was not tested.  The records were content-free:
 
 | Scenario | Requests | Total input | Cached input | Adoption/disposition | Composition | Semantic | Cache | Result |

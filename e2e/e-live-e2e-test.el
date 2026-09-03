@@ -781,7 +781,7 @@ call must have exactly one matching empty output in causal order."
          (< call-index output-index))))
 
 (defconst e-live-e2e--context-curation-description
-  "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."
+  "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."
   "Expected lifecycle affordance in the reserved curation carrier.")
 
 (defun e-live-e2e--context-curation-carrier-p (body)

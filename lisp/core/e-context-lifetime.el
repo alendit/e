@@ -70,7 +70,7 @@ version-3 curation codec and its complete-record bound.")
 (defconst e-context-lifetime-curation-record-version 3
   "Version of durable prepared context-curation records.")
 
-(defconst e-context-lifetime-curation-schema-revision "context-curate-v6"
+(defconst e-context-lifetime-curation-schema-revision "context-curate-v7"
   "Stable revision of the model-facing context-curate shape and guidance.")
 
 (defconst e-context-lifetime-curation-presentation-revision
@@ -895,10 +895,10 @@ REQUIRE-NONEMPTY rejects an empty sequence when non-nil."
   "Normalize optional curation ARGUMENTS for SOURCE-COUNT presented sources.
 
 The accepted keys are optional `:keep', `:summaries', and `:erase'; omission
-means an empty disposition.  Submitted labels must be positive, unique, and
-within SOURCE-COUNT when it is supplied.  Only labels and summary text are
-copied; omitted or erased source bodies and provenance never enter the
-normalized value.  At least one label must be explicitly disposed."
+means an empty disposition and may intentionally omit every presented source.
+Submitted labels must be positive, unique, and within SOURCE-COUNT when it is
+supplied.  Only labels and summary text are copied; omitted or erased source
+bodies and provenance never enter the normalized value."
   (unless (e-context-lifetime--keyword-plist-p arguments)
     (signal 'e-context-lifetime-invalid-record
             (list 'curation-disposition :not-keyword-plist arguments)))
@@ -962,9 +962,6 @@ normalized value.  At least one label must be explicitly disposed."
                       :text (copy-sequence text))
                 summaries)))
       (record-labels erase 'curation-erase nil)
-      (unless (> (hash-table-count seen) 0)
-        (signal 'e-context-lifetime-invalid-record
-                (list 'curation-disposition :no-disposition)))
       (when (> (hash-table-count seen)
                e-context-lifetime-curation-max-sources)
         (signal 'e-context-lifetime-invalid-record

@@ -256,7 +256,7 @@ projection.  No timer, polling loop, synchronous redraw, or new database query
 is added to the chat hot path.
 
 Because provider request material is unchanged, this addendum does not advance
-=context-curate-v6= by itself and does not invalidate current provider
+=context-curate-v7= by itself and does not invalidate current provider
 compatibility evidence.  If Addendum 8 lands first, its active carrier revision
 remains authoritative while this presentation contract stays unchanged.
 

@@ -620,7 +620,8 @@ The repository-owned post-cutover E2E performs the real offline same-root
 cutover before resolving `:chat-default`. One scenario gates catalog-only cold
 startup and selective lazy restore. A second creates a current Board-backed
 chat and drives the real Responses adapter with a fake HTTP transport, gating
-curation-only acknowledgement serialization and one-request replay lifetime
+curation-only acknowledgement serialization, including a valid all-label
+omission with no promotion/erasure write, and one-request replay lifetime
 across close/reopen. Graphical fake-backend tests and no-send current-config
 compatibility checks retain their narrower evidence roles. An explicit
 current-config `live-basic` mode reuses the locally configured default adapter,

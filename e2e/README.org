@@ -145,9 +145,10 @@ SQLite-backed session transcript, and Board output.  It also verifies that any
 reasoning emitted by the configured adapter is combined once per stream and
 provider request.  It does not require the model to retain or summarize the
 source, and it does not substitute an =E_E2E_CONFIG= fixture or injected
-transport.
-The model may answer without choosing the optional curation action; deterministic
-post-cutover coverage owns that protocol.  Missing configuration,
+transport.  If the model calls the optional carrier while selecting no labels,
+the valid all-omission path must still reach the assistant response.
+The model may answer without choosing the optional curation action;
+deterministic post-cutover coverage always exercises that protocol.  Missing configuration,
 authentication, provider availability, or persistence failure is a failed
 test; this mode has no skip path.
 
@@ -284,7 +285,7 @@ eldev -s test -f e2e/e-live-e2e-test.el \
 
 It requires the ordinary deterministic tool to be useful only for the current
 answer, then checks the exact transformed answer and one explicit erase
-disposition selected through the optional =context-curate-v6= carrier.  The
+disposition selected through the optional =context-curate-v7= carrier.  The
 composition gates prove durable erasure, receipt/aggregate suppression, and
 preserved activity and temporary details across reopen.  Its bounded record
 reports =adoption-disposition erase=,
@@ -311,7 +312,7 @@ Gateway / GPT (Responses) profile over native HTTP, with =:json-false= store
 mode and model =gpt-5.6-sol=.  Its Addendum 6 results are historical after the
 carrier revision.  A current Addendum 7 rerun must pass the reasoning probe,
 positive adoption, explicit erase adoption, warm-prefix cache, and tool-heavy
-cache scenarios under =context-curate-v6=.  Identity-complete records contain
+cache scenarios under =context-curate-v7=.  Identity-complete records contain
 only bounded request identity, revisions, classifications, counts, and timing;
 HTTP evidence does not confirm the exact built-in ChatGPT/WebSocket selectors.
 

@@ -31,15 +31,16 @@ whitespace validation passed.  Accepted configured Responses HTTP evidence
 was captured by the live runner at
 =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=.  That =v5=/presentation-v2
 record became historical when the model-facing eligibility defect was fixed
-with =context-curate-v6=/presentation-v3 on 2026-09-03; exact built-in
-ChatGPT/WebSocket behavior remains capability-unconfirmed, so the Feature
-remains In-review rather than Done.
+with =context-curate-v6=/presentation-v3 on 2026-09-03.  The carrier then
+advanced to =context-curate-v7= when all-label omission was made consistent
+with the optional schema; exact built-in ChatGPT/WebSocket behavior remains
+capability-unconfirmed, so the Feature remains In-review rather than Done.
 
 The historical configured Responses HTTP evidence record, including its complete
 identity, bounded metrics, capture timestamp, seven-day expiry, and dependency
 owner-cone reuse rule, is maintained authoritatively in
 [[file:limitations.org::*Historical configured Addendum 7 v5 evidence][limitations.org]].
-The record is at =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=; current =v6=
+The record is at =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=; current =v7=
 configured-model adoption and exact built-in ChatGPT/WebSocket behavior remain
 =capability-unconfirmed=.
 
@@ -58,12 +59,14 @@ keys:
 }
 #+end_src
 
-An omitted key is an empty list.  Unknown keys are invalid.  After
-normalization, at least one label must appear in =keep=, a summary source list,
-or =erase=.  Labels are positive frame-local integers and may occur at most
-once across the complete submitted disposition.  At most 16 distinct labels
-may be submitted and the complete prepared semantic package is bounded to
-8,192 canonical UTF-8 bytes.
+An omitted key is an empty list.  Unknown keys are invalid.  Zero or more
+labels may appear in =keep=, summary source lists, or =erase=.  Selecting none
+is a valid explicit all-omission result: the frame is consumed, no promotion or
+erasure package is stored, and the ordinary reserved-carrier acknowledgement
+continues to the assistant response.  Submitted labels are positive
+frame-local integers and may occur at most once across the complete
+disposition.  At most 16 distinct labels may be submitted and the complete
+prepared semantic package is bounded to 8,192 canonical UTF-8 bytes.
 
 =keep= retains the exact bounded model-visible value.  A summary replaces its
 listed sources with compact durable text.  Ordinary omission removes the exact
@@ -86,14 +89,14 @@ Generic narration is not strengthened.  Only the reserved carrier has concise
 schema-directed guidance.  Responses requests continue to request
 =reasoning.summary: "auto"=; ="detailed"= remains a diagnostic override.
 
-The material carrier identity is =context-curate-v6= and the source
+The material carrier identity is =context-curate-v7= and the source
 presentation identity is =context-curation-presentation-v3=.
 
 * Required observable behaviors
 
 | ID | Required behavior | Owning boundary | Acceptance evidence |
 |----+-------------------+-----------------+---------------------|
-| =F88A7-CARRIER= | The model sees exactly optional =keep=/=summaries=/=erase=, concise omission-versus-erasure guidance, and explicit per-source erasure eligibility. | Core revision/presentation identity and backend adapter serialization. | Mixed-source presentation plus literal HTTP/WebSocket and post-cutover first-chat request-shape tests. |
+| =F88A7-CARRIER= | The model sees exactly optional =keep=/=summaries=/=erase=, concise omission-versus-erasure guidance including valid all-label omission, and explicit per-source erasure eligibility. | Core revision/presentation identity and backend adapter serialization. | Mixed-source presentation plus literal HTTP/WebSocket and post-cutover first-chat request-shape tests. |
 | =F88A7-OMISSION= | Omitted exact tool output disappears from later ordinary context while its bounded Feature 90 receipt may remain.  Omission is not evidence that the model considered retention. | Feature 88 exact-source lifetime; Feature 90 receipt projection. | Credential-free real-adapter turn showing raw exclusion, receipt preservation, and live details. |
 | =F88A7-ERASURE= | Explicitly erased tool output leaves no automatic tool call, result, receipt, purpose, URI, latest marker, count, or omitted aggregate derived solely from it. | Feature 88 erasure authority consumed by each derived-context provider. | Credential-free real-adapter turn plus receipt-provider owner tests. |
 | =F88A7-PRESERVATION= | Erasure leaves transcript, activity, audit, and temporary details unchanged; an explicit reread is a new ephemeral observation. | Existing transcript/activity/tmp owners and Feature 88 observation framing. | Durable activity and tmp availability assertions; explicit-read framing coverage. |
@@ -108,6 +111,8 @@ There are no unresolved product choices in this package.  The remote authority
 settles the previously ambiguous negative semantics:
 
 - ordinary omission is the receipt-preserving default;
+- an explicit carrier call selecting no labels validly omits every source and
+  stores no promotion or erasure package;
 - explicit =erase= is the considered, no-automatic-trace decision; and
 - no carrier call remains operationally observable but says nothing about what
   the model noticed or rejected.
@@ -160,6 +165,7 @@ or aggregate.  No receipt policy flows back into core curation semantics.
 
 - The =drop= carrier field and every exhaustive-partition rule.
 - Required top-level carrier keys and missing-label rejection.
+- The non-empty-disposition rule that contradicted optional all-label omission.
 - Drop-only audit, eviction, and autonomous-drop evidence machinery.
 - Independent A7.1/A7.2 delivery, review, status, and measurement ledgers.
 - Separate promotion and erasure appends for one decision; one session package
@@ -181,7 +187,7 @@ The new erasure record and package entry are additive persistent formats.
 The model-facing Addendum 6 carrier is intentionally incompatible: calls with
 =drop= are rejected and omitted =keep=/=summaries=/=erase= keys are valid.
 Schema fingerprints and provider anchors must therefore change with
-=context-curate-v6=.  Addendum 6 external adoption/cache results remain useful
+=context-curate-v7=.  Addendum 6 external adoption/cache results remain useful
 history but cannot establish compatibility for this carrier.  Responses HTTP
 and built-in ChatGPT/WebSocket evidence remain separately classified.
 
@@ -194,8 +200,9 @@ committed session formats.
 The package stops only when all of the following work together:
 
 1. The actual backend carrier presents optional =keep=/=summaries=/=erase=,
-   uses =context-curate-v6= and =context-curation-presentation-v3= identities,
-   exposes erasure eligibility, and requests Responses reasoning summaries.
+   accepts explicit all-label omission, uses =context-curate-v7= and
+   =context-curation-presentation-v3= identities, exposes erasure eligibility,
+   and requests Responses reasoning summaries.
 2. Core validates labels, exclusivity, ordinary-tool erase eligibility, the
    16-label limit, and the complete 8,192-byte package before mutation.
 3. Session atomically persists optional promotion plus erasure, replays it on

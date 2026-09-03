@@ -13,7 +13,7 @@ how that rule is explained to the model, and how the loop handles a duplicate
 curation-only response.
 
 Implementation is blocked until Feature 91 reaches =Done=.  Addendum 7 and
-=context-curate-v6= remain the accepted implementation baseline until this
+=context-curate-v7= remains the accepted implementation baseline until this
 addendum is implemented and reviewed.
 
 The motivating incident and source trace are recorded in
@@ -73,7 +73,7 @@ The exact sentence may change without changing the contract, but all four
 meanings above must remain explicit.  This is carrier-local guidance, not
 generic narration repeated in every prompt.
 
-The material carrier identity becomes =context-curate-v7=.  The JSON schema is
+The material carrier identity becomes =context-curate-v8=.  The JSON schema is
 unchanged from Addendum 7, but the invocation guidance and recovery wire output
 change request semantics, so old anchors and external evidence cannot establish
 the new behavior.
@@ -176,8 +176,8 @@ sufficient for the sequential loop.
 
 * Implementation package
 
-1. Revise the carrier guidance and material identity to =context-curate-v7=;
-   invalidate v6 request-shape and external-evidence identity.
+1. Revise the carrier guidance and material identity to =context-curate-v8=;
+   invalidate v7 request-shape and external-evidence identity.
 2. Replace the turn-wide =curation-only-followups= decision with trusted
    request/frame-scoped opportunity state while retaining one acknowledgement
    per successful curation.
@@ -196,8 +196,8 @@ turn-wide counter is not an acceptable stopping point.
 
 No durable record or session codec changes.  Existing Addendum 7 packages stay
 readable and retain their meaning.  The provider carrier schema remains
-optional =keep=/=summaries=/=erase=, but =context-curate-v7= intentionally
-invalidates v6 anchors, prompt-layout fingerprints, and configured evidence
+optional =keep=/=summaries=/=erase=, but =context-curate-v8= intentionally
+invalidates v7 anchors, prompt-layout fingerprints, and configured evidence
 because guidance and corrective wire behavior are material.
 
 The ordinary path adds constant request-local state and no additional provider

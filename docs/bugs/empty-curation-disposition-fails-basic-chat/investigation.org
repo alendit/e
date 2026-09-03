@@ -1,0 +1,101 @@
+#+title: Empty Curation Disposition Basic-Chat Failure Investigation
+#+startup: overview
+
+* Conclusion
+
+The model-facing contract and core validator contradicted each other.  The
+carrier made all three fields optional and said every omitted label loses its
+exact content.  Core nevertheless required at least one label in =keep=,
+=summaries=, or =erase=.  A model that chose to retain and erase nothing on a
+trivial greeting therefore aborted the whole turn.
+
+The correction accepts an explicit all-omission carrier result.  It does not
+relax any label, summary, source-count, package-size, or erasure-eligibility
+validation.
+
+* Live and durable evidence
+
+One bounded =scripts/e-live-probe chat= identified session
+=20260903T134812-e4fc5faca6f2= in =error= state.  A read-only SQLite query found
+one request starting at 13:48:15 and finishing after 5.128 seconds.  The request
+had no ordinary tool calls.  Its combined reasoning discussed retaining some
+presented options, but the next durable event was =turn-failed= with
+=curation-disposition :no-disposition=.  No assistant message was appended.
+
+The provider response body is not durably retained, so the exact wire object
+cannot be reconstructed.  The error proves that its normalized disposition
+contained no selected labels.  The running Emacs and its database were not
+modified.
+
+* Why green tests missed it
+
+The deterministic post-cutover E2E used a cooperative hand-authored
+=keep:[1]= response.  It covered curation acknowledgement, assistant output,
+Board publication, SQLite persistence, and restart, but never supplied the
+empty object already permitted by its optional JSON schema.
+
+The current-configuration live E2E used the real local adapter, but curation is
+optional and its earlier successful run did not choose this branch.  Lower
+level tests explicitly asserted that empty disposition was invalid, faithfully
+protecting the contradictory rule.  The suite therefore had broad topology
+coverage but the wrong semantic example at the carrier-to-core boundary.
+
+* Correction
+
+- Core normalizes missing or empty =keep=/=summaries=/=erase= to one valid
+  all-omission value.
+- Preparation produces no promotion, erasure, or curation-package record for
+  that value.  The harness still records the reserved response audit, consumes
+  the frame, and lets the loop send its one bounded acknowledgement
+  continuation.
+- The carrier says explicitly that omitting every label is valid.  Its material
+  identity advances to =context-curate-v7=; presentation remains v3.
+- The deterministic post-cutover E2E now uses empty arrays and proves assistant
+  output, one audit, no semantic package, Board output, combined reasoning, and
+  SQLite restart.
+- A malformed duplicate-label control still proves that later tool calls from
+  an invalid provider response are not dispatched.
+
+This adds no retry, recovery ledger, transaction protocol, or persistence
+format.  SQLite remains responsible only for its ordinary atomic writes.
+
+* Validation
+
+- Focused context, adapter, loop, harness, and post-cutover SQLite/restart suite:
+  145/145 passed.
+- Current-configuration =live-basic= with the locally configured real Responses
+  adapter: 1/1 passed; the assistant response completed in 2.032 seconds.
+- Full repository suite: 2705/2705 passed, with no skipped or unexpected tests.
+- Changed production modules byte-compiled successfully.
+- Isolated graphical suite: 29/29 passed.  The first validation run exposed a
+  real test-fixture race: NS applied the private frame resize after the target
+  window signature was captured, so unchanged split topology compared unequal.
+  The shared graphical fixture now waits for that resize before tests record
+  geometry; the formerly failing test passed alone and in the full suite.
+- =git diff --check= passed.
+
+* Design self-check
+
+1. A first-turn greeting no longer fails because the model retains nothing.
+2. The change moves toward one coherent optional-disposition contract.
+3. Provider selection remains uncertain; all-omission semantics are stable and
+   represented directly rather than hidden behind a fallback.
+4. Context-lifetime core owns disposition meaning and validation.
+5. Coupling is unchanged; the adapter renders the core revision and wording.
+6. No dependency points from core toward OpenAI, Board, chat, or SQLite.
+7. Wire rendering and acknowledgement remain at adapter/loop boundaries.
+8. No state is added.  Empty selection creates no durable semantic package.
+9. The change removes one validation branch and adds no scans, I/O, timers, or
+   main-thread work.
+10. The optional schema and core implementation now substitute semantically.
+11. Carrier revision v7 explicitly fences cached v6 request meaning.
+12. The obsolete non-empty rule and its false-positive tests are removed.
+13. Expected malformed input still fails; valid empty input reaches normal
+    completion.
+14. Pure normalization, invalid-ordering, deterministic SQLite/restart, full
+    repository, and real configured-adapter tests cover separate boundaries.
+
+* Reload note
+
+This changes core curation semantics and a provider request identity.  A full
+Emacs restart is required to use it.  The running Emacs was left untouched.

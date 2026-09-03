@@ -1,0 +1,17 @@
+#+title: Empty Curation Disposition Fails a Basic Chat
+#+startup: overview
+
+* Report
+
+After restarting onto the latest Feature 87 branch, the user opened a new chat
+and sent =hi=.  The first provider request failed after five seconds with:
+
+#+begin_example
+Turn failed: Invalid context lifetime record: curation-disposition,
+:no-disposition
+#+end_example
+
+An all-omission curation result must be valid: it should consume the ephemeral
+frame, persist no promotion or erasure package, send the required provider
+acknowledgement, and continue to the assistant answer.  Malformed labels,
+summaries, duplicate selections, and ineligible erasures must remain errors.

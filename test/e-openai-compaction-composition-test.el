@@ -50,7 +50,7 @@
     (should
      (equal
       (plist-get (aref enabled-tools 0) :description)
-      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
+      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."))
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
            (properties (plist-get parameters :properties))
            (summary-schema (plist-get properties :summaries))
@@ -127,10 +127,11 @@
                (e-context-lifetime-normalize-curation-disposition
                 '(:keep (1) :summaries nil :erase (2)))
                '(:keep (1) :summaries nil :erase (2))))
-      (should-error
-       (e-context-lifetime-normalize-curation-disposition
-        '(:keep nil :summaries nil))
-       :type 'e-context-lifetime-invalid-record))))
+      (should
+       (equal
+        (e-context-lifetime-normalize-curation-disposition
+         '(:keep nil :summaries nil))
+        '(:keep nil :summaries nil :erase nil))))))
 
 (ert-deftest e-openai-test-context-curation-schema-is-captured-by-both-transports ()
   "The native HTTP and WebSocket starts capture the same optional carrier."
@@ -186,7 +187,7 @@
               (should
                (equal
                 (plist-get tool :description)
-                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
+                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."))
               (should-not (plist-member parameters :required))
               (should (eq (plist-get parameters :additionalProperties)
                           :json-false))
@@ -216,10 +217,11 @@
                        (if (eq transport 'http)
                            '("sources" "text")
                          ["sources" "text"])))
-              (should-error
-               (e-context-lifetime-normalize-curation-disposition
-                '(:keep nil :summaries nil))
-               :type 'e-context-lifetime-invalid-record)
+              (should
+               (equal
+                (e-context-lifetime-normalize-curation-disposition
+                 '(:keep nil :summaries nil))
+                '(:keep nil :summaries nil :erase nil)))
               (when request
                 (e-backend-cancel-request request)))))))))
 

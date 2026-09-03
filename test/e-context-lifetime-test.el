@@ -587,6 +587,12 @@ the record-focused assertions concise without restoring the retired wrapper."
                 :keep nil))
              '(:keep nil :summaries ((:sources (1) :text "one"))
                :erase nil)))
+    (should (equal
+             (e-context-lifetime-normalize-curation-disposition
+              '(:keep nil :summaries nil :erase nil))
+             '(:keep nil :summaries nil :erase nil)))
+    (should (equal (e-context-lifetime-normalize-curation-disposition nil)
+                   '(:keep nil :summaries nil :erase nil)))
     (dolist (bad
              (list
               '(:keep ("1"))
@@ -604,8 +610,7 @@ the record-focused assertions concise without restoring the retired wrapper."
               '(:keep (1) :summaries ((:sources (1) :text "overlap"))
                 :erase (3))
               '(:keep (1) :summaries nil :erase (1 2))
-              '(:unknown (1))
-              '()))
+              '(:unknown (1))))
       (should-error
        (e-context-lifetime-normalize-curation-disposition bad)
        :type 'e-context-lifetime-invalid-record))))
@@ -759,9 +764,18 @@ the record-focused assertions concise without restoring the retired wrapper."
                      '("observation-2")))
       (should-not (string-match-p "source-3\\|observation-3\\|entry-3\\|fingerprint-3"
                                   (prin1-to-string record))))
+    (let ((all-omitted
+           (e-context-lifetime-prepare-curation-disposition
+            frame '(:keep nil :summaries nil :erase nil)
+            "response-all-omitted")))
+      (should-not (plist-get all-omitted :record))
+      (should-not (plist-get all-omitted :erasure-record))
+      (should-not (plist-get all-omitted :package))
+      (should (= (plist-get all-omitted :source-count) 3))
+      (should (= (plist-get all-omitted :retained-source-count) 0))
+      (should (= (plist-get all-omitted :erased-source-count) 0)))
     (dolist (bad
              (list
-              '(:keep nil :summaries nil)
               '(:keep (1) :summaries nil :erase (1 2 3))
               '(:keep (1) :summaries ((:sources (1) :text "duplicate")))
               '(:keep nil :summaries ((:sources (1) :text ""))
@@ -1084,7 +1098,7 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should (equal first same))
     (should-not (equal first different))
     (should (equal (plist-get first :schema-revision)
-                   "context-curate-v6"))
+                   "context-curate-v7"))
     (should (equal (plist-get first :presentation-revision)
                    "context-curation-presentation-v3"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))

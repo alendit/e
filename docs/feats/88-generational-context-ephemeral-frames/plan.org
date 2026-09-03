@@ -33,7 +33,9 @@ exhaustive partition.  Omission drops exact content while preserving a
 separately owned Feature 90 receipt.  Explicit erasure suppresses that receipt
 and every aggregate derived solely from it while preserving transcript,
 activity, audit, and temporary details.  Responses reasoning summaries remain
-=auto= by default and the material identity is =context-curate-v6=.  Each
+=auto= by default and the material identity is =context-curate-v7=.  An
+explicit all-label omission is valid: it consumes the frame without creating a
+promotion, erasure, or semantic curation-package record.  Each
 source marker explicitly states whether that label is eligible for =erase=.
 
 Addendum 8 plans a frame-scoped invocation rule without changing Addendum 7's
@@ -41,7 +43,8 @@ curation disposition semantics.  One active frame may be curated once; later
 tool work may create a new frame that can be curated again in the same turn.
 A duplicate against a closed opportunity is ignored with one bounded
 corrective continuation instead of being reported as an invalid context
-lifetime record.  This remains unimplemented; =context-curate-v6= is current.
+lifetime record.  This remains unimplemented; it would advance the material
+identity to =context-curate-v8=, while =context-curate-v7= is current.
 
 Addendum 9 plans a content-free =context-curated= activity for classic chat and
 ModernChat.  It visualizes successful keep, summary, and erase counts without
@@ -55,11 +58,12 @@ session persistence, harness commit, the actual carrier, Feature 90 receipt
 filtering, and credential-free end-to-end composition.  The repository
 fixed-point review is at =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=;
 accepted configured evidence was captured by the live runner at
-=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=.  Repository validation passes
-2,456 tests with 2,454 expected passes, zero unexpected results, and two
-expected graphical skips; changed-owner warnings-as-errors compilation also
-passes.  A7.1/A7.2 are internal implementation history, not delivery or
-fixed-point boundaries.
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=.  Current repository validation
+passes 2,705/2,705 tests and 29/29 isolated graphical tests with no skipped or
+unexpected results; the configured real Responses adapter basic-chat probe
+also passes.  Changed production modules byte-compile successfully.
+A7.1/A7.2 are internal implementation history, not delivery or fixed-point
+boundaries.
 
 The earlier 2026-08-28 configured run used provider/profile =eng-ai-gateway-gpt=,
 profile =Engineering AI Model Gateway / GPT (Responses)=, exact base URL
