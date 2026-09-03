@@ -33,6 +33,90 @@
       (accept-process-output nil 0.01))
     value))
 
+(ert-deftest e-loop-test-retires-only-consumed-frame-curation-markers ()
+  "Consumed labels leave every request projection without hiding source data."
+  (let* ((frame
+          (e-context-lifetime-frame-create
+           :id "retired-frame"
+           :generation-id "generation"
+           :consumer-request-id "request"
+           :observations
+           '((:observation-id "source-1"
+              :kind "dynamic-context"
+              :source-entry-ref "dynamic:1"
+              :source-fingerprint "fingerprint-1"
+              :effective-delivery "request-local-replaceable"
+              :body (:content "SOURCE-ONE"))
+             (:observation-id "source-2"
+              :kind "dynamic-context"
+              :source-entry-ref "dynamic:2"
+              :source-fingerprint "fingerprint-2"
+              :effective-delivery "request-local-replaceable"
+              :body (:content "SOURCE-TWO")))))
+         (markers
+          (mapcar (lambda (source) (plist-get source :marker))
+                  (e-context-lifetime-frame-curation-presentation frame)))
+         (marker-one (nth 0 markers))
+         (marker-two (nth 1 markers))
+         (source-one '(:role system :content "SOURCE-ONE"))
+         (source-two '(:role system :content "SOURCE-TWO"))
+         (same-text-user (list :role 'user :content marker-one))
+         (messages
+          (list '(:role user :content "prompt")
+                (list :role 'system :content marker-one)
+                source-one
+                (list :role 'system :content marker-two)
+                source-two
+                ;; A descendant frame can repeat the same presentation text.
+                ;; Only the earlier producer-frame occurrences may retire.
+                (list :role 'system :content marker-one)
+                '(:role system :content "FRESH-SOURCE-ONE")
+                (list :role 'system :content marker-two)
+                '(:role system :content "FRESH-SOURCE-TWO")))
+         (options
+          (list
+           :segments
+           (list
+            '(:kind static-prefix
+              :messages ((:role system :content "stable")))
+            (list :kind 'dynamic-context
+                  :messages
+                  (list (list :role 'system :content marker-one)
+                        same-text-user source-one
+                        (list :role 'system :content marker-two)
+                        source-two)))
+           :context-segment-message-count 6
+           :replaceable-current-state
+           (list (list :role 'system :content marker-one) source-one)
+           :provider-anchor-delta-messages
+           (list (list :role 'system :content marker-two)
+                 '(:role assistant :content "answer"))
+           :provider-compaction-delta-messages
+           (list (list :role 'system :content marker-one))))
+         (retired
+          (e-loop--retire-frame-curation-markers messages options frame))
+         (retired-options (plist-get retired :options))
+         (retired-segments (plist-get retired-options :segments)))
+    (should
+     (equal (plist-get retired :messages)
+            (list '(:role user :content "prompt") source-one source-two
+                  (list :role 'system :content marker-one)
+                  '(:role system :content "FRESH-SOURCE-ONE")
+                  (list :role 'system :content marker-two)
+                  '(:role system :content "FRESH-SOURCE-TWO"))))
+    (should
+     (equal (plist-get (nth 1 retired-segments) :messages)
+            (list same-text-user source-one source-two)))
+    (should (= (plist-get retired-options :context-segment-message-count) 4))
+    (should
+     (equal (plist-get retired-options :replaceable-current-state)
+            (list source-one)))
+    (should
+     (equal (plist-get retired-options :provider-anchor-delta-messages)
+            '((:role assistant :content "answer"))))
+    (should-not
+     (plist-get retired-options :provider-compaction-delta-messages))))
+
 (ert-deftest e-loop-test-inherited-observation-does-not-promote-anchor ()
   "An inherited observation cannot advance a provider anchor candidate."
   (let* ((candidate '(:provider-id openai :metadata (:response-id "resp-2")))

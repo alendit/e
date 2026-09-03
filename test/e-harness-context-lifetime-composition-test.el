@@ -11,6 +11,7 @@
 
 (require 'ert)
 (require 'e-openai-decoder)
+(require 'e-openai-responses)
 (require 'e-sqlite-test-store-support
          (expand-file-name
           "e-sqlite-test-store-support.el"
@@ -245,6 +246,126 @@
         (should-not (string-match-p
                      "frame\|generation\|observation\|backing\|replay"
                      printed))))))
+
+(ert-deftest e-harness-test-consumed-frame-labels-retire-before-new-frame ()
+  "A stateless follow-up presents labels from only its current live frame."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((request-count 0)
+           (requests nil)
+           (backend
+            (e-backend-create
+             :name "context-lifetime-marker-retirement"
+             :context-capabilities
+             '(:continuation none
+               :observation-delivery inherited
+               :reserved-effect-carrier context-curate-wire)
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item &allow-other-keys)
+                ;; Exercise the real adapter partition check as well as the
+                ;; loop's provider-neutral message projection.
+                (e-openai-codex-request-body
+                 :messages messages :options options :tools nil)
+                (setq requests
+                      (append requests
+                              (list (list :messages (copy-tree messages)
+                                          :options (copy-tree options)))))
+                (setq request-count (1+ request-count))
+                (pcase request-count
+                  (1
+                   (funcall
+                    on-item
+                    (e-openai-decoder--context-curation-effect
+                     '(:keep nil :summaries nil :erase nil)
+                     "curation-initial"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (2
+                   (dotimes (index 3)
+                     (funcall
+                      on-item
+                      (list :type 'tool-call
+                            :id (format "fresh-source-%d" (1+ index))
+                            :name "read-source"
+                            :arguments (list :index (1+ index)))))
+                   (funcall on-item '(:type done :reason tool-use)))
+                  (3
+                   (funcall
+                    on-item
+                    (e-openai-decoder--context-curation-effect
+                     '(:keep (3) :summaries nil :erase nil)
+                     "curation-fresh"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (4
+                   (funcall on-item
+                            '(:type assistant-message
+                              :content "LABELS-RETIRED"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (_ (error "Unexpected marker-retirement request %d"
+                            request-count)))))))
+           (provider
+            (e-context-provider-create
+             :name 'marker-retirement-sources
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      '((:role system :content "INITIAL-SOURCE-ONE")
+                        (:role system :content "INITIAL-SOURCE-TWO")))))
+           (capability
+            (e-capability-create
+             :id 'marker-retirement-capability
+             :context-providers (list provider)
+             :tools
+             (list
+              (lambda (registry)
+                (e-tools-test-register
+                 registry
+                 :name "read-source"
+                 :description "Return one fresh frame source."
+                 :handler
+                 (lambda (arguments)
+                   (format "FRESH-SOURCE-%d"
+                           (plist-get arguments :index))))))))
+           (harness
+            (e-harness-create
+             :backend backend
+             :intrinsic-capabilities (list capability))))
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-create-session harness :id "marker-retirement")
+        (e-harness-test-prompt-batch
+         harness "marker-retirement" "inspect fresh sources"))
+      (cl-labels
+          ((source-markers
+            (request)
+            (seq-filter
+             (lambda (message)
+               (let ((content (plist-get message :content)))
+                 (and (eq (plist-get message :role) 'system)
+                      (stringp content)
+                      (string-prefix-p "[ephemeral context source "
+                                       content))))
+             (plist-get request :messages))))
+        (should (= request-count 4))
+        (should (= (length (source-markers (nth 0 requests))) 2))
+        (should-not (source-markers (nth 1 requests)))
+        (let ((fresh-markers (source-markers (nth 2 requests))))
+          (should (= (length fresh-markers) 3))
+          (cl-loop for marker in fresh-markers
+                   for label from 1
+                   do (should
+                       (string-prefix-p
+                        (format "[ephemeral context source %d," label)
+                        (plist-get marker :content)))))
+        (should-not (source-markers (nth 3 requests))))
+      (let* ((store (e-harness-sessions harness))
+             (messages (e-session-messages store "marker-retirement"))
+             (assistant
+              (car (last (seq-filter
+                          (lambda (message)
+                            (eq (plist-get message :role) 'assistant))
+                          messages)))))
+        (should (equal (plist-get assistant :content) "LABELS-RETIRED"))
+        (should (= (length (e-session-context-curations
+                            store "marker-retirement"))
+                   1))))))
 
 (ert-deftest e-harness-test-context-lifetime-tool-marker-follows-all-prior-sources ()
   "A descendant tool source follows every prior presented source."

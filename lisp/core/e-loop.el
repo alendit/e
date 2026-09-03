@@ -84,6 +84,66 @@ preflight and the subsequent durable append share one identity."
       (plist-put (copy-sequence item) :type 'tool-call))
      (t item))))
 
+(defun e-loop--retire-frame-curation-markers (messages options frame)
+  "Retire FRAME's model-facing source markers from request projections.
+
+Return a plist containing detached `:messages' and `:options'.  The frame's
+ordinary source values remain under their existing semantic owners; only the
+frame-local labels that became invalid when FRAME was consumed are removed.
+Every option-side message projection is updated together so a stateless
+adapter cannot reconstruct stale labels from semantic segments or a delta."
+  (let* ((marker-contents
+          (mapcar (lambda (source)
+                    (plist-get source :marker))
+                  (e-context-lifetime-frame-curation-presentation frame)))
+         (options (copy-sequence options)))
+    (cl-labels
+        ((without-markers
+          (projection)
+          (if (listp projection)
+              ;; A tool result can establish a descendant frame before the
+              ;; producer response commits its curation.  Its markers may be
+              ;; textually identical to the producer's, so retire only one
+              ;; earlier occurrence per source in each projection.
+              (let ((remaining (copy-sequence marker-contents)))
+                (cl-remove-if
+                 (lambda (message)
+                   (let ((content (plist-get message :content)))
+                     (when (and (eq (plist-get message :role) 'system)
+                                (member content remaining))
+                       (setq remaining
+                             (cl-delete content remaining
+                                        :count 1 :test #'equal))
+                       t)))
+                 (copy-tree projection)))
+            projection)))
+      (let ((messages (without-markers messages)))
+        (when-let* ((segments (plist-get options :segments)))
+          (setq segments
+                (mapcar
+                 (lambda (segment)
+                   (let ((copy (copy-sequence segment)))
+                     (plist-put copy :messages
+                                (without-markers
+                                 (plist-get segment :messages)))
+                     copy))
+                 segments))
+          (setq options (plist-put options :segments segments))
+          (when (plist-member options :context-segment-message-count)
+            (setq options
+                  (plist-put
+                   options :context-segment-message-count
+                   (cl-loop for segment in segments
+                            sum (length (plist-get segment :messages)))))))
+        (dolist (key '(:replaceable-current-state
+                       :provider-anchor-delta-messages
+                       :provider-compaction-delta-messages))
+          (when (plist-member options key)
+            (setq options
+                  (plist-put options key
+                             (without-markers (plist-get options key))))))
+        (list :messages messages :options options)))))
+
 (defun e-loop--continuation-candidate-p (options candidate &optional immediate-only-p)
   "Return non-nil when CANDIDATE may continue the request in OPTIONS."
   (let* ((continuation
@@ -650,7 +710,31 @@ schedules it behind the owning session's active commit barrier."
                                           (and provider-request-lifetime-frame
                                                (e-context-lifetime-frame-id
                                                 provider-request-lifetime-frame)))))
-                            (setq active-lifetime-frame completed))))))
+                            (setq active-lifetime-frame completed))
+                          ;; A successful curation closes the exact label set
+                          ;; presented to this response.  Retire those
+                          ;; marker messages before its acknowledgement starts;
+                          ;; otherwise a later fresh frame is displayed beside
+                          ;; stale labels from this consumed frame and the model
+                          ;; can submit a label that no longer exists.
+                          (when (and response-curation-effects
+                                     (e-context-lifetime-frame-p completed)
+                                     (e-context-lifetime-frame-consumed-p
+                                      completed)
+                                     (e-context-lifetime-frame-p
+                                      provider-request-lifetime-frame)
+                                     (equal
+                                      (e-context-lifetime-frame-id completed)
+                                      (e-context-lifetime-frame-id
+                                       provider-request-lifetime-frame)))
+                            (let ((retired
+                                   (e-loop--retire-frame-curation-markers
+                                    turn-messages turn-options
+                                    provider-request-lifetime-frame)))
+                              (setq turn-messages
+                                    (plist-get retired :messages)
+                                    turn-options
+                                    (plist-get retired :options))))))))
                    (attach-pending-provider-replay-items
                     ()
                     ;; A reserved provider effect may arrive after an
