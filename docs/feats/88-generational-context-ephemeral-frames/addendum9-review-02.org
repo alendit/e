@@ -1,0 +1,207 @@
+#+title: Review 02: Addendum 9 Context Curation Activity Visualization
+#+date: 2026-09-03
+#+startup: overview
+
+* Status and decision
+
+Implementation-plan fixed point not reached.
+
+This independent incremental Tick reviewed exact revision
+=1eda5193d511c9693dddbdf5cde3ca43705b8f22= against Review 01 at
+=012e7555= and its reviewed parent
+=f38ac3f8915b37e92ea0af92cf9a48e71e73942a=.
+
+- P0: none.
+- P1: none; =F88A9.S2= is closed.
+- P2: =F88A9.S1= and =F88A9.S3= remain open.
+- P3: none.
+- Required repository unknowns: none.
+
+The stable contract rows, scenario portfolio, package relation, useful stopping
+point, dependency order, ModernChat identity contract, glossary selection, and
+architecture direction were rechecked.  Two local plan-authority defects still
+block =implementation-plan-fixed-point=.
+
+The file currently says =Ready=, but implementation admission remains blocked
+until both findings are corrected and a fresh independent Tick clears the
+changed identity-bearing content.
+
+* Behavioral and mechanism status
+
+- Goal ID :: =F88A9-ACTIVITY=
+- Behavioral status :: Unavailable before implementation.
+- Direct scenario status :: Specified but not yet implemented or run.
+- First incomplete public boundary :: Harness frame consumption currently has
+  no safe Board =context-curated= projection.
+- Mechanism status :: Not started for Addendum 9 presentation.
+- External compatibility :: Not applicable.  Provider request and carrier
+  material are unchanged; =A9-DIRECT= is credential-free deterministic
+  composition evidence.
+
+The accepted activity boundary remains a successfully committed non-empty
+curation package.  Valid explicit all-label omission remains package-free and
+produces no Addendum 9 activity.
+
+* Prior finding dispositions
+
+** TODO Medium P2 =F88A9.S1=: incomplete closure
+
+The remediation makes the accepted-package boundary explicit in Status,
+Decision, Presentation data contract, the normative matrix, negative scenario,
+Non-goals, and Design self-check.
+
+One contradictory sentence remains at =addendum9.org:25-29=.  It says every
+successful =context-curate= response prepares and commits promotion or erasure.
+Addendum 7's successful explicit all-label omission commits neither and stores
+no package.
+
+Replace it with:
+
+#+begin_quote
+A =context-curate= response containing a valid non-empty disposition is
+intentionally not an ordinary model-facing tool call.  The loop extracts it as
+a reserved semantic effect, the context-lifetime owner prepares and commits its
+curation package, and the session retains an audit-only response control plus a
+=context-frame-consumed= activity event.
+#+end_quote
+
+This is a wording correction only; it does not visualize all-label omission or
+change Addendum 7 semantics.
+
+** DONE High P1 =F88A9.S2=: delivery-package relation and closure
+
+The normalized matrix maps every contract to =F88A9-DP1=, and the package's
+=Establishes= field maps back to those same nine complete contracts.  The
+package records entry state, dependencies, owner-complete work, internal steps,
+a both-shell acceptance boundary, useful stopping point, and split/combine
+tradeoff.  No smaller package makes =F88A9-ACTIVITY= available, while a larger
+one would mix Addendum 8, provider identity, or controls into unrelated policy.
+=S2= is closed.
+
+** TODO Medium P2 =F88A9.S3=: incomplete behavioral trace and false sole-authority reference claim
+
+The remediation adds the goal, nine-row matrix, package mapping, scenario
+portfolio, non-empty direct composition, negative all-omission coverage,
+evidence classes, external/telemetry dispositions, and behavioral status.
+
+Two authority requirements remain incomplete.  The goal record omits its
+owning-contract set and separate mechanism-progress lane.  The claim that all
+other sections refer back to matrix IDs is also false: retained Decision,
+Presentation, Ownership, Rendering, Failure, Compatibility, and Non-goal prose
+still contains contract-specific imperative detail.
+
+Add the owning-contract list, mechanism status, and external-compatibility
+classification to the goal record.  Replace the false reference claim with a
+section-to-contract map that assigns every retained section to its owning
+matrix rows or plan role and states that those sections are rationale or
+contract-specific implementation appendices, not independent outcomes.
+
+** DONE Medium P2 =F88A9.S4=: real Board identity is preserved through ModernChat acceptance
+
+=F88A9-MODERN= now requires a stable Board-backed DTO identity and selectable,
+inspectable Rust activity.  The plan explicitly preserves Board =:message-id=
+as DTO =id=, forbids synthesis or omission, uses it for Rust selection and
+inspection, and requires service-produced evidence plus the Rust suite.  Those
+requirements reject the current nil-identity failure.  A multiple-row fixture
+is an implementation choice, not a durable requirement.  =S4= is closed.
+
+* Contract and plan coverage
+
+All nine stable matrix rows are semantically complete.  =S1= is contradictory
+supporting prose; =S3= is incomplete plan authority.  The remaining plan-cell
+dispositions are:
+
+| Required cell | Tick disposition |
+|---------------+------------------|
+| Single normative authority | Open: =S1= and =S3= |
+| Behavioral design trace | Open: =S3= |
+| Durable contract boundary | Cleared |
+| Scenario diagnosability | Cleared |
+| Evidence topology | Cleared |
+| External freshness | N/A: no external capability changed |
+| Telemetry decision power | Cleared |
+| Exact-limit justification | Cleared: no new arbitrary limit |
+| Defensive actionability | Cleared |
+| Change locality | Cleared |
+| Workflow boundary | Cleared |
+| Decision level | Cleared: implementation-plan review |
+| Contract-to-package coverage | Cleared: =S2= |
+| Useful stopping point | Cleared: =S2= |
+| Cohesion and transaction closure | Cleared: =S2= |
+| Dependency order | Cleared |
+| Package-size tradeoff | Cleared: =S2= |
+| Acceptance-cost topology | Cleared |
+| Checkpoint/package distinction | Cleared: =S2= |
+
+No required cell is unknown.
+
+* Test-evidence disposition
+
+- Retain the current all-empty real-adapter scenario as =A9-NEGATIVE=.
+- Strengthen or add a separate non-empty carrier composition for =A9-DIRECT=.
+- Replace or strengthen synthetic Modern identity coverage with real
+  Board -> chat service -> DTO identity plus Rust selection/inspector evidence.
+- Retain existing tool/action, replay, graphical, and preservation coverage and
+  add only the portfolio's contract-specific assertions.
+
+* Architecture and glossary continuity
+
+The dependency direction remains:
+
+#+begin_example
+context lifetime -> harness activity -> Board runtime -> chat service
+                                                    -> classic activity
+                                                    -> ModernChat view model
+                                                       -> Rust view
+#+end_example
+
+Semantic mutation remains inside context/session owners; Board publication and
+rendering remain outward.  Board allowlists presentation facts rather than
+interpreting curation arguments, and neither shell reads private session
+curation records.  The current aggregate is the smallest faithful design; no
+architecture follow-up is required.
+
+The selected glossary remains =docs/references/runtime_concepts.org=.  Its
+runtime terms fit this scope.  “Context-curation activity” remains an unresolved
+candidate term whose semantic source is Addendum 9; the task does not authorize
+a glossary edit, and the addendum explains the term locally.
+
+* Plan identity
+
+This Tick binds its result to these exact blobs:
+
+- =addendum9.org=: =cec74374cdc8154110ae6437e8a5faa7e21d8f74=
+- =addendum7.org=: =808b4869a257f63fac9548a7b26351d706d095ec=
+- =addendum8.org=: =ad6ceb75776c67962ba6e610245d4e97ff01c158=
+- =docs/architecture.md=: =48dc0e6e445a2a3a68630d40fba749f7444c58ae=
+- =docs/references/runtime_concepts.org=:
+  =c80fb8cade9100dac00c33ff7d43ffaac3a053f4=
+- =docs/feats/index.org=: =5690e828d660925421faf8a84b12747ff3505409=
+
+The identity-bearing Addendum 9 sections are Status, Decision, Presentation
+data contract, Ownership, the matrix and scenarios, Rendering, Failure,
+Delivery package, Compatibility, Non-goals, and Design self-check.  The two
+proposed corrections change identity-bearing content and require another Tick.
+
+* Verification performed
+
+- =git rev-parse HEAD= returned the reviewed revision.
+- =git status --short= returned no entries.
+- =git diff --check 012e7555..1eda5193 -- addendum9.org= found no issue.
+- Batch Org parsing of Addenda 7, 8, 9, and Review 01 returned
+  =Org parse: 4 files OK=.
+- Review 01 findings, changed plan ranges, matrix, scenarios, package relation,
+  glossary entries, ModernChat identity seam, and architecture self-check were
+  inspected.
+
+No live Emacs probe, reload, provider request, implementation suite, Rust
+build, or graphical run was performed.  The running Emacs was left unchanged,
+and the reviewer changed no repository file.
+
+* Unresolved
+
+- =F88A9.S1=: correct the residual all-label-omission contradiction.
+- =F88A9.S3=: complete the goal trace and assign retained contract-detail
+  sections to their owning matrix rows.
+
+Addendum 9 has not reached =implementation-plan-fixed-point=.
