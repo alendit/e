@@ -1258,7 +1258,7 @@ ordinary-turn anchor."
             (should (equal (alist-get 'type marker-message) "message"))
             (should (equal (alist-get 'role marker-message) "developer"))
             (should (string-match-p
-                     "\\[ephemeral context source 2, ~[0-9]+ tokens\\]"
+                     "\\[ephemeral context source 2, ~[0-9]+ tokens, erase-eligible\\]"
                      (json-encode marker-message)))
             (should-not (string-match-p
                          "frame:\\|generation:\\|observation:\\|fingerprint:\\|replay"

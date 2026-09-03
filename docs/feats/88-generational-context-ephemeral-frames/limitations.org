@@ -4,16 +4,18 @@
 
 * Status
 
-In-review (repository fixed point =9d5d1b07=; configured Responses HTTP v5
-evidence accepted at =bbda59aa=; exact built-in ChatGPT/WebSocket
-capability-unconfirmed).
+In-review (the =9d5d1b07= repository fixed point and configured Responses HTTP
+v5/presentation-v2 evidence at =bbda59aa= are historical after the 2026-09-03
+eligibility correction; current v6/presentation-v3 configured adoption and
+exact built-in ChatGPT/WebSocket capability are unconfirmed).
 This document records the remaining external limitation after Addenda 3--7.
 The current authority is the origin/main Addendum 5 contract as reconciled by
-Addendum 7: the v5 carrier is optional =keep=/=summaries=/=erase=, with
+Addendum 7: the v6 carrier is optional =keep=/=summaries=/=erase=, with
 omission preserving separately owned receipts and explicit =erase= suppressing
-source-derived projections.  The current configured Responses HTTP result is
-recorded below; it does not establish the exact built-in ChatGPT/WebSocket
-capability.
+source-derived projections.  Per-source presentation now exposes explicit
+erasure eligibility.  The historical configured Responses HTTP result is
+recorded below; it does not establish current v6 adoption or the exact built-in
+ChatGPT/WebSocket capability.
 Independent Tick 6 at exact candidate =835ba655= (implementation =f991f895=)
 closed =F88A4.I5= with zero P0-P3 repository findings and zero deterministic
 unknowns; I6 remains closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.
@@ -29,10 +31,11 @@ tool continuation; Addendum 4 adds provider-neutral source presentation,
 model-directed =context-curate=, and version-3 durable curation records while
 retaining read-only version-2 records.  Addendum 6 adds mandatory Responses
 reasoning summaries, which remain diagnostic only.  Addendum 7 adopts the
-origin-authoritative v5 carrier: =keep=, =summaries=, and explicit tool-only
+origin-authoritative carrier: =keep=, =summaries=, and explicit tool-only
 =erase= are optional; an omitted label loses exact source content while a
 separately owned receipt may remain, and =erase= suppresses source-derived
-projections.  The historical live experiments below
+projections.  Its v6/presentation-v3 correction makes eligibility explicit to
+the model.  The historical live experiments below
 remain useful background, but their old optimization mechanisms are not current
 acceptance requirements.  The remaining external limitation is the
 profile-specific built-in ChatGPT Codex WebSocket behavior:
@@ -76,8 +79,8 @@ under the origin/main Addendum 5 authority.  Independent Tick 6 at
 exact candidate =835ba655= (implementation =f991f895=) closed =F88A4.I5= with
 zero P0-P3 repository findings and zero deterministic unknowns.  I6 remains
 closed at =031bd2a92e63f66e420cc9a4eb7984357e2dd843=.  The dependency order
-below is retained as historical provenance; the v4/explicit-drop entries do
-not establish the current v5 contract:
+below is retained as historical provenance; the v4/explicit-drop entries did
+not establish the later v5 contract:
 
 | Commit | Boundary |
 |--------+----------|
@@ -148,21 +151,23 @@ authentication content.  Adoption cache usage was zero; its raw
 adoption.
 
 This is historical external compatibility evidence for the configured
-Responses HTTP profile.  It does not establish the current v5 contract and it
+Responses HTTP profile.  It did not establish the later v5 contract and it
 does not exercise the exact built-in ChatGPT Codex WebSocket
 retained/replaced-socket or response-continuation claims; those remain
-separately unconfirmed and not exercised.  The v5 HTTP run described below is
-the later accepted current evidence.
+separately unconfirmed and not exercised.  The v5 HTTP run described below was
+accepted for its former material identity and is now historical.
 
-* Current configured Addendum 7 evidence
+* Historical configured Addendum 7 v5 evidence
 
-The accepted current run was captured at
+The previously accepted run was captured at
 =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= using provider
 =eng-ai-gateway-gpt=, profile =Engineering AI Model Gateway / GPT
 (Responses)=, endpoint =/responses= over Responses HTTP, =:json-false= store
 mode, native requester =e-openai-codex--http-request-start=, and model
 =gpt-5.6-sol=.  Material requests used =context-curate-v5= and
-=context-curation-presentation-v2=.  Exact built-in ChatGPT/WebSocket
+=context-curation-presentation-v2=.  The model-facing marker did not yet expose
+erasure eligibility, so these records cannot establish current
+=context-curate-v6=/presentation-v3 adoption.  Exact built-in ChatGPT/WebSocket
 behavior was not tested.  The records were content-free:
 
 | Scenario | Requests | Total input | Cached input | Adoption/disposition | Composition | Semantic | Cache | Result |
@@ -703,15 +708,17 @@ canonical OpenAI profiles.
 
 * Current external acceptance limitation
 
-The repository-controlled Addendum 7 package reached its deterministic fixed
-point at =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=.  The accepted configured
-Responses HTTP evidence was captured by the live runner at
+The repository-controlled Addendum 7 package reached an earlier deterministic
+fixed point at =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=.  Configured Responses
+HTTP evidence was captured by the live runner at
 =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461= using =context-curate-v5=;
 provider/profile, request counts, and bounded token observations are recorded
-in the current-evidence section above.  The earlier records at =317be237= and
+in the historical-evidence section above.  The earlier records at =317be237= and
 =01a8466a= remain historical v4/explicit-drop compatibility evidence only.
 Cache accounting in both current and historical adoption records is
-observational and separate from semantic and composition results.
+observational and separate from semantic and composition results.  Both are
+historical after the v6/presentation-v3 eligibility correction.  Current
+configured-model adoption has not yet been recaptured.
 
 The exact built-in ChatGPT Codex WebSocket retained/replaced-socket and
 response-continuation claims were not exercised by the accepted Responses HTTP

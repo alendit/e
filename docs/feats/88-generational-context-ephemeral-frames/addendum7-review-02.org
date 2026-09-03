@@ -27,6 +27,12 @@ Exact built-in ChatGPT/WebSocket behavior remains =capability-unconfirmed=
 and separate from both the repository findings and this configured HTTP
 evidence.
 
+This review remains the historical review of =context-curate-v5=.  A
+2026-09-03 production recurrence showed that the reviewed request contract hid
+the eligibility distinction enforced by core.  The correction and current
+repository evidence are recorded in the post-review update below; the old
+configured-model evidence no longer satisfies the current identity.
+
 * Scope and authority
 
 The review covered the complete =c0db43b7..f59e91cf= diff across the Addendum 7
@@ -231,13 +237,13 @@ content-free records.  This is external compatibility evidence for the
 configured HTTP profile, not proof of exact built-in ChatGPT/WebSocket
 behavior.
 
-The accepted current configured evidence record, capture timestamp, seven-day
+The historical configured evidence record, capture timestamp, seven-day
 expiry, effective identity, and unchanged owner-cone reuse rule are maintained
 authoritatively in
-[[file:limitations.org::*Current configured Addendum 7 evidence][limitations.org]].
+[[file:limitations.org::*Historical configured Addendum 7 v5 evidence][limitations.org]].
 That record is for eng-ai-gateway-gpt Responses HTTP with =context-curate-v5=
-and does not establish exact built-in ChatGPT/WebSocket capability.  Exact
-built-in ChatGPT/WebSocket remains =capability-unconfirmed=.
+and does not establish current v6/presentation-v3 adoption or exact built-in
+ChatGPT/WebSocket capability.  Both remain =capability-unconfirmed=.
 
 * Architecture and design disposition
 
@@ -253,8 +259,89 @@ projection are operational under deterministic evidence.  Product choices are
 settled.  No new abstraction, compatibility layer, generic narration, or
 persistence family was introduced.
 
+* 2026-09-03 model-visible erasure eligibility correction
+
+** Finding
+
+The deterministic post-cutover chat E2E passed while a real first =Hi= turn
+failed with =curation-erasure :non-tool-source 1=.  The E2E scripted
+=keep:[1]= and proved downstream composition, while the strict owner test
+separately proved that =erase:[1]= is invalid.  No test asserted that the model
+could see which side of that distinction label =1= occupied.
+
+** Change
+
+Core now derives and presents =erase-eligible= or =erase-ineligible= without
+exposing provenance.  The OpenAI carrier explicitly permits =erase= only for
+eligible labels.  The material identities advance to =context-curate-v6= and
+=context-curation-presentation-v3=.  Strict invalid-response handling remains
+unchanged; no persistence or recovery protocol was added.
+
+** Evidence
+
+- The pre-change post-cutover E2E passed 1/1, reproducing the false-negative
+  test topology.
+- Mixed-source core and harness tests assert both eligibility classes while
+  retaining strict non-tool rejection.
+- The post-cutover first-chat E2E asserts the literal ineligible marker and
+  prohibition in the same request whose continuation reaches the assistant,
+  Board, and reopened SQLite session.
+- Focused core, harness, adapter, provider-continuation, and post-cutover tests
+  pass 54/54 with zero skips.
+- The complete repository suite passes 2,704/2,704 with zero failures and zero
+  skips.  A fresh per-invocation Eldev runtime root prevents legacy or SQLite
+  state from prior test runs from contaminating startup coverage.
+- The four localhost MCP fixture tests that fail with sandbox =EPERM= pass 4/4
+  when their private loopback bind is permitted; the two OpenAI transport
+  regressions pass 2/2 in the same environment.
+- Forced byte compilation of =e-context-lifetime.el= and
+  =e-openai-responses.el= passes.  The repository-wide =eldev compile= proceeds
+  through production modules, then fails because
+  =tools/migrate-session-checkpoints.el= executes its command-line argument
+  check while being compiled.  That pre-existing build-fileset defect is not a
+  failed or skipped test and is outside this behavior correction.
+- All nine changed Org files parse, and =git diff --check= passes.
+
+** Architecture disposition
+
+Lifetime core remains the sole semantic owner of eligibility.  Presentation
+exports only a boolean and marker text; the adapter owns only carrier wording.
+No tool-call identity crosses the model-facing boundary, dependencies do not
+reverse, and the change adds no durable state.
+
+** Required design self-check
+
+1. Stopping here leaves ordinary first-turn chat safer and its E2E contract
+   materially stronger than before.
+2. The change moves toward explicit, model-visible context-lifetime semantics
+   while retaining strict core validation.
+3. Erasure eligibility is stable domain policy; provider adoption remains an
+   explicit external unknown rather than a speculative abstraction.
+4. Lifetime core owns eligibility because it already owns the trusted source
+   descriptor and validation rule.
+5. Coupling decreases: consumers receive one boolean and marker, not source
+   provenance or core internals.
+6. Dependency direction remains core semantics to adapter rendering; core does
+   not depend on OpenAI or presentation code.
+7. Carrier wording remains at the adapter side-effect boundary.
+8. No durable or process-local production state is added; only the request
+   projection changes.
+9. The added derivation and formatting are constant work per already bounded
+   source and do not add scans, I/O, callbacks, or timers.
+10. The boolean describes the exact substitutable contract enforced by core;
+    it is not an unsupported optional capability.
+11. Material request identities advance; obsolete evidence is retained only as
+    explicitly historical compatibility evidence.
+12. No legacy production path is needed or added.  Test-home contamination is
+    removed by fresh test ownership rather than compatibility behavior.
+13. Expected invalid dispositions still fail at strict preflight; unexpected
+    errors still surface at the turn boundary.
+14. Owner tests prove derivation and rejection; the E2E proves the literal
+    request contract together with assistant, Board, and SQLite reopen behavior.
+
 * Unresolved
 
-- Exact built-in ChatGPT/WebSocket remains =capability-unconfirmed=.
+- Current =context-curate-v6=/presentation-v3 configured-model adoption and
+  exact built-in ChatGPT/WebSocket remain =capability-unconfirmed=.
 
 The feature remains =In-review=.  The running Emacs was left unchanged.

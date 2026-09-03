@@ -106,7 +106,7 @@
                                first-messages)
                        '(user system system)))
         (should (equal (plist-get (nth 1 first-messages) :content)
-                       "[ephemeral context source 1, ~5 tokens]"))
+                       "[ephemeral context source 1, ~5 tokens, erase-ineligible]"))
         (should (equal (plist-get (nth 2 first-messages) :content)
                        "CANVAS-OBSERVATION"))
         (should (= (cl-count "CANVAS-OBSERVATION"
@@ -223,21 +223,21 @@
                        (list "STATIC-POLICY"
                              "STABLE-GUIDANCE"
                              "durable prompt"
-                             "[ephemeral context source 1, ~5 tokens]"
+                             "[ephemeral context source 1, ~5 tokens, erase-ineligible]"
                              source-one
-                             "[ephemeral context source 2, ~14 tokens]"
+                             "[ephemeral context source 2, ~14 tokens, erase-ineligible]"
                              source-two)))
         (should (equal (mapcar (lambda (message)
                                  (plist-get message :role))
                                messages)
                        '(system system user system system system system)))
         (should (< (cl-position "durable prompt" contents :test #'equal)
-                   (cl-position "[ephemeral context source 1, ~5 tokens]" contents :test #'equal)))
-        (should (< (cl-position "[ephemeral context source 1, ~5 tokens]" contents :test #'equal)
+                   (cl-position "[ephemeral context source 1, ~5 tokens, erase-ineligible]" contents :test #'equal)))
+        (should (< (cl-position "[ephemeral context source 1, ~5 tokens, erase-ineligible]" contents :test #'equal)
                    first-source-index))
         (should (< first-source-index
-                   (cl-position "[ephemeral context source 2, ~14 tokens]" contents :test #'equal)))
-        (should (< (cl-position "[ephemeral context source 2, ~14 tokens]" contents :test #'equal)
+                   (cl-position "[ephemeral context source 2, ~14 tokens, erase-ineligible]" contents :test #'equal)))
+        (should (< (cl-position "[ephemeral context source 2, ~14 tokens, erase-ineligible]" contents :test #'equal)
                    second-source-index))
         (should (= (cl-count source-one contents :test #'equal) 1))
         (should (= (cl-count source-two contents :test #'equal) 1))
@@ -307,7 +307,7 @@
                                 (plist-get message :content))
                               projected)))
         (should (equal (car contents) "STABLE"))
-        (should (string-match-p "\\[ephemeral context source 3, ~[0-9]+ tokens\\]"
+        (should (string-match-p "\\[ephemeral context source 3, ~[0-9]+ tokens, erase-eligible\\]"
                                 (cadr contents)))
         (should (equal
                  (plist-get (plist-get (caddr projected) :content) :content)
@@ -498,7 +498,7 @@
                                           :role)
                                'system))
                 (should (string-match-p
-                         "\\[ephemeral context source 2, ~[0-9]+ tokens\\]"
+                         "\\[ephemeral context source 2, ~[0-9]+ tokens, erase-eligible\\]"
                          (plist-get (nth (1- tool-position) messages-b)
                                     :content))))
               (should (equal curation-arguments

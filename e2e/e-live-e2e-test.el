@@ -781,7 +781,7 @@ call must have exactly one matching empty output in causal order."
          (< call-index output-index))))
 
 (defconst e-live-e2e--context-curation-description
-  "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."
+  "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."
   "Expected lifecycle affordance in the reserved curation carrier.")
 
 (defun e-live-e2e--context-curation-carrier-p (body)
@@ -863,7 +863,7 @@ selection into a product-contract observation."
                    (lambda (block)
                      (and (stringp (plist-get block :text))
                           (string-match-p
-                           "^\\[ephemeral context source [0-9]+, ~[0-9]+ tokens\\]$"
+                           "^\\[ephemeral context source [0-9]+, ~[0-9]+ tokens, erase-eligible\\]$"
                            (plist-get block :text))))
                    blocks))))
          (curation-replay-p (body)
@@ -1188,7 +1188,7 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
                 :content
                 (vector
                  (list :type "input_text"
-                       :text "[ephemeral context source 1, ~5 tokens]"))))
+                       :text "[ephemeral context source 1, ~5 tokens, erase-eligible]"))))
          (output
           (list :type "function_call_output"
                 :call_id "ordinary-call" :output sentinel))

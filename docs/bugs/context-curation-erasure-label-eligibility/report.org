@@ -14,3 +14,16 @@ Turn failed: Invalid context lifetime record: curation-erasure,
 The failure occurred while using the Feature 88 Addendum 7
 =context-curate= carrier.  The model selected ephemeral source label =2= for
 =erase=, but that label referred to a non-tool source.
+
+On 2026-09-03 the defect recurred on the first message of a newly created,
+post-SQLite-cutover chat.  Sending only =Hi= failed with the same error for
+label =1=.  This is a basic chat-flow failure, not a migration or SQLite
+transaction failure.
+
+* Expected behavior
+
+A model must be able to distinguish erasable ordinary tool results from every
+other ephemeral source before it chooses a =context-curate= disposition.  A
+fresh chat's first ordinary message must complete through the real adapter,
+session, Board, and chat composition without relying on a scripted model choice
+that hides an ambiguous carrier contract.

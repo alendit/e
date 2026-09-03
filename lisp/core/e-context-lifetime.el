@@ -70,12 +70,14 @@ version-3 curation codec and its complete-record bound.")
 (defconst e-context-lifetime-curation-record-version 3
   "Version of durable prepared context-curation records.")
 
-(defconst e-context-lifetime-curation-schema-revision "context-curate-v5"
+(defconst e-context-lifetime-curation-schema-revision "context-curate-v6"
   "Stable revision of the model-facing context-curate shape and guidance.")
 
 (defconst e-context-lifetime-curation-presentation-revision
-  "context-curation-presentation-v2"
-  "Stable revision of frame-local curation labels, lifetime, and size markers.")
+  "context-curation-presentation-v3"
+  "Stable revision of frame-local curation presentation.
+
+This covers labels, lifetime, size estimates, and erasure eligibility.")
 
 (defconst e-context-lifetime-curation-max-sources 16
   "Maximum distinct frame-local sources disposed by one curation.
@@ -792,14 +794,19 @@ BYTES-PER-TOKEN supplies the estimate ratio."
                (tool-call-id
                 (and (equal kind "tool-result")
                      (e-context-lifetime--curation-tool-call-id
-                      (car items)))))
+                      (car items))))
+               (erase-eligible (and tool-call-id t)))
           (push
            (append
             (list :label source-label
                   :value value
                   :estimated-tokens estimated-tokens
-                  :marker (format "[ephemeral context source %d, ~%d tokens]"
-                                  source-label estimated-tokens)
+                  :erase-eligible erase-eligible
+                  :marker
+                  (format
+                   "[ephemeral context source %d, ~%d tokens, %s]"
+                   source-label estimated-tokens
+                   (if erase-eligible "erase-eligible" "erase-ineligible"))
                   :kind kind
                   :source-observation-id
                   (e-context-lifetime--detached-copy observation-id)
@@ -826,13 +833,14 @@ without internal identities."
 (defun e-context-lifetime-curation-source-presentation (source)
   "Return SOURCE's detached model-facing presentation subset.
 
-Only the local label, exact semantic value, and informational size marker are
-returned.  Frame and provenance identities remain in the trusted descriptor,
-never in this presentation shape."
+Only the local label, exact semantic value, erasure eligibility, and
+informational marker are returned.  Frame and provenance identities remain in
+the trusted descriptor, never in this presentation shape."
   (unless (and (e-context-lifetime--keyword-plist-p source)
                (plist-member source :label)
                (plist-member source :value)
                (plist-member source :estimated-tokens)
+               (plist-member source :erase-eligible)
                (plist-member source :marker))
     (signal 'e-context-lifetime-invalid-record
             (list 'curation-source :presentation source)))
@@ -840,6 +848,7 @@ never in this presentation shape."
         :value (e-context-lifetime--detached-copy
                 (plist-get source :value))
         :estimated-tokens (plist-get source :estimated-tokens)
+        :erase-eligible (and (plist-get source :erase-eligible) t)
         :marker (copy-sequence (plist-get source :marker))))
 
 (defun e-context-lifetime-frame-curation-presentation

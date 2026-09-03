@@ -271,6 +271,7 @@
             (should-not (e-post-cutover-e2e--loaded-p store untouched-id))
             (let* ((first (nth 0 requests))
                    (ack (nth 1 requests))
+                   (first-wire (prin1-to-string first))
                    (curation-tools
                     (seq-filter #'e-post-cutover-chat-e2e--curation-tool-p
                                 (append (plist-get first :tools) nil)))
@@ -281,6 +282,18 @@
                     (e-post-cutover-chat-e2e--items
                      ack "function_call_output" curation-call-id)))
               (should (= (length curation-tools) 1))
+              ;; This ordinary first-turn source cannot be erased.  The
+              ;; request must expose that fact to the model; otherwise a
+              ;; cooperative scripted keep response masks the production
+              ;; ambiguity that caused basic chats to fail.
+              (should
+               (string-match-p
+                "\\[ephemeral context source 1, ~[0-9]+ tokens, erase-ineligible\\]"
+                first-wire))
+              (should
+               (string-match-p
+                "never erase a label marked erase-ineligible"
+                first-wire))
               (should (= (length calls) (if (eq mode 'stateless) 1 0)))
               (should (= (length outputs) 1))
               (if (eq mode 'anchored)

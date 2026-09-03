@@ -243,10 +243,10 @@ It requires a configured Responses profile, uses only the ordinary
 curation carrier, durable replacement, and next-turn raw-source exclusion.
 Its bounded evidence record reports independent =adoption-result=,
 =composition-result=, and =failure-stage= fields without prompt or response
-content.  This selector is intentionally not run by repository-side tests;
-the configured Responses HTTP record is current and confirms exact adoption for
-that profile.  Exact built-in ChatGPT/WebSocket adoption remains a separate,
-unconfirmed scope.
+content.  This selector is intentionally not run by repository-side tests.  Its
+v5/presentation-v2 Responses HTTP record is historical after the explicit
+eligibility correction; current v6/presentation-v3 adoption and exact built-in
+ChatGPT/WebSocket adoption remain unconfirmed scopes.
 
 The Addendum 7 negative-adoption selector uses a fresh session and the same
 configured Responses profile:
@@ -260,7 +260,7 @@ eldev -s test -f e2e/e-live-e2e-test.el \
 
 It requires the ordinary deterministic tool to be useful only for the current
 answer, then checks the exact transformed answer and one explicit erase
-disposition selected through the optional =context-curate-v5= carrier.  The
+disposition selected through the optional =context-curate-v6= carrier.  The
 composition gates prove durable erasure, receipt/aggregate suppression, and
 preserved activity and temporary details across reopen.  Its bounded record
 reports =adoption-disposition erase=,
@@ -287,7 +287,7 @@ Gateway / GPT (Responses) profile over native HTTP, with =:json-false= store
 mode and model =gpt-5.6-sol=.  Its Addendum 6 results are historical after the
 carrier revision.  A current Addendum 7 rerun must pass the reasoning probe,
 positive adoption, explicit erase adoption, warm-prefix cache, and tool-heavy
-cache scenarios under =context-curate-v5=.  Identity-complete records contain
+cache scenarios under =context-curate-v6=.  Identity-complete records contain
 only bounded request identity, revisions, classifications, counts, and timing;
 HTTP evidence does not confirm the exact built-in ChatGPT/WebSocket selectors.
 

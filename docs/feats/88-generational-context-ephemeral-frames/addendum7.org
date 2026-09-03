@@ -23,22 +23,25 @@ not separate A7.1/A7.2 deliveries.  Acceptance requires the real model carrier,
 atomic durable application, receipt integration, and credential-free
 model-to-context coverage together.
 
-The repository-controlled implementation fixed point is
+The earlier repository-controlled implementation fixed point was
 =9d5d1b0799fe8bdc1a12c5780498e1847f4967f9=, with 2,456 tests accounted for:
 2,454 expected passes, zero unexpected results, and two expected graphical
 skips.  Changed-owner warnings-as-errors compilation, Org parsing, and
 whitespace validation passed.  Accepted configured Responses HTTP evidence
 was captured by the live runner at
-=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=; exact built-in
+=bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=.  That =v5=/presentation-v2
+record became historical when the model-facing eligibility defect was fixed
+with =context-curate-v6=/presentation-v3 on 2026-09-03; exact built-in
 ChatGPT/WebSocket behavior remains capability-unconfirmed, so the Feature
 remains In-review rather than Done.
 
-The accepted configured Responses HTTP evidence record, including its complete
+The historical configured Responses HTTP evidence record, including its complete
 identity, bounded metrics, capture timestamp, seven-day expiry, and dependency
 owner-cone reuse rule, is maintained authoritatively in
-[[file:limitations.org::*Current configured Addendum 7 evidence][limitations.org]].
-The record is at =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=; exact built-in
-ChatGPT/WebSocket behavior remains =capability-unconfirmed=.
+[[file:limitations.org::*Historical configured Addendum 7 v5 evidence][limitations.org]].
+The record is at =bbda59aa905ab48c9af9f5fdfb52dd0f125bc461=; current =v6=
+configured-model adoption and exact built-in ChatGPT/WebSocket behavior remain
+=capability-unconfirmed=.
 
 * Decision
 
@@ -68,6 +71,12 @@ source but permits a projection owned elsewhere.  =erase= is valid only for an
 ordinary tool-result source and removes every automatic future model-context
 projection whose evidence is that source.
 
+Every model-facing source marker says either =erase-eligible= or
+=erase-ineligible=.  Eligibility is derived by core from trusted source kind
+and tool-call identity; those internal identities are not exposed.  The
+carrier tells the model to use =erase= only for labels explicitly marked
+=erase-eligible=.
+
 Erasure changes model context, not storage.  Transcript entries, tool activity,
 provider audit/replay state, shell history, and session-scoped invocation
 details remain inspectable.  Explicitly reading one of those stores later
@@ -77,13 +86,14 @@ Generic narration is not strengthened.  Only the reserved carrier has concise
 schema-directed guidance.  Responses requests continue to request
 =reasoning.summary: "auto"=; ="detailed"= remains a diagnostic override.
 
-The material carrier identity is =context-curate-v5=.
+The material carrier identity is =context-curate-v6= and the source
+presentation identity is =context-curation-presentation-v3=.
 
 * Required observable behaviors
 
 | ID | Required behavior | Owning boundary | Acceptance evidence |
 |----+-------------------+-----------------+---------------------|
-| =F88A7-CARRIER= | The model sees exactly optional =keep=/=summaries=/=erase= and concise omission-versus-erasure guidance. | Core revision identity and backend adapter serialization. | Strict core normalization plus literal HTTP/WebSocket request-shape tests. |
+| =F88A7-CARRIER= | The model sees exactly optional =keep=/=summaries=/=erase=, concise omission-versus-erasure guidance, and explicit per-source erasure eligibility. | Core revision/presentation identity and backend adapter serialization. | Mixed-source presentation plus literal HTTP/WebSocket and post-cutover first-chat request-shape tests. |
 | =F88A7-OMISSION= | Omitted exact tool output disappears from later ordinary context while its bounded Feature 90 receipt may remain.  Omission is not evidence that the model considered retention. | Feature 88 exact-source lifetime; Feature 90 receipt projection. | Credential-free real-adapter turn showing raw exclusion, receipt preservation, and live details. |
 | =F88A7-ERASURE= | Explicitly erased tool output leaves no automatic tool call, result, receipt, purpose, URI, latest marker, count, or omitted aggregate derived solely from it. | Feature 88 erasure authority consumed by each derived-context provider. | Credential-free real-adapter turn plus receipt-provider owner tests. |
 | =F88A7-PRESERVATION= | Erasure leaves transcript, activity, audit, and temporary details unchanged; an explicit reread is a new ephemeral observation. | Existing transcript/activity/tmp owners and Feature 88 observation framing. | Durable activity and tmp availability assertions; explicit-read framing coverage. |
@@ -171,7 +181,7 @@ The new erasure record and package entry are additive persistent formats.
 The model-facing Addendum 6 carrier is intentionally incompatible: calls with
 =drop= are rejected and omitted =keep=/=summaries=/=erase= keys are valid.
 Schema fingerprints and provider anchors must therefore change with
-=context-curate-v5=.  Addendum 6 external adoption/cache results remain useful
+=context-curate-v6=.  Addendum 6 external adoption/cache results remain useful
 history but cannot establish compatibility for this carrier.  Responses HTTP
 and built-in ChatGPT/WebSocket evidence remain separately classified.
 
@@ -184,7 +194,8 @@ committed session formats.
 The package stops only when all of the following work together:
 
 1. The actual backend carrier presents optional =keep=/=summaries=/=erase=,
-   uses =context-curate-v5= identity, and Requests reasoning summaries.
+   uses =context-curate-v6= and =context-curation-presentation-v3= identities,
+   exposes erasure eligibility, and requests Responses reasoning summaries.
 2. Core validates labels, exclusivity, ordinary-tool erase eligibility, the
    16-label limit, and the complete 8,192-byte package before mutation.
 3. Session atomically persists optional promotion plus erasure, replays it on

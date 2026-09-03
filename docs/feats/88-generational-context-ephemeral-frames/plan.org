@@ -32,14 +32,15 @@ exhaustive partition.  Omission drops exact content while preserving a
 separately owned Feature 90 receipt.  Explicit erasure suppresses that receipt
 and every aggregate derived solely from it while preserving transcript,
 activity, audit, and temporary details.  Responses reasoning summaries remain
-=auto= by default and the material identity is =context-curate-v5=.
+=auto= by default and the material identity is =context-curate-v6=.  Each
+source marker explicitly states whether that label is eligible for =erase=.
 
 Addendum 8 plans a frame-scoped invocation rule without changing Addendum 7's
 curation disposition semantics.  One active frame may be curated once; later
 tool work may create a new frame that can be curated again in the same turn.
 A duplicate against a closed opportunity is ignored with one bounded
 corrective continuation instead of being reported as an invalid context
-lifetime record.  This remains unimplemented; =context-curate-v5= is current.
+lifetime record.  This remains unimplemented; =context-curate-v6= is current.
 
 The behaviorally coherent implementation now spans core preparation, atomic
 session persistence, harness commit, the actual carrier, Feature 90 receipt

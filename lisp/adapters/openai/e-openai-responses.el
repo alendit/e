@@ -551,7 +551,7 @@ value selects full stateless replay."
    :type "function"
    :name "context-curate"
    :description
-   "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."
+   "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."
    :parameters
    (list
     :type "object"

@@ -50,7 +50,7 @@
     (should
      (equal
       (plist-get (aref enabled-tools 0) :description)
-      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
+      "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
     (let* ((parameters (plist-get (aref enabled-tools 0) :parameters))
            (properties (plist-get parameters :properties))
            (summary-schema (plist-get properties :summaries))
@@ -186,7 +186,7 @@
               (should
                (equal
                 (plist-get tool :description)
-                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention, summaries for compact durable replacements, and erase for ordinary tool results whose source-derived context must not remain. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
+                "After using presented ephemeral context sources, call this once to decide what remains available in later turns. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; separately owned derived context such as receipts may remain."))
               (should-not (plist-member parameters :required))
               (should (eq (plist-get parameters :additionalProperties)
                           :json-false))

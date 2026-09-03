@@ -442,8 +442,12 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should (equal (plist-get (nth 3 sources) :tool-call-id)
                    "call-2"))
     (should (equal (plist-get (nth 0 sources) :marker)
-                   (format "[ephemeral context source 1, ~%d tokens]"
+                   (format "[ephemeral context source 1, ~%d tokens, erase-ineligible]"
                            (plist-get (nth 0 sources) :estimated-tokens))))
+    (should (equal (mapcar (lambda (source)
+                            (plist-get source :erase-eligible))
+                          sources)
+                   '(nil nil t t)))
     (should-not (string-match-p
                  "call-1\|message-1\|metadata"
                  (prin1-to-string (plist-get (nth 2 sources) :value))))
@@ -451,10 +455,17 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should (equal (mapcar (lambda (source) (plist-get source :marker))
                            presentation)
                    (mapcar (lambda (source)
-                             (format "[ephemeral context source %d, ~%d tokens]"
+                             (format "[ephemeral context source %d, ~%d tokens, %s]"
                                      (plist-get source :label)
-                                     (plist-get source :estimated-tokens)))
+                                     (plist-get source :estimated-tokens)
+                                     (if (plist-get source :erase-eligible)
+                                         "erase-eligible"
+                                       "erase-ineligible")))
                            sources)))
+    (should (equal (mapcar (lambda (source)
+                            (plist-get source :erase-eligible))
+                          presentation)
+                   '(nil nil t t)))
     (dolist (source presentation)
       (should-not (plist-member source :source-observation-id))
       (should-not (plist-member source :source-entry-ref))
@@ -1073,9 +1084,9 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should (equal first same))
     (should-not (equal first different))
     (should (equal (plist-get first :schema-revision)
-                   "context-curate-v5"))
+                   "context-curate-v6"))
     (should (equal (plist-get first :presentation-revision)
-                   "context-curation-presentation-v2"))
+                   "context-curation-presentation-v3"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))
     (should (= (plist-get first :max-sources) 16))
     (should (= (plist-get first :max-record-bytes) 8192))))

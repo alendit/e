@@ -9,6 +9,19 @@
 ;; otherwise treat them as Lisp sources.
 (setenv "COPYFILE_DISABLE" "1")
 
+;; A repository test must never inherit durable runtime state from an earlier
+;; Eldev invocation.  In particular, a pre-SQLite `e/sessions/' cache is valid
+;; legacy input for production but must not make unrelated startup tests depend
+;; on which branch or test command previously used Eldev's persistent home.
+(defvar e-eldev-test-runtime-directory
+  (make-temp-file "e-eldev-runtime-" t)
+  "Fresh SQLite runtime root owned by this Eldev process.")
+(setenv "E_RUNTIME_STATE_DIRECTORY" e-eldev-test-runtime-directory)
+(add-hook 'kill-emacs-hook
+          (lambda ()
+            (when (file-directory-p e-eldev-test-runtime-directory)
+              (delete-directory e-eldev-test-runtime-directory t))))
+
 (let ((root (file-name-directory (or load-file-name default-directory))))
   (dolist (subdirectory
            (reverse
