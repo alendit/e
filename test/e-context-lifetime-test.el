@@ -74,9 +74,11 @@ the record-focused assertions concise without restoring the retired wrapper."
           (cl-loop for index from 1 to count
                    collect
                    (list :tool-call
-                         (list :id (format "tool-call-%d" index))
+                         (list :id (format "tool-call-%d" index)
+                               :name (if (<= index 3) "inspect" "bash"))
                          :tool-result
                          (list :tool-call-id (format "tool-call-%d" index)
+                               :name (if (<= index 3) "inspect" "bash")
                                :content (format "tool-source-%d" index))))))))
 
 (ert-deftest e-context-lifetime-test-shadow-projection-forgets-consumed-frame ()
@@ -801,8 +803,8 @@ the record-focused assertions concise without restoring the retired wrapper."
         "response-retain-17")
        :type 'e-context-lifetime-invalid-record))))
 
-(ert-deftest e-context-lifetime-test-curation-activity-is-package-scoped-counts ()
-  "Activity projection exposes counts only for a non-empty semantic package."
+(ert-deftest e-context-lifetime-test-curation-activity-is-package-scoped ()
+  "Activity exposes bounded source stubs for a non-empty semantic package."
   (let* ((frame (e-context-lifetime-test--multi-tool-source-frame 5))
          (prepared
           (e-context-lifetime-prepare-curation-disposition
@@ -817,11 +819,27 @@ the record-focused assertions concise without restoring the retired wrapper."
                    '(:kept-source-count 1
                      :summary-count 1
                      :summarized-source-count 2
-                     :erased-source-count 1)))
+                     :erased-source-count 1
+                     :source-stubs
+                     ((:disposition kept :source-kind "tool-result"
+                       :tool-name "inspect")
+                      (:disposition summarized :source-kind "tool-result"
+                       :tool-name "inspect")
+                      (:disposition summarized :source-kind "tool-result"
+                       :tool-name "inspect")
+                      (:disposition erased :source-kind "tool-result"
+                       :tool-name "bash")))))
     (should-not
      (string-match-p
       "tool-source-\\|observation-\\|entry-\\|fingerprint-\\|response-activity\\|two sources"
       (prin1-to-string projection)))
+    (should
+     (equal
+      (e-context-lifetime-validate-curation-activity-projection
+       '(:kept-source-count 1 :summary-count 0
+         :summarized-source-count 0 :erased-source-count 0))
+      '(:kept-source-count 1 :summary-count 0
+        :summarized-source-count 0 :erased-source-count 0)))
     (should-not
      (e-context-lifetime-curation-activity-projection
       (e-context-lifetime-prepare-curation-disposition
@@ -838,10 +856,28 @@ the record-focused assertions concise without restoring the retired wrapper."
                 :summarized-source-count 0 :erased-source-count 1)
                (:kept-source-count 1 :summary-count 0
                 :summarized-source-count 0 :erased-source-count 0
-                :source-labels (1))))
+                :source-labels (1))
+               (:kept-source-count 1 :summary-count 0
+                :summarized-source-count 0 :erased-source-count 0
+                :source-stubs
+                ((:disposition summarized :source-kind "tool-result"
+                  :tool-name "inspect")))
+               (:kept-source-count 1 :summary-count 0
+                :summarized-source-count 0 :erased-source-count 0
+                :source-stubs nil)))
       (should-error
        (e-context-lifetime-validate-curation-activity-projection bad)
-       :type 'e-context-lifetime-invalid-record))))
+       :type 'e-context-lifetime-invalid-record))
+    (should-error
+     (e-context-lifetime-validate-curation-activity-projection
+      (list :kept-source-count 17
+            :summary-count 0
+            :summarized-source-count 0
+            :erased-source-count 0
+            :source-stubs
+            (make-list 17
+                       '(:disposition kept :source-kind "current-state"))))
+     :type 'e-context-lifetime-invalid-record)))
 
 (ert-deftest e-context-lifetime-test-curation-disposition-bounds-live-frame ()
   "Disposition preparation rejects consumed frames and one-over records."
@@ -925,7 +961,44 @@ the record-focused assertions concise without restoring the retired wrapper."
      (plist-member
       (e-context-lifetime-curation-source-presentation
        (car (e-context-lifetime-frame-curation-sources frame)))
-      :tool-call-id))))
+      :tool-call-id))
+    (should-not
+     (plist-member
+      (e-context-lifetime-curation-source-presentation
+       (car (e-context-lifetime-frame-curation-sources frame)))
+      :tool-name))))
+
+(ert-deftest e-context-lifetime-test-curation-omits-invalid-tool-name-metadata ()
+  "Unsuitable tool names do not change semantic curation success."
+  (dolist (names '((nil "inspect")
+                   ("inspect\nspoof" "inspect\nspoof")
+                   ("inspect" "bash")))
+    (let ((frame
+           (e-context-lifetime-frame-create-from-segments
+            :id "invalid-tool-name-frame"
+            :generation-id "generation-1"
+            :consumer-request-id "consumer-1"
+            :segments
+            (list
+             (list :kind "tool-result"
+                   :id "tool-source"
+                   :messages
+                   (list
+                    (list :tool-call
+                          (list :id "call-1" :name (car names))
+                          :tool-result
+                          (list :tool-call-id "call-1"
+                                :name (cadr names)
+                                :content "safe output"))))))))
+      (let* ((prepared
+              (e-context-lifetime-prepare-curation-disposition
+               frame '(:keep (1)) "response-invalid-tool-name"))
+             (stub
+              (car (plist-get
+                    (e-context-lifetime-curation-activity-projection prepared)
+                    :source-stubs))))
+        (should (equal stub
+                       '(:disposition kept :source-kind "tool-result")))))))
 
 (ert-deftest e-context-lifetime-test-curation-erasure-fanout-and-byte-bound ()
   "Erasure shares the disposed-label and prepared-package bounds."

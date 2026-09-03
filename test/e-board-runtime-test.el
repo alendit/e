@@ -2074,8 +2074,8 @@
           (should (equal (e-board-message-source-activity-key activity)
                          '("participant" 1 34))))))))
 
-(ert-deftest e-board-runtime-test-context-curation-publishes-counts-only-once ()
-  "Committed curation becomes one deduplicated count-only Board activity."
+(ert-deftest e-board-runtime-test-context-curation-publishes-safe-stubs-once ()
+  "Committed curation becomes one deduplicated content-free Board activity."
   (e-board-runtime-test--with-empty-state
     (let* ((board (e-board-registry-create :id "board"))
            (harness (e-harness-create)))
@@ -2095,7 +2095,15 @@
                  (:kept-source-count 1
                   :summary-count 1
                   :summarized-source-count 2
-                  :erased-source-count 1)
+                  :erased-source-count 1
+                  :source-stubs
+                  ((:disposition kept :source-kind "tool-result"
+                    :tool-name "inspect")
+                   (:disposition summarized :source-kind "current-state")
+                   (:disposition summarized :source-kind "tool-result"
+                    :tool-name "read")
+                   (:disposition erased :source-kind "tool-result"
+                    :tool-name "bash")))
                  :private-body "never publish")
                :activity-entry-id "private-event"
                :board-activity-sequence 23)))
@@ -2112,7 +2120,15 @@
             '(:kept-source-count 1
               :summary-count 1
               :summarized-source-count 2
-              :erased-source-count 1)))
+              :erased-source-count 1
+              :source-stubs
+              ((:disposition kept :source-kind "tool-result"
+                :tool-name "inspect")
+               (:disposition summarized :source-kind "current-state")
+               (:disposition summarized :source-kind "tool-result"
+                :tool-name "read")
+               (:disposition erased :source-kind "tool-result"
+                :tool-name "bash")))))
           (should-not
            (string-match-p
             "private-frame\\|private-response\\|private-event\\|never publish"
@@ -2139,6 +2155,16 @@
               :summarized-source-count 0
               :erased-source-count 0
               :source-labels (1)))))
+         :type 'e-board-runtime-invalid-activity)
+        (should-error
+         (e-board-runtime--curation-activity-attributes
+          '(:kept-source-count 1
+            :summary-count 0
+            :summarized-source-count 0
+            :erased-source-count 0
+            :source-stubs
+            ((:disposition kept :source-kind "tool-result"
+              :tool-name "inspect\nspoof"))))
          :type 'e-board-runtime-invalid-activity)))))
 
 (ert-deftest e-board-runtime-test-retrying-activity-retains-bounded-error ()

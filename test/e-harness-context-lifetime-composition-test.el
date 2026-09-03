@@ -573,7 +573,10 @@
                 '(:kept-source-count 0
                   :summary-count 1
                   :summarized-source-count 1
-                  :erased-source-count 0)))
+                  :erased-source-count 0
+                  :source-stubs
+                  ((:disposition summarized :source-kind "tool-result"
+                    :tool-name "inspect-result")))))
               (should consumed-binding)
               (should (equal control-id
                              (e-context-lifetime-frame-consuming-response-entry-id

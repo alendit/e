@@ -1810,7 +1810,10 @@ backend-error-message helper must return only the bare reason."
                     '(:kept-source-count 0
                       :summary-count 0
                       :summarized-source-count 0
-                      :erased-source-count 1)))
+                      :erased-source-count 1
+                      :source-stubs
+                      ((:disposition erased :source-kind "tool-result"
+                        :tool-name "inspect")))))
             (should-not (e-session-context-curations store "erase-only"))
             (let* ((reopened-erasures
                     (e-session-context-erasures reopened "erase-only"))

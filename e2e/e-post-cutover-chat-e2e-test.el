@@ -495,7 +495,9 @@ safe public count projection for a non-empty package."
    '(:kept-source-count 0
      :summary-count 1
      :summarized-source-count 1
-     :erased-source-count 0)))
+     :erased-source-count 0
+     :source-stubs
+     ((:disposition summarized :source-kind "current-state")))))
 
 (provide 'e-post-cutover-chat-e2e-test)
 

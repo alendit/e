@@ -646,6 +646,57 @@ presentation."
                           identity value)))
           (setq identity value))))))
 
+(defun e-context-lifetime--curation-tool-name (item)
+  "Return a safe agreed tool name carried by tool-result source ITEM.
+
+The nested call and result envelopes may both repeat the name.  Any present
+values must be safe strings and agree.  Missing or unsuitable presentation
+metadata returns nil instead of changing semantic curation success.  Tool-call
+identities remain private."
+  (let* ((item-plist (and (e-context-lifetime--keyword-plist-p item) item))
+         (nested-call (and item-plist (plist-get item-plist :tool-call)))
+         (nested-call-plist
+          (and (e-context-lifetime--keyword-plist-p nested-call) nested-call))
+         (result
+          (cond
+           ((and item-plist (plist-member item-plist :tool-result))
+            (plist-get item-plist :tool-result))
+           ((and item-plist (plist-member item-plist :content)
+                 (e-context-lifetime--keyword-plist-p
+                  (plist-get item-plist :content)))
+            (plist-get item-plist :content))
+           (t item)))
+         (result-plist
+          (and (e-context-lifetime--keyword-plist-p result) result))
+         (candidates
+          (list (cons (and nested-call-plist
+                           (plist-member nested-call-plist :name))
+                      (and nested-call-plist
+                           (plist-get nested-call-plist :name)))
+                (cons (and result-plist
+                           (plist-member result-plist :name))
+                      (and result-plist
+                           (plist-get result-plist :name)))
+                (cons (and item-plist
+                           (plist-member item-plist :name))
+                      (and item-plist
+                           (plist-get item-plist :name)))))
+         name
+         valid)
+    (setq valid t)
+    (dolist (candidate candidates name)
+      (when (car candidate)
+        (let ((value (cdr candidate)))
+          (if (not (and (stringp value)
+                        (not (string-empty-p value))
+                        (not (string-match-p "[[:cntrl:]]" value))
+                        (<= (length value) 256)))
+              (setq valid nil)
+            (when (and name (not (equal name value)))
+              (setq valid nil))
+            (setq name (copy-sequence value))))))
+    (and valid name)))
+
 (defun e-context-lifetime--segment-observations (segments delivery)
   "Return one validated observation per semantic source from SEGMENTS and DELIVERY.
 
@@ -795,6 +846,10 @@ BYTES-PER-TOKEN supplies the estimate ratio."
                 (and (equal kind "tool-result")
                      (e-context-lifetime--curation-tool-call-id
                       (car items))))
+               (tool-name
+                (and (equal kind "tool-result")
+                     (e-context-lifetime--curation-tool-name
+                      (car items))))
                (erase-eligible (and tool-call-id t)))
           (push
            (append
@@ -816,7 +871,9 @@ BYTES-PER-TOKEN supplies the estimate ratio."
                   (e-context-lifetime--detached-copy source-fingerprint))
             (when tool-call-id
               (list :tool-call-id
-                    (e-context-lifetime--detached-copy tool-call-id))))
+                    (e-context-lifetime--detached-copy tool-call-id)))
+            (when tool-name
+              (list :tool-name tool-name)))
            result))))))
 
 (defun e-context-lifetime-frame-curation-sources
@@ -971,6 +1028,29 @@ bodies and provenance never enter the normalized value."
             :summaries (nreverse summaries)
             :erase erase))))
 
+(defun e-context-lifetime--curation-activity-source-stubs
+    (sources normalized)
+  "Return bounded content-free source stubs for NORMALIZED over SOURCES."
+  (let ((dispositions (make-hash-table :test #'eql)))
+    (dolist (label (plist-get normalized :keep))
+      (puthash label 'kept dispositions))
+    (dolist (summary (plist-get normalized :summaries))
+      (dolist (label (plist-get summary :sources))
+        (puthash label 'summarized dispositions)))
+    (dolist (label (plist-get normalized :erase))
+      (puthash label 'erased dispositions))
+    (cl-loop for source in sources
+             for disposition = (gethash (plist-get source :label)
+                                        dispositions)
+             when disposition
+             collect
+             (let ((tool-name (plist-get source :tool-name)))
+               (append
+                (list :disposition disposition
+                      :source-kind (copy-sequence (plist-get source :kind)))
+                (when tool-name
+                  (list :tool-name (copy-sequence tool-name))))))))
+
 (defun e-context-lifetime-prepare-curation-disposition
     (frame arguments response-entry-id &optional bytes-per-token)
   "Prepare optional curation ARGUMENTS against live FRAME.
@@ -1009,6 +1089,9 @@ into the normalized disposition or either record."
          (erasure-record
           (e-context-lifetime--curation-erasure-record
            frame normalized response-entry-id sources))
+         (activity-source-stubs
+          (e-context-lifetime--curation-activity-source-stubs
+           sources normalized))
          (record-bytes
           (and record (e-context-lifetime--bytes record))))
     (when (and record-bytes
@@ -1030,6 +1113,7 @@ into the normalized disposition or either record."
             ;; transaction value.  The session owner persists the optional
             ;; components as one context-curation-package record.
             :package package
+            :activity-source-stubs activity-source-stubs
             :erase-only-p (and (plist-get normalized :erase)
                                (null (plist-get normalized :keep))
                                (null (plist-get normalized :summaries)))
@@ -1041,24 +1125,96 @@ into the normalized disposition or either record."
             :erased-source-count
             (length (plist-get normalized :erase))))))
 
-(defconst e-context-lifetime-curation-activity-keys
+(defconst e-context-lifetime-curation-activity-count-keys
   '(:kept-source-count :summary-count :summarized-source-count
     :erased-source-count)
-  "Exact public fields in a context-curation activity projection.")
+  "Required count fields in a context-curation activity projection.")
+
+(defconst e-context-lifetime-curation-activity-source-stub-keys
+  '(:disposition :source-kind :tool-name)
+  "Allowed public fields in a content-free curation source stub.")
+
+(defun e-context-lifetime--validate-curation-activity-source-stub (stub)
+  "Return canonical content-free curation source STUB."
+  (unless (e-context-lifetime--keyword-plist-p stub)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-activity-source-stub :shape stub)))
+  (let ((tail stub)
+        keys)
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every
+                  (lambda (key)
+                    (memq key
+                          e-context-lifetime-curation-activity-source-stub-keys))
+                  keys)
+                 (plist-member stub :disposition)
+                 (plist-member stub :source-kind))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-activity-source-stub :keys (nreverse keys)))))
+  (let ((disposition (plist-get stub :disposition))
+        (source-kind (plist-get stub :source-kind))
+        (tool-name (and (plist-member stub :tool-name)
+                        (plist-get stub :tool-name))))
+    (unless (memq disposition '(kept summarized erased))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-activity-source-stub
+                    :disposition disposition)))
+    (unless (member source-kind e-context-lifetime-observation-kinds)
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-activity-source-stub :source-kind source-kind)))
+    (when (plist-member stub :tool-name)
+      (unless (and (equal source-kind "tool-result")
+                   (stringp tool-name)
+                   (not (string-empty-p tool-name))
+                   (not (string-match-p "[[:cntrl:]]" tool-name))
+                   (<= (length tool-name) 256))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-activity-source-stub :tool-name tool-name))))
+    (append (list :disposition disposition
+                  :source-kind (copy-sequence source-kind))
+            (when tool-name
+              (list :tool-name (copy-sequence tool-name))))))
 
 (defun e-context-lifetime-validate-curation-activity-projection (projection)
-  "Return canonical safe count-only curation activity PROJECTION.
+  "Return canonical safe curation activity PROJECTION.
 
-The projection deliberately excludes source labels, bodies, provenance,
-provider material, response identities, and frame identities.  Invalid
-projections signal `e-context-lifetime-invalid-record'."
-  (e-context-lifetime--validate-exact-plist
-   projection e-context-lifetime-curation-activity-keys
-   'curation-activity-projection)
+The optional source stubs expose only disposition, semantic source kind, and a
+tool name already visible in ordinary tool activity.  Source labels, bodies,
+provenance, provider material, response identities, and frame identities stay
+excluded.  Invalid projections signal `e-context-lifetime-invalid-record'."
+  (unless (e-context-lifetime--keyword-plist-p projection)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'curation-activity-projection :shape projection)))
+  (let ((tail projection)
+        keys)
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every
+                  (lambda (key)
+                    (memq key
+                          (append
+                           e-context-lifetime-curation-activity-count-keys
+                           '(:source-stubs))))
+                  keys)
+                 (cl-every (lambda (key) (plist-member projection key))
+                           e-context-lifetime-curation-activity-count-keys))
+      (signal 'e-context-lifetime-invalid-record
+              (list 'curation-activity-projection :keys (nreverse keys)))))
   (let ((kept (plist-get projection :kept-source-count))
         (summaries (plist-get projection :summary-count))
         (summarized (plist-get projection :summarized-source-count))
-        (erased (plist-get projection :erased-source-count)))
+        (erased (plist-get projection :erased-source-count))
+        (stubs-present-p (plist-member projection :source-stubs))
+        (stubs
+         (and (plist-member projection :source-stubs)
+              (e-context-lifetime--curation-sequence
+               (plist-get projection :source-stubs)
+               'curation-activity-source-stubs))))
     (dolist (value (list kept summaries summarized erased))
       (unless (and (integerp value) (>= value 0))
         (signal 'e-context-lifetime-invalid-record
@@ -1070,10 +1226,37 @@ projections signal `e-context-lifetime-invalid-record'."
       (signal 'e-context-lifetime-invalid-record
               (list 'curation-activity-projection :inconsistent-counts
                     projection)))
-    (list :kept-source-count kept
-          :summary-count summaries
-          :summarized-source-count summarized
-          :erased-source-count erased)))
+    (when stubs-present-p
+      (unless (and stubs
+                   (<= (length stubs)
+                       e-context-lifetime-curation-max-sources))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-activity-projection :source-stubs stubs)))
+      (setq stubs
+            (mapcar
+             #'e-context-lifetime--validate-curation-activity-source-stub
+             stubs))
+      (unless (and (= kept
+                      (seq-count (lambda (stub)
+                                   (eq (plist-get stub :disposition) 'kept))
+                                 stubs))
+                   (= summarized
+                      (seq-count (lambda (stub)
+                                   (eq (plist-get stub :disposition)
+                                       'summarized))
+                                 stubs))
+                   (= erased
+                      (seq-count (lambda (stub)
+                                   (eq (plist-get stub :disposition) 'erased))
+                                 stubs)))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-activity-projection :stub-counts projection))))
+    (append (list :kept-source-count kept
+                  :summary-count summaries
+                  :summarized-source-count summarized
+                  :erased-source-count erased)
+            (when (plist-member projection :source-stubs)
+              (list :source-stubs stubs)))))
 
 (defun e-context-lifetime-curation-activity-projection (prepared)
   "Return the safe activity projection for package-bearing PREPARED curation.
@@ -1091,7 +1274,9 @@ activity projection."
              :summarized-source-count
              (cl-loop for summary in summaries
                       sum (length (plist-get summary :sources)))
-             :erased-source-count (length erase))))))
+             :erased-source-count (length erase)
+             :source-stubs
+             (copy-tree (plist-get prepared :activity-source-stubs)))))))
 
 (defun e-context-lifetime--curation-source-for-label (sources label)
   "Return trusted SOURCE from SOURCES matching positive local LABEL."

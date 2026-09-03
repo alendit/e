@@ -27,6 +27,7 @@
 (require 'e-request)
 (require 'e-session)
 (require 'e-work)
+(require 'seq)
 
 (define-error 'e-board-runtime-attachment-exists
   "e board runtime participant is already attached"
@@ -2214,15 +2215,56 @@ only the generic status fields presentation consumers need."
                append (list key (copy-tree (plist-get payload key))))
     (copy-tree payload)))
 
-(defconst e-board-runtime--curation-activity-keys
+(defconst e-board-runtime--curation-activity-count-keys
   '(:kept-source-count :summary-count :summarized-source-count
     :erased-source-count)
-  "Exact Board-visible fields for one committed curation package.")
+  "Required Board-visible count fields for one committed curation package.")
+
+(defconst e-board-runtime--curation-source-kinds
+  '("current-state" "dynamic-context" "tool-result" "trace"
+    "retrieved-excerpt")
+  "Board-visible semantic source kinds for content-free curation stubs.")
+
+(defun e-board-runtime--curation-source-stub (stub)
+  "Return validated content-free Board curation source STUB."
+  (unless (and (proper-list-p stub) (zerop (% (length stub) 2)))
+    (signal 'e-board-runtime-invalid-activity
+            (list 'context-curated :source-stub-shape stub)))
+  (let ((tail stub)
+        keys)
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every (lambda (key)
+                             (memq key '(:disposition :source-kind :tool-name)))
+                           keys)
+                 (plist-member stub :disposition)
+                 (plist-member stub :source-kind))
+      (signal 'e-board-runtime-invalid-activity
+              (list 'context-curated :source-stub-keys (nreverse keys)))))
+  (let ((disposition (plist-get stub :disposition))
+        (source-kind (plist-get stub :source-kind))
+        (tool-name (and (plist-member stub :tool-name)
+                        (plist-get stub :tool-name))))
+    (unless (and (memq disposition '(kept summarized erased))
+                 (member source-kind e-board-runtime--curation-source-kinds)
+                 (or (not (plist-member stub :tool-name))
+                     (and (equal source-kind "tool-result")
+                          (stringp tool-name)
+                          (not (string-empty-p tool-name))
+                          (not (string-match-p "[[:cntrl:]]" tool-name))
+                          (<= (length tool-name) 256))))
+      (signal 'e-board-runtime-invalid-activity
+              (list 'context-curated :source-stub stub)))
+    (append (list :disposition disposition
+                  :source-kind (copy-sequence source-kind))
+            (when tool-name (list :tool-name (copy-sequence tool-name))))))
 
 (defun e-board-runtime--curation-activity-attributes (projection)
-  "Return validated count-only Board attributes from PROJECTION."
+  "Return validated content-free Board attributes from PROJECTION."
   (unless (and (proper-list-p projection)
-               (= (length projection) 8))
+               (zerop (% (length projection) 2)))
     (signal 'e-board-runtime-invalid-activity
             (list 'context-curated :shape projection)))
   (let ((tail projection)
@@ -2236,16 +2278,22 @@ only the generic status fields presentation consumers need."
         (pop tail)))
     (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
                  (cl-every (lambda (key)
-                             (memq key e-board-runtime--curation-activity-keys))
+                             (memq key
+                                   (append
+                                    e-board-runtime--curation-activity-count-keys
+                                    '(:source-stubs))))
                            keys)
                  (cl-every (lambda (key) (plist-member projection key))
-                           e-board-runtime--curation-activity-keys))
+                           e-board-runtime--curation-activity-count-keys))
       (signal 'e-board-runtime-invalid-activity
               (list 'context-curated :keys (nreverse keys))))
     (let ((kept (plist-get projection :kept-source-count))
           (summaries (plist-get projection :summary-count))
           (summarized (plist-get projection :summarized-source-count))
-          (erased (plist-get projection :erased-source-count)))
+          (erased (plist-get projection :erased-source-count))
+          (stubs-present-p (plist-member projection :source-stubs))
+          (stubs (and (plist-member projection :source-stubs)
+                      (plist-get projection :source-stubs))))
       (unless (and (cl-every (lambda (value)
                                (and (integerp value) (>= value 0)))
                              (list kept summaries summarized erased))
@@ -2254,10 +2302,33 @@ only the generic status fields presentation consumers need."
                    (<= summaries summarized))
         (signal 'e-board-runtime-invalid-activity
                 (list 'context-curated :counts projection)))
-      (list :kept-source-count kept
-            :summary-count summaries
-            :summarized-source-count summarized
-            :erased-source-count erased))))
+      (when stubs-present-p
+        (unless (and (proper-list-p stubs) stubs
+                     (<= (length stubs) 16))
+          (signal 'e-board-runtime-invalid-activity
+                  (list 'context-curated :source-stubs stubs)))
+        (setq stubs (mapcar #'e-board-runtime--curation-source-stub stubs))
+        (unless (and (= kept
+                        (seq-count (lambda (stub)
+                                     (eq (plist-get stub :disposition) 'kept))
+                                   stubs))
+                     (= summarized
+                        (seq-count
+                         (lambda (stub)
+                           (eq (plist-get stub :disposition) 'summarized))
+                         stubs))
+                     (= erased
+                        (seq-count (lambda (stub)
+                                     (eq (plist-get stub :disposition) 'erased))
+                                   stubs)))
+          (signal 'e-board-runtime-invalid-activity
+                  (list 'context-curated :source-stub-counts projection))))
+      (append (list :kept-source-count kept
+                    :summary-count summaries
+                    :summarized-source-count summarized
+                    :erased-source-count erased)
+              (when stubs-present-p
+                (list :source-stubs stubs))))))
 
 (defun e-board-runtime--publish-harness-activity (attachment event)
   "Publish EVENT's bounded lifecycle edge without exposing its raw payload."

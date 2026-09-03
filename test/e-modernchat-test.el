@@ -138,7 +138,7 @@
     (should (equal (plist-get payload :content) "**Inspecting state**"))
     (should (eq (plist-get payload :content-mode) 'snapshot))))
 
-(ert-deftest e-chat-service-test-board-curation-reaches-modernchat-count-only ()
+(ert-deftest e-chat-service-test-board-curation-reaches-modernchat-safe-stubs ()
   "Service transports a Board curation and ModernChat preserves its identity."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
          (session (e-chat-service-create-session
@@ -158,7 +158,15 @@
      :attributes '(:kept-source-count 1
                    :summary-count 1
                    :summarized-source-count 2
-                   :erased-source-count 1)
+                   :erased-source-count 1
+                   :source-stubs
+                   ((:disposition kept :source-kind "tool-result"
+                     :tool-name "inspect")
+                    (:disposition summarized :source-kind "current-state")
+                    (:disposition summarized :source-kind "tool-result"
+                     :tool-name "read")
+                    (:disposition erased :source-kind "tool-result"
+                     :tool-name "bash")))
      :source-activity-key (list participant-id 1 2))
     (e-chat-service-drain-binding binding)
     (let* ((event (car (e-chat-service-activity-events
@@ -172,13 +180,25 @@
               '(:kept-source-count 1
                 :summary-count 1
                 :summarized-source-count 2
-                :erased-source-count 1)))
+                :erased-source-count 1
+                :source-stubs
+                ((:disposition kept :source-kind "tool-result"
+                  :tool-name "inspect")
+                 (:disposition summarized :source-kind "current-state")
+                 (:disposition summarized :source-kind "tool-result"
+                  :tool-name "read")
+                 (:disposition erased :source-kind "tool-result"
+                  :tool-name "bash")))))
       (should (equal (cdr (assq 'id dto)) "board-curation-service-1"))
       (should (equal (cdr (assq 'title dto)) "Context curated"))
       (should (equal (cdr (assq 'status dto)) "ok"))
       (should
        (equal (cdr (assq 'summary dto))
-              "kept 1 · summarized 2 sources into 1 summary · erased 1")))))
+              (concat
+               "kept 1 — tool output · inspect\n"
+               "summarized 2 sources into 1 summary — current state, "
+               "tool output · read\n"
+               "erased 1 — tool output · bash"))))))
 
 (ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
   "Snapshots include recent bounded messages and session metadata."
@@ -301,14 +321,26 @@ messages so the transcript reads as one clean answer."
             :payload (:kept-source-count 1
                       :summary-count 1
                       :summarized-source-count 2
-                      :erased-source-count 1)))
+                      :erased-source-count 1
+                      :source-stubs
+                      ((:disposition kept :source-kind "tool-result"
+                        :tool-name "inspect")
+                       (:disposition summarized :source-kind "current-state")
+                       (:disposition summarized :source-kind "tool-result"
+                        :tool-name "read")
+                       (:disposition erased :source-kind "tool-result"
+                        :tool-name "bash")))))
          (dto (e-modernchat-view-model-activity event)))
     (should (equal (cdr (assq 'id dto)) "board-curation-1"))
     (should (equal (cdr (assq 'title dto)) "Context curated"))
     (should (equal (cdr (assq 'status dto)) "ok"))
     (should
      (equal (cdr (assq 'summary dto))
-            "kept 1 · summarized 2 sources into 1 summary · erased 1"))
+            (concat
+             "kept 1 — tool output · inspect\n"
+             "summarized 2 sources into 1 summary — current state, "
+             "tool output · read\n"
+             "erased 1 — tool output · bash")))
     (should-not
      (string-match-p "message-id\\|source-label\\|drop"
                      (prin1-to-string dto)))))

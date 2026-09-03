@@ -98,7 +98,39 @@
     '(:kept-source-count 1 :summary-count 0
       :summarized-source-count 0 :erased-source-count 0
       :source-labels (1)))
-   :type 'e-chat-service-invalid-activity))
+   :type 'e-chat-service-invalid-activity)
+  (should
+   (equal
+    (e-chat-service-format-context-curation
+     '(:kept-source-count 5 :summary-count 0
+       :summarized-source-count 0 :erased-source-count 0
+       :source-stubs
+       ((:disposition kept :source-kind "tool-result" :tool-name "run_elisp")
+        (:disposition kept :source-kind "tool-result" :tool-name "run_elisp")
+        (:disposition kept :source-kind "tool-result" :tool-name "run_elisp")
+        (:disposition kept :source-kind "tool-result" :tool-name "bash")
+        (:disposition kept :source-kind "tool-result" :tool-name "bash"))))
+    "kept 5 — tool output · run_elisp ×3, tool output · bash ×2"))
+  (should-error
+   (e-chat-service-format-context-curation
+    '(:kept-source-count 1 :summary-count 0
+      :summarized-source-count 0 :erased-source-count 0
+      :source-stubs
+      ((:disposition summarized :source-kind "tool-result"
+        :tool-name "inspect"))))
+   :type 'e-chat-service-invalid-activity)
+  (dolist (stub '((:disposition kept :source-kind "tool-result"
+                   :tool-name "inspect\nspoof")
+                  (:disposition kept :source-kind "current-state"
+                   :tool-name "inspect")))
+    (should-error
+     (e-chat-service-format-context-curation
+      (list :kept-source-count 1
+            :summary-count 0
+            :summarized-source-count 0
+            :erased-source-count 0
+            :source-stubs (list stub)))
+     :type 'e-chat-service-invalid-activity)))
 
 (ert-deftest e-chat-activity-owner-curation-is-ordered-deduplicated-and-counted ()
   "Board identities deduplicate curation without changing tool/action totals."

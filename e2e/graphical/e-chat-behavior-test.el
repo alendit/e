@@ -839,7 +839,15 @@ than the invisible insertion position."
                 (e-chat-behavior-test--post-context-curation
                  fixture
                  '(:kept-source-count 1 :summary-count 1
-                   :summarized-source-count 2 :erased-source-count 1))
+                   :summarized-source-count 2 :erased-source-count 1
+                   :source-stubs
+                   ((:disposition kept :source-kind "tool-result"
+                     :tool-name "inspect")
+                    (:disposition summarized :source-kind "current-state")
+                    (:disposition summarized :source-kind "tool-result"
+                     :tool-name "read")
+                    (:disposition erased :source-kind "tool-result"
+                     :tool-name "bash"))))
                 ;; Before the follow-up request starts, the completed round's
                 ;; summary and curation stay stable above the mutable Working
                 ;; tail.  One progress tick must preserve that prefix.
@@ -926,7 +934,12 @@ than the invisible insertion position."
                 (should-not (equal (e-chat-surface-status) "done"))
                 (should (string-match-p
                          (regexp-quote
-                          "Context curated\nkept 1 · summarized 2 sources into 1 summary · erased 1")
+                          (concat
+                           "Context curated\n"
+                           "kept 1 — tool output · inspect\n"
+                           "summarized 2 sources into 1 summary — "
+                           "current state, tool output · read\n"
+                           "erased 1 — tool output · bash"))
                          (buffer-string)))
                 (let* ((content (buffer-string))
                        (summary-position
@@ -988,7 +1001,11 @@ than the invisible insertion position."
                 (call-interactively #'e-chat-response-navigation-activate)
                 (should (string-match-p
                          (regexp-quote
-                          "Context curated: kept 1 · summarized 2 sources into 1 summary · erased 1")
+                          (concat
+                           "Context curated: kept 1 — tool output · inspect\n"
+                           "summarized 2 sources into 1 summary — "
+                           "current state, tool output · read\n"
+                           "erased 1 — tool output · bash"))
                          (buffer-string))))
               (should (= (length (window-list nil 'nomini))
                          window-count-before))

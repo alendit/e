@@ -24,6 +24,7 @@
 (require 'e-harness-registry)
 (require 'e-session)
 (require 'e-session-board-policy)
+(require 'seq)
 (require 'subr-x)
 
 (defvar e-chat-default-harness-id)
@@ -54,14 +55,56 @@
   :type 'number
   :group 'e-chat-service)
 
-(defconst e-chat-service--curation-activity-keys
+(defconst e-chat-service--curation-activity-count-keys
   '(:kept-source-count :summary-count :summarized-source-count
     :erased-source-count)
-  "Exact count fields accepted by the shell-family curation formatter.")
+  "Required count fields accepted by the curation formatter.")
+
+(defconst e-chat-service--curation-source-kinds
+  '("current-state" "dynamic-context" "tool-result" "trace"
+    "retrieved-excerpt")
+  "Public semantic source kinds accepted in curation stubs.")
+
+(defun e-chat-service--curation-source-stub (stub)
+  "Return validated content-free curation source STUB."
+  (unless (and (proper-list-p stub) (zerop (% (length stub) 2)))
+    (signal 'e-chat-service-invalid-activity
+            (list 'context-curated :source-stub-shape stub)))
+  (let ((tail stub)
+        keys)
+    (while tail
+      (push (pop tail) keys)
+      (pop tail))
+    (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
+                 (cl-every (lambda (key)
+                             (memq key '(:disposition :source-kind :tool-name)))
+                           keys)
+                 (plist-member stub :disposition)
+                 (plist-member stub :source-kind))
+      (signal 'e-chat-service-invalid-activity
+              (list 'context-curated :source-stub-keys (nreverse keys)))))
+  (let ((disposition (plist-get stub :disposition))
+        (source-kind (plist-get stub :source-kind))
+        (tool-name (and (plist-member stub :tool-name)
+                        (plist-get stub :tool-name))))
+    (unless (and (memq disposition '(kept summarized erased))
+                 (member source-kind e-chat-service--curation-source-kinds)
+                 (or (not (plist-member stub :tool-name))
+                     (and (equal source-kind "tool-result")
+                          (stringp tool-name)
+                          (not (string-empty-p tool-name))
+                          (not (string-match-p "[[:cntrl:]]" tool-name))
+                          (<= (length tool-name) 256))))
+      (signal 'e-chat-service-invalid-activity
+              (list 'context-curated :source-stub stub)))
+    (append (list :disposition disposition
+                  :source-kind (copy-sequence source-kind))
+            (when tool-name (list :tool-name (copy-sequence tool-name))))))
 
 (defun e-chat-service--curation-counts (projection)
-  "Return validated curation counts from public PROJECTION."
-  (unless (and (proper-list-p projection) (= (length projection) 8))
+  "Return validated curation counts and source stubs from public PROJECTION."
+  (unless (and (proper-list-p projection)
+               (zerop (% (length projection) 2)))
     (signal 'e-chat-service-invalid-activity
             (list 'context-curated :shape projection)))
   (let ((tail projection)
@@ -74,17 +117,23 @@
         (push key keys)
         (pop tail)))
     (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
-                 (cl-every (lambda (key)
-                             (memq key e-chat-service--curation-activity-keys))
-                           keys)
+                 (cl-every
+                  (lambda (key)
+                    (memq key
+                          (append e-chat-service--curation-activity-count-keys
+                                  '(:source-stubs))))
+                  keys)
                  (cl-every (lambda (key) (plist-member projection key))
-                           e-chat-service--curation-activity-keys))
+                           e-chat-service--curation-activity-count-keys))
       (signal 'e-chat-service-invalid-activity
               (list 'context-curated :keys (nreverse keys))))
     (let ((kept (plist-get projection :kept-source-count))
           (summaries (plist-get projection :summary-count))
           (summarized (plist-get projection :summarized-source-count))
-          (erased (plist-get projection :erased-source-count)))
+          (erased (plist-get projection :erased-source-count))
+          (stubs-present-p (plist-member projection :source-stubs))
+          (stubs (and (plist-member projection :source-stubs)
+                      (plist-get projection :source-stubs))))
       (unless (and (cl-every (lambda (value)
                                (and (integerp value) (>= value 0)))
                              (list kept summaries summarized erased))
@@ -93,22 +142,83 @@
                    (<= summaries summarized))
         (signal 'e-chat-service-invalid-activity
                 (list 'context-curated :counts projection)))
-      (list kept summaries summarized erased))))
+      (when stubs-present-p
+        (unless (and (proper-list-p stubs) stubs
+                     (<= (length stubs) 16))
+          (signal 'e-chat-service-invalid-activity
+                  (list 'context-curated :source-stubs stubs)))
+        (setq stubs (mapcar #'e-chat-service--curation-source-stub stubs))
+        (unless (and (= kept
+                        (seq-count (lambda (stub)
+                                     (eq (plist-get stub :disposition) 'kept))
+                                   stubs))
+                     (= summarized
+                        (seq-count
+                         (lambda (stub)
+                           (eq (plist-get stub :disposition) 'summarized))
+                         stubs))
+                     (= erased
+                        (seq-count (lambda (stub)
+                                     (eq (plist-get stub :disposition) 'erased))
+                                   stubs)))
+          (signal 'e-chat-service-invalid-activity
+                  (list 'context-curated :source-stub-counts projection))))
+      (list kept summaries summarized erased stubs))))
+
+(defun e-chat-service--curation-source-stub-label (stub)
+  "Return compact human-readable label for curation source STUB."
+  (pcase (plist-get stub :source-kind)
+    ("tool-result"
+     (let ((name (plist-get stub :tool-name)))
+       (if name (format "tool output · %s" name) "tool output")))
+    ("current-state" "current state")
+    ("dynamic-context" "dynamic context")
+    ("trace" "trace")
+    ("retrieved-excerpt" "retrieved excerpt")))
+
+(defun e-chat-service--curation-source-description (stubs disposition)
+  "Describe STUBS having DISPOSITION with stable first-seen grouping."
+  (let ((counts (make-hash-table :test #'equal))
+        order)
+    (dolist (stub stubs)
+      (when (eq (plist-get stub :disposition) disposition)
+        (let ((label (e-chat-service--curation-source-stub-label stub)))
+          (unless (gethash label counts)
+            (setq order (append order (list label))))
+          (puthash label (1+ (gethash label counts 0)) counts))))
+    (when order
+      (mapconcat
+       (lambda (label)
+         (let ((count (gethash label counts)))
+           (if (> count 1) (format "%s ×%d" label count) label)))
+       order ", "))))
+
+(defun e-chat-service--curation-line (text stubs disposition)
+  "Append a safe source breakdown to curation line TEXT when available."
+  (let ((description
+         (e-chat-service--curation-source-description stubs disposition)))
+    (if description (format "%s — %s" text description) text)))
 
 (defun e-chat-service-format-context-curation (projection)
-  "Format count-only public context-curation PROJECTION for chat shells."
-  (pcase-let ((`(,kept ,summaries ,summarized ,erased)
+  "Format content-free public context-curation PROJECTION for chat shells."
+  (pcase-let ((`(,kept ,summaries ,summarized ,erased ,stubs)
                (e-chat-service--curation-counts projection)))
     (string-join
      (delq nil
            (list
-            (and (> kept 0) (format "kept %d" kept))
+            (and (> kept 0)
+                 (e-chat-service--curation-line
+                  (format "kept %d" kept) stubs 'kept))
             (and (> summarized 0)
-                 (format "summarized %d source%s into %d summar%s"
-                         summarized (if (= summarized 1) "" "s")
-                         summaries (if (= summaries 1) "y" "ies")))
-            (and (> erased 0) (format "erased %d" erased))))
-     " · ")))
+                 (e-chat-service--curation-line
+                  (format "summarized %d source%s into %d summar%s"
+                          summarized (if (= summarized 1) "" "s")
+                          summaries (if (= summaries 1) "y" "ies"))
+                  stubs 'summarized))
+            (and (> erased 0)
+                 (e-chat-service--curation-line
+                  (format "erased %d" erased) stubs 'erased))))
+     (if stubs "\n" " · "))))
 
 (cl-defstruct (e-chat-service-binding
                (:constructor e-chat-service--binding-create))
