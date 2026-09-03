@@ -4,7 +4,9 @@
 
 * Status
 
-Planned.
+Ready.  Feature 91 is =Done=, its temporary implementation gate is satisfied,
+and this plan is rebaselined on the accepted modularized loop, harness-context,
+OpenAI adapter, Board-runtime, and chat-presentation owners.
 
 This addendum extends [[file:addendum7.org][Addendum 7]] without changing its
 =keep=, =summaries=, =erase=, omission, durability, or storage semantics.  It
@@ -12,9 +14,8 @@ changes when the reserved =context-curate= effect may be used during one turn,
 how that rule is explained to the model, and how the loop handles a duplicate
 curation-only response.
 
-Implementation is blocked until Feature 91 reaches =Done=.  Addendum 7 and
-=context-curate-v7= remains the accepted implementation baseline until this
-addendum is implemented and reviewed.
+Addendum 7 and =context-curate-v7= remain the accepted runtime baseline until
+this addendum is implemented and reviewed.
 
 The motivating incident and source trace are recorded in
 [[file:../../bugs/repeated-empty-curation-fails-turn/investigation.org][Repeated
@@ -143,18 +144,44 @@ produces no normal assistant output or ordinary tool work, it settles through
 the existing backend empty-output policy.  The duplicate itself must never be
 reported as invalid durable state and must never start an acknowledgement loop.
 
-* Required observable behaviors
+* Goal and normative contract matrix
 
-| ID | Required behavior | Owning boundary | Acceptance evidence |
-|----+-------------------+-----------------+---------------------|
-| =F88A8-GUIDANCE= | The carrier says once per presented label set, continue normally after acknowledgement, and call again only after new labeled sources appear. | OpenAI adapter description under the core-owned carrier revision. | Literal HTTP and WebSocket request-shape tests plus revision/fingerprint assertions. |
-| =F88A8-OPPORTUNITY= | Curation eligibility is scoped to the consumer-bound active frame, not the whole turn. | Core owns frame identity; loop owns request sequencing. | Owner test with two different frame identities in one turn. |
-| =F88A8-MULTI-FRAME= | Two valid curation-only responses for two frames commit two ordered packages and both receive one acknowledgement. | Loop, harness completion, and session package append. | Credential-free real-adapter tool/curate/tool/curate/answer composition. |
-| =F88A8-DUPLICATE= | A duplicate for a closed opportunity mutates no semantic state and emits no invalid-record failure. | Loop recovery policy before semantic preparation. | Same-opportunity duplicate test with one commit and one =duplicate-ignored= outcome. |
-| =F88A8-RECOVERY= | One corrective output is followed by at most one carrier-free recovery request. | Loop budget and backend adapter request translation. | Repeating fake backend proves bounded request count, no second hint, and no curation loop. |
-| =F88A8-STRICTNESS= | Malformed dispositions and multiple effects in one response retain Addendum 7's strict pre-mutation failure behavior. | Core normalization and response effect collection. | Existing negative matrix plus focused non-regression tests. |
-| =F88A8-DURABILITY= | Each accepted frame package remains independently ordered, replayable, branch-correct, and atomic. | Session selected-path projection. | Two-package reopen, branch, checkpoint, and compaction tests. |
-| =F88A8-USABILITY= | A duplicate recovery does not poison the session; a later user turn can complete normally. | Harness turn settlement and session reuse. | Composed failed-recovery/fresh-turn scenario without an invalid-record event. |
+- Goal ID :: =F88A8-RECOVERY=.
+- Behavioral goal :: A model may curate each genuinely new presented frame in
+  one turn, while repetition against a closed opportunity recovers once and
+  cannot fail as durable-record corruption or loop indefinitely.
+- Direct scenario :: One turn executes an ordinary tool, curates frame A,
+  receives its acknowledgement, executes another ordinary tool that creates
+  frame B, curates frame B, receives its acknowledgement, and returns a normal
+  answer.  Two packages and two curation activities remain ordered, the turn
+  succeeds, and a subsequent user turn remains usable.
+- Product authority :: The user/operator through this addendum.
+- Owning contracts :: =F88A8-GUIDANCE=, =F88A8-OPPORTUNITY=,
+  =F88A8-MULTI-FRAME=, =F88A8-DUPLICATE=, =F88A8-RECOVERY=,
+  =F88A8-STRICTNESS=, =F88A8-DURABILITY=, and =F88A8-USABILITY=.
+- Behavioral status :: Failing in the current =context-curate-v7= runtime;
+  the motivating live scenario terminates with =:repeated-empty-response=.
+- Mechanism status :: Not started.
+- External compatibility :: Not required for deterministic acceptance.  The
+  provider may or may not obey the revised guidance; repository-owned recovery
+  remains correct either way.  Any configured-provider observation is external
+  compatibility evidence and cannot replace deterministic owner/composition
+  gates.
+
+This matrix is the sole normative Addendum 8 contract authority.  Other
+sections explain the rows or the single delivery package and do not define
+independent outcomes.
+
+| ID | Required behavior | Owning boundary | Package | Acceptance evidence |
+|----+-------------------+-----------------+---------+---------------------|
+| =F88A8-GUIDANCE= | The carrier says once per presented label set, continue normally after acknowledgement, and call again only after new labeled sources appear. | OpenAI adapter description under the core-owned carrier revision. | =F88A8-DP1= | Literal HTTP and WebSocket request-shape tests plus revision/fingerprint assertions. |
+| =F88A8-OPPORTUNITY= | Curation eligibility is scoped to the consumer-bound active frame, not the whole turn. | Core owns frame identity; loop owns request sequencing. | =F88A8-DP1= | Owner test with two different frame identities in one turn. |
+| =F88A8-MULTI-FRAME= | Two valid curation-only responses for two frames commit two ordered packages and both receive one acknowledgement. | Loop, harness completion, and session package append. | =F88A8-DP1= | Credential-free real-adapter tool/curate/tool/curate/answer composition. |
+| =F88A8-DUPLICATE= | A duplicate for a closed opportunity mutates no semantic state and emits no invalid-record failure. | Loop recovery policy before semantic preparation. | =F88A8-DP1= | Same-opportunity duplicate test with one commit and one =duplicate-ignored= outcome. |
+| =F88A8-RECOVERY= | One corrective output is followed by at most one carrier-free recovery request. | Loop budget and backend adapter request translation. | =F88A8-DP1= | Repeating fake backend proves bounded request count, no second hint, and no curation loop. |
+| =F88A8-STRICTNESS= | Malformed dispositions and multiple effects in one response retain Addendum 7's strict pre-mutation failure behavior. | Core normalization and response effect collection. | =F88A8-DP1= | Existing negative matrix plus focused non-regression tests. |
+| =F88A8-DURABILITY= | Each accepted frame package remains independently ordered, replayable, branch-correct, and atomic. | Session selected-path projection. | =F88A8-DP1= | Two-package reopen, branch, checkpoint, and compaction tests. |
+| =F88A8-USABILITY= | A duplicate recovery does not poison the session; a later user turn can complete normally. | Harness turn settlement and session reuse. | =F88A8-DP1= | Composed recovery/fresh-turn scenario without an invalid-record event. |
 
 * Ownership and state lifetime
 
@@ -174,23 +201,78 @@ or frame-scoped state.  It must not retain an unbounded set of historical frame
 identities: the active request opportunity and one corrective-recovery flag are
 sufficient for the sequential loop.
 
-* Implementation package
+* Delivery package
 
-1. Revise the carrier guidance and material identity to =context-curate-v8=;
-   invalidate v7 request-shape and external-evidence identity.
-2. Replace the turn-wide =curation-only-followups= decision with trusted
-   request/frame-scoped opportunity state while retaining one acknowledgement
-   per successful curation.
-3. Add the duplicate-ignored outcome, one fixed corrective output, and one
-   carrier-free recovery continuation.
-4. Add the deterministic owner, real-adapter composition, replay, strictness,
-   and session-usability scenarios in the matrix above.
-5. Update the motivating bug investigation and close it only after repository
-   validation and the current implementation gate permit accepted remediation.
+** =F88A8-DP1=: Frame-scoped curation and bounded duplicate recovery
 
-The package is complete only when the model guidance, loop behavior, durable
-ordering, and recovery bound work together.  A guidance-only edit or a larger
-turn-wide counter is not an acceptable stopping point.
+Useful outcome :: One turn can curate every genuinely new frame and recover
+once from a repeated call against a closed opportunity without corrupting or
+poisoning the session.
+
+Establishes :: =F88A8-GUIDANCE=, =F88A8-OPPORTUNITY=,
+=F88A8-MULTI-FRAME=, =F88A8-DUPLICATE=, =F88A8-RECOVERY=,
+=F88A8-STRICTNESS=, =F88A8-DURABILITY=, and =F88A8-USABILITY=.
+
+Semantic owners and physical boundaries :: Core frame identity remains in
+=e-context-lifetime=; =e-loop= owns request opportunity and bounded recovery;
+harness-context runtime owns semantic commit/consume; OpenAI Responses owns the
+wire carrier and corrective output; session owns accepted packages only.
+
+Prerequisites :: Accepted Addendum 7 semantics, Addendum 9 activity projection,
+and Feature 91's accepted modularized owner boundaries.  No later package is a
+prerequisite.
+
+State and lifetime :: The current request captures one trusted frame
+opportunity.  One duplicate-recovery budget lives for the turn.  Neither is
+durable; accepted curation packages retain their existing session lifetime.
+
+Transaction and recovery closure :: A fresh opportunity prepares and commits
+before consumption and acknowledgement.  A closed opportunity bypasses
+semantic preparation, mutates no durable state, sends one fixed corrective
+output without the carrier, and permits no second correction.  Malformed
+dispositions and unexpected persistence/provider failures keep their existing
+strict paths.
+
+Public and adapter surface :: The provider sees =context-curate-v8= guidance
+and, only for a duplicate, one matching function output explaining that it must
+continue normally.  The transcript gains no semantic message.  Addendum 9
+publishes each accepted package as one ordered count-only activity.
+
+Focused evidence :: The matrix scenarios cover exact first/repeated/new-frame
+partitions, real Responses stateless and anchored wire shapes, two-package
+ordering and reopen, strict malformed input, bounded repeated recovery, normal
+answer settlement, and a fresh user turn.
+
+Safe deferred work :: Configured-provider compliance evidence is external and
+does not block repository correctness.  The separate duplicate-terminal-notice
+presentation defect remains outside this package and is remediated at its chat
+projection owner.
+
+Split/combine decision :: Guidance, opportunity, corrective wire state,
+durability, and recovery are one protocol behavior and cannot stop usefully in
+partial form.  The terminal-notice fix has a separate presentation owner and a
+complete independent outcome, so it remains a separate semantic commit.
+
+Acceptance boundary :: The package is accepted only when all eight contract
+rows pass and the direct tool/curate/tool/curate/answer composition succeeds.
+A guidance-only edit or a larger turn-wide counter is not acceptable.
+
+* Exact recovery bound
+
+- Correctness role :: One correction gives the provider one chance to leave a
+  closed curation opportunity while preventing an acknowledgement loop.
+- Workload basis :: A duplicate response is one protocol violation for the
+  current turn; useful later work creates a new frame and follows the ordinary
+  opportunity path instead.
+- Resource estimate :: The exceptional path adds at most one provider request
+  and retains only one turn-local boolean/budget value.
+- Boundary consequence :: The first duplicate receives the fixed correction;
+  another duplicate before useful tool work or assistant output settles through
+  ordinary backend empty-output policy without semantic mutation.
+- Revision trigger :: A provider protocol that can acknowledge duplicates
+  without another request, or operational evidence that one correction cannot
+  recover while a different finite policy remains safe, permits revisiting the
+  bound.
 
 * Compatibility and performance
 
@@ -241,7 +323,7 @@ or durable recovery ledger is introduced.
 10. A curation opportunity has one substitutable meaning across adapters: one
     accepted decision for one presented active frame.
 11. Existing session formats remain compatible; provider request identity
-    changes explicitly to v6.
+    changes explicitly to v8.
 12. The turn-wide =curation-only-followups= policy and its invalid-record
     regression can be removed once the frame-scoped replacement is accepted.
 13. Recognized duplicates are handled locally and observably; malformed

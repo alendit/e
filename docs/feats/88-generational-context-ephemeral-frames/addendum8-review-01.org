@@ -1,0 +1,182 @@
+#+title: Review 01: Addendum 8 Frame-Scoped Repeated Curation
+#+date: 2026-09-03
+#+startup: overview
+
+* Status and decision
+
+Implementation-plan fixed point reached.
+
+This rebaseline review covers the complete Addendum 8 plan after Feature 91
+reached =Done= and after the motivating failure recurred in a live chat.  It
+reviews the plan blob
+=ee592a150e9e9287e97e4e97bad136681f8a912b= against accepted Addendum 7 and 9
+contracts and the current modularized architecture.
+
+- P0: none.
+- P1: none.
+- P2: none.
+- P3: none.
+- Required repository unknowns: none.
+
+The stale Feature 91 blocker, missing package-level goal trace, incomplete
+delivery-package record, unstructured recovery-bound justification, and
+incorrect =v6= compatibility reference were corrected before this decision.
+The resulting contract and one-package delivery relation are complete and
+admit implementation.
+
+* Review contract
+
+- Goal ID :: =F88A8-RECOVERY=.
+- Behavioral goal :: Each genuinely new presented frame may be curated in one
+  turn; a repeat against a closed opportunity recovers once without durable
+  mutation, invalid-record classification, or an acknowledgement loop.
+- Direct scenario :: =tool -> frame A -> curate -> acknowledge -> tool -> frame
+  B -> curate -> acknowledge -> answer= commits two ordered packages, settles
+  successfully, and leaves the session usable for another turn.
+- Product authority :: The user/operator through Addendum 8.
+- Owning contracts :: =F88A8-GUIDANCE=, =F88A8-OPPORTUNITY=,
+  =F88A8-MULTI-FRAME=, =F88A8-DUPLICATE=, =F88A8-RECOVERY=,
+  =F88A8-STRICTNESS=, =F88A8-DURABILITY=, and =F88A8-USABILITY=.
+- Behavioral status :: Failing under the current =context-curate-v7= runtime;
+  the live user scenario reached =curation :repeated-empty-response= after
+  successful earlier curation and intervening tool work.
+- Mechanism status :: Not started.
+- External compatibility :: Not required for deterministic repository
+  acceptance.  Configured-provider compliance with guidance remains separately
+  reportable external evidence.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  Its harness,
+session, turn, model-facing tool, presentation shell, backend adapter, and Board
+definitions fit the scope.  “Curation opportunity” is a local protocol term
+whose semantic source is Addendum 8; it does not require a glossary edit.
+
+* Normalized contract coverage
+
+The =Goal and normative contract matrix= in =addendum8.org= is the single
+authority.  Every contract maps to exactly one establishing package,
+=F88A8-DP1=, and that package maps back to all eight complete contracts.
+
+| Contract | Owner and public composition | Deterministic evidence | Disposition |
+|----------+------------------------------+------------------------+-------------|
+| =F88A8-GUIDANCE= | OpenAI Responses serializes core-revisioned carrier guidance. | HTTP/WebSocket body and fingerprint assertions. | clear |
+| =F88A8-OPPORTUNITY= | Loop uses the request-captured active frame; core remains frame authority. | Same-frame and new-frame partitions. | clear |
+| =F88A8-MULTI-FRAME= | Loop, harness completion, session package append, and Addendum 9 Board activity compose publicly. | Credential-free real Responses tool/curate/tool/curate/answer. | clear |
+| =F88A8-DUPLICATE= | Loop recognizes only a response whose request had no open frame opportunity. | One commit, no second semantic mutation, =duplicate-ignored=. | clear |
+| =F88A8-RECOVERY= | Loop owns one turn-local correction; adapter owns its fixed wire output. | First duplicate correction and one-over empty-output boundary. | clear |
+| =F88A8-STRICTNESS= | Core and response collector keep Addendum 7 validation. | Existing malformed and multiple-effect matrix. | clear |
+| =F88A8-DURABILITY= | Session retains independent accepted packages; recovery state stays transient. | Ordering, reopen, branch, checkpoint, compaction. | clear |
+| =F88A8-USABILITY= | Harness settles recovered work and permits a fresh turn. | Direct scenario plus subsequent user turn. | clear |
+
+No external capability is required to establish these rows.  The carrier is a
+reserved provider effect, not a model-facing tool, and the test portfolio must
+continue to prove that distinction.
+
+* Required specification-cell disposition
+
+| Cell | Disposition |
+|------+-------------|
+| Single normative authority | clear; one ID-keyed matrix |
+| Behavioral design trace | clear; stable goal and direct public scenario |
+| Durable contract boundary | clear; observable frame/recovery outcomes, private state conditional |
+| Scenario diagnosability | clear; same-frame, new-frame, one-over, strictness, durability, and fresh-turn boundaries localize failures |
+| Evidence topology | clear; deterministic repository gates separate from optional configured-provider behavior |
+| External freshness | not applicable to deterministic acceptance |
+| Telemetry decision power | not applicable; no metric decides acceptance |
+| Exact-limit justification | clear; one correction is justified by convergence and exact/one-over behavior |
+| Defensive actionability | clear; the live failure and existing source guard prove user-visible impact |
+| Change locality | clear; frame truth stays in core, sequencing in loop, wire translation in adapter, durability in session |
+| Workflow boundary | clear; plan contains contracts and evidence, not Tick/Tock mechanics |
+| Decision level and plan disposition | clear; implementation-plan level |
+| Contract-to-package coverage | clear; eight rows map bidirectionally to =F88A8-DP1= |
+| Useful stopping point | clear; both valid repeated curation and duplicate convergence work if development stops |
+| Cohesion and transaction closure | clear; commit/consume/ack and duplicate/no-mutation/recovery close together |
+| Dependency order | clear; Addenda 7/9 and Feature 91 are accepted prerequisites |
+| Package-size tradeoff | clear; protocol pieces stay together, terminal presentation dedup remains separate |
+| Acceptance-cost topology | clear; focused partitions precede one final repository gate and one independent implementation review |
+| Checkpoint/package distinction | clear; internal edits are not packages |
+
+* Aggregate design comparison
+
+Accepted behavior and recovery invariants :: Multiple new frames are valid;
+same-opportunity repetition is bounded; malformed semantics remain strict;
+only accepted packages are durable.
+
+Current aggregate :: A turn-wide integer in =e-loop= permits one curation-only
+continuation and turns every later one into an invalid-record error, regardless
+of which frame its request presented.
+
+Smallest faithful alternative :: Use the already captured
+=provider-request-lifetime-frame= as the opportunity truth, plus one turn-local
+duplicate-correction budget.  Let the OpenAI decoder provide opaque normal and
+corrective replay bundles; the loop selects without interpreting provider wire
+shape.
+
+Material difference :: The alternative removes the false coupling to total
+turn length, introduces no durable identity set or cross-owner transaction, and
+keeps provider syntax in the adapter.  It is both smaller and more faithful
+than expanding the old turn-wide counter.
+
+Decision :: Use the frame-scoped alternative.  Replace the regression that
+expects =e-context-lifetime-invalid-record=; retain and strengthen ordinary
+acknowledgement, strictness, replay, and atomicity tests.
+
+* Delivery-package admission
+
+=F88A8-DP1= is the only delivery package.  Its owner, prerequisites, state
+lifetime, transaction/recovery closure, public and adapter surface, focused
+evidence, safe deferred work, split/combine decision, and acceptance boundary
+are explicit in the plan.  Every realization dimension has a feasible route:
+
+- ownership/capability: request-captured frame in loop, core validation,
+  harness commit, adapter replay translation, existing session append;
+- required information: frame identity and consumed state live for the request;
+  duplicate correction is opaque matching-immediate replay state;
+- transaction/recovery: accepted package commits before consumption and ack;
+  duplicate bypasses preparation and durable mutation before one correction;
+- scenarios/assertions: exact first, same-frame, new-frame, one-over,
+  malformed, reopen, and fresh-turn partitions are named;
+- design dependencies: Feature 91 owners, Addendum 7 semantics, and Addendum 9
+  activity identity are current.
+
+The package is admitted for production implementation at this plan identity.
+
+* Architecture and performance review
+
+The plan preserves dependency direction.  Stable core frame semantics do not
+depend on OpenAI, Board, or presentation.  The loop owns sequential protocol
+state because it already captures the request frame and starts immediate
+continuations.  The adapter supplies opaque wire bundles instead of exporting
+provider item structure into core.  Session receives only accepted semantic
+packages.  The duplicate terminal-notice correction stays at the independent
+Board/chat presentation boundary.
+
+The relevant physical owners remain cohesive after Feature 91.  No new module
+or abstraction is justified: each change is small and belongs to an existing
+owner with the same reason to change.  The normal path adds constant predicates;
+the exceptional path adds at most one request and one turn-local scalar.  There
+is no scan, polling loop, persistent recovery state, or unbounded identity set.
+
+* Plan identity and verification
+
+Identity-bearing sources:
+
+- =addendum8.org=: =ee592a150e9e9287e97e4e97bad136681f8a912b=;
+- =addendum7.org=: =808b4869a257f63fac9548a7b26351d706d095ec=;
+- =addendum9.org=: =659603b4279a4a5846c3efede799670f4923da82=;
+- Feature 91 =review.org=: =56c72c89ad2a959c216b8c1268508070c25144de=;
+- =docs/architecture.md=: =48dc0e6e445a2a3a68630d40fba749f7444c58ae=;
+- =docs/references/runtime_concepts.org=:
+  =c80fb8cade9100dac00c33ff7d43ffaac3a053f4=;
+- =docs/feats/index.org=: =5690e828d660925421faf8a84b12747ff3505409=.
+
+Batch Org parsing and =git diff --check= pass.  The current source guard, loop
+test that freezes the obsolete failure, OpenAI normal replay bundle, harness
+commit seam, Addendum 9 activity path, bug investigation, Feature 91 status,
+and architecture ownership were inspected.  No live mutation, reload, provider
+request, production edit, or runtime test was performed during this plan
+review.
+
+* Unresolved
+
+None.  Addendum 8 is at =implementation-plan-fixed-point= and
+=F88A8-DP1= is admitted for implementation against the exact identity above.
