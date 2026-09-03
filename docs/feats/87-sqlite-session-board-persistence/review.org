@@ -359,6 +359,23 @@ repository-owned 64-session same-root cutover scenario then proves zero cold
 transcript reads, one selected lazy restore, one untouched stub, and exact
 reconstruction after reopen.
 
+** Cold-session publication follow-up
+
+The ordinary source-only suite later exposed a presentation ordering defect in
+the lazy cold-open path.  Normal attachment created the composer and requested
+session-derived projections before cooperative replay became the sole load
+owner.  Composer queue projection entered synchronous lazy loading; cooperative
+completion then reattached while that session fence was held and could leave
+the buffer at =Loading transcript...=.
+
+The chat shell now publishes only its bounded loading projection before replay.
+It defers composer, unread, subscription, and session-derived mode-line work to
+the successful loaded reattachment.  The retained regression proves zero
+synchronous transcript loads, exact committed transcript publication, cleared
+request state, and removal of the loading marker.  Cancellation, stale-success,
+setup-error, and same-session reentrancy evidence also passes.  No session
+fence, storage operation, durable state, retry, or transaction changed.
+
 * Plan coverage
 
 | Contract/scenario | Repository realization | Review disposition |

@@ -1,0 +1,79 @@
+#+title: Cold Session Publication Can Remain at Loading Transcript Investigation
+#+startup: overview
+
+* Source finding
+
+=e-chat-attach-buffer= recognized the unloaded catalog stub and intended to
+start =e-session-load-session-start=.  Before that request became the sole load
+owner, normal attachment created the composer.  Composer queue projection read
+the attached session and entered synchronous lazy loading.  The cooperative
+worker and timer callbacks could run inside that wait.
+
+When cooperative replay completed, its callback cleared
+=e-chat--session-load-request= and reattached the buffer.  That reattachment
+consulted the same session while the synchronous lazy-load fence was still
+held, so =e-session--ensure-loaded= correctly signaled
+=e-session-persistence-unavailable= with =Session load is in progress=.  The
+callback could not publish the completed transcript, leaving the loading
+projection behind.  The session fence was correct; presentation ordering was
+not.
+
+* Correction
+
+An unloaded attachment now installs only presentation state that does not read
+the session.  It publishes the loading header before installing the session
+identity, renders the bounded loading transcript, and starts cooperative
+replay.  Composer queue projection, unread projection, subscription, and
+session-derived mode-line refresh remain part of the normal loaded attachment.
+The successful callback re-enters that path only after replay finalized the
+aggregate.
+
+The correction adds no retry, durable state, revision check, transaction, or
+journal.  Existing request identity and attachment generation checks still
+reject cancellation and stale completion.  Setup failure retains the existing
+bounded error callback and transcript error projection.
+
+* Evidence
+
+The retained production regression now observes zero calls to synchronous
+=e-session-load-session= between cold open and cooperative completion.  It
+then observes a cleared request, no loading marker, the exact committed prompt
+and response in both the buffer and session facade, and the ordinary loaded
+attachment.
+
+Focused cancellation and stale-success tests prove that a late callback cannot
+reattach after cancellation or replace a newer request.  The existing setup
+failure test and the SQLite same-session reentrancy test retain their expected
+error behavior.  The six focused chat tests pass, followed by 104/104 combined
+chat and SQLite session-owner tests, including the 15,722-record /
+37,851,478-byte bounded-load witness.
+
+Repository-side validation did not contact, reload, or change the running
+Emacs or operator database.
+
+* Architecture self-check
+
+1. The package restores a complete cold-open behavior even if later suite work
+   stops.
+2. It moves the runtime toward asynchronous, bounded session restoration.
+3. Timing remains variable but local to one existing request and generation;
+   no speculative recovery mechanism was added.
+4. =e-chat= owns ordering of its loading and loaded presentation phases;
+   =e-session= retains semantic replay and its reentrancy fence.
+5. Coupling is reduced because unloaded presentation no longer invokes normal
+   session-derived projections prematurely.
+6. Dependency direction remains presentation to chat/session owner facades.
+7. Session I/O stays in the storage worker; the shell only schedules and
+   publishes presentation.
+8. No state is added.  Existing buffer-local request and generation values
+   retain their attachment lifetime.
+9. Cold open avoids one complete competing synchronous replay; loaded attach
+   keeps its established bounded projections.
+10. No public interface or substitutability rule changes.
+11. Loaded, unloaded, failed, cancelled, and replaced attachments retain their
+    explicit existing paths.
+12. No compatibility or legacy path is introduced.
+13. Expected setup failure uses the existing callback; unexpected errors still
+    surface at their established boundary.
+14. Owner-focused tests decide publication, cancellation, stale callback, and
+    same-session reentrancy independently of the eventual full-suite gate.

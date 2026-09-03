@@ -110,6 +110,14 @@ authority for observable contracts, package mapping, acceptance, and non-goals.
   one session at a time without rewriting checkpoint state.
   A process-local per-session fence rejects same-session facade reentry during
   that first cooperative replay and is cleared on every exit.
+- Cold-session publication correction :: Implemented for parent review on
+  2026-09-03.  An unloaded chat attachment now publishes only bounded loading
+  presentation before cooperative replay.  Composer, unread, subscription,
+  and session-derived mode-line projections are installed by the successful
+  loaded reattachment, so no synchronous lazy load competes with the replay or
+  strands =Loading transcript...=.  This restores the interactive portion of
+  =F87-C11= and its restart contribution to =F87-C01= without weakening the
+  session reentrancy fence.
 - Simplification correction :: Implemented and parent-accepted on 2026-09-02;
   independently accepted at the exact completed revision.  The runtime
   protocol now uses process-local response correlation only: worker loss fails

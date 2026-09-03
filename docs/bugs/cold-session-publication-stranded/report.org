@@ -1,0 +1,22 @@
+#+title: Cold Session Publication Can Remain at Loading Transcript
+#+startup: overview
+
+* Report
+
+- Goal ID: =TEST-SUITE-ZERO-EXCEPTIONS=.
+- Plan identity: =TEST-SUITE-ZERO-EXCEPTIONS@33b72b810fdd9f3296e3ec82f5eb99d4f70d88f9=.
+- Delivery package: P1, restoring Feature 87 =F87-C11= and the restart
+  contribution to =F87-C01=.
+- Direct package behavior: opening an unloaded SQLite-backed session publishes
+  a loading projection asynchronously, then replaces it with the exact
+  committed transcript.
+
+The ordinary source-only repository suite exposed a production chat/session
+race.  Opening an unloaded catalog stub could start a synchronous lazy load
+from presentation setup while cooperative replay was active.  A reentrant
+completion then failed the session load fence and left the buffer displaying
+=Loading transcript...= permanently.
+
+P1 does not establish the larger =TEST-C01= contract or the
+=S-FULL-SOURCE-GREEN= scenario.  It restores this independently useful cold
+session behavior as a prerequisite for later test-suite packages.

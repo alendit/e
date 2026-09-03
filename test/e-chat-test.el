@@ -2730,6 +2730,8 @@ selected/sibling isolation boundary."
                 (let ((text (buffer-string)))
                   (should (equal started "async-open"))
                   (should e-chat--session-load-request)
+                  (should (equal (e-chat-surface-status)
+                                 "loading session"))
                   (should (string-match-p "open prompt" text))
                   (should (string-match-p "Loading transcript" text))
                   (should-not (string-match-p "open response" text)))))))
@@ -2778,6 +2780,85 @@ selected/sibling isolation boundary."
 
 
 
+(ert-deftest e-chat-test-index-load-cancellation-ignores-late-success ()
+  "A cancelled cold-session request cannot publish a late attachment."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (buffer (generate-new-buffer " *e-chat-cancelled-load*"))
+         on-done
+         request
+         (attach-count 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-mode)
+          (setq-local e-chat-harness harness)
+          (setq-local e-chat-session-id "cancelled-load")
+          (setq-local e-chat-harness-instance-id nil)
+          (setq-local e-chat--session-load-generation 1)
+          (cl-letf (((symbol-function 'e-session-load-session-start)
+                     (lambda (_store _session-id &rest arguments)
+                       (setq on-done (plist-get arguments :on-done))
+                       (e-request-lifecycle-create
+                        :owner 'e-chat-test :state 'started))))
+            (setq request
+                  (e-chat--start-session-load
+                   buffer harness "cancelled-load" nil 1 nil))
+            (setq-local e-chat--session-load-request request))
+          (cl-letf (((symbol-function 'e-chat-attach-buffer)
+                     (lambda (&rest _arguments)
+                       (cl-incf attach-count))))
+            (e-chat--cancel-session-load-request)
+            (funcall on-done '(:id "cancelled-load" :loaded t)))
+          (should-not e-chat--session-load-request)
+          (should (eq (e-request-lifecycle-state request) 'cancelled))
+          (should (= attach-count 0)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
+(ert-deftest e-chat-test-index-load-stale-success-keeps-replacement ()
+  "A stale cold-session success cannot replace a newer attachment request."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (buffer (generate-new-buffer " *e-chat-stale-load*"))
+         first-on-done
+         first-request
+         replacement-request
+         (attach-count 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-mode)
+          (setq-local e-chat-harness harness)
+          (setq-local e-chat-session-id "stale-load")
+          (setq-local e-chat-harness-instance-id nil)
+          (setq-local e-chat--session-load-generation 1)
+          (cl-letf (((symbol-function 'e-session-load-session-start)
+                     (lambda (_store _session-id &rest arguments)
+                       (setq first-on-done (plist-get arguments :on-done))
+                       (e-request-lifecycle-create
+                        :owner 'e-chat-test :state 'started))))
+            (setq first-request
+                  (e-chat--start-session-load
+                   buffer harness "stale-load" nil 1 nil)))
+          (setq replacement-request
+                (e-request-lifecycle-create
+                 :owner 'e-chat-test :state 'started))
+          (setq-local e-chat--session-load-request replacement-request)
+          (cl-letf (((symbol-function 'e-chat-attach-buffer)
+                     (lambda (&rest _arguments)
+                       (cl-incf attach-count))))
+            (e-request-finish
+             first-request '(:id "stale-load" :loaded t))
+            (funcall first-on-done '(:id "stale-load" :loaded t)))
+          (should (eq e-chat--session-load-request replacement-request))
+          (should (= attach-count 0))
+          (should (e-request-terminal-p first-request)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
+
 (ert-deftest e-chat-test-index-loading-bounds-large-session-summary ()
   "Loading projection does not render an unbounded index summary."
   (let ((e-chat-session-summary-preview-max-chars 40)
@@ -2803,7 +2884,10 @@ selected/sibling isolation boundary."
          ;; zero-delay timers completing inside a two-second test deadline.
          (e-session-load-chunk-bytes 128)
          indexed-store
-         buffer)
+         buffer
+         (sync-load-count 0)
+         (mode-line-refresh-count 0)
+         mode-line-refresh-during-load)
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "async-render"
@@ -2830,30 +2914,55 @@ selected/sibling isolation boundary."
           (let* ((indexed-store indexed-store)
                  (harness (e-harness-create
                            :backend (e-backend-fake-create :items nil)
-                           :sessions indexed-store)))
-            (setq buffer (e-chat-open-session harness "async-render"))
-            (with-current-buffer buffer
-              ;; A zero-delay cooperative page may finish while the shell is
-              ;; displaying the buffer.  If it is still pending, only the
-              ;; loading projection is visible; otherwise the exact committed
-              ;; transcript is already the valid completed state.
-              (if e-chat--session-load-request
-                  (should (string-match-p "Loading transcript"
-                                          (buffer-string)))
-                (should (string-match-p "render response"
-                                        (buffer-string)))))
-            (let ((deadline (+ (float-time) 2.0)))
-              (while (and (buffer-live-p buffer)
-                          (with-current-buffer buffer
-                            e-chat--session-load-request)
-                          (< (float-time) deadline))
-                (accept-process-output nil 0.01)))
+                           :sessions indexed-store))
+                 (load-session (symbol-function 'e-session-load-session))
+                 (request-mode-line
+                  (symbol-function
+                   'e-chat-surface--request-mode-line-status-refresh)))
+            (cl-letf (((symbol-function 'e-session-load-session)
+                       (lambda (&rest arguments)
+                         (cl-incf sync-load-count)
+                         (apply load-session arguments)))
+                      ((symbol-function
+                        'e-chat-surface--request-mode-line-status-refresh)
+                       (lambda (&rest arguments)
+                         (cl-incf mode-line-refresh-count)
+                         (when e-chat--session-load-request
+                           (setq mode-line-refresh-during-load t))
+                         (apply request-mode-line arguments))))
+              (setq buffer (e-chat-open-session harness "async-render"))
+              (with-current-buffer buffer
+                ;; A zero-delay cooperative page may finish while the shell is
+                ;; displaying the buffer.  If it is still pending, only the
+                ;; loading projection is visible; otherwise the exact committed
+                ;; transcript is already the valid completed state.
+                (if e-chat--session-load-request
+                    (should (string-match-p "Loading transcript"
+                                            (buffer-string)))
+                  (should (string-match-p "render response"
+                                          (buffer-string)))))
+              (let ((deadline (+ (float-time) 2.0)))
+                (while (and (buffer-live-p buffer)
+                            (with-current-buffer buffer
+                              e-chat--session-load-request)
+                            (< (float-time) deadline))
+                  (accept-process-output nil 0.01))))
             (with-current-buffer buffer
               (let ((text (buffer-string)))
                 (should-not e-chat--session-load-request)
+                (should (buffer-live-p
+                         (e-chat-surface-composer-buffer)))
                 (should (string-match-p "render prompt" text))
                 (should (string-match-p "render response" text))
-                (should-not (string-match-p "Loading transcript" text))))))
+                (should-not (string-match-p "Loading transcript" text))))
+            (should (= sync-load-count 0))
+            (should (= mode-line-refresh-count 1))
+            (should-not mode-line-refresh-during-load)
+            (should
+             (equal
+              (mapcar (lambda (message) (plist-get message :content))
+                      (e-session-messages indexed-store "async-render"))
+              '("render prompt" "render response")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when store

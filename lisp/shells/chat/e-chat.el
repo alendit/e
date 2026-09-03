@@ -1840,6 +1840,12 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
       (e-chat-composer-disable-modal-editing)
       (e-chat-composer-disable-completion)
       (e-chat-surface-initialize)
+      ;; Publish the unloaded state before installing the session identity.
+      ;; The loading header must not derive session-owned mode-line data and
+      ;; start a competing synchronous lazy load while cooperative replay is
+      ;; active.
+      (when unloaded-session
+        (e-chat-surface-set-status "loading session" nil))
       (setq-local e-current-harness harness)
       (setq-local e-chat-harness harness)
       (setq-local e-chat-harness-instance-id instance-id)
@@ -1868,8 +1874,12 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
         (e-chat-surface-kill-composer))
       (when (buffer-live-p surface-composer)
         (e-chat-surface-bind-composer surface-composer buffer))
-      (e-chat-composer-ensure)
-      (e-chat-overview-update-unread-cache buffer)
+      ;; Composer queue projection and unread projection both consult the
+      ;; attached session.  Install them only on the normal loaded attachment;
+      ;; successful cooperative replay re-enters this function for that path.
+      (unless unloaded-session
+        (e-chat-composer-ensure)
+        (e-chat-overview-update-unread-cache buffer))
       (e-chat--rename-buffer-for-session)
       (unless unloaded-session
         ;; Establish one cursor before rendering.  The returned bounded
@@ -1899,9 +1909,8 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
            (e-chat-service-view-messages view)
            (e-chat-service-view-activity-events view)))
         (e-chat-overview-mark-selected-session-read buffer))
-      (e-chat-surface-set-status
-       (if unloaded-session "loading session" "idle")
-       t)
+      (unless unloaded-session
+        (e-chat-surface-set-status "idle" t))
       ;; The transcript no longer has an editable composer tail.  Protect it
       ;; as a whole so an early Escape or any unbound editing key cannot make
       ;; arbitrary text part of the rendered conversation.

@@ -114,10 +114,11 @@ restore regression proves a distinct responsibility.
 - Broad =test/e-chat-test.el= suite excluding the known unrelated timeout: 325
   expected passes, 1 expected skip, and no unexpected results.
 - =eldev compile -W lisp/shells/chat/e-chat.el= completed without warnings.
-- The excluded
-  =e-chat-test-open-session-renders-after-async-index-load= reproduces alone and
-  times out while its 16-byte chunk loader is still at 720/2298 bytes; it does
-  not exercise the changed activation path.
+- The formerly excluded
+  =e-chat-test-open-session-renders-after-async-index-load= exposed a distinct
+  cold-session publication race.  The bounded follow-up is recorded in
+  [[file:../cold-session-publication-stranded/investigation.org][Cold Session
+  Publication Can Remain at Loading Transcript Investigation]].
 - The restarted Emacs was used only for the bounded state probe during this
   investigation and was not reloaded or otherwise changed.
 
