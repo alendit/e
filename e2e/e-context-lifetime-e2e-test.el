@@ -1252,7 +1252,187 @@ persisted anchor response ids for the caller's semantic assertions."
      (mapcar (lambda (anchor)
                (plist-get (plist-get anchor :metadata) :response-id))
               (e-session-provider-anchors
-               (e-harness-sessions harness) session-id)))))
+              (e-harness-sessions harness) session-id)))))
+
+(ert-deftest e-context-lifetime-e2e-test-two-frame-curation-responses-compose ()
+  "Real Responses transport curates two tool frames and publishes both activities."
+  (dolist (mode '(stateless anchored))
+    (let* ((process-environment
+            (cons "E_CONTEXT_LIFETIME_TOKEN=credential-free-test"
+                  process-environment))
+           (e-harness-auto-compaction-enabled nil)
+           (e-context-lifetime-shadow-projection-enabled t)
+           (provider-id (intern (format "two-frame-%s-e2e" mode)))
+           (session-id (format "two-frame-%s" mode))
+           (e-openai-model-providers
+            (list
+             (list provider-id
+                   :name (format "Two frame %s E2E" mode)
+                   :base-url "https://two-frame.example.test/v1"
+                   :env-key "E_CONTEXT_LIFETIME_TOKEN"
+                   :wire-api 'responses
+                   :responses-transport 'http
+                   :response-store t
+                   :responses-context-layout 'developer-input
+                   :observation-delivery 'request-local-replaceable
+                   :continuation (eq mode 'anchored)
+                   :requires-openai-auth nil)))
+           (requests nil)
+           (request-count 0)
+           (tool-calls nil)
+           (captured-frames nil)
+           (register-tool
+            (lambda (registry name result)
+              (e-tools-register
+               registry
+               :name name
+               :description (format "Return %s." result)
+               :parameters '(:type "object"
+                             :properties (:target (:type "string"))
+                             :required ["target"])
+               :work
+               (e-tools-cheap-work
+                (format "e2e.two-frame.%s" name)
+                (lambda (_arguments)
+                  (setq tool-calls (append tool-calls (list name)))
+                  result)))))
+           (capability
+            (e-capability-create
+             :id (intern (format "two-frame-%s-capability" mode))
+             :instructions "Use both inspection tools in order."
+             :tools
+             (list
+              (lambda (registry)
+                (funcall register-tool registry "inspect-a" "FRAME-A-SOURCE")
+                (funcall register-tool registry "inspect-b" "FRAME-B-SOURCE")))))
+           (transport
+            (cl-function
+             (lambda (&key body &allow-other-keys)
+               (let ((parsed (e-context-lifetime-e2e--json-body body)))
+                 (setq requests (append requests (list parsed))
+                       request-count (1+ request-count))
+                 (pcase request-count
+                   (1
+                    (e-context-lifetime-e2e--sse
+                     '((type . "response.output_item.done")
+                       (item . ((type . "function_call")
+                                (call_id . "call-a")
+                                (name . "inspect-a")
+                                (arguments . "{\"stated_purpose\":\"Inspect A.\",\"target\":\"A\"}"))))
+                     '((type . "response.completed")
+                       (response . ((id . "two-frame-tool-a")
+                                    (status . "completed"))))))
+                   (2
+                    (e-context-lifetime-e2e--sse
+                     '((type . "response.output_item.done")
+                       (item . ((type . "function_call")
+                                (call_id . "curate-a")
+                                (name . "context-curate")
+                                (arguments . "{\"keep\":[1],\"summaries\":[],\"erase\":[]}"))))
+                     '((type . "response.completed")
+                       (response . ((id . "two-frame-curate-a")
+                                    (status . "completed"))))))
+                   (3
+                    (e-context-lifetime-e2e--sse
+                     '((type . "response.output_item.done")
+                       (item . ((type . "function_call")
+                                (call_id . "call-b")
+                                (name . "inspect-b")
+                                (arguments . "{\"stated_purpose\":\"Inspect B.\",\"target\":\"B\"}"))))
+                     '((type . "response.completed")
+                       (response . ((id . "two-frame-tool-b")
+                                    (status . "completed"))))))
+                   (4
+                    (e-context-lifetime-e2e--sse
+                     '((type . "response.output_item.done")
+                       (item . ((type . "function_call")
+                                (call_id . "curate-b")
+                                (name . "context-curate")
+                                (arguments . "{\"keep\":[1],\"summaries\":[],\"erase\":[]}"))))
+                     '((type . "response.completed")
+                       (response . ((id . "two-frame-curate-b")
+                                    (status . "completed"))))))
+                   (5
+                    (e-context-lifetime-e2e--sse
+                     '((type . "response.output_text.done")
+                       (text . "TWO-FRAME-ANSWER"))
+                     '((type . "response.completed")
+                       (response . ((id . "two-frame-answer")
+                                    (status . "completed"))))))
+                   (_ (error "Unexpected two-frame request %d" request-count)))))))
+           (harness
+            (e-openai-create-harness
+             :provider provider-id :model "gpt-e2e"
+             :request-function transport)))
+      (dolist (base-capability
+               (e-layer-capabilities (e-harness-base-layer-create)))
+        (e-harness-activate-capability harness base-capability))
+      (e-harness-activate-capability harness capability)
+      (let ((make-frame
+             (symbol-function
+              'e-harness-context-lifetime-tool-observation-frame)))
+        (cl-letf (((symbol-function
+                    'e-harness-context-lifetime-tool-observation-frame)
+                   (lambda (&rest arguments)
+                     (let ((frame (apply make-frame arguments)))
+                       (setq captured-frames
+                             (append captured-frames (list frame)))
+                       frame))))
+          (e-board-e2e-create-session harness :id session-id)
+          (e-context-lifetime-e2e--prompt-batch
+           harness session-id "Inspect A, curate it, then inspect and curate B.")))
+      (let* ((store (e-harness-sessions harness))
+             (curations (e-session-context-curations store session-id))
+             (activities
+              (seq-filter
+               (lambda (event)
+                 (eq (plist-get event :event-type) 'context-curated))
+               (e-chat-service-activity-events harness session-id)))
+             (messages (e-session-messages store session-id)))
+        (should (= request-count 5))
+        (should (equal tool-calls '("inspect-a" "inspect-b")))
+        (should (= (length captured-frames) 2))
+        (should (= (length curations) 2))
+        (should (= (length activities) 2))
+        (should
+         (equal (mapcar (lambda (curation)
+                          (plist-get curation :frame-id))
+                        curations)
+                (mapcar #'e-context-lifetime-frame-id captured-frames)))
+        (should
+         (equal (mapcar (lambda (activity)
+                          (plist-get (plist-get activity :payload)
+                                     :kept-source-count))
+                        activities)
+                '(1 1)))
+        (should
+         (equal (plist-get (car (last messages)) :content)
+                "TWO-FRAME-ANSWER"))
+        (should
+         (equal
+          (mapcar
+           (lambda (request)
+             (if (seq-find
+                  (lambda (tool)
+                    (equal (plist-get tool :name) "context-curate"))
+                  (append (plist-get request :tools) nil))
+                 t nil))
+           requests)
+          ;; The initial user request owns its own live frame.  Each consumed
+          ;; curation acknowledgement is carrier-free, and tool B opens the
+          ;; next opportunity.
+          '(t t nil t nil)))
+        (dolist (spec '((3 "curate-a") (5 "curate-b")))
+          (let* ((request (nth (1- (car spec)) requests))
+                 (call-id (cadr spec)))
+            (should (= (length
+                        (seq-filter
+                         (lambda (item)
+                           (and (equal (plist-get item :type)
+                                       "function_call_output")
+                                (equal (plist-get item :call_id) call-id)))
+                         (append (plist-get request :input) nil)))
+                       1))))))))
 
 (ert-deftest e-context-lifetime-e2e-test-multi-tool-bundle-is-one-shot ()
   "Pair multiple streamed calls/replay/results and forget them as one bundle.

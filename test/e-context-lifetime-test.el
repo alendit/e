@@ -1140,7 +1140,7 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should (equal first same))
     (should-not (equal first different))
     (should (equal (plist-get first :schema-revision)
-                   "context-curate-v7"))
+                   "context-curate-v8"))
     (should (equal (plist-get first :presentation-revision)
                    "context-curation-presentation-v3"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))

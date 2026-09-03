@@ -49,6 +49,29 @@
    ((listp arguments) arguments)
    (t nil)))
 
+(defconst e-openai-decoder--context-curation-duplicate-correction
+  "Curation was already handled for the currently presented labeled sources. Continue normally; call context-curate again only after new labeled sources are presented."
+  "Fixed Responses output used for one duplicate-curation recovery.")
+
+(defun e-openai-decoder--context-curation-replay-bundle
+    (arguments call-id output)
+  "Return opaque Responses replay state for ARGUMENTS, CALL-ID, and OUTPUT."
+  (list
+   (list :type 'provider-replay-item
+         :provider-id 'openai
+         :full-replay-only t
+         :item (list :type "function_call"
+                     :call_id call-id
+                     :name "context-curate"
+                     :arguments
+                     (json-encode
+                      (or arguments (make-hash-table :test 'equal)))))
+   (list :type 'provider-replay-item
+         :provider-id 'openai
+         :item (list :type "function_call_output"
+                     :call_id call-id
+                     :output output))))
+
 (defun e-openai-decoder--context-curation-effect (arguments &optional call-id)
   "Return the core-owned curation effect decoded from wire ARGUMENTS.
 
@@ -64,33 +87,24 @@ provider identity.  Core binds its labels to the live frame at completion."
     ;; session projection removes this replay metadata from later durable
     ;; context.
     (when (and (stringp call-id) (not (string-empty-p call-id)))
-      (let ((output-replay
-             (list :type 'provider-replay-item
-                   :provider-id 'openai
-                   :item (list :type "function_call_output"
-                               :call_id call-id
-                               :output "")))
-            (call-replay
-             (list :type 'provider-replay-item
-                   :provider-id 'openai
-                   ;; An anchored continuation already has this function call
-                   ;; in the provider response.  It is needed only when the
-                   ;; complete causal exchange is replayed statelessly.
-                   :full-replay-only t
-                   :item (list :type "function_call"
-                               :call_id call-id
-                               :name "context-curate"
-                               :arguments
-                               (json-encode
-                                (or arguments
-                                    (make-hash-table :test 'equal)))))))
+      (let* ((normal-bundle
+              (e-openai-decoder--context-curation-replay-bundle
+               arguments call-id ""))
+             (corrective-bundle
+              (e-openai-decoder--context-curation-replay-bundle
+               arguments call-id
+               e-openai-decoder--context-curation-duplicate-correction))
+             (output-replay (cadr normal-bundle)))
         ;; Retain the singular output field for existing consumers while the
         ;; plural field carries the complete call/output pair for full replay.
         (setq effect
               (plist-put effect :provider-replay-item output-replay))
         (setq effect
               (plist-put effect :provider-replay-items
-                         (list call-replay output-replay)))))
+                         normal-bundle))
+        (setq effect
+              (plist-put effect :provider-corrective-replay-items
+                         corrective-bundle))))
     effect))
 
 (defun e-openai-decoder--sequence-list (value)

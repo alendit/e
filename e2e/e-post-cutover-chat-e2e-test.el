@@ -407,19 +407,18 @@ safe public count projection for a non-empty package."
                (string-match-p
                 "never erase a label marked erase-ineligible"
                 first-wire))
-              (should (= (length calls) (if (eq mode 'stateless) 1 0)))
+              ;; Consuming the frame closes the carrier opportunity.  That
+              ;; material layout change makes the matching acknowledgement a
+              ;; complete stateless call/output replay in either profile.
+              (should (= (length calls) 1))
               (should (= (length outputs) 1))
-              (if (eq mode 'anchored)
-                  (progn
-                    (should (equal (plist-get ack :previous_response_id)
-                                   curation-response-id))
-                    (should (= (length
-                                (e-post-cutover-chat-e2e--input-items ack))
-                               1)))
-                (should-not (plist-member ack :previous_response_id))
-                (let ((input (e-post-cutover-chat-e2e--input-items ack)))
-                  (should (< (seq-position input (car calls) #'eq)
-                             (seq-position input (car outputs) #'eq))))))
+              (should-not (plist-member ack :previous_response_id))
+              (should-not
+               (seq-find #'e-post-cutover-chat-e2e--curation-tool-p
+                         (append (plist-get ack :tools) nil)))
+              (let ((input (e-post-cutover-chat-e2e--input-items ack)))
+                (should (< (seq-position input (car calls) #'eq)
+                           (seq-position input (car outputs) #'eq)))))
             ;; Model a cold process boundary while preserving the same
             ;; canonical SQLite root and injected deterministic transport.
             (e-default-runtime-close)
@@ -455,16 +454,9 @@ safe public count projection for a non-empty package."
               (e-board-e2e-prompt-batch reopened session-id "Later")
               (should (= request-count 3))
               (let ((later (nth 2 requests)))
-                (if (eq mode 'anchored)
-                    (progn
-                      (should
-                       (equal
-                        (plist-get later :previous_response_id)
-                        (format "answer-response-%s" mode)))
-                      (should-not
-                       (equal (plist-get later :previous_response_id)
-                              curation-response-id)))
-                  (should-not (plist-member later :previous_response_id)))
+                ;; A fresh turn reopens the carrier for its new frame, so it
+                ;; cannot continue the carrier-free acknowledgement layout.
+                (should-not (plist-member later :previous_response_id))
                 (should-not
                  (seq-find
                   (lambda (item)

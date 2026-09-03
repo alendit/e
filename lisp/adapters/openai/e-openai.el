@@ -211,10 +211,16 @@ OpenAI request and backend-neutral context."
                         :include-encrypted-reasoning
                         (plist-get profile :include-encrypted-reasoning)))
                  (if (plist-get effective-options :context-lifetime-enabled)
-                     (setq effective-options
-                           (plist-put effective-options
-                                      :reserved-effect-carrier
-                                      'context-curate-wire))
+                     ;; The profile supplies the default carrier, while an
+                     ;; explicit request-local nil from the loop closes a
+                     ;; consumed frame opportunity without teaching core any
+                     ;; provider wire syntax.
+                     (unless (plist-member effective-options
+                                            :reserved-effect-carrier)
+                       (setq effective-options
+                             (plist-put effective-options
+                                        :reserved-effect-carrier
+                                        'context-curate-wire)))
                    (cl-remf effective-options :reserved-effect-carrier))
                  (when (plist-member profile :response-store)
                    (setq effective-options

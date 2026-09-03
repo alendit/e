@@ -875,6 +875,115 @@ stand in for the pure curation preparation path."
             (should-not (string-match-p "response-package" fork-projection))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-two-curation-packages-survive-reopen-branches-and-compaction ()
+  "Two ordered frame decisions retain their selected-path meaning everywhere."
+  (let* ((directory (make-temp-file "e-session-two-curations-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "two-curation-packages")
+         (generation-id "two-curation-generation")
+         (make-record
+          (lambda (suffix value)
+            (list :record-version 3
+                  :type 'context-promotion
+                  :id (format "curation-%s" suffix)
+                  :frame-id (format "frame-%s" suffix)
+                  :generation-id generation-id
+                  :consumer-request-id (format "consumer-%s" suffix)
+                  :response-entry-id (format "response-%s" suffix)
+                  :items
+                  (list
+                   (list :kind 'exact :value value
+                         :source-observation-ids
+                         (list (format "observation-%s" suffix))
+                         :source-refs (list (format "source-%s" suffix))
+                         :source-fingerprints
+                         (list (format "fingerprint-%s" suffix))))))))
+    (unwind-protect
+        (let* ((session (e-session-create store :id session-id))
+               (root-id (plist-get session :root-event-id)))
+          (e-session-append-context-generation
+           store session-id
+           (e-context-lifetime-generation-create
+            :id generation-id
+            :checkpoint '((:role system :content "BASE-CHECKPOINT"))
+            :covered-session-boundary root-id))
+          (let* ((record-a (funcall make-record "a" "CURATED-A"))
+                 (record-b (funcall make-record "b" "CURATED-B"))
+                 (package-a
+                  (e-session-append-context-curation-package
+                   store session-id
+                   (list :promotion record-a :erasure nil)))
+                 (_control-a
+                  (e-session-append-context-curation-response
+                   store session-id "turn-two-curations" "response-a"))
+                 (package-b
+                  (e-session-append-context-curation-package
+                   store session-id
+                   (list :promotion record-b :erasure nil)))
+                 (_control-b
+                  (e-session-append-context-curation-response
+                   store session-id "turn-two-curations" "response-b"))
+                 (answer
+                  (e-session-append-message
+                   store session-id
+                   '(:id "two-curation-answer" :role assistant
+                     :content "both selected"))))
+            (e-session-flush-write-queue store)
+            (let* ((reopened (e-session-persistent-store-create directory))
+                   (records (e-session-context-curations reopened session-id))
+                   (source-projection
+                    (e-session-context-lifetime-projection reopened session-id))
+                   (current-fork (e-session-fork reopened session-id))
+                   (current-fork-id (plist-get current-fork :id))
+                   (current-checkpoint
+                    (e-context-lifetime-generation-checkpoint
+                     (plist-get
+                      (e-session-context-lifetime-projection
+                       reopened current-fork-id)
+                      :generation)))
+                   (source-text (prin1-to-string source-projection))
+                   (current-text (prin1-to-string current-checkpoint)))
+              (should (equal (mapcar (lambda (record)
+                                       (plist-get record :id))
+                                     records)
+                             '("curation-a" "curation-b")))
+              (should (< (string-match-p "CURATED-A" source-text)
+                         (string-match-p "CURATED-B" source-text)))
+              (should (< (string-match-p "CURATED-A" current-text)
+                         (string-match-p "CURATED-B" current-text)))
+              (should (string-match-p "BASE-CHECKPOINT" current-text))
+              (should (= (length
+                          (e-session-context-curations reopened session-id))
+                         2))
+              (let* ((compaction
+                      (e-session-append-compaction
+                       reopened session-id "CURATED-A then CURATED-B"
+                       :first-kept-entry-id (plist-get answer :id)))
+                     (_ (e-session-flush-write-queue reopened))
+                     (compacted
+                      (e-session-persistent-store-create directory))
+                     (physical-packages
+                      (seq-filter
+                       (lambda (record)
+                         (equal (plist-get record :type)
+                                "context-curation-package"))
+                       (e-session-storage-read-session-records
+                        compacted session-id))))
+                (should
+                 (equal (plist-get
+                         (e-session-latest-valid-compaction
+                          compacted session-id)
+                         :id)
+                        (plist-get compaction :id)))
+                (should (= (length physical-packages) 2))
+                (should (< (string-match-p
+                            "CURATED-A"
+                            (plist-get compaction :summary))
+                           (string-match-p
+                            "CURATED-B"
+                            (plist-get compaction :summary))))))))
+      (delete-directory directory t))))
+
 
 
 (ert-deftest e-session-test-context-erasure-query-is-path-scoped-and-not-forked ()

@@ -1415,11 +1415,63 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               :arguments
               "{\"keep\":[1],\"summaries\":[],\"erase\":[]}"))))
          (replay (plist-get item :provider-replay-item))
-         (wire-item (plist-get replay :item)))
+         (wire-item (plist-get replay :item))
+         (corrective
+          (cadr (plist-get item :provider-corrective-replay-items)))
+         (corrective-wire-item (plist-get corrective :item)))
     (should (equal (plist-get replay :provider-id) 'openai))
     (should (equal (plist-get wire-item :type) "function_call_output"))
     (should (equal (plist-get wire-item :call_id) "curation-call"))
-    (should (equal (plist-get wire-item :output) ""))))
+    (should (equal (plist-get wire-item :output) ""))
+    (should (equal (plist-get corrective :provider-id) 'openai))
+    (should (equal (plist-get corrective-wire-item :type)
+                   "function_call_output"))
+    (should (equal (plist-get corrective-wire-item :call_id)
+                   "curation-call"))
+    (should (equal
+             (plist-get corrective-wire-item :output)
+             e-openai-decoder--context-curation-duplicate-correction))))
+
+(ert-deftest e-openai-test-context-curation-v8-guidance-is-frame-scoped ()
+  "Reserved carrier guidance states the complete per-frame invocation rule."
+  (let* ((tool (e-openai-responses-context-curation-tool-definition))
+         (description (plist-get tool :description)))
+    (should (equal e-context-lifetime-curation-schema-revision
+                   "context-curate-v8"))
+    (dolist (meaning '("at most once"
+                       "After its acknowledgement, continue"
+                       "only after later tool work or context refresh"
+                       "labels belong only to the currently presented frame"
+                       "cannot be reused for an earlier frame"))
+      (should (string-match-p (regexp-quote meaning) description)))
+    ;; HTTP and WebSocket Responses share this body projection.  Exercise both
+    ;; transport identities so carrier exposure and suppression cannot drift.
+    (dolist (transport '(http websocket))
+      (let* ((options (list :model "gpt-test"
+                            :responses-transport transport
+                            :reserved-effect-carrier 'context-curate-wire))
+             (body (e-openai-codex-request-body
+                    :messages '((:role user :content "curate"))
+                    :options options))
+             (wire-tool
+              (seq-find
+               (lambda (candidate)
+                 (equal (plist-get candidate :name) "context-curate"))
+               (append (plist-get body :tools) nil))))
+        (should wire-tool)
+        (should (equal (plist-get wire-tool :description) description))
+        (should-not
+         (seq-find
+          (lambda (candidate)
+            (equal (plist-get candidate :name) "context-curate"))
+          (append
+           (plist-get
+            (e-openai-codex-request-body
+             :messages '((:role user :content "continue"))
+             :options (plist-put (copy-sequence options)
+                                 :reserved-effect-carrier nil))
+            :tools)
+           nil)))))))
 
 
 (ert-deftest e-openai-test-context-curation-full-replay-pair-is-not-anchored-call ()

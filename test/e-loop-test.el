@@ -2151,55 +2151,258 @@
     (should (equal (plist-get (car (last durable-messages)) :content)
                    "answer"))))
 
-(ert-deftest e-loop-test-curation-only-response-bounds-repeated-empty-followup ()
-  "A reserved-only response cannot start an unbounded acknowledgement loop."
+(ert-deftest e-loop-test-duplicate-curation-recovers-once-then-uses-empty-output ()
+  "A closed opportunity receives one correction, then ordinary empty-output."
   (let* ((request-count 0)
          (completion-count 0)
+         (requests nil)
+         (events nil)
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-duplicate" :generation-id "generation-duplicate"
+           :consumer-request-id "consumer-duplicate"
+           :observations
+           '((:observation-id "observation-duplicate"
+              :kind "current-state"
+              :source-entry-ref "external:duplicate:1"
+              :source-fingerprint "duplicate-fingerprint"
+              :effective-delivery "request-local-replaceable"
+              :body (:role "user" :content "DUPLICATE-SOURCE")))))
          (backend
           (e-backend-create
            :name "repeated-curation-only"
            :stream
            (cl-function
+            (lambda (&key options on-item &allow-other-keys)
+              (setq requests (append requests (list (copy-tree options))))
+              (setq request-count (1+ request-count))
+              (funcall on-item
+                       (e-openai-decoder--context-curation-effect
+                        '(:keep nil :summaries nil :erase nil)
+                        (format "curation-call-%d" request-count)))
+              (funcall on-item
+                       (list :type 'provider-anchor-candidate
+                             :provider-id 'openai
+                             :metadata
+                             (list :response-id
+                                   (format "response-curation-%d"
+                                           request-count))))
+              (funcall on-item '(:type done :reason stop)))))))
+    (let ((error
+           (should-error
+            (e-loop-run-turn-batch
+             :session-id "session-repeated-curation"
+             :turn-id "turn-repeated-curation"
+             :messages '((:role tool
+                          :content (:tool-call-id "inspect-call"
+                                    :name "inspect" :content "inspected")))
+             :backend backend
+             :tools (e-tools-registry-create)
+             :options '(:model "fake"
+                        :context-lifetime-enabled t
+                        :reserved-effect-carrier context-curate-wire
+                        :context-capabilities
+                        (:continuation none
+                         :observation-delivery inherited
+                         :reserved-effect-carrier context-curate-wire))
+             :lifetime-frame frame
+             :on-response-complete
+             (lambda (payload)
+               (when (plist-get payload :curation-effects)
+                 (setq completion-count (1+ completion-count))
+                 (e-context-lifetime-frame-complete-for-consumer
+                  (plist-get payload :frame)
+                  "consumer-duplicate"
+                  (or (plist-get payload :response-entry-id)
+                      "response-entry-duplicate"))))
+             :on-event
+             (lambda (type payload)
+               (push (list :type type :payload payload) events))
+             :append-message #'ignore)
+            :type 'e-loop-empty-output)))
+      (should-not (eq (car-safe error) 'e-context-lifetime-invalid-record)))
+    (should (= request-count 3))
+    (should (= completion-count 1))
+    (should (= (seq-count
+                (lambda (event)
+                  (eq (plist-get event :type)
+                      'context-curation-duplicate-ignored))
+                events)
+               1))
+    (should (eq (plist-get (nth 0 requests) :reserved-effect-carrier)
+                'context-curate-wire))
+    (should-not (plist-get (nth 1 requests) :reserved-effect-carrier))
+    (should-not (plist-get (nth 2 requests) :reserved-effect-carrier))
+    (let* ((third-body
+            (e-openai-codex-request-body
+             :messages nil :options (nth 2 requests) :tools nil))
+           (correction
+            (seq-find
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "curation-call-2")))
+             (append (plist-get third-body :input) nil))))
+      (should correction)
+      (should (equal
+               (plist-get correction :output)
+               e-openai-decoder--context-curation-duplicate-correction)))))
+
+(ert-deftest e-loop-test-duplicate-curation-retains-frame-bound-validation ()
+  "A closed opportunity does not turn an invalid disposition into recovery."
+  (let* ((request-count 0)
+         (completion-count 0)
+         (events nil)
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-strict-duplicate"
+           :generation-id "generation-strict-duplicate"
+           :consumer-request-id "consumer-strict-duplicate"
+           :observations
+           '((:observation-id "observation-strict-duplicate"
+              :kind "current-state"
+              :source-entry-ref "external:strict:1"
+              :source-fingerprint "strict-fingerprint"
+              :effective-delivery "request-local-replaceable"
+              :body (:role "user" :content "STRICT-SOURCE")))))
+         (backend
+          (e-backend-create
+           :name "strict-duplicate-curation"
+           :stream
+           (cl-function
             (lambda (&key on-item &allow-other-keys)
               (setq request-count (1+ request-count))
               (funcall on-item
-                       '(:type context-curate
-                         :arguments (:keep (1) :summaries nil)
-                         :provider-replay-item
-                         (:type provider-replay-item
-                          :provider-id openai
-                          :item (:type "function_call_output"
-                                 :call_id "curation-call"
-                                 :output ""))))
-              (funcall on-item
-                       '(:type provider-anchor-candidate
-                         :provider-id openai
-                         :metadata (:response-id "response-curation")))
+                       (e-openai-decoder--context-curation-effect
+                        (list :keep (list request-count)
+                              :summaries nil :erase nil)
+                        (format "strict-curation-%d" request-count)))
               (funcall on-item '(:type done :reason stop)))))))
     (should-error
      (e-loop-run-turn-batch
-      :session-id "session-repeated-curation"
-      :turn-id "turn-repeated-curation"
-      :messages '((:role tool
-                   :content (:tool-call-id "inspect-call"
-                             :name "inspect" :content "inspected")))
+      :session-id "session-strict-duplicate"
+      :turn-id "turn-strict-duplicate"
+      :messages '((:role user :content "curate once"))
       :backend backend
       :tools (e-tools-registry-create)
       :options '(:model "fake"
                  :context-lifetime-enabled t
-                 :context-capabilities
-                 (:continuation none
-                  :observation-delivery inherited
-                  :reserved-effect-carrier context-curate-wire))
+                 :reserved-effect-carrier context-curate-wire)
+      :lifetime-frame frame
       :on-response-complete
       (lambda (payload)
         (when (plist-get payload :curation-effects)
-          (setq completion-count (1+ completion-count))))
-      :on-event #'ignore
+          (setq completion-count (1+ completion-count))
+          (e-context-lifetime-frame-complete-for-consumer
+           (plist-get payload :frame)
+           "consumer-strict-duplicate"
+           (plist-get payload :response-entry-id))))
+      :on-event
+      (lambda (type payload)
+        (push (list :type type :payload payload) events))
       :append-message #'ignore)
      :type 'e-context-lifetime-invalid-record)
     (should (= request-count 2))
-    (should (= completion-count 1))))
+    (should (= completion-count 1))
+    (should-not
+     (seq-find
+      (lambda (event)
+        (eq (plist-get event :type)
+            'context-curation-duplicate-ignored))
+      events))))
+
+(ert-deftest e-loop-test-curation-opportunity-is-scoped-to-each-new-frame ()
+  "Two tool-created frames each admit one curation in the same turn."
+  (let* ((request-count 0)
+         (tool-count 0)
+         (completion-frames nil)
+         (requests nil)
+         (messages nil)
+         (backend
+          (e-backend-create
+           :name "multi-frame-curation"
+           :stream
+           (cl-function
+            (lambda (&key options on-item &allow-other-keys)
+              (setq requests (append requests (list (copy-tree options))))
+              (setq request-count (1+ request-count))
+              (pcase request-count
+                ((or 1 3)
+                 (funcall on-item
+                          (list :type 'tool-call
+                                :id (format "tool-%d" request-count)
+                                :name "inspect" :arguments nil))
+                 (funcall on-item '(:type done :reason tool-use)))
+                ((or 2 4)
+                 (funcall on-item
+                          (e-openai-decoder--context-curation-effect
+                           '(:keep (1) :summaries nil :erase nil)
+                           (format "curation-%d" request-count)))
+                 (funcall on-item '(:type done :reason stop)))
+                (5
+                 (funcall on-item
+                          '(:type assistant-message :content "multi-frame answer"))
+                 (funcall on-item '(:type done :reason stop)))
+                (_ (error "Unexpected request %d" request-count)))))))
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :start
+           (cl-function
+            (lambda (tool-call &key on-done &allow-other-keys)
+              (setq tool-count (1+ tool-count))
+              (funcall on-done
+                       (list :tool-call-id (plist-get tool-call :id)
+                             :name "inspect" :status 'ok
+                             :content (format "result-%d" tool-count)))
+              nil)))))
+    (e-loop-run-turn-batch
+     :session-id "session-multi-frame"
+     :turn-id "turn-multi-frame"
+     :messages '((:role user :content "inspect twice"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :tool-lifecycle tool-lifecycle
+     :options '(:model "fake"
+                :context-lifetime-enabled t
+                :reserved-effect-carrier context-curate-wire
+                :context-capabilities
+                (:continuation none
+                 :observation-delivery inherited
+                 :reserved-effect-carrier context-curate-wire))
+     :on-tool-observation
+     (lambda (_payload)
+       (let ((index tool-count))
+         (e-context-lifetime-frame-create
+          :id (format "frame-%d" index)
+          :generation-id "generation-multi-frame"
+          :consumer-request-id (format "consumer-%d" index)
+          :observations nil)))
+     :on-response-complete
+     (lambda (payload)
+       (when (plist-get payload :curation-effects)
+         (let ((frame (plist-get payload :frame)))
+           (setq completion-frames
+                 (append completion-frames
+                         (list (e-context-lifetime-frame-id frame))))
+           (e-context-lifetime-frame-complete-for-consumer
+            frame
+            (e-context-lifetime-frame-consumer-request-id frame)
+            (or (plist-get payload :response-entry-id)
+                (format "response-%d" request-count))))))
+     :on-event #'ignore
+     :append-message
+     (lambda (message) (setq messages (append messages (list message)))))
+    (should (= request-count 5))
+    (should (= tool-count 2))
+    (should (equal completion-frames '("frame-1" "frame-2")))
+    (should (equal (plist-get (car (last messages)) :content)
+                   "multi-frame answer"))
+    (should-not (plist-get (nth 0 requests) :reserved-effect-carrier))
+    (should (eq (plist-get (nth 1 requests) :reserved-effect-carrier)
+                'context-curate-wire))
+    (should-not (plist-get (nth 2 requests) :reserved-effect-carrier))
+    (should (eq (plist-get (nth 3 requests) :reserved-effect-carrier)
+                'context-curate-wire))
+    (should-not (plist-get (nth 4 requests) :reserved-effect-carrier))))
 
 (ert-deftest e-loop-test-stateless-curation-replays-call-and-ack-only-once ()
   "Fresh stateless curation replays its call/output pair exactly once."

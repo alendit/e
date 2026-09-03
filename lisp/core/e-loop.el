@@ -312,10 +312,14 @@ metadata, before tool execution begins."
         (active-request nil)
         (provider-request-sequence 0)
         (next-request-causes nil)
-        ;; A reserved curation-only response gets at most one immediate
-        ;; provider continuation for its opaque function-call acknowledgement.
+        ;; A closed frame opportunity gets one corrective provider continuation.
         ;; This is turn-local protocol state, not durable response history.
-        (curation-only-followups 0)
+        (curation-duplicate-correction-used-p nil)
+        ;; Retain exactly the just-curated request frame until the turn ends or
+        ;; a later curation replaces it.  The consumed runtime frame drops its
+        ;; bodies, but duplicate validation must preserve every ordinary
+        ;; frame-bound check before the semantic effect is ignored.
+        (last-curated-lifetime-frame nil)
         ;; A curation-only response has no semantic message to carry its opaque
         ;; provider acknowledgement.  Hold that wire state only until the next
         ;; request captures it; each request receives its own options snapshot.
@@ -443,14 +447,41 @@ metadata, before tool execution begins."
                   (done-reason nil)
                   (provider-anchor-candidate nil)
                   (pending-provider-replay-items nil)
+                  (pending-provider-corrective-replay-items nil)
                   (provider-followup-messages nil)
                   (provider-request nil)
                   (provider-request-id nil)
                   (provider-request-ordinal nil)
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
+                  (provider-request-lifetime-frame active-lifetime-frame)
                   (provider-request-options
                    (let ((request-options (copy-sequence turn-options)))
+                     ;; The capability advertises the reserved carrier for the
+                     ;; turn, but only a request that actually presents a live
+                     ;; frame owns an open curation opportunity.
+                     (when (and
+                            (eq (if (plist-member request-options
+                                                  :reserved-effect-carrier)
+                                    (plist-get request-options
+                                               :reserved-effect-carrier)
+                                  (plist-get
+                                   (plist-get request-options
+                                              :context-capabilities)
+                                   :reserved-effect-carrier))
+                                'context-curate-wire)
+                            (not (and
+                                  (e-context-lifetime-frame-p
+                                   active-lifetime-frame)
+                                  (not
+                                   (e-context-lifetime-frame-consumed-p
+                                    active-lifetime-frame)))))
+                       ;; Explicit nil prevents an adapter profile from
+                       ;; re-materializing its default carrier for this
+                       ;; closed request opportunity.
+                       (setq request-options
+                             (plist-put request-options
+                                        :reserved-effect-carrier nil)))
                      (when next-request-provider-replay-items
                        (setq request-options
                              (plist-put
@@ -466,7 +497,6 @@ metadata, before tool execution begins."
                   (response-curation-effects nil)
                   (response-entry-id nil)
                   (provider-request-causes next-request-causes)
-                  (provider-request-lifetime-frame active-lifetime-frame)
                   (provider-request-projection-identity
                    (plist-get turn-options
                               :continuation-projection-identity))
@@ -722,41 +752,85 @@ metadata, before tool execution begins."
                                (not followup-started)
                                (not settled)
                                (not (cancelled)))
-                      (when (> curation-only-followups 0)
-                        (signal 'e-context-lifetime-invalid-record
-                                (list 'curation
-                                      :repeated-empty-response
-                                      provider-request-id)))
-                      (unless pending-provider-replay-items
-                        (signal 'e-loop-empty-output
-                                (list 'curation :missing-ack-target)))
-                      ;; This response has no assistant message to carry the
-                      ;; durable identity.  Reserve a distinct response id
-                      ;; for the audit-only control entry before pure
-                      ;; preparation; the harness persists it only after that
-                      ;; preparation succeeds.
-                      (unless response-entry-id
-                        (setq response-entry-id (e-session-generate-ulid)))
-                      (setq followup-started t)
-                      (setq curation-only-followups
-                            (1+ curation-only-followups))
-                      ;; Commit/consume through the existing completion
-                      ;; callback before dispatching the acknowledgement.
-                      (notify-response-complete)
-                      ;; Preserve the established tool-result carrier when one
-                      ;; exists.  A fresh curation-only response instead hands
-                      ;; its opaque call/output pair to exactly the immediate
-                      ;; provider request, without fabricating or persisting a
-                      ;; semantic message.
-                      (unless (attach-pending-provider-replay-items)
-                        (setq next-request-provider-replay-items
-                              (copy-tree pending-provider-replay-items))
-                        (setq pending-provider-replay-items nil))
-                      ;; The response id is usable only for this immediate
-                      ;; acknowledgement continuation, even when the frame
-                      ;; makes it unsafe as a durable anchor.
-                      (promote-provider-anchor t)
-                      (start-request)))
+                      (if (and
+                           (e-context-lifetime-frame-p
+                            provider-request-lifetime-frame)
+                           (e-context-lifetime-frame-consumed-p
+                            provider-request-lifetime-frame)
+                           (e-context-lifetime-frame-p
+                            last-curated-lifetime-frame)
+                           (equal
+                            (e-context-lifetime-frame-id
+                             provider-request-lifetime-frame)
+                            (e-context-lifetime-frame-id
+                             last-curated-lifetime-frame)))
+                          (progn
+                            ;; A request against the already consumed frame has
+                            ;; no semantic work.  Preserve the ordinary
+                            ;; frame-bound strictness before selecting only
+                            ;; adapter-supplied opaque correction state; never
+                            ;; enter completion preflight or commit a package.
+                            (e-context-lifetime-prepare-curation-disposition
+                             last-curated-lifetime-frame
+                             (plist-get (car response-curation-effects)
+                                        :arguments)
+                             provider-request-id)
+                            (if curation-duplicate-correction-used-p
+                                (progn
+                                  (e-loop--emit
+                                   :on-event on-event
+                                   :type 'backend-empty-output
+                                   :payload (list :reason done-reason))
+                                  (fail '(e-loop-empty-output)))
+                              (unless pending-provider-corrective-replay-items
+                                (signal 'e-loop-empty-output
+                                        (list 'curation
+                                              :missing-correction-target)))
+                              (e-loop--emit
+                               :on-event on-event
+                               :type 'context-curation-duplicate-ignored
+                               :payload '(:outcome duplicate-ignored))
+                              (setq followup-started t
+                                    curation-duplicate-correction-used-p t
+                                    next-request-provider-replay-items
+                                    (copy-tree
+                                     pending-provider-corrective-replay-items)
+                                    pending-provider-replay-items nil
+                                    pending-provider-corrective-replay-items nil)
+                              ;; The duplicate response id is valid only for its
+                              ;; matching immediate corrective output.
+                              (promote-provider-anchor t)
+                              (start-request)))
+                        (unless pending-provider-replay-items
+                          (signal 'e-loop-empty-output
+                                  (list 'curation :missing-ack-target)))
+                        ;; This response has no assistant message to carry the
+                        ;; durable identity.  Reserve a distinct response id
+                        ;; for the audit-only control entry before pure
+                        ;; preparation; the harness persists it only after that
+                        ;; preparation succeeds.
+                        (unless response-entry-id
+                          (setq response-entry-id (e-session-generate-ulid)))
+                        (setq followup-started t)
+                        ;; Commit/consume through the existing completion
+                        ;; callback before dispatching the acknowledgement.
+                        (notify-response-complete)
+                        (setq last-curated-lifetime-frame
+                              provider-request-lifetime-frame)
+                        ;; Preserve the established tool-result carrier when one
+                        ;; exists.  A fresh curation-only response instead hands
+                        ;; its opaque call/output pair to exactly the immediate
+                        ;; provider request, without fabricating or persisting a
+                        ;; semantic message.
+                        (unless (attach-pending-provider-replay-items)
+                          (setq next-request-provider-replay-items
+                                (copy-tree pending-provider-replay-items))
+                          (setq pending-provider-replay-items nil))
+                        ;; The response id is usable only for this immediate
+                        ;; acknowledgement continuation, even when the frame
+                        ;; makes it unsafe as a durable anchor.
+                        (promote-provider-anchor t)
+                        (start-request))))
                    (current-tool-p
                     (token)
                     (and (listp active-tool)
@@ -1097,9 +1171,18 @@ metadata, before tool execution begins."
                                   (setq pending-provider-replay-items
                                         (append pending-provider-replay-items
                                                 (copy-tree replay-items)))))
+                              (when-let ((corrective-replay-items
+                                         (plist-get
+                                          item
+                                          :provider-corrective-replay-items)))
+                                (setq pending-provider-corrective-replay-items
+                                      (append
+                                       pending-provider-corrective-replay-items
+                                       (copy-tree corrective-replay-items))))
                               (setq item (copy-sequence item))
                               (cl-remf item :provider-replay-item)
                               (cl-remf item :provider-replay-items)
+                              (cl-remf item :provider-corrective-replay-items)
                               (setq response-curation-effects
                                     (list
                                      (list
@@ -1154,7 +1237,9 @@ metadata, before tool execution begins."
                                :payload token-usage))
                              ('provider-anchor-candidate
                               (when (e-loop--continuation-candidate-p
-                                     turn-options item tool-called)
+                                     turn-options item
+                                     (or tool-called
+                                         response-curation-effects))
                                 (setq provider-anchor-candidate item))
                               ;; Do not forward the raw item.  The accepted
                               ;; event is emitted by `promote-provider-anchor'

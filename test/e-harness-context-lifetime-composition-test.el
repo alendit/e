@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-openai-decoder)
 (require 'e-sqlite-test-store-support
          (expand-file-name
           "e-sqlite-test-store-support.el"
@@ -714,6 +715,104 @@
          (seq-find (lambda (message)
                      (eq (plist-get message :role) 'assistant))
                    (e-harness-messages harness "completion-preflight")))))))
+
+(ert-deftest e-harness-test-duplicate-curation-recovers-and-next-turn-is-usable ()
+  "One duplicate correction settles normally and does not poison a fresh turn."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((request-count 0)
+           (requests nil)
+           (events nil)
+           (backend
+            (e-backend-create
+             :name "curation-recovery-fresh-turn"
+             :context-capabilities
+             '(:continuation none
+               :observation-delivery request-local-replaceable
+               :reserved-effect-carrier context-curate-wire)
+             :stream
+             (cl-function
+              (lambda (&key options on-item &allow-other-keys)
+                (setq requests (append requests (list (copy-tree options)))
+                      request-count (1+ request-count))
+                (pcase request-count
+                  ((or 1 2)
+                   (funcall
+                    on-item
+                    (e-openai-decoder--context-curation-effect
+                     '(:keep (1) :summaries nil :erase nil)
+                     (format "recovery-curation-%d" request-count)))
+                   (funcall on-item '(:type done :reason stop)))
+                  (3
+                   (funcall on-item
+                            '(:type assistant-message
+                              :content "RECOVERED-ANSWER"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (4
+                   (funcall on-item
+                            '(:type assistant-message
+                              :content "FRESH-TURN-ANSWER"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (_ (error "Unexpected recovery request %d" request-count)))))))
+           (provider
+            (e-context-provider-create
+             :name 'curation-recovery-source
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      '((:role system :content "RECOVERY-SOURCE")))))
+           (capability
+            (e-capability-create
+             :id 'curation-recovery-capability
+             :context-providers (list provider)))
+           (harness
+            (e-harness-create
+             :backend backend
+             :intrinsic-capabilities (list capability))))
+      (e-harness-create-session harness :id "curation-recovery")
+      (e-harness-activity-subscribe
+       harness (lambda (event) (setq events (append events (list event))))
+       :session-id "curation-recovery")
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-test-prompt-batch
+         harness "curation-recovery" "curate, recover, and answer")
+        (e-harness-test-prompt-batch
+         harness "curation-recovery" "fresh question"))
+      (let* ((store (e-harness-sessions harness))
+             (messages (e-session-messages store "curation-recovery"))
+             (correction-items
+              (plist-get (nth 2 requests) :provider-request-replay-items))
+             (correction-output
+              (seq-find
+               (lambda (item)
+                 (equal (plist-get (plist-get item :item) :type)
+                        "function_call_output"))
+               correction-items)))
+        (should (= request-count 4))
+        (should (= (length (e-session-context-curations
+                            store "curation-recovery"))
+                   1))
+        (should (= (seq-count
+                    (lambda (event)
+                      (eq (plist-get event :type)
+                          'context-curation-duplicate-ignored))
+                    events)
+                   1))
+        (should-not
+         (string-match-p "e-context-lifetime-invalid-record"
+                         (prin1-to-string events)))
+        (should correction-output)
+        (should
+         (equal (plist-get (plist-get correction-output :item) :output)
+                e-openai-decoder--context-curation-duplicate-correction))
+        (should
+         (equal (mapcar (lambda (message)
+                          (plist-get message :content))
+                        (seq-filter
+                         (lambda (message)
+                           (eq (plist-get message :role) 'assistant))
+                         messages))
+                '("RECOVERED-ANSWER" "FRESH-TURN-ANSWER")))
+        (should-not (plist-get (nth 1 requests) :reserved-effect-carrier))
+        (should-not (plist-get (nth 2 requests) :reserved-effect-carrier))))))
 
 (ert-deftest e-harness-test-context-lifetime-assistant-curation-preserves-response-entry-id ()
   "A prepared curation and its assistant share one durable response identity."

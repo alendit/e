@@ -4,9 +4,10 @@
 
 * Status
 
-Ready.  Feature 91 is =Done=, its temporary implementation gate is satisfied,
-and this plan is rebaselined on the accepted modularized loop, harness-context,
-OpenAI adapter, Board-runtime, and chat-presentation owners.
+In-review.  Repository-controlled implementation and deterministic acceptance
+evidence are complete.  Independent implementation review reached no remaining
+actionable finding after corrections for frame-bound duplicate validation and
+the one-over diagnostic count.
 
 This addendum extends [[file:addendum7.org][Addendum 7]] without changing its
 =keep=, =summaries=, =erase=, omission, durability, or storage semantics.  It
@@ -14,8 +15,8 @@ changes when the reserved =context-curate= effect may be used during one turn,
 how that rule is explained to the model, and how the loop handles a duplicate
 curation-only response.
 
-Addendum 7 and =context-curate-v7= remain the accepted runtime baseline until
-this addendum is implemented and reviewed.
+=context-curate-v8= is now the repository runtime contract.  Configured-provider
+compliance remains optional external evidence rather than an acceptance gate.
 
 The motivating incident and source trace are recorded in
 [[file:../../bugs/repeated-empty-curation-fails-turn/investigation.org][Repeated
@@ -159,9 +160,10 @@ reported as invalid durable state and must never start an acknowledgement loop.
 - Owning contracts :: =F88A8-GUIDANCE=, =F88A8-OPPORTUNITY=,
   =F88A8-MULTI-FRAME=, =F88A8-DUPLICATE=, =F88A8-RECOVERY=,
   =F88A8-STRICTNESS=, =F88A8-DURABILITY=, and =F88A8-USABILITY=.
-- Behavioral status :: Failing in the current =context-curate-v7= runtime;
-  the motivating live scenario terminates with =:repeated-empty-response=.
-- Mechanism status :: Not started.
+- Behavioral status :: Passing in deterministic owner, composed harness, and
+  real Responses stateless/anchored scenarios.
+- Mechanism status :: Complete.  Independent implementation review found no
+  remaining actionable defect after two corrections.
 - External compatibility :: Not required for deterministic acceptance.  The
   provider may or may not obey the revised guidance; repository-owned recovery
   remains correct either way.  Any configured-provider observation is external
@@ -196,10 +198,10 @@ independent outcomes.
 - Presentation receives ordinary terminal and diagnostic events but does not
   decide curation validity or recovery.
 
-The implementation should replace the turn-wide scalar policy with request-
-or frame-scoped state.  It must not retain an unbounded set of historical frame
-identities: the active request opportunity and one corrective-recovery flag are
-sufficient for the sequential loop.
+The implementation replaces the turn-wide scalar policy with request- and
+frame-scoped state.  It retains no unbounded history: one just-curated live
+frame remains turn-local solely so a duplicate can repeat the ordinary strict
+validation before being ignored, and one boolean bounds corrective recovery.
 
 * Delivery package
 
@@ -265,7 +267,8 @@ A guidance-only edit or a larger turn-wide counter is not acceptable.
   current turn; useful later work creates a new frame and follows the ordinary
   opportunity path instead.
 - Resource estimate :: The exceptional path adds at most one provider request
-  and retains only one turn-local boolean/budget value.
+  and retains one already-built just-curated frame reference plus one
+  turn-local boolean/budget value.
 - Boundary consequence :: The first duplicate receives the fixed correction;
   another duplicate before useful tool work or assistant output settles through
   ordinary backend empty-output policy without semantic mutation.
@@ -298,6 +301,31 @@ or durable recovery ledger is introduced.
 - Persisting duplicate-recovery protocol state.
 - Treating malformed model output as successful curation.
 - Redesigning the separate duplicate terminal-notice presentation bug.
+
+* Implementation result
+
+The loop now captures each provider request's frame opportunity.  It exposes
+the reserved carrier only while that request presents a live frame, accepts a
+later curation after ordinary tool work creates a new frame, and treats a call
+against the matching consumed frame as one bounded duplicate.  Before ignoring
+that duplicate, it re-runs the ordinary frame-bound preparation checks against
+the just-curated live frame and discards the result, preserving malformed,
+unknown-label, erasure-eligibility, and size failures without a second commit.
+
+The OpenAI adapter owns both normal and corrective opaque replay bundles.  An
+explicit request-local nil now prevents provider defaults from reintroducing a
+closed carrier, and the material carrier revision is =context-curate-v8=.
+Carrier removal changes the request layout, so both configured continuation
+modes correctly use complete stateless call/output replay for that immediate
+acknowledgement.
+
+Deterministic evidence includes 239 focused owner tests; a credential-free real
+Responses composition that runs stateless and anchored variants through
+=tool A -> curate A -> tool B -> curate B -> answer=; two post-cutover Responses
+scenarios; two-package reopen, fork/checkpoint, and compaction coverage; and a
+duplicate-recovery scenario followed by a successful fresh user turn.  The
+configured live provider was not invoked, and the user's running Emacs was not
+changed.
 
 * Design self-check
 

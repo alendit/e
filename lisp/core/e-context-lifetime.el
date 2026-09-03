@@ -70,7 +70,7 @@ version-3 curation codec and its complete-record bound.")
 (defconst e-context-lifetime-curation-record-version 3
   "Version of durable prepared context-curation records.")
 
-(defconst e-context-lifetime-curation-schema-revision "context-curate-v7"
+(defconst e-context-lifetime-curation-schema-revision "context-curate-v8"
   "Stable revision of the model-facing context-curate shape and guidance.")
 
 (defconst e-context-lifetime-curation-presentation-revision
