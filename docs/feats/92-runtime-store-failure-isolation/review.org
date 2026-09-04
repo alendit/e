@@ -5,18 +5,66 @@
 
 * Status
 
-Done.  The independent implementation review reached
-=implementation-review-fixed-point= on exact clean revision =25c574fd= after
-all findings were corrected and the complete repository gate passed.
+In-review.  An independent implementation review reached
+=implementation-review-fixed-point= on exact clean revision =25c574fd=, but a
+fresh Daily run after the required full Emacs restart produced a counterexample
+to the accepted failure-isolation contract.  A lost =catalog-put=
+acknowledgement still freezes the shared store and Board because write identity
+is not part of the SQLite transaction.
 
-The historical Daily report remains open only for a fresh observation after a
-full Emacs restart.  That observation is not repository-controlled mechanism
-evidence and does not keep Feature 92 open.
+The earlier fixed-point result remains useful evidence for the implemented
+mechanisms, but it is no longer acceptance of Feature 92 as a complete work
+package.
+
+** TODO High: Lost worker acknowledgement freezes the application
+
+*** Problem
+
+The worker commits each write transaction before emitting its response, but
+the response correlation ID is not recorded in that transaction.  On timeout
+the parent cannot ask SQLite whether that request committed, so the selected
+Feature 87 failure model kills the worker and permanently freezes the shared
+store.  That turns a local acknowledgement failure into application state.
+
+*** Evidence
+
+The fresh trace identifies submitted request =w:83= as =catalog-put= and queued
+request =w:84= as =board-pickup-transition=.  The latter was correctly
+cancelled and attributed to its blocker, but the former entered global
+fail-closed recovery.  The resumed Daily session was small, and the exact
+1,263-entry catalog completed through the production protocol in about 1.12
+seconds on a disposable clone, so projection size alone does not reproduce the
+stall.
+
+No current deterministic or graphical test injects a stall after a real
+=catalog-put= has been submitted.  The projection-failure integration fake
+signals before transport, while the generic submitted-timeout test asserts the
+now-disproved global-freeze policy.
+
+The current scheduler also clears its immutable preflight frame immediately
+after submission and retains a caller-owned body.  Exact same-identity replay
+therefore requires a bounded immutable frame lifetime through transactional
+resolution, including renewed C04 memory evidence.  The v4 schema has no
+receipt relation, and worker ownership alone cannot authorize old-receipt
+cleanup because a live parent may be replacing its dead worker.
+
+*** Acceptance
+
+Record request identity, request fingerprint, and result in the same SQLite
+transaction as every write.  Under deterministic worker-side stalls on both
+sides of COMMIT, replace the worker and resolve the same request identity
+without application policy, then commit the nested queued Board transition
+exactly once.  Exercise the real default-runtime/session/Board composition and
+its visible timer outcome.  Acceptance also requires the explicit v4 to v5
+upgrade/rollback matrix, immutable replay under caller mutation, parent-liveness
+receipt retention, a one-attempt recovery bound, and exact terminal settlement
+when recovery is exhausted.
 
 * Scope reviewed
 
-- Contract authority: =plan.org=, especially =F92-C01= through =F92-C04= and
-  delivery packages =F92-DP1= through =F92-DP3=.
+- Original contract authority: =plan.org=, especially =F92-C01= through
+  =F92-C04= and delivery packages =F92-DP1= through =F92-DP3=.  The fresh
+  counterexample adds missing contract =F92-C05= and =F92-DP4=.
 - Runtime lifecycle and protocol: =e-runtime-store.el=,
   =e-runtime-store-codec.el=, and =e-runtime-store-worker.el=.
 - Cross-process ownership: =e-runtime-store-ownership.el= and the ordinary and
@@ -119,13 +167,14 @@ found no further actionable issue.
 
 | Contract | Result | Principal evidence |
 |----------+--------+--------------------|
-| F92-C01 | Passing | Separate queue/submitted intervals; startup/open settlement; exactly-once terminal ownership; session/Board composition tests. |
-| F92-C02 | Passing | Typed first protocol cause; unknown, malformed, and empty frames fail closed; callback-owned poisoning removed; reopen recovery covered. |
+| F92-C01 | Partial | Separate queue/submitted intervals and startup/open settlement pass, but submitted ownership still terminates in unresolved global freeze. |
+| F92-C02 | Partial | Typed first protocol cause and callback isolation pass, but malformed, unknown, and empty frames still freeze globally instead of entering bounded worker replacement. |
 | F92-C03 | Passing | Shared atomic Emacs file-lock authority; concurrent winner, stale recovery, PID identity conflict, legacy metadata, and late-release tests. |
 | F92-C04 | Passing | Exact canonical/wire bounds; raw-byte coverage; bounded response handling; paged identities; catalog/checkpoint limits; oversized-checkpoint journal replay. |
+| F92-C05 | Missing | No write receipt shares the mutation transaction, so worker or acknowledgement loss cannot be resolved through SQLite; no worker-stall composition test exists. |
 
-All three delivery packages are accepted.  No plan item is deferred inside the
-repository-controlled scope.
+The first three delivery packages retain their focused mechanism evidence.
+=F92-DP4= is required before the feature can be accepted.
 
 * Verification
 
@@ -149,8 +198,12 @@ Production-path 16 MiB probe maximum RSS: 476905472 bytes (< 536870912)
 The focused ownership file passed 10/10, the focused storage-contract file
 passed 7/7, and the C04 partitions passed 9/9 during package acceptance.
 
-Graphical tests were not applicable: this package changes no presentation,
-redisplay, focus, window, or rendered timer behavior.
+The prior review treated graphical tests as inapplicable because the changed
+owner is below presentation.  The fresh recurrence disproves that conclusion
+for composed acceptance: the failure surfaces through timers, freezes the
+Board, and makes Emacs intermittently unresponsive.  The corrected package
+needs deterministic runtime fault injection and a graphical composition check
+for the visible Daily outcome.
 
 * UX and performance playthrough
 
@@ -168,18 +221,20 @@ unbounded protocol allocation remains in the reviewed paths.
 
 * Architecture review
 
-The scheduler owns request lifetime and ambiguity, the shared private ownership
-module owns process exclusion, the codec/protocol owns frame grammar and byte
-bounds, and session storage owns omission and recovery of rebuildable
-projections.  Domain adapters still depend inward on the runtime-store
-contract.  No transport, UI, provider, or persistence adapter became an
-authority for another layer's policy.
+The scheduler owns request lifetime and transport recovery, the shared private
+ownership module owns process exclusion, the codec/protocol owns frame grammar
+and byte bounds, and session storage owns omission and recovery of rebuildable
+projections.  The missing persistence contract is a request receipt committed
+atomically with each write.  Without it, the scheduler cannot recover its
+still-owned request from the ACID backend and instead exports transport failure
+as application unavailability.
 
 The package removes callback fanout, racy owner deletion, unpaged identities,
 full-payload checkpoint presence checks, and the false Board barrier claim.
-Compatibility is retained for the SQLite schema and legacy encoded values, but
-not for unused callback keywords or presentation text properties in new durable
-values.
+DP1-DP3 retained the SQLite schema and legacy encoded values.  DP4 now requires
+one private additive receipt relation through the explicit upgrade path.  No
+compatibility is required for unused callback keywords or presentation text
+properties in new durable values.
 
 * Design self-check
 
@@ -188,13 +243,16 @@ values.
 2. The final direction is one shared persistence worker with explicit request
    ownership, one exclusion authority, bounded transport, and canonical replay
    as the recovery authority.
-3. Stable decisions are single-worker ordering, commit-first writes, and
-   fail-closed ambiguity.  Numeric limits and workload distributions may
+3. Stable decisions are single-worker ordering, commit-first writes, and ACID
+   resolution of lost acknowledgements by durable request identity.  The
+   original plan incorrectly made transport ambiguity an application recovery
+   state.  Numeric limits and workload distributions may
    change; they remain private constants with exact boundary tests and stated
    revision triggers.  No speculative extension layer hides them.
-4. Runtime-store scheduling owns request lifecycle, the ownership module owns
-   process claims, the codec owns wire measurement, and session storage owns
-   rebuildable projection policy.  Each has one cohesive reason to change.
+4. Runtime-store scheduling owns request lifecycle and restart, the SQLite
+   worker owns transactional receipts, the ownership module owns process
+   claims, the codec owns wire measurement, and session storage owns projection
+   content.  Application owners receive no recovery policy.
 5. Coupling is reduced by deleting callbacks and sharing one private claim
    policy.  Public composition stays narrow: callers submit typed operations
    and observe request terminal state.
@@ -202,13 +260,14 @@ values.
    runtime store.  Stable domain policy does not depend on a concrete UI,
    provider, transport client, or shell.
 7. SQLite and process/file-lock side effects remain at worker and ownership
-   adapters.  Core decisions about ambiguity and rebuildability stay outside
-   those effects; no useful side effect can move farther outward without
-   splitting its owning transaction.
-8. Added request timestamps live only for a request.  Claim metadata and its
-   file lock live only for the worker process and are recoverable after death.
-   Projection status is rebuilt from canonical records.  These are the smallest
-   correct lifetimes.
+   adapters.  Request receipt insertion belongs inside the same SQLite
+   transaction as the mutation; moving it outward would recreate the lost
+   acknowledgement gap.
+8. Added request timestamps live only for a request.  Transaction receipts live
+   until an ordered acknowledgement watermark makes them unnecessary.  Claim
+   metadata and its file lock live only for the worker process.  These are the
+   smallest required lifetimes, with bounded receipt reclamation still to be
+   implemented.
 9. Bounds add finite scans before transport, but prevent larger duplicate
    allocations and unbounded projections.  The aggregate counter reduced the
    measured worst-case peak to 476,905,472 bytes; the full suite and large
@@ -226,7 +285,9 @@ values.
 13. Expected local oversize and queued expiry settle their own request.
     Expected rebuildable checkpoint oversize is omitted by session storage.
     Unexpected malformed/uncorrelatable protocol and ambiguous submitted
-    outcomes surface as one typed first cause and freeze until explicit reopen.
+    outcomes expose one typed first cause while the adapter performs bounded
+    worker replacement and transactional request resolution.  That recovery
+    path is still missing.
 14. Focused owner tests prove lifecycle, ownership, codec, projection, and
     replay behavior independently.  Composition and complete-suite gates prove
     integration, so a design-local change should require narrow test updates.
@@ -235,8 +296,10 @@ values.
 
 The same independent reviewer evaluated the plan and every implementation
 correction.  On =25c574fd= it returned exactly
-=implementation-review-fixed-point=.  There are no unresolved repository
-findings.
+=implementation-review-fixed-point=.  The fresh live counterexample invalidates
+that final acceptance because the normative contract omitted ACID-backed
+acknowledgement recovery.  A new implementation and independent review round
+are required.
 
 * Live runtime disposition
 
@@ -249,5 +312,8 @@ bug report.
 
 * Unresolved
 
-None within Feature 92.  The fresh post-restart Daily observation is tracked by
-=docs/bugs/runtime-store-daily-participant-timeout/investigation.org=.
+- High: a lost worker acknowledgement cannot be resolved from the ACID store
+  and instead freezes the shared store and Board.
+- The timing-dependent reason the live worker failed to acknowledge
+  =catalog-put= within 60 seconds is not reproduced by the current database on
+  a disposable clone.

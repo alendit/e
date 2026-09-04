@@ -108,4 +108,4 @@ record each feature's lifecycle state.
 | 89 | Planned     | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
-| 92 | Done        | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
+| 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |

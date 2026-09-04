@@ -3,12 +3,43 @@
 
 * Status
 
-Mechanism corrected; awaiting fresh Daily verification after a full Emacs
-restart.  The live failure was a parent-enforced 60-second runtime-store timeout
-during GUS child admission, not an Emacs hang, an OS process kill, or SQLite
-corruption.  The first timeout occurred during derived session projection
-publication, but the exact active typed request is not recoverable from the
-historical bounded status record.
+Reproduced after a full Emacs restart; Feature 92's diagnostics now identify a
+submitted =catalog-put= as the blocking request.  The request-lifecycle fixes
+correctly cancelled the queued =board-pickup-transition= without misattributing
+it, but the submitted projection timeout still killed the shared worker,
+froze the Board, and made canonical persistence unavailable.  Feature 92's
+failure containment is therefore incomplete.
+
+* Fresh post-restart recurrence
+
+The fresh runtime reported request =w:83= as a submitted =catalog-put=.  Its
+60-second acknowledgement timeout entered the generic fail-closed path.  A
+queued =board-pickup-transition= (=w:84=) then expired before submission and
+correctly named =catalog-put= as its blocker.  Later Board mutation reported
+=e-board-mutation-frozen=, and subsequent store use exposed the preserved
+=catalog-put= timeout as the unavailable cause.
+
+The supported live probes found the Daily chat idle and Emacs responsive, but
+one ping took about 29 seconds before the event loop answered.  Two later
+bounded process samples found the main thread idle in AppKit, so this was an
+intermittent synchronous stall rather than a permanent CPU loop.  The parent
+process had terminated its runtime-store worker after the timeout; the
+worker's diagnostic owner record and Emacs lock were consequently stale.
+
+The exact Daily session was small: its checkpoint payload was 4,088 SQLite
+bytes and its 12 records totalled 14,160 payload bytes.  The canonical database
+was about 3.56 GB overall, with a 1,092,648-byte catalog projection containing
+1,263 entries.  This rules out oversized replay of the resumed Daily session
+as the immediate explanation for the UI stall.
+
+Read-only extraction of the current catalog followed by production-path
+measurement took about 0.53 seconds for parent encoding/preflight.  On a
+disposable APFS clone of the database, direct worker =catalog-put= took about
+0.36 seconds and the complete parent/subprocess protocol write took about 1.12
+seconds.  Raw catalog size and the current durable contents therefore do not
+reproduce the 60-second stall by themselves.  The remaining trigger involves
+live concurrency, process liveness, or another timing-dependent condition; its
+lower-level cause is not yet proven.
 
 * Live and durable evidence
 
@@ -98,8 +129,9 @@ The queued-timeout regression holds one shared-runtime write, queues a
 commits, the worker remains live, and the cancelled catalog is never
 published.  This contains the destructive Daily failure mode when the GUS
 catalog write was queued.  It does not claim to eliminate a genuinely stalled
-submitted operation.  The bug remains open until a fresh Daily run either
-succeeds or reports the newly preserved active typed cause.
+submitted operation.  The fresh run has now reported that cause: the
+=catalog-put= itself was submitted and stalled, so queued-request containment
+was insufficient.
 
 * Required correction evidence
 
@@ -113,13 +145,13 @@ succeeds or reports the newly preserved active typed cause.
 - Exercise multiple participant admissions sharing one SQLite runtime while
   another child can emit provider/session callbacks.
 - Prove a stalled or queued request cannot incorrectly destroy unrelated
-  healthy persistence work.  Covered for queued requests; submitted operations
-  retain fail-closed ambiguity handling.
+  healthy persistence work.  Covered for queued requests; the fresh run proves
+  submitted-operation recovery remains missing.
 
 The user's running Emacs and canonical SQLite files were inspected read-only
 and left unchanged.
 
-* Feature 92 correction and closure
+* Feature 92 original correction and invalidation
 
 Feature 92 completes the repository-controlled correction in commits
 =0a7a2ad7= through =25c574fd=:
@@ -140,12 +172,72 @@ passes 2,761/2,761 at exact clean revision =25c574fd=.  The real production-path
 below the private 512 MiB envelope.  The same independent reviewer accepted all
 four Feature 92 contracts at =implementation-review-fixed-point=.
 
-These tests establish the deterministic failure mechanisms and recovery paths,
-including shared owner composition.  They cannot recreate the already-lost
-typed identity of the historical request.  This bug therefore remains open
-only until a fresh Daily run after restart either succeeds or reports the now
-preserved operation-specific first cause.
+These tests establish the original deterministic failure mechanisms and
+recovery paths, including shared owner composition.  They did not establish
+ACID outcome resolution after a submitted write loses its acknowledgement.
+The fresh run provided the operation-specific cause and invalidated closure, so
+Feature 92 is again In-review.
 
 No live reload was attempted.  The running Emacs and canonical SQLite files
 remain unchanged.  Feature 92 changes core runtime/session behavior, so the
 new behavior requires a full Emacs restart; =e-dev-reload= is insufficient.
+
+* Why existing deterministic and graphical tests missed the recurrence
+
+The test contract accepted the wrong boundary for this case.  Generic runtime
+tests intentionally assert that every submitted write timeout freezes the
+shared store because acknowledgement may be ambiguous.  They never require the
+adapter to resolve that ambiguity using an identity committed atomically with
+the SQLite mutation.
+
+The session integration test for primary success with projection failure stubs
+=e-session-storage-sqlite-write-catalog= to signal before transport.  It proves
+the primary commit survives a local projection error, but it cannot exercise a
+projection that has been submitted to the worker, times out, and triggers
+global shutdown.  Projection-bound tests call =catalog-put= against temporary
+databases and prove finite size, not recovery under a stalled worker.  The
+large-session fixture exercises one 15,722-record paged replay, not concurrent
+Daily/Board activity plus a 1,263-entry whole-catalog rewrite.
+
+The graphical E2E suite has no Daily scenario that stalls a submitted
+=catalog-put= at the worker boundary.  This is not fundamentally a redisplay
+failure, so ordinary UI assertions would not discover it without deterministic
+fault injection in the real default-runtime composition.  Calling the earlier
+package "graphically not applicable" was too narrow because the user-visible
+timer and responsiveness failure is an important composed outcome even though
+the defect is owned below presentation.
+
+* Required correction after the recurrence
+
+The correction belongs at the ACID storage boundary, not in session or Board
+policy.  SQLite already decides atomically whether each mutation commits or
+rolls back.  The adapter must make that outcome observable across loss of the
+worker acknowledgement: give each write a durable request identity and record
+that identity, an exact request fingerprint, and its bounded result in the same
+transaction as the mutation.  After a timeout, replace the worker and replay
+the same identity.  The worker returns the committed receipt when present or
+executes the transaction once when absent.  A mismatched fingerprint is a
+protocol error.  Reads can be retried after reopening.
+
+Receipt retention must be bounded without weakening deduplication.  Because
+the runtime has one ordered active write, acknowledgement can advance a
+per-runtime durable watermark; receipts older than the acknowledged prefix can
+then be removed.  A newly exclusive runtime can discard receipts belonging to
+dead prior runtime identities.  These are persistence-adapter mechanics and
+must not appear as per-operation recovery flags in application code.
+
+The deterministic acceptance scenario must use the real default runtime,
+session storage, and Board composition; inject a worker-side stall after
+=catalog-put= submission; queue a Board transition behind it; and prove all of
+the following:
+
+- the already-committed canonical primary remains authoritative;
+- the queued Board request is not lost to a global frozen state;
+- the timed-out request resolves to its one durable result whether the injected
+  stall occurs immediately before or after commit;
+- worker replacement/reopen resumes the same ordered request stream safely;
+- a subsequent canonical write succeeds; and
+- neither recovery nor reconciliation duplicates a semantic side effect.
+
+The original canonical database was only read and remains unchanged.  All
+write probes used a disposable clone.

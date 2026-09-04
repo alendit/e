@@ -16,7 +16,28 @@ process, so an otherwise idle chat could no longer persist a new turn.
 
 * Expected behavior
 
-Concurrent Daily child admission must remain bounded without killing the
-shared runtime-store worker.  If a worker request does fail, the first causal
-error and operation must remain visible instead of being replaced by the
+Concurrent Daily child admission must remain bounded without permanently
+disabling the shared runtime store or losing unrelated canonical work.  A
+stalled worker may be replaced safely.  If a request does fail, the first
+causal error and operation must remain visible instead of being replaced by the
 generic subsequent-use error.
+
+* Fresh recurrence after Feature 92
+
+After a full Emacs restart on 2026-09-04, reopening the Daily canvas reproduced
+the failure with the new typed diagnostics:
+
+#+begin_example
+Error running timer: (e-board-mutation-frozen "brd_01M1NVEBD7H84RPDFYBK6EEM57")
+Error running timer: (e-runtime-store-timeout
+  "Queued board-pickup-transition expired before submission; the request was cancelled"
+  :operation board-pickup-transition :kind write :request-state queued
+  :blocking-operation catalog-put :blocking-kind write)
+let: Runtime store worker is unavailable:
+  "Store is unavailable after Runtime store request timed out:
+   Worker did not acknowledge catalog-put before the request timeout ..."
+#+end_example
+
+This is not an acceptable expected failure mode.  A worker timeout must be
+resolved through the ACID store boundary; it must not freeze persistence or
+leave the Board permanently mutation-frozen.
