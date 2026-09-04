@@ -63,8 +63,14 @@
 
 (defun e-session-storage-sqlite-read-checkpoint (store session-id)
   "Return SESSION-ID's exact checkpoint or signal when absent."
+  ;; Call the worker's guarded read directly.  It performs its own metadata
+  ;; check before selecting a value, while the session loader has already used
+  ;; `checkpoint-get' to choose checkpoint versus full replay.  Avoiding a
+  ;; second metadata round-trip keeps normal checkpoint resume at two worker
+  ;; requests: presence then guarded value.
   (let ((result (e-session-storage-sqlite--call
-                 store 'read (list :op 'checkpoint-get :session-id session-id))))
+                 store 'read
+                 (list :op 'checkpoint-read :session-id session-id))))
     (if result
         (let ((value (plist-get result :value)))
           (when (vectorp (plist-get value :records))
@@ -73,14 +79,28 @@
       (signal 'file-missing (list "SQLite checkpoint" session-id)))))
 
 (defun e-session-storage-sqlite-checkpoint-present-p (store session-id)
-  "Return non-nil when SESSION-ID has a checkpoint."
-  (and (e-session-storage-sqlite--call
-        store 'read (list :op 'checkpoint-get :session-id session-id)) t))
+  "Return non-nil when SESSION-ID has a usable bounded checkpoint."
+  (let ((status (e-session-storage-sqlite--call
+                 store 'read (list :op 'checkpoint-get :session-id session-id))))
+    (and status (plist-get status :usable))))
 
 (defun e-session-storage-sqlite-write-checkpoint (store session-id value)
-  "Persist SESSION-ID checkpoint VALUE."
-  (e-session-storage-sqlite--call
-   store 'write (list :op 'checkpoint-put :session-id session-id :value value)))
+  "Persist bounded SESSION-ID checkpoint VALUE, or omit an oversized one.
+
+Checkpoint values are rebuildable projections.  Their size is checked before
+the parent submits a worker request, so an oversized current projection cannot
+freeze or poison the authoritative session-record path."
+  (condition-case err
+      (progn
+        (e-runtime-store-codec-encode-bounded
+         value e-runtime-store-codec-checkpoint-canonical-byte-limit)
+        (e-session-storage-sqlite--call
+         store 'write (list :op 'checkpoint-put :session-id session-id
+                            :value value)))
+    (e-runtime-store-codec-too-large
+     (list :omitted t :session-id session-id
+           :canonical-limit e-runtime-store-codec-checkpoint-canonical-byte-limit
+           :cause err))))
 
 (defun e-session-storage-sqlite-read-records (store session-id &optional after)
   "Return all semantic records for SESSION-ID after AFTER."
@@ -105,8 +125,29 @@
                      :after (or after 0) :limit (or limit 256))))
 
 (defun e-session-storage-sqlite-session-ids (store)
-  "Return STORE's durable session identities."
-  (e-session-storage-sqlite--call store 'read '(:op session-ids)))
+  "Return STORE's durable session identities through bounded cursor pages."
+  (let (cursor ids next)
+    (while
+        (progn
+          (let ((page (e-session-storage-sqlite--call
+                       store 'read
+                       (append '(:op session-id-page :limit 256)
+                               (when cursor (list :cursor cursor))))))
+            (let ((page-ids (plist-get page :ids)))
+              (unless (and (listp page-ids)
+                           (seq-every-p #'stringp page-ids))
+                (signal 'e-runtime-store-error
+                        (list "Invalid session identity page" page)))
+              (setq ids (nconc ids page-ids)
+                    next (plist-get page :next)))
+            (when (and next
+                       (or (not (stringp next))
+                           (equal next cursor)))
+              (signal 'e-runtime-store-error
+                      (list "Session identity page did not advance" page)))
+            (setq cursor next))
+          next))
+    ids))
 
 (defun e-session-storage-sqlite-read-catalog (store)
   "Return STORE's catalog projection, or nil."
@@ -115,9 +156,23 @@
     (plist-get result :value)))
 
 (defun e-session-storage-sqlite-write-catalog (store value)
-  "Persist STORE catalog projection VALUE."
-  (e-session-storage-sqlite--call
-   store 'write (list :op 'catalog-put :value value)))
+  "Persist bounded STORE catalog projection VALUE.
+
+The catalog is derived from authoritative session records.  Its private cap
+therefore reports an explicit projection failure after the primary commit; it
+does not truncate semantic content or freeze the shared runtime."
+  (condition-case err
+      (progn
+        (e-runtime-store-codec-encode-bounded
+         value e-runtime-store-codec-catalog-canonical-byte-limit)
+        (e-session-storage-sqlite--call
+         store 'write (list :op 'catalog-put :value value)))
+    (e-runtime-store-codec-too-large
+     (signal 'e-runtime-store-projection-too-large
+             (list "Catalog projection exceeds canonical byte limit"
+                   :projection 'catalog
+                   :limit e-runtime-store-codec-catalog-canonical-byte-limit
+                   :cause err)))))
 
 (defun e-session-storage-sqlite-status (store)
   "Return bounded adapter and runtime status for STORE."
@@ -141,9 +196,12 @@
   (let* ((records (mapcar #'copy-tree records))
          (body (list :op 'session-append-batch :session-id session-id
                      :records (vconcat records))))
-    ;; Runtime submission performs the same canonical encoding before queueing.
-    ;; Doing it here proves the complete fork frame before any durable effect.
-    (e-runtime-store-codec-encode body)
+    ;; This admission seam must not itself materialize an unbounded canonical
+    ;; body before the scheduler can perform its complete-frame preflight.
+    ;; Submission adds the generated id and kind envelope, then repeats the
+    ;; bounded check before queue ownership changes.
+    (e-runtime-store-codec-encode-bounded
+     body e-runtime-store-codec-protocol-canonical-byte-limit)
     records))
 
 (defun e-session-storage-sqlite-delete (store session-id)

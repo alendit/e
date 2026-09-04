@@ -546,6 +546,105 @@
 (defconst e-session-sqlite-test--large-record-count 15722)
 (defconst e-session-sqlite-test--large-content-bytes 37851478)
 
+(ert-deftest e-session-sqlite-s92-c04-normal-checkpoint-resume-uses-two-reads ()
+  "Normal resume issues metadata presence then one guarded value request."
+  (let* ((directory (make-temp-file "e-session-checkpoint-reads-" t))
+         (session-id "checkpoint-reads")
+         store)
+    (unwind-protect
+        (progn
+          (setq store (e-session-sqlite-store-create directory))
+          (e-session-create store :id session-id)
+          (e-session-append-message
+           store session-id '(:role user :content "checkpointed"))
+          (e-session-sqlite-store-close store)
+          (setq store (e-session-sqlite-store-create directory))
+          (let ((call (symbol-function 'e-runtime-store-call))
+                checkpoint-operations)
+            (cl-letf
+                (((symbol-function 'e-runtime-store-call)
+                  (lambda (runtime kind body)
+                    (when (memq (plist-get body :op)
+                                '(checkpoint-get checkpoint-read))
+                      (push (plist-get body :op) checkpoint-operations))
+                    (funcall call runtime kind body))))
+              (let ((request (e-session-load-session-start
+                              store session-id :chunk-bytes 1)))
+                (while (not (e-request-terminal-p request))
+                  (accept-process-output nil 0.01))
+                (should (eq (e-request-lifecycle-state request) 'finished))))
+            (should (equal (nreverse checkpoint-operations)
+                           '(checkpoint-get checkpoint-read)))))
+      (when store (e-session-sqlite-store-close store))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-sqlite-s92-c04-legacy-oversized-checkpoint-replays-journal ()
+  "A legacy oversized checkpoint stays local and public replay starts at zero."
+  (let* ((directory (make-temp-file "e-session-legacy-checkpoint-" t))
+         (session-id "legacy-oversized")
+         store)
+    (unwind-protect
+        (progn
+          (setq store (e-session-sqlite-store-create directory))
+          (e-session-create store :id session-id)
+          (e-session-append-message
+           store session-id '(:role user :content "canonical journal"))
+          (e-session-sqlite-store-close store)
+          (setq store nil)
+          (let* ((legacy-value
+                  (list :version 1 :session-id session-id
+                        :journal-byte-offset 1
+                        :legacy-padding
+                        (make-string
+                         (1+ e-runtime-store-codec-checkpoint-canonical-byte-limit)
+                         ?x)))
+                 (canonical (e-runtime-store-codec-encode legacy-value)))
+            (should (> (string-bytes canonical)
+                       e-runtime-store-codec-checkpoint-canonical-byte-limit))
+            ;; This is a retired oversized physical payload fixture.  It is
+            ;; inserted only after the test worker closes, then reopened through
+            ;; the public adapter; no live runtime or canonical database moves.
+            (let ((database (sqlite-open (expand-file-name "store.sqlite3" directory))))
+              (unwind-protect
+                  (sqlite-execute
+                   database
+                   "INSERT INTO session_checkpoints(session_id,payload,revision) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision"
+                   (vector session-id (base64-encode-string canonical t) 1))
+                (sqlite-close database))))
+          (setq store (e-session-sqlite-store-create directory))
+          (let ((status
+                 (e-runtime-store-call
+                  (e-session-storage-runtime-store store) 'read
+                  (list :op 'checkpoint-get :session-id session-id))))
+            ;; The public metadata query proves the legacy value stayed inside
+            ;; SQLite: it reports its size/usefulness without a payload field.
+            (should (plist-get status :present))
+            (should-not (plist-member status :value))
+            (should-not (plist-get status :usable)))
+          (should-not
+           (e-session-storage-resume-checkpoint-present-p store session-id))
+          (let ((request (e-session-load-session-start
+                          store session-id :chunk-bytes 1)))
+            (while (not (e-request-terminal-p request))
+              (accept-process-output nil 0.01))
+            (should (eq (e-request-lifecycle-state request) 'finished)))
+          (should (equal
+                   (mapcar (lambda (message) (plist-get message :content))
+                           (e-session-messages store session-id))
+                   '("canonical journal")))
+          ;; The replayed aggregate remains writable; its next normal
+          ;; projection can replace the legacy oversized checkpoint safely.
+          (e-session-append-message
+           store session-id '(:role assistant :content "healthy later write"))
+          (should (equal
+                   (mapcar (lambda (message) (plist-get message :content))
+                           (e-session-messages store session-id))
+                   '("canonical journal" "healthy later write")))
+          (should (e-runtime-store-live-p
+                   (e-session-storage-runtime-store store))))
+      (when store (e-session-sqlite-store-close store))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-sqlite-s3-large-indexed-paged-load-remains-responsive ()
   "The exact deterministic large fixture pages while timers and commits run."
   :tags '(:expensive)

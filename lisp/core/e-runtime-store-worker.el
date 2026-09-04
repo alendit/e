@@ -17,6 +17,10 @@
 
 (unless (get 'e-runtime-store-worker-error 'error-conditions)
   (define-error 'e-runtime-store-worker-error "Runtime store worker error"))
+(unless (get 'e-runtime-store-response-too-large 'error-conditions)
+  (define-error 'e-runtime-store-response-too-large
+    "Runtime store read response exceeds its transport limit"
+    'e-runtime-store-worker-error))
 (require 'e-runtime-store-ownership)
 (define-error 'e-runtime-store-resource-too-large "Runtime store resource is too large"
   'e-runtime-store-worker-error)
@@ -49,6 +53,13 @@
   "Private encoded-payload budget for one session page result.")
 (defconst e-runtime-store-worker-session-record-byte-limit (* 16 1024 1024)
   "Private encoded limit for one exact session record.")
+(defconst e-runtime-store-worker-checkpoint-canonical-byte-limit
+  e-runtime-store-codec-checkpoint-canonical-byte-limit
+  "Maximum canonical bytes in one rebuildable checkpoint value.")
+(defconst e-runtime-store-worker-session-id-page-row-limit 256
+  "Maximum durable identities returned by one session-id page.")
+(defconst e-runtime-store-worker-session-id-page-byte-limit (* 64 1024)
+  "Maximum raw UTF-8 identity bytes returned by one session-id page.")
 
 (defvar e-runtime-store-worker--database nil)
 (defvar e-runtime-store-worker--database-file nil)
@@ -60,16 +71,44 @@
   (if (vectorp row) (aref row index) (nth index row)))
 
 (defun e-runtime-store-worker--pack (value)
-  "Return VALUE as ASCII transport text."
-  (base64-encode-string (e-runtime-store-codec-encode value) t))
+  "Return bounded VALUE as ASCII transport text without its delimiter."
+  (let* ((canonical
+          (e-runtime-store-codec-encode-bounded
+           value e-runtime-store-codec-protocol-canonical-byte-limit))
+         (wire-bytes (e-runtime-store-codec-wire-byte-count
+                      (string-bytes canonical))))
+    (when (> wire-bytes e-runtime-store-codec-protocol-wire-byte-limit)
+      (signal 'e-runtime-store-codec-too-large
+              (list "Protocol wire frame exceeds byte limit"
+                    :domain 'wire
+                    :limit e-runtime-store-codec-protocol-wire-byte-limit
+                    :canonical-bytes (string-bytes canonical))))
+    (base64-encode-string canonical t)))
 
 (defun e-runtime-store-worker--unpack (text)
   "Return exact value encoded by ASCII TEXT."
-  (e-runtime-store-codec-decode (base64-decode-string text)))
+  (when (> (1+ (string-bytes text))
+           e-runtime-store-codec-protocol-wire-byte-limit)
+    (signal 'e-runtime-store-codec-too-large
+            (list "Protocol wire frame exceeds byte limit"
+                  :domain 'wire
+                  :limit e-runtime-store-codec-protocol-wire-byte-limit
+                  :wire-bytes (1+ (string-bytes text)))))
+  (let ((canonical (base64-decode-string text)))
+    (when (> (string-bytes canonical)
+             e-runtime-store-codec-protocol-canonical-byte-limit)
+      (signal 'e-runtime-store-codec-too-large
+              (list "Protocol canonical frame exceeds byte limit"
+                    :domain 'canonical
+                    :limit e-runtime-store-codec-protocol-canonical-byte-limit
+                    :canonical-bytes (string-bytes canonical))))
+    (e-runtime-store-codec-decode canonical)))
 
 (defun e-runtime-store-worker--sql-value (value)
   "Return VALUE encoded for a SQLite TEXT field."
-  (e-runtime-store-worker--pack value))
+  ;; SQLite payloads are not protocol frames.  Their operation-specific
+  ;; storage limits are checked by the caller before this exact encoding.
+  (base64-encode-string (e-runtime-store-codec-encode value) t))
 
 (defun e-runtime-store-worker--value (text)
   "Return exact value stored in SQLite TEXT."
@@ -255,12 +294,18 @@
 (defun e-runtime-store-worker--checkpoint-put (body)
   "Persist a bounded session checkpoint from BODY."
   (let* ((session-id (plist-get body :session-id))
-         (revision (e-runtime-store-worker--session-position session-id)))
+         (revision (e-runtime-store-worker--session-position session-id))
+         ;; This physical backstop protects direct protocol callers.  The
+         ;; session adapter preflights the same value before queue admission so
+         ;; ordinary oversized checkpoints are omitted rather than submitted.
+         (canonical (e-runtime-store-codec-encode-bounded
+                     (plist-get body :value)
+                     e-runtime-store-worker-checkpoint-canonical-byte-limit)))
     (sqlite-execute
      e-runtime-store-worker--database
      "INSERT INTO session_checkpoints(session_id,payload,revision) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision"
      (vector session-id
-             (e-runtime-store-worker--sql-value (plist-get body :value))
+             (base64-encode-string canonical t)
              revision))
     (list :session-id session-id :revision revision)))
 
@@ -269,11 +314,17 @@
   (let* ((row (car (sqlite-select
                     e-runtime-store-worker--database
                     "SELECT revision FROM catalog_projection WHERE singleton=1")))
-         (revision (1+ (if row (e-runtime-store-worker--column row 0) 0))))
+         (revision (1+ (if row (e-runtime-store-worker--column row 0) 0)))
+         ;; Catalog is a rebuildable projection.  The session adapter checks
+         ;; this before transport; the worker repeats the cap for direct
+         ;; protocol callers so no oversized catalog payload reaches SQLite.
+         (canonical (e-runtime-store-codec-encode-bounded
+                     (plist-get body :value)
+                     e-runtime-store-codec-catalog-canonical-byte-limit)))
     (sqlite-execute
      e-runtime-store-worker--database
      "INSERT INTO catalog_projection(singleton,payload,revision) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET payload=excluded.payload,revision=excluded.revision"
-     (vector (e-runtime-store-worker--sql-value (plist-get body :value)) revision))
+     (vector (base64-encode-string canonical t) revision))
     (list :revision revision)))
 
 (defun e-runtime-store-worker--session-delete (body)
@@ -407,6 +458,109 @@
          (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
        (signal (car err) (cdr err))))))
 
+(defun e-runtime-store-worker--base64-canonical-byte-count
+    (sqlite-text-bytes suffix)
+  "Return decoded canonical bytes for base64 SQLite TEXT metadata.
+
+SUFFIX contains at most the final two ASCII characters.  Nil means malformed
+or non-base64-sized metadata and is deliberately not considered usable for a
+checkpoint payload."
+  (when (and (integerp sqlite-text-bytes)
+             (> sqlite-text-bytes 0)
+             (= (% sqlite-text-bytes 4) 0)
+             (stringp suffix))
+    (let ((padding (cond
+                    ((string-suffix-p "==" suffix) 2)
+                    ((string-suffix-p "=" suffix) 1)
+                    (t 0))))
+      (- (* 3 (/ sqlite-text-bytes 4)) padding))))
+
+(defun e-runtime-store-worker--checkpoint-status (session-id)
+  "Return metadata-only bounded checkpoint status for SESSION-ID."
+  (when-let* ((row (car (sqlite-select
+                          e-runtime-store-worker--database
+                          "SELECT revision,LENGTH(CAST(payload AS BLOB)),SUBSTR(payload,-2) FROM session_checkpoints WHERE session_id=?"
+                          (vector session-id)))))
+    (let* ((revision (e-runtime-store-worker--column row 0))
+           (sqlite-text-bytes (e-runtime-store-worker--column row 1))
+           (canonical-bytes
+            (e-runtime-store-worker--base64-canonical-byte-count
+             sqlite-text-bytes (e-runtime-store-worker--column row 2))))
+      (list :present t :revision revision
+            :sqlite-text-bytes sqlite-text-bytes
+            :canonical-bytes canonical-bytes
+            :usable (and canonical-bytes
+                         (<= canonical-bytes
+                             e-runtime-store-worker-checkpoint-canonical-byte-limit))))))
+
+(defun e-runtime-store-worker--checkpoint-read (session-id)
+  "Return SESSION-ID's safe checkpoint payload after metadata preflight.
+
+No oversized legacy payload is selected into worker memory or crosses the
+protocol.  Its canonical journal remains available for replay from zero."
+  (when-let* ((status (e-runtime-store-worker--checkpoint-status session-id)))
+    (when (plist-get status :usable)
+      (when-let* ((row (car (sqlite-select
+                             e-runtime-store-worker--database
+                             "SELECT payload FROM session_checkpoints WHERE session_id=?"
+                             (vector session-id)))))
+        (list :value (e-runtime-store-worker--value
+                      (e-runtime-store-worker--column row 0))
+              :revision (plist-get status :revision))))))
+
+(defun e-runtime-store-worker--session-id-page (body)
+  "Return one cursor, row, and byte bounded durable session identity page."
+  (let* ((cursor (plist-get body :cursor))
+         (limit (min e-runtime-store-worker-session-id-page-row-limit
+                     (max 1 (or (plist-get body :limit)
+                               e-runtime-store-worker-session-id-page-row-limit))))
+         (query-limit (1+ limit)))
+    (unless (or (null cursor) (stringp cursor))
+      (signal 'e-runtime-store-worker-error
+              (list "Session identity cursor must be a string" cursor)))
+    (let* ((rows
+            (if cursor
+                (sqlite-select
+                 e-runtime-store-worker--database
+                 "SELECT DISTINCT session_id FROM session_records WHERE session_id>? ORDER BY session_id LIMIT ?"
+                 (vector cursor query-limit))
+              (sqlite-select
+               e-runtime-store-worker--database
+               "SELECT DISTINCT session_id FROM session_records ORDER BY session_id LIMIT ?"
+               (vector query-limit))))
+           (bytes 0) selected truncated (row-count 0))
+      (catch 'full
+        (dolist (row rows)
+          ;; The extra query row is lookahead only.  It establishes whether a
+          ;; full row-limited page has a successor without becoming a 257th
+          ;; result in a declared 256-row page.
+          (when (>= row-count limit)
+            (setq truncated t)
+            (throw 'full nil))
+          (let* ((session-id (e-runtime-store-worker--column row 0))
+                 (row-bytes (string-bytes session-id)))
+            (when (> row-bytes e-runtime-store-worker-session-id-page-byte-limit)
+              (signal 'e-runtime-store-worker-error
+                      (list "Session identity exceeds page byte budget"
+                            session-id row-bytes
+                            e-runtime-store-worker-session-id-page-byte-limit)))
+            (when (and selected
+                       (> (+ bytes row-bytes)
+                          e-runtime-store-worker-session-id-page-byte-limit))
+              (setq truncated t)
+              (throw 'full nil))
+            (cl-incf bytes row-bytes)
+            (cl-incf row-count)
+            (push session-id selected))))
+      (setq selected (nreverse selected))
+      (list :ids selected
+            :next (and selected
+                       (or truncated (= (length rows) query-limit))
+                       (car (last selected)))
+            :byte-count bytes
+            :row-limit limit
+            :byte-limit e-runtime-store-worker-session-id-page-byte-limit))))
+
 (defun e-runtime-store-worker--read (body)
   "Execute bounded typed query BODY."
   (pcase (plist-get body :op)
@@ -473,10 +627,8 @@
        (list :session-id session-id :present (> (e-runtime-store-worker--column row 0) 0)
              :record-count (e-runtime-store-worker--column row 0) :byte-size (e-runtime-store-worker--column row 1)
              :revision (e-runtime-store-worker--column row 2) :reference session-id)))
-    ('session-ids
-     (mapcar (lambda (row) (e-runtime-store-worker--column row 0))
-             (sqlite-select e-runtime-store-worker--database
-                            "SELECT DISTINCT session_id FROM session_records ORDER BY session_id")))
+    ('session-id-page
+     (e-runtime-store-worker--session-id-page body))
     ('session-record-page
      (let* ((limit (min 1024 (max 1 (or (plist-get body :limit) 256))))
             (rows (sqlite-select
@@ -511,12 +663,9 @@
                         (or truncated (= (length rows) limit))
                         (plist-get (car (last selected)) :position)))))
     ('checkpoint-get
-     (when-let* ((row (car (sqlite-select
-                            e-runtime-store-worker--database
-                            "SELECT payload,revision FROM session_checkpoints WHERE session_id=?"
-                            (vector (plist-get body :session-id))))))
-       (list :value (e-runtime-store-worker--value (e-runtime-store-worker--column row 0))
-             :revision (e-runtime-store-worker--column row 1))))
+     (e-runtime-store-worker--checkpoint-status (plist-get body :session-id)))
+    ('checkpoint-read
+     (e-runtime-store-worker--checkpoint-read (plist-get body :session-id)))
     ('catalog-get
      (when-let* ((row (car (sqlite-select e-runtime-store-worker--database
                                           "SELECT payload,revision FROM catalog_projection WHERE singleton=1"))))
@@ -615,6 +764,50 @@
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown request kind" (plist-get request :kind))))))
 
+(defun e-runtime-store-worker--response (request)
+  "Return one correlated success or typed-error response for REQUEST."
+  (condition-case err
+      (list :id (plist-get request :id) :ok t
+            :result (e-runtime-store-worker--handle request))
+    (error
+     (list :id (plist-get request :id) :ok nil
+           :error-symbol (car err) :error-data (cdr err)))))
+
+(defun e-runtime-store-worker--oversized-read-response (request cause)
+  "Return the small correlated read-overflow response for REQUEST and CAUSE."
+  (list :id (plist-get request :id) :ok nil
+        :error-symbol 'e-runtime-store-response-too-large
+        :error-data
+        (list "Runtime-store read response exceeds transport limit"
+              :operation (plist-get (plist-get request :body) :op)
+              :kind 'read :request-id (plist-get request :id)
+              :cause (car-safe cause)
+              :canonical-limit e-runtime-store-codec-protocol-canonical-byte-limit
+              :wire-limit e-runtime-store-codec-protocol-wire-byte-limit)))
+
+(defun e-runtime-store-worker--emit-response (request response)
+  "Emit RESPONSE for REQUEST while preserving write acknowledgement ambiguity.
+
+An oversized ordinary read has no durable ambiguity, so its result is replaced
+with a small correlated typed error.  A write may have committed before its
+acknowledgement became unencodable; terminate the worker instead of making it
+look retry-safe to the parent."
+  (condition-case err
+      (progn
+        (princ (e-runtime-store-worker--pack response))
+        (terpri)
+        (flush-standard-output))
+    (e-runtime-store-codec-too-large
+     (if (eq (plist-get request :kind) 'read)
+         (let ((fallback
+                (e-runtime-store-worker--oversized-read-response request err)))
+           ;; The fallback contains only fixed fields plus the parent-generated
+           ;; request identity, so a second overflow is a protocol fatal error.
+           (princ (e-runtime-store-worker--pack fallback))
+           (terpri)
+           (flush-standard-output))
+       (signal (car err) (cdr err))))))
+
 (defun e-runtime-store-worker-main ()
   "Run the newline-framed worker protocol on standard input/output."
   (let ((standard-output t)
@@ -626,17 +819,8 @@
             (let* ((request (condition-case err
                                 (e-runtime-store-worker--unpack line)
                               (error (list :decode-error err))))
-                   (response
-                    (condition-case err
-                        (list :id (plist-get request :id) :ok t
-                              :result (e-runtime-store-worker--handle request))
-                      (error
-                       (list :id (plist-get request :id) :ok nil
-                             :error-symbol (car err)
-                             :error-data (cdr err))))))
-              (princ (e-runtime-store-worker--pack response))
-              (terpri)
-              (flush-standard-output))))
+                   (response (e-runtime-store-worker--response request)))
+              (e-runtime-store-worker--emit-response request response))))
       (e-runtime-store-worker--close))))
 
 (provide 'e-runtime-store-worker)

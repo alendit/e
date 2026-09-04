@@ -635,6 +635,355 @@
           (should (equal (plist-get (plist-get last :value) :content)
                          "tail")))))))
 
+(defun e-runtime-store-test--response-line (response)
+  "Return unbounded fixture wire text for exact boundary tests.
+
+The fixture deliberately bypasses production packing so one-over inbound wire
+tests can present a raw frame that production would refuse to create."
+  (base64-encode-string (e-runtime-store-codec-encode response) t))
+
+(defun e-runtime-store-test--submitted-store (request)
+  "Return a minimal STORE with submitted REQUEST as its active correlation."
+  (let ((store (e-runtime-store--create
+                :runtime-id "runtime-bounds"
+                :pending (make-hash-table :test 'equal))))
+    (setf (e-runtime-store--active-request store) request)
+    (puthash (e-runtime-store-request--id request) request
+             (e-runtime-store--pending store))
+    store))
+
+(ert-deftest e-runtime-store-s92-c04-bounded-codec-and-request-preflight ()
+  "Canonical exact/one-over bounds reject before scheduler queue admission."
+  (let* ((value (list :payload (make-string 256 ?x)))
+         (encoded (e-runtime-store-codec-encode value))
+         (exact (string-bytes encoded))
+         (printed nil))
+    (should (= e-runtime-store-codec-protocol-canonical-byte-limit
+               71303168))
+    (should (= e-runtime-store-codec-protocol-wire-byte-limit 95070893))
+    (should (equal (e-runtime-store-codec-encode-bounded value exact) encoded))
+    (cl-letf (((symbol-function 'e-runtime-store-codec--print-form)
+               (lambda (_form)
+                 (setq printed t)
+                 (ert-fail "oversized form was fully printed"))))
+      (should-error
+       (e-runtime-store-codec-encode-bounded value (1- exact))
+       :type 'e-runtime-store-codec-too-large))
+    (should-not printed)
+    (let* ((canonical-limit 100)
+           (wire-limit
+            (e-runtime-store-codec-wire-byte-count canonical-limit))
+           ;; 101 unpadded raw bytes fit the derived 137-byte wire ceiling for
+           ;; a 100-byte canonical limit, so both endpoints must check decoded
+           ;; canonical bytes as a distinct domain.
+           (one-over-wire (base64-encode-string (make-string 101 ?x) t)))
+      (let ((e-runtime-store-codec-protocol-canonical-byte-limit canonical-limit)
+            (e-runtime-store-codec-protocol-wire-byte-limit wire-limit))
+        (should (= (1+ (string-bytes one-over-wire)) wire-limit))
+        (should-error (e-runtime-store--unpack one-over-wire)
+                      :type 'e-runtime-store-codec-too-large)
+        (should-error (e-runtime-store-worker--unpack one-over-wire)
+                      :type 'e-runtime-store-codec-too-large)))
+    (let* ((body (list :op 'status :padding (make-string 48 ?x)))
+           (prototype (e-runtime-store-request--create
+                       :id "bounded:w:1" :kind 'write :body body))
+           (canonical-limit
+            (string-bytes
+             (e-runtime-store-codec-encode
+              (e-runtime-store--request-frame prototype))))
+           (wire-limit
+            (e-runtime-store-codec-wire-byte-count canonical-limit)))
+      (let ((e-runtime-store-codec-protocol-canonical-byte-limit canonical-limit)
+            (e-runtime-store-codec-protocol-wire-byte-limit wire-limit)
+            (store (e-runtime-store--create
+                    :runtime-id "bounded" :pending (make-hash-table :test 'equal))))
+        (cl-letf (((symbol-function 'e-runtime-store--dispatch-next) #'ignore))
+          (let ((request (e-runtime-store-submit store 'write body)))
+            (should (eq (e-runtime-store-request--state request) 'queued))
+            (should (memq request (e-runtime-store--write-queue store)))
+            (should (= (string-bytes (e-runtime-store-request--frame request))
+                       canonical-limit))))
+      (let ((e-runtime-store-codec-protocol-canonical-byte-limit canonical-limit)
+            (e-runtime-store-codec-protocol-wire-byte-limit wire-limit)
+            (store (e-runtime-store--create
+                    :runtime-id "bounded" :pending (make-hash-table :test 'equal))))
+        (cl-letf (((symbol-function 'e-runtime-store--dispatch-next) #'ignore))
+          (should-error
+           (e-runtime-store-submit
+            store 'write
+            (plist-put (copy-sequence body) :padding
+                       (concat (plist-get body :padding) "x")))
+           :type 'e-runtime-store-request-too-large)
+          (should-not (e-runtime-store--write-queue store))
+          (should-not (e-runtime-store--read-queue store))
+          (should (= (hash-table-count (e-runtime-store--pending store)) 0))))))))
+
+(ert-deftest e-runtime-store-s92-c04-request-frame-has-queue-only-lifetime ()
+  "A bounded canonical frame survives queueing, never terminal retention."
+  (let* ((store (e-runtime-store--create
+                 :directory "frame-test" :runtime-id "frame"
+                 :pending (make-hash-table :test 'equal)))
+         ordinary-wire)
+    (cl-letf (((symbol-function 'e-runtime-store--start-process)
+               (lambda (candidate)
+                 (setf (e-runtime-store--process candidate) 'ordinary-process)
+                 'ordinary-process))
+              ((symbol-function 'e-runtime-store--ensure-worker-open) #'ignore)
+              ((symbol-function 'process-send-string)
+               (lambda (_process wire) (setq ordinary-wire wire))))
+      (let ((request (e-runtime-store-submit store 'write '(:op status))))
+        (should (eq (e-runtime-store-request--state request) 'submitted))
+        (should ordinary-wire)
+        (should-not (e-runtime-store-request--frame request))
+        (e-runtime-store--settle
+         store request
+         (list :id (e-runtime-store-request--id request)
+               :ok t :result '(:sent t)))
+        (should (eq (e-runtime-store-request--state request) 'committed))
+        (should-not (e-runtime-store-request--frame request)))))
+  (let* ((store (e-runtime-store--create
+                 :directory "frame-test" :runtime-id "open-frame"
+                 :process 'open-process :pending (make-hash-table :test 'equal)))
+         open-request open-wire)
+    (cl-letf (((symbol-function 'process-send-string)
+               (lambda (_process wire) (setq open-wire wire)))
+              ((symbol-function 'e-runtime-store-await)
+               (lambda (_store request &optional _timeout)
+                 (setq open-request request)
+                 '(:opened t))))
+      (e-runtime-store--ensure-worker-open store))
+    (should open-wire)
+    (should-not (e-runtime-store-request--frame open-request)))
+  (let* ((store (e-runtime-store--create
+                 :runtime-id "terminal-frame"
+                 :pending (make-hash-table :test 'equal)))
+         (failed (e-runtime-store-request--create
+                  :id "failed" :kind 'write :state 'queued :frame "large"))
+         (cancelled (e-runtime-store-request--create
+                     :id "cancelled" :kind 'write :state 'queued :frame "large")))
+    (e-runtime-store--fail-request store failed
+                                   '(e-runtime-store-error "local failure"))
+    (should-not (e-runtime-store-request--frame failed))
+    (setf (e-runtime-store--write-queue store) (list cancelled))
+    (should (eq (e-runtime-store-cancel store cancelled) 'dropped))
+    (should-not (e-runtime-store-request--frame cancelled))))
+
+(ert-deftest e-runtime-store-s92-c04-fragmented-wire-bounds-and-reentrant-remainder ()
+  "Fragmented exact wire frames settle once across nested filter reentry."
+  (let* ((first (e-runtime-store-request--create
+                 :id "first" :kind 'read :state 'submitted))
+         (second (e-runtime-store-request--create
+                  :id "second" :kind 'read :state 'submitted))
+         (third (e-runtime-store-request--create
+                 :id "third" :kind 'read :state 'submitted))
+         (store (e-runtime-store-test--submitted-store first))
+         (line-one (e-runtime-store-test--response-line
+                    '(:id "first" :ok t :result (:value one))))
+         (line-two (e-runtime-store-test--response-line
+                    '(:id "second" :ok t :result (:value two))))
+         (line-three (e-runtime-store-test--response-line
+                      '(:id "third" :ok t :result (:value three))))
+         (half (/ (length line-one) 2))
+         (dispatches 0))
+    (puthash "second" second (e-runtime-store--pending store))
+    (puthash "third" third (e-runtime-store--pending store))
+    (cl-letf
+        (((symbol-function 'e-runtime-store--dispatch-next)
+          (lambda (runtime)
+            (pcase (cl-incf dispatches)
+              (1
+               (setf (e-runtime-store--active-request runtime) second)
+               ;; The outer filter has already published LINE-TWO as its
+               ;; remainder.  Reentry appends LINE-THREE and must consume each
+               ;; continuation exactly once.
+               (e-runtime-store--consume-output runtime (concat line-three "\n")))
+              (2 (setf (e-runtime-store--active-request runtime) third))
+              (3 nil)))))
+      (e-runtime-store--consume-output store (substring line-one 0 half))
+      (e-runtime-store--consume-output
+       store (concat (substring line-one half) "\n" line-two "\n")))
+    (should (= dispatches 3))
+    (dolist (request (list first second third))
+      (should (eq (e-runtime-store-request--state request) 'committed)))
+    (should (string-empty-p (e-runtime-store--input-fragment store)))
+    (let* ((response '(:id "exact-wire" :ok t :result (:value exact)))
+           (ordinary (e-runtime-store-test--response-line response))
+           (canonical-limit
+            (string-bytes (e-runtime-store-codec-encode response)))
+           (wire-limit (1+ (string-bytes ordinary)))
+           (request (e-runtime-store-request--create
+                     :id "exact-wire" :kind 'read :state 'submitted))
+           (exact-store (e-runtime-store-test--submitted-store request))
+           (split (/ (length ordinary) 2)))
+      (let ((e-runtime-store-codec-protocol-canonical-byte-limit canonical-limit)
+            (e-runtime-store-codec-protocol-wire-byte-limit wire-limit))
+        (cl-letf (((symbol-function 'e-runtime-store--dispatch-next) #'ignore))
+          (e-runtime-store--consume-output exact-store
+                                           (substring ordinary 0 split))
+          (e-runtime-store--consume-output
+           exact-store (concat (substring ordinary split) "\n"))))
+      (should (eq (e-runtime-store-request--state request) 'committed)))
+    (let* ((request (e-runtime-store-request--create
+                     :id "one-over" :kind 'read :state 'submitted))
+           (overflow-store (e-runtime-store-test--submitted-store request))
+           (ordinary (e-runtime-store-test--response-line
+                      '(:id "one-over" :ok t :result (:value exact))))
+           (wire-limit (1+ (string-bytes ordinary)))
+           (over (concat ordinary "A"))
+           (split (/ (length over) 2)))
+      (let ((e-runtime-store-codec-protocol-wire-byte-limit wire-limit))
+        (e-runtime-store--consume-output overflow-store (substring over 0 split))
+        (e-runtime-store--consume-output
+         overflow-store (concat (substring over split) "\n")))
+      (should (eq (e-runtime-store-request--state request) 'failed))
+      (should (eq (plist-get (cddr (e-runtime-store-request--error request))
+                             :protocol-cause)
+                  'response-frame-too-large)))))
+
+(ert-deftest e-runtime-store-s92-c04-overflow-read-is-correlated-write-is-fatal ()
+  "A large read gets a small typed response; a write acknowledgement cannot."
+  (let* ((canonical-limit 2048)
+         (wire-limit (e-runtime-store-codec-wire-byte-count canonical-limit))
+         (read-request (e-runtime-store-request--create
+                        :id "read-overflow" :kind 'read :state 'submitted
+                        :body '(:op oversized-read)))
+         (write-request (e-runtime-store-request--create
+                         :id "write-overflow" :kind 'write :state 'submitted
+                         :body '(:op committed-write)))
+         (read-worker-request
+          '(:id "read-overflow" :kind read :body (:op oversized-read)))
+         (write-worker-request
+          '(:id "write-overflow" :kind write :body (:op committed-write)))
+         (large-result (list :content (make-string 8192 ?x)))
+         read-wire)
+    (let ((e-runtime-store-codec-protocol-canonical-byte-limit canonical-limit)
+          (e-runtime-store-codec-protocol-wire-byte-limit wire-limit))
+      (with-temp-buffer
+        (let ((standard-output (current-buffer)))
+          (e-runtime-store-worker--emit-response
+           read-worker-request
+           (list :id "read-overflow" :ok t :result large-result)))
+        (setq read-wire (string-trim-right (buffer-string))))
+      (let ((response (e-runtime-store--unpack read-wire)))
+        (should-not (plist-get response :ok))
+        (should (eq (plist-get response :error-symbol)
+                    'e-runtime-store-response-too-large)))
+      (let ((store (e-runtime-store-test--submitted-store read-request)))
+        (cl-letf (((symbol-function 'e-runtime-store--dispatch-next) #'ignore))
+          (e-runtime-store--consume-output store (concat read-wire "\n")))
+        (should (eq (e-runtime-store-request--state read-request) 'failed))
+        (should-not (e-runtime-store--unavailable store))
+        (should (eq (car (e-runtime-store-request--error read-request))
+                    'e-runtime-store-response-too-large)))
+      (with-temp-buffer
+        (let ((standard-output (current-buffer)))
+          (should-error
+           (e-runtime-store-worker--emit-response
+            write-worker-request
+            (list :id "write-overflow" :ok t :result large-result))
+           :type 'e-runtime-store-codec-too-large)
+          (should (= (buffer-size) 0)))))))
+
+(ert-deftest e-runtime-store-s92-c04-worker-checkpoint-catalog-and-identity-bounds ()
+  "Worker backstops projection limits and pages identities at real boundaries."
+  (let ((directory (make-temp-file "e-runtime-store-c04-worker-" t)))
+    (unwind-protect
+        (progn
+          (e-runtime-store-worker--open directory "c04-worker")
+          (let* ((checkpoint '(:version 1 :payload "x"))
+                 (checkpoint-limit
+                  (string-bytes (e-runtime-store-codec-encode checkpoint)))
+                 (catalog '((:id "catalog" :title "x")))
+                 (catalog-limit
+                  (string-bytes (e-runtime-store-codec-encode catalog))))
+            (should (= (string-bytes
+                        (e-runtime-store-codec-encode
+                         '(:version 1 :payload "xx")))
+                       (1+ checkpoint-limit)))
+            (should (= (string-bytes
+                        (e-runtime-store-codec-encode
+                         '((:id "catalog" :title "xx"))))
+                       (1+ catalog-limit)))
+            (let ((e-runtime-store-worker-checkpoint-canonical-byte-limit
+                   checkpoint-limit))
+              (e-runtime-store-worker--checkpoint-put
+               (list :session-id "checkpoint" :value checkpoint))
+              (should-error
+               (e-runtime-store-worker--checkpoint-put
+                (list :session-id "checkpoint"
+                      :value '(:version 1 :payload "xx")))
+               :type 'e-runtime-store-codec-too-large))
+            (let ((e-runtime-store-codec-catalog-canonical-byte-limit
+                   catalog-limit))
+              (e-runtime-store-worker--catalog-put (list :value catalog))
+              (should-error
+               (e-runtime-store-worker--catalog-put
+                (list :value '((:id "catalog" :title "xx"))))
+               :type 'e-runtime-store-codec-too-large))
+            ;; The current observed 1,089,332-byte SQLite TEXT catalog is
+            ;; 816,999 canonical bytes (an exact no-padding base64 multiple).
+            ;; It remains below the 1 MiB derived-projection ceiling.
+            (let* ((observed-sqlite-text-bytes 1089332)
+                   (observed-canonical-bytes 816999)
+                   (template '((:id "catalog" :payload "")))
+                   (overhead
+                    (string-bytes (e-runtime-store-codec-encode template)))
+                   (observed-catalog
+                    (list (list :id "catalog" :payload
+                                (make-string
+                                 (- observed-canonical-bytes overhead) ?x))))
+                   (canonical
+                    (e-runtime-store-codec-encode observed-catalog)))
+              (should (= (string-bytes canonical) observed-canonical-bytes))
+              (should (= (string-bytes (base64-encode-string canonical t))
+                         observed-sqlite-text-bytes))
+              (should (<= (string-bytes canonical)
+                          e-runtime-store-codec-catalog-canonical-byte-limit))
+              (should (plist-get
+                       (e-runtime-store-worker--catalog-put
+                        (list :value observed-catalog))
+                       :revision))))
+          (let ((payload (e-runtime-store-worker--sql-value '(:type "session"))))
+            (dolist (session-id '("a" "b" "c"))
+              (sqlite-execute
+               e-runtime-store-worker--database
+               "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
+               (vector session-id 1 payload))))
+          (let ((e-runtime-store-worker-session-id-page-row-limit 2)
+                (e-runtime-store-worker-session-id-page-byte-limit 2))
+            (let ((first-page
+                   (e-runtime-store-worker--session-id-page
+                    '(:cursor nil :limit 2))))
+              ;; Three short identities exercise the exact two-row page plus
+              ;; one lookahead; the third never leaks into the first result.
+              (should (equal (plist-get first-page :ids) '("a" "b")))
+              (should (= (plist-get first-page :byte-count) 2))
+              (should (equal (plist-get first-page :next) "b"))
+              (should (equal
+                       (plist-get
+                        (e-runtime-store-worker--session-id-page
+                         '(:cursor "b" :limit 2))
+                        :ids)
+                       '("c"))))
+          (let ((e-runtime-store-worker-session-id-page-row-limit 3)
+                (e-runtime-store-worker-session-id-page-byte-limit 2))
+            (let ((byte-page
+                   (e-runtime-store-worker--session-id-page
+                    '(:cursor nil :limit 3))))
+              ;; The exact two-byte page admits A and B; C is the one-byte
+              ;; overflow and must be deferred to the cursor successor.
+              (should (equal (plist-get byte-page :ids) '("a" "b")))
+              (should (= (plist-get byte-page :byte-count) 2))
+              (should (equal (plist-get byte-page :next) "b"))
+              (should (equal
+                       (plist-get
+                        (e-runtime-store-worker--session-id-page
+                         '(:cursor "b" :limit 3))
+                        :ids)
+                       '("c"))))))
+      (e-runtime-store-worker--close)
+      (delete-directory directory t)))))
+
 (provide 'e-runtime-store-test)
 
 ;;; e-runtime-store-test.el ends here

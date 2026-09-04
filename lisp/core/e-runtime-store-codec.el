@@ -14,8 +14,57 @@
 (require 'cl-lib)
 
 (define-error 'e-runtime-store-codec-error "Runtime store value is invalid")
+(define-error 'e-runtime-store-codec-too-large
+  "Runtime store canonical value exceeds its byte limit"
+  'e-runtime-store-codec-error)
 
 (defconst e-runtime-store-codec-version 1)
+
+(defconst e-runtime-store-codec-protocol-canonical-byte-limit
+  (* 68 1024 1024)
+  "Maximum canonical bytes in one runtime-store protocol value.")
+
+(defconst e-runtime-store-codec-protocol-wire-byte-limit
+  (1+ (* 4 (ceiling e-runtime-store-codec-protocol-canonical-byte-limit 3)))
+  "Maximum base64 protocol bytes, including the newline delimiter.")
+
+(defconst e-runtime-store-codec-checkpoint-canonical-byte-limit (* 1024 1024)
+  "Maximum canonical bytes in one rebuildable session checkpoint value.")
+
+(defconst e-runtime-store-codec-catalog-canonical-byte-limit (* 1024 1024)
+  "Maximum canonical bytes in one rebuildable session catalog projection.")
+
+(defun e-runtime-store-codec-wire-byte-count (canonical-byte-count)
+  "Return newline-framed base64 bytes for CANONICAL-BYTE-COUNT.
+
+CANONICAL-BYTE-COUNT is measured after tagged UTF-8 encoding; the result is
+the exact ASCII wire allocation including its one newline delimiter."
+  (unless (and (integerp canonical-byte-count)
+               (>= canonical-byte-count 0))
+    (signal 'wrong-type-argument (list 'natnump canonical-byte-count)))
+  (1+ (* 4 (ceiling canonical-byte-count 3))))
+
+(defun e-runtime-store-codec--canonical-byte-limit-error (limit bytes)
+  "Signal that canonical output reached LIMIT at BYTES.
+
+BYTES is the first observed byte count beyond LIMIT, rather than a claim about
+the total size of an intentionally unmaterialized value."
+  (signal 'e-runtime-store-codec-too-large
+          (list "Canonical value exceeds byte limit"
+                :limit limit :observed-at-least bytes)))
+
+(defun e-runtime-store-codec--utf-8-character-bytes (character)
+  "Return the UTF-8 byte width of printed CHARACTER.
+
+The tagged codec serializes its reader syntax with `utf-8-unix'.  The printer
+hands a function-valued `standard-output' one character at a time, so this
+small calculation lets bounded encoding stop before a full oversized printed
+representation is allocated."
+  (cond
+   ((< character #x80) 1)
+   ((< character #x800) 2)
+   ((< character #x10000) 3)
+   (t 4)))
 
 (defun e-runtime-store-codec--finite-number-p (value)
   "Return non-nil when VALUE is a finite supported number."
@@ -95,17 +144,61 @@
     (signal 'e-runtime-store-codec-error
             (list "Unsupported durable value" value)))))
 
-(defun e-runtime-store-codec-encode (value)
-  "Return canonical unibyte tagged encoding for VALUE."
+(defun e-runtime-store-codec--form (value)
+  "Return the private tagged form whose printed bytes encode VALUE."
+  (vector 'e-runtime-store-value e-runtime-store-codec-version
+          (e-runtime-store-codec--encode
+           value (make-hash-table :test 'eq))))
+
+(defun e-runtime-store-codec--print-form (form)
+  "Return canonical unibyte printed FORM.
+
+FORM must already be the private tagged value built by
+`e-runtime-store-codec--form'."
   (let ((print-circle nil)
         (print-level nil)
         (print-length nil))
     (encode-coding-string
-     (prin1-to-string
-      (vector 'e-runtime-store-value e-runtime-store-codec-version
-              (e-runtime-store-codec--encode
-               value (make-hash-table :test 'eq))))
+     (prin1-to-string form)
      'utf-8-unix)))
+
+(defun e-runtime-store-codec--measure-form-bounded (form limit)
+  "Return FORM's UTF-8 byte count, stopping once it exceeds LIMIT.
+
+The counting printer intentionally retains no output.  It therefore rejects a
+too-large canonical representation before the complete representation exists
+as a string, while using precisely the same Lisp printer as final encoding.
+LIMIT is a nonnegative integer byte count."
+  (unless (and (integerp limit) (>= limit 0))
+    (signal 'wrong-type-argument (list 'natnump limit)))
+  (let ((bytes 0)
+        (print-circle nil)
+        (print-level nil)
+        (print-length nil))
+    (let ((standard-output
+           (lambda (character)
+             (cl-incf bytes
+                      (e-runtime-store-codec--utf-8-character-bytes
+                       character))
+             (when (> bytes limit)
+               (e-runtime-store-codec--canonical-byte-limit-error
+                limit bytes)))))
+      (prin1 form))
+    bytes))
+
+(defun e-runtime-store-codec-encode (value)
+  "Return canonical unibyte tagged encoding for VALUE."
+  (e-runtime-store-codec--print-form (e-runtime-store-codec--form value)))
+
+(defun e-runtime-store-codec-encode-bounded (value limit)
+  "Return canonical encoding for VALUE when it fits LIMIT UTF-8 bytes.
+
+The bound is measured against the exact tagged canonical representation.  A
+value that exceeds LIMIT signals `e-runtime-store-codec-too-large' before its
+complete oversized representation is constructed."
+  (let ((form (e-runtime-store-codec--form value)))
+    (e-runtime-store-codec--measure-form-bounded form limit)
+    (e-runtime-store-codec--print-form form)))
 
 (defun e-runtime-store-codec--decode (value)
   "Decode one tagged VALUE."

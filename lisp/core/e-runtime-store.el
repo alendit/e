@@ -27,6 +27,15 @@
   'e-runtime-store-error)
 (define-error 'e-runtime-store-worker-error "Runtime store worker error"
   'e-runtime-store-error)
+(define-error 'e-runtime-store-request-too-large
+  "Runtime store request exceeds its transport limit"
+  'e-runtime-store-error)
+(define-error 'e-runtime-store-response-too-large
+  "Runtime store read response exceeds its transport limit"
+  'e-runtime-store-error)
+(define-error 'e-runtime-store-projection-too-large
+  "Runtime store rebuildable projection exceeds its byte limit"
+  'e-runtime-store-error)
 (require 'e-runtime-store-ownership)
 (define-error 'e-runtime-store-board-conflict "Runtime store Board conflict"
   'e-runtime-store-worker-error)
@@ -65,7 +74,7 @@ submitted timeout freezes the store until explicit close/reopen and reload."
                (:constructor e-runtime-store-request--create)
                (:predicate e-runtime-store-request-p)
                (:conc-name e-runtime-store-request--))
-  id kind body state result error admitted-at submitted-at)
+  id kind body frame state result error admitted-at submitted-at)
 
 (defun e-runtime-store--worker-file ()
   "Return the newest installed worker source or byte-code path.
@@ -95,13 +104,60 @@ deleting or rewriting those unrelated artifacts."
         "-l" (e-runtime-store--worker-file)
         "--funcall" "e-runtime-store-worker-main"))
 
+(defun e-runtime-store--encode-frame (value)
+  "Return bounded canonical protocol bytes for VALUE.
+
+Canonical and wire domains are checked independently even though the wire
+limit is mechanically derived from the canonical limit."
+  (let ((canonical
+         (e-runtime-store-codec-encode-bounded
+          value e-runtime-store-codec-protocol-canonical-byte-limit)))
+    (when (> (e-runtime-store-codec-wire-byte-count (string-bytes canonical))
+             e-runtime-store-codec-protocol-wire-byte-limit)
+      (signal 'e-runtime-store-codec-too-large
+              (list "Protocol wire frame exceeds byte limit"
+                    :domain 'wire
+                    :limit e-runtime-store-codec-protocol-wire-byte-limit
+                    :canonical-bytes (string-bytes canonical))))
+    canonical))
+
+(defun e-runtime-store--pack-canonical (canonical)
+  "Return bounded canonical protocol CANONICAL as one ASCII frame."
+  (let ((wire-bytes (e-runtime-store-codec-wire-byte-count
+                     (string-bytes canonical))))
+    (when (> wire-bytes e-runtime-store-codec-protocol-wire-byte-limit)
+      (signal 'e-runtime-store-codec-too-large
+              (list "Protocol wire frame exceeds byte limit"
+                    :domain 'wire
+                    :limit e-runtime-store-codec-protocol-wire-byte-limit
+                    :canonical-bytes (string-bytes canonical))))
+    (concat (base64-encode-string canonical t) "\n")))
+
 (defun e-runtime-store--pack (value)
-  "Return VALUE as one ASCII protocol frame."
-  (concat (base64-encode-string (e-runtime-store-codec-encode value) t) "\n"))
+  "Return VALUE as one bounded ASCII protocol frame."
+  (e-runtime-store--pack-canonical (e-runtime-store--encode-frame value)))
 
 (defun e-runtime-store--unpack (text)
   "Decode one ASCII protocol frame TEXT."
-  (e-runtime-store-codec-decode (base64-decode-string text)))
+  (when (> (1+ (string-bytes text))
+           e-runtime-store-codec-protocol-wire-byte-limit)
+    (signal 'e-runtime-store-codec-too-large
+            (list "Protocol wire frame exceeds byte limit"
+                  :domain 'wire
+                  :limit e-runtime-store-codec-protocol-wire-byte-limit
+                  :wire-bytes (1+ (string-bytes text)))))
+  (let ((canonical (base64-decode-string text)))
+    ;; The largest legal base64 character count can otherwise represent one
+    ;; extra unpadded raw byte when the canonical ceiling is not divisible by
+    ;; three.  Keep both named byte domains independently authoritative.
+    (when (> (string-bytes canonical)
+             e-runtime-store-codec-protocol-canonical-byte-limit)
+      (signal 'e-runtime-store-codec-too-large
+              (list "Protocol canonical frame exceeds byte limit"
+                    :domain 'canonical
+                    :limit e-runtime-store-codec-protocol-canonical-byte-limit
+                    :canonical-bytes (string-bytes canonical))))
+    (e-runtime-store-codec-decode canonical)))
 
 (defun e-runtime-store--live-p (store)
   "Return non-nil when STORE has a live worker process."
@@ -204,6 +260,7 @@ so its failure reports that selected request while it remains queued."
       (setf (e-runtime-store-request--state request) 'committed
             (e-runtime-store-request--result request)
             (plist-get response :result)
+            (e-runtime-store-request--frame request) nil
             (e-runtime-store--last-error store) nil)
     (let ((err (condition-case caught
                    (e-runtime-store--signal-response-error response)
@@ -215,52 +272,87 @@ so its failure reports that selected request while it remains queued."
   (unless (eq (e-runtime-store-request--kind request) 'open)
     (e-runtime-store--dispatch-next store)))
 
+(defun e-runtime-store--freeze-oversized-response (store wire-bytes)
+  "Freeze STORE after receiving a response frame of WIRE-BYTES."
+  (e-runtime-store--freeze-and-stop
+   store
+   (e-runtime-store--protocol-error
+    store 'response-frame-too-large
+    :wire-bytes wire-bytes
+    :wire-limit e-runtime-store-codec-protocol-wire-byte-limit)))
+
+(defun e-runtime-store--consume-response-line (store line)
+  "Decode and settle one complete protocol LINE for STORE."
+  (unless (string-empty-p line)
+    (let ((wire-bytes (1+ (string-bytes line))))
+      (if (> wire-bytes e-runtime-store-codec-protocol-wire-byte-limit)
+          (e-runtime-store--freeze-oversized-response store wire-bytes)
+        (condition-case err
+            (let ((response (e-runtime-store--unpack line)))
+              (if (not (e-runtime-store--response-valid-p response))
+                  (e-runtime-store--freeze-and-stop
+                   store
+                   (e-runtime-store--protocol-error
+                    store 'malformed-response))
+                (let* ((id (plist-get response :id))
+                       (request
+                        (gethash id (e-runtime-store--pending store))))
+                  (cond
+                   ((not request)
+                    (e-runtime-store--freeze-and-stop
+                     store
+                     (e-runtime-store--protocol-error
+                      store 'unknown-response-id :response-id id)))
+                   ((not (eq request (e-runtime-store--active-request store)))
+                    (e-runtime-store--freeze-and-stop
+                     store
+                     (e-runtime-store--protocol-error
+                      store 'uncorrelated-response :response-id id)))
+                   (t (e-runtime-store--settle store request response))))))
+          (e-runtime-store-codec-too-large
+           (e-runtime-store--freeze-oversized-response store wire-bytes))
+          (error
+           (e-runtime-store--freeze-and-stop
+            store
+            (e-runtime-store--protocol-error
+             store 'decode-error :cause err))))))))
+
 (defun e-runtime-store--consume-output (store text)
-  "Consume worker protocol TEXT for STORE."
+  "Consume bounded, newline-framed worker protocol TEXT for STORE."
   ;; A filter invocation may already be queued when close or a protocol
   ;; failure takes ownership of the process.  No later response may settle.
   (unless (or (e-runtime-store--closed store)
               (e-runtime-store--unavailable store))
-    ;; Store each remainder before decoding or settling.  A large flushed frame
-    ;; can make process filters reentrant; leaving the prior fragment installed
-    ;; until the outer invocation returned duplicated prefixes and corrupted an
-    ;; otherwise complete frame.
+    ;; Publish the complete unconsumed remainder before decoding each line.
+    ;; Settling may synchronously dispatch the next request and reenter this
+    ;; filter; that nested invocation must append to the durable remainder,
+    ;; never to a stale lexical prefix from the outer invocation.
     (setf (e-runtime-store--input-fragment store)
           (concat (or (e-runtime-store--input-fragment store) "") text))
     (while (and (not (e-runtime-store--unavailable store))
-                (string-match "\n" (e-runtime-store--input-fragment store)))
+                (let ((input (e-runtime-store--input-fragment store)))
+                  (string-match "\n" input)))
       (let* ((input (e-runtime-store--input-fragment store))
-             (line (substring input 0 (match-beginning 0))))
-        (setf (e-runtime-store--input-fragment store)
-              (substring input (match-end 0)))
-        (unless (string-empty-p line)
-          (condition-case err
-              (let ((response (e-runtime-store--unpack line)))
-                (if (not (e-runtime-store--response-valid-p response))
-                    (e-runtime-store--freeze-and-stop
-                     store
-                     (e-runtime-store--protocol-error
-                      store 'malformed-response))
-                  (let* ((id (plist-get response :id))
-                         (request
-                          (gethash id (e-runtime-store--pending store))))
-                    (cond
-                     ((not request)
-                      (e-runtime-store--freeze-and-stop
-                       store
-                       (e-runtime-store--protocol-error
-                        store 'unknown-response-id :response-id id)))
-                     ((not (eq request (e-runtime-store--active-request store)))
-                      (e-runtime-store--freeze-and-stop
-                       store
-                       (e-runtime-store--protocol-error
-                        store 'uncorrelated-response :response-id id)))
-                     (t (e-runtime-store--settle store request response))))))
-            (error
-             (e-runtime-store--freeze-and-stop
-              store
-              (e-runtime-store--protocol-error
-               store 'decode-error :cause err)))))))))
+             ;; Capture both offsets before decoding: nested printer, codec, or
+             ;; scheduler work is free to use regular expressions itself.
+             (line-end (match-beginning 0))
+             (remainder-start (match-end 0))
+             (line (substring input 0 line-end))
+             (remainder (substring input remainder-start)))
+        (setf (e-runtime-store--input-fragment store) remainder)
+        (let ((wire-bytes (1+ (string-bytes line))))
+          (if (> wire-bytes e-runtime-store-codec-protocol-wire-byte-limit)
+              (e-runtime-store--freeze-oversized-response store wire-bytes)
+            (e-runtime-store--consume-response-line store line)))))
+    (unless (e-runtime-store--unavailable store)
+      (let ((fragment (or (e-runtime-store--input-fragment store) "")))
+        ;; A frame with no delimiter cannot reach the complete limit: the
+        ;; newline itself still needs one byte.  Fail before retaining an
+        ;; impossible-to-complete fragment.
+        (when (>= (string-bytes fragment)
+                  e-runtime-store-codec-protocol-wire-byte-limit)
+          (e-runtime-store--freeze-oversized-response
+           store (string-bytes fragment)))))))
 
 (defun e-runtime-store--fail-all (store error)
   "Fail STORE and every outstanding request with ERROR exactly once."
@@ -358,11 +450,17 @@ so its failure reports that selected request while it remains queued."
            (frame (list :id (e-runtime-store-request--id request)
                         :kind 'open :directory (e-runtime-store--directory store)
                         :runtime-id (e-runtime-store--runtime-id store))))
+      (setf (e-runtime-store-request--frame request)
+            (e-runtime-store--encode-frame frame))
       (setf (e-runtime-store--active-request store) request)
       (puthash (e-runtime-store-request--id request) request
                (e-runtime-store--pending store))
       (process-send-string (e-runtime-store--process store)
-                           (e-runtime-store--pack frame))
+                           (e-runtime-store--pack-canonical
+                            (e-runtime-store-request--frame request)))
+      ;; The subprocess accepted the complete frame.  The pending request
+      ;; needs only its small correlation/terminal facts from this point.
+      (setf (e-runtime-store-request--frame request) nil)
       (setf (e-runtime-store--startup-status store)
             (e-runtime-store-await store request)
             (e-runtime-store--opened-process store)
@@ -379,12 +477,28 @@ so its failure reports that selected request while it remains queued."
         :kind (e-runtime-store-request--kind request)
         :body (e-runtime-store-request--body request)))
 
+(defun e-runtime-store--preflight-request (request)
+  "Return REQUEST's exact bounded canonical frame before queue admission."
+  (or (e-runtime-store-request--frame request)
+      (condition-case err
+          (setf (e-runtime-store-request--frame request)
+                (e-runtime-store--encode-frame
+                 (e-runtime-store--request-frame request)))
+        (e-runtime-store-codec-too-large
+         (let ((failure
+                (e-runtime-store--request-error
+                 'e-runtime-store-request-too-large
+                 "Runtime-store request exceeds its transport limit"
+                 request :cause err)))
+           (signal (car failure) (cdr failure)))))))
+
 (defun e-runtime-store--fail-request (store request err)
   "Settle REQUEST on STORE with ERR exactly once."
   (remhash (e-runtime-store-request--id request)
            (e-runtime-store--pending store))
   (setf (e-runtime-store-request--state request) 'failed
         (e-runtime-store-request--error request) err
+        (e-runtime-store-request--frame request) nil
         (e-runtime-store--last-error store) err))
 
 (defun e-runtime-store--queued-request-p (store request)
@@ -438,8 +552,12 @@ so its failure reports that selected request while it remains queued."
                            (e-runtime-store--pending store))
                   (process-send-string
                    (e-runtime-store--process store)
-                   (e-runtime-store--pack
-                    (e-runtime-store--request-frame request))))
+                   (e-runtime-store--pack-canonical
+                    (e-runtime-store--preflight-request request)))
+                  ;; Keep the bounded frame only until the pipe accepts it.
+                  ;; A retained asynchronous request must not pin a full
+                  ;; 68 MiB canonical buffer after submission.
+                  (setf (e-runtime-store-request--frame request) nil))
               (progn
                 ;; A timer may cancel the selected request while the internal
                 ;; open awaits.  It is terminal already, so continue with the
@@ -472,14 +590,15 @@ Request identity is process-local transport correlation only."
     (signal 'e-runtime-store-unavailable (list "Store is closed")))
   (when (e-runtime-store--unavailable store)
     (e-runtime-store--signal-unavailable store))
-  ;; Encoding is the producer-side validation boundary.  Reject unsupported or
-  ;; cyclic values before the request can become a submitted durable effect.
-  (e-runtime-store-codec-encode body)
   (let ((request
          (e-runtime-store-request--create
           :id (e-runtime-store--next-id store
                                          (if (eq kind 'write) "w" "r"))
           :kind kind :body body :state 'queued :admitted-at (float-time))))
+    ;; Capture and bound the complete transport frame, including its generated
+    ;; correlation id and request envelope, before this request enters either
+    ;; scheduler queue.  Later caller mutation cannot change sent bytes.
+    (e-runtime-store--preflight-request request)
     (if (eq kind 'write)
         (setf (e-runtime-store--write-queue store)
               (nconc (e-runtime-store--write-queue store) (list request)))
@@ -497,7 +616,8 @@ Return `dropped' for provisional work or `in-flight' once transport began."
      (setf
            (e-runtime-store-request--state request) 'cancelled
            (e-runtime-store-request--error request)
-           '(e-runtime-store-cancelled "Cancelled before submission"))
+           '(e-runtime-store-cancelled "Cancelled before submission")
+           (e-runtime-store-request--frame request) nil)
      'dropped)
     ('submitted 'in-flight)
     (_ (e-runtime-store-request--state request))))
