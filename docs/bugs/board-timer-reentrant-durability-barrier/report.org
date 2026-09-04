@@ -1,0 +1,24 @@
+#+title: Board Timer Reenters a Durable Mutation Barrier
+#+date: 2026-09-04
+#+startup: overview
+
+* Report
+
+After the runtime store was upgraded to schema v5 and Emacs restarted, the
+Daily chat appeared to hang again.  Emacs displayed:
+
+#+begin_example
+Error running timer: (e-board-mutation-frozen "brd_01M1NVERD7H84PRDEFYBK6EM57")
+#+end_example
+
+The failure occurred during live timer-driven Board activity.  The operator
+asked why the Feature 92 graphical E2E did not detect it.
+
+* Expected behavior
+
+A timer callback already admitted by the Board runtime must not be lost merely
+because another durable mutation on the same Board is awaiting its worker
+response.  It must remain behind the existing Board storage barrier and run
+after that barrier releases, without an uncaught timer error or duplicate
+durable effect.
+

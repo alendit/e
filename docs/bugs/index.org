@@ -8,7 +8,8 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
-| New    | runtime-store-daily-participant-timeout/ | Daily fanout times out the runtime store |
+| New    | board-timer-reentrant-durability-barrier/ | Board timer reenters a durable mutation barrier |
+| Closed | runtime-store-daily-participant-timeout/ | Daily fanout times out the runtime store |
 | Closed | context-curation-stale-frame-labels/ | Consumed context frame labels remain visible |
 | Closed | e-chat-curation-counts-lack-source-stubs/ | Context curation counts lack useful source stubs |
 | Closed | e-chat-activity-order-and-hidden-summary/ | Chat activity appears below Thinking and summary reasoning is hidden |
