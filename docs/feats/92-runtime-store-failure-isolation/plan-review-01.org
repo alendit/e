@@ -1,0 +1,148 @@
+#+title: Feature 92 Implementation Plan Review 01
+#+date: 2026-09-04
+#+startup: overview
+
+* Decision
+
+Result: =implementation-plan-fixed-point=.
+
+The independent implementation-plan review found no remaining P0--P3 finding
+or required unknown after three corrections.  Production implementation may
+use the reviewed delivery map.
+
+Reviewed plan identity:
+
+- base commit :: =5d0748e4ac0f93555f205f135dd80922731d3e1e=
+- =plan.org= blob :: =df58407c2577ad7751ecdb6537fdeb10f54295a1=
+- plan-owning content ::
+  =docs/feats/92-runtime-store-failure-isolation/plan.org=
+- material dependencies :: Feature 87's accepted persistence contracts and
+  design, the runtime-store/worker/codec/session projection sources and tests,
+  the runtime-store timeout bug report, =docs/feats/index.org=, =AGENTS.md=,
+  =docs/references/runtime_concepts.org=, and
+  =docs/references/dev_work.org=
+- selected result level :: implementation plan
+
+This result is bound to unchanged plan-owning content and the material
+dependencies that determine the contracts, delivery packages, recovery model,
+and evidence.
+
+* Behavioral and mechanism status
+
+- Goal :: =BUG-RUNTIME-STORE-ISOLATION=
+- Behavioral status :: Partial.  Earlier queued-timeout and typed-cause tests
+  pass, but Feature 92's complete deterministic scenario and a fresh Daily run
+  have not run.
+- Mechanism status :: Not started at the reviewed base.
+- Product authority :: The operator request of 2026-09-04, Feature 87's
+  accepted contracts, and the runtime-store timeout bug report.
+- Owning contracts :: =F92-C01= through =F92-C04=.
+
+* Review corrections
+
+** Resolved High: offline upgrade omitted from ownership scope
+
+The first plan assigned the claim only to the ordinary runtime worker.  Source
+inspection showed that the explicit offline upgrade separately checked and
+deleted the same owner file before opening SQLite.
+
+=F92-C03= and =F92-DP2= now assign one private runtime-directory claim to both
+workers.  Both must acquire it before opening SQLite and release it after
+closing.  The ordinary/offline race is part of =S92-OWNERSHIP=.
+
+** Resolved High: snapshot plus rename was not conditional ownership
+
+The first stale-recovery proposal could move a replacement pathname after
+observing an older inode.  Atomic rename alone did not establish compare-and-
+move semantics.
+
+The accepted plan instead uses Emacs's cross-process file-lock primitive for
+atomic acquisition, live-holder exclusion, and dead-PID/prior-boot recovery.
+Bounded diagnostic metadata is subordinate to that lock and never authorizes
+stealing it.
+
+** Resolved High: same-boot PID reuse exceeded file-lock identity
+
+Disposable batch probes confirmed that Emacs lock identity contains
+host/PID/boot but not process-start identity.  A live unrelated process reusing
+the PID on the same boot cannot be distinguished safely enough to steal the
+lock.
+
+The contract was constructively rebaselined: that case now fails safely with a
+typed identity-conflict diagnostic and leaves the lock untouched.  Automatic
+recovery occurs only after the PID is dead or through explicit offline operator
+recovery after proving no worker is live.  This preserves the primary
+single-owner safety outcome without claiming an unavailable primitive.
+
+** Resolved Medium: byte domains and overflow settlement were ambiguous
+
+The first plan compared raw content, canonical codec, base64 wire, and SQLite
+TEXT measurements as though they were interchangeable.  It also omitted the
+read/write distinction when a worker result cannot fit a response.
+
+=F92-DP3= now names each byte domain, preflights complete request frames, gives
+oversized reads a small correlated error, and preserves fail-closed ambiguity
+when a committed write acknowledgement cannot be encoded.  The canonical
+ceiling is 68 MiB and its exact derived wire ceiling is 95,070,893 bytes.
+
+** Resolved Medium: allocation estimate was too small
+
+The first 256 MiB claim was below the lower-bound sum of the listed live
+allocations.  The final private envelope is 512 MiB.  The modeled original
+input, codec copy, canonical frame, and three wire-sized allocations total
+390,070,279 bytes, leaving 146,800,633 bytes of headroom before the envelope.
+A disposable peak-allocation probe must validate the implementation.
+
+** Resolved Medium: protocol recovery evidence stopped at failure
+
+=S92-PROTOCOL= now proves that the first cause survives later submissions and
+that explicit close/reopen plus canonical reload restores usability without
+automatically resubmitting ambiguous work.
+
+* Contract and delivery disposition
+
+| Contract | Package | Disposition |
+|----------+---------+-------------|
+| F92-C01 | F92-DP1 | Cleared: request ownership and phase timeout behavior close in the scheduler. |
+| F92-C02 | F92-DP1 | Cleared: protocol corruption and client notification share one complete settlement package. |
+| F92-C03 | F92-DP2 | Cleared: ordinary/offline claim scope, state table, and fail-safe identity boundary are complete. |
+| F92-C04 | F92-DP3 | Cleared: byte domains, page/projection bounds, overflow settlement, and resume fallback are complete. |
+
+The mapping is bidirectionally complete.  =F92-DP1= establishes =C01/C02=;
+=F92-DP2= establishes =C03= after typed startup settlement exists; and
+=F92-DP3= establishes =C04= after lifecycle and ownership acceptance.  Each
+package is a useful stopping point and no later package repairs an earlier
+package's incomplete recovery semantics.
+
+* Specification-cell disposition
+
+Cleared: single normative authority, behavioral design trace, durable contract
+boundary, scenario diagnosability, evidence topology, telemetry decision power,
+exact-limit justification, defensive actionability, change locality, workflow
+boundary, decision level, contract/package coverage, useful stopping points,
+cohesion and transaction closure, dependency order, package-size tradeoff,
+acceptance-cost topology, and checkpoint/package distinction.
+
+External freshness is not applicable because no provider or credentialed
+capability participates in the repository-controlled contract.  The fresh
+Daily run remains observational and does not substitute for deterministic
+mechanism evidence.
+
+* Architecture and glossary
+
+The architecture branch is =correct now=.  The proper bound includes one
+private =e-runtime-store-ownership.el= module shared by ordinary and offline
+workers; no broad modularization scope is activated.  Request lifecycle,
+generic encoding, and session projection decisions remain with their existing
+semantic owners.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  It fits the
+same-project runtime scope and has no material unresolved term candidate.
+
+* Verification
+
+The reviewer inspected the plan and relevant current sources and ran disposable
+batch lock probes.  The probes confirmed cross-process exclusion, dead-holder
+recovery, and the same-boot PID-reuse limitation recorded in the final plan.
+No production source, canonical database, or running Emacs state changed during
+plan review.

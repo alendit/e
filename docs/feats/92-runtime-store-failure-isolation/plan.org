@@ -1,0 +1,348 @@
+#+title: Runtime-Store Failure Isolation and Bounded Projections
+#+date: 2026-09-04
+#+startup: overview
+
+* Status
+
+Ready.  The operator requested implementation on 2026-09-04, and the
+independent implementation-plan review reached
+=implementation-plan-fixed-point= before production edits began.
+
+This correction follows Feature 87's accepted SQLite ownership and recovery
+model.  It does not change the database schema, make ambiguous writes
+retryable, or move domain policy into the transport.
+
+* Behavioral goal
+
+- Goal ID :: =BUG-RUNTIME-STORE-ISOLATION=
+- Behavioral goal :: Multiple runtime owners can share the one persistence
+  worker without one queued caller, client-side observer, malformed response,
+  oversized rebuildable projection, or competing startup corrupting the
+  worker's ownership or making unrelated healthy persistence unavailable.
+- Direct scenario :: Two session/Board participants share one SQLite runtime
+  while one request is active and another waits.  The waiting request either
+  receives its own full submitted interval and commits, or fails before
+  submission without stopping the active work.  Startup and protocol failures
+  settle every owned request once with the first typed cause.  A checkpoint too
+  large for one bounded response is omitted as a rebuildable projection and
+  the session resumes through bounded record pages.  A second runtime cannot
+  steal the live worker's ownership claim.
+- Product authority :: The operator request of 2026-09-04, Feature 87's
+  accepted contracts, and the runtime-store timeout bug report.
+- Owning contracts :: =F92-C01= through =F92-C04= below.
+- Behavioral status :: Partial.  The queued-timeout and typed-cause
+  corrections already pass deterministic owner tests, but the complete direct
+  scenario and a fresh Daily run have not passed.
+- Mechanism status :: Not started for this corrective package.
+
+* Normative contract matrix
+
+This matrix is the sole normative authority for Feature 92.  Later sections
+reference its IDs and contain implementation-plan detail rather than additional
+observable requirements.  All evidence is repository controlled; provider or
+credentialed external evidence is not applicable.
+
+| ID | Observable contract | Semantic owner and public composition | Establishing package | Deterministic evidence | Telemetry | Status |
+|----+---------------------+---------------------------------------+----------------------+------------------------+-----------+--------|
+| F92-C01 | Every accepted request remains owned from queue admission through exactly one terminal state.  Queue waiting and submitted execution have distinct timeout intervals: expiry before submission affects only that request, while expiry after submission fails closed because acknowledgement is ambiguous.  Startup/open failure settles the selected request with the first typed operation cause. | Runtime-store scheduler; all injected session, Board, task, cron, voice, Goodnite, and raw-result adapters share it. | F92-DP1 | S92-REQUEST-LIFETIME and S92-SHARED-COMPOSITION | Queue age and execution time are observational. | Proposed |
+| F92-C02 | A malformed or uncorrelatable worker response fails the runtime closed once and preserves the protocol failure plus active operation identity as the first unavailable cause.  Client notification behavior cannot change persistence health after a definitive worker response. | Runtime-store protocol and settlement boundary. | F92-DP1 | S92-PROTOCOL | None required. | Proposed |
+| F92-C03 | Exactly one live ordinary or offline worker owns a runtime directory.  Acquisition is atomic, a contender never deletes a replacement claim, and dead or prior-boot claims are recovered.  A live-looking same-boot PID reuse fails safely with an explicit identity-conflict diagnostic rather than opening SQLite or stealing ownership. | Private runtime-directory claim owner shared by the ordinary worker and explicit offline worker; default runtime composition and explicit offline upgrade are the public consumers. | F92-DP2 | S92-OWNERSHIP | Contention and same-boot PID-reuse frequency are observational. | Proposed |
+| F92-C04 | Each process-protocol request and response has a finite byte bound.  Session-record and identity reads are page bounded.  Rebuildable catalog/checkpoint projections are checked before transport; an oversized checkpoint cannot stop the shared worker and session resume falls back to canonical bounded record replay. | Runtime-store codec/protocol owns frame bounds; worker storage operations own row/page bounds; session storage owns projection omission and replay fallback. | F92-DP3 | S92-BOUNDS and S92-OVERSIZED-RESUME | Existing database sizes and projection distributions are observational. | Proposed |
+
+* Existing defects and required dispositions
+
+| Finding | Contract | History | Required disposition |
+|---------+----------+---------+----------------------|
+| Selected request is popped before fallible worker startup/open and can be orphaned. | F92-C01 | Incomplete Feature 87 failure closure. | Keep the domain request scheduler-owned until open succeeds; startup failure must fail it exactly once with operation, kind, request ID, and underlying cause. |
+| One await deadline spans both queued and submitted phases. | F92-C01 | Incomplete queued-timeout correction. | Record request admission and submission instants and derive the active deadline from the current phase. |
+| Ordinary and offline worker owner checks use racy check/delete/open sequences, while PID-only liveness can misclassify PID reuse. | F92-C03 | Inherited Feature 87 exclusivity defect. | Use one cross-process file-lock owner across both workers; recover only identities the primitive proves stale and report a bounded fail-safe conflict for a live-looking same-boot mismatch. |
+| Checkpoint, catalog, session-identity, and protocol framing boundaries are not all byte/page bounded. | F92-C04 | Incomplete Feature 87 bounded-work closure. | Enforce bounds at the producing boundary, page identity reads, and make an oversized rebuildable checkpoint equivalent to no usable checkpoint for cooperative resume. |
+| Unknown IDs and malformed frames lose or delay the causal protocol failure. | F92-C02 | Incomplete typed-cause closure. | Construct one typed protocol cause with the active request identity and enter the existing fail-closed path directly. |
+| A client callback exception freezes healthy persistence after a definitive response. | F92-C02 | Latent inherited defect; no production caller uses runtime-store callbacks. | Remove the unused callback surface and make terminal request state the sole notification contract; delete tests that require callback-driven store poisoning. |
+| Board durability status documentation promises an ordered barrier although the operation is local status. | F92-C01 | Documentation defect. | Describe the bounded local status honestly; do not add an implicit worker request. |
+
+* Delivery packages
+
+** F92-DP1: Request lifecycle and protocol isolation
+
+Establishes =F92-C01= and =F92-C02= with no prerequisite inside Feature 92.
+
+Useful stopping point: every scheduler-owned request reaches one terminal
+state, each lifetime phase receives the intended interval, protocol corruption
+fails closed with the first cause, and client notification code cannot poison a
+healthy shared worker.
+
+- Reorder dispatch so starting and opening the worker cannot remove a domain
+  request from scheduler ownership.  Preserve commit-first selection after an
+  internal open completes.
+- Record queue admission and submission times.  Queue expiry is calculated
+  from admission; once submitted, the execution deadline is calculated from
+  submission rather than inherited from queue waiting.
+- Introduce one typed protocol-failure constructor at the transport boundary.
+  Unknown response IDs and decode failures use it before stopping the worker.
+- Remove =:on-done= and =:on-error= from the unused internal submission API and
+  remove callback fields and failure fanout.  Request terminal state/result/error
+  remains the asynchronous observation surface.
+- Correct the Board status docstring without changing behavior.
+
+Transaction and recovery closure: a request remains in exactly one of queue,
+active/pending, or terminal ownership.  A submitted timeout and a protocol
+failure remain ambiguous and freeze; a queued timeout and client observation do
+not.  Close/reopen remains the only recovery after ambiguous work.
+
+Focused evidence: forced startup failure; queued-to-submitted transition just
+before queue expiry; ordinary queued expiry; submitted expiry; malformed and
+unknown-ID responses; a subsequent session and Board write after every
+non-ambiguous client-local failure; close/reopen plus canonical reload after
+each ambiguous protocol failure; negative source scan for runtime-store callback
+keywords.
+
+** F92-DP2: Atomic worker ownership
+
+Establishes =F92-C03= and may begin only after =F92-DP1= is accepted so startup
+failure reports the ownership error through the corrected scheduler.
+
+Useful stopping point: concurrent starts have exactly one winner and the loser
+cannot delete the winner's claim; stale ownership can be recovered without
+confusing an unrelated reused PID for the original worker.
+
+- Introduce one private runtime-directory claim module shared by
+  =e-runtime-store-worker= and =e-runtime-store-offline-worker=.  Both processes
+  acquire the claim before opening SQLite, close SQLite before release, and
+  remove the offline worker's check-then-open =--assert-unowned= path.
+- Use Emacs's cross-process =lock-file= primitive as the exclusion authority.
+  Its atomic lock creation and host/PID/boot identity own simultaneous
+  acquisition plus dead-PID and prior-boot crash recovery.  A bounded
+  noninteractive conflict handler translates contention into the existing
+  typed runtime-store owner error.
+- Keep the =store.sqlite3.owner= file as bounded diagnostic metadata written
+  only while its Emacs file lock is held.  New records include runtime ID, PID,
+  process start, and ordinary/offline role.  The metadata improves diagnostics
+  but does not authorize stealing a live-looking Emacs lock.  If the lock PID
+  is live on the same boot while metadata or process command identifies a
+  different process instance, acquisition fails with a typed identity-conflict
+  cause naming both identities.  An existing legacy metadata record without a
+  corresponding file lock is rejected while its PID and command still identify
+  a live runtime-store worker; otherwise the lock holder may replace it.
+- Release deletes diagnostic metadata only while the current process still
+  owns the Emacs file lock, then calls =unlock-file=.  Built-in lock ownership
+  prevents a late releaser from unlinking another process's replacement lock.
+
+Claim state table:
+
+| State | Result |
+|-------+--------|
+| No lock | Atomic =lock-file= succeeds; claimant writes its metadata and may open SQLite. |
+| Matching live lock | Contender receives typed owner-active failure and never opens SQLite. |
+| Stale lock after claimant crash | Emacs validates the stale host/PID/boot identity, reclaims it, and the new holder rewrites metadata. |
+| Simultaneous contenders | Atomic lock creation selects exactly one holder; every loser leaves both lock and metadata untouched. |
+| PID reused by a live process on the same boot | Typed identity conflict; contender leaves lock and metadata untouched and does not open SQLite.  Automatic reclamation waits until the PID is dead or requires explicit offline operator recovery after proving no worker is live. |
+| Legacy metadata without a lock | A demonstrably live runtime-store worker remains protected; dead or unrelated records are replaced only by the new lock holder. |
+| Replacement before old release | =unlock-file= ownership rejects or preserves the replacement; metadata deletion occurs only under the still-owned lock. |
+
+No schema or durable domain state changes.  The ownership file remains an
+ephemeral process-lifetime coordination artifact.
+
+Focused evidence: synchronized concurrent acquisition with exactly one winner;
+loser cannot remove the winner; stale dead owner recovery; reused live PID with
+mismatched start identity; legacy live-owner rejection; release cannot remove a
+replacement claim.
+
+** F92-DP3: Bounded transport and rebuildable projections
+
+Establishes =F92-C04= after =F92-DP1= and =F92-DP2= are accepted.
+
+Useful stopping point: no single protocol frame, identity page, catalog, or
+checkpoint can grow without a finite transport bound, and oversized
+checkpoints degrade to the already-canonical cooperative journal replay without
+making persistence unavailable.
+
+- Add bounded canonical encoding that can reject a value before constructing a
+  full oversized representation, while preserving exact encoding for admitted
+  values.  Preflight the complete request frame before queue admission and
+  enforce finite canonical and wire bounds on both protocol sides.
+- Name each private byte domain explicitly: =canonical bytes= are the UTF-8
+  bytes returned by the tagged codec; =wire bytes= are base64 of those canonical
+  bytes plus the newline delimiter; =SQLite TEXT bytes= are the stored base64
+  text measured with =LENGTH(CAST(payload AS BLOB))=; raw resource bytes are
+  measured before codec escaping.  Convert observations before comparing these
+  domains.
+- Set the initial complete-request ceiling to 68 MiB canonical bytes.  An exact
+  16 MiB arbitrary-byte resource can expand to at most four printed octets per
+  input byte under the current codec; 4 MiB covers tags and the request
+  envelope.  Derive the wire ceiling mechanically as
+  =4 * ceil(canonical-limit / 3) + 1=, exactly 95,070,893 bytes.  The conservative
+  simultaneous parent allocation envelope is 512 MiB: the original input,
+  codec copy, 68 MiB canonical frame, and three complete wire-sized allocations
+  total about 372 MiB before smaller tagged-object and request-envelope
+  overhead, leaving about 140 MiB headroom.  A disposable peak-allocation probe
+  must remain below that private envelope.  Exact/one-over mechanism tests use
+  the same domains.  A larger accepted one-value contract, codec-version
+  change, or measured allocation regression is the revision trigger.
+- Set the initial checkpoint ceiling to 1 MiB of canonical checkpoint-value
+  bytes.  The observed 27,518,128-byte SQLite TEXT checkpoint converts to at
+  most 20,638,596 canonical bytes, while the observed average SQLite TEXT
+  checkpoint converts to about 520 KiB canonical.  The boundary therefore
+  admits the average current checkpoint and rejects the demonstrated outlier.
+  Encoding preflight and exact/one-over tests measure canonical bytes; changed
+  workload distribution or a lower-allocation codec is the revision trigger.
+- Check checkpoint size before parent-to-worker transport.  An oversized new
+  checkpoint is an omitted rebuildable projection, not a primary mutation
+  failure and not a reason to freeze the runtime.
+- Make checkpoint presence/status a metadata-only query.  =checkpoint-get=
+  must not return an oversized stored payload; cooperative session load treats
+  it as no usable checkpoint and starts canonical paged replay from position
+  zero.
+- Replace the unpaged =session-ids= worker result with cursor/row/byte-bounded
+  pages; the session adapter may cooperatively assemble the current consumer's
+  complete list across finite requests.
+- Bound catalog transport with a private projection ceiling that admits the
+  observed 1,089,332 SQLite TEXT bytes after conversion to canonical bytes.
+  Oversize is an explicit derived-projection failure after primary commit,
+  preserving the established retry/reconciliation behavior rather than
+  freezing or truncating semantic content.
+- A locally oversized request settles as a bounded typed error before queue
+  admission and cannot affect unrelated work.  A legitimate oversized read
+  result is replaced by a small correlated typed response.  If a committed
+  write acknowledgement cannot be encoded, the worker terminates and the parent
+  preserves fail-closed ambiguity; it must not translate that outcome into a
+  safe retry.  Malformed or uncorrelatable frames continue through =F92-C02=.
+
+Transaction and recovery closure: bounds are checked before a request becomes
+submitted wherever the parent owns the value, and before worker output wherever
+SQLite owns it.  No partial projection is stored or returned.  Canonical
+session records remain authoritative; checkpoint/catalog projections remain
+replaceable and rebuildable.
+
+Focused evidence: bounded codec exact/one-over and early rejection; fragmented
+wire input at exact/one-over; checkpoint exact/one-over write; injected legacy
+oversized checkpoint followed by successful cooperative full replay and later
+healthy writes; bounded session-identity pagination; catalog exact/one-over;
+the existing large-session timer/queued-commit scenario.
+
+* Scenario portfolio
+
+- S92-REQUEST-LIFETIME :: Owner-level scheduler partitions for startup,
+  queued, submitted, committed, failed, and cancelled states.  A failure
+  localizes to queue ownership or phase-deadline selection.
+- S92-SHARED-COMPOSITION :: Session and Board adapters share one runtime;
+  non-ambiguous failure in one owner leaves another owner's commit usable.
+- S92-PROTOCOL :: Malformed-frame and wrong-response-identity cases expose the
+  first typed protocol cause and exact active operation, settle all owned work
+  once, and make later submissions report that same cause.  Close/reopen plus
+  canonical owner reload restores usability without automatically resubmitting
+  the ambiguous request.
+- S92-OWNERSHIP :: Ordinary/ordinary and ordinary/offline contenders race for
+  one runtime directory.  Exactly one opens SQLite; the loser cannot remove or
+  supersede the winner's claim, and the winner remains usable.  Dead-owner,
+  prior-boot, claimant-crash, legacy-record, live-looking same-boot PID-reuse,
+  and replacement-before-release fixtures localize claim-state handling; the
+  PID-reuse case proves safe refusal rather than automatic reclamation.
+- S92-BOUNDS :: Exact and one-over values exercise codec, raw/wire frame,
+  catalog, checkpoint, and identity-page bounds without asserting private data
+  representation.
+- S92-OVERSIZED-RESUME :: A physically present oversized legacy checkpoint is
+  never transported; public cooperative session load replays canonical pages,
+  completes, and leaves the runtime healthy.
+
+The canonical package gate is the complete Eldev test suite plus
+=git diff --check= and batch =check-parens= for changed Lisp.  Graphical testing
+is not applicable because no presentation, redisplay, focus, window, or timer
+rendering behavior changes.  A fresh Daily run is external observational
+behavioral evidence after restart; it is not required to establish the
+repository-controlled mechanisms.
+
+* Architecture and aggregate design comparison
+
+The correction stays within the existing runtime-store scheduler/protocol,
+worker ownership, and session projection owners.  It adds no database table,
+domain transaction, fallback authority, or shell dependency.
+
+Current aggregate: one scheduler conflates queue and execution lifetime, the
+worker claim uses a racy read/delete/create sequence, and rebuildable session
+projections can cross the generic protocol without a byte boundary.
+
+Smallest faithful alternative: keep the one scheduler and one worker, make the
+scheduler's existing states authoritative for phase deadlines, make the
+worker's existing owner file an atomic process-instance claim, and enforce
+bounds at the existing codec/projection adapters.  Canonical paged journal
+replay already supplies correct checkpoint recovery.
+
+Decision: retain the existing owners and simplify their faulty paths.  A new
+lease service, generic transaction manager, asynchronous callback registry,
+or second persistence worker would add coordination without serving an
+accepted behavior.
+
+Physical-boundary disposition:
+
+- request state, dispatch, response correlation, and fail-closed policy remain
+  in =e-runtime-store.el= because they change together as one transport
+  lifecycle;
+- claim acquisition/release moves to one private
+  =e-runtime-store-ownership.el= boundary because ordinary and offline workers
+  must share exactly one exclusion policy while retaining separate SQLite
+  operations;
+- generic encoding bounds remain in =e-runtime-store-codec.el= and the two
+  protocol endpoints;
+- checkpoint omission and replay fallback remain in session catalog/storage
+  composition because only the session owner can classify that projection as
+  rebuildable.
+
+The several touched files express adapter propagation across real boundaries,
+not a qualified physical-decomposition defect.  No modularization scope is
+activated.
+
+* Compatibility, non-goals, and removal
+
+- Runtime-store callback keywords are removed.  Repository source has no
+  production caller, so there is no accepted compatibility obligation.
+- Existing database schema and stored values remain readable.  Oversized old
+  checkpoints are ignored as unusable projections; they are not rewritten or
+  truncated during read.
+- Submitted writes are never retried automatically after timeout, worker loss,
+  or protocol ambiguity.
+- This package does not identify the historical Daily operation, promise that
+  every submitted operation finishes within 60 seconds, or make wall-clock
+  latency a deterministic gate.
+- It does not automatically remove an Emacs lock attributed to a live PID on
+  the same boot.  A process-start mismatch is reported explicitly and remains
+  fail-safe until the PID exits or the operator performs offline recovery after
+  proving no runtime-store worker is live.
+- It does not reload or terminate the user's running Emacs or mutate the
+  canonical SQLite store.
+
+Obsolete paths removed by the package are callback-owned request fields and
+failure fanout, unpaged session-identity response, full-payload checkpoint
+presence checks, racy unconditional owner deletion, and the false Board barrier
+claim.
+
+* Design self-check
+
+1. Each delivery package is independently useful and moves toward a shared
+   persistence worker whose ownership, request lifecycle, and resource bounds
+   are explicit.
+2. Stable decisions are one worker, commit-first domain writes, and fail-closed
+   ambiguous effects.  Numeric limits remain private and revisable; checkpoint
+   omission uses the existing canonical replay path.
+3. Scheduler/protocol, worker claim, and session projection behavior stay with
+   their existing semantic owners and cohesive source boundaries.
+4. Only request admission/submission timestamps, Emacs file-lock state, and
+   bounded diagnostic claim metadata are added.  They live for the request or
+   worker claim and are rebuilt or reclaimed on restart.
+5. Domain adapters continue to depend on the generic runtime-store boundary;
+   session rebuildability does not move into the transport.
+6. No new public abstraction is introduced.  The unused callback surface is
+   removed.
+7. SQLite schema and canonical data compatibility are preserved; obsolete
+   callback, unpaged, and unconditional-delete paths are removed.
+8. Expected oversized projections are handled by the session projection owner;
+   unexpected protocol corruption surfaces through one typed fail-closed cause.
+9. Projection sizes remain observational.  Finite frame/page enforcement is
+   deterministic, while wall-clock timings remain diagnostic.
+10. Exact private limits have workload and resource bases, exact/one-over
+    behavior, and revision triggers in F92-DP3.
+11. Owner tests cover every request state and boundary; shared session/Board
+    and cooperative replay scenarios prove the real composition.
+12. The non-local effects are ordinary propagation through existing adapters.
+    The smallest proper corrections fit this package, so the architecture
+    branch is =correct now= with no deferred follow-up.
