@@ -283,7 +283,12 @@ so its failure reports that selected request while it remains queued."
 
 (defun e-runtime-store--consume-response-line (store line)
   "Decode and settle one complete protocol LINE for STORE."
-  (unless (string-empty-p line)
+  ;; The private protocol has no keepalive frame.  A delimiter always closes
+  ;; one response, so a bare newline is corruption rather than ignorable idle
+  ;; output and must preserve the active request as its first failure cause.
+  (if (string-empty-p line)
+      (e-runtime-store--freeze-and-stop
+       store (e-runtime-store--protocol-error store 'empty-response))
     (let ((wire-bytes (1+ (string-bytes line))))
       (if (> wire-bytes e-runtime-store-codec-protocol-wire-byte-limit)
           (e-runtime-store--freeze-oversized-response store wire-bytes)

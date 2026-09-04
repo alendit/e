@@ -53,18 +53,23 @@ the total size of an intentionally unmaterialized value."
           (list "Canonical value exceeds byte limit"
                 :limit limit :observed-at-least bytes)))
 
-(defun e-runtime-store-codec--utf-8-character-bytes (character)
-  "Return the UTF-8 byte width of printed CHARACTER.
+(defconst e-runtime-store-codec--reader-escaped-character-regexp
+  (regexp-opt '("\"" "\\") t)
+  "Regexp for reader string characters that take one extra output byte.")
 
-The tagged codec serializes its reader syntax with `utf-8-unix'.  The printer
-hands a function-valued `standard-output' one character at a time, so this
-small calculation lets bounded encoding stop before a full oversized printed
-representation is allocated."
-  (cond
-   ((< character #x80) 1)
-   ((< character #x800) 2)
-   ((< character #x10000) 3)
-   (t 4)))
+(defconst e-runtime-store-codec--unibyte-high-octet-regexp
+  (concat "[" (unibyte-string 128) "-" (unibyte-string 255) "]")
+  "Regexp for unibyte octets printed as four-byte octal escapes.")
+
+(defun e-runtime-store-codec--string-has-text-properties-p (value)
+  "Return non-nil when string VALUE carries presentation text properties."
+  (let ((position 0)
+        (length (length value))
+        properties)
+    (while (and (< position length) (not properties))
+      (setq properties (text-properties-at position value)
+            position (next-property-change position value length)))
+    properties))
 
 (defun e-runtime-store-codec--finite-number-p (value)
   "Return non-nil when VALUE is a finite supported number."
@@ -109,7 +114,18 @@ representation is allocated."
     ;; `prin1-to-string' retains the decimal marker for integral floats (1.0),
     ;; unlike %g, while remaining round-trip precise for Emacs floats.
     (vector 'float (prin1-to-string value)))
-   ((stringp value) (vector 'string (copy-sequence value)))
+   ((stringp value)
+    ;; Text properties are presentation state, not a durable value grammar.
+    ;; Rejecting them keeps the private tagged printer form closed enough for
+    ;; bounded exact measurement; prior stored values remain decoder-readable.
+    (when (e-runtime-store-codec--string-has-text-properties-p value)
+      (signal 'e-runtime-store-codec-error
+              ;; Do not retain an arbitrarily large rejected string in the
+              ;; error condition: callers need its category and size, not its
+              ;; presentation payload.
+              (list "Text properties are not durable"
+                    :string-bytes (string-bytes value))))
+    (vector 'string (copy-sequence value)))
    ((keywordp value) (vector 'keyword (symbol-name value)))
    ((symbolp value) (vector 'symbol (symbol-name value)))
    ((consp value)
@@ -157,33 +173,109 @@ FORM must already be the private tagged value built by
 `e-runtime-store-codec--form'."
   (let ((print-circle nil)
         (print-level nil)
-        (print-length nil))
+        (print-length nil)
+        ;; Pin the reader syntax counted below instead of inheriting a
+        ;; caller's temporary print preferences.
+        (print-escape-newlines nil)
+        (print-escape-control-characters nil)
+        (print-escape-nonascii nil)
+        (print-escape-multibyte nil)
+        (print-quoted t)
+        (print-gensym nil)
+        (print-base 10)
+        (print-radix nil)
+        (print-readably nil))
     (encode-coding-string
      (prin1-to-string form)
      'utf-8-unix)))
 
+(defun e-runtime-store-codec--string-byte-count-bounded
+    (value limit bytes)
+  "Return BYTE count after reader-printing property-free string VALUE.
+
+VALUE is already accepted by the closed tagged codec grammar.  The current
+canonical reader syntax writes multibyte characters directly as UTF-8, quotes
+and backslashes with one extra ASCII byte, and unibyte octets >= 128 as a
+four-byte octal escape.  Native regexp counting over one disposable buffer
+avoids a Lisp call per input byte and never builds the escaped representation."
+  (let ((multibyte (multibyte-string-p value))
+        escaped)
+    ;; `count-matches' scans in C.  Keep the original representation in the
+    ;; scratch buffer: a multibyte character must not become an unibyte UTF-8
+    ;; octet before we decide whether it needs octal escaping.
+    (with-temp-buffer
+      (set-buffer-multibyte multibyte)
+      (insert value)
+      (setq escaped
+            (count-matches e-runtime-store-codec--reader-escaped-character-regexp
+                           (point-min) (point-max)))
+      (unless multibyte
+        (setq escaped
+              (+ escaped
+                 (* 3
+                    (count-matches e-runtime-store-codec--unibyte-high-octet-regexp
+                                   (point-min) (point-max)))))))
+    ;; Reader string delimiters plus literal UTF-8 bytes and escape growth.
+    (setq bytes (+ bytes 2 (string-bytes value) escaped))
+    (when (> bytes limit)
+      (e-runtime-store-codec--canonical-byte-limit-error limit bytes))
+    bytes))
+
+(defun e-runtime-store-codec--small-atom-byte-count (value)
+  "Return canonical UTF-8 reader bytes for one fixed tagged-form atom VALUE."
+  ;; The tagged form owns only its fixed symbols and codec version integer.
+  ;; Keeping this tiny fallback on the actual printer makes any future fixed
+  ;; atom spelling exact without reintroducing large value allocation.
+  (string-bytes
+   (encode-coding-string (prin1-to-string value) 'utf-8-unix)))
+
 (defun e-runtime-store-codec--measure-form-bounded (form limit)
   "Return FORM's UTF-8 byte count, stopping once it exceeds LIMIT.
 
-The counting printer intentionally retains no output.  It therefore rejects a
-too-large canonical representation before the complete representation exists
-as a string, while using precisely the same Lisp printer as final encoding.
-LIMIT is a nonnegative integer byte count."
+The private tagged form contains only fixed atoms, vectors, and property-free
+strings.  Walk that closed reader grammar directly, rejecting an oversized
+canonical representation before its complete escaped string exists.  LIMIT is
+a nonnegative integer byte count."
   (unless (and (integerp limit) (>= limit 0))
     (signal 'wrong-type-argument (list 'natnump limit)))
   (let ((bytes 0)
+        ;; Keep the small fixed-atom printer under exactly the same canonical
+        ;; syntax settings as `e-runtime-store-codec--print-form'.
         (print-circle nil)
         (print-level nil)
-        (print-length nil))
-    (let ((standard-output
-           (lambda (character)
-             (cl-incf bytes
-                      (e-runtime-store-codec--utf-8-character-bytes
-                       character))
-             (when (> bytes limit)
-               (e-runtime-store-codec--canonical-byte-limit-error
-                limit bytes)))))
-      (prin1 form))
+        (print-length nil)
+        (print-escape-newlines nil)
+        (print-escape-control-characters nil)
+        (print-escape-nonascii nil)
+        (print-escape-multibyte nil)
+        (print-quoted t)
+        (print-gensym nil)
+        (print-base 10)
+        (print-radix nil)
+        (print-readably nil))
+    (cl-labels
+        ((add (count)
+           (setq bytes (+ bytes count))
+           (when (> bytes limit)
+             (e-runtime-store-codec--canonical-byte-limit-error limit bytes)))
+         (walk (value)
+           (cond
+            ((stringp value)
+             (setq bytes
+                   (e-runtime-store-codec--string-byte-count-bounded
+                    value limit bytes)))
+            ((or (symbolp value) (integerp value))
+             (add (e-runtime-store-codec--small-atom-byte-count value)))
+            ((vectorp value)
+             (add 1)                    ; [
+             (dotimes (index (length value))
+               (when (> index 0) (add 1)) ; separating space
+               (walk (aref value index)))
+             (add 1))                    ; ]
+            (t
+             (signal 'e-runtime-store-codec-error
+                     (list "Invalid private tagged form" value))))))
+      (walk form))
     bytes))
 
 (defun e-runtime-store-codec-encode (value)

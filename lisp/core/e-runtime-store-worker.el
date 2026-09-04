@@ -815,12 +815,14 @@ look retry-safe to the parent."
     (unwind-protect
         (while (setq line (condition-case nil (read-string "")
                             (end-of-file nil)))
-          (unless (string-empty-p line)
-            (let* ((request (condition-case err
-                                (e-runtime-store-worker--unpack line)
-                              (error (list :decode-error err))))
-                   (response (e-runtime-store-worker--response request)))
-              (e-runtime-store-worker--emit-response request response))))
+          ;; Every delimiter terminates one request.  A blank frame is corrupt,
+          ;; not an idle keepalive: let the normal decode-error response reach
+          ;; the parent, which then freezes with its active request as cause.
+          (let* ((request (condition-case err
+                              (e-runtime-store-worker--unpack line)
+                            (error (list :decode-error err))))
+                 (response (e-runtime-store-worker--response request)))
+            (e-runtime-store-worker--emit-response request response)))
       (e-runtime-store-worker--close))))
 
 (provide 'e-runtime-store-worker)

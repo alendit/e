@@ -34,8 +34,9 @@ retryable, or move domain policy into the transport.
   Daily run after restarting Emacs remains pending observational evidence for
   the historical report.
 - Mechanism status :: =F92-DP1=, =F92-DP2=, and =F92-DP3= pass their focused
-  deterministic evidence.  The complete repository gate and independent
-  implementation review remain before closure.
+  deterministic evidence, including the real worst-case peak-RSS probe.  The
+  complete repository gate and independent implementation-review recheck
+  remain before closure.
 
 * Normative contract matrix
 
@@ -161,8 +162,11 @@ making persistence unavailable.
 
 - Add bounded canonical encoding that can reject a value before constructing a
   full oversized representation, while preserving exact encoding for admitted
-  values.  Preflight the complete request frame before queue admission and
-  enforce finite canonical and wire bounds on both protocol sides.
+  values.  The accepted tagged grammar excludes presentation text properties
+  on new strings so exact byte measurement cannot be bypassed through generic
+  printer syntax; legacy property-bearing stored values remain decoder-readable.
+  Preflight the complete request frame before queue admission and enforce
+  finite canonical and wire bounds on both protocol sides.
 - Name each private byte domain explicitly: =canonical bytes= are the UTF-8
   bytes returned by the tagged codec; =wire bytes= are base64 of those canonical
   bytes plus the newline delimiter; =SQLite TEXT bytes= are the stored base64
@@ -177,10 +181,16 @@ making persistence unavailable.
   simultaneous parent allocation envelope is 512 MiB: the original input,
   codec copy, 68 MiB canonical frame, and three complete wire-sized allocations
   total about 372 MiB before smaller tagged-object and request-envelope
-  overhead, leaving about 140 MiB headroom.  A disposable peak-allocation probe
-  must remain below that private envelope.  Exact/one-over mechanism tests use
-  the same domains.  A larger accepted one-value contract, codec-version
-  change, or measured allocation regression is the revision trigger.
+  overhead, leaving about 140 MiB modeled headroom.  A disposable
+  peak-allocation probe must remain below that private envelope.  The accepted
+  production-path probe forces collection, then suppresses collection while
+  constructing a 16,777,216-byte worst-case unibyte resource, preflighting the
+  real request, and packing its real wire frame.  It produced 67,109,280
+  canonical bytes and 89,479,041 wire
+  bytes with 476,954,624 bytes maximum RSS, below the 536,870,912-byte
+  envelope.  Exact/one-over mechanism tests use the same domains.  A larger
+  accepted one-value contract, codec-version change, or measured allocation
+  regression is the revision trigger.
 - Set the initial checkpoint ceiling to 1 MiB of canonical checkpoint-value
   bytes.  The observed 27,518,128-byte SQLite TEXT checkpoint converts to at
   most 20,638,596 canonical bytes, while the observed average SQLite TEXT
@@ -301,6 +311,10 @@ activated.
 - Existing database schema and stored values remain readable.  Oversized old
   checkpoints are ignored as unusable projections; they are not rewritten or
   truncated during read.
+- Existing property-bearing string encodings remain readable.  New
+  property-bearing strings are rejected with bounded error metadata because
+  text properties are presentation state outside the durable tagged grammar;
+  core, layer, and default producers do not attach them to persisted values.
 - Submitted writes are never retried automatically after timeout, worker loss,
   or protocol ambiguity.
 - This package does not identify the historical Daily operation, promise that

@@ -54,6 +54,49 @@
       (should-error (e-runtime-store-codec-encode cycle)
                     :type 'e-runtime-store-codec-error))))
 
+(ert-deftest e-runtime-store-codec-bounded-measure-matches-reader-syntax ()
+  "The allocation-light count equals the final canonical reader bytes."
+  (let ((unibyte (string-make-unibyte (concat "a" (string 255) "\"\\")))
+        (all-octets
+         (apply #'unibyte-string (number-sequence 0 255))))
+    (dolist (value (list ""
+                         "quote=\" slash=\\ newline=\n tab=\t"
+                         unibyte
+                         all-octets
+                         "λ🧵"
+                         (list :nested [nil t :json-false "leaf"])))
+      (let* ((form (e-runtime-store-codec--form value))
+             (printed (e-runtime-store-codec--print-form form))
+             (exact (string-bytes printed)))
+        (should (= (e-runtime-store-codec--measure-form-bounded form exact)
+                   exact))
+        (should (equal (e-runtime-store-codec-encode-bounded value exact)
+                       printed))
+        (should-error
+         (e-runtime-store-codec--measure-form-bounded form (1- exact))
+         :type 'e-runtime-store-codec-too-large))))
+  ;; Text properties are display state and no longer enter the durable tagged
+  ;; grammar, so their generic printer syntax cannot bypass bounded counting.
+  ;; Existing serialized values remain decoder-readable for recovery.
+  (let* ((legacy-value (propertize "display" 'face 'bold))
+         (legacy-form
+          (vector 'e-runtime-store-value e-runtime-store-codec-version
+                  (vector 'string legacy-value)))
+         (legacy (e-runtime-store-codec--print-form legacy-form))
+         (decoded (e-runtime-store-codec-decode legacy))
+         (rejected (propertize (make-string 4096 ?x) 'face 'bold))
+         (failure
+          (condition-case err
+              (progn (e-runtime-store-codec-encode rejected) nil)
+            (e-runtime-store-codec-error err))))
+    (should (equal decoded legacy-value))
+    (should (eq (get-text-property 0 'face decoded) 'bold))
+    (should (eq (car failure) 'e-runtime-store-codec-error))
+    ;; A failure must not retain or print the arbitrarily sized input.
+    (should-not (memq rejected (cdr failure)))
+    (should (= (plist-get (cddr failure) :string-bytes)
+               (string-bytes rejected)))))
+
 (ert-deftest e-runtime-store-s2-serializes-ordinary-owner-writes ()
   "The single worker assigns monotonic positions without a command ledger."
   (e-runtime-store-test--with-store (store directory)
@@ -478,8 +521,8 @@
                  1)))))
 
 (ert-deftest e-runtime-store-s92-protocol-failure-preserves-cause-and-recovers ()
-  "Malformed and unknown responses freeze once, then recover by reopen."
-  (dolist (protocol-cause '(malformed-response unknown-response-id))
+  "Every malformed complete frame freezes once, then recover by reopen."
+  (dolist (protocol-cause '(empty-response malformed-response unknown-response-id))
     (let* ((directory (make-temp-file "e-runtime-store-protocol-" t))
            (store (e-runtime-store-open directory))
            request sent)
@@ -498,12 +541,15 @@
             (should (eq (e-runtime-store-request--state request) 'submitted))
             (e-runtime-store--consume-output
              store
-             (e-runtime-store--pack
-              (pcase protocol-cause
-                ('malformed-response
-                 (list :id (e-runtime-store-request--id request) :ok t))
-                ('unknown-response-id
-                 '(:id "wrong-response-id" :ok t :result (:ignored t))))))
+             (pcase protocol-cause
+               ('empty-response "\n")
+               (_
+                (e-runtime-store--pack
+                 (pcase protocol-cause
+                   ('malformed-response
+                    (list :id (e-runtime-store-request--id request) :ok t))
+                   ('unknown-response-id
+                    '(:id "wrong-response-id" :ok t :result (:ignored t))))))))
             (should (eq (e-runtime-store-request--state request) 'failed))
             (let* ((cause (plist-get (e-runtime-store-status store)
                                      :unavailable-cause))
@@ -537,6 +583,26 @@
                        1)))
         (ignore-errors (e-runtime-store-close store))
         (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-s92-empty-worker-input-is-not-a-keepalive ()
+  "A blank parent request frame reaches the normal malformed-request path."
+  (let ((lines '("")) request response closed)
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (&rest _arguments)
+                 (if lines
+                     (prog1 (car lines) (setq lines (cdr lines)))
+                   (signal 'end-of-file nil))))
+              ((symbol-function 'e-runtime-store-worker--emit-response)
+               (lambda (candidate-request candidate-response)
+                 (setq request candidate-request
+                       response candidate-response)))
+              ((symbol-function 'e-runtime-store-worker--close)
+               (lambda () (setq closed t))))
+      (e-runtime-store-worker-main))
+    (should closed)
+    (should (plist-member request :decode-error))
+    (should-not (plist-get request :id))
+    (should-not (plist-get response :ok))))
 
 (ert-deftest e-runtime-store-s92-submission-surface-has-no-client-hooks ()
   "Terminal request state is the only client observation surface."
