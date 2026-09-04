@@ -435,6 +435,38 @@ Return `dropped' for provisional work or `in-flight' once transport began."
       ('failed (signal (car (e-runtime-store-request--error request))
                        (cdr (e-runtime-store-request--error request))))
       ('cancelled (signal 'e-runtime-store-cancelled (list request)))
+      ('queued
+       (let* ((active (e-runtime-store--active-request store))
+              (operation (e-runtime-store--request-operation request))
+              (err
+               (list 'e-runtime-store-timeout
+                     (format
+                      "Queued %s expired before submission; the request was cancelled"
+                      (or operation "request"))
+                     :operation operation
+                     :kind (e-runtime-store-request--kind request)
+                     :request-id (e-runtime-store-request--id request)
+                     :request-state 'queued
+                     :blocking-operation
+                     (e-runtime-store--request-operation active)
+                     :blocking-kind
+                     (and active (e-runtime-store-request--kind active))
+                     :blocking-request-id
+                     (and active (e-runtime-store-request--id active)))))
+         (setf (e-runtime-store--write-queue store)
+               (delq request (e-runtime-store--write-queue store))
+               (e-runtime-store--read-queue store)
+               (delq request (e-runtime-store--read-queue store)))
+         (when-let* ((callback-error
+                      (e-runtime-store--fail-request store request err)))
+           (setf (e-runtime-store--last-error store)
+                 (list 'e-runtime-store-error
+                       "Queued request timeout callback signaled"
+                       :storage-error err
+                       :callback-error callback-error)))
+         (unless (e-runtime-store--active-request store)
+           (e-runtime-store--dispatch-next store))
+         (signal (car err) (cdr err))))
       (_
        (let* ((active (e-runtime-store--active-request store))
               (blocking (or active request))

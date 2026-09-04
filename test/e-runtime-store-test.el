@@ -254,6 +254,55 @@
       (ignore-errors (e-runtime-store-close store))
       (delete-directory directory t))))
 
+(ert-deftest e-runtime-store-s2-queued-timeout-does-not-freeze-active-work ()
+  "An unsent timeout cancels only that request and preserves active work."
+  (e-runtime-store-test--with-store (store _directory)
+    (let* ((process (e-runtime-store--process store))
+           (ordinary-filter (process-filter process))
+           (captured "")
+           (active-done 0)
+           (queued-done 0)
+           (queued-errors 0)
+           active queued)
+      (set-process-filter
+       process (lambda (_worker text) (setq captured (concat captured text))))
+      (setq active
+            (e-runtime-store-submit
+             store 'write
+             '(:op session-append :session-id "queued-timeout"
+               :record (:value active))
+             :on-done (lambda (_result) (cl-incf active-done))))
+      (setq queued
+            (e-runtime-store-submit
+             store 'write '(:op catalog-put :value ((:id "must-not-land")))
+             :on-done (lambda (_result) (cl-incf queued-done))
+             :on-error (lambda (_error) (cl-incf queued-errors))))
+      (let ((timeout
+             (should-error (e-runtime-store-await store queued 0.02)
+                           :type 'e-runtime-store-timeout)))
+        (should (eq (plist-get (cddr timeout) :operation) 'catalog-put))
+        (should (eq (plist-get (cddr timeout) :blocking-operation)
+                    'session-append)))
+      (should (eq (e-runtime-store-request--state queued) 'failed))
+      (should (= queued-done 0))
+      (should (= queued-errors 1))
+      (should (e-runtime-store-live-p store))
+      (should-not (plist-get (e-runtime-store-status store) :unavailable))
+      (should-not (memq queued (e-runtime-store--write-queue store)))
+      (let ((deadline (+ (float-time) 5.0)))
+        (while (and (not (string-match-p "\n" captured))
+                    (< (float-time) deadline))
+          (accept-process-output process 0.01)))
+      (should (string-match-p "\n" captured))
+      (set-process-filter process ordinary-filter)
+      (funcall ordinary-filter process captured)
+      (e-runtime-store-test--wait-terminal active)
+      (should (eq (e-runtime-store-request--state active) 'committed))
+      (should (= active-done 1))
+      (should-not
+       (e-runtime-store-call store 'read '(:op catalog-get)))
+      (should (e-runtime-store-live-p store)))))
+
 (ert-deftest e-runtime-store-s2-close-settles-owned-requests-once ()
   "Close fails active and queued work once and ignores a late response."
   (let* ((directory (make-temp-file "e-runtime-store-close-" t))
