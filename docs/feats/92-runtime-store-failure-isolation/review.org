@@ -5,13 +5,30 @@
 
 * Status
 
-Done.  A fresh Daily run invalidated the original fixed point at =25c574fd= by
+In-review.  A fresh Daily run invalidated the original fixed point at =25c574fd= by
 showing that a lost =catalog-put= acknowledgement could still freeze the shared
 store.  DP4 and its review correction add ACID acknowledgement recovery in
 =df94170d= and =857fcb1f=.  Independent review of exact clean revision
 =857fcb1f8bdae66d13df4c628e6675096ab82c5d= returned
-=implementation-review-fixed-point= with no P0--P3 findings or required
-evidence gaps.
+=implementation-review-fixed-point=, but the first live v5 run invalidated the
+claimed graphical composition evidence.  A timer reentered a durable mutation
+on the same Board and escaped as =e-board-mutation-frozen=.  See
+[[file:../../bugs/board-timer-reentrant-durability-barrier/investigation.org][the live investigation]].
+
+** TODO High: Same-Board timer reenters the durable mutation barrier
+
+The Feature 92 batch and graphical tests schedule a Board pickup transition
+behind session-owned =catalog-put=.  That proves shared runtime-store ordering,
+but =catalog-put= does not set the Board object's =mutation-frozen-p= flag.  The
+live failure requires one durable Board mutation to hold
+=e-board--call-with-storage-barrier= while its synchronous worker wait services
+a timer that attempts another mutation on the same Board.
+
+Acceptance requires the real production timer owner to defer through
+=e-board--defer-after-storage-barrier=, then commit exactly once after release.
+Focused and graphical tests must hold a same-Board durable mutation at the
+worker-response seam and fail on any escaped timer error.  Eventual projection
+polling alone is insufficient.
 
 ** DONE High: Lost worker acknowledgement freezes the application
 
@@ -291,8 +308,9 @@ properties in new durable values.
 The independent reviewer evaluated the frozen amended plan blob
 =8be7429b71408eca57942549b8922b540146f327= and every DP4 correction.  On exact
 clean revision =857fcb1f8bdae66d13df4c628e6675096ab82c5d= it returned exactly
-=implementation-review-fixed-point=.  No actionable implementation defect or
-required evidence gap remains.
+=implementation-review-fixed-point=.  The subsequent live same-Board timer
+counterexample invalidates that acceptance and requires a new correction and
+independent review round.
 
 * Live runtime disposition
 
@@ -305,11 +323,14 @@ bug report.
 
 * Unresolved
 
-No implementation or acceptance finding remains.  The timing-dependent reason
-the historical live worker failed to acknowledge =catalog-put= within 60
-seconds is not reproduced by the current database on a disposable clone; that
-is an observational follow-up rather than a blocker to the deterministic
-failure-isolation contract.
+- High: an admitted timer mutation can escape as =e-board-mutation-frozen=
+  while another durable mutation on the same Board awaits storage.  The
+  production timer owner and complete correction still require implementation
+  evidence.
+- The timing-dependent reason the historical live worker failed to acknowledge
+  =catalog-put= within 60 seconds is not reproduced by the current database on
+  a disposable clone.  That remains observational; the new same-Board
+  reentrancy has direct live and source evidence independently of that trigger.
 
 * DP4 correction evidence (accepted implementation)
 

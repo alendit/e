@@ -4,13 +4,17 @@
 
 * Status
 
-Done.  The amended plan reached =implementation-plan-fixed-point= at blob
+In-review.  The amended plan reached =implementation-plan-fixed-point= at blob
 =8be7429b71408eca57942549b8922b540146f327= before DP4 production edits began.
 The implementation and its response-envelope correction are commits
 =df94170d= and =857fcb1f=.  Independent review of exact clean revision
 =857fcb1f8bdae66d13df4c628e6675096ab82c5d= reached
-=implementation-review-fixed-point= with no remaining findings or evidence
-gaps.
+=implementation-review-fixed-point=, but the first live v5 run produced a new
+counterexample: a timer reentered a durable mutation barrier on the same Board
+and escaped as =e-board-mutation-frozen=.  The accepted E2E stalled
+session-owned =catalog-put= while a Board timer ran; it never held the Board's
+own barrier.  The package is reopened until that same-Board composition is
+specified, implemented, and independently reviewed.
 
 The original correction followed Feature 87's accepted SQLite ownership and
 freeze-on-ambiguity model.  A fresh post-restart Daily counterexample
@@ -45,15 +49,18 @@ policy into application code.
 - Product authority :: The operator request of 2026-09-04, Feature 87's
   accepted contracts, and the runtime-store timeout bug report.
 - Owning contracts :: =F92-C01= through =F92-C05= below.
-- Behavioral status :: Passing in repository-controlled evidence.  Lost
-  acknowledgements on both sides of COMMIT resolve under the same durable
-  identity, queued Board work continues, and exhausted recovery preserves the
-  first typed cause and safe receipt ownership.
+- Behavioral status :: Failed by a fresh live same-Board timer counterexample.
+  Lost runtime-store acknowledgements now resolve correctly, but an admitted
+  timer mutation can still be rejected while an earlier mutation on that Board
+  waits synchronously for persistence.
 - Mechanism status :: =F92-DP1= through =F92-DP4= pass focused deterministic
   evidence.  The combined runtime, ownership, migration, and Board set passes
   86/86; the isolated graphical composition passes 1/1; the production-path
   16 MiB retained-frame probe peaks at 344,948,736 bytes, below 536,870,912;
-  and the complete repository gate passes 2,777/2,777.
+  and the complete repository gate passes 2,777/2,777.  Those gates cover a
+  Board timer behind session-owned persistence, not behind another durable
+  mutation on the same Board, so graphical composition acceptance is
+  incomplete.
 
 * Normative contract matrix
 
