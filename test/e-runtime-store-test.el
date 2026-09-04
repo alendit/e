@@ -571,10 +571,7 @@
                               e-runtime-store-worker--database
                               "SELECT COUNT(*) FROM session_records"))
                        0))))
-      (when e-runtime-store-worker--database
-        (sqlite-close e-runtime-store-worker--database)
-        (setq e-runtime-store-worker--database nil))
-      (e-runtime-store-worker--release-owner)
+      (e-runtime-store-worker--close)
       (delete-directory directory t))))
 
 (ert-deftest e-runtime-store-s2-cancellation-and-write-priority ()

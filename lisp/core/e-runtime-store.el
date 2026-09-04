@@ -27,8 +27,7 @@
   'e-runtime-store-error)
 (define-error 'e-runtime-store-worker-error "Runtime store worker error"
   'e-runtime-store-error)
-(define-error 'e-runtime-store-owner-active "Runtime store already has a live owner"
-  'e-runtime-store-worker-error)
+(require 'e-runtime-store-ownership)
 (define-error 'e-runtime-store-board-conflict "Runtime store Board conflict"
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-task-conflict "Runtime store task conflict"

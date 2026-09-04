@@ -33,8 +33,8 @@ retryable, or move domain policy into the transport.
 - Behavioral status :: Partial.  The queued-timeout and typed-cause
   corrections already pass deterministic owner tests, but the complete direct
   scenario and a fresh Daily run have not passed.
-- Mechanism status :: =F92-DP1= passes its focused deterministic evidence;
-  atomic worker ownership and bounded projection work remain.
+- Mechanism status :: =F92-DP1= and =F92-DP2= pass their focused
+  deterministic evidence; bounded transport and projection work remains.
 
 * Normative contract matrix
 
@@ -47,7 +47,7 @@ credentialed external evidence is not applicable.
 |----+---------------------+---------------------------------------+----------------------+------------------------+-----------+--------|
 | F92-C01 | Every accepted request remains owned from queue admission through exactly one terminal state.  Queue waiting and submitted execution have distinct timeout intervals: expiry before submission affects only that request, while expiry after submission fails closed because acknowledgement is ambiguous.  Startup/open failure settles the selected request with the first typed operation cause. | Runtime-store scheduler; all injected session, Board, task, cron, voice, Goodnite, and raw-result adapters share it. | F92-DP1 | S92-REQUEST-LIFETIME and S92-SHARED-COMPOSITION | Queue age and execution time are observational. | Passing |
 | F92-C02 | A malformed or uncorrelatable worker response fails the runtime closed once and preserves the protocol failure plus active operation identity as the first unavailable cause.  Client notification behavior cannot change persistence health after a definitive worker response. | Runtime-store protocol and settlement boundary. | F92-DP1 | S92-PROTOCOL | None required. | Passing |
-| F92-C03 | Exactly one live ordinary or offline worker owns a runtime directory.  Acquisition is atomic, a contender never deletes a replacement claim, and dead or prior-boot claims are recovered.  A live-looking same-boot PID reuse fails safely with an explicit identity-conflict diagnostic rather than opening SQLite or stealing ownership. | Private runtime-directory claim owner shared by the ordinary worker and explicit offline worker; default runtime composition and explicit offline upgrade are the public consumers. | F92-DP2 | S92-OWNERSHIP | Contention and same-boot PID-reuse frequency are observational. | Proposed |
+| F92-C03 | Exactly one live ordinary or offline worker owns a runtime directory.  Acquisition is atomic, a contender never deletes a replacement claim, and dead or prior-boot claims are recovered.  A live-looking same-boot PID reuse fails safely with an explicit identity-conflict diagnostic rather than opening SQLite or stealing ownership. | Private runtime-directory claim owner shared by the ordinary worker and explicit offline worker; default runtime composition and explicit offline upgrade are the public consumers. | F92-DP2 | S92-OWNERSHIP | Contention and same-boot PID-reuse frequency are observational. | Passing |
 | F92-C04 | Each process-protocol request and response has a finite byte bound.  Session-record and identity reads are page bounded.  Rebuildable catalog/checkpoint projections are checked before transport; an oversized checkpoint cannot stop the shared worker and session resume falls back to canonical bounded record replay. | Runtime-store codec/protocol owns frame bounds; worker storage operations own row/page bounds; session storage owns projection omission and replay fallback. | F92-DP3 | S92-BOUNDS and S92-OVERSIZED-RESUME | Existing database sizes and projection distributions are observational. | Proposed |
 
 * Existing defects and required dispositions

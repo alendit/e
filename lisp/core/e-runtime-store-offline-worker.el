@@ -16,6 +16,7 @@
 (require 'sqlite)
 (require 'e-runtime-store-codec)
 (require 'e-runtime-store-worker)
+(require 'e-runtime-store-ownership)
 
 (define-error 'e-runtime-store-offline-error "Offline runtime-store operation failed")
 
@@ -49,86 +50,77 @@
     (string-to-number
      (e-runtime-store-offline-worker--column row 0))))
 
-(defun e-runtime-store-offline-worker--assert-unowned (database-file)
-  "Reject a live owner for DATABASE-FILE and remove a stale crash marker."
-  (let ((owner-file (concat database-file ".owner")))
-    (when (file-exists-p owner-file)
-      (let ((owner
-             (condition-case nil
-                 (with-temp-buffer
-                   (insert-file-contents owner-file)
-                   (read (current-buffer)))
-               (error nil))))
-        (when (and owner
-                   (integerp (plist-get owner :pid))
-                   (process-attributes (plist-get owner :pid)))
-          (signal 'e-runtime-store-offline-error
-                  (list "Store has a live runtime owner" owner)))
-        (delete-file owner-file)))))
-
 (defun e-runtime-store-offline-worker--upgrade (database-file backup-file)
   "Upgrade closed DATABASE-FILE after verified BACKUP-FILE creation."
   (unless (file-readable-p database-file)
     (signal 'e-runtime-store-offline-error
             (list "Store must exist" database-file)))
-  (e-runtime-store-offline-worker--assert-unowned database-file)
   (when (file-exists-p backup-file)
     (signal 'file-already-exists (list backup-file)))
   (make-directory (file-name-directory backup-file) t)
   (set-file-modes (file-name-directory backup-file) #o700)
-  (let ((database (sqlite-open database-file)))
+  ;; Claim before the first SQLite open.  The ordinary worker and this explicit
+  ;; offline operation deliberately share the same process-lifetime authority.
+  (let ((claim
+         (e-runtime-store-ownership-acquire
+          database-file (format "offline:%d" (emacs-pid)) 'offline)))
     (unwind-protect
-        (let ((version (e-runtime-store-offline-worker--version database))
-              (current e-runtime-store-worker-schema-version))
-          (cond
-           ((> version current)
-            (signal 'e-runtime-store-schema-too-new
-                    (list :actual version :supported current)))
-           ((= version current)
-            (signal 'e-runtime-store-offline-error
-                    (list "Store already uses the current schema" current)))
-           ((/= version (1- current))
-            (signal 'e-runtime-store-offline-error
-                    (list "No supported direct upgrade path" version current))))
-          (e-runtime-store-offline-worker--check database)
-          (sqlite-execute database "VACUUM INTO ?" (vector backup-file))
-          (set-file-modes backup-file #o600)
-          (let ((backup (sqlite-open backup-file)))
-            (unwind-protect
-                (progn
-                  (e-runtime-store-offline-worker--check backup)
-                  (unless (= (e-runtime-store-offline-worker--version backup)
-                             version)
-                    (signal 'e-runtime-store-offline-error
-                            (list "Backup schema verification failed"))))
-              (sqlite-close backup)))
-          (sqlite-execute database "BEGIN IMMEDIATE")
-          (condition-case err
-              (progn
-                (sqlite-execute
-                 database
-                 "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)")
-                (sqlite-execute
-                 database
-                 "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
-                 (vector current "feature87-p4-explicit-upgrade"
-                         (secure-hash 'sha256 "feature87-schema-v4")
-                         (float-time)))
-                (sqlite-execute
-                 database
-                 "UPDATE store_meta SET value=? WHERE key='schema_version'"
-                 (vector (number-to-string current)))
-                (sqlite-execute database "COMMIT"))
-            (error
-             (ignore-errors (sqlite-execute database "ROLLBACK"))
-             (signal (car err) (cdr err))))
-          (e-runtime-store-offline-worker--check database)
-          (set-file-modes database-file #o600)
-          (list :from version :to current :backup backup-file
-                :backup-bytes
-                (file-attribute-size (file-attributes backup-file))
-                :integrity "ok"))
-      (sqlite-close database))))
+        (let ((database (sqlite-open database-file)))
+          (unwind-protect
+              (let ((version (e-runtime-store-offline-worker--version database))
+                    (current e-runtime-store-worker-schema-version))
+                (cond
+                 ((> version current)
+                  (signal 'e-runtime-store-schema-too-new
+                          (list :actual version :supported current)))
+                 ((= version current)
+                  (signal 'e-runtime-store-offline-error
+                          (list "Store already uses the current schema" current)))
+                 ((/= version (1- current))
+                  (signal 'e-runtime-store-offline-error
+                          (list "No supported direct upgrade path" version current))))
+                (e-runtime-store-offline-worker--check database)
+                (sqlite-execute database "VACUUM INTO ?" (vector backup-file))
+                (set-file-modes backup-file #o600)
+                (let ((backup (sqlite-open backup-file)))
+                  (unwind-protect
+                      (progn
+                        (e-runtime-store-offline-worker--check backup)
+                        (unless (= (e-runtime-store-offline-worker--version backup)
+                                   version)
+                          (signal 'e-runtime-store-offline-error
+                                  (list "Backup schema verification failed"))))
+                    (sqlite-close backup)))
+                (sqlite-execute database "BEGIN IMMEDIATE")
+                (condition-case err
+                    (progn
+                      (sqlite-execute
+                       database
+                       "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)")
+                      (sqlite-execute
+                       database
+                       "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
+                       (vector current "feature87-p4-explicit-upgrade"
+                               (secure-hash 'sha256 "feature87-schema-v4")
+                               (float-time)))
+                      (sqlite-execute
+                       database
+                       "UPDATE store_meta SET value=? WHERE key='schema_version'"
+                       (vector (number-to-string current)))
+                      (sqlite-execute database "COMMIT"))
+                  (error
+                   (ignore-errors (sqlite-execute database "ROLLBACK"))
+                   (signal (car err) (cdr err))))
+                (e-runtime-store-offline-worker--check database)
+                (set-file-modes database-file #o600)
+                (list :from version :to current :backup backup-file
+                      :backup-bytes
+                      (file-attribute-size (file-attributes backup-file))
+                      :integrity "ok"))
+            (sqlite-close database)))
+      ;; Both the ordinary and offline paths close their SQLite connection(s)
+      ;; before their shared claim becomes available to the other worker.
+      (e-runtime-store-ownership-release claim))))
 
 (defun e-runtime-store-offline-worker-main ()
   "Execute one narrow operation from `command-line-args-left'."

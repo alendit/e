@@ -15,9 +15,9 @@
 (require 'subr-x)
 (require 'e-runtime-store-codec)
 
-(define-error 'e-runtime-store-worker-error "Runtime store worker error")
-(define-error 'e-runtime-store-owner-active "Runtime store already has a live owner"
-  'e-runtime-store-worker-error)
+(unless (get 'e-runtime-store-worker-error 'error-conditions)
+  (define-error 'e-runtime-store-worker-error "Runtime store worker error"))
+(require 'e-runtime-store-ownership)
 (define-error 'e-runtime-store-resource-too-large "Runtime store resource is too large"
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-schema-too-old "Runtime store schema requires explicit upgrade"
@@ -52,9 +52,8 @@
 
 (defvar e-runtime-store-worker--database nil)
 (defvar e-runtime-store-worker--database-file nil)
-(defvar e-runtime-store-worker--owner-file nil)
 (defvar e-runtime-store-worker--runtime-id nil)
-(defvar e-runtime-store-worker--owns-owner-file nil)
+(defvar e-runtime-store-worker--ownership nil)
 
 (defun e-runtime-store-worker--column (row index)
   "Return INDEX from SQLite ROW across supported Emacs return shapes."
@@ -76,55 +75,27 @@
   "Return exact value stored in SQLite TEXT."
   (and text (e-runtime-store-worker--unpack text)))
 
-(defun e-runtime-store-worker--pid-live-p (pid)
-  "Return non-nil when PID identifies a live process."
-  (and (integerp pid) (> pid 0) (process-attributes pid)))
-
-(defun e-runtime-store-worker--read-owner ()
-  "Return the existing owner record, or nil when unreadable."
-  (when (file-readable-p e-runtime-store-worker--owner-file)
-    (condition-case nil
-        (with-temp-buffer
-          (insert-file-contents e-runtime-store-worker--owner-file)
-          (read (current-buffer)))
-      (error nil))))
-
-(defun e-runtime-store-worker--claim-owner ()
-  "Claim the runtime ownership file or reject a live owner."
-  (when-let* ((owner (e-runtime-store-worker--read-owner)))
-    (when (e-runtime-store-worker--pid-live-p (plist-get owner :pid))
-      (signal 'e-runtime-store-owner-active
-              (list :runtime-id (plist-get owner :runtime-id)
-                    :pid (plist-get owner :pid)))))
-  (when (file-exists-p e-runtime-store-worker--owner-file)
-    (delete-file e-runtime-store-worker--owner-file))
-  (let ((coding-system-for-write 'utf-8-unix))
-    (write-region
-     (prin1-to-string (list :runtime-id e-runtime-store-worker--runtime-id
-                            :pid (emacs-pid) :started-at (float-time)))
-     nil e-runtime-store-worker--owner-file nil 'silent nil 'excl))
-  (set-file-modes e-runtime-store-worker--owner-file #o600)
-  (setq e-runtime-store-worker--owns-owner-file t))
-
 (defun e-runtime-store-worker--permissions ()
   "Apply restrictive modes to current SQLite and ownership files."
   (dolist (file (list e-runtime-store-worker--database-file
                       (concat e-runtime-store-worker--database-file "-wal")
                       (concat e-runtime-store-worker--database-file "-shm")
-                      e-runtime-store-worker--owner-file))
+                      (and e-runtime-store-worker--ownership
+                           (e-runtime-store-ownership-claim--metadata-file
+                            e-runtime-store-worker--ownership))))
     (when (file-exists-p file)
       (set-file-modes file #o600))))
 
-(defun e-runtime-store-worker--release-owner ()
-  "Release only this worker's current runtime ownership file."
-  (when (and e-runtime-store-worker--owns-owner-file
-             e-runtime-store-worker--owner-file
-             (file-exists-p e-runtime-store-worker--owner-file))
-    (let ((owner (e-runtime-store-worker--read-owner)))
-      (when (and (equal (plist-get owner :runtime-id)
-                        e-runtime-store-worker--runtime-id)
-                 (= (or (plist-get owner :pid) -1) (emacs-pid)))
-        (delete-file e-runtime-store-worker--owner-file)))))
+(defun e-runtime-store-worker--close ()
+  "Close SQLite before releasing this worker's runtime-directory claim."
+  (unwind-protect
+      (when e-runtime-store-worker--database
+        (sqlite-close e-runtime-store-worker--database))
+    (setq e-runtime-store-worker--database nil)
+    (when e-runtime-store-worker--ownership
+      (unwind-protect
+          (e-runtime-store-ownership-release e-runtime-store-worker--ownership)
+        (setq e-runtime-store-worker--ownership nil)))))
 
 (defun e-runtime-store-worker--schema (new-store-p)
   "Create the current schema when NEW-STORE-P, otherwise verify it."
@@ -203,25 +174,33 @@
   (setq directory (file-name-as-directory (expand-file-name directory))
         e-runtime-store-worker--runtime-id runtime-id
         e-runtime-store-worker--database-file
-        (expand-file-name "store.sqlite3" directory)
-        e-runtime-store-worker--owner-file
-        (expand-file-name "store.sqlite3.owner" directory))
-  (let ((new-store-p (not (file-exists-p e-runtime-store-worker--database-file))))
+        (expand-file-name "store.sqlite3" directory))
   (make-directory directory t)
   (set-file-modes directory #o700)
-  (e-runtime-store-worker--claim-owner)
-  (setq e-runtime-store-worker--database
-        (sqlite-open e-runtime-store-worker--database-file))
-  (sqlite-execute e-runtime-store-worker--database "PRAGMA foreign_keys=ON")
-  (sqlite-select e-runtime-store-worker--database "PRAGMA journal_mode=WAL")
-  (sqlite-execute e-runtime-store-worker--database "PRAGMA synchronous=NORMAL")
-  (sqlite-execute e-runtime-store-worker--database "PRAGMA busy_timeout=2500")
-  (e-runtime-store-worker--schema new-store-p)
-  (e-runtime-store-worker--permissions)
-  (list :schema-version e-runtime-store-worker-schema-version
-        :database-file e-runtime-store-worker--database-file
-        :runtime-id runtime-id :pid (emacs-pid)
-        :journal-mode "wal" :synchronous "normal")))
+  ;; The file lock is the authority.  Do not inspect SQLite or its old owner
+  ;; metadata until this process holds the shared ordinary/offline claim.
+  (setq e-runtime-store-worker--ownership
+        (e-runtime-store-ownership-acquire
+         e-runtime-store-worker--database-file runtime-id 'ordinary))
+  (let ((opened nil))
+    (unwind-protect
+        (let ((new-store-p
+               (not (file-exists-p e-runtime-store-worker--database-file))))
+          (setq e-runtime-store-worker--database
+                (sqlite-open e-runtime-store-worker--database-file))
+          (sqlite-execute e-runtime-store-worker--database "PRAGMA foreign_keys=ON")
+          (sqlite-select e-runtime-store-worker--database "PRAGMA journal_mode=WAL")
+          (sqlite-execute e-runtime-store-worker--database "PRAGMA synchronous=NORMAL")
+          (sqlite-execute e-runtime-store-worker--database "PRAGMA busy_timeout=2500")
+          (e-runtime-store-worker--schema new-store-p)
+          (e-runtime-store-worker--permissions)
+          (setq opened t)
+          (list :schema-version e-runtime-store-worker-schema-version
+                :database-file e-runtime-store-worker--database-file
+                :runtime-id runtime-id :pid (emacs-pid)
+                :journal-mode "wal" :synchronous "normal"))
+      (unless opened
+        (e-runtime-store-worker--close)))))
 
 (defun e-runtime-store-worker--session-position (session-id)
   "Return SESSION-ID's current monotonic record position."
@@ -658,9 +637,7 @@
               (princ (e-runtime-store-worker--pack response))
               (terpri)
               (flush-standard-output))))
-      (when e-runtime-store-worker--database
-        (sqlite-close e-runtime-store-worker--database))
-      (e-runtime-store-worker--release-owner))))
+      (e-runtime-store-worker--close))))
 
 (provide 'e-runtime-store-worker)
 
