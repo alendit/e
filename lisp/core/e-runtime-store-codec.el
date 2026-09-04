@@ -61,6 +61,10 @@ the total size of an intentionally unmaterialized value."
   (concat "[" (unibyte-string 128) "-" (unibyte-string 255) "]")
   "Regexp for unibyte octets printed as four-byte octal escapes.")
 
+(defconst e-runtime-store-codec--multibyte-raw-byte-regexp
+  (concat "[" (string #x3fff80) "-" (string #x3fffff) "]")
+  "Regexp for Emacs multibyte raw-byte characters.")
+
 (defun e-runtime-store-codec--string-has-text-properties-p (value)
   "Return non-nil when string VALUE carries presentation text properties."
   (let ((position 0)
@@ -196,7 +200,8 @@ FORM must already be the private tagged value built by
 VALUE is already accepted by the closed tagged codec grammar.  The current
 canonical reader syntax writes multibyte characters directly as UTF-8, quotes
 and backslashes with one extra ASCII byte, and unibyte octets >= 128 as a
-four-byte octal escape.  Native regexp counting over one disposable buffer
+four-byte octal escape.  Emacs multibyte raw-byte characters also print as
+four-byte octal escapes.  Native regexp counting over one disposable buffer
 avoids a Lisp call per input byte and never builds the escaped representation."
   (let ((multibyte (multibyte-string-p value))
         escaped)
@@ -209,9 +214,17 @@ avoids a Lisp call per input byte and never builds the escaped representation."
       (setq escaped
             (count-matches e-runtime-store-codec--reader-escaped-character-regexp
                            (point-min) (point-max)))
-      (unless multibyte
-        (setq escaped
-              (+ escaped
+      (setq escaped
+            (+ escaped
+               (if multibyte
+                   ;; A raw-byte character occupies two bytes in its source
+                   ;; multibyte string but prints as four ASCII octal bytes.
+                   (* 2
+                      (count-matches
+                       e-runtime-store-codec--multibyte-raw-byte-regexp
+                       (point-min) (point-max)))
+                 ;; A high unibyte octet occupies one source byte and prints
+                 ;; as four ASCII octal bytes.
                  (* 3
                     (count-matches e-runtime-store-codec--unibyte-high-octet-regexp
                                    (point-min) (point-max)))))))

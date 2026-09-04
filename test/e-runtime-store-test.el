@@ -97,6 +97,25 @@
     (should (= (plist-get (cddr failure) :string-bytes)
                (string-bytes rejected)))))
 
+(ert-deftest e-runtime-store-codec-bounded-multibyte-raw-bytes-match-printer ()
+  "All Emacs multibyte raw-byte characters use their octal reader bytes."
+  (let* ((raw-octets
+          (string-to-multibyte
+           (apply #'unibyte-string (number-sequence 128 255))))
+         ;; Exercise raw bytes embedded among ordinary multibyte text and
+         ;; reader-escaped ASCII characters, not as a separate grammar case.
+         (raw-bytes (concat "λ\"" raw-octets "\\🧵"))
+         (form (e-runtime-store-codec--form raw-bytes))
+         (printed (e-runtime-store-codec--print-form form))
+         (exact (string-bytes printed)))
+    (should (= (e-runtime-store-codec--measure-form-bounded form exact)
+               exact))
+    (should (equal (e-runtime-store-codec-encode-bounded raw-bytes exact)
+                   printed))
+    (should-error
+     (e-runtime-store-codec-encode-bounded raw-bytes (1- exact))
+     :type 'e-runtime-store-codec-too-large)))
+
 (ert-deftest e-runtime-store-s2-serializes-ordinary-owner-writes ()
   "The single worker assigns monotonic positions without a command ledger."
   (e-runtime-store-test--with-store (store directory)
@@ -783,6 +802,30 @@ tests can present a raw frame that production would refuse to create."
           (should-not (e-runtime-store--write-queue store))
           (should-not (e-runtime-store--read-queue store))
           (should (= (hash-table-count (e-runtime-store--pending store)) 0))))))))
+
+(ert-deftest e-runtime-store-s92-c04-preflight-rejects-raw-byte-canonical-overflow ()
+  "Preflight rejects raw-byte overflow before base64 rounding can mask it."
+  (let* ((raw-bytes (string-to-multibyte (unibyte-string 128 192 255)))
+         (body (list :op 'status :content raw-bytes))
+         (request (e-runtime-store-request--create
+                   :id "raw-byte:w:1" :kind 'write :body body))
+         (actual-canonical
+          (string-bytes
+           (e-runtime-store-codec-encode
+            (e-runtime-store--request-frame request))))
+         ;; Three raw bytes yield a canonical size of 3k+2.  Therefore the
+         ;; one-byte-smaller canonical ceiling has the same rounded wire cap.
+         (canonical-limit (1- actual-canonical))
+         (wire-limit
+          (e-runtime-store-codec-wire-byte-count canonical-limit)))
+    (should (= (mod actual-canonical 3) 2))
+    (should (= (e-runtime-store-codec-wire-byte-count actual-canonical)
+               wire-limit))
+    (let ((e-runtime-store-codec-protocol-canonical-byte-limit canonical-limit)
+          (e-runtime-store-codec-protocol-wire-byte-limit wire-limit))
+      (should-error (e-runtime-store--preflight-request request)
+                    :type 'e-runtime-store-request-too-large)
+      (should-not (e-runtime-store-request--frame request)))))
 
 (ert-deftest e-runtime-store-s92-c04-request-frame-has-queue-only-lifetime ()
   "A bounded canonical frame survives queueing, never terminal retention."
