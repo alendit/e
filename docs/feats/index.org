@@ -15,12 +15,11 @@ rebaseline that feature's source anchors and assumptions against the accepted
 Feature 91 module boundaries.  Existing statuses remain unchanged because they
 record each feature's lifecycle state.
 
-Feature 92 is =In-review=: its runtime-store DP4 mechanism passed repository
-review, but live evidence invalidated the interactive composition boundary.
-The accepted DP5 rebaseline keeps the worker and requires genuinely
-asynchronous runtime settlement plus session/Board/chat operation services;
-the amended plan is independently reviewed and ready for ordered DP5
-implementation.
+Feature 92 is =In-review=: DP5A independently accepted its event-driven
+runtime-store substrate, while live evidence still leaves the interactive
+session/Board/chat composition boundary unresolved.  DP5B--DP5D retain the
+remaining asynchronous application services, reachability, and whole-runtime
+budget work.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

@@ -3,25 +3,46 @@
 
 * Status
 
-Partially resolved by Feature 92 DP4 and reopened for asynchronous application
-composition.  The historical
+DP5A transport substrate is resolved and independently accepted; the Daily
+application behavior remains unresolved pending DP5B--DP5D.  The historical
 post-restart recurrence identified a submitted =catalog-put= whose lost
 acknowledgement killed the shared worker and froze queued Board work.  The
 runtime store now resolves the same durable write identity through an ACID
 receipt and one bounded worker replacement, preserving exact-once mutation and
 continuing the queue on either side of COMMIT.
 
-DP4 did not make interactive persistence asynchronous.  Cold submit can still
-open the worker synchronously, timeout and recovery progression still depends
-on =e-runtime-store-await=, and session/Board/chat application services still
-wait inline for durable results.  The accepted Feature 92 DP5 direction keeps
-the external worker but makes scheduler settlement autonomous and returns
-pending domain-operation handles before open or acknowledgement.
+DP5A makes runtime-store cold submit, timeout, and recovery settlement
+autonomous; =e-runtime-store-await= observes rather than drives it.  Session,
+Board, and chat application services still wait inline for durable results.
+The remaining DP5 direction keeps the external worker while DP5B--DP5D add
+pending domain-operation handles and composition-owned asynchronous lanes.
 
 The lower-level timing condition that delayed the historical live worker for
 60 seconds is not reproduced by the disposable database clone.  That unknown
 is observational: deterministic fault injection now proves the required
 failure behavior independently of the trigger.
+
+* DP5A transport implementation evidence (accepted)
+
+The accepted runtime transport substrate returns a private immutable request
+handle before cold open or acknowledgement, and the runtime-owned timer advances open, dispatch,
+deadline recovery, and settlement without =await=.  This does not yet make
+session, Board, or chat application operations asynchronous; those remain the
+separate DP5B--DP5D packages, so the historical Daily behavior is not marked
+resolved by this record.
+
+DP5A also bounds scheduler-owned canonical frames and terminal
+notification tokens, releases them on terminal/cancel/close paths, and keeps
+client observation failures local.  Independent evidence is 68 focused
+runtime-owner tests, Board replay seam 1/1, retained-frame RSS 242,204,672
+bytes, clean diff, and no orphan process.  The user's live Emacs and canonical
+database were not opened, reloaded, or mutated.  Because this is a core runtime
+change, a full restart is required to use it.
+
+The accepted DP5A correction also makes cold/idle close scheduler-owned,
+keeps its acknowledgement recovery off an awaiter, and centralizes transport
+reservation release.  This remains transport-only evidence and does not alter
+the unresolved Daily session/Board/chat composition status.
 
 * Fresh post-restart recurrence
 
@@ -319,8 +340,9 @@ restart to take effect.
 
 * Remaining asynchronous correction
 
-The acknowledgement ambiguity is closed, but the interactive contract remains
-open.  Feature 92 contracts =F92-C06= through =F92-C10= require:
+The acknowledgement ambiguity and runtime autonomous settlement are closed,
+but the interactive application contract remains open.  Feature 92 contracts
+=F92-C07= through =F92-C10= require:
 
 - autonomous cold open, dispatch, phase deadlines, recovery, and terminal
   settlement when no caller awaits;
@@ -337,3 +359,139 @@ The release gate is a deterministic graphical Daily topology through public
 heartbeat plus composer edit run during the hold, show pending state, then
 release and observe exactly one ordered visible transition.  CPU percentage,
 database size, and wall-clock duration remain observational.
+
+* Historical DP5A correction evidence (superseded by accepted DP5A)
+
+The scheduler now bounds overdue queued expiry to 16 terminal transitions per
+turn.  The deterministic runtime-owner witness queues 17 overdue requests,
+observes an independent heartbeat after the first 16, then observes the
+rescheduled turn expire the final request.  A second matrix witnesses
+cancelled and expired =starting-request= entries across open success/failure
+and successor/no-successor outcomes: stale identity is cleared, a surviving
+successor is promoted only after successful open, and startup failure is
+attributed to that successor rather than the stale request.
+
+The asynchronous cold-open owner-contention path also now reaches a definitive
+typed unavailable state when it has no queued domain request.  This prevents a
+compatibility observer or close teardown from waiting for a disabled phase
+timer.  Repository validation: runtime owner 51/51 (21.61 seconds), Board
+replay seam 1/1, changed-Lisp check-parens and diff check passed, and a
+read-only post-run process inspection found no isolated batch worker or Eldev
+test runner.  This is implementation evidence only; Feature 92 remains
+=In-review=.  No live Emacs or canonical SQLite store was opened or changed;
+the runtime change requires restart before interactive use.
+
+** Second DP5A correction evidence (pending independent review)
+
+Private asynchronous close is now an owned terminal request even when its
+initial cold open fails.  Its observer runs once only after the worker and all
+runtime timer/recovery/close references are retired.  The scheduler also uses
+one live domain-selection helper for all initial-open failure paths, so stale
+cancelled/expired selections and private open identities cannot become the
+reported application cause.  Direct codec premeasurement has deterministic
+parity and cycle cleanup coverage.  Repository validation: runtime owner
+55/55 (22.73 seconds), Board replay seam 1/1, check-parens/diff check, and a
+final no-orphan process inspection all passed.  Feature 92 remains =In-review=.
+
+The independent cleanup record supersedes the earlier stale-shell wording:
+the parent SIGTERM-reaped isolated old test PIDs 51591 and 51961 and verified
+that no matching process remained.  Streaming codec measurement and paged
+close-finalization corrections remain pending review.
+
+** DP5A fixed-control budget amendment (pending renewed review)
+
+The runtime now records one scheduler-only internal-open singleton per store
+outside the 128 admitted client request/token cap.  It has no client observer
+or notification token and cannot be duplicated, preserving full cold-queue
+capacity.  Client-visible close remains inside that cap and reports typed
+capacity failure when it cannot reserve one request/token pair.  This changes
+the frozen DP5A budget wording and therefore requires renewed independent plan
+and implementation review; Feature 92 remains =In-review=.
+
+Focused post-amendment evidence: cap-one cold submission progresses with one
+tokenless internal open and no second open object; both open success and
+opening failure return client count/token usage to zero.  Close at saturation
+raises =e-runtime-store-capacity-exhausted= and its later admitted close
+releases exactly once.  The runtime owner selector passes 61/61 in 22.53
+seconds and its final audit finds no private runtime-store timer callback even
+after fake fixtures clear their timer fields.  A read-only process audit found
+no isolated test worker or batch process.  These facts are pending renewed
+independent review, not a fixed-point claim.
+
+** DP5A specification correction after rejected =d48fd754= review
+
+The review found the fixed singleton-open allowance incomplete: it excluded a
+request/token from the 128 client cap but had not bounded the singleton's own
+complete open frame or named every release path.  The amended plan now requires
+one 16 KiB canonical / 21,849-byte newline-terminated base64 open frame,
+immediate post-send or setup-rollback frame release, and correlation cleanup on
+success, typed failure, timeout, malformed response, worker exit, and recovery
+exhaustion.  It also requires exact/one-over complete-frame evidence and the
+128-cold-client/no-second-open matrix.
+
+The later DP5B session close contract now reserves its client-visible
+request/token before fencing admission or mutating adapters.  Failure returns a
+single terminal typed-capacity close =e-work= while leaving admission, fence,
+snapshot, and adapters unchanged for retry.  The modeled memory addition of a
+simultaneous 16,384-byte canonical plus 21,849-byte wire open frame yields
+352,408,921-byte RSS and 330,733,753-byte footprint from the prior probe; it
+is not a fresh RSS measurement.  This correction edits plan/evidence only; no
+production/test/live-store change or acceptance claim is made.
+
+** P2 plan correction after =2fb59cc5= review
+
+The singleton-open ceiling and memory accounting now belong to DP5A/common
+asynchronous budget work, not accepted DP3 protocol work.  DP5A additionally
+defines a possible-partial-write =process-send-string= failure as a fenced
+transport incident: fence before release, then use the selected client's
+bounded recovery/failure path.  Required evidence includes that deterministic
+seam and complete open-control release/reopen across success, failure, timeout,
+malformed response, exit, recovery exhaustion, close, reset, and stale
+generation.  This is plan-only and remains pending independent re-review.
+
+** DP5A singleton-open implementation evidence (pending review)
+
+The transport now preflights the complete open control before launching a
+worker: 16,384 canonical bytes and 21,849 newline-terminated wire bytes are
+independent fixed limits, while only its request/token count remains outside
+the 128-client budget.  A possible partial open send fences the old worker
+before releasing the control and terminally routes the selected client's typed
+startup cause.  Deterministic owner tests cover exact/one-over preflight with
+no worker start, partial-send fencing, 128 cold clients with no second control,
+client 129/close rejection at saturation, and close use of the released slot.
+
+The owner selector passes 66/66 in 22.75 seconds; its global timer callback
+audit passes, the Board replay seam passes 1/1, and a fresh public cold-open
+retained-frame probe reports 242,302,976-byte maximum RSS below 536,870,912.
+Changed-Lisp parens/diff checks and no-orphan process audit pass.  No live
+Emacs or canonical store was opened; Feature 92 remains =In-review= pending
+independent implementation review.
+
+** DP5A close-frame correction (pending review)
+
+Close is now admitted with its measured complete immutable frame and actual
+local/shared bytes before it becomes visible or compatibility close can alter
+transport state.  One-over local/shared capacity and encode failure leave it
+unpublished and retryable; final close notification releases its frame, token,
+and bytes once.  The new deterministic open-control matrix covers success,
+typed failure, timeout, malformed response, exit, recovery exhaustion, close,
+freeze reset-equivalent, and stale-generation/current teardown with a later
+fresh open.  These are pending independent review findings, not acceptance.
+
+** DP5A partial-close send and public reopen correction (pending review)
+
+After a close frame is submitted, a signalled pipe send is potentially
+partially written.  The runtime now fences that worker and routes the typed
+original close identity/cause through DP4 recovery, retaining the immutable
+retirement frame for same-ID replay.  The partial-send witness proves one
+fence/replacement, first-cause exhaustion under a later bad response, and the
+real SQLite retirement-COMMIT fault witnesses prove the persisted retirement
+ID remains the original close ID on both sides of COMMIT.
+
+Public rollback/reopen evidence covers forced open setup, codec encode, and
+worker-start failure.  Each disposable owner is finalized, then the same
+directory/runtime identity is reopened through the public adapter, receives a
+real open acknowledgement, and handles a successful subsequent request.  The
+runtime owner selector passes 68/68 in 23.14s; Board seam 1/1; RSS 240,664,576
+bytes; parens/diff/timer/no-orphan audits pass.  This is evidence only:
+Feature 92 remains =In-review= pending independent correction review.

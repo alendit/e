@@ -291,6 +291,88 @@ a nonnegative integer byte count."
       (walk form))
     bytes))
 
+(defun e-runtime-store-codec-measure-bounded (value limit)
+  "Return VALUE's exact canonical byte count without building its tagged form.
+
+This mirrors the closed tagged grammar used by `e-runtime-store-codec-encode'.
+It is the admission-side counterpart to encoding: callers can reject an
+oversized original value before allocating its complete transformed form or
+printed canonical string.  Hash-entry order affects bytes only by permutation,
+so measuring entries directly preserves the exact total without materializing
+the encoder's sort keys."
+  (unless (and (integerp limit) (>= limit 0))
+    (signal 'wrong-type-argument (list 'natnump limit)))
+  (let ((bytes 0) (active (make-hash-table :test 'eq)))
+    (cl-labels
+        ((add (count) (setq bytes (+ bytes count))
+              (when (> bytes limit)
+                (e-runtime-store-codec--canonical-byte-limit-error limit bytes)))
+         (atom (thing)
+           (if (stringp thing)
+               (setq bytes (e-runtime-store-codec--string-byte-count-bounded thing limit bytes))
+             (add (e-runtime-store-codec--small-atom-byte-count thing))))
+         (start (tag) (add 1) (atom tag))
+         (item () (add 1))
+         (finish () (add 1))
+         (encoded-list (list)
+           ;; Count in canonical order without premarking the spine or
+           ;; allocating per-element closures.  The list/list* tag differs by
+           ;; one byte; that correction is applied only if a dotted tail is
+           ;; reached, while byte accounting itself streams each head.
+           (let ((cursor list) (first t))
+             (unwind-protect
+                 (progn
+                   (start 'list) (item) (add 1)
+                   (while (consp cursor)
+                     (when (gethash cursor active)
+                       (signal 'e-runtime-store-codec-error (list "Cyclic value" list)))
+                     (puthash cursor t active)
+                     (unless first (item)) (setq first nil)
+                     (encoded (car cursor))
+                     (setq cursor (cdr cursor)))
+                   (finish)
+                   (unless (null cursor)
+                     (add 1) (item) (encoded cursor))
+                   (finish))
+               (let ((node list))
+                 (while (and (consp node) (gethash node active))
+                   (remhash node active) (setq node (cdr node)))))))
+         (encoded (thing)
+           (cond
+            ((null thing) (start 'nil) (finish))
+            ((eq thing t) (start 'true) (finish))
+            ((eq thing :json-false) (start 'false) (finish))
+            ((integerp thing) (start 'integer) (item) (atom (number-to-string thing)) (finish))
+            ((floatp thing) (unless (e-runtime-store-codec--finite-number-p thing)
+                              (signal 'e-runtime-store-codec-error (list "Non-finite number" thing)))
+             (start 'float) (item) (atom (prin1-to-string thing)) (finish))
+            ((stringp thing) (when (e-runtime-store-codec--string-has-text-properties-p thing)
+                                (signal 'e-runtime-store-codec-error (list "Text properties are not durable")))
+             (start 'string) (item) (atom thing) (finish))
+            ((keywordp thing) (start 'keyword) (item) (atom (symbol-name thing)) (finish))
+            ((symbolp thing) (start 'symbol) (item) (atom (symbol-name thing)) (finish))
+            ((consp thing) (encoded-list thing))
+            ((vectorp thing)
+             (when (gethash thing active) (signal 'e-runtime-store-codec-error (list "Cyclic value" thing)))
+             (puthash thing t active)
+             (unwind-protect (progn (start 'vector) (item) (add 1)
+                                    (dotimes (i (length thing)) (when (> i 0) (item)) (encoded (aref thing i)))
+                                    (finish) (finish))
+               (remhash thing active)))
+            ((hash-table-p thing)
+             (when (gethash thing active) (signal 'e-runtime-store-codec-error (list "Cyclic value" thing)))
+             (puthash thing t active)
+             (unwind-protect (progn (start 'map) (item) (atom (hash-table-test thing)) (item) (add 1)
+                                    (let ((first t))
+                                      (maphash (lambda (key value)
+                                                 (unless first (item)) (setq first nil)
+                                                 (add 1) (encoded key) (item) (encoded value) (finish)) thing))
+                                    (finish) (finish))
+               (remhash thing active)))
+            (t (signal 'e-runtime-store-codec-error (list "Unsupported durable value" thing))))))
+      (start 'e-runtime-store-value) (item) (atom e-runtime-store-codec-version) (item) (encoded value) (finish))
+    bytes))
+
 (defun e-runtime-store-codec-encode (value)
   "Return canonical unibyte tagged encoding for VALUE."
   (e-runtime-store-codec--print-form (e-runtime-store-codec--form value)))

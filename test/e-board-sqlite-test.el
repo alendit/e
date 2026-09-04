@@ -304,10 +304,9 @@
       (set-process-filter
        process
        (lambda (worker text)
-         (let* ((request (e-runtime-store--active-request runtime))
-                (body (and request
-                           (e-runtime-store-request--body request))))
-           (if (and (eq (plist-get body :op) 'board-replay-progress-put)
+         (let ((request (e-runtime-store--active-request runtime)))
+           (if (and (eq (e-runtime-store--request-operation request)
+                        'board-replay-progress-put)
                     (not response-held))
                (progn
                  (setq captured (concat captured text))

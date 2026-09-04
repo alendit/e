@@ -30,6 +30,9 @@
 (define-error 'e-runtime-store-request-too-large
   "Runtime store request exceeds its transport limit"
   'e-runtime-store-error)
+(define-error 'e-runtime-store-capacity-exhausted
+  "Runtime store scheduler capacity is exhausted"
+  'e-runtime-store-error)
 (define-error 'e-runtime-store-response-too-large
   "Runtime store read response exceeds its transport limit"
   'e-runtime-store-error)
@@ -62,6 +65,34 @@ Queue admission and submitted execution each receive this interval.  A
 submitted timeout fences and replaces the worker once."
   :type 'number :group 'e)
 
+;; These are deliberately scheduler-local rather than application policy.  A
+;; later composition owner supplies a shared reservation object when it owns
+;; several stores; the default keeps independently opened stores bounded too.
+(defconst e-runtime-store-request-capacity 128)
+(defconst e-runtime-store-retained-byte-capacity (* 68 1024 1024))
+(defconst e-runtime-store-global-byte-capacity (* 84 1024 1024))
+(defconst e-runtime-store-notification-capacity 128)
+(defconst e-runtime-store-notification-drain-limit 16)
+(defconst e-runtime-store-open-control-capacity 1
+  "Maximum fixed internal open controls owned by one runtime.
+
+This singleton is scheduler scaffolding, not an admitted client request: it
+owns no client notification token and is deliberately outside the 128 client
+request/token budget so a full cold queue can still become ready.")
+(defconst e-runtime-store-open-control-canonical-byte-limit 16384
+  "Maximum canonical bytes for the singleton internal open frame.")
+(defconst e-runtime-store-open-control-wire-byte-limit 21849
+  "Maximum newline-terminated base64 bytes for an internal open frame.")
+
+(cl-defstruct (e-runtime-store--reservation
+               (:constructor e-runtime-store--reservation-create))
+  (limit e-runtime-store-global-byte-capacity :read-only t)
+  (used 0))
+
+(defvar e-runtime-store--default-reservation
+  (e-runtime-store--reservation-create)
+  "Private fallback aggregate reservation for independently opened stores.")
+
 (defvar e-runtime-store--parent-boot-id
   (e-runtime-store-ownership--host-boot-id)
   "Private host-boot identity shared by all scheduler processes on this boot.")
@@ -80,13 +111,19 @@ submitted timeout fences and replaces the worker once."
   (sequence 0) pending write-queue read-queue active-request
   starting-request last-error unavailable-cause startup-status unavailable closed
   recovering-request recovery-cause (recovery-attempt 0) (acknowledged-write-prefix 0)
-  (write-prefix-sequence 0))
+  (write-prefix-sequence 0)
+  open-control-request
+  closing-request close-finalizer-timer
+  reservation (reserved-bytes 0) (request-count 0)
+  notification-outbox (notification-count 0) notification-timer
+  scheduler-timer (scheduler-generation 0))
 
 (cl-defstruct (e-runtime-store-request
                (:constructor e-runtime-store-request--create)
                (:predicate e-runtime-store-request-p)
                (:conc-name e-runtime-store-request--))
-  id kind body frame state result error admitted-at submitted-at write-prefix)
+  id kind body frame state result error admitted-at submitted-at write-prefix
+  operation frame-bytes retained-bytes notification observer observer-detached)
 
 (defun e-runtime-store--worker-file ()
   "Return the newest installed worker source or byte-code path.
@@ -116,14 +153,20 @@ deleting or rewriting those unrelated artifacts."
         "-l" (e-runtime-store--worker-file)
         "--funcall" "e-runtime-store-worker-main"))
 
-(defun e-runtime-store--encode-frame (value)
+(defun e-runtime-store--encode-frame (value &optional measured-bytes)
   "Return bounded canonical protocol bytes for VALUE.
 
 Canonical and wire domains are checked independently even though the wire
 limit is mechanically derived from the canonical limit."
-  (let ((canonical
-         (e-runtime-store-codec-encode-bounded
-          value e-runtime-store-codec-protocol-canonical-byte-limit)))
+  (let ((canonical (e-runtime-store-codec-encode value)))
+    (when (and measured-bytes (/= measured-bytes (string-bytes canonical)))
+      (signal 'e-runtime-store-codec-error
+              (list "Preflight measurement disagreed with canonical encoding"
+                    :measured measured-bytes :encoded (string-bytes canonical))))
+    (when (> (string-bytes canonical) e-runtime-store-codec-protocol-canonical-byte-limit)
+      (signal 'e-runtime-store-codec-too-large
+              (list "Protocol canonical frame exceeds byte limit"
+                    :domain 'canonical :canonical-bytes (string-bytes canonical))))
     (when (> (e-runtime-store-codec-wire-byte-count (string-bytes canonical))
              e-runtime-store-codec-protocol-wire-byte-limit)
       (signal 'e-runtime-store-codec-too-large
@@ -132,6 +175,58 @@ limit is mechanically derived from the canonical limit."
                     :limit e-runtime-store-codec-protocol-wire-byte-limit
                     :canonical-bytes (string-bytes canonical))))
     canonical))
+
+(defun e-runtime-store--open-control-frame (store request)
+  "Return the complete bounded open frame value for STORE and REQUEST."
+  (list :id (e-runtime-store-request--id request)
+        :kind 'open :directory (e-runtime-store--directory store)
+        :runtime-id (e-runtime-store--runtime-id store)
+        :parent-identity (e-runtime-store--parent-identity)))
+
+(defun e-runtime-store--prepare-open-control (store)
+  "Create and preflight STORE's one fixed-size internal open control.
+
+This intentionally measures before constructing canonical bytes, so an
+oversized identity/open envelope fails before a worker is started or sent to.
+The returned request is scheduler scaffolding: it owns neither a client slot
+nor a notification token."
+  (or (e-runtime-store--open-control-request store)
+      (let* ((request
+              (e-runtime-store-request--create
+               :id (e-runtime-store--next-id store "open") :kind 'open
+               :body nil :state 'submitted :submitted-at (float-time)))
+             (value (e-runtime-store--open-control-frame store request))
+             (bytes (e-runtime-store-codec-measure-bounded
+                     value e-runtime-store-open-control-canonical-byte-limit))
+             (wire-bytes (e-runtime-store-codec-wire-byte-count bytes)))
+        (when (> wire-bytes e-runtime-store-open-control-wire-byte-limit)
+          (signal 'e-runtime-store-codec-too-large
+                  (list "Internal open wire frame exceeds byte limit"
+                        :domain 'wire :limit e-runtime-store-open-control-wire-byte-limit
+                        :canonical-bytes bytes)))
+        (condition-case err
+            (let ((canonical (e-runtime-store-codec-encode value)))
+              (unless (= bytes (string-bytes canonical))
+                (signal 'e-runtime-store-codec-error
+                        (list "Open preflight measurement disagreed with encoding"
+                              :measured bytes :encoded (string-bytes canonical))))
+              (setf (e-runtime-store-request--frame request) canonical
+                    (e-runtime-store-request--frame-bytes request) bytes
+                    (e-runtime-store--open-control-request store) request)
+              request)
+          (error
+           (setf (e-runtime-store-request--frame request) nil)
+           (signal (car err) (cdr err)))))))
+
+(defun e-runtime-store--release-open-control (store request)
+  "Release REQUEST's singleton-open frame and correlation ownership once."
+  (when (eq (e-runtime-store--open-control-request store) request)
+    (setf (e-runtime-store--open-control-request store) nil))
+  (when (eq (e-runtime-store--active-request store) request)
+    (setf (e-runtime-store--active-request store) nil))
+  (remhash (e-runtime-store-request--id request) (e-runtime-store--pending store))
+  (setf (e-runtime-store-request--frame request) nil
+        (e-runtime-store-request--frame-bytes request) nil))
 
 (defun e-runtime-store--pack-canonical (canonical)
   "Return bounded canonical protocol CANONICAL as one ASCII frame."
@@ -186,15 +281,31 @@ limit is mechanically derived from the canonical limit."
 (defun e-runtime-store--request-operation (request)
   "Return REQUEST's typed operation, or nil when it has no operation body."
   (and request
-       (plist-get (e-runtime-store-request--body request) :op)))
+       (or (e-runtime-store-request--operation request)
+           (plist-get (e-runtime-store-request--body request) :op))))
+
+(defun e-runtime-store--startup-request (store)
+  "Return STORE's one still-owned domain request while opening.
+
+The internal open frame is transport scaffolding, never a domain failure
+  identity.  A selection that cancellation or queue expiry removed is ignored
+and the current queue head is selected instead."
+  (let ((selected (e-runtime-store--starting-request store)))
+    (if (and selected (e-runtime-store--queued-request-p store selected))
+        selected
+      (e-runtime-store--next-queued-request store))))
 
 (defun e-runtime-store--failure-request (store &optional fallback)
   "Return the request whose identity explains STORE's current failure.
 
 An internal open is only transport setup for the scheduler-selected request,
 so its failure reports that selected request while it remains queued."
-  (or (e-runtime-store--starting-request store)
-      (e-runtime-store--active-request store)
+  (or (e-runtime-store--recovering-request store)
+      (let ((active (e-runtime-store--active-request store)))
+        (unless (or (null active)
+                    (eq (e-runtime-store-request--kind active) 'open))
+          active))
+      (e-runtime-store--startup-request store)
       fallback))
 
 (defun e-runtime-store--request-error (type message request &rest properties)
@@ -204,6 +315,120 @@ so its failure reports that selected request while it remains queued."
                 :kind (and request (e-runtime-store-request--kind request))
                 :request-id (and request (e-runtime-store-request--id request)))
           properties))
+
+(defun e-runtime-store--request-live-p (request)
+  "Return non-nil while REQUEST is still scheduler-owned."
+  (memq (e-runtime-store-request--state request) '(queued submitted)))
+
+(defun e-runtime-store--reserve-request (store request bytes)
+  "Atomically reserve REQUEST, BYTES, and its eventual terminal token.
+
+BYTES is the exact canonical frame size measured before the frame is printed.
+The token is reserved at admission, so terminal settlement never drops an
+already admitted notification because a burst filled the outbox meanwhile."
+  (let ((reservation (or (e-runtime-store--reservation store)
+                         e-runtime-store--default-reservation)))
+    (when (or (>= (e-runtime-store--request-count store)
+                  e-runtime-store-request-capacity)
+              (> (+ (e-runtime-store--reserved-bytes store) bytes)
+                 e-runtime-store-retained-byte-capacity)
+              (>= (e-runtime-store--notification-count store)
+                  e-runtime-store-notification-capacity)
+              (> (+ (e-runtime-store--reservation-used reservation) bytes)
+                 (e-runtime-store--reservation-limit reservation)))
+      (signal 'e-runtime-store-capacity-exhausted
+              (list "Runtime-store admission capacity is exhausted"
+                    :request-count (e-runtime-store--request-count store)
+                    :retained-bytes (e-runtime-store--reserved-bytes store)
+                    :global-bytes (e-runtime-store--reservation-used reservation))))
+    (setf (e-runtime-store--reservation store) reservation
+          (e-runtime-store--request-count store) (1+ (e-runtime-store--request-count store))
+          (e-runtime-store--reserved-bytes store) (+ (e-runtime-store--reserved-bytes store) bytes)
+          (e-runtime-store--reservation-used reservation)
+          (+ (e-runtime-store--reservation-used reservation) bytes)
+          (e-runtime-store--notification-count store)
+          (1+ (e-runtime-store--notification-count store))
+          (e-runtime-store-request--retained-bytes request) bytes
+          (e-runtime-store-request--notification request) 'reserved)))
+
+(defun e-runtime-store--request-slot-available-p (store)
+  "Return non-nil when STORE can cheaply admit one request/token pair."
+  (and (< (e-runtime-store--request-count store)
+          e-runtime-store-request-capacity)
+       (< (e-runtime-store--notification-count store)
+          e-runtime-store-notification-capacity)))
+
+(defun e-runtime-store--release-request (store request)
+  "Release REQUEST's one admission reservation exactly once."
+  (when-let* ((bytes (e-runtime-store-request--retained-bytes request)))
+    (let ((reservation (or (e-runtime-store--reservation store)
+                           e-runtime-store--default-reservation)))
+      (setf (e-runtime-store--reserved-bytes store)
+            (max 0 (- (e-runtime-store--reserved-bytes store) bytes))
+            (e-runtime-store--reservation-used reservation)
+            (max 0 (- (e-runtime-store--reservation-used reservation) bytes))
+            (e-runtime-store--request-count store)
+            (max 0 (1- (e-runtime-store--request-count store)))
+            (e-runtime-store-request--retained-bytes request) nil))))
+
+(defun e-runtime-store--release-terminal (store request)
+  "Release REQUEST's token and frame reservation exactly once."
+  (when (e-runtime-store-request--notification request)
+    (setf (e-runtime-store-request--notification request) nil
+          (e-runtime-store--notification-count store)
+          (max 0 (1- (e-runtime-store--notification-count store)))))
+  ;; Close retains its immutable protocol frame through retirement/final
+  ;; notification; ordinary requests may reach here sooner.  This is the one
+  ;; terminal owner that releases both bytes and the retained frame.
+  (setf (e-runtime-store-request--frame request) nil
+        (e-runtime-store-request--frame-bytes request) nil)
+  (e-runtime-store--release-request store request))
+
+(defun e-runtime-store--deliver-terminal-notification (store request)
+  "Deliver REQUEST's observer outside transport filters and sentinels."
+  (let ((observer (and (not (e-runtime-store-request--observer-detached request))
+                       (e-runtime-store-request--observer request))))
+    (setf (e-runtime-store-request--observer request) nil)
+    ;; A client observer is not a scheduler owner.  Its exception is local;
+    ;; `unwind-protect' also releases on quit or any nonlocal transfer.
+    (unwind-protect
+        (when observer
+          (condition-case nil
+              (funcall observer request)
+            (error nil)
+            (quit nil)))
+      (e-runtime-store--release-terminal store request))))
+
+(defun e-runtime-store--drain-terminal-notifications (store &optional no-schedule)
+  "Deliver at most one bounded page of queued terminal observations."
+  (setf (e-runtime-store--notification-timer store) nil)
+  ;; `quit' and other nonlocal observer exits are client-local.  Always arm
+  ;; the remaining page before propagating one, so no terminal ownership is
+  ;; stranded behind the observer that escaped.
+  (unwind-protect
+      (dotimes (_ e-runtime-store-notification-drain-limit)
+        (when-let* ((request (pop (e-runtime-store--notification-outbox store))))
+          (e-runtime-store--deliver-terminal-notification store request)))
+    (when (and (not no-schedule) (e-runtime-store--notification-outbox store))
+      (setf (e-runtime-store--notification-timer store)
+            (run-at-time 0 nil #'e-runtime-store--drain-terminal-notifications store)))))
+
+(defun e-runtime-store--enqueue-terminal-notification (store request)
+  "Queue REQUEST's pre-reserved terminal observation exactly once."
+  (when (eq (e-runtime-store-request--notification request) 'reserved)
+    (if (e-runtime-store-request--observer-detached request)
+        ;; A detached read has no client notification to schedule, but keeps
+        ;; ownership through terminal transport settlement.
+        (e-runtime-store--release-terminal store request)
+      (setf (e-runtime-store-request--notification request) 'queued
+            (e-runtime-store--notification-outbox store)
+            (nconc (e-runtime-store--notification-outbox store) (list request)))
+      ;; Close drains this bounded outbox synchronously during finalization;
+      ;; do not leave a fresh timer holding STORE after it has been retired.
+      (unless (or (e-runtime-store--closed store)
+                  (timerp (e-runtime-store--notification-timer store)))
+        (setf (e-runtime-store--notification-timer store)
+              (run-at-time 0 nil #'e-runtime-store--drain-terminal-notifications store))))))
 
 (defun e-runtime-store--startup-error (request cause)
   "Return the typed startup failure for scheduler-selected REQUEST and CAUSE."
@@ -268,16 +493,23 @@ so its failure reports that selected request while it remains queued."
   (remhash (e-runtime-store-request--id request)
            (e-runtime-store--pending store))
   (setf (e-runtime-store--active-request store) nil)
+  (when (eq (e-runtime-store-request--kind request) 'open)
+    ;; The singleton frame was already discarded after a complete send, but
+    ;; its correlation slot must retire on either terminal response.
+    (setf (e-runtime-store--open-control-request store) nil
+          (e-runtime-store-request--frame-bytes request) nil))
   (if (eq (plist-get response :ok) t)
       (setf (e-runtime-store-request--state request) 'committed
             (e-runtime-store-request--result request)
             (plist-get response :result)
-            (e-runtime-store-request--frame request) nil
             (e-runtime-store--last-error store) nil)
     (let ((err (condition-case caught
                    (e-runtime-store--signal-response-error response)
                  (error caught))))
       (e-runtime-store--fail-request store request err)))
+  (unless (eq (e-runtime-store-request--kind request) 'close)
+    (setf (e-runtime-store-request--frame request) nil
+          (e-runtime-store-request--frame-bytes request) nil))
   (when (and (eq (e-runtime-store-request--kind request) 'write)
              (eq (e-runtime-store-request--state request) 'committed))
     (setf (e-runtime-store--acknowledged-write-prefix store)
@@ -287,18 +519,74 @@ so its failure reports that selected request while it remains queued."
              (memq (e-runtime-store-request--state request) '(committed failed)))
     (setf (e-runtime-store--recovery-attempt store) 0
           (e-runtime-store--recovery-cause store) nil))
-  ;; An internal open is only a transport prerequisite.  The caller which is
-  ;; establishing that transport dispatches its domain request after the open
-  ;; acknowledgement, so it cannot overtake the selected request.
+  ;; An internal open is only a transport prerequisite.  It is advanced by
+  ;; scheduler events, never by the submitter or an awaiter.
   (cond
    ((and (eq (e-runtime-store-request--kind request) 'open)
          (e-runtime-store--recovering-request store))
-    ;; Recovery opening temporarily owns the active slot.  Restore the exact
-    ;; retained request before any queue work can be considered.
-    (setf (e-runtime-store--active-request store)
-          (e-runtime-store--recovering-request store)))
+    (if (eq (e-runtime-store-request--state request) 'committed)
+        (let ((replay (e-runtime-store--recovering-request store)))
+          ;; A successful replacement open has its own acknowledgement.
+          (setf (e-runtime-store--active-request store) replay
+                (e-runtime-store--opened-process store)
+                (e-runtime-store--process store)
+                (e-runtime-store--recovering-request store) nil)
+          (condition-case err
+              (progn
+                (unless (stringp (e-runtime-store-request--frame replay))
+                  (signal 'e-runtime-store-error
+                          (list "Recovery lost its immutable request frame")))
+                (process-send-string
+                 (e-runtime-store--process store)
+                 (e-runtime-store--pack-canonical
+                  (e-runtime-store-request--frame replay)))
+                (setf (e-runtime-store-request--submitted-at replay) (float-time)))
+            (error
+             (e-runtime-store--recovery-exhausted
+              store (or (e-runtime-store--recovery-cause store) err)))))
+      ;; Fencing can win the local process race before the child drops its
+      ;; cross-process ownership lock.  That transient refusal is not a
+      ;; second domain recovery attempt: wait for the replacement child to
+      ;; die, then retry opening under the same retained request identity.
+      (if (eq (plist-get response :error-symbol) 'e-runtime-store-owner-active)
+          (progn
+            (e-runtime-store--fence-worker store)
+            (e-runtime-store--schedule store 0.01))
+        (e-runtime-store--recovery-exhausted
+         store (or (e-runtime-store--recovery-cause store)
+                   (e-runtime-store-request--error request))))))
+   ((eq (e-runtime-store-request--kind request) 'open)
+    (when (eq (e-runtime-store-request--state request) 'committed)
+      (setf (e-runtime-store--opened-process store)
+            (e-runtime-store--process store)))
+    ;; A selected queue entry may have cancelled or expired while open was in
+    ;; flight.  Never let that stale identity explain a later startup result.
+    (unless (or (null (e-runtime-store--starting-request store))
+                (e-runtime-store--queued-request-p
+                 store (e-runtime-store--starting-request store)))
+      (setf (e-runtime-store--starting-request store) nil))
+    (when (not (eq (e-runtime-store-request--state request) 'committed))
+      (let ((selected (e-runtime-store--startup-request store)))
+        (if selected
+            (progn
+              (setf (e-runtime-store--starting-request store) selected)
+              (e-runtime-store--fail-all
+               store
+               (e-runtime-store--startup-error
+                selected (e-runtime-store-request--error request))))
+          ;; A cold open has no selected domain request to explain failure.
+          ;; Its own typed worker result is still terminal: retaining an
+          ;; unowned opening state would leave compatibility observers and
+          ;; close teardown waiting until a phase timeout.
+          (e-runtime-store--fail-all store
+                                     (e-runtime-store-request--error request)))))
+    (e-runtime-store--schedule store t))
+   ((eq (e-runtime-store-request--kind request) 'close)
+    (e-runtime-store--schedule-close-finalization store))
    ((not (eq (e-runtime-store-request--kind request) 'open))
-    (e-runtime-store--dispatch-next store))))
+    (when (eq (e-runtime-store-request--state request) 'committed)
+      (e-runtime-store--enqueue-terminal-notification store request))
+    (e-runtime-store--schedule store t))))
 
 (defun e-runtime-store--freeze-oversized-response (store wire-bytes)
   "Recover submitted work after an oversized response frame of WIRE-BYTES."
@@ -396,7 +684,9 @@ so its failure reports that selected request while it remains queued."
            (cl-delete-duplicates
             (delq nil
                   (append (list (e-runtime-store--starting-request store)
-                                (e-runtime-store--active-request store))
+                                (e-runtime-store--active-request store)
+                                (e-runtime-store--open-control-request store)
+                                (e-runtime-store--closing-request store))
                           (e-runtime-store--write-queue store)
                           (e-runtime-store--read-queue store)
                           pending-requests))
@@ -405,6 +695,7 @@ so its failure reports that selected request while it remains queued."
         (setf (e-runtime-store--unavailable-cause store) error))
       (setf (e-runtime-store--active-request store) nil
             (e-runtime-store--starting-request store) nil
+            (e-runtime-store--open-control-request store) nil
             (e-runtime-store--write-queue store) nil
             (e-runtime-store--read-queue store) nil
             (e-runtime-store--opened-process store) nil
@@ -417,6 +708,9 @@ so its failure reports that selected request while it remains queued."
 
 (defun e-runtime-store--freeze-and-stop (store error)
   "Freeze STORE with ERROR and stop its worker without processing more output."
+  (when (timerp (e-runtime-store--scheduler-timer store))
+    (cancel-timer (e-runtime-store--scheduler-timer store)))
+  (setf (e-runtime-store--scheduler-timer store) nil)
   (unwind-protect
       (e-runtime-store--fail-all store error)
     (when (processp (e-runtime-store--process store))
@@ -440,7 +734,8 @@ Old filter and sentinel callbacks must not settle a replayed request."
 (defun e-runtime-store--recovery-exhausted (store cause)
   "Fail STORE's owned work once, preserving the original recovery CAUSE."
   (let ((first (or (e-runtime-store--recovery-cause store) cause)))
-    (setf (e-runtime-store--recovering-request store) nil)
+    (setf (e-runtime-store--recovering-request store) nil
+          (e-runtime-store--recovery-cause store) nil)
     (e-runtime-store--freeze-and-stop store first)))
 
 (defun e-runtime-store--recover-active (store cause)
@@ -472,18 +767,11 @@ whether the mutation already committed.  Reads are safe to retry directly."
               (e-runtime-store--fence-worker store)
               (setf (e-runtime-store--opened-process store) nil
                     (e-runtime-store--input-fragment store) "")
-              (e-runtime-store--start-process store)
-              (e-runtime-store--ensure-worker-open store)
-              (unless (and (eq request (e-runtime-store--active-request store))
-                           (stringp (e-runtime-store-request--frame request)))
-                (signal 'e-runtime-store-error
-                        (list "Recovery lost its immutable request frame")))
-              (process-send-string
-               (e-runtime-store--process store)
-                (e-runtime-store--pack-canonical
-                (e-runtime-store-request--frame request)))
-              (setf (e-runtime-store-request--submitted-at request) (float-time)
-                    (e-runtime-store--recovering-request store) nil))
+              ;; The old process can retain the ownership lock until its
+              ;; asynchronous death completes.  A scheduler turn observes
+              ;; that boundary before opening the replacement; spinning or
+              ;; waiting here would reintroduce an interactive-stack wait.
+              (e-runtime-store--schedule store 0.01))
           (error
            (e-runtime-store--recovery-exhausted
             store (or (e-runtime-store--recovery-cause store)
@@ -494,6 +782,18 @@ whether the mutation already committed.  Reads are safe to retry directly."
   (cond
    ((e-runtime-store--recovering-request store)
     (e-runtime-store--recovery-exhausted store error))
+   ((and (e-runtime-store--active-request store)
+         (eq (e-runtime-store-request--kind
+              (e-runtime-store--active-request store)) 'open))
+    ;; Initial cold open has not submitted a domain request.  Its selected
+    ;; queue owner receives the typed startup cause; replay is only for an
+    ;; already submitted domain request or a replacement open above.
+    (let ((selected (e-runtime-store--startup-request store)))
+      (e-runtime-store--freeze-and-stop
+       store
+       (if selected
+           (e-runtime-store--startup-error selected error)
+         error))))
    ((and (e-runtime-store--active-request store)
          (eq (e-runtime-store-request--state
               (e-runtime-store--active-request store)) 'submitted))
@@ -546,32 +846,45 @@ whether the mutation already committed.  Reads are safe to retry directly."
   (e-runtime-store--process store))
 
 (defun e-runtime-store--ensure-worker-open (store)
-  "Open STORE in a newly started worker before dispatching domain work."
-  (unless (eq (e-runtime-store--opened-process store)
-              (e-runtime-store--process store))
-    (let* ((request
-            (e-runtime-store-request--create
-             :id (e-runtime-store--next-id store "open") :kind 'open
-             :body nil :state 'submitted :submitted-at (float-time)))
-           (frame (list :id (e-runtime-store-request--id request)
-                        :kind 'open :directory (e-runtime-store--directory store)
-                        :runtime-id (e-runtime-store--runtime-id store)
-                        :parent-identity (e-runtime-store--parent-identity))))
-      (setf (e-runtime-store-request--frame request)
-            (e-runtime-store--encode-frame frame))
+  "Begin opening STORE in its current worker without waiting for an ack."
+  (unless (or (eq (e-runtime-store--opened-process store)
+                  (e-runtime-store--process store))
+              ;; The singleton control is intentionally not client-admitted;
+              ;; do not construct a second one if a scheduler turn re-enters
+              ;; while the first open acknowledgement is outstanding.
+              (when-let* ((active (e-runtime-store--active-request store)))
+                (eq (e-runtime-store-request--kind active) 'open)))
+    (let ((request (e-runtime-store--prepare-open-control store)))
       (setf (e-runtime-store--active-request store) request)
       (puthash (e-runtime-store-request--id request) request
                (e-runtime-store--pending store))
-      (process-send-string (e-runtime-store--process store)
-                           (e-runtime-store--pack-canonical
-                            (e-runtime-store-request--frame request)))
-      ;; The subprocess accepted the complete frame.  The pending request
-      ;; needs only its small correlation/terminal facts from this point.
-      (setf (e-runtime-store-request--frame request) nil)
-      (setf (e-runtime-store--startup-status store)
-            (e-runtime-store-await store request)
-            (e-runtime-store--opened-process store)
-            (e-runtime-store--process store)))))
+      (condition-case send-error
+          (progn
+            (process-send-string (e-runtime-store--process store)
+                                 (e-runtime-store--pack-canonical
+                                  (e-runtime-store-request--frame request)))
+            ;; The subprocess accepted the complete frame.  The pending
+            ;; correlation owns only small facts from this point.
+            (setf (e-runtime-store-request--frame request) nil
+                  (e-runtime-store-request--frame-bytes request) nil
+                  (e-runtime-store--startup-status store) 'opening)
+            request)
+        (error
+         ;; A signalled send can follow a partial pipe write.  Treat it as a
+         ;; transport incident: no old output may later settle the selected
+         ;; client as if this open had never been attempted.
+         (let ((selected (e-runtime-store--startup-request store)))
+           (e-runtime-store--fence-worker store)
+           (e-runtime-store--release-open-control store request)
+           (setf (e-runtime-store-request--state request) 'failed
+                 (e-runtime-store-request--error request) send-error)
+           (if (e-runtime-store--recovering-request store)
+               (e-runtime-store--recovery-exhausted
+                store (or (e-runtime-store--recovery-cause store) send-error))
+             (e-runtime-store--freeze-and-stop
+              store (if selected
+                        (e-runtime-store--startup-error selected send-error)
+                      send-error)))))))))
 
 (defun e-runtime-store--next-id (store prefix)
   "Return STORE's next process-local protocol id with PREFIX."
@@ -591,31 +904,79 @@ whether the mutation already committed.  Reads are safe to retry directly."
              :ack-prefix (and (eq (e-runtime-store-request--kind request) 'write)
                               (e-runtime-store--acknowledged-write-prefix store)))))))
 
-(defun e-runtime-store--preflight-request (store-or-request &optional maybe-request)
+(defun e-runtime-store--preflight-request (store-or-request &optional maybe-request admit)
   "Return REQUEST's exact bounded canonical frame before queue admission."
   (let ((store (and maybe-request store-or-request))
-        (request (or maybe-request store-or-request)))
+        (request (or maybe-request store-or-request))
+        reserved success)
     (or (e-runtime-store-request--frame request)
         (condition-case err
-            (setf (e-runtime-store-request--frame request)
-                  (e-runtime-store--encode-frame
-                   (e-runtime-store--request-frame store request)))
+            (progn
+              ;; Count/token saturation is independent of the value.  Reject
+              ;; it before walking a caller's potentially large graph.
+              (when (and admit (not (e-runtime-store--request-slot-available-p store)))
+                (signal 'e-runtime-store-capacity-exhausted
+                        (list "Runtime-store request/token capacity is exhausted")))
+            (let* ((value (e-runtime-store--request-frame store request))
+                   ;; Measure the precise tagged representation first.  This
+                   ;; rejects a large request before allocating the complete
+                   ;; canonical frame which will be retained for replay.
+                   (bytes
+                    (e-runtime-store-codec-measure-bounded
+                     value
+                     e-runtime-store-codec-protocol-canonical-byte-limit)))
+              (when (> (e-runtime-store-codec-wire-byte-count bytes)
+                       e-runtime-store-codec-protocol-wire-byte-limit)
+                (signal 'e-runtime-store-codec-too-large
+                        (list "Protocol wire frame exceeds byte limit"
+                              :domain 'wire :canonical-bytes bytes)))
+              ;; Reserve the measured canonical frame before allocating its
+              ;; large string.  Once encoded, scheduler ownership retains the
+              ;; immutable frame and typed operation, never caller BODY.
+              (when admit
+                (e-runtime-store--reserve-request store request bytes)
+                (setq reserved t))
+              (unwind-protect
+                  (progn
+                    (setf (e-runtime-store-request--frame-bytes request) bytes
+                          (e-runtime-store-request--frame request)
+                          (e-runtime-store--encode-frame value bytes)
+                          (e-runtime-store-request--operation request)
+                          (plist-get (e-runtime-store-request--body request) :op)
+                          (e-runtime-store-request--body request) nil
+                          success t))
+                (unless success
+                  (when reserved (e-runtime-store--release-terminal store request))))))
         (e-runtime-store-codec-too-large
+         (when reserved (e-runtime-store--release-terminal store request))
          (let ((failure
                 (e-runtime-store--request-error
                  'e-runtime-store-request-too-large
                  "Runtime-store request exceeds its transport limit"
                  request :cause err)))
-           (signal (car failure) (cdr failure))))))))
+           (signal (car failure) (cdr failure))))
+        (error
+         (when reserved (e-runtime-store--release-terminal store request))
+         (signal (car err) (cdr err)))))))
 
 (defun e-runtime-store--fail-request (store request err)
   "Settle REQUEST on STORE with ERR exactly once."
-  (remhash (e-runtime-store-request--id request)
-           (e-runtime-store--pending store))
-  (setf (e-runtime-store-request--state request) 'failed
-        (e-runtime-store-request--error request) err
-        (e-runtime-store-request--frame request) nil
-        (e-runtime-store--last-error store) err))
+  (when (e-runtime-store--request-live-p request)
+    (remhash (e-runtime-store-request--id request)
+             (e-runtime-store--pending store))
+    (setf (e-runtime-store-request--state request) 'failed
+          (e-runtime-store-request--error request) err
+          (e-runtime-store--last-error store) err)
+    (unless (eq (e-runtime-store-request--kind request) 'close)
+      (setf (e-runtime-store-request--frame request) nil
+            (e-runtime-store-request--frame-bytes request) nil))
+    (when (eq (e-runtime-store-request--kind request) 'open)
+      (setf (e-runtime-store--open-control-request store) nil
+            (e-runtime-store-request--frame-bytes request) nil))
+    (unless (eq (e-runtime-store-request--kind request) 'open)
+      (if (eq (e-runtime-store-request--kind request) 'close)
+          (e-runtime-store--schedule-close-finalization store)
+        (e-runtime-store--enqueue-terminal-notification store request)))))
 
 (defun e-runtime-store--queued-request-p (store request)
   "Return non-nil when REQUEST remains scheduler-owned in STORE's queues."
@@ -629,6 +990,8 @@ whether the mutation already committed.  Reads are safe to retry directly."
         (delq request (e-runtime-store--write-queue store))
         (e-runtime-store--read-queue store)
         (delq request (e-runtime-store--read-queue store)))
+  (when (eq request (e-runtime-store--starting-request store))
+    (setf (e-runtime-store--starting-request store) nil))
   request)
 
 (defun e-runtime-store--take-queued-request (store request)
@@ -643,8 +1006,220 @@ whether the mutation already committed.  Reads are safe to retry directly."
   (or (car (e-runtime-store--write-queue store))
       (car (e-runtime-store--read-queue store))))
 
+(defun e-runtime-store--scheduler-deadline (store)
+  "Return STORE's earliest owned phase deadline, or nil when idle."
+  (let ((active (e-runtime-store--active-request store)) deadlines)
+    (when (and active (eq (e-runtime-store-request--state active) 'submitted))
+      (push (e-runtime-store--request-deadline
+             active e-runtime-store-request-timeout) deadlines))
+    (dolist (request (append (e-runtime-store--write-queue store)
+                             (e-runtime-store--read-queue store)))
+      (push (e-runtime-store--request-deadline
+             request e-runtime-store-request-timeout) deadlines))
+    (when deadlines (apply #'min deadlines))))
+
+(defun e-runtime-store--expire-overdue-queued (store interval)
+  "Expire at most one scheduler page of overdue queued requests.
+
+Return non-nil when another immediate timer turn is needed."
+  (let ((expired 0) more)
+    (catch 'page-full
+      (dolist (request (append (copy-sequence (e-runtime-store--write-queue store))
+                               (copy-sequence (e-runtime-store--read-queue store))))
+    (when (and (e-runtime-store--queued-request-p store request)
+               (>= (float-time) (e-runtime-store--request-deadline request interval)))
+      (e-runtime-store--remove-queued-request store request)
+      (e-runtime-store--fail-request
+       store request
+       (e-runtime-store--request-error
+        'e-runtime-store-timeout
+        "Runtime-store request expired before submission"
+        request :request-state 'queued))
+      (setq expired (1+ expired))
+      (when (>= expired e-runtime-store-notification-drain-limit)
+        (setq more t)
+        (throw 'page-full t)))))
+    more))
+
+(defun e-runtime-store--finalize-close (store)
+  "Release STORE after its private close request has terminally resolved."
+  (when (timerp (e-runtime-store--close-finalizer-timer store))
+    (cancel-timer (e-runtime-store--close-finalizer-timer store)))
+  (setf (e-runtime-store--close-finalizer-timer store) nil)
+  (let ((process (e-runtime-store--process store))
+        (close-request (e-runtime-store--closing-request store)))
+      (setf (e-runtime-store--closed store) t)
+      (when (timerp (e-runtime-store--scheduler-timer store))
+        (cancel-timer (e-runtime-store--scheduler-timer store)))
+      (when (timerp (e-runtime-store--notification-timer store))
+        (cancel-timer (e-runtime-store--notification-timer store)))
+      (setf (e-runtime-store--scheduler-timer store) nil
+            (e-runtime-store--notification-timer store) nil)
+      (when (processp process)
+        (set-process-filter process #'ignore)
+        (set-process-sentinel process #'ignore))
+      (e-runtime-store--fail-all store '(e-runtime-store-unavailable "Store is closed"))
+      (when (processp process)
+        (when (process-live-p process) (delete-process process)))
+      (when (buffer-live-p (e-runtime-store--stderr-buffer store))
+        (kill-buffer (e-runtime-store--stderr-buffer store)))
+      ;; The close observer is the final client-visible event: resources are
+      ;; gone and no scheduler/recovery/close reference can revive transport.
+      (setf (e-runtime-store--process store) nil
+            (e-runtime-store--opened-process store) nil
+            (e-runtime-store--stderr-buffer store) nil
+            (e-runtime-store--input-fragment store) nil
+            (e-runtime-store--active-request store) nil
+            (e-runtime-store--starting-request store) nil
+            (e-runtime-store--recovering-request store) nil
+            (e-runtime-store--recovery-cause store) nil)
+      ;; A close cannot monopolize a timer turn.  Resources are already
+      ;; retired; drain one ordinary bounded page, then yield before the next.
+      (e-runtime-store--drain-terminal-notifications store t)
+      (if (e-runtime-store--notification-outbox store)
+          (setf (e-runtime-store--close-finalizer-timer store)
+                (run-at-time 0 nil #'e-runtime-store--finalize-close store))
+        (setf (e-runtime-store--closing-request store) nil)
+        (when close-request
+          (e-runtime-store--deliver-terminal-notification store close-request)))))
+
+(defun e-runtime-store--schedule-close-finalization (store)
+  "Schedule STORE's nonblocking terminal close cleanup exactly once."
+  (unless (or (e-runtime-store--closed store)
+              (timerp (e-runtime-store--close-finalizer-timer store)))
+    (setf (e-runtime-store--close-finalizer-timer store)
+          (run-at-time 0 nil #'e-runtime-store--finalize-close store))))
+
+(defun e-runtime-store--close-start (store)
+  "Return STORE's private asynchronous close request before its acknowledgement.
+
+Close is client-visible completion work: it reserves the same bounded request
+and notification ownership as every other client request.  Its private handle
+waits in order for active transport work; the legacy blocking wrapper may then
+choose immediate local finalization without letting the close escape the cap."
+  (or (e-runtime-store--closing-request store)
+      (let ((request (e-runtime-store-request--create
+                      ;; Do not advance STORE sequence until complete close
+                      ;; admission succeeds; a capacity/encode failure leaves
+                      ;; the public compatibility surface unchanged/retryable.
+                      :id (format "%s:close:%d" (e-runtime-store--runtime-id store)
+                                  (1+ (e-runtime-store--sequence store)))
+                      :kind 'close :body nil :state 'queued
+                      :admitted-at (float-time))))
+        ;; This is a client request, not scheduler scaffolding.  Preflight
+        ;; measures/reserves the complete immutable close frame and its token
+        ;; atomically before publishing closing-request or fencing anything.
+        ;; Its own unwind-protect rolls every reservation back on encode/setup
+        ;; failure, leaving a later close retry equivalent to the first call.
+        (e-runtime-store--preflight-request store request t)
+        (cl-incf (e-runtime-store--sequence store))
+        (setf (e-runtime-store--closing-request store) request)
+        (e-runtime-store--schedule store t)
+        request)))
+
+(defun e-runtime-store--dispatch-close (store)
+  "Advance STORE's queued private close request without waiting."
+  (let ((request (e-runtime-store--closing-request store)))
+    (when (and request (eq (e-runtime-store-request--state request) 'queued)
+               (not (e-runtime-store--active-request store)))
+      (if (eq (e-runtime-store--opened-process store)
+              (e-runtime-store--process store))
+          (condition-case err
+              (let ((frame (e-runtime-store-request--frame request)))
+                (unless (stringp frame)
+                  (signal 'e-runtime-store-error
+                          (list "Close lost its immutable admitted frame" request)))
+                (setf (e-runtime-store-request--frame request) frame
+                      (e-runtime-store-request--state request) 'submitted
+                      (e-runtime-store-request--submitted-at request) (float-time)
+                      (e-runtime-store--active-request store) request)
+                (puthash (e-runtime-store-request--id request) request
+                         (e-runtime-store--pending store))
+                (process-send-string (e-runtime-store--process store)
+                                     (e-runtime-store--pack-canonical frame)))
+            (error
+             ;; The close frame may have reached the pipe before this signal.
+             ;; Keep its immutable same-ID retirement authority and spend the
+             ;; ordinary DP4 recovery attempt; `recover-active' fences the old
+             ;; worker before any late response can settle this close.
+             (e-runtime-store--recover-or-fail
+              store
+              (e-runtime-store--request-error
+               'e-runtime-store-timeout
+               "Worker transport failed after close submission"
+               request :cause err))))
+        (e-runtime-store--start-process store)
+        (e-runtime-store--ensure-worker-open store)))))
+
+(defun e-runtime-store--schedule (store &optional immediate)
+  "Arm STORE's single generation-fenced scheduler timer.
+
+IMMEDIATE requests one bounded scheduler turn (or a numeric delay); otherwise
+the timer fires at the earliest current phase deadline.  Replacing the timer
+increments its generation so stale callbacks are inert."
+  (unless (or (e-runtime-store--closed store)
+              (e-runtime-store--unavailable store))
+    (let ((deadline (and (not immediate)
+                         (e-runtime-store--scheduler-deadline store))))
+      (when (or immediate deadline)
+        (when (timerp (e-runtime-store--scheduler-timer store))
+          (cancel-timer (e-runtime-store--scheduler-timer store)))
+        (let ((generation (1+ (e-runtime-store--scheduler-generation store))))
+          (setf (e-runtime-store--scheduler-generation store) generation
+                (e-runtime-store--scheduler-timer store)
+                (run-at-time (max 0 (if immediate
+                                       (if (numberp immediate) immediate 0)
+                                     (- deadline (float-time))))
+                             nil #'e-runtime-store--scheduler-fired
+                             store generation)))))))
+
+(defun e-runtime-store--scheduler-fired (store generation)
+  "Run one bounded scheduler transition for STORE when GENERATION is current."
+  (when (and (= generation (e-runtime-store--scheduler-generation store))
+             (not (e-runtime-store--closed store))
+             (not (e-runtime-store--unavailable store)))
+    (setf (e-runtime-store--scheduler-timer store) nil)
+    (condition-case err
+        (if (e-runtime-store--recovering-request store)
+            (cond
+             ;; The replacement open is already in flight; leave its response
+             ;; or phase deadline to the normal filter/timer boundary.
+             ((and (e-runtime-store--active-request store)
+                   (eq (e-runtime-store-request--kind
+                        (e-runtime-store--active-request store)) 'open)) nil)
+             ((e-runtime-store--live-p store)
+              ;; Process death releases the cross-process claim.  Polling at
+              ;; a bounded cadence is scheduler work, never an awaiter.
+              (e-runtime-store--fence-worker store)
+              (e-runtime-store--schedule store 0.01))
+             (t
+              (e-runtime-store--start-process store)
+              (e-runtime-store--ensure-worker-open store)))
+          (progn
+            (e-runtime-store--recover-overdue-active
+             store e-runtime-store-request-timeout)
+            (let ((more-overdue
+                   (e-runtime-store--expire-overdue-queued
+                    store e-runtime-store-request-timeout)))
+            (cond
+             ((e-runtime-store--closing-request store)
+              (e-runtime-store--dispatch-close store))
+             ((and (not (e-runtime-store--active-request store))
+                   (e-runtime-store--next-queued-request store))
+              (e-runtime-store--dispatch-next store)))
+             (when more-overdue (e-runtime-store--schedule store t)))))
+      (error
+       ;; Replacement setup is part of the already-owned incident.  Its
+       ;; transport or ownership symptom must never displace the cause that
+       ;; started the one permitted recovery attempt.
+       (if (e-runtime-store--recovering-request store)
+           (e-runtime-store--recovery-exhausted store err)
+         (e-runtime-store--freeze-and-stop store err))))
+    (unless (timerp (e-runtime-store--scheduler-timer store))
+      (e-runtime-store--schedule store))))
+
 (defun e-runtime-store--dispatch-next (store)
-  "Dispatch the next bounded request, with commits preferred over reads."
+  "Advance one bounded request without waiting for worker open or acknowledgement."
   (unless (or (e-runtime-store--active-request store)
               (e-runtime-store--closed store)
               (e-runtime-store--unavailable store))
@@ -654,9 +1229,16 @@ whether the mutation already committed.  Reads are safe to retry directly."
       (setf (e-runtime-store--starting-request store) request)
       (condition-case err
           (progn
+            (unless (eq (e-runtime-store--opened-process store)
+                        (e-runtime-store--process store))
+              ;; Reject an oversized cold-open envelope before spawning a
+              ;; worker for this queued client request.
+              (e-runtime-store--prepare-open-control store))
             (e-runtime-store--start-process store)
             (e-runtime-store--ensure-worker-open store)
-            (if (e-runtime-store--queued-request-p store request)
+            (when (eq (e-runtime-store--opened-process store)
+                      (e-runtime-store--process store))
+              (if (e-runtime-store--queued-request-p store request)
                 (progn
                   (e-runtime-store--take-queued-request store request)
                   (setf (e-runtime-store--active-request store) request
@@ -675,7 +1257,7 @@ whether the mutation already committed.  Reads are safe to retry directly."
                 ;; open awaits.  It is terminal already, so continue with the
                 ;; next still-owned request rather than sending it late.
                 (setf (e-runtime-store--starting-request store) nil)
-                (e-runtime-store--dispatch-next store))))
+                (e-runtime-store--schedule store t)))))
         (error
          (unless (e-runtime-store--unavailable store)
            (let ((failure-request
@@ -689,9 +1271,9 @@ whether the mutation already committed.  Reads are safe to retry directly."
                    'e-runtime-store-timeout
                    "Worker transport failed after request submission"
                    failure-request :cause err))
-               (e-runtime-store--fail-all
-                store
-                (e-runtime-store--startup-error failure-request err))))))))))
+                (e-runtime-store--fail-all
+                 store
+                 (e-runtime-store--startup-error failure-request err))))))))))
 
 (defun e-runtime-store-submit (store kind body)
   "Submit typed KIND BODY to STORE and return its request.
@@ -712,18 +1294,21 @@ Write identity is also the private durable receipt key used for recovery."
     ;; Capture and bound the complete transport frame, including its generated
     ;; correlation id and request envelope, before this request enters either
     ;; scheduler queue.  Later caller mutation cannot change sent bytes.
-    (e-runtime-store--preflight-request store request)
+    (e-runtime-store--preflight-request store request t)
     (if (eq kind 'write)
         (setf (e-runtime-store--write-queue store)
               (nconc (e-runtime-store--write-queue store) (list request)))
       (setf (e-runtime-store--read-queue store)
             (nconc (e-runtime-store--read-queue store) (list request))))
-    (e-runtime-store--dispatch-next store)
+    ;; Submission stops at bounded ownership transfer.  The zero-delay event
+    ;; below runs only after this caller has its stable private handle.
+    (e-runtime-store--schedule store t)
     request))
 
 (defun e-runtime-store-cancel (store request)
   "Cancel REQUEST before submission.
-Return `dropped' for provisional work or `in-flight' once transport began."
+Return `dropped' for queued work, `detached' for submitted reads, and
+`in-flight' for submitted writes."
   (pcase (e-runtime-store-request--state request)
     ('queued
      (e-runtime-store--remove-queued-request store request)
@@ -732,9 +1317,32 @@ Return `dropped' for provisional work or `in-flight' once transport began."
            (e-runtime-store-request--error request)
            '(e-runtime-store-cancelled "Cancelled before submission")
            (e-runtime-store-request--frame request) nil)
+     (e-runtime-store--enqueue-terminal-notification store request)
+     (e-runtime-store--schedule store t)
      'dropped)
-    ('submitted 'in-flight)
+    ('submitted
+     (if (eq (e-runtime-store-request--kind request) 'read)
+         (progn
+           (setf (e-runtime-store-request--observer-detached request) t
+                 (e-runtime-store-request--observer request) nil)
+           'detached)
+       'in-flight))
     (_ (e-runtime-store-request--state request))))
+
+(defun e-runtime-store--observe (request function)
+  "Install FUNCTION as REQUEST's one private terminal observer.
+
+This intentionally lives on the private request handle rather than exposing a
+registry.  It is only valid before terminal settlement and is invoked once by
+the bounded outbox drain."
+  (unless (functionp function)
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (unless (e-runtime-store--request-live-p request)
+    (signal 'e-runtime-store-error (list "Request is already terminal" request)))
+  (when (e-runtime-store-request--observer request)
+    (signal 'e-runtime-store-error (list "Request already has an observer" request)))
+  (setf (e-runtime-store-request--observer request) function)
+  request)
 
 (defun e-runtime-store--request-deadline (request interval)
   "Return REQUEST's current phase deadline using timeout INTERVAL."
@@ -758,71 +1366,44 @@ execution deadline rather than waiting for their own later admission timeout."
               ((eq (e-runtime-store-request--state active) 'submitted))
               ((>= (float-time)
                    (e-runtime-store--request-deadline active interval))))
-    (let ((operation (e-runtime-store--request-operation active)))
+    (let* ((request (if (eq (e-runtime-store-request--kind active) 'open)
+                        (e-runtime-store--startup-request store)
+                      active))
+           (operation (e-runtime-store--request-operation request)))
       (e-runtime-store--recover-or-fail
        store
        (e-runtime-store--request-error
         'e-runtime-store-timeout
         (format "Worker did not acknowledge %s before the request timeout; close, reopen, and reload canonical state"
                 (or operation "request"))
-        active :awaited-request-id nil)))))
+        request :awaited-request-id nil)))))
 
 (defun e-runtime-store-await (store request &optional timeout)
-  "Wait cooperatively for REQUEST and return its committed result."
+  "Observe REQUEST until terminal and return its committed result.
+
+The scheduler is timer/filter driven; this compatibility observer never
+opens, dispatches, expires, recovers, cancels, or settles transport work."
   (let ((interval (or timeout e-runtime-store-request-timeout)))
     (while (and (memq (e-runtime-store-request--state request)
                       '(queued submitted))
                 (< (float-time)
                    (e-runtime-store--request-deadline request interval)))
-      (e-runtime-store--recover-overdue-active store interval)
-      (if (e-runtime-store--live-p store)
-          (accept-process-output (e-runtime-store--process store) 0.01)
-        (e-runtime-store--worker-exited store)))
+      ;; `sit-for' lets process filters and scheduler timers run, but this
+      ;; function does not call a scheduler transition itself.
+      (sit-for 0.01))
     (pcase (e-runtime-store-request--state request)
       ('committed (e-runtime-store-request--result request))
       ('failed (signal (car (e-runtime-store-request--error request))
                        (cdr (e-runtime-store-request--error request))))
       ('cancelled (signal 'e-runtime-store-cancelled (list request)))
       ('queued
-       (let* ((active (e-runtime-store--active-request store))
-              (operation (e-runtime-store--request-operation request))
-              (err
-               (list 'e-runtime-store-timeout
-                     (format
-                      "Queued %s expired before submission; the request was cancelled"
-                      (or operation "request"))
-                     :operation operation
-                     :kind (e-runtime-store-request--kind request)
-                     :request-id (e-runtime-store-request--id request)
-                     :request-state 'queued
-                     :blocking-operation
-                     (e-runtime-store--request-operation active)
-                     :blocking-kind
-                     (and active (e-runtime-store-request--kind active))
-                     :blocking-request-id
-                     (and active (e-runtime-store-request--id active)))))
-         (e-runtime-store--remove-queued-request store request)
-         (e-runtime-store--fail-request store request err)
-         (unless (e-runtime-store--active-request store)
-           (e-runtime-store--dispatch-next store))
-         (signal (car err) (cdr err))))
+       (signal 'e-runtime-store-timeout
+               (list "Await observation timed out before scheduler settlement"
+                     :request-id (e-runtime-store-request--id request))))
       (_
-       (let* ((blocking (e-runtime-store--failure-request store request))
-              (operation (e-runtime-store--request-operation blocking))
-              (err
-               (list 'e-runtime-store-timeout
-                     (format
-                      "Worker did not acknowledge %s before the request timeout; close, reopen, and reload canonical state"
-                      (or operation "request"))
-                     :operation operation
-                     :kind (e-runtime-store-request--kind blocking)
-                     :request-id (e-runtime-store-request--id blocking)
-                     :request-state (e-runtime-store-request--state blocking)
-                     :awaited-request-id (e-runtime-store-request--id request))))
-         (e-runtime-store--recover-active store err)
-         ;; A replacement resets the submitted interval.  The caller observes
-         ;; the definitive receipt result, not a transient transport timeout.
-         (e-runtime-store-await store request interval))))))
+       (signal 'e-runtime-store-timeout
+               (list "Await observation timed out before scheduler settlement"
+                     :request-id (e-runtime-store-request--id request)))))))
 
 (defun e-runtime-store-call (store kind body)
   "Submit KIND BODY to STORE and return its bounded result."
@@ -867,8 +1448,12 @@ execution deadline rather than waiting for their own later admission timeout."
                "SIBLING_BACKUP, then restart Emacs")
        directory directory)))))
 
-(cl-defun e-runtime-store-open (directory &key runtime-id)
-  "Open one subordinate runtime store for DIRECTORY."
+(cl-defun e-runtime-store-open (directory &key runtime-id reservation)
+  "Create STORE and begin its asynchronous cold-open phase.
+
+This returns before the worker's open acknowledgement.  Submission never
+waits for or advances that phase; an entirely cold test/store can equivalently
+be constructed with the private constructor used by scheduler tests."
   (let* ((directory (file-name-as-directory (expand-file-name directory)))
          (database-file (expand-file-name "store.sqlite3" directory))
          (store (e-runtime-store--create
@@ -878,73 +1463,72 @@ execution deadline rather than waiting for their own later admission timeout."
                                  (format "%x-%x-%x" (emacs-pid)
                                          (truncate (* 1000000 (float-time)))
                                          (random most-positive-fixnum)))
-                 :pending (make-hash-table :test 'equal))))
+                 :pending (make-hash-table :test 'equal)
+                 :reservation (or reservation e-runtime-store--default-reservation))))
     (e-runtime-store--reject-legacy-only-directory directory database-file)
     (make-directory directory t)
     (condition-case err
         (progn
+          ;; Open preflight is deliberately before process creation: a bad
+          ;; expanded identity frame has no transport side effect to fence.
+          (e-runtime-store--prepare-open-control store)
           (e-runtime-store--start-process store)
           (e-runtime-store--ensure-worker-open store)
+          (e-runtime-store--schedule store)
           store)
       (error
+       (when-let* ((control (e-runtime-store--open-control-request store)))
+         (e-runtime-store--release-open-control store control))
        (setf (e-runtime-store--closed store) t)
+       (when (timerp (e-runtime-store--scheduler-timer store))
+         (cancel-timer (e-runtime-store--scheduler-timer store)))
+       (when (timerp (e-runtime-store--notification-timer store))
+         (cancel-timer (e-runtime-store--notification-timer store)))
        (when (processp (e-runtime-store--process store))
          (delete-process (e-runtime-store--process store)))
        (when (buffer-live-p (e-runtime-store--stderr-buffer store))
          (kill-buffer (e-runtime-store--stderr-buffer store)))
+       ;; Public-open setup is all-or-nothing.  A caller that catches this
+       ;; error must not retain stale process/timer/control ownership which
+       ;; could make a later same-directory open look live.
+       (setf (e-runtime-store--process store) nil
+             (e-runtime-store--opened-process store) nil
+             (e-runtime-store--stderr-buffer store) nil
+             (e-runtime-store--input-fragment store) nil
+             (e-runtime-store--active-request store) nil
+             (e-runtime-store--starting-request store) nil
+             (e-runtime-store--recovering-request store) nil
+             (e-runtime-store--recovery-cause store) nil
+             (e-runtime-store--scheduler-timer store) nil
+             (e-runtime-store--notification-timer store) nil)
        (signal (car err) (cdr err))))))
 
 (defun e-runtime-store-close (store)
-  "Close STORE, retiring an idle runtime before detaching its worker.
-When callers still own queued or active work, close retains its established
-terminal behavior and settles them locally.  An idle close is a worker-owned,
-idempotent retirement so a lost acknowledgement is recoverable once."
+  "Compatibility observer for STORE's private asynchronous close request."
   (unless (e-runtime-store--closed store)
-    (let ((process (e-runtime-store--process store))
-          (error '(e-runtime-store-unavailable "Store is closed"))
-          retirement-error)
-      (when (and (e-runtime-store--live-p store)
-                 (not (e-runtime-store--unavailable store))
-                 (not (e-runtime-store--active-request store))
-                 (null (e-runtime-store--write-queue store))
-                 (null (e-runtime-store--read-queue store)))
-        (let* ((request (e-runtime-store-request--create
-                         :id (e-runtime-store--next-id store "close")
-                         :kind 'close :body nil :state 'submitted
-                         :submitted-at (float-time)))
-               (frame (e-runtime-store--encode-frame
-                       (e-runtime-store--request-frame store request))))
-          (setf (e-runtime-store-request--frame request) frame
-                (e-runtime-store--active-request store) request)
-          (puthash (e-runtime-store-request--id request) request
-                   (e-runtime-store--pending store))
-          (process-send-string process (e-runtime-store--pack-canonical frame))
-          (condition-case caught
+    (let ((busy (e-runtime-store--active-request store))
+          (request (and (not (e-runtime-store--unavailable store))
+                        (e-runtime-store--close-start store)))
+          close-error)
+      (cond
+       ;; Preserve old synchronous busy-close behavior, but only after its
+       ;; client-visible close request successfully reserved capacity.
+       ((and request busy)
+        (e-runtime-store--finalize-close store))
+       (request
+          (condition-case err
               (e-runtime-store-await store request)
-            (error (setq retirement-error caught)))))
-      (setq process (e-runtime-store--process store))
-      ;; Close owns the lifetime boundary before later observers run.  Detach
-      ;; both process handlers first so buffered output cannot overtake failure
-      ;; settlement or publish a late success.
-      (setf (e-runtime-store--closed store) t)
-      (when (processp process)
-        (set-process-filter process #'ignore)
-        (set-process-sentinel process #'ignore))
-      (unwind-protect
-          (progn
-            (e-runtime-store--fail-all store error)
-            (when (and (processp process) (process-live-p process))
-              (process-send-eof process)
-              (accept-process-output process 0.2)))
-        (when (processp process)
-          (when (process-live-p process)
-            (delete-process process)))
-        (when (buffer-live-p (e-runtime-store--stderr-buffer store))
-          (kill-buffer (e-runtime-store--stderr-buffer store)))
-        ;; The state was made terminal and the process detached above, but a
-        ;; failed retirement is observable to the caller rather than hidden.
-        (when retirement-error
-          (signal (car retirement-error) (cdr retirement-error))))))
+            (error (setq close-error err))))
+       (t
+        ;; Busy/unavailable compatibility close retains its established local
+        ;; settlement meaning; it has no additional client handle to admit.
+        (e-runtime-store--finalize-close store)))
+      (when (timerp (e-runtime-store--close-finalizer-timer store))
+        (e-runtime-store--finalize-close store))
+      (when close-error
+        (signal 'e-runtime-store-unavailable
+                (list "Runtime retirement recovery was exhausted"
+                      :cause close-error)))))
   t)
 
 (defun e-runtime-store-status (store)
