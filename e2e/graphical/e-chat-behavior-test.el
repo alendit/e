@@ -1902,6 +1902,50 @@ than the invisible insertion position."
              "session-switch-after-noisy-tail")))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-reattach-clears-stale-transcript-before-mode-reset ()
+  "A graphical reattach discards old presentation before minor-mode teardown."
+  (should (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture
+        observed-size)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (e-chat-behavior-test--submit fixture "render a large transcript")
+          (e-chat-behavior-test--finish
+           fixture
+           (mapconcat
+            (lambda (index)
+              (format "retained transcript line %04d" index))
+            (number-sequence 1 100) "\n"))
+          (let* ((harness (plist-get fixture :harness))
+                 (session-id (plist-get fixture :session-id))
+                 (transcript (plist-get fixture :transcript)))
+            (with-current-buffer transcript
+              ;; Inflate only the stale presentation.  Replay still comes
+              ;; from the real bounded service view, not from this suffix.
+              (let ((inhibit-read-only t))
+                (goto-char (point-max))
+                (insert (make-string 100000 ?x)))
+              (should (> (buffer-size) 30000))
+              (add-hook 'change-major-mode-hook
+                        (lambda () (setq observed-size (buffer-size))) nil t)
+              ;; A stale subscription is the production condition that makes
+              ;; `e-chat-open' reattach an existing rendered buffer.
+              (e-chat--unsubscribe))
+            (e-chat-behavior-test--capture-state
+             "reattach-before-stale-transcript-reset")
+            (e-chat-open-session harness session-id t)
+            (redisplay t)
+            (should (equal observed-size 0))
+            (with-current-buffer transcript
+              (should (string-match-p "retained transcript line 0100"
+                                      (buffer-string))))
+            (e-chat-behavior-test--capture-state
+             "reattach-after-stale-transcript-reset")))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (provide 'e-chat-behavior-test)
 
 ;;; e-chat-behavior-test.el ends here

@@ -1836,6 +1836,16 @@ ON-SESSION-LOAD-ERROR receives any asynchronous transcript load failure."
         (e-chat-session-ensure-project-root
          harness session-id (e-chat--project-root default-directory)))
       (e-chat--unsubscribe)
+      ;; Reattachment replaces the transcript from the bounded service view
+      ;; below.  Drop the stale presentation before changing major mode: a
+      ;; globalized minor mode may otherwise tear itself down by scanning the
+      ;; entire old transcript during `kill-all-local-variables'.  In
+      ;; particular, emojify removes its text properties with a whole-buffer
+      ;; walk, making a resumed large Daily appear hung before replay starts.
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t)
+            (buffer-undo-list t))
+        (erase-buffer))
       (e-chat-mode)
       (e-chat-composer-disable-modal-editing)
       (e-chat-composer-disable-completion)

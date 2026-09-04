@@ -1408,6 +1408,29 @@ selected/sibling isolation boundary."
         (kill-buffer buffer)))))
 
 
+(ert-deftest e-chat-test-reattach-clears-stale-transcript-before-mode-reset ()
+  "Reattachment never lets minor-mode teardown scan the old transcript."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (buffer (e-chat-open :harness harness :session-id "chat-reattach-clear"))
+         observed-size)
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (insert (make-string 100000 ?x)))
+          ;; Globalized minor modes are disabled from this hook while a major
+          ;; mode is reset.  Record the amount of stale presentation such a
+          ;; teardown callback can observe without depending on emojify.
+          (add-hook 'change-major-mode-hook
+                    (lambda () (setq observed-size (buffer-size))) nil t)
+          (e-chat-attach-buffer buffer harness "chat-reattach-clear")
+          (should (equal observed-size 0))
+          (should (derived-mode-p 'e-chat-mode)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+
 
 (ert-deftest e-chat-test-reload-buffers-keeps-board-bound-harness ()
   "Reloading keeps the admitted endpoint, transcript, and composer draft."

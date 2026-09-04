@@ -1,0 +1,69 @@
+#+title: Investigation: Chat Reattachment Scans the Stale Transcript During Mode Teardown
+#+date: 2026-09-04
+#+startup: overview
+
+* Status
+
+Closed.  This live recurrence was not blocked in SQLite: the
+main Emacs process was consuming CPU in chat presentation reattachment while
+the external runtime-store worker was idle.
+
+* Live evidence
+
+- =scripts/e-live-probe chat= returned successfully; no live probe timed out.
+- OS inspection showed the main Emacs process at approximately 83 percent CPU
+  and its runtime-store worker at approximately 0.1 percent CPU.
+- A five-second non-signalling process sample placed all sampled main-thread
+  work below =grimoire-daily= and
+  =grimoire-topic--start-agentic-session=.  The sampled descendant included
+  =emojify-mode=, =emojify-turn-off-emojify-mode=, and
+  =emojify-undisplay-emojis-in-region=, with substantial garbage collection.
+- The running Emacs and its worker were inspected read-only and were not
+  reloaded, signalled, or terminated.
+
+* Cause
+
+=grimoire-topic--start-agentic-session= calls =e-chat-open= for the Daily's
+stored session.  When the existing chat buffer is not considered a fully live
+attachment, =e-chat-attach-buffer= captures the reusable composer and workspace,
+unsubscribes, and then invokes =e-chat-mode= while the old rendered transcript
+is still present.
+
+Changing major mode runs globalized minor-mode teardown.  Doom enables
+=global-emojify-mode=; disabling =emojify-mode= calls
+=emojify-undisplay-emojis-in-region= across =point-min= through =point-max=.
+The old transcript is discarded moments later by =e-chat--clear= and bounded
+replay, so this whole-buffer presentation scan is both costly and unnecessary.
+
+* Correction
+
+=e-chat-attach-buffer= now erases the replaceable stale transcript after it has
+captured reusable surface state and unsubscribed, but before it invokes
+=e-chat-mode=.  Read-only state, modification hooks, and undo recording are
+suppressed for that discard.  The subsequent service-view replay remains the
+sole source of transcript contents.
+
+The focused regression installs a buffer-local =change-major-mode-hook= as a
+generic stand-in for globalized minor-mode teardown, appends a large stale
+transcript, reattaches the session, and proves the teardown sees an empty
+buffer.  A graphical E2E additionally renders a large real transcript, makes
+its live subscription stale, reopens the session through the public facade,
+and proves both that mode teardown sees an empty buffer and that bounded replay
+restores the transcript.  Neither test depends on Doom or emojify internals.
+
+* Scope
+
+This closes the high-CPU presentation hang observed in the fresh Daily run.  It
+does not close Feature 92's separate architectural defect: interactive
+application-service operations still synchronously await runtime-store
+acknowledgements and can service reentrant timers.  That work remains open in
+Feature 92 and the Board timer durability-barrier bug.
+
+* Runtime disposition
+
+The correction changes an intended reloadable shell module.  Repository-side
+validation passed: the complete =test/e-chat-test.el= file passes 92/92 and the
+isolated graphical reattachment scenario passes 1/1.  =git diff --check= and
+batch =check-parens= for the changed Lisp also pass.  The user's running Emacs
+remains unchanged; using the correction immediately would require an explicitly
+requested =e-dev-reload= and may block the UI.

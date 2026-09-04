@@ -1,0 +1,15 @@
+#+title: Chat Reattachment Scans the Stale Transcript During Mode Teardown
+#+date: 2026-09-04
+#+startup: overview
+
+* Report
+
+After the runtime store was upgraded to schema v5 and Emacs restarted,
+=grimoire-daily-update= still appeared to hang.  The operator reported that the
+previous runtime-store correction had not fixed the Daily outcome.
+
+* Expected behavior
+
+Opening or reattaching a Daily chat must not make globalized minor-mode cleanup
+walk the old rendered transcript before the bounded session view is replayed.
+The visible canvas should open promptly regardless of stale transcript size.
