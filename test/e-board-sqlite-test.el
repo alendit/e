@@ -35,6 +35,46 @@
    :register nil :input-classification-scheduler
    (lambda (drain) (funcall drain))))
 
+(ert-deftest e-board-sqlite-s92-queued-timeout-is-local-to-one-owner ()
+  "An unsent Board request leaves the shared session runtime usable."
+  (e-board-sqlite-test--with-store (sessions storage _directory)
+    (e-session-create sessions :id "before-timeout")
+    (let* ((runtime (e-session-storage-runtime-store sessions))
+           (process (e-runtime-store--process runtime))
+           (ordinary-filter (process-filter process))
+           (captured "")
+           active)
+      (set-process-filter
+       process (lambda (_worker text) (setq captured (concat captured text))))
+      (setq active
+            (e-runtime-store-submit
+             runtime 'write
+             '(:op session-append :session-id "active-session"
+               :record (:value active))))
+      (let ((e-runtime-store-request-timeout 0.02))
+        (let ((timeout
+               (should-error
+                (e-board-storage-create-board storage "must-not-land" "owner")
+                :type 'e-runtime-store-timeout)))
+          (should (eq (plist-get (cddr timeout) :operation) 'board-create))
+          (should (eq (plist-get (cddr timeout) :blocking-operation)
+                      'session-append))))
+      (should (e-runtime-store-live-p runtime))
+      (should-not (plist-get (e-runtime-store-status runtime) :unavailable))
+      (let ((deadline (+ (float-time) 5.0)))
+        (while (and (not (string-match-p "\n" captured))
+                    (< (float-time) deadline))
+          (accept-process-output process 0.01)))
+      (should (string-match-p "\n" captured))
+      (set-process-filter process ordinary-filter)
+      (funcall ordinary-filter process captured)
+      (should (= (plist-get (e-runtime-store-await runtime active) :revision) 1))
+      (should-not (e-board-storage-board storage "must-not-land"))
+      (should (equal (plist-get (e-session-create sessions :id "after-timeout") :id)
+                     "after-timeout"))
+      (should (e-board-storage-create-board storage "after-timeout" "owner"))
+      (should (e-runtime-store-live-p runtime)))))
+
 (ert-deftest e-board-sqlite-s5-publication-is-invisible-until-ack ()
   "A reentrant observer cannot see or build on an unacknowledged fact."
   (e-board-sqlite-test--with-store (sessions storage directory)

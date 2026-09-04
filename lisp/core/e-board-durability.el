@@ -286,7 +286,7 @@ available as immutable audit after `e-board-clear'."
    (e-board-durability--normalize-record-selector selector)))
 
 (defun e-board-durability-status (board)
-  "Return BOARD's ordered durability barrier and bounded runtime status."
+  "Return BOARD's bounded local durability and runtime status."
   (unless (e-board-storage-backed-p board)
     (signal 'e-board-storage-unavailable (list (e-board-id board))))
   (append (list :board-id (e-board-id board)
