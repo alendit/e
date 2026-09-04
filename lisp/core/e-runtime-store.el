@@ -59,8 +59,18 @@
 (defcustom e-runtime-store-request-timeout 60.0
   "Maximum seconds for each bounded runtime-store request phase.
 Queue admission and submitted execution each receive this interval.  A
-submitted timeout freezes the store until explicit close/reopen and reload."
+submitted timeout fences and replaces the worker once."
   :type 'number :group 'e)
+
+(defvar e-runtime-store--parent-boot-id
+  (e-runtime-store-ownership--host-boot-id)
+  "Private host-boot identity shared by all scheduler processes on this boot.")
+
+(defun e-runtime-store--parent-identity ()
+  "Return the bounded scheduler identity persisted by the SQLite worker."
+  (list :boot e-runtime-store--parent-boot-id
+        :pid (emacs-pid)
+        :process-start (e-runtime-store-ownership--current-process-start)))
 
 (cl-defstruct (e-runtime-store
                (:constructor e-runtime-store--create)
@@ -68,13 +78,15 @@ submitted timeout freezes the store until explicit close/reopen and reload."
                (:conc-name e-runtime-store--))
   directory database-file runtime-id process opened-process stderr-buffer input-fragment
   (sequence 0) pending write-queue read-queue active-request
-  starting-request last-error unavailable-cause startup-status unavailable closed)
+  starting-request last-error unavailable-cause startup-status unavailable closed
+  recovering-request recovery-cause (recovery-attempt 0) (acknowledged-write-prefix 0)
+  (write-prefix-sequence 0))
 
 (cl-defstruct (e-runtime-store-request
                (:constructor e-runtime-store-request--create)
                (:predicate e-runtime-store-request-p)
                (:conc-name e-runtime-store-request--))
-  id kind body frame state result error admitted-at submitted-at)
+  id kind body frame state result error admitted-at submitted-at write-prefix)
 
 (defun e-runtime-store--worker-file ()
   "Return the newest installed worker source or byte-code path.
@@ -266,15 +278,31 @@ so its failure reports that selected request while it remains queued."
                    (e-runtime-store--signal-response-error response)
                  (error caught))))
       (e-runtime-store--fail-request store request err)))
+  (when (and (eq (e-runtime-store-request--kind request) 'write)
+             (eq (e-runtime-store-request--state request) 'committed))
+    (setf (e-runtime-store--acknowledged-write-prefix store)
+          (max (e-runtime-store--acknowledged-write-prefix store)
+               (or (e-runtime-store-request--write-prefix request) 0))))
+  (when (and (not (eq (e-runtime-store-request--kind request) 'open))
+             (memq (e-runtime-store-request--state request) '(committed failed)))
+    (setf (e-runtime-store--recovery-attempt store) 0
+          (e-runtime-store--recovery-cause store) nil))
   ;; An internal open is only a transport prerequisite.  The caller which is
   ;; establishing that transport dispatches its domain request after the open
   ;; acknowledgement, so it cannot overtake the selected request.
-  (unless (eq (e-runtime-store-request--kind request) 'open)
-    (e-runtime-store--dispatch-next store)))
+  (cond
+   ((and (eq (e-runtime-store-request--kind request) 'open)
+         (e-runtime-store--recovering-request store))
+    ;; Recovery opening temporarily owns the active slot.  Restore the exact
+    ;; retained request before any queue work can be considered.
+    (setf (e-runtime-store--active-request store)
+          (e-runtime-store--recovering-request store)))
+   ((not (eq (e-runtime-store-request--kind request) 'open))
+    (e-runtime-store--dispatch-next store))))
 
 (defun e-runtime-store--freeze-oversized-response (store wire-bytes)
-  "Freeze STORE after receiving a response frame of WIRE-BYTES."
-  (e-runtime-store--freeze-and-stop
+  "Recover submitted work after an oversized response frame of WIRE-BYTES."
+  (e-runtime-store--recover-or-fail
    store
    (e-runtime-store--protocol-error
     store 'response-frame-too-large
@@ -287,7 +315,7 @@ so its failure reports that selected request while it remains queued."
   ;; one response, so a bare newline is corruption rather than ignorable idle
   ;; output and must preserve the active request as its first failure cause.
   (if (string-empty-p line)
-      (e-runtime-store--freeze-and-stop
+      (e-runtime-store--recover-or-fail
        store (e-runtime-store--protocol-error store 'empty-response))
     (let ((wire-bytes (1+ (string-bytes line))))
       (if (> wire-bytes e-runtime-store-codec-protocol-wire-byte-limit)
@@ -295,7 +323,7 @@ so its failure reports that selected request while it remains queued."
         (condition-case err
             (let ((response (e-runtime-store--unpack line)))
               (if (not (e-runtime-store--response-valid-p response))
-                  (e-runtime-store--freeze-and-stop
+                  (e-runtime-store--recover-or-fail
                    store
                    (e-runtime-store--protocol-error
                     store 'malformed-response))
@@ -304,12 +332,12 @@ so its failure reports that selected request while it remains queued."
                         (gethash id (e-runtime-store--pending store))))
                   (cond
                    ((not request)
-                    (e-runtime-store--freeze-and-stop
+                    (e-runtime-store--recover-or-fail
                      store
                      (e-runtime-store--protocol-error
                       store 'unknown-response-id :response-id id)))
                    ((not (eq request (e-runtime-store--active-request store)))
-                    (e-runtime-store--freeze-and-stop
+                     (e-runtime-store--recover-or-fail
                      store
                      (e-runtime-store--protocol-error
                       store 'uncorrelated-response :response-id id)))
@@ -317,7 +345,7 @@ so its failure reports that selected request while it remains queued."
           (e-runtime-store-codec-too-large
            (e-runtime-store--freeze-oversized-response store wire-bytes))
           (error
-           (e-runtime-store--freeze-and-stop
+           (e-runtime-store--recover-or-fail
             store
             (e-runtime-store--protocol-error
              store 'decode-error :cause err))))))))
@@ -399,20 +427,93 @@ so its failure reports that selected request while it remains queued."
       (when (process-live-p (e-runtime-store--process store))
         (delete-process (e-runtime-store--process store))))))
 
+(defun e-runtime-store--fence-worker (store)
+  "Detach STORE from its current worker before a bounded replacement.
+Old filter and sentinel callbacks must not settle a replayed request."
+  (when-let* ((process (e-runtime-store--process store)))
+    (when (processp process)
+      (set-process-filter process #'ignore)
+      (set-process-sentinel process #'ignore)
+      (when (process-live-p process)
+        (delete-process process)))))
+
+(defun e-runtime-store--recovery-exhausted (store cause)
+  "Fail STORE's owned work once, preserving the original recovery CAUSE."
+  (let ((first (or (e-runtime-store--recovery-cause store) cause)))
+    (setf (e-runtime-store--recovering-request store) nil)
+    (e-runtime-store--freeze-and-stop store first)))
+
+(defun e-runtime-store--recover-active (store cause)
+  "Replace STORE's worker once and replay its exact retained active frame.
+Writes replay their original request identity, letting the SQLite receipt decide
+whether the mutation already committed.  Reads are safe to retry directly."
+  (let ((request (e-runtime-store--active-request store)))
+    (cond
+     ;; The internal open temporarily becomes active while the original domain
+     ;; request remains owned by RECOVERING-REQUEST.  A second failure there
+     ;; spends the one attempt and settles that original request and its queue.
+     ((e-runtime-store--recovering-request store)
+      (e-runtime-store--recovery-exhausted store cause))
+     ((not request)
+      (e-runtime-store--recovery-exhausted store cause))
+     (t
+      ;; A replacement may have completed but its replay can still corrupt or
+      ;; stall.  Retain the first typed transport cause through that second
+      ;; incident; exhaustion reports the initiating failure, not whichever
+      ;; later symptom happened to win the race.
+      (unless (e-runtime-store--recovery-cause store)
+        (setf (e-runtime-store--recovery-cause store) cause))
+      (setf (e-runtime-store--recovering-request store) request)
+      (cl-incf (e-runtime-store--recovery-attempt store))
+      (if (> (e-runtime-store--recovery-attempt store) 1)
+          (e-runtime-store--recovery-exhausted store cause)
+        (condition-case replacement-error
+            (progn
+              (e-runtime-store--fence-worker store)
+              (setf (e-runtime-store--opened-process store) nil
+                    (e-runtime-store--input-fragment store) "")
+              (e-runtime-store--start-process store)
+              (e-runtime-store--ensure-worker-open store)
+              (unless (and (eq request (e-runtime-store--active-request store))
+                           (stringp (e-runtime-store-request--frame request)))
+                (signal 'e-runtime-store-error
+                        (list "Recovery lost its immutable request frame")))
+              (process-send-string
+               (e-runtime-store--process store)
+                (e-runtime-store--pack-canonical
+                (e-runtime-store-request--frame request)))
+              (setf (e-runtime-store-request--submitted-at request) (float-time)
+                    (e-runtime-store--recovering-request store) nil))
+          (error
+           (e-runtime-store--recovery-exhausted
+            store (or (e-runtime-store--recovery-cause store)
+                      replacement-error)))))))))
+
+(defun e-runtime-store--recover-or-fail (store error)
+  "Recover submitted work for ERROR, or fail safely when no request is owned."
+  (cond
+   ((e-runtime-store--recovering-request store)
+    (e-runtime-store--recovery-exhausted store error))
+   ((and (e-runtime-store--active-request store)
+         (eq (e-runtime-store-request--state
+              (e-runtime-store--active-request store)) 'submitted))
+    (e-runtime-store--recover-active store error))
+   (t (e-runtime-store--freeze-and-stop store error))))
+
 (defun e-runtime-store--worker-exited (store)
-  "Fail STORE after worker loss without retrying an ambiguous operation."
+  "Recover one submitted request after worker loss when possible."
   (unless (or (e-runtime-store--closed store)
               (e-runtime-store--unavailable store))
     (let* ((request (e-runtime-store--failure-request store))
            (operation (e-runtime-store--request-operation request)))
-      (e-runtime-store--fail-all
+      (e-runtime-store--recover-or-fail
        store
        (e-runtime-store--request-error
-        'e-runtime-store-unavailable
+        'e-runtime-store-timeout
         (if operation
             (format "Worker exited before acknowledging %s; reload canonical state"
                     operation)
-          "Worker exited before acknowledging the request; reload canonical state")
+          "Worker exited before acknowledging the request")
         request :cause 'worker-exited)))))
 
 (defun e-runtime-store--start-process (store)
@@ -454,7 +555,8 @@ so its failure reports that selected request while it remains queued."
              :body nil :state 'submitted :submitted-at (float-time)))
            (frame (list :id (e-runtime-store-request--id request)
                         :kind 'open :directory (e-runtime-store--directory store)
-                        :runtime-id (e-runtime-store--runtime-id store))))
+                        :runtime-id (e-runtime-store--runtime-id store)
+                        :parent-identity (e-runtime-store--parent-identity))))
       (setf (e-runtime-store-request--frame request)
             (e-runtime-store--encode-frame frame))
       (setf (e-runtime-store--active-request store) request)
@@ -476,26 +578,35 @@ so its failure reports that selected request while it remains queued."
   (format "%s:%s:%d" (e-runtime-store--runtime-id store) prefix
           (cl-incf (e-runtime-store--sequence store))))
 
-(defun e-runtime-store--request-frame (request)
+(defun e-runtime-store--request-frame (store-or-request &optional maybe-request)
   "Return protocol frame for REQUEST."
-  (list :id (e-runtime-store-request--id request)
-        :kind (e-runtime-store-request--kind request)
-        :body (e-runtime-store-request--body request)))
+  (let ((store (and maybe-request store-or-request))
+        (request (or maybe-request store-or-request)))
+    (append
+     (list :id (e-runtime-store-request--id request)
+           :kind (e-runtime-store-request--kind request)
+           :body (e-runtime-store-request--body request))
+     (when store
+       (list :write-prefix (e-runtime-store-request--write-prefix request)
+             :ack-prefix (and (eq (e-runtime-store-request--kind request) 'write)
+                              (e-runtime-store--acknowledged-write-prefix store)))))))
 
-(defun e-runtime-store--preflight-request (request)
+(defun e-runtime-store--preflight-request (store-or-request &optional maybe-request)
   "Return REQUEST's exact bounded canonical frame before queue admission."
-  (or (e-runtime-store-request--frame request)
-      (condition-case err
-          (setf (e-runtime-store-request--frame request)
-                (e-runtime-store--encode-frame
-                 (e-runtime-store--request-frame request)))
+  (let ((store (and maybe-request store-or-request))
+        (request (or maybe-request store-or-request)))
+    (or (e-runtime-store-request--frame request)
+        (condition-case err
+            (setf (e-runtime-store-request--frame request)
+                  (e-runtime-store--encode-frame
+                   (e-runtime-store--request-frame store request)))
         (e-runtime-store-codec-too-large
          (let ((failure
                 (e-runtime-store--request-error
                  'e-runtime-store-request-too-large
                  "Runtime-store request exceeds its transport limit"
                  request :cause err)))
-           (signal (car failure) (cdr failure)))))))
+           (signal (car failure) (cdr failure))))))))
 
 (defun e-runtime-store--fail-request (store request err)
   "Settle REQUEST on STORE with ERR exactly once."
@@ -558,11 +669,7 @@ so its failure reports that selected request while it remains queued."
                   (process-send-string
                    (e-runtime-store--process store)
                    (e-runtime-store--pack-canonical
-                    (e-runtime-store--preflight-request request)))
-                  ;; Keep the bounded frame only until the pipe accepts it.
-                  ;; A retained asynchronous request must not pin a full
-                  ;; 68 MiB canonical buffer after submission.
-                  (setf (e-runtime-store-request--frame request) nil))
+                    (e-runtime-store--preflight-request store request))))
               (progn
                 ;; A timer may cancel the selected request while the internal
                 ;; open awaits.  It is terminal already, so continue with the
@@ -576,11 +683,11 @@ so its failure reports that selected request while it remains queued."
              (if (eq (e-runtime-store-request--state request) 'submitted)
                  ;; A send can have reached the pipe before it signaled.  Its
                  ;; acknowledgement is ambiguous and must therefore freeze.
-                 (e-runtime-store--freeze-and-stop
+                 (e-runtime-store--recover-or-fail
                   store
                   (e-runtime-store--request-error
-                   'e-runtime-store-unavailable
-                   "Worker transport failed after request submission; reload canonical state"
+                   'e-runtime-store-timeout
+                   "Worker transport failed after request submission"
                    failure-request :cause err))
                (e-runtime-store--fail-all
                 store
@@ -588,7 +695,7 @@ so its failure reports that selected request while it remains queued."
 
 (defun e-runtime-store-submit (store kind body)
   "Submit typed KIND BODY to STORE and return its request.
-Request identity is process-local transport correlation only."
+Write identity is also the private durable receipt key used for recovery."
   (unless (memq kind '(read write))
     (signal 'wrong-type-argument (list '(member read write) kind)))
   (when (e-runtime-store--closed store)
@@ -599,11 +706,13 @@ Request identity is process-local transport correlation only."
          (e-runtime-store-request--create
           :id (e-runtime-store--next-id store
                                          (if (eq kind 'write) "w" "r"))
-          :kind kind :body body :state 'queued :admitted-at (float-time))))
+          :kind kind :body body :state 'queued :admitted-at (float-time)
+          :write-prefix (and (eq kind 'write)
+                             (cl-incf (e-runtime-store--write-prefix-sequence store))))))
     ;; Capture and bound the complete transport frame, including its generated
     ;; correlation id and request envelope, before this request enters either
     ;; scheduler queue.  Later caller mutation cannot change sent bytes.
-    (e-runtime-store--preflight-request request)
+    (e-runtime-store--preflight-request store request)
     (if (eq kind 'write)
         (setf (e-runtime-store--write-queue store)
               (nconc (e-runtime-store--write-queue store) (list request)))
@@ -639,6 +748,25 @@ Return `dropped' for provisional work or `in-flight' once transport began."
               (list "Runtime-store request lacks its phase timestamp" request)))
     (+ started-at interval)))
 
+(defun e-runtime-store--recover-overdue-active (store interval)
+  "Start STORE's single recovery when submitted work expires before a waiter.
+
+Queued waiters remain scheduler-owned while a submitted predecessor is the
+only ambiguous operation.  They therefore observe that predecessor's shorter
+execution deadline rather than waiting for their own later admission timeout."
+  (when-let* ((active (e-runtime-store--active-request store))
+              ((eq (e-runtime-store-request--state active) 'submitted))
+              ((>= (float-time)
+                   (e-runtime-store--request-deadline active interval))))
+    (let ((operation (e-runtime-store--request-operation active)))
+      (e-runtime-store--recover-or-fail
+       store
+       (e-runtime-store--request-error
+        'e-runtime-store-timeout
+        (format "Worker did not acknowledge %s before the request timeout; close, reopen, and reload canonical state"
+                (or operation "request"))
+        active :awaited-request-id nil)))))
+
 (defun e-runtime-store-await (store request &optional timeout)
   "Wait cooperatively for REQUEST and return its committed result."
   (let ((interval (or timeout e-runtime-store-request-timeout)))
@@ -646,6 +774,7 @@ Return `dropped' for provisional work or `in-flight' once transport began."
                       '(queued submitted))
                 (< (float-time)
                    (e-runtime-store--request-deadline request interval)))
+      (e-runtime-store--recover-overdue-active store interval)
       (if (e-runtime-store--live-p store)
           (accept-process-output (e-runtime-store--process store) 0.01)
         (e-runtime-store--worker-exited store)))
@@ -690,8 +819,10 @@ Return `dropped' for provisional work or `in-flight' once transport began."
                      :request-id (e-runtime-store-request--id blocking)
                      :request-state (e-runtime-store-request--state blocking)
                      :awaited-request-id (e-runtime-store-request--id request))))
-         (e-runtime-store--freeze-and-stop store err)
-         (signal (car err) (cdr err)))))))
+         (e-runtime-store--recover-active store err)
+         ;; A replacement resets the submitted interval.  The caller observes
+         ;; the definitive receipt result, not a transient transport timeout.
+         (e-runtime-store-await store request interval))))))
 
 (defun e-runtime-store-call (store kind body)
   "Submit KIND BODY to STORE and return its bounded result."
@@ -764,10 +895,34 @@ Return `dropped' for provisional work or `in-flight' once transport began."
        (signal (car err) (cdr err))))))
 
 (defun e-runtime-store-close (store)
-  "Close STORE, failing all owned requests before detaching its worker."
+  "Close STORE, retiring an idle runtime before detaching its worker.
+When callers still own queued or active work, close retains its established
+terminal behavior and settles them locally.  An idle close is a worker-owned,
+idempotent retirement so a lost acknowledgement is recoverable once."
   (unless (e-runtime-store--closed store)
     (let ((process (e-runtime-store--process store))
-          (error '(e-runtime-store-unavailable "Store is closed")))
+          (error '(e-runtime-store-unavailable "Store is closed"))
+          retirement-error)
+      (when (and (e-runtime-store--live-p store)
+                 (not (e-runtime-store--unavailable store))
+                 (not (e-runtime-store--active-request store))
+                 (null (e-runtime-store--write-queue store))
+                 (null (e-runtime-store--read-queue store)))
+        (let* ((request (e-runtime-store-request--create
+                         :id (e-runtime-store--next-id store "close")
+                         :kind 'close :body nil :state 'submitted
+                         :submitted-at (float-time)))
+               (frame (e-runtime-store--encode-frame
+                       (e-runtime-store--request-frame store request))))
+          (setf (e-runtime-store-request--frame request) frame
+                (e-runtime-store--active-request store) request)
+          (puthash (e-runtime-store-request--id request) request
+                   (e-runtime-store--pending store))
+          (process-send-string process (e-runtime-store--pack-canonical frame))
+          (condition-case caught
+              (e-runtime-store-await store request)
+            (error (setq retirement-error caught)))))
+      (setq process (e-runtime-store--process store))
       ;; Close owns the lifetime boundary before later observers run.  Detach
       ;; both process handlers first so buffered output cannot overtake failure
       ;; settlement or publish a late success.
@@ -785,7 +940,11 @@ Return `dropped' for provisional work or `in-flight' once transport began."
           (when (process-live-p process)
             (delete-process process)))
         (when (buffer-live-p (e-runtime-store--stderr-buffer store))
-          (kill-buffer (e-runtime-store--stderr-buffer store))))))
+          (kill-buffer (e-runtime-store--stderr-buffer store)))
+        ;; The state was made terminal and the process detached above, but a
+        ;; failed retirement is observable to the caller rather than hidden.
+        (when retirement-error
+          (signal (car retirement-error) (cdr retirement-error))))))
   t)
 
 (defun e-runtime-store-status (store)

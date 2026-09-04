@@ -34,6 +34,37 @@
 (defconst e-runtime-store-ownership-runtime-id-max-chars 256
   "Private maximum length retained for a runtime ownership diagnostic id.")
 
+(defun e-runtime-store-ownership--host-boot-marker ()
+  "Return the local host marker that changes at an operating-system boot.
+
+The marker is deliberately independent of Emacs' PID and start time: those
+identify a parent *within* a boot, while this value is the evidence that a
+persisted parent belongs to a previous host boot.  PID 1's start identity is
+available through Emacs on macOS and Linux and changes only when that host (or
+its runtime container) boots.  Linux's per-boot UUID is the fallback for a
+platform that cannot expose PID 1 attributes."
+  (cond
+   ((when-let* ((attributes (e-runtime-store-ownership--process-attributes 1))
+                (start (e-runtime-store-ownership--process-start attributes)))
+      (format "pid-1-start:%S" start)))
+   ((file-readable-p "/proc/sys/kernel/random/boot_id")
+    (with-temp-buffer
+      (insert-file-contents-literally "/proc/sys/kernel/random/boot_id")
+      (string-trim (buffer-string))))
+   (t
+    (signal 'e-runtime-store-ownership-error
+            (list "Cannot establish a host boot marker")))))
+
+(defun e-runtime-store-ownership--host-boot-id ()
+  "Return a bounded opaque identity for this host operating-system boot."
+  (let ((marker (e-runtime-store-ownership--host-boot-marker)))
+    (unless (and (stringp marker) (not (string-empty-p marker)))
+      (signal 'e-runtime-store-ownership-error
+              (list "Host boot marker was empty")))
+    ;; Keep platform-specific boot details out of SQLite while retaining a
+    ;; stable, process-independent comparison token.
+    (secure-hash 'sha256 marker)))
+
 (cl-defstruct (e-runtime-store-ownership-claim
                (:constructor e-runtime-store-ownership-claim--create)
                (:predicate e-runtime-store-ownership-claim-p)

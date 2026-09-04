@@ -241,3 +241,47 @@ the following:
 
 The original canonical database was only read and remains unchanged.  All
 write probes used a disposable clone.
+
+* DP4 implementation status (repository-side)
+
+The runtime-store scheduler now retains the immutable preflight frame for a
+submitted request, fences a malformed/lost worker once, and replaces it before
+replaying that same frame.  Generic SQLite writes persist a request-id,
+complete semantic replay-frame fingerprint, and bounded result in the mutation
+transaction;
+the replacement either returns that receipt or performs the absent mutation.
+Reads retry through the same bounded replacement.  A second transport failure
+exhausts recovery with the first typed cause and settles owned work once.
+
+Schema version 5 adds the private receipt and singleton runtime-state
+relations.  Ordinary v4 open still rejects without mutation; the explicit
+offline upgrader creates and verifies its backup, installs the v5 relations in
+one transaction, and rolls back a fault.  An idle clean close now retires the
+same runtime identity transactionally, so a lost close acknowledgement uses
+the same replacement boundary.
+
+Focused deterministic evidence now passes for the three transaction fault
+points (before COMMIT, after COMMIT, and after response formation), exact
+receipt-result bounds with mutation rollback, receipt collision/watermark,
+parent-boot/PID/process-start lifetime, live-parent refusal, prior-boot and
+PID-reuse reclamation, retired replacement, repeated clean lifecycle rows, and
+zero-or-owned receipt counts.  Parent boot is now an opaque host-boot token
+derived from PID 1's start identity, not an Emacs-instance nonce; separate
+batch Emacsen prove the same boot token with distinct PID/start identities.
+Queued waiters observe the earlier active
+deadline, while replacement-open loss and ownership contention exhaust once
+with the original typed cause.  The real session-SQLite plus Board timer composition
+uses a one-shot worker-side =catalog-put= post-COMMIT fault and continues its
+queued pickup transition; the isolated graphical chat/Board witness exercises
+the same path through =e2e/run-graphical-tests.sh=.  The v4-to-v5 fixture
+preserves canonical records, verifies backup and ordinary-open rejection,
+rolls back injected faults without either v5 table, and recovers a faulted
+write after upgrade.  The fresh production-path 16 MiB retained-frame recovery
+probe passed at 344,948,736 bytes peak RSS, below 536,870,912 bytes.
+
+This is implementation evidence only: Feature 92 remains In-review pending
+parent and independent review; neither behavioral acceptance nor a fixed point
+is claimed here.
+No live reload was attempted.  The user's running Emacs and canonical SQLite
+files remain unchanged; this core runtime/schema change requires a full Emacs
+restart to take effect.

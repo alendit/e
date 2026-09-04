@@ -225,33 +225,110 @@
         (when (file-directory-p directory) (delete-directory directory t))))))
 
 (ert-deftest e-runtime-sqlite-p4-s9-explicit-upgrade-backs-up-before-install ()
-  "Ordinary startup rejects v3; explicit upgrade verifies a restrictive backup."
+  "Ordinary startup rejects v4; explicit v5 upgrade verifies a backup."
   (let* ((directory (make-temp-file "e-runtime-p4-upgrade-" t))
          (store (e-runtime-store-open directory))
          (database (expand-file-name "store.sqlite3" directory))
-         (backup (expand-file-name "operator/pre-v4.sqlite3" directory)))
+         (backup (expand-file-name "operator/pre-v5.sqlite3" directory)))
     (unwind-protect
         (progn
+          (should (= (plist-get
+                      (e-runtime-store-call
+                       store 'write
+                       '(:op session-append :session-id "upgrade-preserved"
+                         :record (:value before-v5)))
+                      :revision)
+                     1))
           (e-runtime-store-close store)
           (setq store nil)
           ;; This fixture mutation occurs only in the isolated test process.
           (let ((db (sqlite-open database)))
             (sqlite-execute
-             db "UPDATE store_meta SET value='3' WHERE key='schema_version'")
-            (sqlite-execute db "DELETE FROM schema_migrations WHERE version=4")
+             db "UPDATE store_meta SET value='4' WHERE key='schema_version'")
+            (sqlite-execute db "DELETE FROM schema_migrations WHERE version=5")
+            (sqlite-execute db "DROP TABLE runtime_store_receipts")
+            (sqlite-execute db "DROP TABLE runtime_store_state")
             (sqlite-close db))
           (should-error (e-runtime-store-open directory)
                         :type 'e-runtime-store-schema-too-old)
+          ;; Ordinary v4 open is a refusal, not an implicit partial upgrade.
+          (let ((db (sqlite-open database)))
+            (unwind-protect
+                (progn
+                  (should (equal (car (car (sqlite-select db "SELECT value FROM store_meta WHERE key='schema_version'"))) "4"))
+                  (should-not (car (sqlite-select db "SELECT 1 FROM sqlite_master WHERE name='runtime_store_state'"))))
+              (sqlite-close db)))
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
-            (should (= (plist-get result :from) 3))
-            (should (= (plist-get result :to) 4))
+            (should (= (plist-get result :from) 4))
+            (should (= (plist-get result :to) 5))
             (should (equal (plist-get result :integrity) "ok"))
             (should (= (e-runtime-sqlite-p4-test--mode backup) #o600)))
           (setq store (e-runtime-store-open directory))
           (should (= (plist-get (plist-get (e-runtime-store-status store)
                                            :startup)
                                 :schema-version)
-                     4)))
+                     5))
+          (should (equal
+                   (plist-get
+                    (car (plist-get
+                          (e-runtime-store-call
+                           store 'read
+                           '(:op session-record-page :session-id "upgrade-preserved"))
+                          :records))
+                    :value)
+                   '(:value before-v5)))
+          ;; An upgraded v5 store uses the same receipt recovery path.
+          (let* ((marker (make-temp-file "e-runtime-upgrade-recovery-"))
+                 (process-environment
+                  (cons "E_RUNTIME_STORE_TEST_FAULT=after-commit"
+                        (cons (concat "E_RUNTIME_STORE_TEST_FAULT_ONCE_FILE=" marker)
+                              process-environment))))
+            (delete-file marker)
+            ;; Restart under the fault environment, then recover one write.
+            (e-runtime-store-close store)
+            (setq store (e-runtime-store-open directory))
+            (should (> (plist-get
+                        (e-runtime-store-call
+                         store 'write
+                         '(:op session-append :session-id "upgrade-preserved"
+                           :record (:value recovered-v5)))
+                        :revision)
+                       1))
+            (should (file-exists-p marker))
+            (delete-file marker)))
+      (when store (ignore-errors (e-runtime-store-close store)))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-sqlite-p4-s92-v5-upgrade-fault-rolls-back-without-partial-schema ()
+  "An injected v4-to-v5 upgrade fault leaves the old store untouched."
+  (let* ((directory (make-temp-file "e-runtime-v5-rollback-" t))
+         (store (e-runtime-store-open directory))
+         (database (expand-file-name "store.sqlite3" directory))
+         (backup (expand-file-name "operator/pre-v5.sqlite3" directory)))
+    (unwind-protect
+        (progn
+          (e-runtime-store-close store)
+          (setq store nil)
+          (let ((db (sqlite-open database)))
+            (sqlite-execute db "UPDATE store_meta SET value='4' WHERE key='schema_version'")
+            (sqlite-execute db "DELETE FROM schema_migrations WHERE version=5")
+            (sqlite-execute db "DROP TABLE runtime_store_receipts")
+            (sqlite-execute db "DROP TABLE runtime_store_state")
+            (sqlite-close db))
+          (let ((process-environment
+                 (cons "E_RUNTIME_STORE_TEST_MIGRATION_FAULT=1" process-environment)))
+            (should-error (e-runtime-store-offline-upgrade directory backup)
+                          :type 'e-runtime-store-offline-error))
+          (should (file-exists-p backup))
+          (let ((db (sqlite-open database)))
+            (unwind-protect
+                (progn
+                  (should (equal (car
+                                  (car (sqlite-select db "SELECT value FROM store_meta WHERE key='schema_version'")))
+                                 "4"))
+                  (should-not (car (sqlite-select db "SELECT 1 FROM sqlite_master WHERE name='runtime_store_receipts'")))
+                  (should-not (car (sqlite-select db "SELECT 1 FROM sqlite_master WHERE name='runtime_store_state'"))))
+              (sqlite-close db))))
       (when store (ignore-errors (e-runtime-store-close store)))
       (delete-directory directory t))))
 
@@ -264,7 +341,7 @@
         (progn
           (should (plist-get (e-runtime-store-integrity store t) :ok))
           (let ((metrics (e-runtime-store-metrics store)))
-            (should (= (plist-get metrics :schema-version) 4))
+            (should (= (plist-get metrics :schema-version) 5))
             (should (> (plist-get metrics :database-bytes) 0)))
           (should (plist-get (e-runtime-store-backup store backup) :verified))
           (should (= (e-runtime-sqlite-p4-test--mode backup) #o600))

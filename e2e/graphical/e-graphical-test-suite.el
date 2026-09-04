@@ -15,6 +15,7 @@
 (let ((directory
        (file-name-directory (or load-file-name buffer-file-name))))
   (load (expand-file-name "e-chat-behavior-test.el" directory) nil nil t)
+  (load (expand-file-name "e-runtime-store-recovery-behavior-test.el" directory) nil nil t)
   (load (expand-file-name "e-window-surface-behavior-test.el" directory) nil nil t)
   (load (expand-file-name "e-workspace-behavior-test.el" directory) nil nil t))
 

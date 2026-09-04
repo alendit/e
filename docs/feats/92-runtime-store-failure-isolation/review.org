@@ -312,8 +312,73 @@ bug report.
 
 * Unresolved
 
-- High: a lost worker acknowledgement cannot be resolved from the ACID store
-  and instead freezes the shared store and Board.
+- Parent and independent review of the unaccepted DP4 correction remain
+  required; Feature 92 stays In-review.
 - The timing-dependent reason the live worker failed to acknowledge
   =catalog-put= within 60 seconds is not reproduced by the current database on
   a disposable clone.
+
+* DP4 correction evidence (unaccepted implementation)
+
+** Resolved implementation finding: runtime identity could be stolen from a live parent
+
+The initial DP4 state row named only a runtime id and could replace an
+unretired predecessor, leaving its receipt without replay authority.  The
+worker now receives the scheduler's bounded parent boot, PID, and process-start
+identity with =open=, persists all three in the singleton, and preserves state
+only for that same runtime and parent.  A different runtime replaces a retired
+row, or an unretired row only after recorded-parent death, prior boot, or
+process-start mismatch proves safe; it deletes that predecessor's receipts in
+the same transaction before replacing the state.  Live-parent refusal leaves
+both row and receipt unchanged.
+
+The boot token is an opaque hash of PID 1's start identity, so it is stable
+across separate Emacs processes on one host boot and changes when that boot
+changes; it is not an Emacs PID/start/time nonce.  This makes boot inequality
+valid evidence independently of the live-parent PID/start check.
+
+=e-runtime-store-s92-runtime-state-parent-lifetime-and-clean-cycles= covers
+live refusal, same-identity recovery, prior-boot cleanup, PID reuse, retired
+replacement, repeated cycles, one state row, and zero-or-owned receipts.
+=e-runtime-store-s92-parent-boot-is-host-stable-across-emacsen= starts two
+batch Emacsen and proves equal boot tokens with distinct PID/start identities.
+
+** Resolved implementation finding: recovery setup could strand the original request
+
+Recovery now treats the internal replacement =open= as setup for the retained
+domain request.  Worker exit, malformed output, or contention while that open
+is active exhausts the single incident, retains the initiating typed cause,
+and settles original active and queued work exactly once.  Cooperative queued
+await also observes an earlier submitted active deadline before its own later
+deadline.
+
+=e-runtime-store-s92-replacement-open-loss-settles-original-and-queue= uses
+the production worker open-loss seam; =e-runtime-store-s92-replacement-open-
+contention-keeps-first-cause= covers typed ownership failure; and
+=e-runtime-store-s92-queued-waiter-observes-earlier-active-deadline= provides
+the deterministic scheduler clock witness.
+
+** Resolved implementation finding: receipts did not bind all replay semantics or result size
+
+Receipt fingerprints now hash kind, body, write prefix, and acknowledgement
+prefix while the request id remains the receipt key.  Receipt results are
+encoded through the protocol canonical bound before COMMIT, so one-over output
+rolls back its domain mutation and receipt together.
+
+=e-runtime-store-s92-receipt-collision-watermark-and-retirement= includes a
+same-body changed-prefix collision; =e-runtime-store-s92-receipt-result-bound-
+rolls-back-mutation= exercises exact/one-over result bounds and verifies no
+domain record or receipt survives the failed transaction.
+
+** Verification for this correction pass
+
+- =eldev test -f test/e-runtime-store-test.el -f test/e-runtime-sqlite-p4-test.el
+  -f test/e-board-sqlite-test.el=: 74 passed, 0 unexpected.
+- Focused isolated graphical selector
+  =e-runtime-store-recovery-graphical-s92-durable-board-survives-catalog-ack-loss=:
+  1 passed, 0 unexpected.
+- Fresh =/usr/bin/time -l eldev test -f test/e-runtime-store-test.el=: 40
+  passed, 0 unexpected; peak RSS 344,948,736 bytes (< 536,870,912).
+
+No live reload or canonical-database mutation was performed.  Core runtime and
+schema changes still require a full Emacs restart to take effect.

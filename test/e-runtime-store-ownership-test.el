@@ -420,10 +420,12 @@
                 (progn
                   (sqlite-execute
                    database
-                   "UPDATE store_meta SET value='3' WHERE key='schema_version'")
+                   "UPDATE store_meta SET value='4' WHERE key='schema_version'")
                   (sqlite-execute
                    database
-                   "DELETE FROM schema_migrations WHERE version=4"))
+                   "DELETE FROM schema_migrations WHERE version=5")
+                  (sqlite-execute database "DROP TABLE runtime_store_receipts")
+                  (sqlite-execute database "DROP TABLE runtime_store_state"))
               (sqlite-close database)))
           (let ((real-acquire
                  (symbol-function 'e-runtime-store-ownership-acquire))

@@ -38,6 +38,9 @@
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-raw-conflict "Runtime store raw-result conflict"
   'e-runtime-store-worker-error)
+(define-error 'e-runtime-store-parent-active
+  "Runtime store predecessor parent is still live"
+  'e-runtime-store-worker-error)
 
 (require 'e-board-storage-sqlite-worker)
 (require 'e-cron-storage-sqlite-worker)
@@ -46,7 +49,7 @@
 (require 'e-task-storage-sqlite-worker)
 (require 'e-voice-storage-sqlite-worker)
 
-(defconst e-runtime-store-worker-schema-version 4)
+(defconst e-runtime-store-worker-schema-version 5)
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
 (defconst e-runtime-store-worker-session-page-byte-limit (* 1024 1024)
@@ -65,6 +68,27 @@
 (defvar e-runtime-store-worker--database-file nil)
 (defvar e-runtime-store-worker--runtime-id nil)
 (defvar e-runtime-store-worker--ownership nil)
+
+(defun e-runtime-store-worker--test-fault (point &optional request)
+  "Terminate at private test POINT when the one-shot worker seam requests it.
+The seam is inert without its explicitly named environment variables and is
+consumed through a marker file shared with the replacement subprocess."
+  (when (and (equal (getenv "E_RUNTIME_STORE_TEST_FAULT") point)
+             (or (not request)
+                 (pcase point
+                   ("after-response-formation"
+                    (memq (plist-get request :kind) '(write close)))
+                   (_ t)))
+             (let ((operation (getenv "E_RUNTIME_STORE_TEST_FAULT_OPERATION")))
+               (or (not operation)
+                   (and request
+                        (equal operation
+                               (format "%s"
+                                       (plist-get (plist-get request :body) :op)))))))
+    (let ((marker (getenv "E_RUNTIME_STORE_TEST_FAULT_ONCE_FILE")))
+      (when (or (not marker) (not (file-exists-p marker)))
+        (when marker (write-region "used" nil marker nil 'silent))
+        (kill-emacs 70)))))
 
 (defun e-runtime-store-worker--column (row index)
   "Return INDEX from SQLite ROW across supported Emacs return shapes."
@@ -109,6 +133,13 @@
   ;; SQLite payloads are not protocol frames.  Their operation-specific
   ;; storage limits are checked by the caller before this exact encoding.
   (base64-encode-string (e-runtime-store-codec-encode value) t))
+
+(defun e-runtime-store-worker--bounded-receipt-result (value)
+  "Encode VALUE within the response canonical bound before transaction commit."
+  (base64-encode-string
+   (e-runtime-store-codec-encode-bounded
+    value e-runtime-store-codec-protocol-canonical-byte-limit)
+   t))
 
 (defun e-runtime-store-worker--value (text)
   "Return exact value stored in SQLite TEXT."
@@ -179,7 +210,14 @@
          "CREATE INDEX IF NOT EXISTS tool_followups_session ON tool_followups(session_id, state)"
          "CREATE TABLE IF NOT EXISTS resources (lineage_id TEXT NOT NULL, resource_path TEXT NOT NULL, session_id TEXT NOT NULL, content BLOB NOT NULL, metadata TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL, PRIMARY KEY(lineage_id, resource_path))"
          "CREATE INDEX IF NOT EXISTS resources_session ON resources(session_id)"
-         "CREATE INDEX IF NOT EXISTS resources_expiry ON resources(expires_at)"))
+         "CREATE INDEX IF NOT EXISTS resources_expiry ON resources(expires_at)"
+         ;; A receipt is deliberately generic: domain writers remain unaware
+         ;; of transport acknowledgement loss.  Its row is committed with the
+         ;; domain mutation, so a replacement worker can distinguish no commit
+         ;; from a committed-but-unobserved response.
+         "CREATE TABLE IF NOT EXISTS runtime_store_receipts (runtime_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, write_prefix INTEGER NOT NULL, PRIMARY KEY(runtime_id, request_id))"
+         "CREATE INDEX IF NOT EXISTS runtime_store_receipts_watermark ON runtime_store_receipts(runtime_id, write_prefix)"
+         "CREATE TABLE IF NOT EXISTS runtime_store_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), runtime_id TEXT NOT NULL, parent_boot TEXT NOT NULL, parent_pid INTEGER NOT NULL, parent_process_start TEXT NOT NULL, acknowledged_prefix INTEGER NOT NULL DEFAULT 0, retired INTEGER NOT NULL DEFAULT 0, retirement_request_id TEXT, retirement_fingerprint TEXT, retirement_result TEXT)"))
     (sqlite-execute e-runtime-store-worker--database statement))
   (e-board-storage-sqlite-worker-initialize
    e-runtime-store-worker--database)
@@ -204,10 +242,103 @@
        e-runtime-store-worker--database
        "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
        (vector e-runtime-store-worker-schema-version "new-current-schema"
-               (secure-hash 'sha256 "feature87-schema-v4") (float-time))))))
+               (secure-hash 'sha256 "feature92-schema-v5") (float-time))))))
 
-(defun e-runtime-store-worker--open (directory runtime-id)
-  "Open DIRECTORY for RUNTIME-ID and return startup status."
+(defun e-runtime-store-worker--default-parent-identity ()
+  "Return a bounded identity for direct worker-owner calls.
+The scheduler always supplies its own identity.  This fallback keeps focused
+worker fixtures faithful without widening the process protocol."
+  (list :boot (e-runtime-store-ownership--host-boot-id)
+        :pid (emacs-pid)
+        :process-start (e-runtime-store-ownership--current-process-start)))
+
+(defun e-runtime-store-worker--parent-process-start (value)
+  "Encode bounded parent process-start VALUE for singleton comparison."
+  (base64-encode-string
+   (e-runtime-store-codec-encode-bounded
+    value e-runtime-store-ownership-metadata-max-bytes)
+   t))
+
+(defun e-runtime-store-worker--parent-identity (identity)
+  "Validate and normalize bounded scheduler parent IDENTITY."
+  (let ((boot (plist-get identity :boot))
+        (pid (plist-get identity :pid))
+        (start (plist-get identity :process-start)))
+    (unless (and (stringp boot) (<= (string-bytes boot) 256)
+                 (integerp pid) (> pid 0) start)
+      (signal 'e-runtime-store-worker-error
+              (list "Malformed runtime-store parent identity" identity)))
+    (list :boot boot :pid pid
+          :process-start (e-runtime-store-worker--parent-process-start start))))
+
+(defun e-runtime-store-worker--parent-live-p (pid encoded-start)
+  "Return non-nil when PID still has exactly ENCODED-START identity."
+  (when-let* ((attributes
+              (e-runtime-store-ownership--process-attributes pid)))
+    (equal encoded-start
+           (e-runtime-store-worker--parent-process-start
+            (e-runtime-store-ownership--process-start attributes)))))
+
+(defun e-runtime-store-worker--install-runtime-state (runtime-id parent)
+  "Preserve or safely replace the singleton state for RUNTIME-ID and PARENT.
+
+An unretired predecessor remains replay authority until its recorded parent is
+dead, has reused its PID, or comes from a prior parent boot.  Replacement and
+receipt reclamation share one SQLite transaction so no receipt is orphaned."
+  (let ((parent-boot (plist-get parent :boot))
+        (parent-pid (plist-get parent :pid))
+        (parent-start (plist-get parent :process-start)))
+    (sqlite-execute e-runtime-store-worker--database "BEGIN IMMEDIATE")
+    (condition-case err
+        (let ((row (car (sqlite-select
+                         e-runtime-store-worker--database
+                         "SELECT runtime_id,parent_boot,parent_pid,parent_process_start,retired FROM runtime_store_state WHERE singleton=1"))))
+          (cond
+           ((not row)
+            (sqlite-execute
+             e-runtime-store-worker--database
+             "INSERT INTO runtime_store_state(singleton,runtime_id,parent_boot,parent_pid,parent_process_start,acknowledged_prefix,retired) VALUES(1,?,?,?,?,0,0)"
+             (vector runtime-id parent-boot parent-pid parent-start)))
+           ((and (equal runtime-id (e-runtime-store-worker--column row 0))
+                 (equal parent-boot (e-runtime-store-worker--column row 1))
+                 (= parent-pid (e-runtime-store-worker--column row 2))
+                 (equal parent-start (e-runtime-store-worker--column row 3)))
+            ;; Same scheduler identity is a replacement worker, not a new
+            ;; owner.  In particular retain retirement identity for a lost
+            ;; close acknowledgement.
+            nil)
+           ((or (= 1 (e-runtime-store-worker--column row 4))
+                (not (equal parent-boot (e-runtime-store-worker--column row 1)))
+                (not (e-runtime-store-worker--parent-live-p
+                      (e-runtime-store-worker--column row 2)
+                      (e-runtime-store-worker--column row 3))))
+            (let ((predecessor (e-runtime-store-worker--column row 0)))
+              ;; Once this branch is safe, the predecessor can no longer
+              ;; replay: remove all of its receipts before replacing the only
+              ;; state row that names it.
+              (sqlite-execute e-runtime-store-worker--database
+                              "DELETE FROM runtime_store_receipts WHERE runtime_id=?"
+                              (vector predecessor))
+              (sqlite-execute
+               e-runtime-store-worker--database
+               "UPDATE runtime_store_state SET runtime_id=?,parent_boot=?,parent_pid=?,parent_process_start=?,acknowledged_prefix=0,retired=0,retirement_request_id=NULL,retirement_fingerprint=NULL,retirement_result=NULL WHERE singleton=1"
+               (vector runtime-id parent-boot parent-pid parent-start))))
+           (t
+            (signal 'e-runtime-store-parent-active
+                    (list "Runtime-store predecessor parent remains live"
+                          :runtime-id (e-runtime-store-worker--column row 0)
+                          :parent-boot (e-runtime-store-worker--column row 1)
+                          :parent-pid (e-runtime-store-worker--column row 2)
+                          :parent-process-start
+                          (e-runtime-store-worker--value
+                           (e-runtime-store-worker--column row 3))))))
+          (sqlite-execute e-runtime-store-worker--database "COMMIT"))
+      (error
+       (ignore-errors (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
+       (signal (car err) (cdr err))))))
+
+(defun e-runtime-store-worker--open (directory runtime-id &optional parent-identity)
+  "Open DIRECTORY for RUNTIME-ID under scheduler PARENT-IDENTITY."
   (unless (sqlite-available-p)
     (signal 'e-runtime-store-worker-error (list "SQLite is unavailable")))
   (setq directory (file-name-as-directory (expand-file-name directory))
@@ -232,6 +363,11 @@
           (sqlite-execute e-runtime-store-worker--database "PRAGMA synchronous=NORMAL")
           (sqlite-execute e-runtime-store-worker--database "PRAGMA busy_timeout=2500")
           (e-runtime-store-worker--schema new-store-p)
+          (e-runtime-store-worker--install-runtime-state
+           runtime-id
+           (e-runtime-store-worker--parent-identity
+            (or parent-identity
+                (e-runtime-store-worker--default-parent-identity))))
           (e-runtime-store-worker--permissions)
           (setq opened t)
           (list :schema-version e-runtime-store-worker-schema-version
@@ -441,21 +577,113 @@
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown write operation" (plist-get body :op))))))
 
+(defun e-runtime-store-worker--request-fingerprint (request)
+  "Return the stable canonical fingerprint for write REQUEST.
+The request id is the receipt key; every other replay-semantic frame field is
+bound into the fingerprint so an id cannot silently adopt a changed kind or
+acknowledgement prefix."
+  (secure-hash
+   'sha256
+   (e-runtime-store-codec-encode
+    (list :kind (plist-get request :kind)
+          :body (plist-get request :body)
+          :write-prefix (plist-get request :write-prefix)
+          :ack-prefix (plist-get request :ack-prefix)))))
+
+(defun e-runtime-store-worker--receipt-result (row)
+  "Return the bounded decoded result held by receipt ROW."
+  (e-runtime-store-worker--value (e-runtime-store-worker--column row 1)))
+
 (defun e-runtime-store-worker--write (request)
-  "Execute one transactional write REQUEST and return its committed result."
-  (let ((body (plist-get request :body)))
-    ;; Modes are a precondition for mutation.  Once COMMIT succeeds, response
-    ;; formation is deliberately in-memory and non-fallible.  Transport loss
-    ;; fails the client and never causes automatic resubmission.
+  "Execute one idempotent transactional write REQUEST and return its result."
+  (let* ((body (plist-get request :body))
+         (request-id (plist-get request :id))
+         (fingerprint (e-runtime-store-worker--request-fingerprint request))
+         (prefix (or (plist-get request :write-prefix) 0))
+         (ack-prefix (or (plist-get request :ack-prefix) 0)))
     (e-runtime-store-worker--permissions)
     (sqlite-execute e-runtime-store-worker--database "BEGIN IMMEDIATE")
     (condition-case err
-        (let ((result (e-runtime-store-worker--write-dispatch body)))
-          (sqlite-execute e-runtime-store-worker--database "COMMIT")
-          result)
+        (let ((prior
+               (car (sqlite-select
+                     e-runtime-store-worker--database
+                     "SELECT fingerprint,result FROM runtime_store_receipts WHERE runtime_id=? AND request_id=?"
+                     (vector e-runtime-store-worker--runtime-id request-id)))))
+          (if prior
+              (progn
+                (unless (equal fingerprint (e-runtime-store-worker--column prior 0))
+                  (signal 'e-runtime-store-worker-error
+                          (list "Runtime-store receipt fingerprint collision"
+                                :runtime-id e-runtime-store-worker--runtime-id
+                                :request-id request-id)))
+                (sqlite-execute e-runtime-store-worker--database "COMMIT")
+                (e-runtime-store-worker--receipt-result prior))
+            ;; Advance only through writes already observed by the parent.  The
+            ;; active request is never among these receipts, so an uncertain
+            ;; commit remains available to its replacement worker.
+            (sqlite-execute e-runtime-store-worker--database
+                            "DELETE FROM runtime_store_receipts WHERE runtime_id=? AND write_prefix<=?"
+                            (vector e-runtime-store-worker--runtime-id ack-prefix))
+            (sqlite-execute e-runtime-store-worker--database
+                            "UPDATE runtime_store_state SET acknowledged_prefix=MAX(acknowledged_prefix,?) WHERE singleton=1 AND runtime_id=?"
+                            (vector ack-prefix e-runtime-store-worker--runtime-id))
+            (let* ((result (e-runtime-store-worker--write-dispatch body))
+                   ;; Encode before COMMIT so an unrepresentable result aborts
+                   ;; the mutation instead of creating an unacknowledgeable one.
+                   (encoded-result
+                    (e-runtime-store-worker--bounded-receipt-result result)))
+              (sqlite-execute
+               e-runtime-store-worker--database
+               "INSERT INTO runtime_store_receipts(runtime_id,request_id,fingerprint,result,write_prefix) VALUES(?,?,?,?,?)"
+               (vector e-runtime-store-worker--runtime-id request-id fingerprint
+                       encoded-result prefix))
+              (e-runtime-store-worker--test-fault "before-commit" request)
+              (sqlite-execute e-runtime-store-worker--database "COMMIT")
+              (e-runtime-store-worker--test-fault "after-commit" request)
+              result)))
       (error
-       (ignore-errors
-         (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
+       (ignore-errors (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
+       (signal (car err) (cdr err))))))
+
+(defun e-runtime-store-worker--retire (request)
+  "Transactionally retire the current runtime for idempotent close REQUEST."
+  (let* ((request-id (plist-get request :id))
+         (fingerprint (e-runtime-store-worker--request-fingerprint request))
+         (result (list :runtime-id e-runtime-store-worker--runtime-id :retired t))
+         (encoded-result (e-runtime-store-worker--bounded-receipt-result result)))
+    (sqlite-execute e-runtime-store-worker--database "BEGIN IMMEDIATE")
+    (condition-case err
+        (let ((row (car (sqlite-select
+                         e-runtime-store-worker--database
+                         "SELECT retirement_request_id,retirement_fingerprint,retirement_result FROM runtime_store_state WHERE singleton=1 AND runtime_id=?"
+                         (vector e-runtime-store-worker--runtime-id)))))
+          (unless row
+            (signal 'e-runtime-store-worker-error (list "Missing runtime state at close")))
+          (let ((prior-id (e-runtime-store-worker--column row 0)))
+            (if prior-id
+                (progn
+                  (unless (and (equal prior-id request-id)
+                               (equal (e-runtime-store-worker--column row 1) fingerprint))
+                    (signal 'e-runtime-store-worker-error
+                            (list "Runtime-store retirement fingerprint collision"
+                                  :runtime-id e-runtime-store-worker--runtime-id
+                                  :request-id request-id)))
+                  (sqlite-execute e-runtime-store-worker--database "COMMIT")
+                  (e-runtime-store-worker--value
+                   (e-runtime-store-worker--column row 2)))
+              (sqlite-execute e-runtime-store-worker--database
+                              "DELETE FROM runtime_store_receipts WHERE runtime_id=?"
+                              (vector e-runtime-store-worker--runtime-id))
+              (sqlite-execute
+               e-runtime-store-worker--database
+               "UPDATE runtime_store_state SET retired=1, retirement_request_id=?, retirement_fingerprint=?, retirement_result=? WHERE singleton=1"
+               (vector request-id fingerprint encoded-result))
+              (e-runtime-store-worker--test-fault "before-retirement-commit")
+              (sqlite-execute e-runtime-store-worker--database "COMMIT")
+              (e-runtime-store-worker--test-fault "after-retirement-commit")
+              result)))
+      (error
+       (ignore-errors (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
        (signal (car err) (cdr err))))))
 
 (defun e-runtime-store-worker--base64-canonical-byte-count
@@ -757,8 +985,10 @@ protocol.  Its canonical journal remains available for replay from zero."
 (defun e-runtime-store-worker--handle (request)
   "Handle one decoded REQUEST."
   (pcase (plist-get request :kind)
-    ('open (e-runtime-store-worker--open (plist-get request :directory)
-                                         (plist-get request :runtime-id)))
+    ('open (e-runtime-store-worker--open
+            (plist-get request :directory) (plist-get request :runtime-id)
+            (plist-get request :parent-identity)))
+    ('close (e-runtime-store-worker--retire request))
     ('write (e-runtime-store-worker--write request))
     ('read (e-runtime-store-worker--read (plist-get request :body)))
     (_ (signal 'e-runtime-store-worker-error
@@ -794,6 +1024,8 @@ acknowledgement became unencodable; terminate the worker instead of making it
 look retry-safe to the parent."
   (condition-case err
       (progn
+        (e-runtime-store-worker--test-fault "after-response-formation" request)
+        (e-runtime-store-worker--test-fault "after-open-response-formation" request)
         (princ (e-runtime-store-worker--pack response))
         (terpri)
         (flush-standard-output))

@@ -15,6 +15,10 @@ rebaseline that feature's source anchors and assumptions against the accepted
 Feature 91 module boundaries.  Existing statuses remain unchanged because they
 record each feature's lifecycle state.
 
+Feature 92 remains =In-review=: its DP4 repository evidence is available for
+parent and independent review, but has not been accepted as a behavioral fixed
+point.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |

@@ -97,11 +97,28 @@
                       (sqlite-execute
                        database
                        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)")
+                      ;; v5's generic receipt relation is additive.  Ordinary
+                      ;; startup rejects v4 before it reaches this point;
+                      ;; only this verified, operator-selected transaction can
+                      ;; install the recovery schema.
+                      (sqlite-execute
+                       database
+                       "CREATE TABLE runtime_store_receipts (runtime_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, write_prefix INTEGER NOT NULL, PRIMARY KEY(runtime_id, request_id))")
+                      (sqlite-execute
+                       database
+                       "CREATE INDEX runtime_store_receipts_watermark ON runtime_store_receipts(runtime_id, write_prefix)")
+                      (sqlite-execute
+                       database
+                       "CREATE TABLE runtime_store_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), runtime_id TEXT NOT NULL, parent_boot TEXT NOT NULL, parent_pid INTEGER NOT NULL, parent_process_start TEXT NOT NULL, acknowledged_prefix INTEGER NOT NULL DEFAULT 0, retired INTEGER NOT NULL DEFAULT 0, retirement_request_id TEXT, retirement_fingerprint TEXT, retirement_result TEXT)")
+                      (when (getenv "E_RUNTIME_STORE_TEST_MIGRATION_FAULT")
+                        ;; Explicitly test-only, evaluated inside the upgrade
+                        ;; transaction so the rollback witness is meaningful.
+                        (error "Forced runtime-store migration rollback"))
                       (sqlite-execute
                        database
                        "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
-                       (vector current "feature87-p4-explicit-upgrade"
-                               (secure-hash 'sha256 "feature87-schema-v4")
+                       (vector current "feature92-v4-to-v5-explicit-upgrade"
+                               (secure-hash 'sha256 "feature92-schema-v5")
                                (float-time)))
                       (sqlite-execute
                        database
