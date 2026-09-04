@@ -1,0 +1,108 @@
+#+title: Feature 92 Amended Implementation Plan Review 02
+#+date: 2026-09-04
+#+startup: overview
+
+* Decision
+
+Result: =implementation-plan-fixed-point=.
+
+An independent rebaseline review of the post-restart correction found no
+remaining P0--P3 finding or required unknown after three correction rounds.
+Production implementation may use =F92-DP4= from the amended delivery map.
+
+Reviewed plan identity:
+
+- base commit :: =8e880d7c339f7363ae253a85a38491bcf8bb8eb5=
+- =plan.org= blob :: =8be7429b71408eca57942549b8922b540146f327=
+- plan-owning content ::
+  =docs/feats/92-runtime-store-failure-isolation/plan.org=
+- material dependencies :: Feature 87's accepted persistence contracts;
+  accepted Feature 92 packages =F92-DP1= through =F92-DP3=; the runtime-store,
+  worker, offline-upgrade, ownership, default-runtime, session, Board, codec,
+  graphical-test, and focused-test sources; the Daily timeout bug report;
+  =docs/feats/index.org=; =AGENTS.md=;
+  =docs/references/runtime_concepts.org=; and
+  =docs/references/dev_work.org=
+- selected result level :: implementation plan
+
+This result is bound to unchanged plan-owning content and the material
+dependencies that determine the contracts, recovery transaction, lifetime,
+delivery relation, and evidence.
+
+* Behavioral and mechanism status
+
+- Goal :: =BUG-RUNTIME-STORE-ISOLATION=
+- Behavioral status :: Failing at submitted-write acknowledgement recovery.
+- Mechanism status :: =F92-DP1= through =F92-DP3= complete; =F92-DP4= not
+  started at the reviewed baseline.
+- Product authority :: The operator request of 2026-09-04, Feature 87's
+  accepted contracts, and the runtime-store timeout bug report.
+- Owning contracts :: =F92-C01= through =F92-C05=.
+
+* Review corrections
+
+** Closed: amended direct scenario and package relation
+
+The direct scenario now includes successful and exhausted lost-acknowledgement
+recovery.  It distinguishes recoverable protocol corruption from exhausted
+replacement.  =F92-C01= remains the complete DP1 queue/startup ownership
+contract, while =F92-DP4= establishes complete =F92-C02= and =F92-C05=.
+
+** Closed: stable C05 boundary and migration compatibility
+
+=F92-C05= states the observable ACID outcome, application-policy exclusion,
+and explicit v4 migration behavior without making the private receipt shape a
+durable contract.  Request identity, fingerprint, same-byte replay, receipt
+schema, and acknowledgement watermark remain conditional DP4 mechanisms.
+
+** Closed: receipt and runtime-state lifetime
+
+Clean close is an ordered, idempotent transaction resolved across both sides of
+COMMIT with the same identity.  Repeated clean cycles reclaim their receipts,
+and the database retains only one current-or-most-recent runtime-state row.
+An unretired predecessor is replaced only after the parent-liveness proof, so
+cleanup cannot discard an uncertain write owned by a recovering parent.
+
+* Contract and delivery disposition
+
+| Contract | Package | Disposition |
+|----------+---------+-------------|
+| F92-C01 | F92-DP1 | Cleared and passing from the accepted lifecycle package. |
+| F92-C02 | F92-DP4 | Cleared plan: first-cause fencing, bounded replacement, read retry, and exhausted settlement close in one package. |
+| F92-C03 | F92-DP2 | Cleared and passing; ownership dependencies are unchanged. |
+| F92-C04 | F92-DP3 | Cleared and passing; DP4 revalidates the retained-frame memory path without changing the stable boundedness contract. |
+| F92-C05 | F92-DP4 | Cleared plan: transactional outcome resolution, explicit upgrade, receipt retirement, and real session/Board composition close in one package. |
+
+The mapping is bidirectionally complete.  DP4 consumes the accepted first three
+packages and does not repair an incomplete contract assigned to them.
+
+* Specification-cell disposition
+
+Cleared: single normative authority, behavioral design trace, durable contract
+boundary, scenario diagnosability, evidence topology, telemetry decision power,
+exact-limit handling, defensive actionability, change locality, workflow
+boundary, decision level, contract/package coverage, useful stopping point,
+cohesion and transaction closure, dependency order, package-size tradeoff,
+acceptance-cost topology, and checkpoint/package distinction.
+
+External freshness is not applicable because no provider or credentialed
+capability participates in the repository-controlled contract.  Timings remain
+observational.
+
+* Architecture and glossary
+
+The architecture branch is =correct now=.  Scheduler recovery and worker
+transactions remain with their current semantic owners; the amended package
+does not activate modularization scope.
+
+The selected glossary is =docs/references/runtime_concepts.org=.  It fits the
+same-project runtime scope.  Transactional receipt is qualified local
+implementation vocabulary, so there is no unresolved glossary candidate.
+
+* Verification
+
+The independent reviewer checked the amended matrix, delivery map, transaction
+and lifetime closure, current source feasibility, schema upgrade path,
+graphical/default-runtime composition, and accepted DP1--DP3 dependencies.
+=git diff --check= passed.  No production source, test, running Emacs state, or
+canonical database changed during the review.

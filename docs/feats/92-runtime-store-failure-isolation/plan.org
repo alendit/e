@@ -28,11 +28,19 @@ a write under a new identity or move recovery policy into application code.
 - Direct scenario :: Two session/Board participants share one SQLite runtime
   while one request is active and another waits.  The waiting request either
   receives its own full submitted interval and commits, or fails before
-  submission without stopping the active work.  Startup and protocol failures
-  settle every owned request once with the first typed cause.  A checkpoint too
-  large for one bounded response is omitted as a rebuildable projection and
-  the session resumes through bounded record pages.  A second runtime cannot
-  steal the live worker's ownership claim.
+  submission without stopping the active work.  Startup/open failure settles
+  every owned request once with the first typed cause.  A malformed or
+  uncorrelatable response fences that worker and preserves the first typed
+  cause; bounded replacement recovers the active request and continues queued
+  work, while exhausted recovery settles all owned work once with that cause
+  and makes the store unavailable.  If a submitted write loses its worker
+  acknowledgement, storage recovery resolves that logical write exactly once,
+  queued Board work continues, and the composed chat/Board surface remains
+  responsive and usable.  If bounded recovery is exhausted, every owned
+  request settles once with the first typed cause and the store becomes
+  unavailable.  A checkpoint too large for one bounded response is omitted as
+  a rebuildable projection and the session resumes through bounded record
+  pages.  A second runtime cannot steal the live worker's ownership claim.
 - Product authority :: The operator request of 2026-09-04, Feature 87's
   accepted contracts, and the runtime-store timeout bug report.
 - Owning contracts :: =F92-C01= through =F92-C05= below.
@@ -55,11 +63,11 @@ credentialed external evidence is not applicable.
 
 | ID | Observable contract | Semantic owner and public composition | Establishing package | Deterministic evidence | Telemetry | Status |
 |----+---------------------+---------------------------------------+----------------------+------------------------+-----------+--------|
-| F92-C01 | Every accepted request remains owned from queue admission through exactly one terminal state.  Queue waiting and submitted execution have distinct timeout intervals: expiry before submission affects only that request, while submitted writes remain owned pending the separate ACID outcome contract F92-C05.  Startup/open failure settles the selected request with the first typed operation cause. | Runtime-store scheduler; all injected session, Board, task, cron, voice, Goodnite, and raw-result adapters share it. | F92-DP1 | S92-REQUEST-LIFETIME and S92-SHARED-COMPOSITION | Queue age and execution time are observational. | Partial |
+| F92-C01 | Every accepted request remains scheduler-owned from queue admission through exactly one terminal state.  Queue waiting and submitted execution have distinct timeout intervals: expiry before submission affects only that request.  Startup/open failure settles the selected request with the first typed operation cause. | Runtime-store scheduler; all injected session, Board, task, cron, voice, Goodnite, and raw-result adapters share it. | F92-DP1 | S92-REQUEST-LIFETIME and S92-SHARED-COMPOSITION | Queue age and execution time are observational. | Passing |
 | F92-C02 | A malformed or uncorrelatable worker response fences that worker once and preserves the protocol failure plus active operation identity as the first recovery cause.  A submitted write then resolves under F92-C05 and a read may retry after bounded worker replacement.  Repeated corruption or failed replacement makes the store unavailable with the first causal error.  Client notification behavior cannot change persistence health after a definitive response. | Runtime-store protocol, recovery, and settlement boundary. | F92-DP4 | S92-PROTOCOL and S92-ACID-ACK-RECOVERY | Recovery attempt and repeat-corruption counts are observational. | Partial |
 | F92-C03 | Exactly one live ordinary or offline worker owns a runtime directory.  Acquisition is atomic, a contender never deletes a replacement claim, and dead or prior-boot claims are recovered.  A live-looking same-boot PID reuse fails safely with an explicit identity-conflict diagnostic rather than opening SQLite or stealing ownership. | Private runtime-directory claim owner shared by the ordinary worker and explicit offline worker; default runtime composition and explicit offline upgrade are the public consumers. | F92-DP2 | S92-OWNERSHIP | Contention and same-boot PID-reuse frequency are observational. | Passing |
 | F92-C04 | Each process-protocol request and response has a finite byte bound.  Session-record and identity reads are page bounded.  Rebuildable catalog/checkpoint projections are checked before transport; an oversized checkpoint cannot stop the shared worker and session resume falls back to canonical bounded record replay. | Runtime-store codec/protocol owns frame bounds; worker storage operations own row/page bounds; session storage owns projection omission and replay fallback. | F92-DP3 | S92-BOUNDS and S92-OVERSIZED-RESUME | Existing database sizes and projection distributions are observational. | Passing |
-| F92-C05 | Every submitted write has one ACID-resolved outcome across worker or acknowledgement loss.  The worker records request identity, request fingerprint, and bounded result in the same SQLite transaction as the mutation.  Recovery replaces the worker and reuses that identity: an existing matching receipt returns its result, while an absent receipt permits one execution.  Application callers provide no recovery classification. | Runtime-store scheduler/protocol and SQLite worker adapter own generic transaction identity, receipt lookup, worker replacement, bounded acknowledgement, and receipt retirement. | F92-DP4 | S92-ACID-ACK-RECOVERY and graphical Daily composition | Timeout and worker-replacement frequency are observational. | Missing |
+| F92-C05 | After a submitted write loses its worker or acknowledgement, the scheduler retains ownership until the SQLite adapter resolves one definitive mutation and bounded result without duplicate semantic effects, or bounded recovery is exhausted.  Application callers neither classify nor replay the write.  Existing v4 stores require verified explicit offline migration, preserve their canonical values, and are never mutated by ordinary startup. | Runtime-store scheduler/protocol and SQLite worker adapter own generic outcome resolution, worker replacement, bounded acknowledgement, and migration-safe persistence. | F92-DP4 | S92-ACID-ACK-RECOVERY and graphical Daily composition | Timeout and worker-replacement frequency are observational. | Missing |
 
 * Existing defects and required dispositions
 
@@ -72,7 +80,7 @@ credentialed external evidence is not applicable.
 | Unknown IDs and malformed frames lose or delay the causal protocol failure. | F92-C02 | Incomplete typed-cause closure. | Construct one typed protocol cause with the active request identity, fence that worker, and preserve the cause through DP4's bounded replacement. |
 | A client callback exception freezes healthy persistence after a definitive response. | F92-C02 | Latent inherited defect; no production caller uses runtime-store callbacks. | Remove the unused callback surface and make terminal request state the sole notification contract; delete tests that require callback-driven store poisoning. |
 | Board durability status documentation promises an ordered barrier although the operation is local status. | F92-C01 | Documentation defect. | Describe the bounded local status honestly; do not add an implicit worker request. |
-| A submitted write timeout is treated as permanently unknowable even though SQLite has an atomic outcome; the whole application is frozen because the protocol has no durable acknowledgement identity. | F92-C01 and F92-C05 | Fresh post-restart Daily counterexample after the original Feature 92 acceptance; inherited Feature 87 failure model. | Persist request identity and result inside the mutation transaction, replace the worker after timeout, and resolve/replay the same request generically before dispatching queued work. |
+| A submitted write timeout is treated as permanently unknowable even though SQLite has an atomic outcome; the whole application is frozen because the protocol has no durable acknowledgement identity. | F92-C05 | Fresh post-restart Daily counterexample after the original Feature 92 acceptance; inherited Feature 87 failure model. | Persist request identity and result inside the mutation transaction, replace the worker after timeout, and resolve/replay the same request generically before dispatching queued work. |
 
 * Delivery packages
 
@@ -247,8 +255,8 @@ the existing large-session timer/queued-commit scenario.
 
 ** F92-DP4: ACID acknowledgement recovery
 
-Establishes =F92-C05= after the live counterexample invalidated the original
-package acceptance.
+Establishes =F92-C02= and =F92-C05= after the live counterexample invalidated
+the original package acceptance.
 
 Useful stopping point: loss of a local worker acknowledgement is no longer an
 application-wide failure.  The adapter asks the ACID database which result
@@ -270,12 +278,25 @@ to session, Board, or other application owners.
   Revisit C04's parent-memory envelope for one retained maximum-size frame and
   test caller mutation after submission followed by recovery.
 - Retry reads after worker replacement because they have no durable effect.
-- Bound receipt retention with an acknowledged request-prefix watermark.  Keep
-  the active uncertain receipt until the parent has observed it; retire only
-  older acknowledged receipts.  Record the parent process identity at open.
-  Receipts for another runtime may be removed only after proving that parent
-  dead or from a prior boot; worker-lock release alone is insufficient because
-  the original parent may still be recovering its uncertain request.
+- Each request carries the highest write prefix already observed by the parent.
+  The worker advances that runtime's durable acknowledgement watermark and
+  removes receipts at or below the previously acknowledged prefix without
+  removing the active uncertain receipt.  Record bounded parent boot, PID, and
+  process-start identity with the runtime state at open.  Clean close is an
+  ordered, idempotent transaction after all accepted writes are observed: it
+  advances through the final observed write, marks that runtime identity
+  retired, and removes its remaining receipts.  Resolve a lost close response
+  through the same close identity and one bounded replacement attempt.  A
+  committed retirement is recognized from SQLite; an absent retirement may
+  execute once.  Only a durably unretired runtime after exhausted close
+  recovery requires proof that its recorded parent is dead or from a prior
+  boot before cleanup.  Worker-lock release alone is insufficient because the
+  original parent may still be recovering its uncertain request.
+- Runtime state is one bounded current-or-most-recent row per database, not one
+  permanent row per runtime identity.  Open may replace a retired row; it may
+  replace an unretired predecessor only after the existing parent-liveness
+  proof.  Clean close marks the singleton row retired transactionally, allowing
+  same-identity close recovery without accumulating retired tombstones.
 - Drive timeout recovery from scheduler state rather than whichever nested
   await happens to notice first.  A queued waiter that observes an overdue
   active request initiates the same single recovery transition.
@@ -307,9 +328,15 @@ Focused evidence: inject worker-side stalls immediately before commit,
 immediately after commit, and after response formation; queue a Board
 transition from a nested timer behind the active request; prove one durable
 effect and one result, bounded worker replacement, exact queued transition
-commit, healthy subsequent writes, and bounded receipt reclamation.  Also race
-a committed unacknowledged receipt, worker death, competing worker open, and
-original-parent recovery; the mutation must remain exactly once.
+commit, healthy subsequent writes, and bounded receipt reclamation.  Repeated
+clean open/write/close cycles under one still-live parent leave no retired
+runtime receipts and keep a constant runtime-state row count.  Lost close
+acknowledgement immediately before and after the retirement COMMIT resolves the
+same retirement identity; exhausted recovery retains an unretired runtime until
+dead-parent or prior-boot cleanup is safe and does not remove an unrelated
+uncertain write receipt.  Also race a committed unacknowledged receipt, worker
+death, competing worker open, and original-parent recovery; the mutation must
+remain exactly once.
 
 * Scenario portfolio
 
@@ -339,7 +366,8 @@ original-parent recovery; the mutation must remain exactly once.
   composition submit a write whose worker is deterministically stalled on each
   side of COMMIT.  A nested timer queues a Board transition.  The adapter
   replaces the worker, resolves the active request through its transactional
-  receipt, commits the queued transition exactly once, and remains healthy.
+  receipt, commits the queued transition exactly once, keeps the chat surface
+  responsive, exposes the visible Board transition, and remains healthy.
 
 The canonical package gate is the complete Eldev test suite plus
 =git diff --check= and batch =check-parens= for changed Lisp.  Because this
@@ -398,9 +426,11 @@ activated.
 
 - Runtime-store callback keywords are removed.  Repository source has no
   production caller, so there is no accepted compatibility obligation.
-- Existing database schema and stored values remain readable.  Oversized old
-  checkpoints are ignored as unusable projections; they are not rewritten or
-  truncated during read.
+- Under =F92-C05=, existing v4 stores require explicit offline migration and
+  ordinary startup rejects them without mutation.  Their canonical stored
+  values remain readable after migration.  Oversized old checkpoints are
+  ignored as unusable projections; they are not rewritten or truncated during
+  read.
 - Existing property-bearing string encodings remain readable.  New
   property-bearing strings are rejected with bounded error metadata because
   text properties are presentation state outside the durable tagged grammar;
@@ -436,8 +466,10 @@ claim.
    projection behavior stay with their semantic owners and cohesive source
    boundaries.
 4. Request timestamps live for one request, receipt identity/result lives until
-   the ordered acknowledgement watermark retires it, and Emacs file-lock state
-   lives for the worker claim.  Each is reclaimed at its owning boundary.
+   the ordered acknowledgement watermark retires it, one current-or-most-recent
+   runtime-state row lives until a safe successor replaces it, and Emacs
+   file-lock state lives for the worker claim.  Each is reclaimed at its owning
+   boundary.
 5. Domain adapters continue to depend on the generic runtime-store boundary;
    transport recovery does not move into domain adapters.
 6. No new public abstraction is introduced.  The unused callback surface is
