@@ -134,12 +134,21 @@ consumed through a marker file shared with the replacement subprocess."
   ;; storage limits are checked by the caller before this exact encoding.
   (base64-encode-string (e-runtime-store-codec-encode value) t))
 
-(defun e-runtime-store-worker--bounded-receipt-result (value)
-  "Encode VALUE within the response canonical bound before transaction commit."
-  (base64-encode-string
-   (e-runtime-store-codec-encode-bounded
-    value e-runtime-store-codec-protocol-canonical-byte-limit)
-   t))
+(defun e-runtime-store-worker--bounded-receipt-result (request value)
+  "Encode VALUE only when REQUEST's complete success response fits pre-COMMIT.
+
+Receipt storage holds just VALUE, but the parent can acknowledge it only as
+the correlated `:id', `:ok', and `:result' protocol response.  Validate that
+complete wire authority before the domain transaction commits, then retain the
+bounded result payload for idempotent replay."
+  (let ((limit e-runtime-store-codec-protocol-canonical-byte-limit))
+    ;; Use the exact production packer, not a parallel estimate: it proves
+    ;; both canonical and base64 wire limits for this request's success frame.
+    (e-runtime-store-worker--pack
+     (list :id (plist-get request :id) :ok t :result value))
+    (base64-encode-string
+     (e-runtime-store-codec-encode-bounded value limit)
+     t)))
 
 (defun e-runtime-store-worker--value (text)
   "Return exact value stored in SQLite TEXT."
@@ -631,7 +640,8 @@ acknowledgement prefix."
                    ;; Encode before COMMIT so an unrepresentable result aborts
                    ;; the mutation instead of creating an unacknowledgeable one.
                    (encoded-result
-                    (e-runtime-store-worker--bounded-receipt-result result)))
+                    (e-runtime-store-worker--bounded-receipt-result
+                     request result)))
               (sqlite-execute
                e-runtime-store-worker--database
                "INSERT INTO runtime_store_receipts(runtime_id,request_id,fingerprint,result,write_prefix) VALUES(?,?,?,?,?)"
@@ -650,7 +660,8 @@ acknowledgement prefix."
   (let* ((request-id (plist-get request :id))
          (fingerprint (e-runtime-store-worker--request-fingerprint request))
          (result (list :runtime-id e-runtime-store-worker--runtime-id :retired t))
-         (encoded-result (e-runtime-store-worker--bounded-receipt-result result)))
+         (encoded-result (e-runtime-store-worker--bounded-receipt-result
+                          request result)))
     (sqlite-execute e-runtime-store-worker--database "BEGIN IMMEDIATE")
     (condition-case err
         (let ((row (car (sqlite-select

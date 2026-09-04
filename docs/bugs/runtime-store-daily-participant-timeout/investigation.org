@@ -213,8 +213,9 @@ The correction belongs at the ACID storage boundary, not in session or Board
 policy.  SQLite already decides atomically whether each mutation commits or
 rolls back.  The adapter must make that outcome observable across loss of the
 worker acknowledgement: give each write a durable request identity and record
-that identity, an exact request fingerprint, and its bounded result in the same
-transaction as the mutation.  After a timeout, replace the worker and replay
+that identity, an exact request fingerprint, and a result proved to fit its
+complete correlated success response in the same transaction as the mutation.
+After a timeout, replace the worker and replay
 the same identity.  The worker returns the committed receipt when present or
 executes the transaction once when absent.  A mismatched fingerprint is a
 protocol error.  Reads can be retried after reopening.
@@ -247,8 +248,8 @@ write probes used a disposable clone.
 The runtime-store scheduler now retains the immutable preflight frame for a
 submitted request, fences a malformed/lost worker once, and replaces it before
 replaying that same frame.  Generic SQLite writes persist a request-id,
-complete semantic replay-frame fingerprint, and bounded result in the mutation
-transaction;
+complete semantic replay-frame fingerprint, and a result bounded against the
+complete =:id= / =:ok= / =:result= success envelope in the mutation transaction;
 the replacement either returns that receipt or performs the absent mutation.
 Reads retry through the same bounded replacement.  A second transport failure
 exhausts recovery with the first typed cause and settles owned work once.
@@ -262,7 +263,8 @@ the same replacement boundary.
 
 Focused deterministic evidence now passes for the three transaction fault
 points (before COMMIT, after COMMIT, and after response formation), exact
-receipt-result bounds with mutation rollback, receipt collision/watermark,
+full-success-response receipt bounds through original emission and receipt
+replay with one-over mutation rollback, receipt collision/watermark,
 parent-boot/PID/process-start lifetime, live-parent refusal, prior-boot and
 PID-reuse reclamation, retired replacement, repeated clean lifecycle rows, and
 zero-or-owned receipt counts.  Parent boot is now an opaque host-boot token
@@ -271,13 +273,21 @@ batch Emacsen prove the same boot token with distinct PID/start identities.
 Queued waiters observe the earlier active
 deadline, while replacement-open loss and ownership contention exhaust once
 with the original typed cause.  The real session-SQLite plus Board timer composition
-uses a one-shot worker-side =catalog-put= post-COMMIT fault and continues its
+uses one-shot worker-side =catalog-put= faults before and after COMMIT and continues its
 queued pickup transition; the isolated graphical chat/Board witness exercises
 the same path through =e2e/run-graphical-tests.sh=.  The v4-to-v5 fixture
 preserves canonical records, verifies backup and ordinary-open rejection,
 rolls back injected faults without either v5 table, and recovers a faulted
 write after upgrade.  The fresh production-path 16 MiB retained-frame recovery
 probe passed at 344,948,736 bytes peak RSS, below 536,870,912 bytes.
+
+Exhausted close recovery now has direct deterministic evidence: a pre-COMMIT
+retirement loss plus failed replacement leaves the singleton unretired and its
+uncertain write receipt present until controlled prior-boot cleanup reclaims
+it.  A committed lost write acknowledgement also rejects a competing
+different-parent open while the original parent is live, then replays once
+under that original identity and retires its receipt through the next
+acknowledgement watermark.
 
 This is implementation evidence only: Feature 92 remains In-review pending
 parent and independent review; neither behavioral acceptance nor a fixed point

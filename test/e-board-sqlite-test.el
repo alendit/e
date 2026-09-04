@@ -76,44 +76,48 @@
       (should (e-runtime-store-live-p runtime)))))
 
 (ert-deftest e-board-sqlite-s92-catalog-recovery-keeps-timer-queued-pickup ()
-  "A real catalog receipt recovers before a timer-driven Board transition."
-  (let* ((marker (make-temp-file "e-board-s92-catalog-fault-"))
-         (process-environment
-          (cons "E_RUNTIME_STORE_TEST_FAULT=after-commit"
-                (cons "E_RUNTIME_STORE_TEST_FAULT_OPERATION=catalog-put"
-                      (cons (concat "E_RUNTIME_STORE_TEST_FAULT_ONCE_FILE=" marker)
-                            process-environment)))))
-    (delete-file marker)
-    (unwind-protect
-    (e-board-sqlite-test--with-store (sessions storage _directory)
-      (let* ((board (e-board-sqlite-test--board storage "catalog-recovery"))
-             (_participant (e-board-add-participant
-                            board :id "member" :create-pickup-subscription-id "address"))
-             (publication (e-board-post-input
-                           board :id "input" :to "member" :content "route"
-                           :source-input-key '(catalog-recovery 1 1)))
-             (runtime (e-session-storage-runtime-store sessions)))
-        ;; The helper's synchronous classifier is the normal durable routing
-        ;; path and has created a ready pickup before the catalog write.
-        (let* ((pickup-id (car (e-board-publication-pickup-ids publication)))
-               claimed)
-          (run-at-time 0 nil
-                       (lambda ()
-                         (setq claimed
-                               (e-board-pickup-start-delivery board pickup-id))))
-          (should (= (plist-get
-                      (e-session-storage-sqlite-write-catalog
-                       sessions '((:id "recovery")))
-                      :revision)
-                     1))
-          (sit-for 0.05)
-          (should claimed)
-          (should (eq (e-board-pickup-state (e-board-pickup board pickup-id))
-                      'delivering))
-          (should-not (plist-get (e-runtime-store-status runtime) :unavailable))
-          (should (equal (plist-get (e-session-create sessions :id "after-catalog") :id)
-                         "after-catalog")))))
-      (when (file-exists-p marker) (delete-file marker)))))
+  "Both catalog transaction sides recover before a timer-driven Board transition."
+  (dolist (point '("before-commit" "after-commit"))
+    (let* ((marker (make-temp-file "e-board-s92-catalog-fault-"))
+           (process-environment
+            (cons (concat "E_RUNTIME_STORE_TEST_FAULT=" point)
+                  (cons "E_RUNTIME_STORE_TEST_FAULT_OPERATION=catalog-put"
+                        (cons (concat "E_RUNTIME_STORE_TEST_FAULT_ONCE_FILE=" marker)
+                              process-environment)))))
+      (delete-file marker)
+      (unwind-protect
+          (e-board-sqlite-test--with-store (sessions storage _directory)
+            (let* ((board (e-board-sqlite-test--board storage "catalog-recovery"))
+                   (_participant (e-board-add-participant
+                                  board :id "member" :create-pickup-subscription-id "address"))
+                   (publication (e-board-post-input
+                                 board :id "input" :to "member" :content "route"
+                                 :source-input-key '(catalog-recovery 1 1)))
+                   (runtime (e-session-storage-runtime-store sessions)))
+              ;; The helper's synchronous classifier is the normal durable routing
+              ;; path and has created a ready pickup before the catalog write.
+              (let* ((pickup-id (car (e-board-publication-pickup-ids publication)))
+                     claimed)
+                (run-at-time 0 nil
+                             (lambda ()
+                               (setq claimed
+                                     (e-board-pickup-start-delivery board pickup-id))))
+                (should (= (plist-get
+                            (e-session-storage-sqlite-write-catalog
+                             sessions '((:id "recovery")))
+                            :revision)
+                           1))
+                (let ((deadline (+ (float-time) 5.0)))
+                  (while (and (not claimed) (< (float-time) deadline))
+                    (accept-process-output nil 0.01)))
+                (should (e-board-pickup-p claimed))
+                (should (eq (e-board-pickup-state (e-board-pickup board pickup-id))
+                            'delivering))
+                (should (file-exists-p marker))
+                (should-not (plist-get (e-runtime-store-status runtime) :unavailable))
+                (should (equal (plist-get (e-session-create sessions :id "after-catalog") :id)
+                               "after-catalog")))))
+        (when (file-exists-p marker) (delete-file marker))))))
 
 (ert-deftest e-board-sqlite-s5-publication-is-invisible-until-ack ()
   "A reentrant observer cannot see or build on an unacknowledged fact."

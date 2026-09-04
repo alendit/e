@@ -351,6 +351,73 @@
       (ignore-errors (e-runtime-store-close store))
       (delete-directory directory t))))
 
+(ert-deftest e-runtime-store-s92-live-competitor-cannot-steal-uncertain-receipt ()
+  "Only the live original parent may replay its committed lost acknowledgement."
+  (e-runtime-store-test--with-worker-fault "after-commit"
+    (let* ((directory (make-temp-file "e-runtime-store-live-replay-" t))
+           (database-file (expand-file-name "store.sqlite3" directory))
+           (store (e-runtime-store-open directory))
+           (process (e-runtime-store--process store))
+           (other-parent (e-runtime-store-test--separate-batch-parent-identity))
+           request)
+      (unwind-protect
+          (progn
+            ;; Keep the test in control until the competing parent has tried
+            ;; to claim the receipt; normal await performs the later recovery.
+            (set-process-sentinel process #'ignore)
+            (setq request
+                  (e-runtime-store-submit
+                   store 'write
+                   '(:op session-append :session-id "live-replay"
+                     :record (:value committed-once))))
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (process-live-p process) (< (float-time) deadline))
+                (sleep-for 0.01)))
+            (should-not (process-live-p process))
+            (let ((db (sqlite-open database-file)))
+              (unwind-protect
+                  (should (= (e-runtime-store-worker--column
+                              (car (sqlite-select db
+                                                  "SELECT COUNT(*) FROM runtime_store_receipts")) 0)
+                             1))
+                (sqlite-close db)))
+            (should (equal (plist-get other-parent :boot)
+                           (plist-get (e-runtime-store--parent-identity) :boot)))
+            (should-not (= (plist-get other-parent :pid) (emacs-pid)))
+            (should-error
+             (e-runtime-store-worker--open directory "competing-parent" other-parent)
+             :type 'e-runtime-store-parent-active)
+            (e-runtime-store-worker--close)
+            ;; Same runtime and live parent retain the state row and replay
+            ;; the receipt, yielding the original result without duplication.
+            (should (= (plist-get (e-runtime-store-await store request) :revision) 1))
+            (should (= (length (plist-get
+                                (e-runtime-store-call
+                                 store 'read
+                                 '(:op session-record-page :session-id "live-replay"))
+                                :records))
+                       1))
+            ;; The following canonical write carries the acknowledgement
+            ;; watermark and retires the now-resolved uncertain receipt.
+            (should (= (plist-get
+                        (e-runtime-store-call
+                         store 'write
+                         '(:op session-append :session-id "live-replay"
+                           :record (:value after-replay)))
+                        :revision)
+                       2))
+            (let ((db (sqlite-open database-file)))
+              (unwind-protect
+                  (should (= (e-runtime-store-worker--column
+                              (car (sqlite-select db
+                                                  "SELECT COUNT(*) FROM runtime_store_receipts WHERE request_id=?"
+                                                  (vector (e-runtime-store-request--id request)))) 0)
+                             0))
+                (sqlite-close db))))
+        (ignore-errors (e-runtime-store-close store))
+        (e-runtime-store-worker--close)
+        (delete-directory directory t)))))
+
 (ert-deftest e-runtime-store-s92-acid-worker-fault-sides-replay-once ()
   "Pre-COMMIT, post-COMMIT, and formed-response loss resolve one write once."
   (dolist (point '("before-commit" "after-commit" "after-response-formation"))
@@ -532,6 +599,60 @@
           (when store (ignore-errors (e-runtime-store-close store)))
           (delete-directory directory t))))))
 
+(ert-deftest e-runtime-store-s92-exhausted-close-keeps-unretired-state-and-receipt ()
+  "A failed close retry leaves its rollback state and uncertain receipt owned."
+  (e-runtime-store-test--with-worker-fault "before-retirement-commit"
+    (let* ((directory (make-temp-file "e-runtime-store-close-exhausted-" t))
+           (database-file (expand-file-name "store.sqlite3" directory))
+           (store (e-runtime-store-open directory))
+           (prior-boot (copy-tree (e-runtime-store--parent-identity))))
+      (plist-put prior-boot :boot
+                 (concat "controlled-prior-boot-"
+                         (plist-get prior-boot :boot)))
+      (unwind-protect
+          (progn
+            ;; A successfully acknowledged write is still the one uncertain
+            ;; receipt until a later write advertises its acknowledgement.
+            (should (= (plist-get
+                        (e-runtime-store-call
+                         store 'write
+                         '(:op session-append :session-id "close-exhausted"
+                           :record (:value uncertain-before-close)))
+                        :revision)
+                       1))
+            ;; The first close worker rolls its retirement transaction back;
+            ;; replacement setup then fails, spending the only retry.
+            (cl-letf (((symbol-function 'e-runtime-store--ensure-worker-open)
+                       (lambda (&rest _arguments)
+                         (signal 'e-runtime-store-error
+                                 '("forced exhausted close replacement")))))
+              (should-error (e-runtime-store-close store)
+                            :type 'e-runtime-store-unavailable))
+            (setq store nil)
+            (let ((db (sqlite-open database-file)))
+              (unwind-protect
+                  (progn
+                    (should (= (e-runtime-store-worker--column
+                                (car (sqlite-select db
+                                                    "SELECT retired FROM runtime_store_state")) 0)
+                               0))
+                    (should (= (e-runtime-store-worker--column
+                                (car (sqlite-select db
+                                                    "SELECT COUNT(*) FROM runtime_store_receipts")) 0)
+                               1)))
+                (sqlite-close db)))
+            ;; Only explicit prior-boot proof can now replace the unretired
+            ;; owner, and that same safe transaction reclaims its receipt.
+            (e-runtime-store-worker--open directory "safe-close-cleanup" prior-boot)
+            (should (= (e-runtime-store-worker--column
+                        (car (sqlite-select e-runtime-store-worker--database
+                                            "SELECT COUNT(*) FROM runtime_store_receipts")) 0)
+                       0))
+            (e-runtime-store-worker--close))
+        (when store (ignore-errors (e-runtime-store-close store)))
+        (e-runtime-store-worker--close)
+        (delete-directory directory t)))))
+
 (ert-deftest e-runtime-store-s92-receipt-collision-watermark-and-retirement ()
   "Receipts reject semantic id reuse, retain the active one, then retire cleanly."
   (let ((directory (make-temp-file "e-runtime-store-receipt-" t)))
@@ -578,41 +699,89 @@
       (delete-directory directory t))))
 
 (ert-deftest e-runtime-store-s92-receipt-result-bound-rolls-back-mutation ()
-  "A one-over receipt result aborts its domain mutation and receipt together."
+  "Only a full fitting success response may commit its mutation and receipt."
   (let ((directory (make-temp-file "e-runtime-store-result-bound-" t))
         (limit 1024) exact one-over)
     (unwind-protect
         (let ((e-runtime-store-codec-protocol-canonical-byte-limit limit))
-          ;; Find the exact printable boundary rather than assuming a private
-          ;; codec tag's fixed overhead; ASCII grows one canonical byte here.
-          (setq exact "")
-          (while (< (string-bytes (e-runtime-store-codec-encode exact)) limit)
-            (setq exact (concat exact "x")))
-          (setq one-over (concat exact "x"))
-          (should (= (string-bytes (e-runtime-store-codec-encode exact)) limit))
-          (should (stringp (e-runtime-store-worker--bounded-receipt-result exact)))
-          (should-error (e-runtime-store-worker--bounded-receipt-result one-over)
-                        :type 'e-runtime-store-codec-too-large)
-          (e-runtime-store-worker--open directory "result-bound")
-          (cl-letf (((symbol-function 'e-runtime-store-worker--write-dispatch)
-                     (lambda (body)
-                       (e-runtime-store-worker--session-append body)
-                       one-over)))
+          (let* ((exact-request
+                  '(:id "exact:1" :kind write :write-prefix 1 :ack-prefix 0
+                    :body (:op session-append :session-id "result-exact"
+                           :record (:value commits-once))))
+                 ;; Keep the ID byte length equal, so adding one ASCII result
+                 ;; byte crosses precisely the same success-response boundary.
+                 (one-over-request
+                  '(:id "overx:1" :kind write :write-prefix 1 :ack-prefix 0
+                    :body (:op session-append :session-id "result-over"
+                           :record (:value must-roll-back)))))
+            ;; Measure the complete response that the original and replacement
+            ;; worker must actually pack, never a bare SQLite receipt payload.
+            (setq exact "")
+            (while (< (string-bytes
+                       (e-runtime-store-codec-encode
+                        (list :id (plist-get exact-request :id) :ok t
+                              :result exact)))
+                      limit)
+              (setq exact (concat exact "x")))
+            (setq one-over (concat exact "x"))
+            (should (= (string-bytes
+                        (e-runtime-store-codec-encode
+                         (list :id (plist-get exact-request :id) :ok t
+                               :result exact)))
+                       limit))
             (should-error
-             (e-runtime-store-worker--write
-              '(:id "too-large:1" :kind write :write-prefix 1 :ack-prefix 0
-                :body (:op session-append :session-id "result-bound"
-                       :record (:value must-roll-back))))
-             :type 'e-runtime-store-codec-too-large))
-          (should (= (length (plist-get
-                              (e-runtime-store-worker--read
-                               '(:op session-record-page :session-id "result-bound"))
-                              :records))
-                     0))
-          (should (= (e-runtime-store-worker--column
-                      (car (sqlite-select e-runtime-store-worker--database
-                                          "SELECT COUNT(*) FROM runtime_store_receipts")) 0)
-                     0)))
+             (e-runtime-store-worker--bounded-receipt-result
+              one-over-request one-over)
+             :type 'e-runtime-store-codec-too-large)
+            (e-runtime-store-worker--open directory "result-bound")
+            (cl-labels
+                ((emit (request response)
+                   (with-temp-buffer
+                     (let ((standard-output (current-buffer)))
+                       (e-runtime-store-worker--emit-response request response))
+                     (e-runtime-store-worker--unpack
+                      (string-trim (buffer-string))))))
+              (cl-letf (((symbol-function 'e-runtime-store-worker--write-dispatch)
+                         (lambda (body)
+                           (e-runtime-store-worker--session-append body)
+                           exact)))
+                (let ((original (e-runtime-store-worker--response exact-request)))
+                  (should (plist-get original :ok))
+                  (should (equal (plist-get original :result) exact))
+                  (should (equal (emit exact-request original) original))
+                  ;; Receipt replay must emit the same full fitting response
+                  ;; without applying the domain mutation again.
+                  (let ((replay (e-runtime-store-worker--response exact-request)))
+                    (should (equal replay original))
+                    (should (equal (emit exact-request replay) replay)))))
+              (cl-letf (((symbol-function 'e-runtime-store-worker--write-dispatch)
+                         (lambda (body)
+                           (e-runtime-store-worker--session-append body)
+                           one-over)))
+                (let ((rejected
+                       (e-runtime-store-worker--response one-over-request)))
+                  (should-not (plist-get rejected :ok))
+                  ;; The original error response is itself still transportable;
+                  ;; no write receipt may be left for an unacknowledgeable value.
+                  (should (equal (emit one-over-request rejected) rejected))))
+              (should (= (length (plist-get
+                                  (e-runtime-store-worker--read
+                                   '(:op session-record-page :session-id "result-exact"))
+                                  :records))
+                         1))
+              (should (= (length (plist-get
+                                  (e-runtime-store-worker--read
+                                   '(:op session-record-page :session-id "result-over"))
+                                  :records))
+                         0))
+              (should (= (e-runtime-store-worker--column
+                          (car (sqlite-select e-runtime-store-worker--database
+                                              "SELECT COUNT(*) FROM runtime_store_receipts WHERE request_id='exact:1'")) 0)
+                         1))
+              (should (= (e-runtime-store-worker--column
+                          (car (sqlite-select e-runtime-store-worker--database
+                                              "SELECT COUNT(*) FROM runtime_store_receipts WHERE request_id='overx:1'")) 0)
+                         0)))))
       (e-runtime-store-worker--close)
       (delete-directory directory t))))
 

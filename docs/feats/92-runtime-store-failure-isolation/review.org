@@ -361,14 +361,33 @@ the deterministic scheduler clock witness.
 ** Resolved implementation finding: receipts did not bind all replay semantics or result size
 
 Receipt fingerprints now hash kind, body, write prefix, and acknowledgement
-prefix while the request id remains the receipt key.  Receipt results are
-encoded through the protocol canonical bound before COMMIT, so one-over output
-rolls back its domain mutation and receipt together.
+prefix while the request id remains the receipt key.  Before COMMIT, receipt
+results are bounded against the complete correlated =:id= / =:ok= / =:result=
+success response, rather than against a bare SQLite result payload.  One-over
+output therefore rolls back its domain mutation and receipt together.
 
 =e-runtime-store-s92-receipt-collision-watermark-and-retirement= includes a
 same-body changed-prefix collision; =e-runtime-store-s92-receipt-result-bound-
-rolls-back-mutation= exercises exact/one-over result bounds and verifies no
-domain record or receipt survives the failed transaction.
+rolls-back-mutation= emits the exact full success response on both original
+execution and receipt replay, then verifies that a one-over response leaves no
+domain record or receipt.
+
+** Resolved implementation finding: recovery evidence omitted close and composition partitions
+
+=e-board-sqlite-s92-catalog-recovery-keeps-timer-queued-pickup= now drives the
+real session-SQLite plus Board timer composition through both =catalog-put=
+before-COMMIT and after-COMMIT worker loss.  In each case it proves one catalog
+revision, a visible durable pickup transition, and a later healthy canonical
+write.
+
+=e-runtime-store-s92-exhausted-close-keeps-unretired-state-and-receipt=
+forces a pre-COMMIT close loss followed by failed replacement setup, proves the
+row remains unretired with its write receipt, then uses controlled prior-boot
+proof for safe reclamation.  =e-runtime-store-s92-live-competitor-cannot-steal-
+uncertain-receipt= commits a write without its acknowledgement, rejects a
+different-parent candidate while the original parent remains live, replays
+under that original parent once, and
+uses the next acknowledgement watermark to retire the receipt.
 
 ** Verification for this correction pass
 
