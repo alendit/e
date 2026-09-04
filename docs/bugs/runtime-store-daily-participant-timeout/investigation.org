@@ -1,0 +1,119 @@
+#+title: Daily Runtime-Store Timeout Investigation
+#+startup: overview
+
+* Status
+
+In progress.  The live failure is a parent-enforced 60-second runtime-store
+timeout during GUS child admission, not an Emacs hang, an OS process kill, or
+SQLite corruption.  The first timeout occurred during derived session
+projection publication, but the exact active typed request is not recoverable
+from the current bounded status record.
+
+* Live and durable evidence
+
+The supported read-only live probe reports that Emacs is responsive and the
+Daily chat is idle.  OS inspection finds no runtime-store worker beneath the
+new Emacs process.
+
+The fresh ownership record names worker PID 5289 with start time
+=2026-09-04T09:19:20Z=.  The bounded macOS unified-log window shows that PID's
+connections closing at =2026-09-04T09:20:40.857Z=, with no crash report,
+memory-pressure kill, or other external termination.  The final new session
+and WAL writes occurred at =09:19:40Z=.  The 60-second interval matches
+=e-runtime-store-request-timeout= and the parent adapter's explicit
+=delete-process= timeout path.
+
+The canonical store opens read-only, reports schema version 4, and passes
+=PRAGMA quick_check=.  Its current size is 3.56 GB, primarily session records
+and checkpoints.  Size is a scaling condition, not evidence of corruption.
+
+The latest Daily board contains its manifest and running GitHub and GUS facts.
+The GitHub child completed private Board admission.  The GUS child durably
+committed its session root and board-session-state, proving that binding
+installation and the primary session-admission transaction both completed.
+Its Board participant exists at revision 1 with =:publication-pending t=.
+The catalog projection does not contain the GUS session and the GUS session has
+no checkpoint, so the later derived publication did not complete and final
+participant publication encountered the already unavailable store.
+
+An APFS clone of the canonical database preserves that exact provisional
+participant.  Running the exact =board-participant-publish= operation against
+the clone succeeds immediately, advances the Board revision, and leaves the
+cloned worker healthy.  The participant SQL transition and database contents
+therefore do not reproduce the stall by themselves.
+
+* Source evidence
+
+=e-chat-service-create-participant= first creates the provisional session,
+then installs a deferred participant binding, commits the session admission,
+and finally publishes the participant.  For SQLite,
+=e-session-commit-board-admission= publishes the primary records, commits the
+aggregate reservation, and then attempts rebuildable catalog and checkpoint
+projections.  Projection failure after the primary commit is deliberately
+recorded rather than reported as an uncommitted primary mutation.  The durable
+state therefore narrows the first unavailable transition to that derived
+projection interval.  =catalog-put= is the awaited operation at that boundary,
+but the old diagnostics do not distinguish it from a concurrently active
+request that may have blocked it.
+
+At the incident revision, =e-runtime-store-await= applied one 60-second
+wall-clock deadline and froze the entire shared store when it expired.  The
+timeout error recorded only the request kind (=read= or =write=), not the typed
+body operation, request id, queue state, or concurrently active request.  Every
+later submission replaced that cause with the generic unavailable message
+shown in the report.
+
+At the incident revision, the worker's ordinary =status= operation also ran
+=PRAGMA quick_check=.
+=e-session-storage-sqlite-ordered-barrier= uses that status operation as a
+supposedly narrow ordering fence.  On this database the check takes about ten
+seconds.  This is an independent scaling defect: explicit integrity checking
+already has its own =store-integrity= operation, so an ordinary status/barrier
+must not scan the database.  Current repository and project source has no
+production caller of that session finalization/barrier path during Daily
+admission, so it is not yet accepted as the direct cause of this incident.
+
+* Implemented containment and diagnostics
+
+Commit =eb091148= makes ordinary worker status constant-cost and leaves
+=PRAGMA quick_check= and =PRAGMA integrity_check= under the explicit
+=store-integrity= operation.  It also records typed operation and transport
+kind for timeouts and worker exits, retains the first unavailable cause across
+later submissions and callback errors, and exposes active operation and first
+cause through bounded runtime status.
+
+Commit =478de8bf= distinguishes an expired queued request from an ambiguous
+submitted request.  It removes and fails only the unsent request, records the
+active request that blocked it, and keeps the shared worker available.  The
+submitted timeout path still freezes the store because its commit outcome can
+be ambiguous.
+
+Repository-side validation passed 16 runtime-store tests, 15 session SQLite
+tests, 17 Board SQLite tests, and 14 default-runtime SQLite tests.  Independent
+reviews found no remaining blocker in either slice.
+
+The queued-timeout regression holds one shared-runtime write, queues a
+=catalog-put=, expires that queued request, then proves the earlier write
+commits, the worker remains live, and the cancelled catalog is never
+published.  This contains the destructive Daily failure mode when the GUS
+catalog write was queued.  It does not claim to eliminate a genuinely stalled
+submitted operation.  The bug remains open until a fresh Daily run either
+succeeds or reports the newly preserved active typed cause.
+
+* Required correction evidence
+
+- Reproduce the shared-store admission stall or identify the exact typed
+  request from preserved diagnostics.
+- Keep ordinary status and ordering barriers constant-cost; retain
+  =PRAGMA quick_check= only behind explicit integrity checking.  Implemented
+  and covered.
+- Preserve the first unavailable cause and typed operation in subsequent
+  user-visible failures.  Implemented and covered.
+- Exercise multiple participant admissions sharing one SQLite runtime while
+  another child can emit provider/session callbacks.
+- Prove a stalled or queued request cannot incorrectly destroy unrelated
+  healthy persistence work.  Covered for queued requests; submitted operations
+  retain fail-closed ambiguity handling.
+
+The user's running Emacs and canonical SQLite files were inspected read-only
+and left unchanged.
