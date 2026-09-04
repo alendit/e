@@ -318,6 +318,17 @@
                   :record-count)
                  1)))))
 
+(ert-deftest e-session-sqlite-s3-ordered-barrier-dispatches-status-only ()
+  "The ordered barrier requests status without an integrity operation."
+  (let (observed)
+    (cl-letf (((symbol-function 'e-session-storage-sqlite--call)
+               (lambda (store kind body)
+                 (setq observed (list store kind body))
+                 'acknowledged)))
+      (should (eq (e-session-storage-sqlite-ordered-barrier 'store)
+                  'acknowledged))
+      (should (equal observed '(store read (:op status)))))))
+
 (ert-deftest e-session-sqlite-s3-fork-batch-is-atomic-and-restorable ()
   "A fork commits its complete bounded record vector in one transaction."
   (e-session-sqlite-test--with-store (store directory)

@@ -73,6 +73,31 @@
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('writer_commands','owner_revisions')"))
         (sqlite-close database)))))
 
+(ert-deftest e-runtime-store-s2-status-is-constant-cost-and-integrity-explicit ()
+  "Ordinary status performs no SQLite scan; explicit integrity still does."
+  (let ((e-runtime-store-worker--database 'sentinel)
+        selects)
+    (cl-letf (((symbol-function 'sqlite-select)
+               (lambda (_database sql &rest _arguments)
+                 (push sql selects)
+                 (list (list "ok")))))
+      (let ((status (e-runtime-store-worker--read '(:op status))))
+        (should (= (plist-get status :schema-version) 4))
+        (should-not (plist-member status :quick-check))
+        (should-not selects))
+      (let ((integrity
+             (e-runtime-store-worker--read '(:op store-integrity))))
+        (should (plist-get integrity :ok))
+        (should (eq (plist-get integrity :kind) 'quick-check))
+        (should (equal selects '("PRAGMA quick_check"))))
+      (setq selects nil)
+      (let ((integrity
+             (e-runtime-store-worker--read
+              '(:op store-integrity :full t))))
+        (should (plist-get integrity :ok))
+        (should (eq (plist-get integrity :kind) 'integrity-check))
+        (should (equal selects '("PRAGMA integrity_check")))))))
+
 (ert-deftest e-runtime-store-s2-rejects-a-second-live-runtime ()
   "One live worker exclusively owns one physical database."
   (e-runtime-store-test--with-store (store directory)
@@ -197,17 +222,26 @@
                    :record (:value maybe-committed))
                  :on-done (lambda (_result) (cl-incf done-count))
                  :on-error (lambda (_error) (cl-incf error-count))))
-          (should-error (e-runtime-store-await store request 0.02)
-                        :type 'e-runtime-store-timeout)
-          (accept-process-output nil 0.05)
-          (should (eq (e-runtime-store-request--state request) 'failed))
-          (should (= done-count 0))
-          (should (= error-count 1))
-          (should-not (process-live-p process))
-          (should (plist-get (e-runtime-store-status store) :unavailable))
-          (should-error
-           (e-runtime-store-call store 'read '(:op status))
-           :type 'e-runtime-store-unavailable)
+          (let ((timeout
+                 (should-error (e-runtime-store-await store request 0.02)
+                               :type 'e-runtime-store-timeout)))
+            (accept-process-output nil 0.05)
+            (should (eq (e-runtime-store-request--state request) 'failed))
+            (should (= done-count 0))
+            (should (= error-count 1))
+            (should-not (process-live-p process))
+            (should (plist-get (e-runtime-store-status store) :unavailable))
+            (should (eq (plist-get (cddr timeout) :operation)
+                        'session-append))
+            (dotimes (_ 2)
+              (let ((later
+                     (should-error
+                      (e-runtime-store-call store 'read '(:op status))
+                      :type 'e-runtime-store-unavailable)))
+                (should (string-match-p
+                         "session-append"
+                         (error-message-string later)))
+                (should (equal (plist-get (cddr later) :cause) timeout)))))
           (e-runtime-store-close store)
           (setq store (e-runtime-store-open directory))
           (let ((page
@@ -310,7 +344,16 @@
       (should (string-match-p
                "Failure callback signaled"
                (error-message-string
-                (plist-get (e-runtime-store-status store) :last-error)))))))
+                (plist-get (e-runtime-store-status store) :last-error))))
+      (let* ((status (e-runtime-store-status store))
+             (cause (plist-get status :unavailable-cause))
+             (later
+              (should-error
+               (e-runtime-store-call store 'read '(:op status))
+               :type 'e-runtime-store-unavailable)))
+        (should (eq (car cause) 'e-runtime-store-unavailable))
+        (should (eq (plist-get (cddr cause) :operation) 'session-append))
+        (should (equal (plist-get (cddr later) :cause) cause))))))
 
 (ert-deftest e-runtime-store-s2-success-callback-failure-is-visible ()
   "A signaling success callback freezes later work without undoing its commit."

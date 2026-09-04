@@ -156,7 +156,9 @@
 
 The runtime store serializes writes and gives queued commits priority over
 bounded reads.  Its status query is therefore the narrow ordered barrier: an
-acknowledged status response cannot overtake an earlier submitted write."
+acknowledged status response cannot overtake an earlier submitted write.  The
+barrier deliberately performs no database integrity scan; callers request
+that separately through `e-runtime-store-integrity'."
   (e-session-storage-sqlite--call store 'read '(:op status)))
 
 (defun e-session-storage-sqlite-healthy-p (store)

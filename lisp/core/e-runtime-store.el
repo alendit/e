@@ -57,7 +57,7 @@ A submitted timeout freezes the store until explicit close/reopen and reload."
                (:conc-name e-runtime-store--))
   directory database-file runtime-id process opened-process stderr-buffer input-fragment
   (sequence 0) pending write-queue read-queue active-request
-  last-error startup-status unavailable closed)
+  last-error unavailable-cause startup-status unavailable closed)
 
 (cl-defstruct (e-runtime-store-request
                (:constructor e-runtime-store-request--create)
@@ -112,6 +112,22 @@ deleting or rewriting those unrelated artifacts."
        (not (e-runtime-store--closed store))
        (not (e-runtime-store--unavailable store))
        (e-runtime-store--live-p store)))
+
+(defun e-runtime-store--request-operation (request)
+  "Return REQUEST's typed operation, or nil when it has no operation body."
+  (and request
+       (plist-get (e-runtime-store-request--body request) :op)))
+
+(defun e-runtime-store--signal-unavailable (store)
+  "Signal STORE's unavailable state while preserving its first cause."
+  (let ((cause (e-runtime-store--unavailable-cause store)))
+    (signal
+     'e-runtime-store-unavailable
+     (if cause
+         (list (format "Store is unavailable after %s"
+                       (error-message-string cause))
+               :cause cause)
+       (list "Store is unavailable; close, reopen, and reload canonical state")))))
 
 (defun e-runtime-store--signal-response-error (response)
   "Signal the typed error contained by RESPONSE."
@@ -209,6 +225,8 @@ deleting or rewriting those unrelated artifacts."
                           (e-runtime-store--read-queue store)
                           pending-requests))
             :test #'eq)))
+      (unless (e-runtime-store--unavailable-cause store)
+        (setf (e-runtime-store--unavailable-cause store) error))
       (setf (e-runtime-store--active-request store) nil
             (e-runtime-store--write-queue store) nil
             (e-runtime-store--read-queue store) nil
@@ -250,17 +268,26 @@ deleting or rewriting those unrelated artifacts."
 (defun e-runtime-store--worker-exited (store)
   "Fail STORE after worker loss without retrying an ambiguous operation."
   (unless (e-runtime-store--closed store)
-    (e-runtime-store--fail-all
-     store '(e-runtime-store-unavailable
-             "Worker exited before acknowledging the request; reload canonical state"))))
+    (let* ((request (e-runtime-store--active-request store))
+           (operation (e-runtime-store--request-operation request)))
+      (e-runtime-store--fail-all
+       store
+       (list 'e-runtime-store-unavailable
+             (if operation
+                 (format "Worker exited before acknowledging %s; reload canonical state"
+                         operation)
+               "Worker exited before acknowledging the request; reload canonical state")
+             :operation operation
+             :kind (and request (e-runtime-store-request--kind request))
+             :request-id (and request
+                              (e-runtime-store-request--id request)))))))
 
 (defun e-runtime-store--start-process (store)
   "Start STORE's worker process and return it."
   (when (e-runtime-store--closed store)
     (signal 'e-runtime-store-unavailable (list "Store is closed")))
   (when (e-runtime-store--unavailable store)
-    (signal 'e-runtime-store-unavailable
-            (list "Store is unavailable; close, reopen, and reload canonical state")))
+    (e-runtime-store--signal-unavailable store))
   (unless (e-runtime-store--live-p store)
     (when (buffer-live-p (e-runtime-store--stderr-buffer store))
       (kill-buffer (e-runtime-store--stderr-buffer store)))
@@ -360,8 +387,7 @@ Request identity is process-local transport correlation only."
   (when (e-runtime-store--closed store)
     (signal 'e-runtime-store-unavailable (list "Store is closed")))
   (when (e-runtime-store--unavailable store)
-    (signal 'e-runtime-store-unavailable
-            (list "Store is unavailable; close, reopen, and reload canonical state")))
+    (e-runtime-store--signal-unavailable store))
   ;; Encoding is the producer-side validation boundary.  Reject unsupported or
   ;; cyclic values before the request can become a submitted durable effect.
   (let ((request
@@ -410,10 +436,19 @@ Return `dropped' for provisional work or `in-flight' once transport began."
                        (cdr (e-runtime-store-request--error request))))
       ('cancelled (signal 'e-runtime-store-cancelled (list request)))
       (_
-       (let ((err
-              (list 'e-runtime-store-timeout
-                    "Worker did not acknowledge before the request timeout; close, reopen, and reload canonical state"
-                    (e-runtime-store-request--kind request))))
+       (let* ((active (e-runtime-store--active-request store))
+              (blocking (or active request))
+              (operation (e-runtime-store--request-operation blocking))
+              (err
+               (list 'e-runtime-store-timeout
+                     (format
+                      "Worker did not acknowledge %s before the request timeout; close, reopen, and reload canonical state"
+                      (or operation "request"))
+                     :operation operation
+                     :kind (e-runtime-store-request--kind blocking)
+                     :request-id (e-runtime-store-request--id blocking)
+                     :request-state (e-runtime-store-request--state blocking)
+                     :awaited-request-id (e-runtime-store-request--id request))))
          (e-runtime-store--freeze-and-stop store err)
          (signal (car err) (cdr err)))))))
 
@@ -528,7 +563,10 @@ Return `dropped' for provisional work or `in-flight' once transport began."
                               (e-runtime-store-request--submitted-at active)))
           :active-request-kind
           (and active (e-runtime-store-request--kind active))
+          :active-request-operation
+          (e-runtime-store--request-operation active)
           :unavailable (and (e-runtime-store--unavailable store) t)
+          :unavailable-cause (e-runtime-store--unavailable-cause store)
           :last-error (e-runtime-store--last-error store)
           :startup (e-runtime-store--startup-status store))))
 

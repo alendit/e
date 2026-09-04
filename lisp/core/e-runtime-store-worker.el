@@ -435,11 +435,7 @@
      (list :schema-version e-runtime-store-worker-schema-version
            :database-file e-runtime-store-worker--database-file
            :runtime-id e-runtime-store-worker--runtime-id
-        :pid (emacs-pid)
-        :quick-check
-           (e-runtime-store-worker--column
-         (car (sqlite-select e-runtime-store-worker--database
-                             "PRAGMA quick_check")) 0)))
+           :pid (emacs-pid)))
     ('store-integrity
      (let* ((full (and (plist-get body :full) t))
             (pragma (if full "PRAGMA integrity_check" "PRAGMA quick_check"))
