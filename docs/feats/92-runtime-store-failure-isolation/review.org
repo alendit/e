@@ -1,0 +1,253 @@
+#+title: Review: Runtime-Store Failure Isolation and Bounded Projections
+#+author: e implementation
+#+date: 2026-09-04
+#+startup: overview
+
+* Status
+
+Done.  The independent implementation review reached
+=implementation-review-fixed-point= on exact clean revision =25c574fd= after
+all findings were corrected and the complete repository gate passed.
+
+The historical Daily report remains open only for a fresh observation after a
+full Emacs restart.  That observation is not repository-controlled mechanism
+evidence and does not keep Feature 92 open.
+
+* Scope reviewed
+
+- Contract authority: =plan.org=, especially =F92-C01= through =F92-C04= and
+  delivery packages =F92-DP1= through =F92-DP3=.
+- Runtime lifecycle and protocol: =e-runtime-store.el=,
+  =e-runtime-store-codec.el=, and =e-runtime-store-worker.el=.
+- Cross-process ownership: =e-runtime-store-ownership.el= and the ordinary and
+  offline worker adapters.
+- Rebuildable projections: =e-session-storage-sqlite.el=.
+- Board status contract and all focused tests changed by the package.
+- Exact semantic commits =0a7a2ad7=, =3f7e8cc1=, =71b79ed1=, =7c84044f=,
+  and =25c574fd=.
+
+* Review loop
+
+** Resolved High: Empty worker response could leave an active request pending
+
+*** Problem
+
+The process filter treated a newline-only worker frame as ignorable input.
+Because the worker protocol has no keepalive frame, an active request could
+remain submitted until its timeout instead of failing immediately with the
+protocol cause required by =F92-C02=.
+
+*** Change
+
+Both protocol endpoints now reject empty frames.  The parent takes the existing
+typed fail-closed path, while the worker treats empty input as malformed rather
+than as a keepalive.
+
+*** Evidence
+
+=e-runtime-store-s92-empty-worker-input-is-not-a-keepalive= passes, and the
+reviewer confirmed the finding closed at =25c574fd=.
+
+** Resolved evidence gap: Worst-case request allocation was not measured
+
+*** Problem
+
+The first DP3 review had only a modeled allocation envelope.  The contract
+also required a real production-path probe proving that worst-case admitted
+input stays below the private 512 MiB parent envelope.
+
+*** Change
+
+The exact canonical-size counter was changed from allocation-heavy per-character
+printer simulation to aggregate C-backed byte-class counts.  It preserves the
+tagged printer grammar while avoiding an additional full interpreted walk.
+
+*** Evidence
+
+Two rejected implementations peaked at 1,583,939,584 and 1,022,033,920 bytes.
+The accepted probe forced collection, disabled collection during measurement,
+constructed a 16,777,216-byte all-255 resource, and called the real request
+preflight and wire packer.  It measured 67,109,280 canonical bytes, 89,479,041
+wire bytes, 476,905,472 bytes maximum RSS, and 455,263,168 bytes peak memory
+footprint.  Maximum RSS is below the 536,870,912-byte envelope.
+
+** Resolved High: Multibyte raw-byte characters bypassed canonical preflight
+
+*** Problem
+
+For Emacs multibyte raw-byte characters =#x3fff80= through =#x3fffff=, the
+source representation occupies two bytes but =prin1= emits four octal ASCII
+bytes.  The initial exact-size counter therefore undercounted each such value
+by two bytes.  Base64 rounding meant a request could pass both the understated
+canonical check and an unchanged wire ceiling.
+
+*** Change
+
+The counter now adds two bytes for every multibyte raw-byte character.  The
+preflight contract remains expressed in final canonical bytes, independent of
+the source string's internal representation.
+
+*** Evidence
+
+The codec test covers every raw octet 128 through 255 in multibyte text with
+quote and backslash cases.  The production preflight test uses three raw-byte
+characters, producing a =3k+2= canonical size, and proves rejection at the
+one-byte-smaller limit even though that limit has the same derived base64 wire
+ceiling.  The focused runtime-store file passes 28/28 and the complete suite
+passes 2,761/2,761.
+
+** Resolved acceptance corrections
+
+Parent review also corrected these boundary defects before independent
+acceptance:
+
+- reentrant process-filter input now preserves the actual unconsumed suffix;
+- session-ID paging reads one bounded lookahead row instead of leaking a 257th
+  identity into a 256-row page;
+- worker-side catalog encoding has its own projection bound;
+- normal checkpoint resume performs exactly the metadata query and payload
+  read it needs;
+- parent request frames are retained only while queued and are cleared after a
+  successful send and on every terminal path; and
+- new property-bearing strings are rejected explicitly while legacy persisted
+  values remain decoder-readable.
+
+Focused regression tests cover each correction.  The final independent pass
+found no further actionable issue.
+
+* Plan coverage
+
+| Contract | Result | Principal evidence |
+|----------+--------+--------------------|
+| F92-C01 | Passing | Separate queue/submitted intervals; startup/open settlement; exactly-once terminal ownership; session/Board composition tests. |
+| F92-C02 | Passing | Typed first protocol cause; unknown, malformed, and empty frames fail closed; callback-owned poisoning removed; reopen recovery covered. |
+| F92-C03 | Passing | Shared atomic Emacs file-lock authority; concurrent winner, stale recovery, PID identity conflict, legacy metadata, and late-release tests. |
+| F92-C04 | Passing | Exact canonical/wire bounds; raw-byte coverage; bounded response handling; paged identities; catalog/checkpoint limits; oversized-checkpoint journal replay. |
+
+All three delivery packages are accepted.  No plan item is deferred inside the
+repository-controlled scope.
+
+* Verification
+
+Final gates were run against exact clean revision
+=25c574fd72f8e434487778015eb87dc4b51dd815=.
+
+#+begin_src sh
+eldev test --file test/e-runtime-store-test.el
+eldev test
+git diff --check
+#+end_src
+
+#+begin_example
+Focused runtime-store tests: 28 passed, 0 unexpected
+Complete repository suite: 2761 passed, 0 unexpected (154.433794 seconds)
+check-parens: passed for changed Lisp
+git diff --check: passed
+Production-path 16 MiB probe maximum RSS: 476905472 bytes (< 536870912)
+#+end_example
+
+The focused ownership file passed 10/10, the focused storage-contract file
+passed 7/7, and the C04 partitions passed 9/9 during package acceptance.
+
+Graphical tests were not applicable: this package changes no presentation,
+redisplay, focus, window, or rendered timer behavior.
+
+* UX and performance playthrough
+
+The user-visible error and recovery journeys are exercised at the owning batch
+boundary: local oversize rejects without poisoning the worker; malformed,
+unknown, and empty responses expose the typed first cause; close/reopen restores
+canonical state after ambiguous failure; and an oversized legacy checkpoint
+resumes through bounded canonical journal pages.  These are runtime semantics,
+not graphical interactions.
+
+The realistic 16 MiB worst-case codec path remained within the explicit memory
+envelope.  The complete suite's large indexed session fixture also passed with
+15,722 records and 37,851,478 content bytes.  No avoidable new unbounded scan or
+unbounded protocol allocation remains in the reviewed paths.
+
+* Architecture review
+
+The scheduler owns request lifetime and ambiguity, the shared private ownership
+module owns process exclusion, the codec/protocol owns frame grammar and byte
+bounds, and session storage owns omission and recovery of rebuildable
+projections.  Domain adapters still depend inward on the runtime-store
+contract.  No transport, UI, provider, or persistence adapter became an
+authority for another layer's policy.
+
+The package removes callback fanout, racy owner deletion, unpaged identities,
+full-payload checkpoint presence checks, and the false Board barrier claim.
+Compatibility is retained for the SQLite schema and legacy encoded values, but
+not for unused callback keywords or presentation text properties in new durable
+values.
+
+* Design self-check
+
+1. Yes.  Each accepted package is a useful stopping point: lifecycle failures
+   are isolated, ownership is atomic, and frames/projections are bounded.
+2. The final direction is one shared persistence worker with explicit request
+   ownership, one exclusion authority, bounded transport, and canonical replay
+   as the recovery authority.
+3. Stable decisions are single-worker ordering, commit-first writes, and
+   fail-closed ambiguity.  Numeric limits and workload distributions may
+   change; they remain private constants with exact boundary tests and stated
+   revision triggers.  No speculative extension layer hides them.
+4. Runtime-store scheduling owns request lifecycle, the ownership module owns
+   process claims, the codec owns wire measurement, and session storage owns
+   rebuildable projection policy.  Each has one cohesive reason to change.
+5. Coupling is reduced by deleting callbacks and sharing one private claim
+   policy.  Public composition stays narrow: callers submit typed operations
+   and observe request terminal state.
+6. Dependencies still flow from session and Board adapters toward the generic
+   runtime store.  Stable domain policy does not depend on a concrete UI,
+   provider, transport client, or shell.
+7. SQLite and process/file-lock side effects remain at worker and ownership
+   adapters.  Core decisions about ambiguity and rebuildability stay outside
+   those effects; no useful side effect can move farther outward without
+   splitting its owning transaction.
+8. Added request timestamps live only for a request.  Claim metadata and its
+   file lock live only for the worker process and are recoverable after death.
+   Projection status is rebuilt from canonical records.  These are the smallest
+   correct lifetimes.
+9. Bounds add finite scans before transport, but prevent larger duplicate
+   allocations and unbounded projections.  The aggregate counter reduced the
+   measured worst-case peak to 476,905,472 bytes; the full suite and large
+   fixture show no required regression.
+10. The only new shared boundary is the semantically real ordinary/offline
+    ownership policy.  Both workers satisfy the same acquire/release contract
+    without weakened behavior or unsupported operations.
+11. Existing databases and legacy encoded property-bearing strings remain
+    readable.  New callback keywords and property-bearing durable strings have
+    no production compatibility obligation and are rejected or removed
+    explicitly.
+12. Removed legacy code includes callback request fields/fanout, unpaged
+    identity transport, racy owner checks/deletes, payload-heavy checkpoint
+    status, and misleading ordered-barrier documentation.
+13. Expected local oversize and queued expiry settle their own request.
+    Expected rebuildable checkpoint oversize is omitted by session storage.
+    Unexpected malformed/uncorrelatable protocol and ambiguous submitted
+    outcomes surface as one typed first cause and freeze until explicit reopen.
+14. Focused owner tests prove lifecycle, ownership, codec, projection, and
+    replay behavior independently.  Composition and complete-suite gates prove
+    integration, so a design-local change should require narrow test updates.
+
+* Final review
+
+The same independent reviewer evaluated the plan and every implementation
+correction.  On =25c574fd= it returned exactly
+=implementation-review-fixed-point=.  There are no unresolved repository
+findings.
+
+* Live runtime disposition
+
+The user's running Emacs and canonical runtime store were left unchanged.  No
+live reload or live mutation was attempted.  Because the package changes core
+runtime, session, worker, and record-boundary behavior, using it immediately
+requires a full Emacs restart; =e-dev-reload= is not sufficient.  A fresh Daily
+run after that restart remains the observational follow-up for the historical
+bug report.
+
+* Unresolved
+
+None within Feature 92.  The fresh post-restart Daily observation is tracked by
+=docs/bugs/runtime-store-daily-participant-timeout/investigation.org=.

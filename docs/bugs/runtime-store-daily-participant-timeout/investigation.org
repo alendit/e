@@ -3,11 +3,12 @@
 
 * Status
 
-In progress.  The live failure is a parent-enforced 60-second runtime-store
-timeout during GUS child admission, not an Emacs hang, an OS process kill, or
-SQLite corruption.  The first timeout occurred during derived session
-projection publication, but the exact active typed request is not recoverable
-from the current bounded status record.
+Mechanism corrected; awaiting fresh Daily verification after a full Emacs
+restart.  The live failure was a parent-enforced 60-second runtime-store timeout
+during GUS child admission, not an Emacs hang, an OS process kill, or SQLite
+corruption.  The first timeout occurred during derived session projection
+publication, but the exact active typed request is not recoverable from the
+historical bounded status record.
 
 * Live and durable evidence
 
@@ -117,3 +118,34 @@ succeeds or reports the newly preserved active typed cause.
 
 The user's running Emacs and canonical SQLite files were inspected read-only
 and left unchanged.
+
+* Feature 92 correction and closure
+
+Feature 92 completes the repository-controlled correction in commits
+=0a7a2ad7= through =25c574fd=:
+
+- queue admission and submitted execution now have separate timeout intervals;
+  startup/open failure cannot orphan the selected request;
+- malformed, unknown, and empty protocol frames preserve the first typed cause,
+  while client callback code can no longer poison a healthy store;
+- ordinary and offline workers share one atomic cross-process ownership claim
+  with bounded identity diagnostics and safe stale-owner handling; and
+- request/response frames, identity pages, catalog projections, and checkpoint
+  projections have explicit byte or row bounds.  An oversized rebuildable
+  checkpoint resumes through canonical bounded journal replay.
+
+The final focused runtime-store file passes 28/28.  The full repository suite
+passes 2,761/2,761 at exact clean revision =25c574fd=.  The real production-path
+16 MiB worst-case preflight and wire-pack probe peaks at 476,905,472 bytes RSS,
+below the private 512 MiB envelope.  The same independent reviewer accepted all
+four Feature 92 contracts at =implementation-review-fixed-point=.
+
+These tests establish the deterministic failure mechanisms and recovery paths,
+including shared owner composition.  They cannot recreate the already-lost
+typed identity of the historical request.  This bug therefore remains open
+only until a fresh Daily run after restart either succeeds or reports the now
+preserved operation-specific first cause.
+
+No live reload was attempted.  The running Emacs and canonical SQLite files
+remain unchanged.  Feature 92 changes core runtime/session behavior, so the
+new behavior requires a full Emacs restart; =e-dev-reload= is insufficient.

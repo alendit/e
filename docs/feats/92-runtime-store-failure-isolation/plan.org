@@ -4,9 +4,10 @@
 
 * Status
 
-In-progress.  The operator requested implementation on 2026-09-04, and the
-independent implementation-plan review reached
-=implementation-plan-fixed-point= before production edits began.
+Done.  The operator requested implementation on 2026-09-04, the independent
+implementation-plan review reached =implementation-plan-fixed-point= before
+production edits began, and the independent implementation review reached
+=implementation-review-fixed-point= on exact clean revision =25c574fd=.
 
 This correction follows Feature 87's accepted SQLite ownership and recovery
 model.  It does not change the database schema, make ambiguous writes
@@ -35,8 +36,8 @@ retryable, or move domain policy into the transport.
   the historical report.
 - Mechanism status :: =F92-DP1=, =F92-DP2=, and =F92-DP3= pass their focused
   deterministic evidence, including the real worst-case peak-RSS probe.  The
-  complete repository gate and independent implementation-review recheck
-  remain before closure.
+  complete repository gate passes 2,761/2,761, and the same independent
+  reviewer accepted the final corrections with no unresolved finding.
 
 * Normative contract matrix
 
@@ -187,7 +188,7 @@ making persistence unavailable.
   constructing a 16,777,216-byte worst-case unibyte resource, preflighting the
   real request, and packing its real wire frame.  It produced 67,109,280
   canonical bytes and 89,479,041 wire
-  bytes with 476,954,624 bytes maximum RSS, below the 536,870,912-byte
+  bytes with 476,905,472 bytes maximum RSS, below the 536,870,912-byte
   envelope.  Exact/one-over mechanism tests use the same domains.  A larger
   accepted one-value contract, codec-version change, or measured allocation
   regression is the revision trigger.
