@@ -4,19 +4,20 @@
 
 * Status
 
-In-review.  The operator requested implementation on 2026-09-04, the independent
-implementation-plan review reached =implementation-plan-fixed-point= before
-production edits began, and the independent implementation review reached
-=implementation-review-fixed-point= on exact clean revision =25c574fd=.  A
-fresh post-restart Daily run then demonstrated that the contract was incomplete:
-a lost =catalog-put= acknowledgement cannot be resolved from SQLite and still
-freezes the shared store.
+Done.  The amended plan reached =implementation-plan-fixed-point= at blob
+=8be7429b71408eca57942549b8922b540146f327= before DP4 production edits began.
+The implementation and its response-envelope correction are commits
+=df94170d= and =857fcb1f=.  Independent review of exact clean revision
+=857fcb1f8bdae66d13df4c628e6675096ab82c5d= reached
+=implementation-review-fixed-point= with no remaining findings or evidence
+gaps.
 
-This correction initially followed Feature 87's accepted SQLite ownership and
-freeze-on-ambiguity model.  The fresh counterexample invalidates that recovery
-choice.  DP4 adds a private receipt relation through the explicit schema
-upgrade path and resolves the same durable request identity; it does not replay
-a write under a new identity or move recovery policy into application code.
+The original correction followed Feature 87's accepted SQLite ownership and
+freeze-on-ambiguity model.  A fresh post-restart Daily counterexample
+invalidated that recovery choice.  DP4 now adds a private receipt relation
+through the explicit schema upgrade path and resolves the same durable request
+identity; it does not replay a write under a new identity or move recovery
+policy into application code.
 
 * Behavioral goal
 
@@ -44,15 +45,15 @@ a write under a new identity or move recovery policy into application code.
 - Product authority :: The operator request of 2026-09-04, Feature 87's
   accepted contracts, and the runtime-store timeout bug report.
 - Owning contracts :: =F92-C01= through =F92-C05= below.
-- Behavioral status :: Failed by fresh Daily counterexample.  Queue isolation
-  and typed diagnostics worked, but the worker protocol could not resolve the
-  submitted transaction's outcome and made unrelated persistence unavailable.
-- Mechanism status :: =F92-DP1=, =F92-DP2=, and =F92-DP3= pass their focused
-  deterministic evidence, including the real worst-case peak-RSS probe.  The
-  complete repository gate passes 2,761/2,761, and the same independent
-  reviewer accepted the final corrections with no unresolved finding.  Those
-  gates do not cover worker-side stalls on either side of COMMIT; the plan and
-  acceptance evidence require amendment before the feature can return to Done.
+- Behavioral status :: Passing in repository-controlled evidence.  Lost
+  acknowledgements on both sides of COMMIT resolve under the same durable
+  identity, queued Board work continues, and exhausted recovery preserves the
+  first typed cause and safe receipt ownership.
+- Mechanism status :: =F92-DP1= through =F92-DP4= pass focused deterministic
+  evidence.  The combined runtime, ownership, migration, and Board set passes
+  86/86; the isolated graphical composition passes 1/1; the production-path
+  16 MiB retained-frame probe peaks at 344,948,736 bytes, below 536,870,912;
+  and the complete repository gate passes 2,777/2,777.
 
 * Normative contract matrix
 
@@ -64,10 +65,10 @@ credentialed external evidence is not applicable.
 | ID | Observable contract | Semantic owner and public composition | Establishing package | Deterministic evidence | Telemetry | Status |
 |----+---------------------+---------------------------------------+----------------------+------------------------+-----------+--------|
 | F92-C01 | Every accepted request remains scheduler-owned from queue admission through exactly one terminal state.  Queue waiting and submitted execution have distinct timeout intervals: expiry before submission affects only that request.  Startup/open failure settles the selected request with the first typed operation cause. | Runtime-store scheduler; all injected session, Board, task, cron, voice, Goodnite, and raw-result adapters share it. | F92-DP1 | S92-REQUEST-LIFETIME and S92-SHARED-COMPOSITION | Queue age and execution time are observational. | Passing |
-| F92-C02 | A malformed or uncorrelatable worker response fences that worker once and preserves the protocol failure plus active operation identity as the first recovery cause.  A submitted write then resolves under F92-C05 and a read may retry after bounded worker replacement.  Repeated corruption or failed replacement makes the store unavailable with the first causal error.  Client notification behavior cannot change persistence health after a definitive response. | Runtime-store protocol, recovery, and settlement boundary. | F92-DP4 | S92-PROTOCOL and S92-ACID-ACK-RECOVERY | Recovery attempt and repeat-corruption counts are observational. | Partial |
+| F92-C02 | A malformed or uncorrelatable worker response fences that worker once and preserves the protocol failure plus active operation identity as the first recovery cause.  A submitted write then resolves under F92-C05 and a read may retry after bounded worker replacement.  Repeated corruption or failed replacement makes the store unavailable with the first causal error.  Client notification behavior cannot change persistence health after a definitive response. | Runtime-store protocol, recovery, and settlement boundary. | F92-DP4 | S92-PROTOCOL and S92-ACID-ACK-RECOVERY | Recovery attempt and repeat-corruption counts are observational. | Passing |
 | F92-C03 | Exactly one live ordinary or offline worker owns a runtime directory.  Acquisition is atomic, a contender never deletes a replacement claim, and dead or prior-boot claims are recovered.  A live-looking same-boot PID reuse fails safely with an explicit identity-conflict diagnostic rather than opening SQLite or stealing ownership. | Private runtime-directory claim owner shared by the ordinary worker and explicit offline worker; default runtime composition and explicit offline upgrade are the public consumers. | F92-DP2 | S92-OWNERSHIP | Contention and same-boot PID-reuse frequency are observational. | Passing |
 | F92-C04 | Each process-protocol request and response has a finite byte bound.  Session-record and identity reads are page bounded.  Rebuildable catalog/checkpoint projections are checked before transport; an oversized checkpoint cannot stop the shared worker and session resume falls back to canonical bounded record replay. | Runtime-store codec/protocol owns frame bounds; worker storage operations own row/page bounds; session storage owns projection omission and replay fallback. | F92-DP3 | S92-BOUNDS and S92-OVERSIZED-RESUME | Existing database sizes and projection distributions are observational. | Passing |
-| F92-C05 | After a submitted write loses its worker or acknowledgement, the scheduler retains ownership until the SQLite adapter resolves one definitive mutation and bounded result without duplicate semantic effects, or bounded recovery is exhausted.  Application callers neither classify nor replay the write.  Existing v4 stores require verified explicit offline migration, preserve their canonical values, and are never mutated by ordinary startup. | Runtime-store scheduler/protocol and SQLite worker adapter own generic outcome resolution, worker replacement, bounded acknowledgement, and migration-safe persistence. | F92-DP4 | S92-ACID-ACK-RECOVERY and graphical Daily composition | Timeout and worker-replacement frequency are observational. | Missing |
+| F92-C05 | After a submitted write loses its worker or acknowledgement, the scheduler retains ownership until the SQLite adapter resolves one definitive mutation and bounded result without duplicate semantic effects, or bounded recovery is exhausted.  Application callers neither classify nor replay the write.  Existing v4 stores require verified explicit offline migration, preserve their canonical values, and are never mutated by ordinary startup. | Runtime-store scheduler/protocol and SQLite worker adapter own generic outcome resolution, worker replacement, bounded acknowledgement, and migration-safe persistence. | F92-DP4 | S92-ACID-ACK-RECOVERY and graphical Daily composition | Timeout and worker-replacement frequency are observational. | Passing |
 
 * Existing defects and required dispositions
 
@@ -483,10 +484,11 @@ claim.
    deterministic, while wall-clock timings remain diagnostic.
 10. Exact private limits have workload and resource bases, exact/one-over
     behavior, and revision triggers in F92-DP3.
-11. Existing owner tests cover the original request states and boundaries.
-    DP4 must add pre/post-COMMIT loss, nested queued work, receipt collision,
-    retention, and real session/Board composition coverage.
+11. Owner tests cover the original request states and boundaries.  DP4 adds
+    pre/post-COMMIT loss, nested queued work, receipt collision, retention,
+    exhausted close, live-parent contention, and real session/Board
+    composition coverage.
 12. The non-local effects are ordinary propagation through existing adapters.
     The smallest proper corrections fit this package, so the architecture
-    branch is =correct now= once DP4 is implemented; no application recovery
+    branch is =correct now= with DP4 implemented; no application recovery
     abstraction is justified.

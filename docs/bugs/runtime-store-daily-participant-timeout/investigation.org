@@ -3,12 +3,17 @@
 
 * Status
 
-Reproduced after a full Emacs restart; Feature 92's diagnostics now identify a
-submitted =catalog-put= as the blocking request.  The request-lifecycle fixes
-correctly cancelled the queued =board-pickup-transition= without misattributing
-it, but the submitted projection timeout still killed the shared worker,
-froze the Board, and made canonical persistence unavailable.  Feature 92's
-failure containment is therefore incomplete.
+Resolved in repository-controlled evidence by Feature 92 DP4.  The historical
+post-restart recurrence identified a submitted =catalog-put= whose lost
+acknowledgement killed the shared worker and froze queued Board work.  The
+runtime store now resolves the same durable write identity through an ACID
+receipt and one bounded worker replacement, preserving exact-once mutation and
+continuing the queue on either side of COMMIT.
+
+The lower-level timing condition that delayed the historical live worker for
+60 seconds is not reproduced by the disposable database clone.  That unknown
+is observational: deterministic fault injection now proves the required
+failure behavior independently of the trigger.
 
 * Fresh post-restart recurrence
 
@@ -105,7 +110,7 @@ must not scan the database.  Current repository and project source has no
 production caller of that session finalization/barrier path during Daily
 admission, so it is not yet accepted as the direct cause of this incident.
 
-* Implemented containment and diagnostics
+* Original containment and diagnostics
 
 Commit =eb091148= makes ordinary worker status constant-cost and leaves
 =PRAGMA quick_check= and =PRAGMA integrity_check= under the explicit
@@ -116,9 +121,9 @@ cause through bounded runtime status.
 
 Commit =478de8bf= distinguishes an expired queued request from an ambiguous
 submitted request.  It removes and fails only the unsent request, records the
-active request that blocked it, and keeps the shared worker available.  The
-submitted timeout path still freezes the store because its commit outcome can
-be ambiguous.
+active request that blocked it, and keeps the shared worker available.  At
+that revision, the submitted timeout path still froze the store because its
+commit outcome could be ambiguous.
 
 Repository-side validation passed 16 runtime-store tests, 15 session SQLite
 tests, 17 Board SQLite tests, and 14 default-runtime SQLite tests.  Independent
@@ -133,7 +138,11 @@ submitted operation.  The fresh run has now reported that cause: the
 =catalog-put= itself was submitted and stalled, so queued-request containment
 was insufficient.
 
-* Required correction evidence
+* Correction evidence required after the recurrence
+
+This was the acceptance gap after the live recurrence.  DP4 now closes each
+repository-controlled item below; the historical 60-second trigger itself
+remains observational.
 
 - Reproduce the shared-store admission stall or identify the exact typed
   request from preserved diagnostics.
@@ -142,11 +151,12 @@ was insufficient.
   and covered.
 - Preserve the first unavailable cause and typed operation in subsequent
   user-visible failures.  Implemented and covered.
-- Exercise multiple participant admissions sharing one SQLite runtime while
-  another child can emit provider/session callbacks.
+- Exercise the real session/Board composition sharing one SQLite runtime while
+  timer-driven work is queued.  Implemented and covered before and after
+  COMMIT, including an isolated graphical witness.
 - Prove a stalled or queued request cannot incorrectly destroy unrelated
-  healthy persistence work.  Covered for queued requests; the fresh run proves
-  submitted-operation recovery remains missing.
+  healthy persistence work.  Implemented and covered for queued and submitted
+  requests, bounded exhaustion, and live-parent receipt ownership.
 
 The user's running Emacs and canonical SQLite files were inspected read-only
 and left unchanged.
@@ -175,8 +185,8 @@ four Feature 92 contracts at =implementation-review-fixed-point=.
 These tests establish the original deterministic failure mechanisms and
 recovery paths, including shared owner composition.  They did not establish
 ACID outcome resolution after a submitted write loses its acknowledgement.
-The fresh run provided the operation-specific cause and invalidated closure, so
-Feature 92 is again In-review.
+The fresh run provided the operation-specific cause and invalidated closure at
+that revision, leading to the DP4 amendment implemented below.
 
 No live reload was attempted.  The running Emacs and canonical SQLite files
 remain unchanged.  Feature 92 changes core runtime/session behavior, so the
@@ -289,9 +299,12 @@ different-parent open while the original parent is live, then replays once
 under that original identity and retires its receipt through the next
 acknowledgement watermark.
 
-This is implementation evidence only: Feature 92 remains In-review pending
-parent and independent review; neither behavioral acceptance nor a fixed point
-is claimed here.
+The implementation is committed in =df94170d= and corrected in =857fcb1f=.
+Independent review of exact clean revision
+=857fcb1f8bdae66d13df4c628e6675096ab82c5d= reached
+=implementation-review-fixed-point= with no remaining finding or required
+evidence gap.  The combined focused set passes 86/86, the isolated graphical
+composition passes 1/1, and the complete repository suite passes 2,777/2,777.
 No live reload was attempted.  The user's running Emacs and canonical SQLite
 files remain unchanged; this core runtime/schema change requires a full Emacs
 restart to take effect.

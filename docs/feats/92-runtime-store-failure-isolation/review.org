@@ -5,26 +5,24 @@
 
 * Status
 
-In-review.  An independent implementation review reached
-=implementation-review-fixed-point= on exact clean revision =25c574fd=, but a
-fresh Daily run after the required full Emacs restart produced a counterexample
-to the accepted failure-isolation contract.  A lost =catalog-put=
-acknowledgement still freezes the shared store and Board because write identity
-is not part of the SQLite transaction.
+Done.  A fresh Daily run invalidated the original fixed point at =25c574fd= by
+showing that a lost =catalog-put= acknowledgement could still freeze the shared
+store.  DP4 and its review correction add ACID acknowledgement recovery in
+=df94170d= and =857fcb1f=.  Independent review of exact clean revision
+=857fcb1f8bdae66d13df4c628e6675096ab82c5d= returned
+=implementation-review-fixed-point= with no P0--P3 findings or required
+evidence gaps.
 
-The earlier fixed-point result remains useful evidence for the implemented
-mechanisms, but it is no longer acceptance of Feature 92 as a complete work
-package.
-
-** TODO High: Lost worker acknowledgement freezes the application
+** DONE High: Lost worker acknowledgement freezes the application
 
 *** Problem
 
-The worker commits each write transaction before emitting its response, but
-the response correlation ID is not recorded in that transaction.  On timeout
-the parent cannot ask SQLite whether that request committed, so the selected
-Feature 87 failure model kills the worker and permanently freezes the shared
-store.  That turns a local acknowledgement failure into application state.
+Before DP4, the worker committed each write transaction before emitting its
+response, but did not record the response correlation ID in that transaction.
+On timeout the parent could not ask SQLite whether that request committed, so
+the selected Feature 87 failure model killed the worker and permanently froze
+the shared store.  That turned a local acknowledgement failure into
+application state.
 
 *** Evidence
 
@@ -36,17 +34,18 @@ fail-closed recovery.  The resumed Daily session was small, and the exact
 seconds on a disposable clone, so projection size alone does not reproduce the
 stall.
 
-No current deterministic or graphical test injects a stall after a real
-=catalog-put= has been submitted.  The projection-failure integration fake
-signals before transport, while the generic submitted-timeout test asserts the
-now-disproved global-freeze policy.
+At the invalidated revision, no deterministic or graphical test injected a
+stall after a real =catalog-put= had been submitted.  The projection-failure
+integration fake signalled before transport, while the generic
+submitted-timeout test asserted the now-disproved global-freeze policy.
 
-The current scheduler also clears its immutable preflight frame immediately
-after submission and retains a caller-owned body.  Exact same-identity replay
-therefore requires a bounded immutable frame lifetime through transactional
-resolution, including renewed C04 memory evidence.  The v4 schema has no
-receipt relation, and worker ownership alone cannot authorize old-receipt
-cleanup because a live parent may be replacing its dead worker.
+The invalidated scheduler also cleared its immutable preflight frame
+immediately after submission and retained a caller-owned body.  Exact
+same-identity replay therefore required a bounded immutable frame lifetime
+through transactional resolution, including renewed C04 memory evidence.  The
+v4 schema had no receipt relation, and worker ownership alone could not
+authorize old-receipt cleanup because a live parent might be replacing its
+dead worker.
 
 *** Acceptance
 
@@ -72,7 +71,7 @@ when recovery is exhausted.
 - Rebuildable projections: =e-session-storage-sqlite.el=.
 - Board status contract and all focused tests changed by the package.
 - Exact semantic commits =0a7a2ad7=, =3f7e8cc1=, =71b79ed1=, =7c84044f=,
-  and =25c574fd=.
+  =25c574fd=, =df94170d=, and =857fcb1f=.
 
 * Review loop
 
@@ -167,55 +166,51 @@ found no further actionable issue.
 
 | Contract | Result | Principal evidence |
 |----------+--------+--------------------|
-| F92-C01 | Partial | Separate queue/submitted intervals and startup/open settlement pass, but submitted ownership still terminates in unresolved global freeze. |
-| F92-C02 | Partial | Typed first protocol cause and callback isolation pass, but malformed, unknown, and empty frames still freeze globally instead of entering bounded worker replacement. |
+| F92-C01 | Passing | Separate queue/submitted intervals, startup/open settlement, queued observation of the active deadline, and exact-once exhaustion pass. |
+| F92-C02 | Passing | Typed first protocol cause, callback isolation, one bounded replacement, read replay, and first-cause exhaustion pass. |
 | F92-C03 | Passing | Shared atomic Emacs file-lock authority; concurrent winner, stale recovery, PID identity conflict, legacy metadata, and late-release tests. |
 | F92-C04 | Passing | Exact canonical/wire bounds; raw-byte coverage; bounded response handling; paged identities; catalog/checkpoint limits; oversized-checkpoint journal replay. |
-| F92-C05 | Missing | No write receipt shares the mutation transaction, so worker or acknowledgement loss cannot be resolved through SQLite; no worker-stall composition test exists. |
+| F92-C05 | Passing | Mutation and full-response-bounded receipt share one SQLite transaction; same-identity replay, migration, retention, close, live-parent contention, and graphical Board composition pass. |
 
-The first three delivery packages retain their focused mechanism evidence.
-=F92-DP4= is required before the feature can be accepted.
+All four delivery packages pass their focused mechanism and composition
+evidence.
 
 * Verification
 
 Final gates were run against exact clean revision
-=25c574fd72f8e434487778015eb87dc4b51dd815=.
+=857fcb1f8bdae66d13df4c628e6675096ab82c5d=.
 
 #+begin_src sh
-eldev test --file test/e-runtime-store-test.el
+eldev test -f test/e-runtime-store-test.el -f test/e-runtime-store-ownership-test.el -f test/e-runtime-sqlite-p4-test.el -f test/e-board-sqlite-test.el
+E_GRAPHICAL_E2E_SELECTOR=e-runtime-store-recovery-graphical-s92-durable-board-survives-catalog-ack-loss bash e2e/run-graphical-tests.sh
 eldev test
 git diff --check
 #+end_src
 
 #+begin_example
-Focused runtime-store tests: 28 passed, 0 unexpected
-Complete repository suite: 2761 passed, 0 unexpected (154.433794 seconds)
+Focused runtime, ownership, migration, and Board tests: 86 passed, 0 unexpected
+Isolated graphical composition: 1 passed, 0 unexpected
+Complete repository suite: 2777 passed, 0 unexpected (180.215260 seconds)
 check-parens: passed for changed Lisp
 git diff --check: passed
-Production-path 16 MiB probe maximum RSS: 476905472 bytes (< 536870912)
+Production-path 16 MiB retained-frame probe maximum RSS: 344948736 bytes (< 536870912)
 #+end_example
 
-The focused ownership file passed 10/10, the focused storage-contract file
-passed 7/7, and the C04 partitions passed 9/9 during package acceptance.
-
-The prior review treated graphical tests as inapplicable because the changed
-owner is below presentation.  The fresh recurrence disproves that conclusion
-for composed acceptance: the failure surfaces through timers, freezes the
-Board, and makes Emacs intermittently unresponsive.  The corrected package
-needs deterministic runtime fault injection and a graphical composition check
-for the visible Daily outcome.
+The graphical witness uses the real session-SQLite and Board composition with
+worker-side fault injection; it does not connect to the user's running Emacs.
 
 * UX and performance playthrough
 
-The user-visible error and recovery journeys are exercised at the owning batch
-boundary: local oversize rejects without poisoning the worker; malformed,
-unknown, and empty responses expose the typed first cause; close/reopen restores
-canonical state after ambiguous failure; and an oversized legacy checkpoint
-resumes through bounded canonical journal pages.  These are runtime semantics,
-not graphical interactions.
+The user-visible error and recovery journeys are exercised at their owning
+boundaries: local oversize rejects without poisoning the worker; malformed,
+unknown, and empty responses expose the typed first cause; same-identity
+replacement resolves loss on either side of COMMIT; and an oversized legacy
+checkpoint resumes through bounded canonical journal pages.  The isolated
+graphical witness proves that the queued Board timer transition remains visible
+and usable after acknowledgement loss.
 
-The realistic 16 MiB worst-case codec path remained within the explicit memory
-envelope.  The complete suite's large indexed session fixture also passed with
+The realistic 16 MiB retained-frame recovery path remained within the explicit
+memory envelope.  The complete suite's large indexed session fixture also passed with
 15,722 records and 37,851,478 content bytes.  No avoidable new unbounded scan or
 unbounded protocol allocation remains in the reviewed paths.
 
@@ -224,15 +219,15 @@ unbounded protocol allocation remains in the reviewed paths.
 The scheduler owns request lifetime and transport recovery, the shared private
 ownership module owns process exclusion, the codec/protocol owns frame grammar
 and byte bounds, and session storage owns omission and recovery of rebuildable
-projections.  The missing persistence contract is a request receipt committed
-atomically with each write.  Without it, the scheduler cannot recover its
-still-owned request from the ACID backend and instead exports transport failure
-as application unavailability.
+projections.  The SQLite worker now commits the request receipt atomically with
+each write, allowing the scheduler to resolve its still-owned request without
+exporting transport failure as application unavailability.
 
 The package removes callback fanout, racy owner deletion, unpaged identities,
 full-payload checkpoint presence checks, and the false Board barrier claim.
-DP1-DP3 retained the SQLite schema and legacy encoded values.  DP4 now requires
-one private additive receipt relation through the explicit upgrade path.  No
+DP1-DP3 retained the SQLite schema and legacy encoded values.  DP4 adds one
+private receipt relation and one singleton runtime-state relation through the
+explicit v4-to-v5 upgrade path.  No
 compatibility is required for unused callback keywords or presentation text
 properties in new durable values.
 
@@ -266,11 +261,11 @@ properties in new durable values.
 8. Added request timestamps live only for a request.  Transaction receipts live
    until an ordered acknowledgement watermark makes them unnecessary.  Claim
    metadata and its file lock live only for the worker process.  These are the
-   smallest required lifetimes, with bounded receipt reclamation still to be
-   implemented.
+   smallest required lifetimes, and bounded receipt reclamation is implemented
+   at the same transaction boundary.
 9. Bounds add finite scans before transport, but prevent larger duplicate
    allocations and unbounded projections.  The aggregate counter reduced the
-   measured worst-case peak to 476,905,472 bytes; the full suite and large
+   measured retained-frame peak to 344,948,736 bytes; the full suite and large
    fixture show no required regression.
 10. The only new shared boundary is the semantically real ordinary/offline
     ownership policy.  Both workers satisfy the same acquire/release contract
@@ -286,20 +281,18 @@ properties in new durable values.
     Expected rebuildable checkpoint oversize is omitted by session storage.
     Unexpected malformed/uncorrelatable protocol and ambiguous submitted
     outcomes expose one typed first cause while the adapter performs bounded
-    worker replacement and transactional request resolution.  That recovery
-    path is still missing.
+    worker replacement and transactional request resolution.
 14. Focused owner tests prove lifecycle, ownership, codec, projection, and
     replay behavior independently.  Composition and complete-suite gates prove
     integration, so a design-local change should require narrow test updates.
 
 * Final review
 
-The same independent reviewer evaluated the plan and every implementation
-correction.  On =25c574fd= it returned exactly
-=implementation-review-fixed-point=.  The fresh live counterexample invalidates
-that final acceptance because the normative contract omitted ACID-backed
-acknowledgement recovery.  A new implementation and independent review round
-are required.
+The independent reviewer evaluated the frozen amended plan blob
+=8be7429b71408eca57942549b8922b540146f327= and every DP4 correction.  On exact
+clean revision =857fcb1f8bdae66d13df4c628e6675096ab82c5d= it returned exactly
+=implementation-review-fixed-point=.  No actionable implementation defect or
+required evidence gap remains.
 
 * Live runtime disposition
 
@@ -312,13 +305,13 @@ bug report.
 
 * Unresolved
 
-- Parent and independent review of the unaccepted DP4 correction remain
-  required; Feature 92 stays In-review.
-- The timing-dependent reason the live worker failed to acknowledge
-  =catalog-put= within 60 seconds is not reproduced by the current database on
-  a disposable clone.
+No implementation or acceptance finding remains.  The timing-dependent reason
+the historical live worker failed to acknowledge =catalog-put= within 60
+seconds is not reproduced by the current database on a disposable clone; that
+is an observational follow-up rather than a blocker to the deterministic
+failure-isolation contract.
 
-* DP4 correction evidence (unaccepted implementation)
+* DP4 correction evidence (accepted implementation)
 
 ** Resolved implementation finding: runtime identity could be stolen from a live parent
 
@@ -391,13 +384,15 @@ uses the next acknowledgement watermark to retire the receipt.
 
 ** Verification for this correction pass
 
-- =eldev test -f test/e-runtime-store-test.el -f test/e-runtime-sqlite-p4-test.el
-  -f test/e-board-sqlite-test.el=: 74 passed, 0 unexpected.
+- =eldev test -f test/e-runtime-store-test.el -f test/e-runtime-store-ownership-test.el
+  -f test/e-runtime-sqlite-p4-test.el -f test/e-board-sqlite-test.el=: 86
+  passed, 0 unexpected.
 - Focused isolated graphical selector
   =e-runtime-store-recovery-graphical-s92-durable-board-survives-catalog-ack-loss=:
   1 passed, 0 unexpected.
 - Fresh =/usr/bin/time -l eldev test -f test/e-runtime-store-test.el=: 40
   passed, 0 unexpected; peak RSS 344,948,736 bytes (< 536,870,912).
+- Complete =eldev test=: 2,777 passed, 0 unexpected.
 
 No live reload or canonical-database mutation was performed.  Core runtime and
 schema changes still require a full Emacs restart to take effect.

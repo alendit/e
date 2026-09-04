@@ -15,9 +15,9 @@ rebaseline that feature's source anchors and assumptions against the accepted
 Feature 91 module boundaries.  Existing statuses remain unchanged because they
 record each feature's lifecycle state.
 
-Feature 92 remains =In-review=: its DP4 repository evidence is available for
-parent and independent review, but has not been accepted as a behavioral fixed
-point.
+Feature 92 is =Done=: DP4 and its correction passed repository-controlled
+evidence and independent implementation review at fixed point.  Its core
+runtime/schema behavior requires a full Emacs restart before live use.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
@@ -112,4 +112,4 @@ point.
 | 89 | Planned     | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
-| 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
+| 92 | Done        | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
