@@ -4,17 +4,23 @@
 
 * Status
 
-In-review.  The amended plan reached =implementation-plan-fixed-point= at blob
-=8be7429b71408eca57942549b8922b540146f327= before DP4 production edits began.
+In-review.  The earlier amended plan reached =implementation-plan-fixed-point= at
+blob =8be7429b71408eca57942549b8922b540146f327= before DP4 production edits began.
 The implementation and its response-envelope correction are commits
 =df94170d= and =857fcb1f=.  Independent review of exact clean revision
 =857fcb1f8bdae66d13df4c628e6675096ab82c5d= reached
 =implementation-review-fixed-point=, but the first live v5 run produced a new
 counterexample: a timer reentered a durable mutation barrier on the same Board
-and escaped as =e-board-mutation-frozen=.  The accepted E2E stalled
-session-owned =catalog-put= while a Board timer ran; it never held the Board's
-own barrier.  The package is reopened until that same-Board composition is
-specified, implemented, and independently reviewed.
+and escaped as =e-board-mutation-frozen=.  A subsequent Daily hang spent its
+sampled main-loop time tearing down presentation over a stale transcript, not
+waiting on SQLite.  That presentation defect is corrected separately and must
+not substitute for the persistence contract.  Product authority now requires
+every persistence operation reachable from an interactive path to be genuinely
+asynchronous.  The DP5 rebaseline reached
+=implementation-plan-fixed-point= at exact semantic plan blob
+=4a7b996a38d754b4ee20cfdc982c1a6a3e23de4f= on source baseline
+=696e514e9a0ce9694e20ea3e263a153dc1a9ef8c=; the following status sentence is
+the non-semantic read-back of that review result.
 
 The original correction followed Feature 87's accepted SQLite ownership and
 freeze-on-ambiguity model.  A fresh post-restart Daily counterexample
@@ -26,10 +32,10 @@ policy into application code.
 * Behavioral goal
 
 - Goal ID :: =BUG-RUNTIME-STORE-ISOLATION=
-- Behavioral goal :: Multiple runtime owners can share the one persistence
-  worker without one queued caller, client-side observer, malformed response,
-  oversized rebuildable projection, or competing startup corrupting the
-  worker's ownership or making unrelated healthy persistence unavailable.
+- Behavioral goal :: Multiple runtime owners can share one external persistence
+  worker without corrupting ownership, making unrelated healthy persistence
+  unavailable, or occupying an interactive Emacs stack while worker open,
+  acknowledgement, recovery, or durable application composition is pending.
 - Direct scenario :: Two session/Board participants share one SQLite runtime
   while one request is active and another waits.  The waiting request either
   receives its own full submitted interval and commits, or fails before
@@ -39,20 +45,27 @@ policy into application code.
   cause; bounded replacement recovers the active request and continues queued
   work, while exhausted recovery settles all owned work once with that cause
   and makes the store unavailable.  If a submitted write loses its worker
-  acknowledgement, storage recovery resolves that logical write exactly once,
-  queued Board work continues, and the composed chat/Board surface remains
-  responsive and usable.  If bounded recovery is exhausted, every owned
+  acknowledgement, storage recovery resolves that logical write exactly once
+  while its application =e-work= remains pending, queued Board work is admitted,
+  and the composed chat/Board surface remains responsive and visibly pending.
+  A cold public Daily open returns its buffer before storage readiness;
+  immediate input queues behind chat-owned reconciliation, the real
+  input-classification timer queues behind same-Board durability, and release
+  publishes each ordered result once.  If bounded recovery is exhausted, every owned
   request settles once with the first typed cause and the store becomes
   unavailable.  A checkpoint too large for one bounded response is omitted as
   a rebuildable projection and the session resumes through bounded record
   pages.  A second runtime cannot steal the live worker's ownership claim.
-- Product authority :: The operator request of 2026-09-04, Feature 87's
-  accepted contracts, and the runtime-store timeout bug report.
-- Owning contracts :: =F92-C01= through =F92-C05= below.
-- Behavioral status :: Failed by a fresh live same-Board timer counterexample.
-  Lost runtime-store acknowledgements now resolve correctly, but an admitted
-  timer mutation can still be rejected while an earlier mutation on that Board
-  waits synchronously for persistence.
+- Product authority :: The operator's accepted asynchronous-persistence
+  direction of 2026-09-04, Feature 66's accepted asynchronous writer and atomic
+  public-visibility contracts, Feature 87's accepted storage contracts, and the
+  runtime-store timeout reports.
+- Owning contracts :: =F92-C01= through =F92-C10= below.
+- Behavioral status :: Failed by a fresh live same-Board timer counterexample
+  and by source proof that interactive session, Board, and chat stacks still
+  synchronously wait for worker open or acknowledgement.  Lost runtime-store
+  acknowledgements resolve correctly, but an admitted timer mutation can still
+  be rejected while an earlier mutation on that Board waits synchronously.
 - Mechanism status :: =F92-DP1= through =F92-DP4= pass focused deterministic
   evidence.  The combined runtime, ownership, migration, and Board set passes
   86/86; the isolated graphical composition passes 1/1; the production-path
@@ -76,6 +89,11 @@ credentialed external evidence is not applicable.
 | F92-C03 | Exactly one live ordinary or offline worker owns a runtime directory.  Acquisition is atomic, a contender never deletes a replacement claim, and dead or prior-boot claims are recovered.  A live-looking same-boot PID reuse fails safely with an explicit identity-conflict diagnostic rather than opening SQLite or stealing ownership. | Private runtime-directory claim owner shared by the ordinary worker and explicit offline worker; default runtime composition and explicit offline upgrade are the public consumers. | F92-DP2 | S92-OWNERSHIP | Contention and same-boot PID-reuse frequency are observational. | Passing |
 | F92-C04 | Each process-protocol request and response has a finite byte bound.  Session-record and identity reads are page bounded.  Rebuildable catalog/checkpoint projections are checked before transport; an oversized checkpoint cannot stop the shared worker and session resume falls back to canonical bounded record replay. | Runtime-store codec/protocol owns frame bounds; worker storage operations own row/page bounds; session storage owns projection omission and replay fallback. | F92-DP3 | S92-BOUNDS and S92-OVERSIZED-RESUME | Existing database sizes and projection distributions are observational. | Passing |
 | F92-C05 | After a submitted write loses its worker or acknowledgement, the scheduler retains ownership until the SQLite adapter resolves one definitive mutation and bounded result without duplicate semantic effects, or bounded recovery is exhausted.  Application callers neither classify nor replay the write.  Existing v4 stores require verified explicit offline migration, preserve their canonical values, and are never mutated by ordinary startup. | Runtime-store scheduler/protocol and SQLite worker adapter own generic outcome resolution, worker replacement, bounded acknowledgement, and migration-safe persistence. | F92-DP4 | S92-ACID-ACK-RECOVERY and graphical Daily composition | Timeout and worker-replacement frequency are observational. | Passing |
+| F92-C06 | Runtime-store submission performs only bounded immutable capture and preflight, returns its stable private request handle before worker open or acknowledgement, and autonomously advances open, dispatch, phase deadlines, one-attempt recovery, and terminal settlement without an awaiter.  Await is observation only and never drives scheduler progress. | Runtime-store scheduler. | F92-DP5A | S92-ASYNC-RUNTIME | Queue/open/settlement latency is observational. | Planned |
+| F92-C07 | Every durable session application-service create, mutation, resume, finalize, and explicit close returns an =e-work= handle before worker open or acknowledgement.  Per-session FIFO lanes and one session-store coordinator preserve required ordering and publish acknowledged authoritative state exactly once, with no partial public authoritative publication.  Existing Feature 66 projection submissions that do not gate Board publication remain non-gating. | Session application service and session-store coordinator. | F92-DP5B | S92-ASYNC-SESSION | Projection lag and operation latency are observational. | Planned |
+| F92-C08 | Every durable Board application-service command returns an =e-work= handle before acknowledgement and is FIFO per Board; same-Board timer commands are admitted behind active work.  =e-chat-open= retains buffer-return compatibility only by retaining and visibly projecting the pending readiness handle, and immediate submit or steer intent queues behind it.  Composite session/participant admission exposes membership, attachment token, and live endpoint together or exposes none.  After any authoritative acknowledgement, failure never compensates by deleting or allocating replacement identities.  Exhausted reconciliation fails the current operation once with the first cause; the next matching open/resume reconciles the replay-discoverable existing identities before allocating or exposing a replacement. | Board durability and chat application service. | F92-DP5C | S92-ASYNC-BOARD and S92-DAILY | Operation latency is observational. | Planned |
+| F92-C09 | Every persistence operation reachable from an interactive command, timer, provider callback, Board/chat drain, resource/action path, or shutdown hook uses its owning asynchronous application-service operation.  Only explicitly classified batch, operator, offline, and test callers may block. | Remaining runtime-domain owners and structural reachability gate. | F92-DP5D | Owner-composition and reachability tests. | Owner frequency is observational. | Planned |
+| F92-C10 | Runtime requests, domain lanes, completion outboxes, retained payloads, and scheduled drains have named count, byte, and work-unit caps.  Over-cap work rejects before semantic admission, and every terminal, cancel, reset, close, and stale-generation partition releases its owned references and timers.  Cancellation terminally cancels only pre-submission work.  After submission a read observer may detach while transport remains owned to terminal settlement; an authoritative write reports =in-flight= and its application =e-work= remains pending through the definitive outcome, never falsely =cancelled=. | Runtime scheduler, domain lane owners, and the opt-in authoritative =e-work= cancellation policy. | F92-DP5D | S92-ASYNC-BOUNDS | Backlog distribution is observational. | Planned |
 
 * Existing defects and required dispositions
 
@@ -89,6 +107,10 @@ credentialed external evidence is not applicable.
 | A client callback exception freezes healthy persistence after a definitive response. | F92-C02 | Latent inherited defect; no production caller uses runtime-store callbacks. | Remove the unused callback surface and make terminal request state the sole notification contract; delete tests that require callback-driven store poisoning. |
 | Board durability status documentation promises an ordered barrier although the operation is local status. | F92-C01 | Documentation defect. | Describe the bounded local status honestly; do not add an implicit worker request. |
 | A submitted write timeout is treated as permanently unknowable even though SQLite has an atomic outcome; the whole application is frozen because the protocol has no durable acknowledgement identity. | F92-C05 | Fresh post-restart Daily counterexample after the original Feature 92 acceptance; inherited Feature 87 failure model. | Persist request identity and result inside the mutation transaction, replace the worker after timeout, and resolve/replay the same request generically before dispatching queued work. |
+| =e-runtime-store-submit= may synchronously open the worker, while timeout and recovery advance only inside =e-runtime-store-await=. | F92-C01, F92-C06 | Current transport implementation; exposed by the accepted asynchronous product direction. | Move cold open, dispatch, phase deadlines, recovery, and terminal notification into the store-owned event-driven scheduler.  Keep await as a batch observer only. |
+| Session, Board, and chat durable operations compose synchronous storage results on interactive and timer stacks. | F92-C07, F92-C08 | Current application-service and adapter implementation; direct cause of same-Board reentry. | Add per-owner asynchronous operation lanes, publish staged authoritative state only after acknowledgement, and compose chat readiness and immediate input through pending handles. |
+| Other shared-runtime owners and shutdown hooks retain blocking calls without an explicit hot-path classification. | F92-C09 | Current task, cron, voice, Goodnite, raw-result, session-tmp, default-runtime, and operator surfaces. | Migrate every interactive/timer/callback/resource/action path; retain blocking observation only for enumerated batch, operator, offline, and test callers. |
+| Individually bounded frames can accumulate without an aggregate asynchronous backlog bound. | F92-C04, F92-C10 | New consequence of accepting work without waiting. | Enforce exact/one-over count and retained-byte admission bounds at transport and owner lanes, bound completion drain work, and release all retained references on every terminal lifecycle partition. |
 
 * Delivery packages
 
@@ -346,6 +368,259 @@ uncertain write receipt.  Also race a committed unacknowledged receipt, worker
 death, competing worker open, and original-parent recovery; the mutation must
 remain exactly once.
 
+** F92-DP5A: Event-driven runtime-store settlement
+
+Establishes =F92-C06= and re-proves =F92-C01=, =F92-C02=, =F92-C04=, and
+=F92-C05= without a waiter.  It installs the transport accounting later
+composed and established end to end by =F92-C10=.
+
+Useful stopping point: a caller can submit to a cold or stalled runtime and
+return with a stable request handle before open or acknowledgement; the store
+continues open, dispatch, timeout, one-attempt recovery, and exact-once
+settlement even if no caller invokes await.
+
+- Make worker open and dispatch scheduler events rather than work performed by
+  =e-runtime-store-submit=.
+- Give the scheduler its own phase-deadline/watchdog progression and make DP4
+  recovery a store-owned state transition.  =e-runtime-store-await= may observe
+  the same state machine for explicit batch/operator/test callers but must not
+  drive it.
+- Add one narrow, one-shot terminal-notification seam.  Queue notification
+  outside process filters and sentinels; a notification failure is client-local
+  and cannot change store health or another request's settlement.
+- Atomically reserve the request object, aggregate byte capacity, and one
+  terminal-notification token before admission.  Settlement stores the result
+  once on the request and enqueues only its O(1) identity/reference.  Outbox
+  saturation can reject new admission but cannot drop or replace an admitted
+  request's terminal notification.
+- Own one generation-fenced earliest-phase-deadline timer per runtime.
+  Admission, submission, recovery replacement, and terminal settlement
+  recompute or cancel it.  Its callback performs one bounded expiry transition
+  and schedules remaining work; a stale generation is a no-op.
+- Bound admitted request count, total retained request bytes, terminal outbox
+  count/bytes, and work per completion drain.  Reject exact one-over work before
+  admission and release frames, payloads, timers, and notification registrations
+  in every terminal/reset/close partition.
+- Define cancellation precisely: queued, not-yet-submitted work is removed and
+  terminally cancelled.  After submission, the transport request remains
+  scheduler-owned through one terminal outcome.  A read observer may detach and
+  suppress late client notification without releasing transport state; a
+  submitted authoritative write rejects cancellation and its public handle
+  remains pending through the definitive DP4 outcome.
+
+Focused evidence: hold cold open and prove submit returns; with no waiter,
+exercise queue and submitted deadlines, pre/post-COMMIT lost acknowledgement,
+replacement exhaustion, and observer failure; exact/one-over count and byte
+limits; bounded drain with an independent heartbeat between pages; and resource
+release across queued, submitted, recovery, terminal, reset, close, and stale
+generation states.  Preterminal read detachment retains its request and token
+until transport terminal state, invokes no late observer, then releases both
+exactly once.
+
+** F92-DP5B: Asynchronous session application service
+
+Establishes =F92-C07= after =F92-DP5A= is accepted and installs session-lane
+accounting later composed and established end to end by =F92-C10=.
+
+Useful stopping point: durable session create, mutation, projection, resume,
+finalize, and close return pending operation handles without worker waits while
+retaining durable-before-visible authoritative publication.
+
+- Add a bounded FIFO operation lane per durable session.  Stage authoritative
+  changes, submit through DP5A, publish exactly once after acknowledgement, and
+  surface the first typed failure without partial authoritative publication.
+- Make header, checkpoint, and every bounded journal page in cooperative resume
+  genuinely asynchronous.  A timer may schedule the next bounded page, but no
+  page callback may call a blocking storage API.
+- Coalesce rebuildable catalog/checkpoint projections behind acknowledged
+  authoritative work.  Projection failure remains visible and secondary to the
+  already committed authoritative mutation.
+- Above the per-session lanes, add one bounded session-store coordinator for
+  catalog/checkpoint projection, finalize, and explicit close.  Close first
+  fences new admission, snapshots all previously accepted work, asynchronously
+  drains or definitively settles it, submits DP4 clean retirement, and detaches
+  adapters only after that result.  Reset or stale generation suppresses
+  obsolete live publication but never discards a submitted request's durable
+  outcome; later reload observes any committed state.
+- Make default runtime/session opening, finalize, and close return pending
+  handles.  Explicit batch/operator/test wrappers may await those handles under
+  the compatibility rules below.
+- Bound lane count, retained payload bytes, and work per publication drain;
+  release session references and registrations in every lifecycle partition.
+- Add one opt-in authoritative-cancellation policy to =e-work= without changing
+  existing Feature 66 handles.  For a persistence operation, carrier
+  cancellation reports =dropped= only before transport submission, after which
+  =e-work= enters terminal =cancelled=.  An =in-flight= authoritative write does
+  not transition the =e-work= lifecycle: cancellation reports =in-flight= and
+  the handle remains pending through definitive storage settlement.  Repeated
+  cancellation requests are idempotent.  Focused tests prove both partitions
+  and prove existing eager-cancellation handles are unchanged.
+
+Focused evidence: held session write has no premature aggregate publication,
+UI/timers continue, release publishes once, and projection failure remains
+secondary; held resume proves header, checkpoint, and every page return without
+waiting while another session operation is admitted and returns its handle and
+an independent heartbeat progresses; cover same-session pending intent, reset,
+close, and stale-generation settlement.  No second SQLite commit is required to
+overtake the held request.
+
+** F92-DP5C: Asynchronous Board and chat composition
+
+Establishes =F92-C08= after =F92-DP5B= is accepted and installs Board/chat-lane
+accounting later composed and established end to end by =F92-C10=.
+
+Useful stopping point: =e-chat-open= still returns a buffer immediately, with a
+visible pending surface while durable session/Board binding completes.  An
+immediate start, submit, or steer intent queues behind readiness.  Same-Board
+timer commands queue and commit in order instead of reentering a synchronous
+barrier.
+
+- Make =e-board-durability= own one bounded FIFO durable-command lane per Board.
+  Split Board transitions into detached prepare and post-acknowledgement apply;
+  route/deliver only after authoritative publication.
+- Replace synchronous mutation freezing with operation admission.  A production
+  Board timer entering behind active work receives a pending handle and cannot
+  escape as =e-board-mutation-frozen=.
+- Make =e-chat-service= own composite create/open/resume/participant readiness.
+  Preserve =e-chat-open='s buffer-return compatibility but not synchronous
+  readiness; queue immediate input intents behind the binding operation and
+  expose pending or first-cause failure visibly.
+- Implement create, resume, and participant readiness as one chat-owned
+  reconciliation state machine: preflight all inputs; create only bounded
+  provisional session/participant state; acknowledge the session association;
+  acknowledge participant publication; then expose membership, attachment
+  token, endpoint, and ready surface together.  Failure or cancellation before
+  any authoritative acknowledgement removes only provisional/unacknowledged
+  state.  Once a phase is acknowledged, cancellation cannot compensate by
+  deleting it: the same stable identities remain pending through bounded
+  reconciliation, with visible first-cause failure if reconciliation exhausts.
+  Late or stale completions cannot attach or publish into a replacement
+  generation.  On exhausted reconciliation after any authoritative
+  acknowledgement, the current =e-work= fails once with the first cause and
+  releases all process-local surface, timer, and registration references.  The
+  acknowledged provisional session/participant identities remain
+  replay-discoverable in existing v5 state; the next matching open/resume must
+  resume reconciliation with those identities before allocating or exposing a
+  replacement.  Until it succeeds, membership, attachment token, endpoint, and
+  ready surface remain collectively unexposed.  Focused evidence covers
+  exhaustion, process-local teardown, replay/resume, and no duplicate session
+  or participant identity.
+- Bound per-Board/chat queued operation count, retained payload bytes, and drain
+  work; clear all surface and domain references on reset, close, and stale
+  generation settlement.
+
+Focused evidence: hold one durable same-Board command, fire a production Board
+timer, and prove the second is pending with no timer error, both commit in order
+exactly once, and another Board remains responsive.  Cover immediate chat input
+behind create/open/resume plus failure, reset, and close partitions.
+
+** F92-DP5D: Remaining runtime-owner cutover and reachability gate
+
+Establishes =F92-C09= and =F92-C10= after =F92-DP5C= by classifying task, cron,
+voice, Goodnite, raw-result, and session-tmp use of the shared runtime and
+composing all transport and owner-lane bounds.
+
+Useful stopping point: every interactive, callback, timer, or shutdown-reachable
+persistence operation uses an asynchronous application-service seam; only
+explicitly classified batch, operator, offline, and test paths can block.
+
+- Implement the fixed owner-classification table below: migrate every listed
+  hot path to its named handle owner and retain blocking only for the stated
+  reason.
+- Add a structural reachability gate that forbids blocking runtime/storage APIs
+  from interactive commands, timers, provider callbacks, Board/chat drains, and
+  kill-Emacs finalization.
+- Exercise one representative composed operation per retained owner class and
+  exact/one-over aggregate owner-lane bounds.
+- Explicit user/operator close follows DP5B's asynchronous close transaction.
+  =kill-emacs-hook= performs no flush, await, worker open, or asynchronous work
+  that cannot complete during exit; it only detaches process-local observers
+  and adapters.  Abrupt exit deliberately leaves DP4's unretired runtime state
+  and receipts for next-open recovery.
+
+Owner classification fixed for DP5D:
+
+| Owner | Interactive/timer/callback entry points | Async service/handle owner | Retained blocking callers and reason |
+|-------+------------------------------------------+----------------------------+--------------------------------------|
+| Runtime store | Default lazy open, scheduler dispatch, timeout, recovery, explicit close | Private runtime request handle; application callers receive their domain =e-work= | =call=/=await= only from the enumerated batch/operator/offline/test rows below |
+| Session | Chat create/open/resume, record mutation, Board association, finalize | Session application service and session-store coordinator =e-work= | Explicit test/load/flush helpers under the hot-path guard |
+| Board/chat | Chat create/open, participant admission, routing/delivery drains, pickup and input-classification timers | Board durability and chat readiness =e-work= | Ephemeral in-memory Board operations only |
+| Task | Queue commands and worker/provider completion callbacks | Task application-service =e-work= | Offline legacy import only |
+| Cron | Registration commands, claim/settle timers | Cron application-service =e-work= | Offline legacy import only |
+| Voice | Interactive adjustment list/record/clear | Voice application-service =e-work= | Offline legacy import only |
+| Goodnite | Resource/action append, page, acknowledge, cleanup | Goodnite application-service =e-work= | Offline legacy import only |
+| Raw result | Tool/provider result put/read/delete and expiry timer | Raw-result application-service =e-work= | Offline legacy import only |
+| Session tmp | Harness session create/read/append/delete paths | Session-tmp application-service =e-work= | Explicit migration/test helpers only |
+| Default open/close | First interactive consumer and explicit user close | Default runtime readiness/close =e-work= | None; =kill-emacs-hook= only detaches |
+| Migration | Explicit runtime upgrade/import command | Not applicable | Blocking is required by the offline, exclusive, operator-invoked transaction |
+| Integrity | Explicit integrity command | Not applicable | Blocking operator diagnostic against an exclusively opened store |
+| Metrics/status | Explicit runtime diagnostic | Runtime diagnostic =e-work= when invoked in a live Emacs | Batch/test inspection may block under the guard |
+| Backup | Explicit pre-upgrade/operator backup | Not applicable | Blocking offline operator workflow must finish before mutation |
+
+All runtime and domain owners share one composition-owned 84 MiB parent-memory
+reservation in addition to their local fairness caps.  Admission first computes
+the exact incremental canonical/raw size without constructing or copying the
+large representation, rejects if existing reservations plus that increment
+would exceed the global allowance, and only then captures or encodes it.  A
+representation simultaneously retained by a domain lane and runtime request is
+charged in every physically retained form; ownership transfer reduces the
+reservation only after the old form is released.  Process-filter wire,
+canonical decode, and result-construction transients retain the remaining
+headroom beneath the established 512 MiB process envelope.
+
+The disposable production-path probe retained a 16,777,216-byte worst-case raw
+payload and its 67,109,277-byte canonical submitted/recovery frame, admitted the
+largest remaining 4,193,891-byte domain payload under the 84 MiB reservation,
+performed a real response pack/decode/result transition, and rejected the
+4,193,892-byte one-over increment arithmetically before constructing a second
+frame.  Peak RSS was 352,370,688 bytes and peak memory footprint 330,695,520
+bytes, both below 536,870,912.  The probe used the production codec and runtime
+request preflight in disposable batch Emacs; it performed no live or canonical
+store mutation.
+
+Initial local and aggregate budgets fixed for =F92-C10=:
+
+| Budget | Initial value | Exactly counted representation | Over-cap result | Release point | Workload/cost basis | Revision trigger |
+|--------+---------------+--------------------------------+-----------------+---------------+---------------------+------------------|
+| Runtime admitted requests | 128 | Active plus queued request objects | Typed runtime capacity failure before queue insertion | Terminal settlement or pre-submit cancellation | Twice the existing 64-item Board fanout ceiling permits one full fanout from each of two owners while one worker serializes | Observed sustained 75 percent use or a larger accepted fanout contract |
+| Runtime retained request bytes | 68 MiB local; 84 MiB shared reservation | =string-bytes= of immutable canonical request frames, charged alongside every still-retained domain form | Typed runtime capacity failure before queue insertion | Definitive terminal settlement or pre-submit cancellation | Preserves one existing maximum protocol frame; the shared probe proves the largest simultaneous extra payload under the process envelope | Protocol frame/global allowance change or sustained 75 percent use |
+| Terminal notification outbox | 128 pre-reserved O(1) tokens; no variable payload copy | Request identity/reference only; the request owns its terminal result exactly once | Admission rejects before queue insertion when no request plus notification token can be reserved; terminal notification is never dropped | Successful bounded notification drain; or, when every observer detached before settlement, terminal transport settlement releases the suppressed-notification token without enqueueing a callback | Every one of the 128 admitted requests must remain observable through exactly one terminal state | Runtime request cap or notification-drain topology changes |
+| Per-session lane | 32 operations / 16 MiB local; 84 MiB shared reservation | Pending operation count and exact measured canonical/raw bytes of captured operation payloads | Session capacity failure before staging/admission | Publication, definitive failure, or pre-submit cancellation | Existing 32-item page/drain scale; one worst-case 16 MiB producer plus its near-maximum transport frame fits the measured shared envelope | Session producer limit, protocol/global allowance, or sustained 75 percent use changes |
+| All session lanes | 64 operations / 16 MiB local aggregate; 84 MiB shared reservation | Sum of per-session pending counts and exact captured-payload reservations in one session-store coordinator | Session-store capacity failure before owner-lane insertion | Same as owning session lane | Two full 32-item lanes for small work while global bytes preserve the measured worst-case operation | Concurrent-session workload or global allowance changes |
+| Per-Board lane | 32 commands / 16 MiB local; 84 MiB shared reservation | Pending command count and exact measured canonical/raw bytes of detached storage command payloads | Board capacity failure before prepare/admission | Post-ack apply, definitive failure, or pre-submit cancellation | Existing input-classification/replay drain scale and the current 256 KiB message limit with bounded metadata/reference fields | Board drain/message limits or sustained 75 percent use changes |
+| All Board lanes | 64 commands / 16 MiB local aggregate; 84 MiB shared reservation | Sum of pending counts and exact command-payload reservations in Board durability | Board-store capacity failure before owner-lane insertion | Same as owning Board lane | Existing 64-item fanout ceiling for small commands while the global reservation governs mixed owners | Fanout or global allowance changes |
+| Chat pending intents | 32 intents / 8 MiB | Intent count and UTF-8 bytes of message content plus canonical metadata/reference bytes | Visible chat capacity failure before intent insertion | Intent start, cancellation before readiness, or failed/retired surface | Admits one maximum legal intent and up to 32 ordinary intents; the independent 8 MiB byte cap may reject fewer than 32 maximum-content intents once their bounded metadata/reference bytes are included | Message limit or sustained 75 percent use changes |
+| Completion/publication drain | 16 work units per timer turn | One terminal notification or one domain publication equals one unit | Remaining work is rescheduled, not rejected | End of each bounded callback | Matches existing 16-item Board and chat drains and guarantees a scheduler yield between bursts | Measured UI starvation or accepted drain-limit change |
+
+Local byte caps count the named owner-held immutable representation; the shared
+reservation counts every physically simultaneous canonical/raw form.  Neither
+pretends to estimate cons or object overhead, which remains inside the measured
+process headroom.  Tests construct exact and one-over totals from real measured
+and encoded values.  These are compatibility and memory-safety choices:
+runtime submission still admits one maximum legal frame, domain producers keep
+their existing bounds, and asynchronous admission cannot multiply them into an
+unbounded backlog.
+
+Package boundary and safe-deferral decisions:
+
+- DP5A is separate because autonomous transport settlement is useful to every
+  owner and can be proved without changing domain publication.  It safely
+  defers domain cutover because no interactive caller is migrated until its
+  owning later package can preserve that domain's transaction semantics.
+- DP5B is separate because per-session ordering and store-wide close/projection
+  coordination form one session-owned transaction boundary.  It safely defers
+  Board/chat because their old durable path remains unsupported for interactive
+  use until DP5C, rather than being advertised as fixed by session work.
+- DP5C keeps Board durability and chat reconciliation together because public
+  readiness is the join between session association and Board participant
+  publication.  Splitting it would expose precisely the partial public state
+  forbidden by =F92-C08=.  It safely defers only the separately owned runtime
+  domains classified in DP5D.
+- DP5D combines the remaining owner migrations with the reachability and
+  aggregate-budget gate because =F92-C09= and =F92-C10= are whole-runtime
+  closure claims; accepting them earlier from a subset would be false.  No
+  interactive persistence owner or resource bound is deferred after DP5D.
+
 * Scenario portfolio
 
 - S92-REQUEST-LIFETIME :: Owner-level scheduler partitions for startup,
@@ -376,6 +651,33 @@ remain exactly once.
   replaces the worker, resolves the active request through its transactional
   receipt, commits the queued transition exactly once, keeps the chat surface
   responsive, exposes the visible Board transition, and remains healthy.
+- S92-ASYNC-RUNTIME :: A cold or stalled runtime accepts work and returns a
+  stable handle before open or acknowledgement.  Scheduler-owned deadlines,
+  recovery, terminal notification, and close progress exactly once without an
+  awaiter; observer failure is isolated.
+- S92-ASYNC-BOUNDS :: Exact and one-over runtime and owner queue counts and
+  retained bytes prove rejection before semantic admission, bounded completion
+  drains, and reference release across all lifecycle partitions.
+- S92-ASYNC-SESSION :: Hold one authoritative session response.  Its public
+  application operation remains pending with no premature publication; another
+  session operation is admitted and returns its handle, and an independent UI
+  heartbeat runs.  After release, shared-worker order is preserved and each
+  result publishes once.  Each header, checkpoint, and journal-page resume step
+  has the same no-wait assertion.
+- S92-ASYNC-BOARD :: Hold one same-Board durable command, then invoke the real
+  timer-backed input-classification scheduler installed by
+  =e-board-runtime--configure-attachment=.  Its
+  =e-board-runtime--drain-input-routing= durability command is admitted behind
+  the first command with no =e-board-mutation-frozen= or timer error.  Another
+  Board's command returns pending and its UI remains responsive; no claim is
+  made that a second SQLite commit overtakes the held worker request.
+- S92-DAILY :: Open the stored Daily topology through public =e-chat-open=,
+  verify that it returns its buffer with visible pending readiness, then call
+  public =e-chat-submit-session= immediately.  Hold the first same-Board
+  response and run the production input-classification timer above.
+  Before/during/after graphical captures prove pending state, composer editing,
+  and an independent heartbeat during the hold; release then produces exactly
+  one ordered visible transition and starts the queued input once.
 
 The canonical package gate is the complete Eldev test suite plus
 =git diff --check= and batch =check-parens= for changed Lisp.  Because this
@@ -387,24 +689,31 @@ scenario.
 
 * Architecture and aggregate design comparison
 
-The correction stays within the existing runtime-store scheduler/protocol and
-SQLite worker adapter.  It adds one private receipt relation and no application
-recovery contract, domain transaction, fallback authority, or shell dependency.
+The correction retains the external SQLite worker but changes the application
+contract above it.  The worker remains the side-effect adapter; the runtime
+scheduler owns autonomous transport progress; session and Board application
+services own durable operation ordering and post-acknowledgement publication;
+chat owns pending surface composition.  No application recovery policy or
+second persistence system is added.
 
-Current aggregate after DP1-DP3: queue and execution lifetime, ownership, and
-byte bounds are explicit, but a lost acknowledgement has no durable identity
-inside the transaction.  The scheduler therefore converts a recoverable local
-worker failure into permanent application unavailability.
+Current aggregate after DP4: request lifetime, ownership, byte bounds, and
+transactional acknowledgement recovery pass, including a lost response on
+either side of COMMIT.  However, cold open and dispatch still run inside
+=submit=, phase deadlines and recovery still depend on a synchronous awaiter,
+and durable session, Board, chat, and other domain adapters still block their
+interactive stacks.
 
-Smallest faithful alternative: keep the one scheduler and one worker, make
-request acknowledgement transactional in the worker adapter, and let the
-scheduler replace the worker and resolve its still-owned active identity.  No
-application contract or second persistence system is needed.
+Smallest faithful alternative after the accepted product direction: keep the
+one scheduler and one worker, retain transactional acknowledgement recovery,
+make scheduler progress event-driven, and expose narrow domain-owned pending
+operations.  Moving only the synchronous call into a timer would still block
+the Emacs event loop and preserve the reentrancy defect.
 
-Decision: retain the existing owners and simplify their faulty paths.  A new
-lease service, generic transaction manager, asynchronous callback registry,
-or second persistence worker would add coordination without serving an
-accepted behavior.
+Decision: retain the worker and existing domain owners, but remove persistence
+waits from interactive stacks.  Use one-shot settlement observation rather than
+a generic callback registry, and per-session/per-Board lanes rather than a
+cross-domain transaction manager.  A new lease service or second persistence
+worker would add coordination without serving an accepted behavior.
 
 Physical-boundary disposition:
 
@@ -419,7 +728,11 @@ Physical-boundary disposition:
   protocol endpoints;
 - checkpoint omission and replay fallback remain in session catalog/storage
   composition because only the session owner can classify that projection as
-  rebuildable.
+  rebuildable;
+- session operation order and publication remain in the session application
+  service; Board durable command order remains in Board durability; and chat
+  readiness remains in chat service.  Stable domain policy does not depend on
+  the concrete runtime-store adapter.
 
 The several touched files express adapter propagation across real boundaries,
 not a qualified physical-decomposition defect.  No modularization scope is
@@ -434,6 +747,31 @@ activated.
 
 - Runtime-store callback keywords are removed.  Repository source has no
   production caller, so there is no accepted compatibility obligation.
+- =e-runtime-store-call= and =e-runtime-store-await= may remain only as clearly
+  named batch/operator/test observation APIs.  They use the same event-driven
+  state machine, are guarded from hot-path use, and never drive recovery.
+- Ephemeral in-memory session and Board operations may remain synchronous.
+  Durable session/Board APIs are not a supported synchronous interactive
+  alternative or fallback; public durable operations gain =*-start= application
+  service forms returning stable work handles, and interactive compositions use
+  those forms.
+- =e-chat-open= retains buffer-return compatibility through a visible pending
+  surface.  It no longer promises synchronous durable readiness; immediate
+  input queues behind the surface binding operation.
+- DP5 changes no SQLite schema, worker operation semantics, receipt identity, or
+  v4-to-v5 migration rule; ordinary open still rejects v4 and explicit offline
+  migration remains the only upgrade path.
+- Public application services use the existing =e-work= lifecycle semantics.
+  Runtime-store request objects remain private transport handles.
+  =e-runtime-store-await= and =e-runtime-store-call= coexist only for the
+  enumerated batch/operator/offline/test entry points and reject when the
+  existing interactive hot-path guard is active; interactive production code
+  cannot use them as fallback.
+- Persistence operations opt into the authoritative-cancellation extension to
+  =e-work=: pre-submit carrier cancellation may terminally cancel, while an
+  =in-flight= authoritative write reports that disposition and leaves the work
+  pending through definitive settlement.  Existing Feature 66 handles retain
+  eager cancellation; no default =e-work= behavior changes.
 - Under =F92-C05=, existing v4 stores require explicit offline migration and
   ordinary startup rejects them without mutation.  Their canonical stored
   values remain readable after migration.  Oversized old checkpoints are
@@ -463,39 +801,53 @@ claim.
 
 * Design self-check
 
-1. Each delivery package is independently useful and moves toward a shared
-   persistence worker whose ownership, request lifecycle, and resource bounds
-   are explicit.
-2. Stable decisions are one worker, commit-first domain writes, and one
-   transactional result for each durable request identity.  Numeric limits
-   remain private and revisable; checkpoint omission uses the existing
-   canonical replay path.
-3. Scheduler/protocol, SQLite transaction receipts, worker claim, and session
-   projection behavior stay with their semantic owners and cohesive source
-   boundaries.
-4. Request timestamps live for one request, receipt identity/result lives until
-   the ordered acknowledgement watermark retires it, one current-or-most-recent
-   runtime-state row lives until a safe successor replaces it, and Emacs
-   file-lock state lives for the worker claim.  Each is reclaimed at its owning
-   boundary.
-5. Domain adapters continue to depend on the generic runtime-store boundary;
-   transport recovery does not move into domain adapters.
-6. No new public abstraction is introduced.  The unused callback surface is
-   removed.
-7. Existing canonical data remains compatible.  The private additive receipt
-   relation requires the repository's explicit schema-upgrade path; obsolete
-   callback, unpaged, and unconditional-delete paths remain removed.
-8. Expected oversized projections are handled by the session projection owner;
-   unexpected protocol corruption surfaces through one typed fail-closed cause.
-9. Projection sizes remain observational.  Finite frame/page enforcement is
-   deterministic, while wall-clock timings remain diagnostic.
-10. Exact private limits have workload and resource bases, exact/one-over
-    behavior, and revision triggers in F92-DP3.
-11. Owner tests cover the original request states and boundaries.  DP4 adds
-    pre/post-COMMIT loss, nested queued work, receipt collision, retention,
-    exhausted close, live-parent contention, and real session/Board
-    composition coverage.
-12. The non-local effects are ordinary propagation through existing adapters.
-    The smallest proper corrections fit this package, so the architecture
-    branch is =correct now= with DP4 implemented; no application recovery
-    abstraction is justified.
+1. If work stops after DP5A, the runtime has a reusable nonblocking substrate;
+   after DP5B, sessions no longer block; after DP5C, the reported Daily/Board
+   path is fixed; and DP5D closes all remaining reachability and aggregate
+   bounds.  Each stopping point is useful.
+2. The final direction is one external persistence worker with autonomous
+   transport settlement and domain-owned asynchronous application operations.
+3. One worker, durable-before-visible publication, transactional receipt
+   recovery, and existing =e-work= semantics are stable.  Numeric budgets are
+   explicit but revisable from their named triggers.  Chat reconciliation and
+   projection coalescing remain local to their owners rather than generalized.
+4. Runtime transport lifecycle belongs to =e-runtime-store=; session ordering
+   and store-wide finalize/close belong to the session application service and
+   coordinator; Board command order belongs to Board durability; composite
+   readiness belongs to chat.  Each has one primary reason to change.
+5. Coupling is reduced because shells, timers, and callbacks depend on narrow
+   domain =e-work= operations rather than synchronous SQLite-shaped calls.
+   Runtime request handles remain private.
+6. Stable domain policy continues to point toward its consumer-shaped storage
+   port.  No session, Board, or chat policy depends on the concrete SQLite
+   worker, and transport recovery remains below application services.
+7. SQLite process/open/send/recovery effects remain in the transport adapter.
+   Application services retain only admission, ordering, staged state, and
+   post-acknowledgement publication.  Kill-time work is reduced to detachment.
+8. Queued frames/outbox entries live only for the request lifecycle; session and
+   Board payloads/references live only in their bounded owner lanes; chat
+   readiness/intents live only for the surface generation; receipts persist
+   only until acknowledgement-watermark retirement.  Rebuildable projections
+   remain coordinator-owned and may be reconstructed.
+9. Interactive stacks do less blocking work.  Async admission can retain more
+   concurrent data, so exact aggregate byte/count limits and 16-unit drains
+   bound memory and callback occupancy.  No performance regression is accepted
+   merely for implementation convenience.
+10. Runtime requests and =e-work= operations are distinct real contracts:
+    transport implementations settle a private request; application services
+    expose domain completion.  In-memory implementations may complete
+    synchronously without weakening the durable contract.
+11. DP5 changes no schema or worker operation ABI.  =e-chat-open= keeps its
+    buffer return but changes readiness to explicit pending state.  Blocking
+    APIs remain only for enumerated batch/operator/offline/test callers.
+12. Timer-specific barrier deferral, waiter-driven recovery, synchronous
+    hot-path adapters, and kill-hook flush/close are obsolete and removed.
+13. Expected capacity, projection, cancellation, and typed persistence failures
+    settle their owning =e-work=.  Unexpected protocol corruption preserves the
+    first typed cause and fails visibly through bounded DP4 recovery; it is not
+    swallowed by observers or presentation.
+14. Owner tests independently prove cold-open settlement, deadlines,
+    cancellation, lifecycle release, per-owner ordering, reconciliation, and
+    exact/one-over limits.  The graphical public Daily scenario proves their
+    composition, while the structural reachability gate prevents a new hidden
+    blocking path without coupling tests to private queue representation.

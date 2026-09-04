@@ -9,7 +9,10 @@ not a recurrence of Feature 92's lost-acknowledgement freeze: Emacs responds,
 the v5 worker remains alive, and the runtime acknowledgement watermark
 continues to advance.  A timer instead attempts a second durable mutation on
 the same Board while the first synchronous Board storage barrier is still
-servicing timers.
+servicing timers.  The accepted correction is no longer timer-specific
+deferral: all persistence-backed interactive operations must be genuinely
+asynchronous, with the Board owner admitting the timer command into a bounded
+FIFO operation lane.
 
 The exact timer producer is not proven without a Lisp backtrace.  No live
 mutation, reload, signal, or process termination was performed.
@@ -44,13 +47,13 @@ signals =e-board-mutation-frozen= with only the Board ID.  Runtime-store waits
 service Emacs timers, so a timer can run on that same stack before the first
 storage response releases the barrier.
 
-The code already has the correct owner seam:
-=e-board--defer-after-storage-barrier= queues an admitted callback while the
-Board is frozen and =e-board--release-storage-barrier= schedules it after the
-commit barrier clears.  Input-routing runtime callbacks use this seam in
-=e-board-runtime--drain-input-routing=.  The live error proves that at least one
-other timer-driven mutation path still enters the public mutation boundary
-directly.
+The existing =e-board--defer-after-storage-barrier= seam demonstrates the
+required ownership location, but it is not the final contract.  It queues only
+selected callbacks around a synchronous barrier, while other timer-driven
+mutations may still enter directly and the original callback continues to
+occupy the main event loop.  =e-board-durability= must instead own a bounded
+FIFO of asynchronous durable commands and publish prepared state only after
+acknowledgement.
 
 * Why Feature 92 E2E missed it
 
@@ -82,10 +85,14 @@ timer error.
 - Make the test fail on any =Error running timer= or
   =e-board-mutation-frozen= escape; do not merely poll the eventual Board
   projection.
-- Prove the timer mutation is queued behind the existing barrier, commits after
-  release, and occurs exactly once.
-- Cover the actual production timer owner once identified, plus a focused
-  owner-level test for the generic deferral contract.
+- Prove both mutation calls return pending handles without waiting, the timer
+  mutation is admitted behind the active command, both commit in order exactly
+  once after release, and another Board remains responsive.
+- Use the known production timer-backed input-classification scheduler installed
+  by =e-board-runtime--configure-attachment= and its
+  =e-board-runtime--drain-input-routing= durable command, plus a focused
+  owner-level test for asynchronous FIFO admission.  The exact historical timer
+  producer remains observational and is not a release gate.
 - Add an isolated graphical case with the real chat/Board composition and an
   inspectable before/during/after transition.  A worker crash is unnecessary;
   the essential seam is a delayed same-Board acknowledgement while timers are
@@ -94,9 +101,11 @@ timer error.
   gate must reproduce the race deterministically without depending on a large
   live database or wall-clock duration.
 
+The superseding normative contracts are =F92-C06= through =F92-C10=;
+=F92-DP5C= owns this Board/chat behavior in Feature 92's plan.
+
 * Runtime disposition
 
 The running Emacs, worker, and canonical v5 SQLite store were inspected
 read-only and left unchanged.  The current Daily session was not restarted or
 reloaded.
-

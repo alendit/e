@@ -3,12 +3,20 @@
 
 * Status
 
-Resolved in repository-controlled evidence by Feature 92 DP4.  The historical
+Partially resolved by Feature 92 DP4 and reopened for asynchronous application
+composition.  The historical
 post-restart recurrence identified a submitted =catalog-put= whose lost
 acknowledgement killed the shared worker and froze queued Board work.  The
 runtime store now resolves the same durable write identity through an ACID
 receipt and one bounded worker replacement, preserving exact-once mutation and
 continuing the queue on either side of COMMIT.
+
+DP4 did not make interactive persistence asynchronous.  Cold submit can still
+open the worker synchronously, timeout and recovery progression still depends
+on =e-runtime-store-await=, and session/Board/chat application services still
+wait inline for durable results.  The accepted Feature 92 DP5 direction keeps
+the external worker but makes scheduler settlement autonomous and returns
+pending domain-operation handles before open or acknowledgement.
 
 The lower-level timing condition that delayed the historical live worker for
 60 seconds is not reproduced by the disposable database clone.  That unknown
@@ -217,7 +225,7 @@ package "graphically not applicable" was too narrow because the user-visible
 timer and responsiveness failure is an important composed outcome even though
 the defect is owned below presentation.
 
-* Required correction after the recurrence
+* DP4 correction after the acknowledgement recurrence
 
 The correction belongs at the ACID storage boundary, not in session or Board
 policy.  SQLite already decides atomically whether each mutation commits or
@@ -308,3 +316,24 @@ composition passes 1/1, and the complete repository suite passes 2,777/2,777.
 No live reload was attempted.  The user's running Emacs and canonical SQLite
 files remain unchanged; this core runtime/schema change requires a full Emacs
 restart to take effect.
+
+* Remaining asynchronous correction
+
+The acknowledgement ambiguity is closed, but the interactive contract remains
+open.  Feature 92 contracts =F92-C06= through =F92-C10= require:
+
+- autonomous cold open, dispatch, phase deadlines, recovery, and terminal
+  settlement when no caller awaits;
+- bounded per-session and per-Board application-service lanes that preserve
+  durable-before-visible publication and admit same-owner timer work in FIFO
+  order;
+- public chat composition that returns a pending surface and queues immediate
+  Daily start/input behind durable binding readiness; and
+- aggregate count, retained-byte, completion-work, and lifecycle-release bounds
+  at both transport and domain-operation owners.
+
+The release gate is a deterministic graphical Daily topology through public
+=e-chat-open=: hold the real same-Board response, prove the call returns and a
+heartbeat plus composer edit run during the hold, show pending state, then
+release and observe exactly one ordered visible transition.  CPU percentage,
+database size, and wall-clock duration remain observational.

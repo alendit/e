@@ -15,7 +15,7 @@ claimed graphical composition evidence.  A timer reentered a durable mutation
 on the same Board and escaped as =e-board-mutation-frozen=.  See
 [[file:../../bugs/board-timer-reentrant-durability-barrier/investigation.org][the live investigation]].
 
-** TODO High: Same-Board timer reenters the durable mutation barrier
+** TODO High: Interactive persistence remains synchronous
 
 The Feature 92 batch and graphical tests schedule a Board pickup transition
 behind session-owned =catalog-put=.  That proves shared runtime-store ordering,
@@ -24,11 +24,16 @@ live failure requires one durable Board mutation to hold
 =e-board--call-with-storage-barrier= while its synchronous worker wait services
 a timer that attempts another mutation on the same Board.
 
-Acceptance requires the real production timer owner to defer through
-=e-board--defer-after-storage-barrier=, then commit exactly once after release.
-Focused and graphical tests must hold a same-Board durable mutation at the
-worker-response seam and fail on any escaped timer error.  Eventual projection
-polling alone is insufficient.
+Timer-specific deferral is not sufficient because the original durable caller
+would still occupy the main event loop.  The accepted product direction keeps
+the SQLite worker but requires autonomous runtime-store settlement and
+domain-owned asynchronous session/Board operation lanes.  Acceptance requires
+the =F92-C06= through =F92-C10= and =F92-DP5A= through =F92-DP5D= plan
+rebaseline to reach fixed point, followed by focused and graphical evidence
+through the real Daily path.  Eventual projection polling alone is insufficient.
+Independent specification review reached =implementation-plan-fixed-point= for
+exact semantic plan blob =4a7b996a38d754b4ee20cfdc982c1a6a3e23de4f= on source baseline
+=696e514e9a0ce9694e20ea3e263a153dc1a9ef8c=.  Production work has not started.
 
 ** DONE High: Lost worker acknowledgement freezes the application
 
@@ -76,7 +81,7 @@ upgrade/rollback matrix, immutable replay under caller mutation, parent-liveness
 receipt retention, a one-attempt recovery bound, and exact terminal settlement
 when recovery is exhausted.
 
-* Scope reviewed
+* Historical DP1-DP4 scope reviewed
 
 - Original contract authority: =plan.org=, especially =F92-C01= through
   =F92-C04= and delivery packages =F92-DP1= through =F92-DP3=.  The fresh
@@ -179,7 +184,7 @@ acceptance:
 Focused regression tests cover each correction.  The final independent pass
 found no further actionable issue.
 
-* Plan coverage
+* Historical DP1-DP4 plan coverage
 
 | Contract | Result | Principal evidence |
 |----------+--------+--------------------|
@@ -188,9 +193,15 @@ found no further actionable issue.
 | F92-C03 | Passing | Shared atomic Emacs file-lock authority; concurrent winner, stale recovery, PID identity conflict, legacy metadata, and late-release tests. |
 | F92-C04 | Passing | Exact canonical/wire bounds; raw-byte coverage; bounded response handling; paged identities; catalog/checkpoint limits; oversized-checkpoint journal replay. |
 | F92-C05 | Passing | Mutation and full-response-bounded receipt share one SQLite transaction; same-identity replay, migration, retention, close, live-parent contention, and graphical Board composition pass. |
+| F92-C06 | Planned / not started | Event-driven runtime settlement without an awaiter. |
+| F92-C07 | Planned / not started | Session application-service lanes and store-wide coordinator. |
+| F92-C08 | Planned / not started | Board durability lane and chat readiness reconciliation. |
+| F92-C09 | Planned / not started | Complete hot-path owner migration and reachability gate. |
+| F92-C10 | Planned / not started | Aggregate count/byte/work budgets and lifecycle release. |
 
-All four delivery packages pass their focused mechanism and composition
-evidence.
+The historical four delivery packages pass their focused mechanism and
+composition evidence.  DP5A through DP5D have no production implementation or
+acceptance evidence yet.
 
 * Verification
 
@@ -231,7 +242,7 @@ memory envelope.  The complete suite's large indexed session fixture also passed
 15,722 records and 37,851,478 content bytes.  No avoidable new unbounded scan or
 unbounded protocol allocation remains in the reviewed paths.
 
-* Architecture review
+* Historical DP1-DP4 architecture review
 
 The scheduler owns request lifetime and transport recovery, the shared private
 ownership module owns process exclusion, the codec/protocol owns frame grammar
@@ -248,7 +259,7 @@ explicit v4-to-v5 upgrade path.  No
 compatibility is required for unused callback keywords or presentation text
 properties in new durable values.
 
-* Design self-check
+* Historical DP1-DP4 design self-check
 
 1. Yes.  Each accepted package is a useful stopping point: lifecycle failures
    are isolated, ownership is atomic, and frames/projections are bounded.
@@ -324,9 +335,11 @@ bug report.
 * Unresolved
 
 - High: an admitted timer mutation can escape as =e-board-mutation-frozen=
-  while another durable mutation on the same Board awaits storage.  The
-  production timer owner and complete correction still require implementation
-  evidence.
+  while another durable mutation on the same Board awaits storage.  The DP5
+  correction and its named deterministic topology through the timer-backed
+  input-classification scheduler, =e-board-runtime--drain-input-routing=, and
+  public Daily chat composition still require implementation evidence.  The
+  exact historical timer producer remains observational and non-gating.
 - The timing-dependent reason the historical live worker failed to acknowledge
   =catalog-put= within 60 seconds is not reproduced by the current database on
   a disposable clone.  That remains observational; the new same-Board

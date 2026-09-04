@@ -16,8 +16,11 @@ Feature 91 module boundaries.  Existing statuses remain unchanged because they
 record each feature's lifecycle state.
 
 Feature 92 is =In-review=: its runtime-store DP4 mechanism passed repository
-review, but the first live v5 run invalidated the graphical composition gate by
-exposing a same-Board timer reentry through the durable mutation barrier.
+review, but live evidence invalidated the interactive composition boundary.
+The accepted DP5 rebaseline keeps the worker and requires genuinely
+asynchronous runtime settlement plus session/Board/chat operation services;
+the amended plan is independently reviewed and ready for ordered DP5
+implementation.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
