@@ -1,0 +1,90 @@
+#+title: Feature 92 SQLite-Owned Query State Plan Review 06
+#+date: 2026-09-05
+#+startup: overview
+
+* Decision
+
+Result: =changes-requested=.  Commit
+=c71ea32d0c4ceabf2341f9a301a82babbbd8f274=, Addendum 2 blob
+=d870a31fe1d20a9aa2af1211a5a55c4d16e9048b=, closes five of the seven findings
+in [[file:plan-review-05.org][plan review 05]], but is not yet at an
+=implementation-plan-fixed-point=.
+
+The same independent reviewer performed an incremental, read-only Tick.  Its
+required clear-technical-writing pass changed no finding, severity, evidence,
+or owner.
+
+* Closed findings
+
+- The active-session lifecycle now closes concurrent acquisition, private
+  reconstruction, loading-time mutation order, generation fencing, failure,
+  and release.
+- The session domain owns exhaustive query-state derivation shared by live
+  mutation and migration; journal, query rows, and receipt share one worker
+  transaction.
+- The normalized matrix separates accepted contracts from failing current
+  behavior and maps =F92A2-C01=--=F92A2-C10= once to DP1--DP5.
+- Board and Task are independently useful packages with explicit split and
+  acceptance-cost rationale.
+- Graphical responsiveness now has a deterministic three-heartbeat and one-edit
+  outcome under a test-controlled hold.
+
+* Findings
+
+** P1: F92-C09 does not define Board quarantine
+
+Addendum 2 says semantic invalidity may quarantine a session or Board.  The
+retained =F92-C09= authority instead defines one session-loader quarantine table
+keyed by session ID.  Invalid Board/session association shape quarantines the
+session and may produce a Board-surface warning; it does not create a separate
+Board quarantine.  Standalone Board read failure remains request-local unless a
+separate contract is accepted.
+
+** P1: Give F92-C09 one establishing package and its complete evidence
+
+Addendum 2 assigns =F92A2-DP2= to complete =F92-C09= while the parent matrix
+still assigns it to =F92-DP6C=.  Addendum 2 must explicitly supersede only that
+package relation, and the parent row must point to the new sole package without
+changing its observable or ownership fields.
+
+DP2 must consume =S92-SESSION-QUARANTINE= in full: every validation dimension,
+bounded paging and yielding, immutable first cause, restart reconstruction,
+repair/revalidate/clear, optimistic-state replacement, Board-warning clearing,
+and healthy-sibling progress.
+
+** P2: Replace the promised modularization audit with a complete inventory
+
+The activated-root paragraph lists broad areas but leaves every required
+responsibility, state/lifetime, transaction, dependency, ABI, test, private
+boundary, and target-disposition cell to a future review.  That leaves physical
+scope discoverable during implementation.
+
+The plan inventory must cover default/runtime composition, session loader,
+aggregate, storage, worker, Board, Task, cron, voice, Goodnite, raw results,
+=e-session-tmp-sqlite.el=, migration/offline worker, and synchronous session
+getter/list consumers across context, actions, MCP, harness resources, chat,
+and Org Canvas.  No activated cluster may remain =unknown=.
+
+** P2: Put v5 startup reporting in the normative matrix
+
+The schema section uniquely requires worker readiness/status to report the
+existing explicit-upgrade diagnostic asynchronously when startup encounters a
+v5 store.  Add the outcome to =F92A2-C01= and add a v5 variant to
+=S92A2-STARTUP= so the matrix remains the sole normative authority.
+
+* Coverage
+
+| Area | Disposition |
+|------+-------------|
+| Prior findings | Five closed; failure semantics and residual topology remain blocked. |
+| Addendum package map | DP1--DP5 map each =F92A2= contract exactly once and are otherwise useful stopping points. |
+| Blocked cells | Single authority, cross-contract package/dependency order, =C10= failure semantics, and activated-root topology. |
+| Architecture branch | =correct-now=; no safe deferral clears the missing topology. |
+
+The goal =F92A2-SQLITE-WORKING-SET= remains behaviorally =Failing= and mechanism
+progress remains =not-started=.  External evidence is not applicable and
+latency is observational.  =docs/references/runtime_concepts.org= remains the
+selected, scope-fitting glossary; no terminology candidate is unresolved.
+
+No production source, tests, running Emacs state, or canonical database changed
+during this review.
