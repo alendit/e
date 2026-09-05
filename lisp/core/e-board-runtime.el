@@ -247,7 +247,8 @@ the board transcript.  Terminal events use their dedicated publisher below.")
 (cl-defstruct (e-board-runtime-attachment
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
-  board participant harness session-id delivery-function subscription activity-sequence generation
+  board participant harness session-id delivery-function subscription activity-sequence
+  output-sequence last-output-turn-id last-output-sequence generation
   turn-activity turn-tags turn-delivery-ids turn-port instance-id instance-catalog-generation
   harness-id harness-object-generation endpoint-token state reconciliation
   identity-token
@@ -2103,13 +2104,36 @@ has no callback and is observed only."
   (let ((message
          (e-harness-attached-turn-port-assistant-message
           (e-board-runtime-attachment-turn-port attachment) turn-id)))
-    (when-let ((sequence (and message
-                              (plist-get message :board-output-sequence))))
+    (when message
       (let* ((board (e-board-registry-board-source-board
                      (e-board-runtime-attachment-board attachment)))
              (participant-id
               (e-board-registry-participant-id
-               (e-board-runtime-attachment-participant attachment))))
+               (e-board-runtime-attachment-participant attachment)))
+             ;; Board owns its producer sequence.  On a synchronous append the
+             ;; legacy session sequence is already present; while SQLite is
+             ;; delayed, allocate the equivalent next value from this
+             ;; attachment's committed high watermark.  Remember the most
+             ;; recent turn so a duplicate terminal callback reuses its key.
+             (sequence
+              (cond
+               ((equal turn-id
+                       (e-board-runtime-attachment-last-output-turn-id
+                        attachment))
+                (e-board-runtime-attachment-last-output-sequence attachment))
+               ((integerp (plist-get message :board-output-sequence))
+                (plist-get message :board-output-sequence))
+               (t (1+ (or (e-board-runtime-attachment-output-sequence
+                            attachment)
+                           0))))))
+        (setf (e-board-runtime-attachment-output-sequence attachment)
+              (max sequence
+                   (or (e-board-runtime-attachment-output-sequence attachment)
+                       0))
+              (e-board-runtime-attachment-last-output-turn-id attachment)
+              turn-id
+              (e-board-runtime-attachment-last-output-sequence attachment)
+              sequence)
         (e-board-post-output
          board
          :author (format "participant:%s" participant-id)
@@ -2953,7 +2977,13 @@ This operation never invokes an instance factory or loads dormant history."
   (let ((attachment
          (e-board-runtime-attachment--create
           :board board :participant participant :harness harness :session-id session-id
-          :activity-sequence 0 :generation generation :state 'active
+          :activity-sequence 0
+          :output-sequence
+          (or (plist-get
+               (e-session-get (e-harness-sessions harness) session-id)
+               :board-output-sequence)
+              0)
+          :generation generation :state 'active
           :turn-activity (make-hash-table :test 'equal)
           :turn-tags (make-hash-table :test 'equal)
           :turn-delivery-ids (make-hash-table :test 'equal)

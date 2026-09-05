@@ -27,6 +27,7 @@
 (require 'e-chat)
 (require 'e-chat-service)
 (require 'e-harness)
+(require 'e-org-canvas)
 (require 'e-session)
 (require 'e-graphical-test-support)
 
@@ -127,6 +128,388 @@ chat window tree after this test has already started its surface assertion."
           (cl-incf count))
         count))))
 
+(ert-deftest e-runtime-store-recovery-graphical-s92-org-canvas-turn-survives-delayed-persistence ()
+  "A new public Org Canvas Daily stays usable while SQLite admission waits."
+  (e-board-e2e-reset-runtime)
+  (let* ((directory (make-temp-file "e-runtime-store-org-canvas-" t))
+         (canvas-directory (make-temp-file "e-org-canvas-daily-" t))
+         (stall-directory (make-temp-file "e-runtime-store-stall-" t))
+         (process-environment
+          (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" stall-directory)
+                process-environment))
+         sessions reader runtime stream harness target input backing-chat session-id
+         failure-target failure-input failure-chat failure-id
+         unrelated-target unrelated-input unrelated-chat unrelated-id heartbeat-timer
+         (heartbeat 0)
+         (e-org-canvas-input-auto-close-delay nil)
+         synchronous-operation service-events service-subscription)
+    (unwind-protect
+        (progn
+          ;; Server-hosted graphical ERT runs inside an Emacs process filter;
+          ;; pump the disposable worker explicitly during synchronous fixture
+          ;; setup so nested process-filter suppression cannot manufacture a
+          ;; 120-second open/cleanup timeout before the behavior under test.
+          (setq sessions
+                (cl-letf (((symbol-function 'e-runtime-store-await)
+                           #'e-runtime-store-recovery-graphical--await-with-pump))
+                  (e-session-sqlite-store-create directory))
+                runtime (e-session-storage-runtime-store sessions)
+                stream (e-graphical-test-stream-create)
+                harness (e-harness-create
+                         :backend (e-graphical-test-stream-backend stream)
+                         :sessions sessions)
+                target
+                (find-file-noselect
+                 (expand-file-name "2026-09-05.org" canvas-directory)))
+          (e-session-enable sessions)
+          (with-current-buffer target
+            (org-mode)
+            (insert "* Daily\n")
+            (save-buffer))
+          (e-runtime-store-recovery-graphical--prepare-frame)
+          (set-window-buffer (selected-window) target)
+          (e-runtime-store-recovery-graphical--arm-stall
+           stall-directory 'board-create)
+          (setq heartbeat-timer
+                (run-at-time 0.01 0.01 (lambda () (cl-incf heartbeat))))
+          ;; This is the command Grimoire Daily invokes on a fresh Org buffer.
+          ;; No test-only session or Canvas binding exists before this call.
+          (let ((started (float-time)))
+            (setq input
+                  (with-timeout
+                      (1.0 (error "Public Org Canvas Daily open blocked"))
+                    (cl-letf (((symbol-function 'e-org-canvas--default-harness)
+                               (lambda () harness))
+                              ((symbol-function 'e-runtime-store-await)
+                               (lambda (_store request &optional _timeout)
+                                 (setq synchronous-operation
+                                       (e-runtime-store-request--operation
+                                        request))
+                                 (error "Org Canvas open awaited %S"
+                                        synchronous-operation))))
+                      (with-current-buffer target
+                        (e-org-canvas-prompt-document)))))
+            (should (< (- (float-time) started) 0.1)))
+          (should (buffer-live-p input))
+          (setq session-id
+                (buffer-local-value 'e-org-canvas-input--session-id input))
+          (setq backing-chat
+                (cl-find-if
+                 (lambda (buffer)
+                   (with-current-buffer buffer
+                     (and (derived-mode-p 'e-chat-mode)
+                          (not (derived-mode-p 'e-org-canvas-input-mode))
+                          (equal e-chat-session-id session-id))))
+                 (buffer-list)))
+          (should (stringp session-id))
+          (should (buffer-live-p backing-chat))
+          (should (equal (buffer-local-value 'e-org-canvas-session-id target)
+                         session-id))
+          (should (eq (window-buffer (selected-window)) input))
+          (setq service-subscription
+                (e-chat-service-subscribe
+                 harness session-id
+                 (lambda (event) (push (plist-get event :type) service-events))))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--stall-ready-p
+              stall-directory 'board-create))
+           2.0 "Org Canvas new-session admission")
+          (should
+           (e-runtime-store-recovery-graphical--runtime-operation-p
+            runtime 'board-participant-put))
+          (should
+           (e-runtime-store-recovery-graphical--runtime-operation-p
+            runtime 'session-append-batch))
+          (with-current-buffer input
+            (goto-char (point-max))
+            (e-graphical-test-type-text
+             "Are there any background refreshers running on the daily board?")
+            (let ((started (float-time)))
+              (cl-letf (((symbol-function 'e-runtime-store-await)
+                         (lambda (_store request &optional _timeout)
+                           (setq synchronous-operation
+                                 (e-runtime-store-request--operation request))
+                           (error "Org Canvas turn awaited %S"
+                                  synchronous-operation))))
+                (e-org-canvas-input-submit))
+              (should (< (- (float-time) started) 0.1))))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--runtime-operation-p
+              runtime 'board-routing-put))
+           1.0 "same-Board classification timer admission")
+          (should (> heartbeat 3))
+          (should-not
+           (e-board-mutation-frozen-p
+            (e-board-registry-board-source-board
+             (e-chat-service-binding-board
+              (e-chat-service-binding harness session-id)))))
+          (when synchronous-operation
+            (ert-fail (format "Org Canvas interactive path awaited %S"
+                              synchronous-operation)))
+          (e-runtime-store-recovery-graphical--release-stall
+           stall-directory 'board-create)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (eq (plist-get
+                  (e-work-status
+                   (e-chat-service-binding-readiness-work
+                    (e-chat-service-binding harness session-id)))
+                  :state)
+                 'finished))
+           3.0 "Org Canvas session readiness")
+          (e-graphical-test-wait-until
+           (lambda () (e-graphical-test-stream-active-p stream))
+           1.0 "Org Canvas provider request after release")
+          (cl-letf (((symbol-function 'e-runtime-store-await)
+                     (lambda (_store request &optional _timeout)
+                       (unless synchronous-operation
+                         (setq synchronous-operation
+                               (e-runtime-store-request--operation request)))
+                       (error "Org Canvas callback awaited %S"
+                              synchronous-operation))))
+            (e-graphical-test-stream-emit
+             stream '(:type reasoning-delta :content "checking background work")
+             0.01)
+            (e-graphical-test-stream-emit
+             stream '(:type assistant-message
+                      :content "No background refresher is blocking this Daily.")
+             0.02)
+            (e-graphical-test-stream-finish stream 0.03)
+            (e-graphical-test-wait-until
+             (lambda ()
+               (or synchronous-operation
+                   (e-graphical-test-stream-failure stream)
+                   (not (e-graphical-test-stream-active-p stream))))
+             2.0 "Org Canvas provider callback after delayed admission"))
+          (when synchronous-operation
+            (ert-fail (format "Org Canvas callback awaited %S"
+                              synchronous-operation)))
+          (should-not (e-graphical-test-stream-failure stream))
+          (with-current-buffer input
+            (should-not (string-match-p "Turn failed" (buffer-string))))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (and (not (e-session-async-pending-p sessions session-id))
+                  (null (e-runtime-store--active-request runtime))
+                  (null (e-runtime-store--client-queue runtime))))
+           3.0 "Org Canvas persistence drain")
+          (condition-case _wait-error
+              (e-graphical-test-wait-until
+               (lambda ()
+                 (with-current-buffer input
+                   (string-match-p
+                    "No background refresher is blocking this Daily"
+                    (buffer-string))))
+               2.0 "Org Canvas visible response after persistence release")
+            (ert-test-failed
+             (ert-fail
+              (format "Org Canvas response missing: events=%S input=%S"
+                      (reverse service-events)
+                      (and (buffer-live-p input)
+                           (with-current-buffer input (buffer-string)))))))
+          (should
+           (cl-find-if
+            (lambda (event)
+              (eq (plist-get event :event-type) 'reasoning-delta))
+            (e-session-activity-events sessions session-id)))
+          (should
+           (cl-find-if
+            (lambda (message)
+              (equal (plist-get message :content)
+                     "No background refresher is blocking this Daily."))
+            (e-session-messages sessions session-id)))
+
+          ;; Fail a second real Org Canvas Daily during its session admission.
+          ;; Only that session/Board owner becomes suspect; the first Daily and
+          ;; a third unrelated Daily remain available.
+          (setq failure-target
+                (find-file-noselect
+                 (expand-file-name "failure.org" canvas-directory)))
+          (with-current-buffer failure-target
+            (org-mode)
+            (insert "* Failure isolation\n")
+            (save-buffer))
+          (e-runtime-store-recovery-graphical--prepare-frame)
+          (set-window-buffer (selected-window) failure-target)
+          (e-runtime-store-recovery-graphical--arm-stall
+           stall-directory 'session-append-batch)
+          (setq failure-input
+                (with-timeout
+                    (1.0 (error "Failure Daily open blocked"))
+                  (cl-letf (((symbol-function 'e-org-canvas--default-harness)
+                             (lambda () harness))
+                            ((symbol-function 'e-runtime-store-await)
+                             (lambda (_store request &optional _timeout)
+                               (setq synchronous-operation
+                                     (e-runtime-store-request--operation
+                                      request))
+                               (error "Failure Daily open awaited %S"
+                                      synchronous-operation))))
+                    (with-current-buffer failure-target
+                      (e-org-canvas-prompt-document)))))
+          (setq failure-id
+                (buffer-local-value
+                 'e-org-canvas-input--session-id failure-input)
+                failure-chat
+                (cl-find-if
+                 (lambda (buffer)
+                   (with-current-buffer buffer
+                     (and (derived-mode-p 'e-chat-mode)
+                          (not (derived-mode-p 'e-org-canvas-input-mode))
+                          (equal e-chat-session-id failure-id))))
+                 (buffer-list)))
+          (when synchronous-operation
+            (ert-fail (format "Failure Daily open awaited %S"
+                              synchronous-operation)))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--stall-ready-p
+              stall-directory 'session-append-batch))
+           2.0 "failure Daily session mutation")
+          (let ((failed-process (e-runtime-store--process runtime)))
+            (delete-process failed-process)
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-runtime-store-recovery-graphical--pump-runtime runtime)
+               (let ((replacement (e-runtime-store--process runtime)))
+                 (and replacement
+                      (not (eq replacement failed-process))
+                      (process-live-p replacement)
+                      (e-runtime-store-recovery-graphical--runtime-operation-p
+                       runtime 'session-append-batch))))
+             2.0 "failure Daily same-owner retry")
+            (delete-process (e-runtime-store--process runtime)))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (and (e-session-storage-session-suspect sessions failure-id)
+                  (buffer-local-value
+                   'e-org-canvas--persistence-warning failure-target)))
+           2.0 "failure Daily visible owner-local warning")
+          (should-not
+           (e-session-storage-session-suspect sessions session-id))
+          (should
+           (e-chat-service-binding-first-persistence-error
+            (e-chat-service-binding harness failure-id)))
+          (let ((warning
+                 (buffer-local-value
+                  'e-org-canvas--persistence-warning failure-target)))
+            (should (string-match-p "persistence suspect" warning))
+            (should (<= (string-bytes warning) 1152))
+            (should
+             (string-match-p
+              "persistence suspect"
+              (format "%s" (buffer-local-value 'mode-name failure-target)))))
+
+          ;; Release the test stall and prove a new public Canvas session can
+          ;; lazily start a worker, persist, and survive an independent reopen.
+          (e-runtime-store-recovery-graphical--release-stall
+           stall-directory 'session-append-batch)
+          (setq unrelated-target
+                (find-file-noselect
+                 (expand-file-name "unrelated.org" canvas-directory)))
+          (with-current-buffer unrelated-target
+            (org-mode)
+            (insert "* Unrelated Daily\n")
+            (save-buffer))
+          (e-runtime-store-recovery-graphical--prepare-frame)
+          (set-window-buffer (selected-window) unrelated-target)
+          (setq unrelated-input
+                (with-timeout
+                    (1.0 (error "Unrelated Daily open blocked"))
+                  (cl-letf (((symbol-function 'e-org-canvas--default-harness)
+                             (lambda () harness))
+                            ((symbol-function 'e-runtime-store-await)
+                             (lambda (_store request &optional _timeout)
+                               (setq synchronous-operation
+                                     (e-runtime-store-request--operation
+                                      request))
+                               (error "Unrelated Daily open awaited %S"
+                                      synchronous-operation))))
+                    (with-current-buffer unrelated-target
+                      (e-org-canvas-prompt-document)))))
+          (setq unrelated-id
+                (buffer-local-value
+                 'e-org-canvas-input--session-id unrelated-input)
+                unrelated-chat
+                (cl-find-if
+                 (lambda (buffer)
+                   (with-current-buffer buffer
+                     (and (derived-mode-p 'e-chat-mode)
+                          (not (derived-mode-p 'e-org-canvas-input-mode))
+                          (equal e-chat-session-id unrelated-id))))
+                 (buffer-list)))
+          (when synchronous-operation
+            (ert-fail (format "Unrelated Daily open awaited %S"
+                              synchronous-operation)))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (eq (plist-get
+                  (e-work-status
+                   (e-chat-service-binding-readiness-work
+                    (e-chat-service-binding harness unrelated-id)))
+                  :state)
+                 'finished))
+           3.0 "unrelated Daily lazy worker replacement")
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (and (not (e-session-async-pending-p sessions session-id))
+                  (not (e-session-async-pending-p sessions failure-id))
+                  (not (e-session-async-pending-p sessions unrelated-id))
+                  (null (e-runtime-store--active-request runtime))
+                  (null (e-runtime-store--client-queue runtime))
+                  (null (e-runtime-store--recovering-request runtime))))
+           3.0 "unrelated Daily persistence drain")
+          (e-runtime-store--close-start runtime)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store--closed runtime))
+           2.0 "writer retirement before independent readback")
+          (setq reader
+                (cl-letf
+                    (((symbol-function 'e-runtime-store-await)
+                      #'e-runtime-store-recovery-graphical--await-with-pump))
+                  (e-session-sqlite-store-create directory :load-all t)))
+          (should (equal (plist-get (e-session-get reader unrelated-id) :id)
+                         unrelated-id))
+          (should
+           (plist-get
+            (plist-get (e-session-get reader unrelated-id) :metadata)
+            :org-canvas-ref)))
+      (when (timerp heartbeat-timer) (cancel-timer heartbeat-timer))
+      (when (e-graphical-test-stream-p stream)
+        (e-graphical-test-stream-cancel stream))
+      (when service-subscription
+        (e-chat-service-unsubscribe service-subscription))
+      (ignore-errors
+        (e-runtime-store-recovery-graphical--release-stall
+         stall-directory 'board-create)
+        (e-runtime-store-recovery-graphical--release-stall
+         stall-directory 'session-append-batch))
+      (dolist (buffer (list input backing-chat target
+                            failure-input failure-chat failure-target
+                            unrelated-input unrelated-chat unrelated-target))
+        (when (buffer-live-p buffer) (kill-buffer buffer)))
+      (when reader
+        (ignore-errors
+          (e-runtime-store--finalize-close
+           (e-session-storage-runtime-store reader))))
+      (when runtime
+        (ignore-errors (e-runtime-store--finalize-close runtime)))
+      (delete-directory directory t)
+      (delete-directory canvas-directory t)
+      (delete-directory stall-directory t))))
+
 (ert-deftest e-runtime-store-recovery-graphical-s92-daily-open-does-not-wait-for-worker ()
   "Public Daily open returns a usable pending surface before SQLite replies."
   (e-board-e2e-reset-runtime)
@@ -144,7 +527,10 @@ chat window tree after this test has already started its surface assertion."
           (setq phase 'create-runtime)
           ;; Match the production default harness, which enables the session
           ;; application adapter before any public chat work is admitted.
-          (setq sessions (e-session-sqlite-store-create directory))
+          (setq sessions
+                (cl-letf (((symbol-function 'e-runtime-store-await)
+                           #'e-runtime-store-recovery-graphical--await-with-pump))
+                  (e-session-sqlite-store-create directory)))
           (e-session-enable sessions)
           (setq runtime (e-session-storage-runtime-store sessions)
                 stream (e-graphical-test-stream-create)
@@ -433,7 +819,10 @@ chat window tree after this test has already started its surface assertion."
           ;; topology before asking the production chat surface to compose its
           ;; transcript/composer pair, so a prior test cannot hide either half.
           (e-runtime-store-recovery-graphical--prepare-frame)
-          (setq sessions (e-session-sqlite-store-create directory)
+          (setq sessions
+                (cl-letf (((symbol-function 'e-runtime-store-await)
+                           #'e-runtime-store-recovery-graphical--await-with-pump))
+                  (e-session-sqlite-store-create directory))
                 stream (e-graphical-test-stream-create)
                 harness
                 (e-harness-create

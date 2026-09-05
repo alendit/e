@@ -1524,6 +1524,53 @@ Return request options, persisted anchors, and the final context."
                     'snapshot))
         (should (plist-get (plist-get summary :payload) :combined))))))
 
+(ert-deftest e-harness-test-reasoning-flush-publishes-after-async-enqueue ()
+  "Reasoning publication does not treat an async persistence handle as an event."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (events nil)
+         write-index
+         refreshed)
+    (e-harness-create-session harness :id "session-1")
+    (e-session-async-enable (e-harness-sessions harness))
+    (e-harness-activity-subscribe
+     harness (lambda (event) (push event events)) :session-id "session-1")
+    (cl-letf (((symbol-function 'e-session-append-activity-event)
+               (lambda (_store _session-id _turn-id _type _payload
+                        &rest options)
+                 (setq write-index (plist-get options :write-index))
+                 ;; Async session persistence returns an `e-work' cl-struct,
+                 ;; not the appended activity plist.  A vector has the same
+                 ;; relevant plist behavior without starting test work.
+                 [async-persistence-work]))
+              ((symbol-function 'e-session-refresh-index)
+               (lambda (&rest _arguments)
+                 (setq refreshed t)
+                 (error "Async activity callback flushed the catalog"))))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'provider-request-started
+       '(:status started))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'reasoning-delta
+       '(:type reasoning-delta :content "thinking"))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'provider-request-finished
+       '(:status done))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'turn-finished '(:reason stop)))
+    (let ((published (reverse events)))
+      (should (equal (mapcar (lambda (event) (plist-get event :type))
+                     published)
+                     '(provider-request-started reasoning-delta reasoning-delta
+                       provider-request-finished turn-finished)))
+      (should (equal (plist-get (plist-get (nth 2 published) :payload)
+                                :content)
+                     "thinking"))
+      (should (plist-get (plist-get (nth 2 published) :payload) :combined))
+      (should-not (plist-get (nth 2 published) :activity-entry-id))
+      (should write-index)
+      (should-not refreshed))))
+
 (ert-deftest e-harness-test-activity-index-write-is-coalesced ()
   "Harness activity events flush the session index once at turn settlement."
   (let* ((store (e-session-store-create))

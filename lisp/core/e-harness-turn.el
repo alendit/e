@@ -1252,10 +1252,35 @@ provider or loop failure."
      (let ((message (copy-sequence message)))
        (when turn-id
          (plist-put message :turn-id turn-id))
-       (setq message
-             (e-session-append-message (e-harness-sessions harness)
-                                       session-id
-                                       message))
+       (let ((append-result
+              (e-session-append-message (e-harness-sessions harness)
+                                        session-id
+                                        message)))
+         ;; The asynchronous session facade returns its work handle once the
+         ;; immutable append has entered the owner FIFO.  That handle is not
+         ;; the semantic message and must never cross the harness event port.
+         ;; Synchronous stores still return their normalized durable message.
+         (if (not (e-work-handle-p append-result))
+             (setq message append-result)
+           (pcase-let* ((status (e-work-status append-result))
+                        (state (plist-get status :state)))
+             ;; Capacity rejection is represented by an already-failed work;
+             ;; it is not a successful enqueue and therefore cannot be
+             ;; published optimistically.
+             (when (eq state 'failed)
+               (let ((err (plist-get status :error)))
+                 (signal (car err) (cdr err))))
+             (when (eq state 'cancelled)
+               (signal 'e-work-cancelled (list append-result))))))
+       ;; Terminal hooks and the Board adapter need the accepted assistant
+       ;; value before SQLite acknowledges the append.  Keep that one value on
+       ;; the active turn that owns it; durable session state replaces it on
+       ;; ordinary synchronous and post-commit reads.
+       (when (eq (plist-get message :role) 'assistant)
+         (when-let ((entry (gethash session-id
+                                    (e-harness-active-turns harness))))
+           (when (equal (plist-get entry :id) turn-id)
+             (plist-put entry :assistant-message (copy-sequence message)))))
        (e-harness-activity-emit-turn-event
         harness session-id turn-id 'message-added (list :message message))
        message))))
@@ -1294,11 +1319,16 @@ Returns the updated message, or nil when no such message exists."
 (defun e-harness-turn--turn-assistant-message (harness session-id turn-id)
   "Return the final assistant message for SESSION-ID TURN-ID in HARNESS.
 When a turn produced multiple assistant messages, return the last one."
-  (car (last (cl-remove-if-not
-              (lambda (message)
-                (and (eq (plist-get message :role) 'assistant)
-                     (equal (plist-get message :turn-id) turn-id)))
-              (e-session-messages (e-harness-sessions harness) session-id)))))
+  (or (when-let ((entry (gethash session-id
+                                  (e-harness-active-turns harness))))
+        (when (equal (plist-get entry :id) turn-id)
+          (copy-sequence (plist-get entry :assistant-message))))
+      (car (last (cl-remove-if-not
+                  (lambda (message)
+                    (and (eq (plist-get message :role) 'assistant)
+                         (equal (plist-get message :turn-id) turn-id)))
+                  (e-session-messages (e-harness-sessions harness)
+                                      session-id))))))
 
 (defun e-harness-turn--run-turn-finished-hooks
     (harness session-id turn-id result &optional model-context)

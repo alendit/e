@@ -1472,6 +1472,11 @@
                      (lambda (&rest args)
                        (setq call args)
                        "turn-1"))
+                    ;; A freshly opened persistent Canvas can have its
+                    ;; metadata mutation queued behind session admission.  The
+                    ;; input pane already owns the authoritative live source.
+                    ((symbol-function 'e-org-canvas-session-buffer)
+                     (lambda (&rest _args) nil))
                     ((symbol-function 'e-workspace-pop-to-buffer)
                      (lambda (&rest _args) nil)))
             (with-current-buffer buffer
@@ -1749,6 +1754,7 @@
             :turn-id "turn-1"
             :created-at 1
             :payload '(:message (:role assistant
+                                  :terminal-output t
                                   :content "Here is the result."))))
           (e-org-canvas-test--emit-board-event
            harness

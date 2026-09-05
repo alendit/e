@@ -56,6 +56,53 @@
     (should (equal (plist-get (plist-get seen :assistant-message) :content)
                    assistant-text))))
 
+(ert-deftest e-harness-test-async-message-append-publishes-semantic-message ()
+  "An accepted async append never exposes its work handle as a message."
+  (let* ((harness (e-harness-create))
+         (session-id "session-async-message")
+         (turn-id "turn-async-message")
+         (entry (list :id turn-id :status 'running))
+         (work (e-work-prepare
+                (e-work-spec-create
+                 :id "test-session-append" :execution 'cooperative
+                 :interactive-policy 'async :owner 'test
+                 :runner (lambda (&rest _arguments) :deferred))
+                nil))
+         events returned)
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id session-id)
+          (puthash session-id entry (e-harness-active-turns harness))
+          (e-harness-activity-subscribe
+           harness (lambda (event) (push event events)) :session-id session-id)
+          (cl-letf (((symbol-function 'e-session-append-message)
+                     (lambda (&rest _arguments) work)))
+            (setq returned
+                  (e-harness-turn--append-message
+                   harness session-id turn-id
+                   '(:role assistant :content "accepted before commit"))))
+          (should-not (e-work-handle-p returned))
+          (should (eq (plist-get returned :role) 'assistant))
+          (should (equal (plist-get returned :content)
+                         "accepted before commit"))
+          (should
+           (equal
+            (plist-get
+             (plist-get
+              (seq-find (lambda (event)
+                          (eq (plist-get event :type) 'message-added))
+                        events)
+              :payload)
+             :message)
+            returned))
+          (should
+           (equal (e-harness-turn--turn-assistant-message
+                   harness session-id turn-id)
+                  returned)))
+      (unless (memq (plist-get (e-work-status work) :state)
+                    '(finished failed cancelled))
+        (e-work-cancel work)))))
+
 (ert-deftest e-harness-test-turn-finished-is-published-after-hook-audit ()
   "The public terminal event follows all turn-finished hook side effects."
   (let* ((events nil)

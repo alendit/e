@@ -45,6 +45,16 @@ not release gates and must not be extended unless a common reproduced failure
 requires them.  The current release gate is the public graphical Daily scenario
 in =S92-DAILY=.
 
+The first claimed =S92-DAILY= witness was subsequently invalidated by a live
+Grimoire Daily turn: the test used classic =e-chat= rather than the Org Canvas
+shell.  Enabling async session persistence changed activity append results to
+=e-work= handles while reasoning flush still treated them as persisted event
+plists, producing =e-events-make= with a nil type.  Re-auditing the public path
+also found synchronous Canvas session creation and post-enqueue consumers that
+still assumed committed session state.  The corrected =S92-DAILY= test now
+passes through the actual Org Canvas entry, delay/release turn, owner failure,
+unrelated Daily persistence, and independent reopen.
+
 * Behavioral goal
 
 - Goal ID :: =BUG-RUNTIME-STORE-ISOLATION=
@@ -69,15 +79,14 @@ in =S92-DAILY=.
   they conflict; accepted DP1--DP5A behavior remains available but is not
   reimplemented in application layers.
 - Owning contracts :: =F92-C01= through =F92-C11= below.
-- Behavioral status :: The minimum =S92-DAILY= slice now passes its isolated
-  public graphical acceptance test: new chat open returns a pending buffer,
-  session and participant persistence enqueue, same-Board timer work queues,
-  composer input and an independent heartbeat continue during a deliberate
-  SQLite delay, release renders one classification message, and a failed Daily
-  owner does not prevent an unrelated session from persisting and reading back.
-  This is repository evidence, not a live validation of the user's running
-  Emacs or canonical database.  Session quarantine, the all-domain hot-path
-  audit, and the rest of the roadmap remain unresolved.
+- Behavioral status :: The minimum public Grimoire Daily slice passes its
+  actual Org Canvas graphical gate: fresh Canvas open returns immediately;
+  session, participant, metadata, and same-Board timer work queue while SQLite
+  is delayed; composer input and an independent heartbeat remain responsive;
+  release renders one ordered result; and worker failure marks only that Daily
+  suspect while an unrelated public Canvas persists and reads back.  Session
+  quarantine, the all-domain hot-path audit, and the rest of the roadmap remain
+  unresolved.
 - Mechanism status :: =F92-DP1= through =F92-DP4= remain passing and
   independently accepted =F92-DP5A= establishes the autonomous runtime
   substrate.  DP5A's independent owner gate passes 68/68, the Board replay
@@ -226,8 +235,9 @@ After enqueue succeeds, application state may publish optimistically in FIFO
 order.  Later persistence failure changes only the affected surface to a
 visible suspect warning.
 
-Primary acceptance is one isolated graphical test through public
-=e-chat-open=: delay the real SQLite worker, assert buffer return, edit the
+Primary acceptance is one isolated graphical test through the actual public
+Org Canvas/Grimoire Daily entry: delay the real SQLite worker, assert buffer
+return, edit the
 composer, observe an independent heartbeat and same-Board timer admission,
 release the worker, and observe this exact order: participant binding becomes
 ready, the queued classification transition applies, then its one Board message
@@ -240,22 +250,39 @@ the primary release gate and directly removes the reported hang.
 
 *** Minimum Daily implementation evidence (2026-09-05)
 
-The implemented slice uses the ordinary public default-enablement path and the
-real external SQLite worker.  Its final focused graphical test passes 1/1 in
-1.027 seconds on the integrated tree.  The test proves only the six current
-acceptance points: immediate =e-chat-open= buffer return; queued
-session and participant association; queued same-Board classification without
-=e-board-mutation-frozen=; live composer input and heartbeat during the worker
-delay; one classification Board message after release; and owner-local suspect
-failure followed by unrelated session persistence and independent readback.
+The first focused graphical test uses the ordinary public default-enablement
+path and a real external SQLite worker, and passes its six classic-chat/Board
+assertions.  It does not prove the public Grimoire Daily path because it calls
+=e-chat-open= and =e-chat-submit-session= directly.
 
-Focused repository checks pass: runtime store 69/69, Board SQLite 19/19, DP6
-runtime 11/11, and session async 44/44.  =eldev compile=
-exits zero with pre-existing warnings; batch parenthesis checks pass for all 18
-changed Lisp files; =git diff --check= is clean; and the isolated harness leaves
-no Emacs or runtime-store worker process behind.  The implementation/test
-manifest before this evidence-only documentation update is
-=2cd4d1c64e39815251f38682013c3abd96f7922f4029f476803bd6ea4cd6a679=.
+A live Org Canvas turn exposed =e-event-type nil=: async activity persistence
+returned an =e-work= handle while reasoning flush expected a persisted event
+plist.  Reasoning publication now uses its harness-owned semantic type/payload
+and attaches persisted provenance only when synchronously available.  The same
+return-contract error also replaced terminal assistant messages with =e-work=
+handles, so the harness now retains the accepted semantic assistant message
+until durable state catches up.  Canvas creation now enters through asynchronous
+=e-chat-open= with a generated session identity; prompt submission uses the
+already-owned source buffer while its metadata write is queued; and the
+result-only pane does not run the normal-chat composer-reset hint.
+
+The final public graphical selector starts with an unbound Org file and invokes
+=e-org-canvas-prompt-document=.  It deliberately stalls the real external
+worker, traps any =e-runtime-store-await= on open and submit, asserts return in
+under 100 ms, observes queued session/participant/metadata and production Board
+timer operations, edits the real composer, and advances an independent
+heartbeat.  After release it observes the classification result exactly once
+and durable activity/message state.  It then kills the worker through both
+attempts for a second public Canvas, observes only that Daily's bounded suspect
+warning, and proves a third unrelated public Canvas persists and reads back
+after an independent reopen.  Clean consecutive selector runs pass 1/1 in
+1.769 and 1.810 seconds; the classic-chat control also passes 1/1.
+
+Focused repository checks pass: Canvas 9/9, Org Canvas 74/74, harness activity
+34/34, harness turn 30/30, Board runtime 83/83, DP6 runtime 11/11, and session
+async 44/44.  =git diff --check= is clean, and the isolated harness leaves no
+Emacs or runtime-store worker process behind.  =eldev compile= exits zero with
+only the repository's existing warnings.
 
 This evidence does not complete =F92-DP6A=--=F92-DP6D= independently.  It does
 not add session quarantine, the all-domain reachability migration, generalized

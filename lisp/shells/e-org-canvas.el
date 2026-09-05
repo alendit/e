@@ -105,6 +105,9 @@ Org Canvas status refreshes for the current buffer.")
 (defvar-local e-org-canvas--status-snapshot-cache nil
   "Caller-owned status text snapshot cache for this Org Canvas buffer.")
 
+(defvar-local e-org-canvas--persistence-warning nil
+  "First bounded persistence warning for this Org Canvas session.")
+
 (defvar-local e-org-canvas-input--harness nil
   "Harness used by the current input pane.")
 
@@ -202,23 +205,46 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
 
 (defun e-org-canvas--context-status-text ()
   "Return Org Canvas context-state status text for the current buffer."
-  (unless (consp e-org-canvas--status-estimate-cache)
-    (setq-local e-org-canvas--status-estimate-cache (cons nil nil)))
-  (unless (consp e-org-canvas--status-snapshot-cache)
-    (setq-local e-org-canvas--status-snapshot-cache (cons nil nil)))
-  (let ((cache-key (e-org-canvas--context-status-key)))
-    (e-context-status-text
-     e-org-canvas-harness e-org-canvas-session-id
-     :prefix e-org-canvas--mode-name
-     :prefer-token-usage t
-     :estimate-context nil
-     :estimate-cache e-org-canvas--status-estimate-cache
-     :estimate-cache-key cache-key
-     :snapshot-cache e-org-canvas--status-snapshot-cache
-     :snapshot-cache-key
-     (list :status-key cache-key
-           :prefer-token-usage t
-           :estimate-context nil))))
+  (if e-org-canvas--persistence-warning
+      (format "%s ⚠ persistence suspect" e-org-canvas--mode-name)
+    (unless (consp e-org-canvas--status-estimate-cache)
+      (setq-local e-org-canvas--status-estimate-cache (cons nil nil)))
+    (unless (consp e-org-canvas--status-snapshot-cache)
+      (setq-local e-org-canvas--status-snapshot-cache (cons nil nil)))
+    (let ((cache-key (e-org-canvas--context-status-key)))
+      (e-context-status-text
+       e-org-canvas-harness e-org-canvas-session-id
+       :prefix e-org-canvas--mode-name
+       :prefer-token-usage t
+       :estimate-context nil
+       :estimate-cache e-org-canvas--status-estimate-cache
+       :estimate-cache-key cache-key
+       :snapshot-cache e-org-canvas--status-snapshot-cache
+       :snapshot-cache-key
+       (list :status-key cache-key
+             :prefer-token-usage t
+             :estimate-context nil)))))
+
+(defun e-org-canvas--watch-session-readiness (buffer chat-buffer session-id)
+  "Reflect CHAT-BUFFER admission failure on Org Canvas BUFFER for SESSION-ID."
+  (when-let* ((work (and (buffer-live-p chat-buffer)
+                         (buffer-local-value
+                          'e-chat--session-readiness-work chat-buffer))))
+    (e-work-on-settle
+     work
+     (lambda (settled-work)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (when (and (eq (plist-get (e-work-status settled-work) :state)
+                          'failed)
+                      (null e-org-canvas--persistence-warning))
+             (setq-local
+              e-org-canvas--persistence-warning
+              (format "persistence suspect %s: %s"
+                      session-id
+                      (e-work-error-message
+                       (plist-get (e-work-status settled-work) :error))))
+             (e-org-canvas--refresh-status))))))))
 
 (defun e-org-canvas--context-status-key ()
   "Return semantic cache key for the current Org Canvas context status."
@@ -651,6 +677,9 @@ When DISPLAY is non-nil, display and focus the chat composer; otherwise select
 the Org source buffer only."
   (let ((workspace (e-org-canvas--workspace-for-buffer buffer)))
     (e-buffer-set-workspace chat-buffer workspace)
+    (e-org-canvas--watch-session-readiness
+     buffer chat-buffer
+     (buffer-local-value 'e-org-canvas-session-id buffer))
     (e-org-canvas--select-org-buffer buffer)
     (when display
       (e-org-canvas--display-and-select-chat-buffer chat-buffer)))
@@ -1105,7 +1134,16 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
          (when (eq (plist-get message :role) 'assistant)
            (setq-local e-org-canvas-input--final-message-rendered-p t)
            (e-org-canvas--input-enter-result-state)
-           (e-chat-render-event event)
+           ;; A Board-final assistant row normally tells the chat facade to
+           ;; ensure its next composer.  This transient Canvas pane owns a
+           ;; result-only lifecycle, so pass the shared renderer the same
+           ;; semantic message without the normal-chat settlement hint.  The
+           ;; original event remains unchanged for every other subscriber.
+           (let* ((render-event (copy-tree event))
+                  (render-payload (plist-get render-event :payload))
+                  (render-message (plist-get render-payload :message)))
+             (cl-remf render-message :terminal-output)
+             (e-chat-render-event render-event))
            (e-org-canvas-input-result-mode 1)
            (e-org-canvas--input-select-result-buffer buffer))))
       ('turn-finished
@@ -1239,10 +1277,12 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
     (setq-local e-org-canvas-input--scope-reference nil)))
 
 (cl-defun e-org-canvas-submit-prompt
-    (harness session-id prompt scope &key references)
-  "Submit PROMPT to HARNESS SESSION-ID with Org Canvas SCOPE metadata."
+    (harness session-id prompt scope &key references target-buffer)
+  "Submit PROMPT to HARNESS SESSION-ID with Org Canvas SCOPE metadata.
+TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
   (e-org-canvas--maybe-save-new-buffer harness session-id prompt)
-  (let* ((buffer (or (e-org-canvas-session-buffer harness session-id)
+  (let* ((buffer (or (and (buffer-live-p target-buffer) target-buffer)
+                     (e-org-canvas-session-buffer harness session-id)
                      (user-error "Org Canvas session has no live Org buffer")))
          (focus (with-current-buffer buffer
                   (e-org-canvas-capture-focus scope)))
@@ -1327,7 +1367,8 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
       (unwind-protect
           (setq turn-id
                 (e-org-canvas-submit-prompt harness session-id prompt scope
-                                            :references references))
+                                            :references references
+                                            :target-buffer target))
         (setq-local e-org-canvas-input--submitting nil))
       (setq-local e-org-canvas-input--active-turn-id turn-id)
       (e-org-canvas--input-enter-result-state)

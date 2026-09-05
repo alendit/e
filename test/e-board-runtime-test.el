@@ -2541,6 +2541,27 @@
           (should (eq (e-board-message-kind (car messages)) 'output))
           (should (equal (e-board-message-content (car messages)) "done")))))))
 
+(ert-deftest e-board-runtime-test-publishes-accepted-output-before-session-commit ()
+  "A turn-owned assistant value can publish before its session append commits."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board"))
+           (harness (e-harness-create)))
+      (e-harness-create-session harness :id "session")
+      (let ((attachment (e-board-runtime-attach
+                         board harness "session" :participant-id "participant")))
+        (cl-letf (((symbol-function
+                    'e-harness-attached-turn-port-assistant-message)
+                   (lambda (_port _turn-id)
+                     '(:role assistant :turn-id "turn"
+                       :content "accepted before commit"))))
+          (e-board-runtime--publish-output attachment "turn"))
+        (let ((message (car (e-board-messages
+                             (e-board-registry-board-source-board board)))))
+          (should (equal (e-board-message-content message)
+                         "accepted before commit"))
+          (should (equal (e-board-message-source-output-key message)
+                         '("participant" 1 1))))))))
+
 (ert-deftest e-board-runtime-test-rebind-gives-fresh-session-output-a-new-source-generation ()
   "A fresh session after rebind cannot deduplicate a prior endpoint's output."
   (e-board-runtime-test--with-empty-state

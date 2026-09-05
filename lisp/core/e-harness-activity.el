@@ -501,6 +501,9 @@ fields outside that error contract."
          :metadata (list :event-type (and type (symbol-name type))))
    (lambda ()
      (let* ((store (e-harness-sessions harness))
+            (flush-index-p
+             (e-harness-activity--activity-index-flush-event-p type))
+            (async-p (e-session-async-enabled-p store))
             (durable-payload
              (e-harness-activity-payload type payload))
             (checkpoint-retain
@@ -512,16 +515,23 @@ fields outside that error contract."
                     turn-id
                     type
                     durable-payload
-                    :write-index nil
+                    ;; Async completion marks the derived projection dirty
+                    ;; without publishing it on this interactive callback.
+                    :write-index (and async-p flush-index-p)
                     :checkpoint-retain checkpoint-retain)))
-       (when (e-harness-activity--activity-index-flush-event-p type)
+       (when (and flush-index-p (not async-p))
          (e-session-refresh-index store))
        event))))
 
 (defun e-harness-activity--flush-reasoning-stream
     (harness session-id turn-id)
   "Persist at most one combined reasoning entry per stream for this request.
-Return the appended activity entries in summary/raw order."
+Return public event descriptors in summary/raw order.
+
+Persistence may return either an appended entry or an asynchronous work
+handle.  The harness-owned TYPE and PAYLOAD remain authoritative for immediate
+publication; persisted provenance is attached only when it is already
+available."
   (let* ((streams (e-harness-activity--reasoning-streams harness))
          (key (e-harness-activity--reasoning-stream-key session-id turn-id))
          (stream (gethash key streams))
@@ -540,12 +550,19 @@ Return the appended activity entries in summary/raw order."
         (when-let* ((payload
                      (e-harness-activity--combined-reasoning-payload
                       stream (nth 1 spec) (nth 2 spec))))
-          (setq appended
-                (append
-                 appended
-                 (list
-                  (e-harness-activity--append-durable-activity-event
-                   harness session-id turn-id (car spec) payload)))))))
+          (let ((activity-entry
+                 (e-harness-activity--append-durable-activity-event
+                  harness session-id turn-id (car spec) payload)))
+            (setq appended
+                  (append
+                   appended
+                   (list
+                    (list :event-type (car spec)
+                          :payload payload
+                          :activity-entry-id (plist-get activity-entry :id)
+                          :board-activity-sequence
+                          (plist-get activity-entry
+                                     :board-activity-sequence)))))))))
     appended))
 
 (defun e-harness-activity--flush-and-emit-reasoning-stream
@@ -561,7 +578,7 @@ Return the appended activity entries in summary/raw order."
       :session-id session-id
       :turn-id turn-id
       :payload (plist-get entry :payload)
-      :activity-entry-id (plist-get entry :id)
+      :activity-entry-id (plist-get entry :activity-entry-id)
       :board-activity-sequence
       (plist-get entry :board-activity-sequence)))))
 

@@ -18,6 +18,7 @@
 (require 'e-chat)
 (require 'e-chat-session)
 (require 'e-harness-registry)
+(require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
 (require 'e-ui-work)
@@ -276,15 +277,25 @@ OPTIONS are kind-owned creation options and DISPLAY controls presentation."
     (kind harness buffer options display)
   "Create and open KIND's Canvas session in HARNESS for BUFFER.
 OPTIONS belong to KIND, and DISPLAY controls presentation."
-  (let* ((session (e-chat-create-session :harness harness))
-         (session-id (plist-get session :id))
+  (let* ((session-id (e-session-generate-id))
+         ;; Canvas creation is an interactive application-service operation.
+         ;; Start the board-backed session and attach its chat surface without
+         ;; waiting for SQLite admission.  The cooperative create runner has
+         ;; already published the process-local session and binding before
+         ;; `e-chat-open' returns, so the Canvas metadata mutations below join
+         ;; the same owner FIFO behind that admission.
+         (chat-buffer
+          (e-chat-open :harness harness :session-id session-id :new-session t))
          (attachment
           (funcall (e-canvas-kind-attachment-function kind) buffer)))
     (e-chat-session-attach-context harness session-id attachment :canvas t)
     (funcall (e-canvas-kind-initialize-session-function kind)
              harness session-id buffer options)
-    (e-canvas--bind-and-open-session
-     kind harness session-id buffer options display)))
+    (funcall (e-canvas-kind-bind-session-function kind)
+             harness session-id buffer options)
+    (funcall (e-canvas-kind-present-session-function kind)
+             buffer chat-buffer display)
+    chat-buffer))
 
 (defun e-canvas--recover-unavailable-session
     (kind harness buffer session-id condition options display)
