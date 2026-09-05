@@ -289,6 +289,45 @@
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('writer_commands','owner_revisions')"))
         (sqlite-close database)))))
 
+(ert-deftest e-runtime-store-s2-drops-redundant-session-position-index ()
+  "The session primary key is the only index on its identical column pair."
+  (let ((directory (make-temp-file "e-runtime-store-index-test-" t))
+        store)
+    (cl-labels
+        ((redundant-index-p ()
+           (let ((database
+                  (sqlite-open (expand-file-name "store.sqlite3" directory))))
+             (unwind-protect
+                 (car (sqlite-select
+                       database
+                       (concat
+                        "SELECT 1 FROM sqlite_master WHERE type='index' "
+                        "AND name='session_records_position'")))
+               (sqlite-close database)))))
+      (unwind-protect
+          (progn
+            (setq store (e-runtime-store-open directory))
+            (e-runtime-store-test--wait-ready store)
+            (should-not (redundant-index-p))
+            (e-runtime-store-close store)
+            (let ((database
+                   (sqlite-open (expand-file-name "store.sqlite3" directory))))
+              (unwind-protect
+                  (sqlite-execute
+                   database
+                   (concat
+                    "CREATE INDEX session_records_position "
+                    "ON session_records(session_id, position)"))
+                (sqlite-close database)))
+            (should (redundant-index-p))
+            (setq store (e-runtime-store-open directory))
+            (e-runtime-store-test--wait-ready store)
+            (should-not (redundant-index-p)))
+        (when store
+          (ignore-errors (e-runtime-store-close store))
+          (e-runtime-store-test--cancel-store-timers store))
+        (delete-directory directory t)))))
+
 (ert-deftest e-runtime-store-s2-status-is-constant-cost-and-integrity-explicit ()
   "Ordinary status performs no SQLite scan; explicit integrity still does."
   (let ((e-runtime-store-worker--database 'sentinel)

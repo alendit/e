@@ -1,0 +1,46 @@
+#+title: Drop Redundant Session Position Index
+
+* Status
+
+Done.
+
+* Change
+
+Stop creating =session_records_position(session_id, position)= because the
+=session_records= composite primary key already creates an index on the same
+columns in the same order.  Existing v5 stores remove the named secondary index
+idempotently during worker open; this is a physical index-layout correction,
+not the planned v6 logical-schema migration.
+
+Add a regression proving both that a new store omits the index and that opening
+an early-v5-shaped store drops it.  The implicit primary-key index remains.
+
+This is tiny because it removes one redundant physical structure without
+changing stored rows, query semantics, public interfaces, or schema version.
+
+* Validation
+
+- Focused new-store/existing-store regression: 1/1 passed.
+- Full runtime-store suite: 72/72 passed.
+- Runtime migration/cutover suite: 15/15 passed.
+- Focused byte compilation of =e-runtime-store-worker.el= passed.
+- =git diff --check= passed.
+
+* Architecture self-check
+
+1. The slice independently removes redundant write and storage overhead.
+2. It moves toward a deliberate, query-shaped physical schema.
+3. No uncertain product decision or extension point is introduced.
+4. The runtime-store worker owns physical SQLite schema maintenance.
+5. Coupling and public interfaces are unchanged.
+6. No dependency direction changes.
+7. The only side effect is the worker-owned idempotent index removal.
+8. No application state is added; one rebuildable SQLite index is removed.
+9. Reads retain the identical primary-key access path while writes maintain one
+   fewer B-tree.
+10. No abstraction or interface is added.
+11. Existing v5 stores are handled directly; v6 remains reserved for its
+    planned logical-schema migration.
+12. The obsolete named secondary index is removed.
+13. SQLite DDL errors surface through ordinary worker-open failure handling.
+14. The focused test proves both new-store and existing-store behavior.

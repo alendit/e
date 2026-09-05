@@ -233,7 +233,6 @@ bounded result payload for idempotent replay."
       (statement
        '("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)"
          "CREATE TABLE IF NOT EXISTS session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, position))"
-         "CREATE INDEX IF NOT EXISTS session_records_position ON session_records(session_id, position)"
          "CREATE TABLE IF NOT EXISTS session_checkpoints (session_id TEXT PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL)"
          "CREATE TABLE IF NOT EXISTS catalog_projection (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL, revision INTEGER NOT NULL)"
          "CREATE TABLE IF NOT EXISTS tool_followups (session_id TEXT NOT NULL, call_id TEXT NOT NULL, state TEXT NOT NULL, payload TEXT, revision INTEGER NOT NULL, PRIMARY KEY(session_id, call_id))"
@@ -249,6 +248,13 @@ bounded result payload for idempotent replay."
          "CREATE INDEX IF NOT EXISTS runtime_store_receipts_watermark ON runtime_store_receipts(runtime_id, write_prefix)"
          "CREATE TABLE IF NOT EXISTS runtime_store_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), runtime_id TEXT NOT NULL, parent_boot TEXT NOT NULL, parent_pid INTEGER NOT NULL, parent_process_start TEXT NOT NULL, acknowledged_prefix INTEGER NOT NULL DEFAULT 0, retired INTEGER NOT NULL DEFAULT 0, retirement_request_id TEXT, retirement_fingerprint TEXT, retirement_result TEXT)"))
     (sqlite-execute e-runtime-store-worker--database statement))
+  ;; Early v5 stores created this secondary index even though the composite
+  ;; primary key already creates the identical SQLite autoindex.  Index layout
+  ;; is a physical optimization rather than a persisted domain contract, so
+  ;; remove the redundant copy idempotently without consuming the planned v6
+  ;; logical-schema migration.
+  (sqlite-execute e-runtime-store-worker--database
+                  "DROP INDEX IF EXISTS session_records_position")
   (e-board-storage-sqlite-worker-initialize
    e-runtime-store-worker--database)
   (e-task-storage-sqlite-worker-initialize
