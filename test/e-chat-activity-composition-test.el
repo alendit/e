@@ -1316,32 +1316,41 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-reasoning-snapshots-render-as-markdown-lines ()
-  "Board reasoning snapshots stay separate and receive Markdown presentation."
+  "Board reasoning snapshots use deterministic Markdown presentation."
   (let ((e-chat-activity-reasoning-visible-line-limit 3)
-        (buffer (e-chat-test--buffer nil "chat-reasoning-snapshots")))
+        (buffer (e-chat-test--buffer nil "chat-reasoning-snapshots"))
+        (full-markdown-calls 0)
+        (original-full-markdown
+         (symbol-function 'e-chat-transcript--apply-markdown-mode-properties)))
     (unwind-protect
         (with-current-buffer buffer
-          (e-chat-render-event
-           (e-events-make :type 'turn-started
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 0))
-          (e-chat-render-event
-           (e-events-make :type 'provider-request-started
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 0
-                          :payload '(:status started)))
-          (dolist (content '("**Inspecting state**" "**Drafting change**"))
+          (cl-letf (((symbol-function
+                      'e-chat-transcript--apply-markdown-mode-properties)
+                     (lambda (&rest arguments)
+                       (cl-incf full-markdown-calls)
+                       (apply original-full-markdown arguments))))
             (e-chat-render-event
-             (e-events-make :type 'reasoning-delta
+             (e-events-make :type 'turn-started
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
-                            :created-at 1
-                            :payload (list :content content
-                                           :content-mode 'snapshot))))
-          (e-ui-work-with-batch-drain
-            (e-ui-work-drain-batch :buffer (current-buffer)))
+                            :created-at 0))
+            (e-chat-render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started)))
+            (dolist (content '("**Inspecting state**" "**Drafting change**"))
+              (e-chat-render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :created-at 1
+                              :payload (list :content content
+                                             :content-mode 'snapshot))))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
+          (should (= full-markdown-calls 0))
           (let ((text (buffer-string)))
             (should (string-match-p
                      (regexp-quote

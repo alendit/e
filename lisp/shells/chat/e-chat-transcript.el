@@ -1140,7 +1140,11 @@ Return non-nil when `markdown-mode' was available and used."
       (e-chat-clear-markdown-presentation content-start content-end)
       (with-temp-buffer
         (insert content)
-        (markdown-mode)
+        (let ((markdown-mode-hook nil))
+          ;; Assistant presentation borrows `markdown-mode' fontification; it
+          ;; must not run user buffer-setup hooks in this disposable buffer.
+          (ignore markdown-mode-hook)
+          (delay-mode-hooks (markdown-mode)))
         (font-lock-ensure (point-min) (point-max))
         (let ((source-end (point-max))
               (source-pos (point-min)))
@@ -2271,10 +2275,11 @@ projection, keeping marker and bounds representation private to transcript."
       (cons start (length text)))))
 
 (defun e-chat-transcript--apply-activity-markdown-lines (start end)
-  "Apply Markdown presentation to activity lines touched by START through END.
+  "Apply deterministic Markdown to activity lines touched by START through END.
 Expanding to complete lines keeps delimiters paired when a streamed update
 changes only a suffix.  Activity projections are compact and bounded, while
-unchanged lines remain untouched during ordinary progress ticks."
+unchanged lines remain untouched during ordinary progress ticks.  This hot UI
+path deliberately avoids instantiating a major mode or running mode hooks."
   (when (< start end)
     (let ((line-start
            (save-excursion
@@ -2284,14 +2289,15 @@ unchanged lines remain untouched during ordinary progress ticks."
            (save-excursion
              (goto-char (1- end))
              (min (point-max) (1+ (line-end-position))))))
-      (e-chat-transcript--apply-assistant-markdown line-start line-end)
       ;; Activity text must be stable across user `markdown-mode'
-      ;; configurations.  In particular, reasoning status delimiters remain
-      ;; presentation syntax rather than visible transcript content.
+      ;; configurations and cheap enough for progress-timer redraws.  Clear
+      ;; properties from the touched lines, then use only E's bounded
+      ;; deterministic presenter.  In particular, reasoning status delimiters
+      ;; remain presentation syntax rather than visible transcript content.
+      (e-chat-clear-markdown-presentation line-start line-end)
       (e-chat-transcript--apply-deterministic-markdown line-start line-end)
-      ;; The Markdown presenter clears generic face properties before adding
-      ;; semantic ones.  Restore the activity base face as the background
-      ;; style while preserving strong/code/link faces on top of it.
+      ;; Restore the activity base face as the background style while
+      ;; preserving strong/code/link faces on top of it.
       (add-text-properties
        line-start line-end '(font-lock-face e-chat-system-face)))))
 

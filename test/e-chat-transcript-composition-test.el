@@ -315,12 +315,16 @@ one-answer transcript."
 (ert-deftest e-chat-test-assistant-markdown-renders-with-text-properties ()
   "Assistant messages keep Markdown text and use markdown-mode faces."
   (e-test-require-feature 'markdown-mode 'markdown-mode)
-  (let ((buffer (e-chat-test--buffer nil "chat-markdown")))
+  (let ((buffer (e-chat-test--buffer nil "chat-markdown"))
+        (markdown-mode-hook-ran nil)
+        (markdown-mode-hook
+         (list (lambda () (setq markdown-mode-hook-ran t)))))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-transcript-insert-entry
            "Assistant"
            "## Heading\nUse **bold**, *italic*, and `code`.\n- item\n\n```elisp\n(message \"hi\")\n```\n\n[docs](https://example.test)")
+          (should-not markdown-mode-hook-ran)
           (let ((content (buffer-string)))
             (should (string-match-p "## Heading" content))
             (should (string-match-p "\\*\\*bold\\*\\*" content))

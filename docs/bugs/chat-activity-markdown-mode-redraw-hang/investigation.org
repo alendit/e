@@ -1,0 +1,99 @@
+#+title: Chat Activity Redraw Hang Investigation
+#+startup: overview
+
+* Evidence
+
+- The supported live probe timed out while Emacs was unresponsive.  Per the
+  live-diagnostic contract, no further request was sent to Emacs.
+- Bounded OS sampling found the Emacs main thread consuming approximately one
+  CPU core.  Samples were dominated by graphical redisplay, mode-line work,
+  garbage collection, and a temporary =markdown-mode= initialization path that
+  included Evil mode setup.  The separate runtime-store worker was idle.
+- The active Daily turn had entered provider request 4.  Chat progress advances
+  every =e-chat-progress-interval=, currently 0.6 seconds.
+- =e-chat-transcript--apply-activity-markdown-lines= expanded each touched
+  activity update to complete lines and called
+  =e-chat-transcript--apply-assistant-markdown=.  That function created a
+  temporary buffer, entered =markdown-mode=, fontified it, and copied text
+  properties back into the transcript.
+- The user's =markdown-mode-hook= enables =visual-fill-column-mode=.  Major-mode
+  activation also invokes host integration such as Evil setup.  Those are real
+  buffer lifecycle effects, not bounded text presentation.
+
+* Why It Appeared With SQLite
+
+The hot activity path was introduced by commit =8d6dc683= on 2026-08-31, before
+the first SQLite runtime-store commit on 2026-09-01.  The original fix's handoff
+states that the running Emacs was left unchanged and that its chat-service
+change required a full restart.  The SQLite cutover also required a restart, so
+that restart activated the already-committed activity renderer.  SQLite was the
+deployment boundary, not the work observed in the CPU samples.
+
+* Root Cause
+
+A transient presentation path reused the settled assistant renderer.  That
+renderer is allowed to borrow a full markup mode for one completed assistant
+entry, but activity is a timer-driven projection.  Re-entering a major mode in
+a temporary buffer on repeated activity redraws ran user and distribution hooks
+and turned cosmetic progress updates into unbounded UI lifecycle work.
+
+* Fix
+
+- Transient activity now clears presentation properties and applies only E's
+  deterministic, bounded Markdown property renderer.  It never initializes
+  =markdown-mode= or =org-mode= and remains independent of assistant-output
+  mode.
+- Settled Markdown assistant rendering still borrows =markdown-mode=
+  fontification, but suppresses user =markdown-mode-hook= in its disposable
+  buffer, matching the existing Org renderer's isolation.
+
+* Acceptance
+
+- A reasoning-snapshot activity regression intercepts the full
+  =markdown-mode= property renderer and proves that activity never calls it.
+- Existing assertions continue to prove separated reasoning lines, concealed
+  delimiters, and strong presentation.
+- The optional full Markdown composition test proves that settled assistant
+  content retains =markdown-mode= faces without running user buffer-setup hooks.
+
+* Validation
+
+- Eldev activity and transcript composition suites: 58/58 passed, including
+  the full Markdown renderer with its declared =markdown-mode= dependency.
+- Isolated native graphical reasoning-snapshot regression: 1/1 passed.
+- Focused byte compilation of =e-chat-transcript.el= completed successfully;
+  emitted warnings are the file's pre-existing Emacs 31 obsolete-macro
+  warnings.
+- =git diff --check= passed.
+
+* Architecture Self-Check
+
+1. The slice is useful alone: it removes major-mode lifecycle work from the
+   timer-driven presentation path that hung Emacs.
+2. It moves toward bounded presentation owned by the chat shell.
+3. Assistant output mode remains variable; transient activity's small internal
+   markup is stable and is handled directly without a speculative abstraction.
+4. The transcript owns its text properties and remains the sole owner changed.
+5. Coupling is reduced because activity no longer depends on =markdown-mode=,
+   Doom, Evil, or user buffer-setup hooks.
+6. No core policy acquired a dependency on a presentation or provider adapter.
+7. All presentation side effects remain in the shell, and major-mode side
+   effects were removed from the timer path.
+8. No state or persistence was added.
+9. Each touched activity line now performs bounded deterministic property work
+   instead of initializing a major mode; this strictly reduces repaint cost.
+10. No interface or substitutability contract was added.
+11. Settled Markdown output retains its existing =markdown-mode= faces; only
+    disposable-buffer hooks and transient full-mode rendering are removed.
+12. The redundant transient call to the full assistant renderer was removed.
+13. Unexpected renderer errors still surface; no fallback or error swallowing
+    was added.
+14. Composition tests prove mechanism and presentation properties, and the
+    isolated graphical test proves the visible reasoning-snapshot behavior.
+
+* Live Emacs Status
+
+The running Emacs was not reloaded, restarted, or signalled.  The supported
+probe had already timed out, so investigation remained repository- and OS-side.
+The change is in a reloadable chat shell module, but no live reload should be
+attempted while a turn or hung process may still exist.

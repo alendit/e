@@ -1,0 +1,18 @@
+#+title: Chat Activity Redraw Hangs Emacs
+#+startup: overview
+
+* Report
+
+After submitting a question in the Grimoire Daily session, Emacs became
+unresponsive and consumed a full CPU core.  The behavior appeared only after
+the SQLite runtime-store migration was loaded.
+
+The Daily canvas and assistant output are configured for Org presentation, so
+transient chat progress must not repeatedly initialize =markdown-mode= while a
+turn is active.
+
+* Expected behavior
+
+Transient activity and progress redraws must remain bounded presentation work.
+They must not initialize a major mode or run user mode hooks on each progress
+frame, regardless of the session's assistant-output mode.
