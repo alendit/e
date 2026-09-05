@@ -1,0 +1,77 @@
+#+title: Feature 92 Accepted Session Projection Plan Review 03
+#+date: 2026-09-05
+#+startup: overview
+
+* Decision
+
+Result: =changes-requested=.
+
+The independent review covered commit
+=03959c5f9d84c86ce96d56d926a4e8e15bec7df8= and addendum blob
+=94488bf041ed67add3636b58d0bf1a04bb7aa5b9=.  The contract-to-package map is
+complete, but =F92A-DP1= is not implementation-ready.
+
+* Findings
+
+** P1: Close the post-admission projection-install outcome
+
+The runtime enqueue is an irreversible boundary unless the still-queued request
+is synchronously cancelled.  The plan must require preparation of a validated,
+bounded, no-fail aggregate install token before enqueue.  After enqueue, the
+session service installs that token without yielding.  An unexpected failure
+before installation must cancel the exact queued request; a proven =dropped=
+result leaves no semantic or durable mutation.  Any outcome that cannot prove
+the request unsubmitted becomes owner-local suspect state.  Fault evidence is
+required before and after the install edge.
+
+** P1: Delete the duplicate session terminal outbox and specify ordering
+
+The runtime terminal outbox already page-bounds delivery, isolates =error= and
+=quit=, and releases request/token ownership.  The session callback must first
+remove the exact pending entry and install first-cause suspect state on failure,
+then clear private operation links and settle =e-work=.  Work and presentation
+callbacks run after authoritative state and cannot gate cleanup.  Success,
+failure, close/reset, observer-error, and observer-quit evidence is required.
+
+** P1: Complete and correct the activated-root topology
+
+The current table misattributes command validation, accounting, sealing,
+interpretation, and incremental apply to =e-session-async.el= even though those
+owners are in =e-session-aggregate.el=.  It also omits aggregate staging,
+default-store activation, Board pickup admission, settlement-state lifetime,
+runtime observation, =e-work= settlement, callers, ABI, tests, transactions,
+and colocation invariants.  Board pickup's cross-owner transaction must remain
+explicitly commit-first and cannot disappear with the ordinary session barrier.
+
+** P2: Inventory the facade contract and synchronous exceptions
+
+The plan must name every supported persistent session mutation facade and map it
+to its command tag, validation, semantic result, no-op rule, publication, handle
+ownership, and evidence.  It must separately name allowed synchronous
+batch/operator/ephemeral paths instead of promising unnamed compatibility.
+
+** P2: Close pending and suspect state lifetime
+
+Pending state is one entry per admitted request.  Failure converts it to one
+first-cause suspect entry per session, repeated failures do not grow state, and
+store close/restart releases all process-local pending and suspect state.
+Canonical reload clearing remains deferred under the Feature 92 validation
+roadmap.  Repeated-failure and close/reset evidence is required.
+
+* Coverage
+
+| Contract | Disposition |
+|----------+-------------|
+| =F92A-C01= | Blocked by post-admission install failure. |
+| =F92A-C02= | Blocked by facade and aggregate topology gaps. |
+| =F92A-C03= | Blocked by terminal-delivery ordering. |
+| =F92A-C04= | Blocked by terminal and suspect lifetime. |
+| =F92A-C05= | Cleared.  The session journal remains the only durable authority. |
+| =F92A-C06= | Scenario is clear, but DP2 depends on blocked DP1. |
+
+External evidence is not applicable.  Timing remains observational.  The
+selected glossary, =docs/references/runtime_concepts.org=, fits the runtime
+scope; the two addendum terms remain locally defined.
+
+No production source, tests, running Emacs state, or canonical database changed
+during this review.
