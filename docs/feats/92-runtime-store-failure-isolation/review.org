@@ -24,6 +24,34 @@ claimed graphical composition evidence.  A timer reentered a durable mutation
 on the same Board and escaped as =e-board-mutation-frozen=.  See
 [[file:../../bugs/board-timer-reentrant-durability-barrier/investigation.org][the live investigation]].
 
+DP5B foundation correction is paused for renewed specification review.  The
+generic staged-mutation closure cannot truthfully promise capacity-before-stage
+admission because its retained projection size is not knowable until mutation.
+The pending plan delta replaces it with an aggregate-owned closed immutable
+command grammar and interpreter.  A single normative schema calculator counts
+every fixed-width command/delta/undo node, constructs each family maximum, and
+runs the exact transport-visible delta through the production codec.  Admission
+reserves producer leaves =P=, calculator-derived wrappers =D=, 32 fixed
+reference cells =R=8,192, and a per-command allocation-free =Freserve= derived
+from the validated caller graph plus the exact family delta envelope before any
+detach/freeze/command construction.  Admission reserves the slot and all bytes,
+then allocates identity/time/tags, freezes/builds, and verifies parity; any
+failure rolls the complete reservation back without queue insertion.
+Command/delta/undo share frozen =P= leaves and retain no whole-session projection
+or pretransport canonical string.  The 68 MiB codec =Fmax= is an absolute
+ceiling, not an always-reserved frame.  DP5A atomically transfers the same
+escrow to the actual runtime frame and releases the difference, so it cannot
+double count.
+The absolute max remains 88,350,720 bytes (=P=16,777,216 + =D=262,144 +
+=R=8,192 + =Freserve=Fmax=71,303,168), under proposed 85 MiB
+(89,128,960), leaving 778,240 bytes; it requires a fresh RSS probe.  An
+exhausted post-ACK apply atomically fails/releases its tail before observer
+delivery, keeps one counted 2,048-byte barrier slot, and gives matching resume
+priority with one bounded page/frame escrow.  A submitted atomic fork batch/cut
+remains owned through DP4 same-ID resolution, while only pre-submit cancellation
+can release it.  No DP5B acceptance or Daily-resolution claim follows from this
+plan-only correction.
+
 ** TODO High: Interactive persistence remains synchronous
 
 The Feature 92 batch and graphical tests schedule a Board pickup transition

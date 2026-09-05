@@ -17,6 +17,32 @@ Board, and chat application services still wait inline for durable results.
 The remaining DP5 direction keeps the external worker while DP5B--DP5D add
 pending domain-operation handles and composition-owned asynchronous lanes.
 
+DP5B foundation implementation is paused pending plan re-review of a bounded
+command/delta admission correction: a generic mutation closure cannot know its
+post-mutation retained projection size before staging, so it cannot honestly
+meet the capacity-before-staging contract.  The proposed correction gives the
+aggregate a closed immutable command grammar and interpreter.  Its single
+normative schema calculator enumerates fixed-width command/delta/undo nodes,
+builds each maximum family fixture, and sends the exact transport-visible delta
+schema through the production codec.  Admission reserves frozen producer leaves
+=P=, calculated wrappers =D=, fixed references =R=, and allocation-free
+per-command =Freserve= from the validated caller graph plus the family delta
+envelope before any detach/freeze/command construction.  It atomically reserves
+the slot and bytes, then allocates identity/time/tags and freezes/builds with
+parity verification; every exception rolls all admission ownership back without
+enqueue.  No whole-session projection or pretransport canonical string survives.
+The 68 MiB =Fmax= is an absolute ceiling only.  DP5A atomically transfers the
+same escrow to the actual runtime frame, releases the difference, and never
+double counts it.  The absolute maximum reservation is 88,350,720 bytes against
+a proposed 85 MiB (89,128,960-byte) composition allowance, leaving 778,240
+bytes and requiring a fresh disposable RSS probe before C07 can be accepted.
+An exhausted post-ACK apply atomically releases/fails its tail before observer
+delivery, retains one counted 2,048-byte durable barrier, and runs matching
+resume first through a bounded page/frame escrow.  A submitted existing atomic
+fork batch/cut remains owned through DP4 same-ID resolution, while only
+pre-submit cancellation can release it.  This does not change the unresolved
+Daily status.
+
 The lower-level timing condition that delayed the historical live worker for
 60 seconds is not reproduced by the disposable database clone.  That unknown
 is observational: deterministic fault injection now proves the required

@@ -471,6 +471,100 @@ retaining durable-before-visible authoritative publication.
 - Add a bounded FIFO operation lane per durable session.  Stage authoritative
   changes, submit through DP5A, publish exactly once after acknowledgement, and
   surface the first typed failure without partial authoritative publication.
+- Async mutation admission retains sealed aggregate commands only; no staged or
+  whole-session projection survives enqueue.  First, an allocation-free,
+  cycle-safe validation/measurement walks the caller graph without detaching or
+  constructing a command.  It derives =P= (the future uniquely retained frozen
+  producer-leaf bytes) and per-command =Freserve= from that graph plus the
+  family's maximum transport-visible delta wrapper.  The coordinator atomically
+  reserves one lane/coordinator slot and =P+D+R+Freserve= before it allocates an
+  ID/time/tag, detaches/freezes data, or builds a sealed command.  Only then does
+  the aggregate constructor allocate input-independent identity/time/tags,
+  detach/freeze, build the command, and verify frozen/measurement parity.  The
+  sealed command, durable delta, and undo/apply journal reference =P= leaves by
+  =eq= without payload copy or a pre-transport canonical string.  Validation,
+  freeze, parity, or constructor failure releases that exact slot and every
+  reservation atomically and never enqueues.  =Fmax= is only the 68 MiB absolute
+  protocol ceiling, not a per-command observed frame.  At DP5A encode, the same
+  frame escrow is atomically transferred to the runtime's actual-frame charge:
+  =Factual<=Freserve= replaces that escrow without a second global charge, and
+  =Freserve-Factual= releases immediately.  Runtime terminal settlement then
+  releases =Factual= once.  An expected over-cap returns one typed capacity
+  =e-work= before live mutation or worker submit.
+- At a lane head only after prior acknowledgement publication, the aggregate
+  interpreter reads current live state and produces one bounded durable delta
+  under that reservation.  It may fill fixed-bounded parent/sequence fields but
+  never mutates live state.  DP5A submits that delta.  After acknowledgement,
+  one no-yield aggregate-owned transactional apply consumes the same delta,
+  updates forward order/tails/indexes/current-head/derived fields, and rolls
+  back every touched reference and field on an invariant failure.  =D= includes
+  the prevalidated undo/apply journal.  Every journal boundary is fault
+  injectable; the single no-yield turn has no observable intermediate state.
+  Live apply is distinct from batch replay and needs no replay finalization.
+- After an ACK, the lane remains fenced and retains acknowledged delta plus its
+  reservation until transactional apply publishes once.  An apply invariant
+  failure rolls back, preserves the first typed cause and replayable delta/state,
+  and enters bounded reconciliation; tail work cannot advance.  On
+  reconciliation exhaustion, the current work fails exactly once, releases
+  nonessential =P= leaves, result/fence references, and undo state, and retains
+  exactly one counted 2,048-byte lane barrier.  That barrier holds only durable
+  request identity (<=128 bytes), delta identity (<=128), revision (<=32), a
+  finite cause kind (<=64), a UTF-8 first diagnostic (<=1,024), and fixed tags
+  (672).  It replaces, rather than adds to, the failed operation's reservation,
+  atomically detaches and fails the whole tail, releasing every tail operation's
+  ownership before any public observer is enqueued.  Its terminal notifications
+  drain at no more than 16 isolated units per timer turn; throwing or reentrant
+  observers cannot retain or append to the detached tail.  The matching
+  same-session asynchronous open/resume is a priority barrier-recovery
+  transition ahead of normal lane work.  It reuses that one slot, never creates
+  a 33rd request, and proves the matching request/delta/revision before clear.
+  Recovery reserves one bounded header/checkpoint/page escrow at a time: page
+  payload <=1,048,576 canonical bytes under C04 plus its allocation-free exact
+  DP5A frame measurement <= =Fmax=.  It transfers the actual frame to DP5A at
+  dispatch and releases page/frame escrow when that page settles before the
+  next page.  If global bytes are temporarily unavailable, the counted barrier
+  remains scheduler-owned pending and fences conflicting new admission until
+  capacity frees.  Close or reset releases it only while detaching the local
+  owner after the durable state remains reloadable.  No caller may clear a
+  barrier by supplying a bare revision.
+- The public result and delayed continuity fence retain only O(1) references to
+  sealed command/delta identity or their already-frozen leaves: they take no
+  variable payload copy.  Those fixed references are included in =R=.  Actual
+  delta size can only release unused reservation after interpretation; no
+  post-admission step may increase it.  This removes projection replacement,
+  graph alias census, and any retained full-session copy from DP5B.
+- The closed grammar covers every currently supported durable session facade:
+  create; message append/display/clear; activity, process-report,
+  branch-summary, compaction, provider-anchor, context generation/curation;
+  metadata/config/context-reference/capability-state/turn-options/current
+  branch/name session events; and Board message/state/clear records.  Delete,
+  resume, finalize, and close have their separately named DP5B command kinds.
+  There is no synchronous or unsupported-operation fallback for an async
+  SQLite facade: an over-bound or unsupported command returns one terminal
+  typed capacity/error =e-work= without staging or publication.
+- Fork/clone preserves the existing one atomic bounded =session-append-batch=
+  contract.  It records an immutable source cut =(source-id, generation, acked
+  sequence, root-id)= and holds one O(1) retention pin while the aggregate
+  constructs one sealed destination batch under the existing record/frame cap;
+  the pin blocks source compaction/delete/close/mutation that would invalidate
+  the cut, and no source deep copy occurs before reservation.  Source generation drift retries
+  once, then acquires stable source/destination lane order or fails typed without
+  publication.  One provisional destination ID and one idempotent batch request
+  identity remain publicly invisible until that batch ACK, then one transactional
+  apply publishes the complete fork.
+- Before physical batch submission, cancellation releases cut pin, provisional
+  ID, sealed batch, and reservations because no commit is possible.  Once
+  submitted, cancellation reports =in-flight=; reset or stale generation
+  suppresses only local publication, and explicit close drains the batch.  All
+  retain the immutable batch and source cut through DP4 same-ID definitive
+  resolution.  They release those objects only after proved no-commit or
+  successful definitive resolution; post-submit loss/exit uses the same-ID
+  recovery and its exhaustion retains the bounded durable reconciliation state
+  with the first cause.  Normal resume is read-only asynchronous header/checkpoint/page
+  reconstruction and never performs checkpoint migration; migration remains its
+  separately owned explicit transactional storage operation.  Finalize is an
+  acknowledged command over already-resumed authoritative state, not a
+  resume/migration shortcut.
 - Make header, checkpoint, and every bounded journal page in cooperative resume
   genuinely asynchronous.  A timer may schedule the next bounded page, but no
   page callback may call a blocking storage API.
@@ -513,6 +607,50 @@ close =e-work= settles once with typed capacity error while admission, fences,
 and adapters remain untouched and a later retry can reserve; only a successful
 reservation may begin fencing/snapshot/drain/retire/detach.  No second SQLite
 commit is required to overtake the held request.
+
+Command-admission evidence additionally proves: exact and one-over =P= leaf
+rejection before the interpreter and before ID/time/tag, detach, freeze, or
+sealed-command construction; the normative schema calculator's node count,
+field-width, =D=, and allocation-free per-family =Freserve= fixture for every
+command family; and rejection before construction at =P+D+R+Freserve= one-over.
+Schema changes must fail that exhaustive fixture until the calculator is
+updated.  It injects freeze, parity, and constructor exceptions after successful
+reservation and proves exact slot/local/shared rollback with no queue entry or
+retained owner graph.  It covers 32/64 small-command exact queue counts and
+max/one-over frame-escrow transfer: DP5A takes the one escrow into actual-frame
+ownership, never double-adds it, releases the exact difference, then releases
+the actual frame once.  Evidence also proves monotonic smaller-actual release,
+no retained full-session projection or pretransport canonical string, and exact
+release of =P+D+R=, runtime frame, lane/coordinator, 2,048-byte barrier, and
+shared reservations across success, transport failure, publication
+failure/barrier, cancellation, reset, close, stale generation, and observer
+failure.  Exercise every closed command kind or record an explicit accepted
+removal before implementation.  A maximum legal producer remains admissible
+under the 17,047,552-byte local and 85 MiB shared limits.  The revised lifetime
+requires the fresh disposable production-path RSS probe before accepting C07.
+
+The revised evidence proves sealed constructor identity/time/tag allocation and
+exact =P= measurement before admission; interpreter non-enlargement and
+no-yield transactional live apply/rollback; fault injection at every undo/apply
+journal boundary with no observable intermediate; each =P+D+R= family
+exact/one-over; alias-only result/fence; and post-ACK first-cause/replayable
+reconciliation with a fenced non-advancing tail and exactly one 2,048-byte
+barrier.  Exhaustion evidence fills a 32-operation lane, atomically releases
+and fails its tail before a callback, drains the resulting terminal pages at
+most 16 at a time despite reentry/throwing observers, then proves priority
+same-slot barrier recovery uses one bounded header/checkpoint/page escrow and
+returns to ordinary FIFO only after canonical match/clear.  It also proves an
+unavailable global byte reservation leaves the barrier, rather than an
+uncounted 33rd request, scheduler-owned and fencing conflicting admission.
+Fork evidence covers cut-pin protection, one bounded atomic
+=session-append-batch= under the existing record/frame cap, provisional
+invisibility, pre-submit cleanup, post-submit =in-flight= cancellation,
+same-ID recovery, exhausted reconciliation, reset/stale publication
+suppression, close drain, and release only after no-commit/success proof.  It
+also proves worst cardinality: 32 queued commands in one lane, 64 across the
+coordinator, 16 publication/failure units per timer turn, and rejected 33rd/65th
+operations.  The fresh RSS probe retains maximum =P= leaves, delta+undo,
+production-codec =Fmax= frame, and fixed result/fence references simultaneously.
 
 ** F92-DP5C: Asynchronous Board and chat composition
 
@@ -607,7 +745,7 @@ Owner classification fixed for DP5D:
 | Metrics/status | Explicit runtime diagnostic | Runtime diagnostic =e-work= when invoked in a live Emacs | Batch/test inspection may block under the guard |
 | Backup | Explicit pre-upgrade/operator backup | Not applicable | Blocking offline operator workflow must finish before mutation |
 
-All runtime and domain owners share one composition-owned 84 MiB parent-memory
+All runtime and domain owners share one composition-owned 85 MiB parent-memory
 reservation in addition to their local fairness caps.  Admission first computes
 the exact incremental canonical/raw size without constructing or copying the
 large representation, rejects if existing reservations plus that increment
@@ -618,20 +756,60 @@ reservation only after the old form is released.  Process-filter wire,
 canonical decode, and result-construction transients retain the remaining
 headroom beneath the established 512 MiB process envelope.
 
-The disposable production-path probe retained a 16,777,216-byte worst-case raw
-payload and its 67,109,277-byte canonical submitted/recovery frame, admitted the
-largest remaining 4,193,891-byte domain payload under the 84 MiB reservation,
-performed a real response pack/decode/result transition, and rejected the
-4,193,892-byte one-over increment arithmetically before constructing a second
-frame.  Peak RSS was 352,370,688 bytes and peak memory footprint 330,695,520
-bytes, both below 536,870,912.  The probe used the production codec and runtime
-request preflight in disposable batch Emacs; it performed no live or canonical
-store mutation.  The singleton-open bound was added after that measurement:
-conservatively adding both its maximum 16,384-byte canonical frame and its
-21,849-byte wire frame models 352,408,921 bytes RSS and 330,733,753 bytes
-footprint, still below 536,870,912.  These are modeled additions, not a fresh
-peak-RSS measurement; implementation must rerun the production-path probe if
-its allocation/lifetime differs from this named bound.
+DP5B measures only =P=, exact uniquely retained frozen producer leaves in the
+command grammar's explicit payload domain.  The one normative aggregate
+command-schema calculator is the sole authority for every other reservation:
+it enumerates every sealed-command, transport-visible durable-delta, and
+prevalidated undo/apply-journal node with its bounded field widths, then charges
+one 256-codec-byte cell for each non-payload node.  Its generated =D= is
+therefore neither an observed bucket nor a caller declaration.  The command,
+delta, and undo reference =P= leaves by =eq= and never copy them.  =R= is 32
+fixed reference objects: 8 operation/lane links, 6 scheduler/storage callback
+links, 6 command/delta/undo roots, 4 result/fence links, 4 reconciliation
+links, and 4 close/reset/fork links.  Each has one 256-byte accounting cell, so
+=R=32*256=8,192 bytes; no variable payload enters =R=.  For each family the
+same calculator allocation-free validates/measures the caller graph and its
+maximum transport-visible delta envelope to obtain =P= and =Freserve= before
+detachment.  After reservation, the detached frozen graph must measure exactly
+the same =P= and =Freserve= or constructor rollback releases everything.  It
+constructs exhaustive maximum fixtures for those results; a grammar or schema
+change fails until widths, node count, and =Freserve= are updated.  =Fmax= is
+the absolute codec limit of 68 MiB (71,303,168 bytes), not an always-reserved
+frame.  Admission reserves =P+D+R+Freserve=; only a family whose measured
+maximum reaches =Fmax= reserves all 68 MiB.  At dispatch, DP5A atomically
+transfers that same escrow to its actual immutable-frame charge and releases the
+unused difference, so composition never double-counts a frame.
+
+| Command family | Allowed sealed fields/cardinality | =P= maximum | calculator non-payload nodes =N= | =D=N*256= | allocation-free =Freserve= formula / absolute ceiling |
+|----------------+----------------------------------+-------------+-----------------------------------+-------------+---------------------------------------------------------|
+| create / fork atomic batch | envelope: 12 IDs/tags <=128 bytes, time/revision/sequence <=32, source cut 4*128; one bounded =session-append-batch= record set under existing record/frame cap; undo <=8 roots | 16,777,216 | 1,024 | 262,144 | =codec-measure(caller-P, maximum-create/fork-delta-envelope)<=Fmax=; frozen parity required |
+| message / activity / process / context / Board append | envelope: 12 IDs/tags <=128, time/revision/sequence <=32; one entry and <=16 metadata/reference fields <=128 each; undo <=6 roots | 16,777,216 | 512 | 131,072 | =codec-measure(caller-P, maximum-append-delta-envelope)<=Fmax=; frozen parity required |
+| session-info / branch / compaction / provider-anchor / Board state | envelope: 12 IDs/tags <=128, time/revision/sequence <=32; <=24 fixed metadata/reference fields <=128 each; undo <=8 roots | 16,777,216 | 384 | 98,304 | =codec-measure(caller-P, maximum-state-delta-envelope)<=Fmax=; frozen parity required |
+| display / clear / finalize / close | envelope: 12 IDs/tags <=128, time/revision/sequence <=32; <=8 scalar fields <=128; undo <=4 roots | 65,536 | 128 | 32,768 | =codec-measure(caller-P, maximum-control-delta-envelope)<=Fmax=; frozen parity required |
+
+The max-shape proof is ordinary create at the absolute limit:
+=P=16,777,216 + =D=262,144 + =R=8,192 +
+=Freserve=Fmax=71,303,168 = 88,350,720 bytes, leaving 778,240 below the
+89,128,960-byte (85 MiB) composition reservation.  The local lane
+payload/wrapper fairness ceiling remains 17,047,552 bytes; its queue's shared
+ledger additionally sums one exact =Freserve= per queued command.  The
+64-operation coordinator's local payload/wrapper ceiling is 34,095,104 bytes;
+global admission rejects any mix whose full =P+D+R+Freserve= sum does not fit
+85 MiB.  This is a reservation proof, not an RSS measurement: C07 must rerun
+the disposable production-path RSS probe with =P= leaves, delta+undo journal,
+actual production =Freserve= frame, and fixed result/fence refs simultaneously
+live.
+
+The prior disposable production-path probe retained a 16,777,216-byte
+worst-case raw payload and its 67,109,277-byte canonical submitted/recovery
+frame under the then-84 MiB reservation.  Its 352,370,688-byte RSS and
+330,695,520-byte footprint remain historical runtime evidence, not proof for
+this enlarged DP5B composition.  The new =Fmax= maximum and 85 MiB allowance
+require a fresh disposable production-path RSS probe retaining maximum =P=,
+=D=, =R=, the production-codec =Fmax= frame, and the singleton-open frame
+together; it must again stay below 536,870,912 bytes.  The probe must use the
+production codec and runtime request preflight and may not mutate a live or
+canonical store.
 
 Initial local and aggregate budgets fixed for =F92-C10=:
 
@@ -639,12 +817,12 @@ Initial local and aggregate budgets fixed for =F92-C10=:
 |--------+---------------+--------------------------------+-----------------+---------------+---------------------+------------------|
 | Runtime admitted client requests | 128 | Active plus queued client request objects, including client-visible close | Typed runtime capacity failure before queue insertion/control admission | Terminal settlement or pre-submit cancellation | Twice the existing 64-item Board fanout ceiling permits one full fanout from each of two owners while one worker serializes; close cannot silently exceed it | Observed sustained 75 percent use or a larger accepted fanout contract |
 | Internal open control | 1 fixed singleton per runtime; zero client tokens; 16 KiB canonical / 21,849-byte wire frame ceiling | Scheduler-only correlation plus complete bounded open frame, never a client request or observer; only request/token counts are outside client caps | Exact/one-over open frame rejects before send; a second open is suppressed while the singleton is live | Frame after complete send or setup rollback; on possible partial-write error first fence, then release frame/control and route selected client through bounded recovery/failure; correlation refs on every success/failure/timeout/malformed/exit/recovery-exhaustion/close/reset/stale-generation partition | A causally required cold-open scaffold must not consume one of the advertised 128 client slots or prevent a saturated cold queue from opening, while its own finite allocation remains modeled | Any additional internal control, client-observer ownership, or larger identity/open-frame contract |
-| Runtime retained request bytes | 68 MiB local; 84 MiB shared reservation | =string-bytes= of immutable canonical request frames, charged alongside every still-retained domain form | Typed runtime capacity failure before queue insertion | Definitive terminal settlement or pre-submit cancellation | Preserves one existing maximum protocol frame; the shared probe proves the largest simultaneous extra payload under the process envelope | Protocol frame/global allowance change or sustained 75 percent use |
+| Runtime retained request bytes | 68 MiB local; 85 MiB composition shared reservation | =string-bytes= of immutable canonical request frames, charged alongside every still-retained domain form | Typed runtime capacity failure before queue insertion | Definitive terminal settlement or pre-submit cancellation | Preserves one existing maximum protocol frame; the shared probe proves the largest simultaneous extra payload under the process envelope | Protocol frame/global allowance change or sustained 75 percent use |
 | Terminal notification outbox | 128 pre-reserved O(1) client tokens; no variable payload copy | Client request identity/reference only; the request owns its terminal result exactly once | Admission rejects before queue insertion/control admission when no client request plus notification token can be reserved; terminal notification is never dropped | Successful bounded notification drain; or, when every observer detached before settlement, terminal transport settlement releases the suppressed-notification token without enqueueing a callback | Every one of the 128 admitted client requests must remain observable through exactly one terminal state; internal open has no token | Runtime request cap or notification-drain topology changes |
-| Per-session lane | 32 operations / 16 MiB local; 84 MiB shared reservation | Pending operation count and exact measured canonical/raw bytes of captured operation payloads | Session capacity failure before staging/admission | Publication, definitive failure, or pre-submit cancellation | Existing 32-item page/drain scale; one worst-case 16 MiB producer plus its near-maximum transport frame fits the measured shared envelope | Session producer limit, protocol/global allowance, or sustained 75 percent use changes |
-| All session lanes | 64 operations / 16 MiB local aggregate; 84 MiB shared reservation | Sum of per-session pending counts and exact captured-payload reservations in one session-store coordinator | Session-store capacity failure before owner-lane insertion | Same as owning session lane | Two full 32-item lanes for small work while global bytes preserve the measured worst-case operation | Concurrent-session workload or global allowance changes |
-| Per-Board lane | 32 commands / 16 MiB local; 84 MiB shared reservation | Pending command count and exact measured canonical/raw bytes of detached storage command payloads | Board capacity failure before prepare/admission | Post-ack apply, definitive failure, or pre-submit cancellation | Existing input-classification/replay drain scale and the current 256 KiB message limit with bounded metadata/reference fields | Board drain/message limits or sustained 75 percent use changes |
-| All Board lanes | 64 commands / 16 MiB local aggregate; 84 MiB shared reservation | Sum of pending counts and exact command-payload reservations in Board durability | Board-store capacity failure before owner-lane insertion | Same as owning Board lane | Existing 64-item fanout ceiling for small commands while the global reservation governs mixed owners | Fanout or global allowance changes |
+| Per-session lane | 32 operations / 17,047,552 local payload-wrapper bytes; 85 MiB composition shared reservation | Each queue entry exactly reserves =P+D+R+Freserve=; local fairness counts =P+D+R= while composition counts exact frame escrow.  Failure transfers its one operation slot to one 2,048-byte durable barrier; no whole-session projection, variable result/fence payload, or pretransport canonical string | Typed session capacity =e-work= before constructor/enqueue/interpreter | Definitive apply/cancellation; normal failure releases; exhausted post-ACK failure atomically releases/fails tail before observers and retains only its counted barrier until priority matching canonical resume, close-owner detach, or reset-owner detach | Maximum =P=16,777,216 + create/fork =D=262,144 + =R=8,192 + exact =Freserve<=Fmax= | Producer domain/delta schema/reference-cell topology, protocol/global allowance, or sustained 75 percent use changes |
+| All session lanes | 64 operations / 34,095,104 local payload-wrapper bytes aggregate; 85 MiB composition shared reservation | Sum of lane =P+D+R+Freserve= reservations or their one-for-one 2,048-byte barrier transfers; DP5A atomically transfers one escrow to each coexisting actual runtime frame | Typed session-store capacity =e-work= before lane insertion/constructor | Same as owning session lane, including all failure, barrier-recovery page escrow, reset, close, and atomic-fork batch partitions | Two maximum local lanes are permitted only when the 85 MiB composition reservation admits their actual mix | Concurrent-session workload, producer/delta family bounds, reference-cell topology, or global allowance changes |
+| Per-Board lane | 32 commands / 16 MiB local; 85 MiB composition shared reservation | Pending command count and exact measured canonical/raw bytes of detached storage command payloads | Board capacity failure before prepare/admission | Post-ack apply, definitive failure, or pre-submit cancellation | Existing input-classification/replay drain scale and the current 256 KiB message limit with bounded metadata/reference fields | Board drain/message limits or sustained 75 percent use changes |
+| All Board lanes | 64 commands / 16 MiB local aggregate; 85 MiB composition shared reservation | Sum of pending counts and exact command-payload reservations in Board durability | Board-store capacity failure before owner-lane insertion | Same as owning Board lane | Existing 64-item fanout ceiling for small commands while the global reservation governs mixed owners | Fanout or global allowance changes |
 | Chat pending intents | 32 intents / 8 MiB | Intent count and UTF-8 bytes of message content plus canonical metadata/reference bytes | Visible chat capacity failure before intent insertion | Intent start, cancellation before readiness, or failed/retired surface | Admits one maximum legal intent and up to 32 ordinary intents; the independent 8 MiB byte cap may reject fewer than 32 maximum-content intents once their bounded metadata/reference bytes are included | Message limit or sustained 75 percent use changes |
 | Completion/publication drain | 16 work units per timer turn | One terminal notification or one domain publication equals one unit | Remaining work is rescheduled, not rejected | End of each bounded callback | Matches existing 16-item Board and chat drains and guarantees a scheduler yield between bursts | Measured UI starvation or accepted drain-limit change |
 
