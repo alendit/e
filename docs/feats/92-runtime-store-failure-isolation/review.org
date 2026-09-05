@@ -12,10 +12,11 @@ In-review.  Independent implementation review reached
 =1da248c3c78a600982a43c52fdfc3f673fe31397de8d9ab6820027947e1b34f6=.
 Independent gates were runtime owner 68/68, Board replay seam 1/1, retained
 frame RSS 242,204,672 bytes, clean diff, and no orphan process.  The bounded
-DP5B session-command foundation described below is also independently accepted,
-but Feature 92 remains =In-review=: that foundation does not establish full
-=F92-C07= command coverage, default/public-path composition, C08--C10, or the
-Daily behavior.  Earlier DP5A pending-review records below are
+DP5B session-command foundation and its non-fork durable-mutation expansion
+described below are independently accepted, but Feature 92 remains =In-review=:
+they do not establish asynchronous fork/resume/finalize/close,
+default/public-path composition, C08--C10, or the Daily behavior.  Earlier DP5A
+pending-review records below are
 historical chronology.  A fresh Daily run invalidated the original fixed point at =25c574fd= by
 showing that a lost =catalog-put= acknowledgement could still freeze the shared
 store.  DP4 and its review correction add ACID acknowledgement recovery in
@@ -48,10 +49,11 @@ The absolute max remains 88,350,720 bytes (=P=16,777,216 + =D=262,144 +
 exhausted post-ACK apply atomically fails/releases its tail before observer
 delivery and keeps one counted 2,048-byte barrier slot with matching durable
 proof.  Priority bounded resume and atomic fork/cut ownership remain full DP5B
-work.  The implemented foundation covers create, message append,
-activity/context-curation-response append, and the
-metadata/config/context-reference/capability-state/turn-options/current-branch/
-name session-info family behind explicit async opt-in.  The default SQLite
+work.  The accepted expansion now covers create; message append/display/clear;
+activity, process-report, branch-summary, compaction, provider-anchor, context
+generation/curation; metadata/config/context-reference/capability-state/
+turn-options/current-branch/name session-info; Board message/state/clear; and
+session delete behind explicit async opt-in.  The default SQLite
 composition remains on the legacy synchronous path until the rest of the closed
 grammar, resume/finalize/close orchestration, and public-path proof are complete.
 
@@ -81,6 +83,32 @@ resume, finalize, and close; remove the partial-slice unsupported surface;
 enable the async default only after that closed grammar is complete; and prove
 the complete public entrypoint/reachability composition.  C08--C10 and the
 graphical Daily topology remain separate acceptance gates.
+
+** DP5B non-fork mutation expansion acceptance
+
+Commit =50ffa901= extends the accepted command lane across the remaining
+non-fork durable mutation facades listed above.  Independent review of exact
+base =4ca7a9c31f4f1dc502f4d4cebe44a051561e3206=, semantic plan blob
+=d01c5a96d3b2817a180867ccd3dfbd54b21df6b2=, and frozen six-path diff
+=10eb774ebc1efe3f89bb4782f73ad747c0781a861b1da18980c2c482feb08879=
+returned exactly =slice-review-fixed-point=.
+
+The review found and closed under-reserved repeated wire fields, post-admission
+domain validation, pre-ACK Board journal mutation, permanent symbol interning
+from unbounded categories, projection dirtiness for semantic no-ops, private
+result-shape leakage, and producer-sized copies in Board/context paths.  Routing
+policy admission now measures the exact virtual wire form directly, including
+reversible attribute tags, without calling a JSON encoder or materializing a
+canonical payload before reservation.  Curation identity uses a bounded
+streaming digest while retaining the historical durable ID.
+
+The combined async/runtime/storage plus legacy session/SQLite gate passed
+272/272.  Focused async plus Board-policy validation passed 46/46, targeted
+compilation of all six changed Lisp files passed, and =git diff --check= passed.
+A whole-tree =eldev compile= compiled the changed core modules but then exited
+through the pre-existing top-level usage path in
+=tools/migrate-session-checkpoints.el=; no changed-module compiler failure was
+reported.  No live Emacs or canonical database was opened or mutated.
 
 ** TODO High: Default interactive persistence remains synchronous
 

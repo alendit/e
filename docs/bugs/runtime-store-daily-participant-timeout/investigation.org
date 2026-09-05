@@ -3,10 +3,11 @@
 
 * Status
 
-DP5A transport substrate and a bounded DP5B session-command foundation are
-independently accepted; the Daily application behavior remains unresolved.
-The DP5B foundation is explicitly opt-in and does not yet establish full C07
-command coverage or the default/public Daily path.  The historical
+DP5A transport substrate, a bounded DP5B session-command foundation, and its
+non-fork durable-mutation expansion are independently accepted; the Daily
+application behavior remains unresolved.  The DP5B work is explicitly opt-in
+and does not yet establish asynchronous fork/resume/finalize/close or the
+default/public Daily path.  The historical
 post-restart recurrence identified a submitted =catalog-put= whose lost
 acknowledgement killed the shared worker and froze queued Board work.  The
 runtime store now resolves the same durable write identity through an ACID
@@ -38,10 +39,12 @@ The 68 MiB =Fmax= is an absolute ceiling only.  DP5A atomically transfers the
 same escrow to the actual runtime frame, releases the difference, and never
 double counts it.  The absolute maximum reservation is 88,350,720 bytes against
 a proposed 85 MiB (89,128,960-byte) composition allowance, leaving 778,240
-bytes; a fresh disposable RSS probe remains part of full C07 acceptance.  This
-slice covers create, message append, activity and
-context-curation-response append, plus metadata/config/context-reference/
-capability-state/turn-options/current-branch/name session-info mutations.
+bytes; a fresh disposable RSS probe remains part of full C07 acceptance.  The
+accepted expansion covers create; message append/display/clear; activity,
+process-report, branch-summary, compaction, provider-anchor, context
+generation/curation; metadata/config/context-reference/capability-state/
+turn-options/current-branch/name session-info; Board message/state/clear; and
+delete.
 An exhausted post-ACK apply atomically releases/fails its tail before observer
 delivery and retains one counted 2,048-byte durable barrier with matching
 identity proof.  Priority bounded resume and atomic fork/cut ownership remain
@@ -63,11 +66,29 @@ notification.  Persistent projection-mark or diagnostic failure is secondary:
 each is attempted once, successful authoritative work settles, and the next
 FIFO command advances without a zero-delay retry loop.
 
-This evidence does not accept =F92-C07= as a whole.  The remaining session
-command families, asynchronous resume/finalize/close, default cutover, and
-complete public-path/reachability proof remain open, as do Board/chat C08,
+This evidence does not accept =F92-C07= as a whole.  Atomic asynchronous fork,
+asynchronous resume/finalize/close, default cutover, and complete
+public-path/reachability proof remain open, as do Board/chat C08,
 whole-path C09/C10, and the graphical Daily topology.  The running Emacs and
 canonical database were left unchanged.
+
+* DP5B non-fork mutation expansion evidence (accepted, partial)
+
+Commit =50ffa901= expands the opt-in session command lane across every current
+non-fork durable mutation family named above.  Independent review used base
+=4ca7a9c31f4f1dc502f4d4cebe44a051561e3206=, semantic plan blob
+=d01c5a96d3b2817a180867ccd3dfbd54b21df6b2=, and frozen six-path diff
+=10eb774ebc1efe3f89bb4782f73ad747c0781a861b1da18980c2c482feb08879=,
+then returned exactly =slice-review-fixed-point=.
+
+The combined async/runtime/storage and legacy session/SQLite gate passed
+272/272.  Adversarial evidence covers actual frame reservation for repeated
+wire fields, state-independent rejection before lane ownership, pre-ACK Board
+immutability, semantic no-op projection cleanliness, exact public result
+shapes, frozen producer-leaf sharing, bounded Board categories, and exact
+copy-free virtual JSON sizing for routing policies.  Focused async and policy
+tests passed 46/46; targeted compilation and diff checks passed.  The running
+Emacs and canonical database were left unchanged.
 
 The lower-level timing condition that delayed the historical live worker for
 60 seconds is not reproduced by the disposable database clone.  That unknown

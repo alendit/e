@@ -17,10 +17,10 @@ record each feature's lifecycle state.
 
 Feature 92 is =In-review=: DP5A independently accepted its event-driven
 runtime-store substrate, and independent review accepted the bounded opt-in
-DP5B session-command foundation.  Full C07 command coverage, default/public-path
-composition, the session resume/finalize/close lifecycle, Board/chat C08, and
-C09/C10 reachability and whole-runtime budget proof remain.  The live Daily
-behavior is unresolved.
+DP5B session-command foundation plus its non-fork durable-mutation expansion.
+Atomic fork, the session resume/finalize/close lifecycle, default/public-path
+composition, Board/chat C08, and C09/C10 reachability and whole-runtime budget
+proof remain.  The live Daily behavior is unresolved.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

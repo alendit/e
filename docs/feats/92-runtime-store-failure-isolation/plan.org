@@ -464,6 +464,16 @@ remain Planned until their establishing packages complete.
 Establishes =F92-C07= after =F92-DP5A= is accepted and installs session-lane
 accounting later composed and established end to end by =F92-C10=.
 
+Implementation status: the bounded command-lane foundation and its complete
+non-fork durable-mutation expansion are accepted in =4ca7a9c3= and =50ffa901=.
+The latter reached =slice-review-fixed-point= for frozen six-path diff
+=10eb774ebc1efe3f89bb4782f73ad747c0781a861b1da18980c2c482feb08879=
+against accepted semantic plan blob
+=d01c5a96d3b2817a180867ccd3dfbd54b21df6b2=.
+Atomic fork/cut ownership, asynchronous resume/finalize/close, projection
+coalescing, default cutover, and full C07 lifecycle/reachability evidence remain
+open; therefore DP5B and C07 are not yet complete.
+
 Useful stopping point: durable session create, mutation, projection, resume,
 finalize, and close return pending operation handles without worker waits while
 retaining durable-before-visible authoritative publication.
