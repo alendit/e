@@ -26,6 +26,7 @@
 (require 'e-board-e2e-support)
 (require 'e-chat)
 (require 'e-chat-service)
+(require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-org-canvas)
 (require 'e-session)
@@ -130,6 +131,15 @@ chat window tree after this test has already started its surface assertion."
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-org-canvas-turn-survives-delayed-persistence ()
   "A new public Org Canvas Daily stays usable while SQLite admission waits."
+  ;; The graphical runner loads `e' during interactive daemon startup.  Prove
+  ;; that this public process has already begun opening its default transport
+  ;; before any Daily/harness lookup in the scenario below.
+  (should (e-runtime-sqlite-p e-default--runtime))
+  (should-not (e-runtime-sqlite--closed e-default--runtime))
+  (should (memq
+           (plist-get
+            (e-runtime-sqlite-status e-default--runtime) :startup)
+           '(opening ready)))
   (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-runtime-store-org-canvas-" t))
          (canvas-directory (make-temp-file "e-org-canvas-daily-" t))

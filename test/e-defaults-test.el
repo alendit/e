@@ -118,6 +118,38 @@
                    (e-harness-instance-default :kind 'debug))
                   :debug-default)))))
 
+(ert-deftest e-defaults-test-runtime-prewarm-respects-interactive-startup ()
+  "Interactive startup prewarms storage without creating a lazy harness."
+  (e-defaults-test--with-empty-harness-registry
+    (e-default-harnesses-register)
+    (let ((emacs-startup-hook nil)
+          calls)
+      (cl-letf (((symbol-function 'e-default-runtime)
+                 (lambda ()
+                   (push 'opened calls)
+                   'runtime)))
+        (let ((noninteractive nil)
+              (after-init-time nil))
+          (e-default--install-runtime-prewarm)
+          (should-not calls)
+          (should (memq #'e-default--prewarm-runtime emacs-startup-hook))
+          (run-hooks 'emacs-startup-hook)
+          (should (equal calls '(opened))))
+        (setq calls nil
+              emacs-startup-hook nil)
+        (let ((noninteractive nil)
+              (after-init-time t))
+          (e-default--install-runtime-prewarm)
+          (should (equal calls '(opened)))
+          (should-not emacs-startup-hook))
+        (setq calls nil)
+        (let ((noninteractive t)
+              (after-init-time t))
+          (e-default--install-runtime-prewarm)
+          (should-not calls)))
+      (should-not (e-harness-registry-get :chat-default))
+      (should-not (e-harness-registry-get :debug-default)))))
+
 (ert-deftest e-defaults-test-debug-default-uses-custom-chat-spec-backend ()
   "The built-in debug default derives from a custom chat default spec."
   (e-defaults-test--with-empty-harness-registry

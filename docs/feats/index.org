@@ -29,7 +29,9 @@ review.  This closes the reproduced acknowledgement-gated provider-context gap
 without adding a second history authority.  Its minimal runtime-latency
 extension now reports bounded process-local active, queued, FIFO-wait,
 dispatch-to-settlement, and end-to-end timing through the existing nonblocking
-status surface; it performs no SQLite read to observe SQLite work.  Live restart
+status surface; it performs no SQLite read to observe SQLite work.  Interactive
+=e= startup also begins asynchronous default-runtime prewarming without
+materializing the lazy harnesses or awaiting worker readiness.  Live restart
 validation has not been run; per-session quarantine, the all-domain audit, and
 the broader Feature 92 roadmap remain, so the feature as a whole stays
 =In-review=.

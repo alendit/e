@@ -534,6 +534,31 @@ sandbox, while the six tests that require a local server socket were blocked by
 =Operation not permitted=; those same six pass 6/6 with local socket permission.
 Batch compilation also passes with only the pre-existing warnings.
 
+** Default runtime prewarming
+
+Interactive =e= startup now begins the default runtime's asynchronous cold-open
+phase after init-time configuration has established the final runtime directory.
+Loading =e= after Emacs initialization begins the same open immediately.  The
+startup path neither awaits worker readiness nor creates the lazy chat/debug
+harnesses.  Batch Emacs remains demand-driven so tests and offline commands do
+not acquire the process-wide default composition as a load-time side effect.
+
+This removes ordinary worker startup, ownership acquisition, schema setup, and
+database-open time from the first Daily persistence request.  It does not make
+Daily depend on readiness: an unusually slow prewarm still leaves the first
+write queued behind the asynchronous open while the interactive buffer remains
+usable.
+
+Focused evidence passes 33/33 default-harness tests and 15/15 shared-runtime
+composition tests.  The startup scenario proves deferred init-time prewarming,
+immediate post-init prewarming, batch suppression, and continued lazy
+chat/debug harness creation.  The public S92 graphical Daily scenario remains
+green at 1/1 and now asserts that the interactive daemon prewarmed the default
+runtime before its first Daily/harness lookup.  The full repository suite ran
+2,847 tests: 2,841 passed in the restricted sandbox, and the same six
+local-server tests denied socket binding there passed 6/6 with local socket
+permission.  Batch compilation passes with the existing warnings.
+
 * Verification and acceptance
 
 Run focused owner tests before the graphical gate:

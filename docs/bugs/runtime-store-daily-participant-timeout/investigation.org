@@ -730,3 +730,15 @@ The unchanged public S92 graphical Daily scenario also passes 1/1.  The full
 repository suite's six local-server cases were denied socket binding in the
 restricted sandbox and then passed 6/6 with local socket permission; the other
 2,840 tests passed in the sandbox.
+
+The default runtime now starts its asynchronous worker open during interactive
+Emacs startup, after init-time configuration has selected the runtime directory.
+Chat and debug harness creation remains lazy, and neither startup nor a later
+Daily waits for the worker acknowledgement.  When =e= is loaded after Emacs has
+already initialized, prewarming begins immediately.  Batch loads skip this
+interactive lifecycle side effect.  Focused default-harness and shared-runtime
+tests pass 33/33 and 15/15 respectively, and the public S92 graphical Daily
+scenario remains green at 1/1 while asserting that the daemon prewarmed the
+default runtime before the first Daily/harness lookup.  Combined full-suite
+evidence passes all 2,847 tests; six local-server cases required socket
+permission unavailable inside the restricted sandbox.

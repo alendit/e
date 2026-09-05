@@ -168,6 +168,23 @@ contains the established session directory and its sibling legacy owners."
         e-default--chat-sessions nil)
   t)
 
+(defun e-default--prewarm-runtime ()
+  "Begin opening the default runtime without materializing a harness.
+
+`e-default-runtime' returns after starting the runtime-store's asynchronous
+cold-open phase; this hook never waits for the worker acknowledgement."
+  (e-default-runtime)
+  nil)
+
+(defun e-default--install-runtime-prewarm ()
+  "Arrange interactive default-runtime prewarming at the correct startup edge."
+  (unless noninteractive
+    (if after-init-time
+        (e-default--prewarm-runtime)
+      ;; Let init-time configuration establish the final runtime directory
+      ;; before the shared worker begins opening it.
+      (add-hook 'emacs-startup-hook #'e-default--prewarm-runtime t))))
+
 (defun e-default-chat--prompt-capability ()
   "Return built-in prompt templates for default chat harnesses."
   (e-capability-with-prompts-create
@@ -494,6 +511,10 @@ Factories remain registered so the next lookup recreates fresh harnesses."
   (e-default-harnesses-sync-instances))
 
 (add-hook 'e-startup-layer-hook #'e-default-harnesses-startup)
+
+;; Harness factories stay lazy, but the shared persistence transport should be
+;; ready before the first interactive Daily/chat operation needs it.
+(e-default--install-runtime-prewarm)
 
 (provide 'e-default-harnesses)
 
