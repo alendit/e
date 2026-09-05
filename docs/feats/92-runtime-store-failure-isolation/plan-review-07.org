@@ -1,0 +1,50 @@
+#+title: Feature 92 SQLite-Owned Query State Plan Review 07
+#+date: 2026-09-05
+#+startup: overview
+
+* Decision
+
+Result: =changes-requested=.  Commit
+=8be63de1184dd29f42a3531b16cc2c439de7014a= closes all findings in
+[[file:plan-review-06.org][plan review 06]] except one dependency-order defect.
+
+Reviewed identities:
+
+- Addendum 2 blob :: =66a31a07e0e58407238dcce30f73f2a8b23680a3=
+- Parent plan blob :: =a5e59efcd24c4d39035cb131118f3201e9cc8d16=
+- Plan review 06 blob :: =f1a5c2c6a769aa6b3fbf491438c2632269728cc3=
+
+The same independent reviewer performed an incremental read-only Tick and
+applied the required clear-technical-writing pass exactly once.
+
+* Closed findings
+
+- =F92-C09= now defines session-only quarantine and one establishing package,
+  and =F92A2-DP2= consumes the complete =S92-SESSION-QUARANTINE= evidence.
+- The 22-row activated-root inventory covers all named roots and grouped
+  synchronous consumers with no =unknown= target disposition.
+- =F92A2-C01= and =S92A2-STARTUP= own the asynchronous v5 explicit-upgrade
+  diagnostic.
+- The normalized matrix and DP1--DP5 package map otherwise remain complete.
+
+* Finding
+
+** P1: Move the F92-C09 prerequisite and every active DP6C reference
+
+Reassigning =F92-C09= to =F92A2-DP2= left its original =F92-DP6A= prerequisite
+inside the superseded DP6C block.  The unchanged contract clears DP6A-owned
+session/Board suspect state after successful canonical reload, so DP2 must
+start after both =F92A2-DP1= and accepted =F92-DP6A=.
+
+The parent plan must replace active DP6C references in suspect clearing,
+DP6D dependency order, and the design self-check with =F92A2-DP2=.  The
+superseded DP6C block must no longer retain its own package dependency after
+that prerequisite moves.
+
+* Coverage
+
+The goal =F92A2-SQLITE-WORKING-SET= remains behaviorally =Failing= and mechanism
+progress remains =not-started=.  External evidence is not applicable; latency
+is observational.  The runtime glossary remains scope-fitting with no
+unresolved candidates.  No production source, tests, running Emacs state, or
+canonical database changed during this review.
