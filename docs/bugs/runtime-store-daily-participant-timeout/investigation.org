@@ -710,3 +710,23 @@ scenario twice, and 2,844/2,844 repository tests.  Independent review found no
 P0--P3 issue.  Structural, deleted-helper, boundary, and no-orphan audits also
 passed.  No running Emacs or canonical SQLite store was touched; live behavior
 requires a full Emacs restart.
+
+* Runtime latency observability follow-up
+
+The runtime status surface now exposes the latency evidence that was missing
+during the live Daily incidents.  While work is pending it reports the active
+phase age and the oldest queued operation's age.  At terminal settlement it
+retains a bounded newest-first scalar sample separating FIFO wait,
+first-dispatch-to-settlement, and total admission-to-settlement duration.
+Recovery remains included in dispatch-to-settlement time, which is the relevant
+parent-observed acknowledgement interval.
+
+This is process-local diagnostics, not durable telemetry and not another
+SQLite operation.  It performs no database scan or file write, retains no
+session/Board identity or payload, and does not claim statement-only SQLite
+timing.  The focused runtime-store suite passes 71/71, including deterministic
+active, queued, terminal, exact-once, ordering, and bounded-retention evidence.
+The unchanged public S92 graphical Daily scenario also passes 1/1.  The full
+repository suite's six local-server cases were denied socket binding in the
+restricted sandbox and then passed 6/6 with local socket permission; the other
+2,840 tests passed in the sandbox.

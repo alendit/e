@@ -73,6 +73,9 @@ Queue admission and submitted execution each receive this interval.  A
 submitted timeout fences and replaces the worker once."
   :type 'number :group 'e)
 
+(defconst e-runtime-store--latency-sample-capacity 64
+  "Maximum recent terminal operation latencies retained by one runtime.")
+
 ;; These are deliberately scheduler-local rather than application policy.  A
 ;; later composition owner supplies a shared reservation object when it owns
 ;; several stores; the default keeps independently opened stores bounded too.
@@ -125,13 +128,15 @@ request/token budget so a full cold queue can still become ready.")
   closing-request close-finalizer-timer
   reservation (reserved-bytes 0) (request-count 0)
   notification-outbox (notification-count 0) notification-timer
-  scheduler-timer (scheduler-generation 0))
+  scheduler-timer (scheduler-generation 0)
+  latency-samples)
 
 (cl-defstruct (e-runtime-store-request
                (:constructor e-runtime-store-request--create)
                (:predicate e-runtime-store-request-p)
                (:conc-name e-runtime-store-request--))
-  id kind body frame state result error admitted-at submitted-at timeout-interval
+  id kind body frame state result error admitted-at submitted-at first-submitted-at
+  settled-at timeout-interval
   write-prefix owner-key
   operation frame-bytes retained-bytes notification observer observer-detached
   frame-escrow)
@@ -202,10 +207,12 @@ oversized identity/open envelope fails before a worker is started or sent to.
 The returned request is scheduler scaffolding: it owns neither a client slot
 nor a notification token."
   (or (e-runtime-store--open-control-request store)
-      (let* ((request
+      (let* ((now (float-time))
+             (request
               (e-runtime-store-request--create
                :id (e-runtime-store--next-id store "open") :kind 'open
-               :body nil :state 'submitted :submitted-at (float-time)
+               :body nil :state 'submitted :submitted-at now
+               :first-submitted-at now
                :timeout-interval e-runtime-store-request-timeout))
              (value (e-runtime-store--open-control-frame store request))
              (bytes (e-runtime-store-codec-measure-bounded
@@ -295,6 +302,75 @@ nor a notification token."
   (and request
        (or (e-runtime-store-request--operation request)
            (plist-get (e-runtime-store-request--body request) :op))))
+
+(defun e-runtime-store--latency-ms (started-at finished-at)
+  "Return non-negative milliseconds from STARTED-AT to FINISHED-AT."
+  (and (numberp started-at)
+       (numberp finished-at)
+       (* 1000.0 (max 0.0 (- finished-at started-at)))))
+
+(defun e-runtime-store--record-request-latency (store request)
+  "Retain REQUEST's bounded terminal latency sample on STORE exactly once."
+  (when (and request
+             (memq (e-runtime-store-request--state request)
+                   '(committed failed cancelled))
+             (not (e-runtime-store-request--settled-at request)))
+    (let* ((settled-at (float-time))
+           (admitted-at (e-runtime-store-request--admitted-at request))
+           (first-submitted-at
+            (or (e-runtime-store-request--first-submitted-at request)
+                (e-runtime-store-request--submitted-at request)))
+           (queue-finished-at (or first-submitted-at settled-at))
+           (sample
+            (list :operation (or (e-runtime-store--request-operation request)
+                                 (e-runtime-store-request--kind request))
+                  :kind (e-runtime-store-request--kind request)
+                  :outcome (e-runtime-store-request--state request)
+                  :queue-ms
+                  (e-runtime-store--latency-ms admitted-at queue-finished-at)
+                  :dispatch-to-settlement-ms
+                  (e-runtime-store--latency-ms first-submitted-at settled-at)
+                  :total-ms
+                  (e-runtime-store--latency-ms
+                   (or admitted-at first-submitted-at) settled-at)
+                  :settled-at settled-at)))
+      (let ((samples (cons sample (e-runtime-store--latency-samples store))))
+        (when (> (length samples) e-runtime-store--latency-sample-capacity)
+          (setcdr (nthcdr (1- e-runtime-store--latency-sample-capacity) samples)
+                  nil))
+        (setf (e-runtime-store-request--settled-at request) settled-at
+              (e-runtime-store--latency-samples store) samples)))))
+
+(defun e-runtime-store--request-live-latency (request now)
+  "Return REQUEST's current bounded latency status at NOW."
+  (when request
+    (let* ((phase (e-runtime-store-request--state request))
+           (phase-start
+            (pcase phase
+              ('queued (e-runtime-store-request--admitted-at request))
+              ('submitted (e-runtime-store-request--submitted-at request))))
+           (total-start
+            (or (e-runtime-store-request--admitted-at request)
+                (e-runtime-store-request--first-submitted-at request)
+                (e-runtime-store-request--submitted-at request))))
+      (list :operation (or (e-runtime-store--request-operation request)
+                           (e-runtime-store-request--kind request))
+            :kind (e-runtime-store-request--kind request)
+            :phase phase
+            :phase-age-ms (e-runtime-store--latency-ms phase-start now)
+            :total-age-ms (e-runtime-store--latency-ms total-start now)))))
+
+(defun e-runtime-store--latency-status (store active now)
+  "Return STORE's bounded current and recent latency status at NOW."
+  (let ((oldest-queued (car (e-runtime-store--client-queue store))))
+    (list :unit 'milliseconds
+          :active (e-runtime-store--request-live-latency active now)
+          :oldest-queued
+          (e-runtime-store--request-live-latency oldest-queued now)
+          :recent-count (length (e-runtime-store--latency-samples store))
+          ;; Samples are newest first and contain only bounded scalar facts.
+          :recent (mapcar #'copy-tree
+                          (e-runtime-store--latency-samples store)))))
 
 (defun e-runtime-store--startup-request (store)
   "Return STORE's one still-owned domain request while opening.
@@ -588,6 +664,7 @@ continues to own its own admission reservation."
              (memq (e-runtime-store-request--state request) '(committed failed)))
     (setf (e-runtime-store--recovery-attempt store) 0
           (e-runtime-store--recovery-cause store) nil))
+  (e-runtime-store--record-request-latency store request)
   ;; An internal open is only a transport prerequisite.  It is advanced by
   ;; scheduler events, never by the submitter or an awaiter.
   (cond
@@ -880,7 +957,8 @@ the healthy worker and already-consumed input remainder stay authoritative."
     (when open
       (e-runtime-store--release-open-control store open)
       (setf (e-runtime-store-request--state open) 'failed
-            (e-runtime-store-request--error open) cause))
+            (e-runtime-store-request--error open) cause)
+      (e-runtime-store--record-request-latency store open))
     (when (and request (e-runtime-store--request-live-p request))
       (e-runtime-store--fail-request
        store request first-error))
@@ -1077,6 +1155,7 @@ whether the mutation already committed.  Reads are safe to retry directly."
            (e-runtime-store--release-open-control store request)
            (setf (e-runtime-store-request--state request) 'failed
                  (e-runtime-store-request--error request) send-error)
+           (e-runtime-store--record-request-latency store request)
            (if (e-runtime-store--recovering-request store)
                (e-runtime-store--recovery-exhausted
                 store (or (e-runtime-store--recovery-cause store) send-error))
@@ -1201,6 +1280,7 @@ wrapper."
     (setf (e-runtime-store-request--state request) 'failed
           (e-runtime-store-request--error request) err
           (e-runtime-store--last-error store) err)
+    (e-runtime-store--record-request-latency store request)
     (unless (eq (e-runtime-store-request--kind request) 'close)
       (setf (e-runtime-store-request--frame request) nil
             (e-runtime-store-request--frame-bytes request) nil))
@@ -1372,10 +1452,14 @@ choose immediate local finalization without letting the close escape the cap."
                 (unless (stringp frame)
                   (signal 'e-runtime-store-error
                           (list "Close lost its immutable admitted frame" request)))
-                (setf (e-runtime-store-request--frame request) frame
-                      (e-runtime-store-request--state request) 'submitted
-                      (e-runtime-store-request--submitted-at request) (float-time)
-                      (e-runtime-store--active-request store) request)
+                (let ((now (float-time)))
+                  (setf (e-runtime-store-request--frame request) frame
+                        (e-runtime-store-request--state request) 'submitted
+                        (e-runtime-store-request--submitted-at request) now
+                        (e-runtime-store-request--first-submitted-at request)
+                        (or (e-runtime-store-request--first-submitted-at request)
+                            now)
+                        (e-runtime-store--active-request store) request))
                 (puthash (e-runtime-store-request--id request) request
                          (e-runtime-store--pending store))
                 (process-send-string (e-runtime-store--process store)
@@ -1485,11 +1569,14 @@ increments its generation so stale callbacks are inert."
               (if (e-runtime-store--queued-request-p store request)
                 (progn
                   (e-runtime-store--take-queued-request store request)
-                  (setf (e-runtime-store--active-request store) request
-                        (e-runtime-store-request--state request) 'submitted
-                        (e-runtime-store-request--submitted-at request)
-                        (float-time)
-                        (e-runtime-store--starting-request store) nil)
+                  (let ((now (float-time)))
+                    (setf (e-runtime-store--active-request store) request
+                          (e-runtime-store-request--state request) 'submitted
+                          (e-runtime-store-request--submitted-at request) now
+                          (e-runtime-store-request--first-submitted-at request)
+                          (or (e-runtime-store-request--first-submitted-at request)
+                              now)
+                          (e-runtime-store--starting-request store) nil))
                   (puthash (e-runtime-store-request--id request) request
                            (e-runtime-store--pending store))
                   (process-send-string
@@ -1601,6 +1688,7 @@ Return `dropped' for queued work, `detached' for submitted reads, and
            (e-runtime-store-request--error request)
            '(e-runtime-store-cancelled "Cancelled before submission")
            (e-runtime-store-request--frame request) nil)
+     (e-runtime-store--record-request-latency store request)
      (e-runtime-store--enqueue-terminal-notification store request)
      (e-runtime-store--schedule store t)
      'dropped)
@@ -1825,8 +1913,13 @@ be constructed with the private constructor used by scheduler tests."
   t)
 
 (defun e-runtime-store-status (store)
-  "Return bounded liveness and failure status for STORE."
-  (let ((active (e-runtime-store--active-request store)))
+  "Return bounded liveness, failure, and latency status for STORE.
+
+The `:latencies' entry is process-local and never queries SQLite.  It reports
+the active and oldest queued phase ages plus at most 64 newest-first terminal
+samples separating queue, dispatch-to-settlement, and total milliseconds."
+  (let ((active (e-runtime-store--active-request store))
+        (now (float-time)))
     (list :database-file (e-runtime-store--database-file store)
           :runtime-id (e-runtime-store--runtime-id store)
           :worker-live (and (e-runtime-store--live-p store) t)
@@ -1835,12 +1928,13 @@ be constructed with the private constructor used by scheduler tests."
           :pending-count (+ (length (e-runtime-store--client-queue store))
                             (if active 1 0))
           :oldest-age (and active (e-runtime-store-request--submitted-at active)
-                           (- (float-time)
+                           (- now
                               (e-runtime-store-request--submitted-at active)))
           :active-request-kind
           (and active (e-runtime-store-request--kind active))
           :active-request-operation
           (e-runtime-store--request-operation active)
+          :latencies (e-runtime-store--latency-status store active now)
           :unavailable (and (e-runtime-store--unavailable store) t)
           :unavailable-cause (e-runtime-store--unavailable-cause store)
           :suspect-owners

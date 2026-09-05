@@ -314,6 +314,69 @@
         (should (eq (plist-get integrity :kind) 'integrity-check))
         (should (equal selects '("PRAGMA integrity_check")))))))
 
+(ert-deftest e-runtime-store-s92-status-exposes-current-and-terminal-latencies ()
+  "Status separates FIFO wait, dispatch-to-settlement, and total latency."
+  (let* ((active (e-runtime-store-request--create
+                  :id "latency:w:1" :kind 'write
+                  :body '(:op session-append) :state 'submitted
+                  :admitted-at 1.0 :submitted-at 3.0 :first-submitted-at 3.0))
+         (queued (e-runtime-store-request--create
+                  :id "latency:r:2" :kind 'read :body '(:op catalog-get)
+                  :state 'queued :admitted-at 4.0))
+         (store (e-runtime-store--create
+                 :runtime-id "latency" :active-request active
+                 :client-queue (list queued)
+                 :pending (make-hash-table :test 'equal))))
+    (puthash (e-runtime-store-request--id active) active
+             (e-runtime-store--pending store))
+    (cl-letf (((symbol-function 'float-time) (lambda (&optional _time) 8.0))
+              ((symbol-function 'e-runtime-store--schedule) #'ignore))
+      (let* ((latencies (plist-get (e-runtime-store-status store) :latencies))
+             (active-status (plist-get latencies :active))
+             (queued-status (plist-get latencies :oldest-queued)))
+        (should (eq (plist-get latencies :unit) 'milliseconds))
+        (should (equal (plist-get active-status :operation) 'session-append))
+        (should (eq (plist-get active-status :phase) 'submitted))
+        (should (= (plist-get active-status :phase-age-ms) 5000.0))
+        (should (= (plist-get active-status :total-age-ms) 7000.0))
+        (should (equal (plist-get queued-status :operation) 'catalog-get))
+        (should (= (plist-get queued-status :phase-age-ms) 4000.0)))
+      (e-runtime-store--settle
+       store active '(:id "latency:w:1" :ok t :result (:revision 1)))
+      ;; Recording is terminal and exact-once even if another cleanup edge sees
+      ;; the same request after its correlated response.
+      (e-runtime-store--record-request-latency store active)
+      (let* ((latencies (plist-get (e-runtime-store-status store) :latencies))
+             (sample (car (plist-get latencies :recent))))
+        (should (= (plist-get latencies :recent-count) 1))
+        (should (equal (plist-get sample :operation) 'session-append))
+        (should (eq (plist-get sample :outcome) 'committed))
+        (should (= (plist-get sample :queue-ms) 2000.0))
+        (should (= (plist-get sample :dispatch-to-settlement-ms) 5000.0))
+        (should (= (plist-get sample :total-ms) 7000.0))))))
+
+(ert-deftest e-runtime-store-s92-terminal-latency-history-is-bounded ()
+  "Terminal observations retain only the configured recent scalar samples."
+  (let ((store (e-runtime-store--create :runtime-id "latency-cap"))
+        (e-runtime-store--latency-sample-capacity 2))
+    (cl-loop for index from 1 to 3
+             do (let ((request
+                       (e-runtime-store-request--create
+                        :id (format "latency-cap:%d" index) :kind 'write
+                        :body (list :op (intern (format "operation-%d" index)))
+                        :state 'failed :admitted-at 0.0
+                        :submitted-at 1.0 :first-submitted-at 1.0)))
+                  (cl-letf (((symbol-function 'float-time)
+                             (lambda (&optional _time) (+ 1.0 index))))
+                    (e-runtime-store--record-request-latency store request))))
+    (let* ((latencies (plist-get (e-runtime-store-status store) :latencies))
+           (samples (plist-get latencies :recent)))
+      (should (= (plist-get latencies :recent-count) 2))
+      (should (equal (mapcar (lambda (sample)
+                              (plist-get sample :operation))
+                            samples)
+                     '(operation-3 operation-2))))))
+
 (ert-deftest e-runtime-store-s2-rejects-a-second-live-runtime ()
   "One live worker exclusively owns one physical database."
   (e-runtime-store-test--with-store (store directory)

@@ -479,6 +479,61 @@ database integrity check, or SQLite read belongs on the interactive path.
 - reworking accepted worker ownership, transaction receipts, or migration; and
 - broad aggregate/harness decomposition unrelated to the ownership correction.
 
+* Minimal runtime latency observability extension
+
+** Behavioral trace
+
+- Goal ID :: =F92-RUNTIME-LATENCY=
+- Behavioral goal :: An operator inspecting a live runtime can distinguish time
+  spent waiting in the bounded FIFO from time spent after worker dispatch and
+  can inspect recent terminal latency without issuing another SQLite request.
+- Direct scenario :: Hold one runtime operation in the external worker, inspect
+  status while it is active and another operation is queued, release it, then
+  inspect one terminal sample containing FIFO wait, dispatch-to-settlement, and
+  end-to-end duration for the operation.
+- Product authority :: The operator's 2026-09-05 request for minimal SQLite
+  operation-latency observability.
+- Owning contract :: Runtime-store status is nonblocking, process-local, and
+  bounded; it reports transport-observed latency without claiming to isolate
+  SQLite statement execution from worker or protocol overhead.
+- Behavioral status :: Passing in deterministic runtime-store evidence.
+- Mechanism status :: Complete.  No worker protocol or SQLite schema changed.
+
+** Status contract
+
+=e-runtime-store-status= and the existing owner/composition status facades now
+include =:latencies=.  Its =:active= and =:oldest-queued= entries report the
+operation, request kind, phase, phase age, and total age in milliseconds.
+=:recent= retains newest-first terminal scalar samples with:
+
+- =:queue-ms=: admission to first dispatch, or admission to terminal failure
+  when the request never dispatches;
+- =:dispatch-to-settlement-ms=: first dispatch to terminal settlement,
+  including worker replacement/recovery when it occurs; and
+- =:total-ms=: admission to terminal settlement.
+
+The runtime retains at most 64 recent samples.  This is a private practical
+default, not a correctness limit or performance gate.  Samples contain only
+operation, kind, outcome, timestamps, and durations: no owner identity, request
+payload, result, or diagnostic.  They disappear with the process-local runtime.
+Collection performs no SQLite query, filesystem write, subscriber call, or
+application-domain publication.  Actual SQLite statement-only timing remains a
+separate possible worker diagnostic; the current value intentionally measures
+the user-relevant parent-side interval through acknowledgement.
+
+** Evidence
+
+The focused runtime-store suite passes 71/71.  Its two new deterministic
+scenarios prove current active/queued phase ages, exact FIFO/dispatch/total
+terminal durations, exact-once terminal sampling, newest-first order, and the
+retention cap.  Timing values remain observational; tests inject a clock to
+prove arithmetic and do not impose a wall-clock threshold.  The public S92 Org
+Canvas delay/release/failure scenario passes 1/1 in the isolated graphical
+runner.  The repository suite ran 2,846 tests: 2,840 passed in the restricted
+sandbox, while the six tests that require a local server socket were blocked by
+=Operation not permitted=; those same six pass 6/6 with local socket permission.
+Batch compilation also passes with only the pre-existing warnings.
+
 * Verification and acceptance
 
 Run focused owner tests before the graphical gate:

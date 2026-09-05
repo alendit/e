@@ -26,9 +26,13 @@ The accepted-session projection addendum is =Done= in implementation
 =9857214a=: its exact candidate passed a data-dependent public two-turn Org
 Canvas gate twice, 2,844/2,844 repository tests, and independent implementation
 review.  This closes the reproduced acknowledgement-gated provider-context gap
-without adding a second history authority.  Live restart validation has not
-been run; per-session quarantine, the all-domain audit, and the broader Feature
-92 roadmap remain, so the feature as a whole stays =In-review=.
+without adding a second history authority.  Its minimal runtime-latency
+extension now reports bounded process-local active, queued, FIFO-wait,
+dispatch-to-settlement, and end-to-end timing through the existing nonblocking
+status surface; it performs no SQLite read to observe SQLite work.  Live restart
+validation has not been run; per-session quarantine, the all-domain audit, and
+the broader Feature 92 roadmap remain, so the feature as a whole stays
+=In-review=.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
