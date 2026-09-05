@@ -86,6 +86,27 @@ chat window tree after this test has already started its surface assertion."
    (e-runtime-store-recovery-graphical--stall-file
     directory operation "ready")))
 
+(defun e-runtime-store-recovery-graphical--make-v6-worker ()
+  "Return a disposable worker copy that treats v5 stores as unupgraded.
+
+The production worker remains v5 until the explicit DP2 schema package.  This
+test-only child lets the startup scenario exercise the already specified v5
+diagnostic without changing the DP1 database schema or worker source."
+  (let* ((source
+          (expand-file-name "lisp/core/e-runtime-store-worker.el"
+                            (e-source-directory)))
+         (target (make-temp-file "e-runtime-store-worker-v6-" nil ".el")))
+    (with-temp-buffer
+      (insert-file-contents source)
+      (goto-char (point-min))
+      (unless (search-forward
+               "(defconst e-runtime-store-worker-schema-version 5)" nil t)
+        (error "Could not locate the v5 worker schema declaration"))
+      (replace-match
+       "(defconst e-runtime-store-worker-schema-version 6)")
+      (write-region (point-min) (point-max) target nil 'silent))
+    target))
+
 (defun e-runtime-store-recovery-graphical--runtime-operation-p
     (runtime operation)
   "Return non-nil when RUNTIME has active or queued OPERATION."
@@ -128,6 +149,182 @@ chat window tree after this test has already started its surface assertion."
         (while (search-forward needle nil t)
           (cl-incf count))
         count))))
+
+(ert-deftest e-runtime-store-recovery-graphical-s92-startup-prewarm-is-transport-only ()
+  "Graphical startup survives held open and reports an unupgraded v5 store."
+  (let* ((directory (make-temp-file "e-runtime-store-startup-v5-" t))
+         (stall-directory (make-temp-file "e-runtime-store-startup-stall-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-default--runtime nil)
+         (e-default--runtime-store nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil)
+         (worker-file nil)
+         (transport nil)
+         heartbeat-timer
+         (heartbeat 0))
+    (setenv "E_RUNTIME_STORE_TEST_STALL_DIRECTORY" stall-directory)
+    ;; The graphical daemon has already run the normal startup prewarm before
+    ;; ERT begins.  Point this isolated scenario at its own fixture directory
+    ;; so the v5 fixture and the test-only v6 transport share one owner rather
+    ;; than competing with that earlier default-directory worker.
+    (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
+    (unwind-protect
+        (progn
+          ;; Establish a nonempty current v5 fixture before the held startup
+          ;; open.  All fixture I/O is explicit setup, not startup traffic.
+          (let ((fixture nil))
+            (unwind-protect
+                (cl-letf (((symbol-function 'e-runtime-store-await)
+                           #'e-runtime-store-recovery-graphical--await-with-pump))
+                  (setq fixture (e-runtime-store-open directory))
+                  (e-runtime-store-call
+                   fixture 'write
+                   '(:op session-append-batch :session-id "startup-fixture"
+                     :records [(:type "session" :session-id "startup-fixture"
+                                :id "startup-root"
+                                :timestamp "2026-09-05T00:00:00Z")]))
+                  (e-runtime-store-close fixture))
+              (when (and fixture
+                         (not (e-runtime-store--closed fixture)))
+                (ignore-errors (e-runtime-store-close fixture)))))
+          (e-runtime-store-recovery-graphical--prepare-frame)
+          (e-runtime-store-recovery-graphical--arm-stall
+           stall-directory 'open)
+          (setq worker-file
+                (e-runtime-store-recovery-graphical--make-v6-worker))
+          (setq heartbeat-timer
+                (run-at-time 0.01 0.01 (lambda () (cl-incf heartbeat))))
+          (let ((started (float-time)))
+            (cl-letf (((symbol-function 'e-runtime-store--worker-file)
+                       (lambda () worker-file))
+                      ((symbol-function 'e-runtime-store--command)
+                       (lambda ()
+                         (list (e-runtime-store--emacs-program) "--batch" "-Q"
+                               "-L" (file-name-directory
+                                     (e-runtime-store--worker-file))
+                               "-L" (file-name-directory
+                                     (expand-file-name
+                                      "lisp/core/e-runtime-store-worker.el"
+                                      (e-source-directory)))
+                               "--eval" "(setq load-prefer-newer t)"
+                               "-l" worker-file
+                               "--funcall" "e-runtime-store-worker-main"))))
+              ;; This is the public startup edge; it must return while the
+              ;; private open control is still held by the worker.
+              (should-not (e-default--prewarm-runtime)))
+            (should (< (- (float-time) started) 0.5)))
+          (setq transport e-default--runtime-store)
+          (should (e-runtime-store-p transport))
+          (should-not e-default--runtime)
+          (should-not e-default--chat-sessions)
+          (let ((deadline (+ (float-time) 2.0)))
+            (while (and (< (float-time) deadline)
+                        (not (e-runtime-store-recovery-graphical--stall-ready-p
+                              stall-directory 'open)))
+              (e-runtime-store-recovery-graphical--pump-runtime transport)
+              (sit-for 0.01))
+            (unless (e-runtime-store-recovery-graphical--stall-ready-p
+                     stall-directory 'open)
+              (ert-fail
+               (format
+                "Startup open did not reach stall: process=%S status=%S stderr=%S last-error=%S"
+                (and (e-runtime-store--process transport)
+                     (process-status (e-runtime-store--process transport)))
+                (and (e-runtime-store--process transport)
+                     (process-exit-status (e-runtime-store--process transport)))
+                (and (buffer-live-p (e-runtime-store--stderr-buffer transport))
+                     (with-current-buffer (e-runtime-store--stderr-buffer transport)
+                       (buffer-substring-no-properties
+                        (max (point-min) (- (point-max) 2000)) (point-max))))
+                (plist-get (e-runtime-store-status transport) :last-error)))))
+          (e-graphical-test-wait-until
+           (lambda () (> heartbeat 3))
+           1.0 "independent startup heartbeats")
+          (let* ((active (e-runtime-store--active-request transport))
+                 (status (e-runtime-store-status transport))
+                 (pending nil)
+                 (stderr
+                  (and (buffer-live-p
+                        (e-runtime-store--stderr-buffer transport))
+                       (with-current-buffer
+                           (e-runtime-store--stderr-buffer transport)
+                         (buffer-substring-no-properties
+                          (max (point-min) (- (point-max) 2000))
+                          (point-max))))))
+            (maphash
+             (lambda (_id request)
+               (push (list :id (e-runtime-store-request--id request)
+                           :kind (e-runtime-store-request--kind request)
+                           :operation
+                           (e-runtime-store-request--operation request)
+                           :state (e-runtime-store-request--state request))
+                     pending))
+             (e-runtime-store--pending transport))
+            (unless (and active
+                         (eq (e-runtime-store-request--kind active) 'open)
+                         (eq (e-runtime-store-request--state active)
+                             'submitted))
+              (ert-fail
+               (format
+                "Held startup open lost before heartbeat gate: active=%S pending=%S queue=%S status=%S process=%S stderr=%S"
+                (and active
+                     (list :id (e-runtime-store-request--id active)
+                           :kind (e-runtime-store-request--kind active)
+                           :operation
+                           (e-runtime-store-request--operation active)
+                           :state (e-runtime-store-request--state active)))
+                pending
+                (mapcar
+                 (lambda (request)
+                   (list :id (e-runtime-store-request--id request)
+                         :kind (e-runtime-store-request--kind request)
+                         :operation
+                         (e-runtime-store-request--operation request)
+                         :state (e-runtime-store-request--state request)))
+                 (e-runtime-store--client-queue transport))
+                status
+                (and (e-runtime-store--process transport)
+                     (list (process-status (e-runtime-store--process transport))
+                           (process-exit-status
+                            (e-runtime-store--process transport))))
+                stderr))))
+          (should-not (e-runtime-store--client-queue transport))
+          (let (operations)
+            (maphash
+             (lambda (_id request)
+               (push (e-runtime-store-request--kind request) operations))
+             (e-runtime-store--pending transport))
+            (should (equal operations '(open))))
+          (e-runtime-store-recovery-graphical--release-stall
+           stall-directory 'open)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime transport)
+             (let ((status (e-runtime-store-status transport)))
+               (and (plist-get status :last-error)
+                    (not (e-runtime-store--active-request transport)))))
+           2.0 "v5 startup diagnostic")
+          (let* ((status (e-runtime-store-status transport))
+                 (diagnostic (plist-get status :last-error)))
+            (should (eq (car diagnostic) 'e-runtime-store-schema-too-old))
+            (should (= (plist-get (cdr diagnostic) :actual) 5))
+            (should (= (plist-get (cdr diagnostic) :required) 6))
+            (should (equal (plist-get (cdr diagnostic) :operation)
+                           'e-runtime-store-offline-upgrade)))
+          (should-not (e-runtime-store--client-queue transport)))
+      (when (timerp heartbeat-timer)
+        (cancel-timer heartbeat-timer))
+      (e-runtime-store-recovery-graphical--release-stall
+       stall-directory 'open)
+      (when (e-runtime-store-p e-default--runtime-store)
+        (cl-letf (((symbol-function 'e-runtime-store-await)
+                   #'e-runtime-store-recovery-graphical--await-with-pump))
+          (ignore-errors (e-default-runtime-close))))
+      (when (and worker-file (file-exists-p worker-file))
+        (delete-file worker-file))
+      (delete-directory directory t)
+      (delete-directory stall-directory t))))
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-org-canvas-turn-survives-delayed-persistence ()
   "A new public Org Canvas Daily stays usable while SQLite admission waits."

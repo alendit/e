@@ -32,10 +32,14 @@ dispatch-to-settlement, and end-to-end timing through the existing nonblocking
 status surface; it performs no SQLite read to observe SQLite work.  A subsequent
 live startup counterexample invalidated the full-composition prewarm claim:
 session construction still synchronously hydrated the complete catalog and
-enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =Planned= to make startup
+enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =In-progress= to make startup
 transport-only, replace catalog/checkpoint blobs and process-wide mirrors with
 bounded SQLite queries and active working sets, bound Board/task restore, and
-remove remaining interactive storage awaits.  Feature 92 remains =In-review=.
+remove remaining interactive storage awaits.  DP1 is accepted for transport-only
+startup and pure composition: focused ERT and the isolated graphical
+startup-prewarm gate pass, including the macOS private =CFFIXED_USER_HOME=
+runner isolation.  DP2--DP5 are not started, and Feature 92 remains
+=In-review=.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

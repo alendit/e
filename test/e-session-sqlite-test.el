@@ -46,8 +46,8 @@
       (setq store (e-session-sqlite-store-create directory))
       (should-not (e-session-messages store "source")))))
 
-(ert-deftest e-session-sqlite-missing-catalog-reads-only-first-record-pages ()
-  "Journal-root reconciliation reads one bounded record from each journal."
+(ert-deftest e-session-sqlite-constructor-does-not-reconcile-journal-roots ()
+  "Ordinary construction does not enumerate or materialize durable sessions."
   (e-session-sqlite-test--with-store (store directory)
     (let ((runtime (e-session-storage-runtime-store store)))
       (e-runtime-store-call
@@ -70,14 +70,14 @@
                    (push (list session-id after limit) page-calls)
                    (funcall read-page candidate session-id after limit))))
         (setq store (e-session-sqlite-store-create directory)))
-      (should (equal page-calls '(("missing-catalog" nil 1))))
-      (should (e-session-session-present-p store "missing-catalog"))
-      (should-not
-       (plist-get
-        (e-session-aggregate-peek-session store "missing-catalog") :loaded)))))
+      (should-not page-calls)
+      (should-not (e-session-session-present-p store "missing-catalog"))
+      (should-error
+       (e-session-aggregate-peek-session store "missing-catalog")
+       :type 'e-session-missing))))
 
-(ert-deftest e-session-sqlite-catalog-startup-is-lazy-until-first-access ()
-  "Catalog startup installs stubs; first transcript access restores one."
+(ert-deftest e-session-sqlite-constructor-defers-session-replay-until-access ()
+  "Ordinary construction leaves explicit session replay to first access."
   (e-session-sqlite-test--with-store (store directory)
     (e-session-create store :id "catalog-lazy")
     (e-session-append-message
@@ -97,10 +97,10 @@
                    (cl-incf record-count)
                    (apply read-records args))))
         (setq store (e-session-sqlite-store-create directory))
-        (should (e-session-session-present-p store "catalog-lazy"))
-        (should-not
-         (plist-get
-          (e-session-aggregate-peek-session store "catalog-lazy") :loaded))
+        (should-not (e-session-session-present-p store "catalog-lazy"))
+        (should-error
+         (e-session-aggregate-peek-session store "catalog-lazy")
+         :type 'e-session-missing)
         (should (= page-count 0))
         (should (= record-count 0))
         (should (equal
@@ -111,8 +111,8 @@
          (plist-get
           (e-session-aggregate-peek-session store "catalog-lazy") :loaded))))))
 
-(ert-deftest e-session-sqlite-rebuild-catalog-is-one-session-at-a-time ()
-  "Offline catalog rebuild preserves checkpoints and leaves lazy stubs."
+(ert-deftest e-session-sqlite-load-all-remains-an-explicit-batch-boundary ()
+  "Only an explicit LOAD-ALL construction eagerly replays all sessions."
   (e-session-sqlite-test--with-store (store directory)
     (e-session-create store :id "checkpointed")
     (e-session-append-message
@@ -122,11 +122,7 @@
            (opaque-checkpoint
             (plist-put (copy-tree checkpoint) :legacy-opaque
                        '(:false :json-false :pair (left . right))))
-           (runtime (e-session-storage-runtime-store store))
-           (ids '("checkpointed" "checkpoint-less"))
-           (unload (symbol-function 'e-session-unload-session))
-           unload-observations
-           projection)
+           (runtime (e-session-storage-runtime-store store)))
       (e-session-storage-persist-resume-checkpoint
        store "checkpointed" opaque-checkpoint)
       (e-runtime-store-call
@@ -141,24 +137,6 @@
       (should-not
        (e-session-storage-resume-checkpoint-present-p
         store "checkpoint-less"))
-      (cl-letf
-          (((symbol-function 'e-session-unload-session)
-            (lambda (candidate session-id &optional entry)
-              (push
-               (list session-id
-                     (cl-count-if
-                      (lambda (session) (plist-get session :loaded))
-                      (e-session-aggregate-session-values candidate)))
-               unload-observations)
-              (funcall unload candidate session-id entry))))
-        (setq projection (e-session-rebuild-catalog store)))
-      (should (= (length projection) 2))
-      (should (equal (sort (mapcar #'car unload-observations) #'string<)
-                     (sort (copy-sequence ids) #'string<)))
-      (should (equal (mapcar #'cadr unload-observations) '(1 1)))
-      (dolist (id ids)
-        (should-not
-         (plist-get (e-session-aggregate-peek-session store id) :loaded)))
       (should
        (equal (e-session-storage-read-resume-checkpoint store "checkpointed")
               opaque-checkpoint))
@@ -166,23 +144,16 @@
        (e-session-storage-resume-checkpoint-present-p
         store "checkpoint-less"))
       (e-session-sqlite-store-close store)
-      (let ((read-page (symbol-function 'e-session-storage-read-session-page))
-            (read-records
+      (let ((read-records
              (symbol-function 'e-session-storage-read-session-records))
-            (page-count 0)
             (record-count 0))
-        (cl-letf (((symbol-function 'e-session-storage-read-session-page)
-                   (lambda (&rest args)
-                     (cl-incf page-count)
-                     (apply read-page args)))
-                  ((symbol-function 'e-session-storage-read-session-records)
+        (cl-letf (((symbol-function 'e-session-storage-read-session-records)
                    (lambda (&rest args)
                      (cl-incf record-count)
                      (apply read-records args))))
-          (setq store (e-session-sqlite-store-create directory))
+          (setq store (e-session-sqlite-store-create directory :load-all t))
           (should (= (length (e-session-list store)) 2))
-          (should (= page-count 0))
-          (should (= record-count 0)))))))
+          (should (> record-count 0)))))))
 
 (ert-deftest e-session-sqlite-first-lazy-load-rejects-same-session-reentry ()
   "A timer cannot mutate a session while its first replay awaits storage."

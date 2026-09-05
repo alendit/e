@@ -36,7 +36,8 @@
                (:constructor e-runtime-sqlite--create)
                (:conc-name e-runtime-sqlite--))
   directory runtime-store session-store board-storage task-storage task-queue
-  cron-storage voice-storage goodnite-storage raw-results-storage closed)
+  cron-storage voice-storage goodnite-storage raw-results-storage
+  (owns-runtime-store t) closed)
 
 (defun e-runtime-sqlite-runtime-store (runtime)
   "Return RUNTIME's one physical runtime-store."
@@ -76,18 +77,22 @@
 
 (cl-defun e-runtime-sqlite-open
     (directory &key load-sessions load-task-queue task-runner
-               task-producer-binding (task-queue-id "default"))
+               task-producer-binding (task-queue-id "default") runtime-store)
   "Open one SQLite runtime rooted at DIRECTORY.
 
 The returned composition injects one shared physical runtime through separate
 session, Board, task, cron, voice, Goodnite, and raw-result owner ports.
 LOAD-TASK-QUEUE should be used only after TASK-RUNNER or TASK-PRODUCER-BINDING
-provides process-local execution authority."
+provides process-local execution authority.  RUNTIME-STORE may supply an
+already-open transport prewarm handle; the composition borrows that handle and
+the caller remains its close owner."
   (when e-runtime-sqlite--live-composition
     (signal 'e-runtime-sqlite-live-composition
             (list "Close the active SQLite runtime before opening another")))
   (let* ((directory (file-name-as-directory (expand-file-name directory)))
          (reservation (list 'opening directory))
+         (provided-runtime-store runtime-store)
+         (owns-runtime-store (null provided-runtime-store))
          runtime-store session-store board-storage task-storage task-queue
          cron-storage voice-storage goodnite-storage raw-storage composition)
     ;; Reserve ownership before opening or mutating any store.  Reentrant timer
@@ -95,7 +100,20 @@ provides process-local execution authority."
     (setq e-runtime-sqlite--live-composition reservation)
     (condition-case err
         (progn
-          (setq runtime-store (e-runtime-store-open directory))
+          (setq runtime-store
+                (or provided-runtime-store
+                    (e-runtime-store-open directory)))
+          (unless (e-runtime-store-p runtime-store)
+            (signal 'wrong-type-argument
+                    (list 'e-runtime-store-p runtime-store)))
+          (unless (equal directory
+                         (file-name-as-directory
+                          (expand-file-name
+                           (e-runtime-store--directory runtime-store))))
+            (signal 'e-runtime-sqlite-live-composition
+                    (list "Runtime-store directory does not match composition"
+                          (e-runtime-store--directory runtime-store)
+                          directory)))
           (setq session-store
                 (e-session-sqlite-store-create
                  directory :load-all load-sessions
@@ -132,7 +150,8 @@ provides process-local execution authority."
                  :task-storage task-storage :task-queue task-queue
                  :cron-storage cron-storage :voice-storage voice-storage
                  :goodnite-storage goodnite-storage
-                 :raw-results-storage raw-storage))
+                 :raw-results-storage raw-storage
+                 :owns-runtime-store owns-runtime-store))
           (setq e-runtime-sqlite--live-composition composition)
           composition)
       (error
@@ -142,7 +161,7 @@ provides process-local execution authority."
        (e-voice-adjustment-configure-storage nil)
        (e-goodnite-resources-configure-storage nil)
        (e-raw-results-configure-storage nil)
-       (when runtime-store
+       (when (and runtime-store owns-runtime-store)
          (ignore-errors (e-runtime-store-close runtime-store)))
        (when (eq e-runtime-sqlite--live-composition reservation)
          (setq e-runtime-sqlite--live-composition nil))
@@ -164,7 +183,8 @@ provides process-local execution authority."
       (e-raw-results-configure-storage nil))
     (e-session-sqlite-store-close
      (e-runtime-sqlite--session-store runtime))
-    (e-runtime-store-close (e-runtime-sqlite--runtime-store runtime))
+    (when (e-runtime-sqlite--owns-runtime-store runtime)
+      (e-runtime-store-close (e-runtime-sqlite--runtime-store runtime)))
     (setf (e-runtime-sqlite--closed runtime) t)
     (when (eq e-runtime-sqlite--live-composition runtime)
       (setq e-runtime-sqlite--live-composition nil)))

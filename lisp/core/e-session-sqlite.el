@@ -20,9 +20,7 @@
 (declare-function e-session--apply-physical-record "e-session")
 (declare-function e-session--begin-checkpoint-replay "e-session")
 (declare-function e-session--finish-replay "e-session")
-(declare-function e-session--load-index "e-session")
 (declare-function e-session--read-checkpoint "e-session")
-(declare-function e-session--reconcile-journal-roots "e-session")
 (declare-function e-session-generate-ulid "e-session-identity")
 (declare-function e-session-load "e-session")
 
@@ -119,11 +117,12 @@
           (when asynchronous
             (require 'e-session-async)
             (e-session-async-enable store))
-          (if load-all
-              (e-session-load store)
-            (if (e-session--load-index store)
-                (e-session--reconcile-journal-roots store t)
-              (e-session--reconcile-journal-roots store)))
+          ;; Ordinary composition is transport-only: do not read the catalog,
+          ;; enumerate journal roots, or install one process-local stub for
+          ;; every durable session.  Explicit eager replay remains available
+          ;; only to named offline/batch callers through LOAD-ALL.
+          (when load-all
+            (e-session-load store))
           store)
       (error
        (when owns-runtime-store

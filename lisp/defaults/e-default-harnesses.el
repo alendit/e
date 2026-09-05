@@ -99,6 +99,12 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
 (defvar e-default--runtime nil
   "The process-wide default SQLite runtime composition.")
 
+(defvar e-default--runtime-store nil
+  "The process-wide default runtime-store transport handle.
+
+The startup prewarm owns this handle.  A later full runtime composition borrows
+it so startup and first composition cannot create competing workers.")
+
 (defun e-default-common-state-directory ()
   "Return the common e state root established by session configuration.
 
@@ -139,7 +145,7 @@ contains the established session directory and its sibling legacy owners."
         (e-default-common-state-directory)))))
 
 (defun e-default-runtime ()
-  "Return the process-wide default SQLite runtime, opening lazy sessions once."
+  "Return the process-wide default SQLite runtime, reusing its transport."
   (let ((directory (e-default-runtime-directory)))
     (unless (and (e-runtime-sqlite-p e-default--runtime)
                  (not (e-runtime-sqlite--closed e-default--runtime))
@@ -152,7 +158,8 @@ contains the established session directory and its sibling legacy owners."
                       (e-runtime-sqlite--directory e-default--runtime)
                       directory)))
       (setq e-default--runtime
-            (e-runtime-sqlite-open directory)
+            (e-runtime-sqlite-open
+             directory :runtime-store (e-default-runtime-store))
             e-default--chat-sessions
             (e-runtime-sqlite-session-store e-default--runtime)))
     (e-task-queue-actions-configure-queue
@@ -161,19 +168,46 @@ contains the established session directory and its sibling legacy owners."
 
 (defun e-default-runtime-close ()
   "Close the process-wide default runtime exactly once."
-  (when (e-runtime-sqlite-p e-default--runtime)
-    (e-runtime-sqlite-close e-default--runtime))
+  (let ((runtime-store e-default--runtime-store))
+    ;; The composition borrows the process-wide transport.  Retire the domain
+    ;; ports first, then let this sole process-wide owner close the worker.
+    (when (e-runtime-sqlite-p e-default--runtime)
+      (e-runtime-sqlite-close e-default--runtime))
+    (when (and (e-runtime-store-p runtime-store)
+               (not (e-runtime-store--closed runtime-store)))
+      (e-runtime-store-close runtime-store)))
   (e-task-queue-actions-configure-queue nil)
   (setq e-default--runtime nil
-        e-default--chat-sessions nil)
+        e-default--chat-sessions nil
+        e-default--runtime-store nil)
   t)
 
-(defun e-default--prewarm-runtime ()
-  "Begin opening the default runtime without materializing a harness.
+(defun e-default-runtime-store ()
+  "Return the process-wide default transport, opening it asynchronously.
 
-`e-default-runtime' returns after starting the runtime-store's asynchronous
-cold-open phase; this hook never waits for the worker acknowledgement."
-  (e-default-runtime)
+This transport-only boundary is safe for startup prewarming: it starts or
+reuses the worker's private open control, but creates no domain owner and does
+not await readiness."
+  (let ((directory (e-default-runtime-directory)))
+    (unless (and (e-runtime-store-p e-default--runtime-store)
+                 (not (e-runtime-store--closed e-default--runtime-store))
+                 (equal (e-runtime-store--directory e-default--runtime-store)
+                        directory))
+      (when (and (e-runtime-store-p e-default--runtime-store)
+                 (not (e-runtime-store--closed e-default--runtime-store)))
+        (signal 'e-runtime-sqlite-live-composition
+                (list "Default runtime directory changed while live"
+                      (e-runtime-store--directory e-default--runtime-store)
+                      directory)))
+      (setq e-default--runtime-store (e-runtime-store-open directory)))
+    e-default--runtime-store))
+
+(defun e-default--prewarm-runtime ()
+  "Begin opening the default transport without composing domain owners.
+
+The hook never waits for the worker acknowledgement or constructs a session,
+Board, task, cron, voice, Goodnite, or raw-result owner."
+  (e-default-runtime-store)
   nil)
 
 (defun e-default--install-runtime-prewarm ()
@@ -485,17 +519,15 @@ factories are recorded, but no harness is created."
 (defun e-default-harnesses-sync-instances (&optional specs)
   "Reconcile cached default harness instances with current config.
 Only existing instances are touched; lazy factories are left lazy."
-  (let ((refreshed-stores (make-hash-table :test 'eq)))
-    (dolist (spec (e-default-harness--effective-specs specs))
-      (when-let ((harness (e-harness-registry-get (plist-get spec :id))))
-        (funcall (or (plist-get spec :sync)
-                     #'e-default-harness-sync-from-factory)
-                 harness spec)
-        (let ((store (e-harness-sessions harness)))
-          (when (and (e-session-store-p store)
-                     (not (gethash store refreshed-stores)))
-            (puthash store t refreshed-stores)
-            (e-session-refresh-index-metadata store))))))
+  ;; Startup may reconcile presentation/configuration state for an already
+  ;; live harness, but it must not turn that pass into a storage owner use.
+  ;; Query metadata is requested by the session application service when a
+  ;; caller actually opens or lists data.
+  (dolist (spec (e-default-harness--effective-specs specs))
+    (when-let ((harness (e-harness-registry-get (plist-get spec :id))))
+      (funcall (or (plist-get spec :sync)
+                   #'e-default-harness-sync-from-factory)
+               harness spec)))
   nil)
 
 (defun e-default-harnesses-clear-instances (&optional specs)

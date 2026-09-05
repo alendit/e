@@ -473,6 +473,28 @@ tests need a runner whose handle carries one."
   (should-error (e-task-queue-create :directory "/tmp/retired-task-store")
                 :type 'e-task-queue-error))
 
+(ert-deftest e-task-queue-test-storage-root-opens-on-first-explicit-operation ()
+  "A durable queue opens its root only when an owner operation is requested."
+  (let* ((calls nil)
+         (storage
+          (e-task-storage--create
+           :runtime :test-runtime
+           :call-operation
+           (lambda (operation &rest arguments)
+             (push (list operation arguments) calls)
+             (pcase operation
+               ('open-queue '(:revision 3 :sequence 7 :paused-p t))
+               ('snapshot '(:revision 3 :sequence 7 :paused-p t :records nil))
+               (_ (error "Unexpected task storage operation: %S" operation))))))
+         (queue (e-task-queue-create :storage storage :id "first-use")))
+    (should-not calls)
+    (e-task-queue-load queue)
+    (should (equal (mapcar #'car (nreverse calls)) '(open-queue snapshot)))
+    (should (= (e-task-queue-sequence queue) 7))
+    (should (= (e-task-queue-revision queue) 3))
+    (should (e-task-queue-paused-p queue))
+    (should (e-task-queue-loaded-p queue))))
+
 (ert-deftest e-task-queue-test-failed-task-auto-retries ()
   "A failed task with retries left is re-armed as a fresh queued attempt.
 The retry references the failed session, carries an analyze-and-continue

@@ -81,7 +81,8 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
     "${current_emacs_command[@]}" \
       --daemon="$server_name" --load "$daemon_bootstrap_file"
   else
-    E_GRAPHICAL_E2E_EMACS_DIR="$emacs_dir" \
+    CFFIXED_USER_HOME="$emacs_dir" \
+      E_GRAPHICAL_E2E_EMACS_DIR="$emacs_dir" \
       emacs --quick --daemon="$server_name" --load "$daemon_bootstrap_file"
   fi
   result=$(emacsclient --socket-name "$server_name" --eval "

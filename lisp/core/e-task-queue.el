@@ -159,6 +159,7 @@ successful rehydration of that queue instance."
   directory
   id
   storage
+  storage-root-opened-p
   (revision 0)
   loaded-p)
 
@@ -177,19 +178,37 @@ durable port; omitting both creates an explicitly in-memory queue."
   (when directory
     (signal 'e-task-queue-error
             (list "Task file persistence was retired; run offline migration")))
-  (let ((root (and storage (e-task-storage-open-queue storage id))))
-    (e-task-queue--create
-     :id id
-     :storage storage
-     :revision (or (plist-get root :revision) 0)
-     :sequence (or (plist-get root :sequence) 0)
-     :paused-p (and (plist-get root :paused-p) t)
-     :max-parallel max-parallel
-     :default-harness-instance-id default-harness-instance-id
-     :runner runner
-     :producer-binding producer-binding
-     :max-retries max-retries
-     :expose-await-references-p expose-await-references-p)))
+  ;; Storage-backed construction intentionally performs no domain request.
+  ;; The durable queue root is opened at the first explicit queue operation
+  ;; instead, so composing the default runtime cannot wait for worker open or
+  ;; create a queue row as a constructor side effect.
+  (e-task-queue--create
+   :id id
+   :storage storage
+   :max-parallel max-parallel
+   :default-harness-instance-id default-harness-instance-id
+   :runner runner
+   :producer-binding producer-binding
+   :max-retries max-retries
+   :expose-await-references-p expose-await-references-p))
+
+(defun e-task-queue--ensure-storage-root (queue)
+  "Open QUEUE's durable root at its first explicit storage operation.
+
+The idempotent worker operation is kept behind the task owner boundary.  It
+hydrates only queue metadata needed for task identity and pause policy; task
+records remain absent until the explicit `e-task-queue-load' operation."
+  (when (and (e-task-queue-storage-backed-p queue)
+             (not (e-task-queue-storage-root-opened-p queue)))
+    (let ((root (e-task-storage-open-queue
+                 (e-task-queue-storage queue) (e-task-queue-id queue))))
+      (setf (e-task-queue-storage-root-opened-p queue) t
+            (e-task-queue-revision queue) (or (plist-get root :revision) 0)
+            (e-task-queue-sequence queue)
+            (max (or (e-task-queue-sequence queue) 0)
+                 (or (plist-get root :sequence) 0))
+            (e-task-queue-paused-p queue) (and (plist-get root :paused-p) t))))
+  queue)
 
 (defun e-task-queue-storage-backed-p (queue)
   "Return non-nil when QUEUE uses its typed SQLite storage port."
@@ -298,6 +317,7 @@ truncated prompt prefix in `:prompt-summary'."
 (defun e-task-queue--commit-record
     (queue current expected-status staged)
   "Commit STAGED transition and publish it into CURRENT."
+  (e-task-queue--ensure-storage-root queue)
   (if (not (e-task-queue-storage-backed-p queue))
       (e-task-queue--publish-durable-record current staged)
     (let* ((result
@@ -691,6 +711,7 @@ may already be running when this returns."
                    (e-task-queue-producer-binding queue))))
     (signal 'e-board-runtime-producer-disabled
             (list 'task-queue 'missing-live-binding)))
+  (e-task-queue--ensure-storage-root queue)
   (let* ((task-id (e-task-queue--next-id queue))
          (record (list :task-id task-id
                        :status 'queued
@@ -840,6 +861,7 @@ under the normal cap.  A non-paused task is returned unchanged."
   "Set QUEUE's pause gate and pause every non-terminal task.
 While the gate is set the dispatcher starts no new work.  Returns QUEUE."
   (when (e-task-queue-storage-backed-p queue)
+    (e-task-queue--ensure-storage-root queue)
     (let ((result
            (e-task-storage-set-paused
             (e-task-queue-storage queue) (e-task-queue-id queue) t)))
@@ -856,6 +878,7 @@ While the gate is set the dispatcher starts no new work.  Returns QUEUE."
   "Clear QUEUE's pause gate, resume every paused task, and re-dispatch.
 Returns QUEUE."
   (when (e-task-queue-storage-backed-p queue)
+    (e-task-queue--ensure-storage-root queue)
     (let ((result
            (e-task-storage-set-paused
             (e-task-queue-storage queue) (e-task-queue-id queue) nil)))
@@ -927,6 +950,7 @@ ON-ERROR with the writer error.  Return QUEUE immediately."
     (signal 'e-task-queue-error (list "In-memory task queue is not durable")))
   (condition-case err
       (progn
+        (e-task-queue--ensure-storage-root queue)
         ;; A read submitted after all preceding synchronous owner commits is
         ;; the task owner's narrow ordered durability barrier.
         (e-task-storage-snapshot
@@ -940,44 +964,46 @@ ON-ERROR with the writer error.  Return QUEUE immediately."
 An explicitly in-memory queue is simply marked loaded.  Durable `running' or
 `pausing' records restore as interrupted and never auto-retry."
   (if (e-task-queue-storage-backed-p queue)
-      (let ((snapshot
-           (e-task-storage-snapshot
-            (e-task-queue-storage queue) (e-task-queue-id queue)
-            e-task-queue-max-records)))
-      (clrhash (e-task-queue-records queue))
-      (setf (e-task-queue-order queue) nil
-            (e-task-queue-sequence queue) (or (plist-get snapshot :sequence) 0)
-            (e-task-queue-revision queue) (plist-get snapshot :revision)
-            (e-task-queue-paused-p queue) (and (plist-get snapshot :paused-p) t))
-      (dolist (durable (plist-get snapshot :records))
-        (let ((record (copy-tree durable)))
-          (when (memq (plist-get record :status) '(running pausing))
-            (let ((staged (copy-tree record)))
-              (plist-put staged :status 'interrupted)
-              (plist-put staged :finished-at (e-task-queue--timestamp))
-              (plist-put staged :error
-                         "Task runner state was lost; external effect is uncertain")
-              (let ((result
-                     (e-task-storage-transition
-                      (e-task-queue-storage queue) (e-task-queue-id queue)
-                      (plist-get record :task-id) (plist-get record :status)
-                      (e-task-queue--durable-record staged))))
-                (setf (e-task-queue-revision queue)
-                      (plist-get result :revision))
-                (setq record (plist-get result :record)))))
-          (setq record (plist-put record :handle nil)
-                record (plist-put record :pausing nil)
-                record (plist-put record :work-handle
-                                  (e-task-queue--work-handle-for-status record)))
-          (puthash (plist-get record :task-id) record
-                   (e-task-queue-records queue))
-          (setf (e-task-queue-order queue)
-                (append (e-task-queue-order queue)
-                        (list (plist-get record :task-id))))))
-      (setf (e-task-queue-loaded-p queue) t)
-      (e-task-queue--notify queue)
-      (e-task-queue--dispatch queue)
-      queue)
+      (progn
+        (e-task-queue--ensure-storage-root queue)
+        (let ((snapshot
+               (e-task-storage-snapshot
+                (e-task-queue-storage queue) (e-task-queue-id queue)
+                e-task-queue-max-records)))
+          (clrhash (e-task-queue-records queue))
+          (setf (e-task-queue-order queue) nil
+                (e-task-queue-sequence queue) (or (plist-get snapshot :sequence) 0)
+                (e-task-queue-revision queue) (plist-get snapshot :revision)
+                (e-task-queue-paused-p queue) (and (plist-get snapshot :paused-p) t))
+          (dolist (durable (plist-get snapshot :records))
+            (let ((record (copy-tree durable)))
+              (when (memq (plist-get record :status) '(running pausing))
+                (let ((staged (copy-tree record)))
+                  (plist-put staged :status 'interrupted)
+                  (plist-put staged :finished-at (e-task-queue--timestamp))
+                  (plist-put staged :error
+                             "Task runner state was lost; external effect is uncertain")
+                  (let ((result
+                         (e-task-storage-transition
+                          (e-task-queue-storage queue) (e-task-queue-id queue)
+                          (plist-get record :task-id) (plist-get record :status)
+                          (e-task-queue--durable-record staged))))
+                    (setf (e-task-queue-revision queue)
+                          (plist-get result :revision))
+                    (setq record (plist-get result :record)))))
+              (setq record (plist-put record :handle nil)
+                    record (plist-put record :pausing nil)
+                    record (plist-put record :work-handle
+                                      (e-task-queue--work-handle-for-status record)))
+              (puthash (plist-get record :task-id) record
+                       (e-task-queue-records queue))
+              (setf (e-task-queue-order queue)
+                    (append (e-task-queue-order queue)
+                            (list (plist-get record :task-id))))))
+          (setf (e-task-queue-loaded-p queue) t)
+          (e-task-queue--notify queue)
+          (e-task-queue--dispatch queue)
+          queue))
     (setf (e-task-queue-loaded-p queue) t))
   queue)
 
@@ -986,6 +1012,7 @@ An explicitly in-memory queue is simply marked loaded.  Durable `running' or
   (unless (e-task-queue-storage-backed-p queue)
     (signal 'e-task-queue-error
             (list "History deletion requires SQLite task storage")))
+  (e-task-queue--ensure-storage-root queue)
   (let ((result
          (e-task-storage-delete-history
           (e-task-queue-storage queue) (e-task-queue-id queue))))

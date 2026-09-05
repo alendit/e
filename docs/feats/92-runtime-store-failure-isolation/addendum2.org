@@ -4,7 +4,7 @@
 
 * Status
 
-Planned.
+In-progress.
 
 This addendum rebaselines the remaining Feature 92 work after the live startup
 counterexample exposed a broader architectural defect: the SQLite cutover kept
@@ -27,11 +27,12 @@ may synchronously initialize its domain owners.
 supersedes only the parent =F92-DP6C= package relation.  The observable and
 ownership fields of =F92-C09= remain unchanged.
 
-No implementation has been accepted under this addendum.  The current
-=863b8265= startup-prewarm implementation is a failing behavioral baseline, not
-evidence for this plan: it calls full runtime composition from
-=emacs-startup-hook= and can delay or prevent ordinary Emacs startup against the
-operator's existing store.
+=F92A2-DP1= is accepted for this implementation slice, pending the parent's
+exact-commit review.  =F92A2-DP2=--=F92A2-DP5= remain =not-started=.  The
+earlier =863b8265= startup-prewarm implementation was a failing behavioral
+baseline, not evidence for this plan: it called full runtime composition from
+=emacs-startup-hook= and could delay or prevent ordinary Emacs startup against
+the operator's existing store.
 
 * Behavioral trace
 
@@ -57,9 +58,39 @@ operator's existing store.
   catalog initialization, and existing-session access can synchronously decode
   a large checkpoint and restore complete Board history.
 
-Mechanism progress is =not-started=.  Existing asynchronous mutation and
-failure-isolation mechanisms are retained evidence only where the contracts
-below explicitly preserve them.
+Mechanism progress is =F92A2-DP1 accepted=; =F92A2-DP2=--=F92A2-DP5= remain
+=not-started=.  Existing asynchronous mutation and failure-isolation mechanisms
+are retained evidence only where the contracts below explicitly preserve them.
+
+* Implementation ledger
+
+- =F92A2-DP1= :: Parent-accepted on 2026-09-06 for transport-only startup and
+  pure composition, pending exact-commit review.  The process-wide runtime-store
+  transport owns the prewarm handle and its sole close edge; default composition
+  borrows that handle and constructs bounded empty owner state.  Session and
+  task constructors issue no domain request until an explicit owner operation,
+  while the composed startup path records no session, Board, task, cron, voice,
+  Goodnite, or raw-result request.
+- Focused evidence :: =eldev test -f test/e-defaults-test.el= passes 35/35;
+  =eldev test -f test/e-runtime-sqlite-p3-test.el= passes 25/25;
+  =eldev test -f test/e-runtime-sqlite-p4-test.el= passes 15/15;
+  =eldev test -f test/e-session-sqlite-test.el= passes 17/17; and
+  =eldev test -f test/e-task-queue-test.el= passes 29/29.  These checks cover
+  prewarm reuse and directory ownership, borrowed close/error paths, pure
+  composition, session batch compatibility, and first explicit task storage
+  use.
+- Graphical evidence :: =E_GRAPHICAL_E2E_SELECTOR=startup-prewarm bash
+  e2e/run-graphical-tests.sh= passes 1/1.  With worker open held, startup
+  returns, at least three scheduled heartbeats advance, traffic contains only
+  private open control, no domain collection is materialized, and the v5
+  readiness/status diagnostic settles asynchronously after release.
+- Runner isolation :: On macOS the graphical runner assigns its existing
+  private =emacs_dir= to =CFFIXED_USER_HOME= for the isolated daemon launch.
+  It does not alter =HOME= or user defaults; the focused graphical pass confirms
+  reproducible isolation from shared AppKit crash-restoration state.
+- Scope boundary :: =F92A2-DP2=, =F92A2-DP3=, =F92A2-DP4=, and
+  =F92A2-DP5= remain =not-started=; the overall behavioral goal remains
+  =Failing= until those packages and final public acceptance are complete.
 
 * Reason for the rebaseline
 
@@ -269,8 +300,8 @@ repository-controlled.
 
 | ID | Observable contract | Semantic owner and public composition | Establishing package | Deterministic evidence | External evidence | Telemetry | Contract status | Current behavior |
 |----+---------------------+---------------------------------------+----------------------+------------------------+-------------------+-----------+-----------------+------------------|
-| F92A2-C01 | Loading =e= begins worker open without awaiting it and issues no domain query or write before first owner use.  If worker open encounters schema v5, startup still returns without waiting; transport readiness/status settles asynchronously with the existing explicit-upgrade diagnostic, and no domain request is submitted. | Runtime-store transport; default startup composition. | F92A2-DP1 | S92A2-STARTUP, including v5 diagnostic variant | Not applicable: repository-controlled. | Open latency is observational. | Accepted | Failing |
-| F92A2-C02 | Ordinary composition may construct bounded side-effect-free owner ports or empty runtime objects, eagerly or lazily, but performs zero domain SQL, materializes zero durable rows or collections, and waits for no readiness before first owner use. | Default composition plus session, Board, task, cron, voice, Goodnite, and raw-result adapter constructors; startup is the public composition. | F92A2-DP1 | S92A2-STARTUP plus constructor instrumentation | Not applicable: repository-controlled. | Constructor allocation and worker readiness latency are observational. | Accepted | Failing |
+| F92A2-C01 | Loading =e= begins worker open without awaiting it and issues no domain query or write before first owner use.  If worker open encounters schema v5, startup still returns without waiting; transport readiness/status settles asynchronously with the existing explicit-upgrade diagnostic, and no domain request is submitted. | Runtime-store transport; default startup composition. | F92A2-DP1 | S92A2-STARTUP, including v5 diagnostic variant | Not applicable: repository-controlled. | Open latency is observational. | Accepted | Passing |
+| F92A2-C02 | Ordinary composition may construct bounded side-effect-free owner ports or empty runtime objects, eagerly or lazily, but performs zero domain SQL, materializes zero durable rows or collections, and waits for no readiness before first owner use. | Default composition plus session, Board, task, cron, voice, Goodnite, and raw-result adapter constructors; startup is the public composition. | F92A2-DP1 | S92A2-STARTUP plus constructor instrumentation | Not applicable: repository-controlled. | Constructor allocation and worker readiness latency are observational. | Accepted | Passing |
 | F92A2-C03 | Exact session metadata and Board association return one detached row, and recent/root listing returns one stable-cursor bounded page, through immediately returned =e-work= values; none of these operations populates or scans a process-wide session mirror. | Session application service and SQLite storage port; Daily open and session picker. | F92A2-DP2 | S92A2-EXISTING-DAILY and S92A2-HISTORY-PAGE | Not applicable: repository-controlled. | Query and decode latency are observational. | Accepted | Failing |
 | F92A2-C04 | The live session aggregate contains only acquired active sessions.  Its lifecycle is =unloaded -> loading(generation, durable high-water) -> active(owner set) -> releasing -> unloaded=: concurrent opens coalesce, reconstruction remains private until one validated atomic install, admitted loading-time intents apply once in owner order after the high-water mark, last-owner release cancels unsent reads and generation-fences submitted callbacks, every failure settles all waiters without partial publication, and a later acquire may retry.  Public Daily open returns its buffer with a separate readiness work; synchronous aggregate getters accept only an acquired ready session. | Session application service owns lifecycle and active state; harness, chat, and Org Canvas acquire and release it. | F92A2-DP2 | S92A2-EXISTING-DAILY plus duplicate-open, close-phase, loading-time mutation, stale-completion, failure-cleanup, and repeated acquire/release owner tests | Not applicable: repository-controlled. | Active-set size and load latency are observational. | Accepted | Failing |
 | F92A2-C05 | The session journal is the only durable event authority.  The session domain exhaustively derives one bounded query-state delta for every supported durable command family, deletion, and semantic no-op.  The SQLite adapter validates and maps that delta, and the worker atomically commits journal record, current-query rows, and receipt or rolls them all back; receipt replay does not reapply the delta.  Ordinary v6 storage has no catalog/checkpoint publication or renamed opaque equivalent. | Session domain owns semantic derivation; SQLite adapter and worker own physical mapping and transaction; session mutation and reopen are the public compositions. | F92A2-DP2 | Transaction, replay, delete/no-op, all-command-family, reopen, and obsolete-schema tests | Not applicable: repository-controlled. | Transaction and derivation latency are observational. | Accepted | Failing |

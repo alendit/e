@@ -768,6 +768,101 @@
       (ignore-errors (e-runtime-sqlite-close composition))
       (delete-directory directory t))))
 
+(ert-deftest e-runtime-sqlite-p3-composition-constructors-issue-no-domain-requests ()
+  "All ordinary owner constructors are pure over the shared transport."
+  (let* ((directory (make-temp-file "e-runtime-sqlite-p3-pure-" t))
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         (e-runtime-sqlite--live-composition nil)
+         (calls nil)
+         composition)
+    (unwind-protect
+        (let ((real-call (symbol-function 'e-runtime-store-call)))
+          ;; Returning nil keeps the pre-change constructor traffic from
+          ;; waiting on the worker, making the negative reachability witness
+          ;; deterministic while still exercising the full composition root.
+          (cl-letf (((symbol-function 'e-runtime-store-call)
+                     (lambda (_runtime kind body)
+                       (push (list kind (plist-get body :op)) calls)
+                       nil)))
+            (setq composition (e-runtime-sqlite-open directory)))
+          (ignore real-call)
+          (should-not calls)
+          (should-not
+           (e-session-aggregate-session-values
+            (e-runtime-sqlite-session-store composition)))
+          (should-not
+           (e-task-queue-order (e-runtime-sqlite-task-queue composition))))
+      (when composition (ignore-errors (e-runtime-sqlite-close composition)))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-sqlite-p3-composition-borrows-provided-runtime-on-close ()
+  "A composition supplied with a transport never becomes its close owner."
+  (let* ((directory (make-temp-file "e-runtime-sqlite-borrowed-" t))
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         (e-runtime-sqlite--live-composition nil)
+         (runtime (e-runtime-store-open directory))
+         composition)
+    (unwind-protect
+        (progn
+          (setq composition (e-runtime-sqlite-open
+                             directory :runtime-store runtime))
+          (should-not (e-runtime-sqlite--owns-runtime-store composition))
+          (e-runtime-sqlite-close composition)
+          (should (e-runtime-store-live-p runtime))
+          (e-runtime-store-close runtime)
+          (should-not (e-runtime-store-live-p runtime)))
+      (when composition (ignore-errors (e-runtime-sqlite-close composition)))
+      (when (and (e-runtime-store-p runtime)
+                 (not (e-runtime-store--closed runtime)))
+        (ignore-errors (e-runtime-store-close runtime)))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-sqlite-p3-composition-rejects-provided-directory-mismatch ()
+  "A supplied transport from another directory is rejected without closing it."
+  (let* ((runtime-directory (make-temp-file "e-runtime-sqlite-provided-" t))
+         (composition-directory (make-temp-file "e-runtime-sqlite-mismatch-" t))
+         (e-runtime-sqlite--live-composition nil)
+         (runtime (e-runtime-store-open runtime-directory)))
+    (unwind-protect
+        (progn
+          (should-error
+           (e-runtime-sqlite-open composition-directory :runtime-store runtime)
+           :type 'e-runtime-sqlite-live-composition)
+          (should (e-runtime-store-live-p runtime))
+          (should-not
+           (file-exists-p
+            (expand-file-name "store.sqlite3" composition-directory))))
+      (when (and (e-runtime-store-p runtime)
+                 (not (e-runtime-store--closed runtime)))
+        (ignore-errors (e-runtime-store-close runtime)))
+      (delete-directory runtime-directory t)
+      (delete-directory composition-directory t))))
+
+(ert-deftest e-runtime-sqlite-p3-composition-error-does-not-close-provided-runtime ()
+  "A failed owner constructor leaves supplied transport ownership with caller."
+  (let* ((directory (make-temp-file "e-runtime-sqlite-error-" t))
+         (e-runtime-sqlite--live-composition nil)
+         (runtime (e-runtime-store-open directory)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-sqlite-store-create)
+                   (lambda (&rest _arguments)
+                     (error "synthetic session owner failure"))))
+          (should-error
+           (e-runtime-sqlite-open directory :runtime-store runtime)
+           :type 'error)
+          (should (e-runtime-store-live-p runtime))
+          (should-not e-runtime-sqlite--live-composition))
+      (when (and (e-runtime-store-p runtime)
+                 (not (e-runtime-store--closed runtime)))
+        (ignore-errors (e-runtime-store-close runtime)))
+      (delete-directory directory t))))
+
 (ert-deftest e-runtime-sqlite-p3-composition-rejects-second-live-owner ()
   "A second directory cannot replace a live composition's injected adapters."
   (let* ((first-directory (make-temp-file "e-runtime-sqlite-first-" t))

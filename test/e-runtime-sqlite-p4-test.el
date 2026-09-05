@@ -728,6 +728,7 @@
   (let* ((directory (make-temp-file "e-runtime-p4-default-" t))
          (process-environment (copy-sequence process-environment))
          (e-default--runtime nil)
+         (e-default--runtime-store nil)
          (e-default--chat-sessions nil)
          (e-runtime-sqlite--live-composition nil))
     (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
@@ -743,6 +744,9 @@
           (should (e-task-queue-expose-await-references-p
                    e-task-queue-actions-default-queue))
           (e-session-create first :id "default-sqlite")
+          ;; Session mutation is optimistically admitted; the filesystem
+          ;; assertion below is an explicit durability observation.
+          (e-session-flush-write-queue first)
           (should (file-regular-p (expand-file-name "store.sqlite3" directory)))
           (dolist (sidecar '("records.eld" "cron-state.eld" "voice-tells.eld"
                              "daydream_access.jsonl" "index.json"))

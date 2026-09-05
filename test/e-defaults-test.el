@@ -124,7 +124,7 @@
     (e-default-harnesses-register)
     (let ((emacs-startup-hook nil)
           calls)
-      (cl-letf (((symbol-function 'e-default-runtime)
+      (cl-letf (((symbol-function 'e-default-runtime-store)
                  (lambda ()
                    (push 'opened calls)
                    'runtime)))
@@ -149,6 +149,59 @@
           (should-not calls)))
       (should-not (e-harness-registry-get :chat-default))
       (should-not (e-harness-registry-get :debug-default)))))
+
+(ert-deftest e-defaults-test-runtime-prewarm-reuses-one-transport-handle ()
+  "Transport prewarm is reused by the later full default composition."
+  (let* ((directory (make-temp-file "e-defaults-transport-only-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-default--runtime nil)
+         (e-default--runtime-store nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil)
+         (open-count 0)
+         prewarmed composition)
+    (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
+    (let ((real-open (symbol-function 'e-runtime-store-open)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'e-runtime-store-open)
+                     (lambda (&rest args)
+                       (cl-incf open-count)
+                       (apply real-open args))))
+            (e-default--prewarm-runtime)
+            (setq prewarmed (e-default-runtime-store)
+                  composition (e-default-runtime))
+            (should (e-runtime-store-p prewarmed))
+            (should (eq prewarmed (e-default-runtime-store)))
+            (should (eq prewarmed
+                        (e-runtime-sqlite-runtime-store composition)))
+            (should (= open-count 1))
+            (should-not (e-runtime-sqlite--owns-runtime-store composition)))
+        (e-default-runtime-close)
+        (delete-directory directory t)))))
+
+(ert-deftest e-defaults-test-runtime-prewarm-rejects-live-directory-change ()
+  "A live prewarmed transport cannot silently move to another directory."
+  (let* ((first-directory (make-temp-file "e-defaults-prewarm-first-" t))
+         (second-directory (make-temp-file "e-defaults-prewarm-second-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-default--runtime nil)
+         (e-default--runtime-store nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil)
+         first-store)
+    (unwind-protect
+        (progn
+          (setenv "E_RUNTIME_STATE_DIRECTORY" first-directory)
+          (setq first-store (e-default-runtime-store))
+          (setenv "E_RUNTIME_STATE_DIRECTORY" second-directory)
+          (should-error (e-default-runtime-store)
+                        :type 'e-runtime-sqlite-live-composition)
+          (should (eq first-store e-default--runtime-store))
+          (should-not
+           (file-exists-p (expand-file-name "store.sqlite3" second-directory))))
+      (e-default-runtime-close)
+      (delete-directory first-directory t)
+      (delete-directory second-directory t))))
 
 (ert-deftest e-defaults-test-debug-default-uses-custom-chat-spec-backend ()
   "The built-in debug default derives from a custom chat default spec."
@@ -250,6 +303,7 @@
          (sessions-directory (expand-file-name "sessions" directory))
          (process-environment (copy-sequence process-environment))
          (e-default--runtime nil)
+         (e-default--runtime-store nil)
          (e-default--chat-sessions nil)
          (e-runtime-sqlite--live-composition nil))
     (setenv "E_RUNTIME_STATE_DIRECTORY" nil)
@@ -300,11 +354,10 @@
                        (apply read-page args))))
             (let ((store (e-runtime-sqlite-session-store
                           (e-default-runtime))))
-              (should (e-session-session-present-p store "lazy-default"))
-              (should-not
-               (plist-get
-                (e-session-aggregate-peek-session store "lazy-default")
-                :loaded))))
+              (should-not (e-session-session-present-p store "lazy-default"))
+              (should-error
+               (e-session-aggregate-peek-session store "lazy-default")
+               :type 'e-session-missing)))
           (should (equal (car arguments)
                          (file-name-as-directory directory)))
           (should-not (plist-member (cdr arguments) :load-sessions))
@@ -590,42 +643,23 @@
           (should (equal (e-harness-enabled-layer-ids harness)
                          '(e web))))))))
 
-(ert-deftest e-defaults-test-startup-refreshes-retained-session-index-metadata ()
-  "Startup repairs stale unloaded index stubs in a retained harness store."
-  (let* ((directory (make-temp-file "e-defaults-refresh-index-" t))
-         (writer (e-session-persistent-store-create directory))
-         store)
-    (unwind-protect
-        (progn
-          (e-session-create writer :id "root")
-          (e-session-create writer :id "worker"
-                            :metadata '(:parent-session-id "root"
-                                        :subagent-role "tool-user"))
-          ;; Reopen only after releasing the fixture writer's exclusive
-          ;; runtime ownership, matching the production one-store boundary.
-          (e-session-storage-close writer)
-          (setq writer nil
-                store (e-session-persistent-index-store-create directory))
-          (let* ((worker (e-session-aggregate-peek-session store "worker"))
-                 (harness
-                  (e-harness-create
+(ert-deftest e-defaults-test-startup-does-not-refresh-session-metadata ()
+  "Startup sync leaves retained session storage to an explicit owner use."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :sessions store)))
-            (plist-put worker :metadata nil)
-            (e-defaults-test--with-empty-harness-registry
-              (e-harness-registry-register :chat-default harness)
-              (let ((e-default-chat-harness-factory nil)
-                    (e-default-chat-layer-ids nil))
-                (e-default-harnesses-startup))
-              (should (eq (e-harness-registry-get :chat-default) harness))
-              (should (eq (e-harness-sessions harness) store))
-              (should (equal
-                       (mapcar (lambda (session) (plist-get session :id))
-                               (e-harness-root-session-list harness))
-                       '("root"))))))
-      (when store (ignore-errors (e-session-storage-close store)))
-      (when writer (ignore-errors (e-session-storage-close writer)))
-      (delete-directory directory t))))
+                   :sessions store))
+         (refreshed nil))
+    (e-defaults-test--with-empty-harness-registry
+      (e-harness-registry-register :chat-default harness)
+      (cl-letf (((symbol-function 'e-session-refresh-index-metadata)
+                 (lambda (&rest _args) (setq refreshed t))))
+        (let ((e-default-chat-harness-factory nil)
+              (e-default-chat-layer-ids nil))
+          (e-default-harnesses-startup)))
+      (should (eq (e-harness-registry-get :chat-default) harness))
+      (should (eq (e-harness-sessions harness) store))
+      (should-not refreshed))))
 
 (ert-deftest e-defaults-test-startup-refreshes-stale-chat-session-capability ()
   "Startup sync replaces stale intrinsic chat-session capabilities in place."

@@ -101,7 +101,8 @@ The seam is inert unless `E_RUNTIME_STORE_TEST_STALL_DIRECTORY' names a
 directory containing OPERATION.hold.  It writes OPERATION.ready, then waits
 until OPERATION.release exists.  Only this disposable worker is blocked."
   (when-let* ((directory (getenv "E_RUNTIME_STORE_TEST_STALL_DIRECTORY"))
-              (operation (plist-get (plist-get request :body) :op)))
+              (operation (or (and (eq (plist-get request :kind) 'open) 'open)
+                             (plist-get (plist-get request :body) :op))))
     (let* ((name (format "%s" operation))
            (hold (expand-file-name (concat name ".hold") directory))
            (ready (expand-file-name (concat name ".ready") directory))
