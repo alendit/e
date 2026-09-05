@@ -117,8 +117,9 @@ instead of attempting to prewarm them in the background.  Feature 92 remains
   session/Board owner-local suspect partitioning, async fork rejection, and the
   minimum new-Daily application wiring needed by =S92-DAILY=.  The matrix rows
   remain =Planned= until their complete roadmap packages are delivered;
-  =F92-DP6C=, =F92-DP6D=, generalized lifecycle migration, and independent
-  =e-chat-service-create-participant-start= remain deferred.
+  =F92-C09= is reassigned to =F92A2-DP2=, while =F92-DP6D=, generalized
+  lifecycle migration, and independent =e-chat-service-create-participant-start=
+  remain deferred.
 
 * Normative contract matrix
 
@@ -137,7 +138,7 @@ credentialed external evidence is not applicable.
 | F92-C06 | Runtime-store submission performs only bounded immutable capture and preflight, returns its stable private request handle before worker open or acknowledgement, and autonomously advances open, dispatch, phase deadlines, one-attempt recovery, and terminal settlement without an awaiter.  Await is observation only and never drives scheduler progress.  One scheduler-only internal open singleton may exist per runtime outside client admission/token capacity. | Runtime-store scheduler. | F92-DP5A | S92-ASYNC-RUNTIME | Queue/open/settlement latency is observational. | Passing |
 | F92-C07 | Every persistence call reachable from Daily/chat open, session creation, participant association, composer input, or a Board timer enqueues bounded work and returns immediately.  No interactive stack awaits worker open, execution, COMMIT acknowledgement, retry, or recovery.  The happy path may publish process-local state after successful enqueue while preserving FIFO submission order. | Session, Board durability, and chat application services over the shared runtime FIFO. | F92-DP6B | S92-DAILY | Queue and commit latency are observational. | Planned |
 | F92-C08 | Same-Board work arriving while an earlier mutation is pending queues in order instead of raising =e-board-mutation-frozen=.  Chat exposes a pending or suspect warning without preventing composer edits, timers, redisplay, or unrelated sessions. | Board durability queue and chat presentation/readiness owner. | F92-DP6B | S92-DAILY | Pending duration is observational. | Planned |
-| F92-C09 | Reopen and explicit inspection return immediately, then page and validate decoding, exactly one root, unique record identities, parent-chain consistency, and Board/session association shape off the caller stack.  Invalid state enters a process-local quarantine keyed by session ID with a first 1,024-byte diagnostic.  Catalog/list shows =unvalidated= or =pending= until this process checks it, then shows any quarantine warning; ordinary open validates before exposing it as usable.  Only successful canonical reload after page-bounded revalidation clears quarantine or the corresponding session/Board suspect state. | Session loader/validator owns the process-local quarantine table; catalog and chat render current-process status without persisting it. | F92-DP6C | S92-SESSION-QUARANTINE | Quarantine counts are observational. | Planned |
+| F92-C09 | Reopen and explicit inspection return immediately, then page and validate decoding, exactly one root, unique record identities, parent-chain consistency, and Board/session association shape off the caller stack.  Invalid state enters a process-local quarantine keyed by session ID with a first 1,024-byte diagnostic.  Catalog/list shows =unvalidated= or =pending= until this process checks it, then shows any quarantine warning; ordinary open validates before exposing it as usable.  Only successful canonical reload after page-bounded revalidation clears quarantine or the corresponding session/Board suspect state. | Session loader/validator owns the process-local quarantine table; catalog and chat render current-process status without persisting it. | F92A2-DP2 (supersedes F92-DP6C; see =addendum2.org=) | S92-SESSION-QUARANTINE | Quarantine counts are observational. | Planned |
 | F92-C10 | All client reads and writes use one FIFO; singleton internal open is transport control, not a client lane.  Admission includes the active request and is capped at 128 clients; session records are capped at 1 MiB encoded each, and =session-append-batch= at 256 records and 8 MiB encoded total.  Rejection is atomic.  Definitive settlement releases request/frame count and bytes; a pre-reserved notification token remains through bounded observer/warning delivery or explicit observer detachment, then releases.  Full-database integrity checking is explicit operator work.  Async fork is unsupported for this release. | Runtime client FIFO owns =e-runtime-store-request-capacity=; session codec/worker own new =e-session-storage-record-byte-limit=, =e-session-storage-batch-record-limit=, and =e-session-storage-batch-byte-limit= constants; explicit operator diagnostics own whole-database checks. | F92-DP6A | S92-PRACTICAL-BOUNDS | Backlog distribution is observational. | Planned |
 | F92-C11 | Every persistence operation reachable from an interactive command, timer, provider callback, resource method, or capability action enqueues and returns without awaiting worker activity.  Only explicitly classified batch, operator, offline migration, and test APIs may block.  Shutdown detaches pending persistence and never flushes or closes synchronously. | Each domain application service owns its enqueue-return facade; a repository reachability gate owns the caller classification. | F92-DP6D | S92-HOT-PATH-REACHABILITY | Blocking-call inventory is observational. | Planned |
 
@@ -312,6 +313,11 @@ SQLite database were not opened, reloaded, or changed.  These core runtime and
 session changes require a full Emacs restart before live use.
 
 ** F92-DP6C: Session validation and quarantine
+
+Superseded as an establishing package by =F92A2-DP2= in
+[[file:addendum2.org][Addendum 2]].  The text below remains the unchanged
+=F92-C09= behavior and evidence consumed by that package; it is not a second
+delivery-package assignment.
 
 Depends on DP6A.  Reopen returns a pending =e-work= (and public chat open still
 returns its buffer) before storage activity.  A timer/callback validator reads
@@ -965,9 +971,10 @@ behind create/open/resume plus failure, reset, and close partitions.
 
 ** F92-DP5D: Remaining runtime-owner cutover and reachability gate
 
-Establishes =F92-C09= and =F92-C10= after =F92-DP5C= by classifying task, cron,
-voice, Goodnite, raw-result, and session-tmp use of the shared runtime and
-composing all transport and owner-lane bounds.
+Establishes =F92-C10= after =F92-DP5C= by classifying task, cron, voice,
+Goodnite, raw-result, and session-tmp use of the shared runtime and composing
+all transport and owner-lane bounds.  Its former =F92-C09= relation is
+superseded by =F92A2-DP2= in [[file:addendum2.org][Addendum 2]].
 
 Useful stopping point: every interactive, callback, timer, or shutdown-reachable
 persistence operation uses an asynchronous application-service seam; only
