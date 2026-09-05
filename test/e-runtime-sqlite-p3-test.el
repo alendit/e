@@ -769,34 +769,198 @@
       (delete-directory directory t))))
 
 (ert-deftest e-runtime-sqlite-p3-composition-constructors-issue-no-domain-requests ()
-  "All ordinary owner constructors are pure over the shared transport."
+  "All ordinary owner constructors are pure over a held shared transport."
   (let* ((directory (make-temp-file "e-runtime-sqlite-p3-pure-" t))
+         (stall-directory (make-temp-file "e-runtime-sqlite-p3-pure-stall-" t))
+         (process-environment (copy-sequence process-environment))
          (e-cron-storage nil)
          (e-voice-adjustment-storage nil)
          (e-goodnite-resources-storage nil)
          (e-raw-results-storage nil)
          (e-runtime-sqlite--live-composition nil)
-         (calls nil)
-         composition)
+         runtime composition)
+    (setenv "E_RUNTIME_STORE_TEST_STALL_DIRECTORY" stall-directory)
+    (with-temp-file (expand-file-name "open.hold" stall-directory)
+      (insert "hold"))
     (unwind-protect
-        (let ((real-call (symbol-function 'e-runtime-store-call)))
-          ;; Returning nil keeps the pre-change constructor traffic from
-          ;; waiting on the worker, making the negative reachability witness
-          ;; deterministic while still exercising the full composition root.
-          (cl-letf (((symbol-function 'e-runtime-store-call)
-                     (lambda (_runtime kind body)
-                       (push (list kind (plist-get body :op)) calls)
-                       nil)))
-            (setq composition (e-runtime-sqlite-open directory)))
-          (ignore real-call)
-          (should-not calls)
+        (progn
+          ;; The complete composition must be able to wire every owner while
+          ;; the one transport open remains deliberately held.  Any constructor
+          ;; domain request would appear as a second pending or queued entry.
+          (setq runtime (e-runtime-store-open directory))
+          (let ((deadline (+ (float-time) 2.0)))
+            (while (and (< (float-time) deadline)
+                        (not (file-exists-p
+                              (expand-file-name "open.ready" stall-directory))))
+              (accept-process-output nil 0.01))
+            (should (file-exists-p
+                     (expand-file-name "open.ready" stall-directory))))
+          (setq composition
+                (e-runtime-sqlite-open directory :runtime-store runtime))
+          (let ((active (e-runtime-store--active-request runtime))
+                pending-kinds)
+            (maphash
+             (lambda (_id request)
+               (push (e-runtime-store-request--kind request) pending-kinds))
+             (e-runtime-store--pending runtime))
+            (should active)
+            (should (eq (e-runtime-store-request--kind active) 'open))
+            (should (eq (e-runtime-store-request--state active) 'submitted))
+            (should (equal pending-kinds '(open)))
+            (should-not (e-runtime-store--client-queue runtime)))
           (should-not
            (e-session-aggregate-session-values
             (e-runtime-sqlite-session-store composition)))
           (should-not
-           (e-task-queue-order (e-runtime-sqlite-task-queue composition))))
+           (e-task-queue-order (e-runtime-sqlite-task-queue composition)))
+          (let ((open-request (e-runtime-store--active-request runtime)))
+            (should (eq (e-runtime-store-request--kind open-request) 'open))
+            (with-temp-file (expand-file-name "open.release" stall-directory)
+              (insert "release"))
+            (e-runtime-store-await runtime open-request 2.0)))
       (when composition (ignore-errors (e-runtime-sqlite-close composition)))
+      (when (and runtime (not (e-runtime-store--closed runtime)))
+        (ignore-errors (e-runtime-store-close runtime)))
+      (delete-directory directory t)
+      (delete-directory stall-directory t))))
+
+(defun e-runtime-sqlite-p3-test--wait-for-open-stall (stall-directory)
+  "Wait for the disposable worker's open control to reach its hold."
+  (let ((deadline (+ (float-time) 2.0)))
+    (while (and (< (float-time) deadline)
+                (not (file-exists-p
+                      (expand-file-name "open.ready" stall-directory))))
+      (accept-process-output nil 0.01))
+    (should (file-exists-p
+             (expand-file-name "open.ready" stall-directory)))))
+
+(defun e-runtime-sqlite-p3-test--assert-transport-released (runtime)
+  "Assert that RUNTIME and its aggregate admission reservation are empty."
+  (should (e-runtime-store--closed runtime))
+  (should-not (e-runtime-store--process runtime))
+  (should-not (e-runtime-store--opened-process runtime))
+  (should-not (e-runtime-store--stderr-buffer runtime))
+  (should (= (e-runtime-store--request-count runtime) 0))
+  (should (= (e-runtime-store--reserved-bytes runtime) 0))
+  (should (= (e-runtime-store--notification-count runtime) 0))
+  (should (= (e-runtime-store--reservation-used
+              (or (e-runtime-store--reservation runtime)
+                  e-runtime-store--default-reservation))
+             0)))
+
+(ert-deftest e-runtime-sqlite-p3-composition-accepts-pending-but-rejects-closed-provided-runtime ()
+  "A pending transport may be lent, but a closed one is rejected pre-construction."
+  (let* ((directory (make-temp-file "e-runtime-sqlite-p3-pending-" t))
+         (closed-directory (make-temp-file "e-runtime-sqlite-p3-closed-" t))
+         (stall-directory (make-temp-file "e-runtime-sqlite-p3-pending-stall-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         (e-runtime-sqlite--live-composition nil)
+         pending-runtime pending-composition closed-runtime)
+    (setenv "E_RUNTIME_STORE_TEST_STALL_DIRECTORY" stall-directory)
+    (with-temp-file (expand-file-name "open.hold" stall-directory)
+      (insert "hold"))
+    (unwind-protect
+        (progn
+          (setq pending-runtime (e-runtime-store-open directory))
+          (e-runtime-sqlite-p3-test--wait-for-open-stall stall-directory)
+          (setq pending-composition
+                (e-runtime-sqlite-open directory
+                                       :runtime-store pending-runtime))
+          (should (e-runtime-sqlite-p pending-composition))
+          (should-not (e-runtime-sqlite--owns-runtime-store
+                       pending-composition))
+          ;; Lending a still-opening handle does not force domain I/O or
+          ;; transfer caller ownership.
+          (e-runtime-sqlite-close pending-composition)
+          (should-not (e-runtime-store--closed pending-runtime))
+          (with-temp-file (expand-file-name "open.release" stall-directory)
+            (insert "release"))
+          (e-runtime-store-close pending-runtime)
+          (should (e-runtime-store--closed pending-runtime))
+          ;; A terminally closed handle is rejected before any owner
+          ;; constructor can be reached.  The caller remains its close owner.
+          (setq closed-runtime (e-runtime-store-open closed-directory))
+          (e-runtime-store-close closed-runtime)
+          (let ((constructor-calls 0))
+            (cl-letf (((symbol-function 'e-session-sqlite-store-create)
+                       (lambda (&rest _arguments)
+                         (cl-incf constructor-calls)
+                         (error "session constructor must not run"))))
+              (should-error
+               (e-runtime-sqlite-open closed-directory
+                                       :runtime-store closed-runtime)
+               :type 'e-runtime-store-unavailable))
+            (should (= constructor-calls 0)))
+          (should (e-runtime-store--closed closed-runtime))
+          (should-not e-runtime-sqlite--live-composition)
+          (e-runtime-sqlite-p3-test--assert-transport-released closed-runtime))
+      (when pending-composition
+        (ignore-errors (e-runtime-sqlite-close pending-composition)))
+      (when (and (e-runtime-store-p pending-runtime)
+                 (not (e-runtime-store--closed pending-runtime)))
+        (ignore-errors (e-runtime-store-close pending-runtime)))
+      (when (and (e-runtime-store-p closed-runtime)
+                 (not (e-runtime-store--closed closed-runtime)))
+        (ignore-errors (e-runtime-store-close closed-runtime)))
+      (delete-directory directory t)
+      (delete-directory closed-directory t)
+      (delete-directory stall-directory t))))
+
+(defun e-runtime-sqlite-p3-test--close-with-session-failure (failure)
+  "Close a composition while its session owner signals FAILURE."
+  (let* ((directory (make-temp-file "e-runtime-sqlite-p3-close-failure-" t))
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         (e-runtime-sqlite--live-composition nil)
+         (composition (e-runtime-sqlite-open directory))
+         (runtime (e-runtime-sqlite-runtime-store composition))
+         (session-close-count 0)
+         (runtime-close-count 0)
+         (caught nil)
+         (real-runtime-close (symbol-function 'e-runtime-store-close)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-sqlite-store-close)
+                   (lambda (&rest _arguments)
+                     (cl-incf session-close-count)
+                     (signal failure (list "synthetic session close failure"))))
+                  ((symbol-function 'e-runtime-store-close)
+                   (lambda (store)
+                     (cl-incf runtime-close-count)
+                     (funcall real-runtime-close store))))
+          (condition-case err
+              (e-runtime-sqlite-close composition)
+            (error (setq caught err))
+            (quit (setq caught err)))
+          (should caught)
+          (should (= session-close-count 1))
+          (should (= runtime-close-count 1))
+          (should (e-runtime-sqlite--closed composition))
+          (should-not e-runtime-sqlite--live-composition)
+          (should-not e-cron-storage)
+          (should-not e-voice-adjustment-storage)
+          (should-not e-goodnite-resources-storage)
+          (should-not e-raw-results-storage)
+          (e-runtime-sqlite-p3-test--assert-transport-released runtime)
+          ;; A second close is a no-op and cannot repeat any owner cleanup.
+          (should (e-runtime-sqlite-close composition))
+          (should (= session-close-count 1))
+          (should (= runtime-close-count 1)))
+      (ignore-errors (e-runtime-sqlite-close composition))
       (delete-directory directory t))))
+
+(ert-deftest e-runtime-sqlite-p3-close-unwinds-error-and-releases-all-owners ()
+  "An owner error does not strand composition or transport resources."
+  (e-runtime-sqlite-p3-test--close-with-session-failure 'error))
+
+(ert-deftest e-runtime-sqlite-p3-close-unwinds-quit-and-releases-all-owners ()
+  "A quit during owner cleanup does not strand composition or transport resources."
+  (e-runtime-sqlite-p3-test--close-with-session-failure 'quit))
 
 (ert-deftest e-runtime-sqlite-p3-composition-borrows-provided-runtime-on-close ()
   "A composition supplied with a transport never becomes its close owner."

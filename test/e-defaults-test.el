@@ -255,6 +255,87 @@
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities debug))))))))
 
+(defun e-defaults-test--assert-runtime-released (runtime)
+  "Assert that default RUNTIME and its process-wide reservation are empty."
+  (should (e-runtime-store--closed runtime))
+  (should-not (e-runtime-store--process runtime))
+  (should-not (e-runtime-store--opened-process runtime))
+  (should-not (e-runtime-store--stderr-buffer runtime))
+  (should (= (e-runtime-store--request-count runtime) 0))
+  (should (= (e-runtime-store--reserved-bytes runtime) 0))
+  (should (= (e-runtime-store--notification-count runtime) 0))
+  (should (= (e-runtime-store--reservation-used
+              (or (e-runtime-store--reservation runtime)
+                  e-runtime-store--default-reservation))
+             0)))
+
+(defun e-defaults-test--close-with-session-failure (failure)
+  "Close the default composition while its session owner signals FAILURE."
+  (let* ((directory (make-temp-file "e-defaults-close-failure-" t))
+         (process-environment (copy-sequence process-environment))
+         (e-default--runtime nil)
+         (e-default--runtime-store nil)
+         (e-default--chat-sessions nil)
+         (e-runtime-sqlite--live-composition nil)
+         (e-cron-storage nil)
+         (e-voice-adjustment-storage nil)
+         (e-goodnite-resources-storage nil)
+         (e-raw-results-storage nil)
+         (e-task-queue-actions-default-queue nil)
+         composition transport
+         (session-close-count 0)
+         (runtime-close-count 0)
+         (caught nil)
+         (real-runtime-close (symbol-function 'e-runtime-store-close)))
+    (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
+    (unwind-protect
+        (progn
+          (setq composition (e-default-runtime)
+                transport e-default--runtime-store)
+          (should (e-runtime-sqlite-p composition))
+          (should (e-runtime-store-p transport))
+          (cl-letf (((symbol-function 'e-session-sqlite-store-close)
+                     (lambda (&rest _arguments)
+                       (cl-incf session-close-count)
+                       (signal failure
+                               (list "synthetic default session close failure"))))
+                    ((symbol-function 'e-runtime-store-close)
+                     (lambda (store)
+                       (cl-incf runtime-close-count)
+                       (funcall real-runtime-close store))))
+            (condition-case err
+                (e-default-runtime-close)
+              (error (setq caught err))
+              (quit (setq caught err)))
+            (should caught)
+            (should (= session-close-count 1))
+            (should (= runtime-close-count 1)))
+          (should-not e-default--runtime)
+          (should-not e-default--runtime-store)
+          (should-not e-default--chat-sessions)
+          (should-not e-runtime-sqlite--live-composition)
+          (should-not e-task-queue-actions-default-queue)
+          (should-not e-cron-storage)
+          (should-not e-voice-adjustment-storage)
+          (should-not e-goodnite-resources-storage)
+          (should-not e-raw-results-storage)
+          (e-defaults-test--assert-runtime-released transport)
+          ;; A second close has no owner references left and cannot repeat the
+          ;; session or physical transport cleanup.
+          (should (e-default-runtime-close))
+          (should (= session-close-count 1))
+          (should (= runtime-close-count 1)))
+      (ignore-errors (e-default-runtime-close))
+      (delete-directory directory t))))
+
+(ert-deftest e-defaults-test-runtime-close-unwinds-error-and-clears-default-owners ()
+  "An owner error does not strand the default composition or transport."
+  (e-defaults-test--close-with-session-failure 'error))
+
+(ert-deftest e-defaults-test-runtime-close-unwinds-quit-and-clears-default-owners ()
+  "A quit during owner cleanup does not strand the default composition or transport."
+  (e-defaults-test--close-with-session-failure 'quit))
+
 (ert-deftest e-defaults-test-layer-specs-include-dev-harness-base-and-os-base ()
   "Built-in layer specs include dev, harness, and OS base layer ids."
   (should (memq 'e-dev

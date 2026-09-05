@@ -79,6 +79,18 @@ chat window tree after this test has already started its surface assertion."
     directory operation "release")
    nil 'silent))
 
+(defun e-runtime-store-recovery-graphical--finalize-private-transport
+    (transport)
+  "Retire isolated TRANSPORT without starting a compatibility close cycle.
+
+The startup witness deliberately leaves its v6 worker fenced after reporting
+the v5 diagnostic.  Its runner owns this disposable transport, so teardown
+must finish the private state directly instead of asking the compatibility
+close wrapper to submit another request to a non-unavailable store."
+  (when (and (e-runtime-store-p transport)
+             (not (e-runtime-store--closed transport)))
+    (e-runtime-store--finalize-close transport)))
+
 (defun e-runtime-store-recovery-graphical--stall-ready-p
     (directory operation)
   "Return non-nil when isolated worker reached OPERATION's stall."
@@ -86,26 +98,12 @@ chat window tree after this test has already started its surface assertion."
    (e-runtime-store-recovery-graphical--stall-file
     directory operation "ready")))
 
-(defun e-runtime-store-recovery-graphical--make-v6-worker ()
-  "Return a disposable worker copy that treats v5 stores as unupgraded.
-
-The production worker remains v5 until the explicit DP2 schema package.  This
-test-only child lets the startup scenario exercise the already specified v5
-diagnostic without changing the DP1 database schema or worker source."
-  (let* ((source
-          (expand-file-name "lisp/core/e-runtime-store-worker.el"
-                            (e-source-directory)))
-         (target (make-temp-file "e-runtime-store-worker-v6-" nil ".el")))
-    (with-temp-buffer
-      (insert-file-contents source)
-      (goto-char (point-min))
-      (unless (search-forward
-               "(defconst e-runtime-store-worker-schema-version 5)" nil t)
-        (error "Could not locate the v5 worker schema declaration"))
-      (replace-match
-       "(defconst e-runtime-store-worker-schema-version 6)")
-      (write-region (point-min) (point-max) target nil 'silent))
-    target))
+(defun e-runtime-store-recovery-graphical--read-startup-report (path)
+  "Read the bounded startup report at PATH with evaluation disabled."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (let ((read-eval nil))
+      (read (current-buffer)))))
 
 (defun e-runtime-store-recovery-graphical--runtime-operation-p
     (runtime operation)
@@ -152,70 +150,43 @@ diagnostic without changing the DP1 database schema or worker source."
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-startup-prewarm-is-transport-only ()
   "Graphical startup survives held open and reports an unupgraded v5 store."
-  (let* ((directory (make-temp-file "e-runtime-store-startup-v5-" t))
-         (stall-directory (make-temp-file "e-runtime-store-startup-stall-" t))
-         (process-environment (copy-sequence process-environment))
-         (e-default--runtime nil)
-         (e-default--runtime-store nil)
-         (e-default--chat-sessions nil)
-         (e-runtime-sqlite--live-composition nil)
-         (worker-file nil)
-         (transport nil)
-         heartbeat-timer
+  (let* ((directory (getenv "E_RUNTIME_STATE_DIRECTORY"))
+         (stall-directory (getenv "E_RUNTIME_STORE_TEST_STALL_DIRECTORY"))
+         (report-file (getenv "E_GRAPHICAL_E2E_STARTUP_REPORT"))
+         (database-file (and directory
+                             (expand-file-name "store.sqlite3" directory)))
+         transport
+         heartbeat-timers
          (heartbeat 0))
-    (setenv "E_RUNTIME_STORE_TEST_STALL_DIRECTORY" stall-directory)
-    ;; The graphical daemon has already run the normal startup prewarm before
-    ;; ERT begins.  Point this isolated scenario at its own fixture directory
-    ;; so the v5 fixture and the test-only v6 transport share one owner rather
-    ;; than competing with that earlier default-directory worker.
-    (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
+    (unless (and directory stall-directory report-file
+                 (file-exists-p report-file))
+      (ert-skip
+       "startup-prewarm requires the runner's pre-e startup fixture"))
+    ;; Capture the runner-owned transport before any assertion can transfer
+    ;; control to the unwind cleanup.
+    (setq transport e-default--runtime-store)
     (unwind-protect
         (progn
-          ;; Establish a nonempty current v5 fixture before the held startup
-          ;; open.  All fixture I/O is explicit setup, not startup traffic.
-          (let ((fixture nil))
-            (unwind-protect
-                (cl-letf (((symbol-function 'e-runtime-store-await)
-                           #'e-runtime-store-recovery-graphical--await-with-pump))
-                  (setq fixture (e-runtime-store-open directory))
-                  (e-runtime-store-call
-                   fixture 'write
-                   '(:op session-append-batch :session-id "startup-fixture"
-                     :records [(:type "session" :session-id "startup-fixture"
-                                :id "startup-root"
-                                :timestamp "2026-09-05T00:00:00Z")]))
-                  (e-runtime-store-close fixture))
-              (when (and fixture
-                         (not (e-runtime-store--closed fixture)))
-                (ignore-errors (e-runtime-store-close fixture)))))
-          (e-runtime-store-recovery-graphical--prepare-frame)
-          (e-runtime-store-recovery-graphical--arm-stall
-           stall-directory 'open)
-          (setq worker-file
-                (e-runtime-store-recovery-graphical--make-v6-worker))
-          (setq heartbeat-timer
-                (run-at-time 0.01 0.01 (lambda () (cl-incf heartbeat))))
-          (let ((started (float-time)))
-            (cl-letf (((symbol-function 'e-runtime-store--worker-file)
-                       (lambda () worker-file))
-                      ((symbol-function 'e-runtime-store--command)
-                       (lambda ()
-                         (list (e-runtime-store--emacs-program) "--batch" "-Q"
-                               "-L" (file-name-directory
-                                     (e-runtime-store--worker-file))
-                               "-L" (file-name-directory
-                                     (expand-file-name
-                                      "lisp/core/e-runtime-store-worker.el"
-                                      (e-source-directory)))
-                               "--eval" "(setq load-prefer-newer t)"
-                               "-l" worker-file
-                               "--funcall" "e-runtime-store-worker-main"))))
-              ;; This is the public startup edge; it must return while the
-              ;; private open control is still held by the worker.
-              (should-not (e-default--prewarm-runtime)))
-            (should (< (- (float-time) started) 0.5)))
-          (setq transport e-default--runtime-store)
-          (should (e-runtime-store-p transport))
+          ;; The runner created the nonempty v5 fixture, v6 worker copy, open
+          ;; hold, and report channel before the daemon loaded `e'.  The report
+          ;; is written by the real default prewarm, not by this ERT body.
+          (let ((report
+                 (e-runtime-store-recovery-graphical--read-startup-report
+                  report-file)))
+            (should (plist-get report :prewarm-called))
+            (should (equal (plist-get report :directory)
+                           (file-name-as-directory
+                            (expand-file-name directory))))
+            (should (equal (plist-get (plist-get report :active) :kind)
+                           'open))
+            (should (eq (plist-get (plist-get report :active) :state)
+                        'submitted))
+            (should (equal (plist-get report :pending)
+                           '((:kind open :operation nil :state submitted))))
+            (should-not (plist-get report :queue)))
+          (should (file-regular-p database-file))
+          (should (> (file-attribute-size (file-attributes database-file)) 0))
+          (should (e-runtime-store-p e-default--runtime-store))
           (should-not e-default--runtime)
           (should-not e-default--chat-sessions)
           (let ((deadline (+ (float-time) 2.0)))
@@ -238,8 +209,16 @@ diagnostic without changing the DP1 database schema or worker source."
                        (buffer-substring-no-properties
                         (max (point-min) (- (point-max) 2000)) (point-max))))
                 (plist-get (e-runtime-store-status transport) :last-error)))))
+          ;; Schedule three independent one-shot callbacks rather than using a
+          ;; repeating timer, so progress cannot be explained by one callback
+          ;; retaining control of the event loop.
+          (setq heartbeat-timers
+                (list
+                 (run-at-time 0.01 nil (lambda () (cl-incf heartbeat)))
+                 (run-at-time 0.02 nil (lambda () (cl-incf heartbeat)))
+                 (run-at-time 0.03 nil (lambda () (cl-incf heartbeat)))))
           (e-graphical-test-wait-until
-           (lambda () (> heartbeat 3))
+           (lambda () (>= heartbeat 3))
            1.0 "independent startup heartbeats")
           (let* ((active (e-runtime-store--active-request transport))
                  (status (e-runtime-store-status transport))
@@ -313,18 +292,20 @@ diagnostic without changing the DP1 database schema or worker source."
             (should (equal (plist-get (cdr diagnostic) :operation)
                            'e-runtime-store-offline-upgrade)))
           (should-not (e-runtime-store--client-queue transport)))
-      (when (timerp heartbeat-timer)
-        (cancel-timer heartbeat-timer))
+      (dolist (timer heartbeat-timers)
+        (when (timerp timer) (cancel-timer timer)))
       (e-runtime-store-recovery-graphical--release-stall
        stall-directory 'open)
+      ;; The failed v5 open fences its worker but intentionally leaves the
+      ;; transport restartable for a later explicit operation.  This private
+      ;; fixture has no later operation: retire it before default cleanup so
+      ;; `e-default-runtime-close' cannot submit and synchronously await a
+      ;; second close/open cycle during ERT unwind.
+      (ignore-errors
+        (e-runtime-store-recovery-graphical--finalize-private-transport
+         transport))
       (when (e-runtime-store-p e-default--runtime-store)
-        (cl-letf (((symbol-function 'e-runtime-store-await)
-                   #'e-runtime-store-recovery-graphical--await-with-pump))
-          (ignore-errors (e-default-runtime-close))))
-      (when (and worker-file (file-exists-p worker-file))
-        (delete-file worker-file))
-      (delete-directory directory t)
-      (delete-directory stall-directory t))))
+        (ignore-errors (e-default-runtime-close))))))
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-org-canvas-turn-survives-delayed-persistence ()
   "A new public Org Canvas Daily stays usable while SQLite admission waits."

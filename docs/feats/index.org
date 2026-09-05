@@ -35,10 +35,16 @@ session construction still synchronously hydrated the complete catalog and
 enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =In-progress= to make startup
 transport-only, replace catalog/checkpoint blobs and process-wide mirrors with
 bounded SQLite queries and active working sets, bound Board/task restore, and
-remove remaining interactive storage awaits.  DP1 is accepted for transport-only
-startup and pure composition: focused ERT and the isolated graphical
-startup-prewarm gate pass, including the macOS private =CFFIXED_USER_HOME=
-runner isolation.  DP2--DP5 are not started, and Feature 92 remains
+remove remaining interactive storage awaits.  DP1 implementation is complete
+and pending independent correction review for transport-only startup and pure
+composition.  Focused ERT passes =e-defaults= 37/37, =e-runtime-sqlite-p3=
+28/28, =e-runtime-sqlite-p4= 15/15, =e-session-sqlite= 17/17,
+=e-task-queue= 29/29, and =e-runtime-store= 72/72.  The isolated graphical
+startup-prewarm gate passes 1/1 with 0 unexpected; ERT timing is 0.046125
+seconds (0.047432 seconds test-runner total), with approximately 17 seconds
+wall time including daemon and source loading.  The macOS private
+=CFFIXED_USER_HOME= runner isolation is part of that pass.  DP2--DP5 are not
+started, the overall behavioral goal remains =Failing=, and Feature 92 remains
 =In-review=.
 
 | ID | Status      | Path                                      | Title                                                |

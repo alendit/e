@@ -114,6 +114,13 @@ the caller remains its close owner."
                     (list "Runtime-store directory does not match composition"
                           (e-runtime-store--directory runtime-store)
                           directory)))
+          ;; A caller may lend a transport while its open control is still
+          ;; pending, but a terminally closed handle can never become the
+          ;; composition's transport.  Reject it before constructing any
+          ;; domain owner and leave the caller's ownership untouched.
+          (when (e-runtime-store--closed runtime-store)
+            (signal 'e-runtime-store-unavailable
+                    (list "Provided runtime-store is closed")))
           (setq session-store
                 (e-session-sqlite-store-create
                  directory :load-all load-sessions
@@ -169,26 +176,60 @@ the caller remains its close owner."
 
 (defun e-runtime-sqlite-close (runtime)
   "Close RUNTIME exactly once and detach its borrowed owner adapters."
-  (unless (e-runtime-sqlite--closed runtime)
-    (when (eq e-cron-storage (e-runtime-sqlite--cron-storage runtime))
-      (e-cron-configure-storage nil))
-    (when (eq e-voice-adjustment-storage
-              (e-runtime-sqlite--voice-storage runtime))
-      (e-voice-adjustment-configure-storage nil))
-    (when (eq e-goodnite-resources-storage
-              (e-runtime-sqlite--goodnite-storage runtime))
-      (e-goodnite-resources-configure-storage nil))
-    (when (eq e-raw-results-storage
-              (e-runtime-sqlite--raw-results-storage runtime))
-      (e-raw-results-configure-storage nil))
-    (e-session-sqlite-store-close
-     (e-runtime-sqlite--session-store runtime))
-    (when (e-runtime-sqlite--owns-runtime-store runtime)
-      (e-runtime-store-close (e-runtime-sqlite--runtime-store runtime)))
-    (setf (e-runtime-sqlite--closed runtime) t)
-    (when (eq e-runtime-sqlite--live-composition runtime)
-      (setq e-runtime-sqlite--live-composition nil)))
-  t)
+  (if (e-runtime-sqlite--closed runtime)
+      t
+    (let (first-error)
+      (cl-labels
+          ((attempt (function)
+             ;; Cleanup must continue across both ordinary errors and quit.
+             ;; The composition has already relinquished its public ownership
+             ;; before the first adapter is detached, so a failing cleanup
+             ;; cannot strand a live-composition reservation.
+             (condition-case err
+                 (funcall function)
+               (error (unless first-error (setq first-error err)))
+               (quit (unless first-error (setq first-error err))))))
+        ;; Mark and detach the composition before invoking any fallible owner
+        ;; cleanup.  Reentrant close calls therefore perform no second pass.
+        (setf (e-runtime-sqlite--closed runtime) t)
+        (when (eq e-runtime-sqlite--live-composition runtime)
+          (setq e-runtime-sqlite--live-composition nil))
+        (when (eq e-cron-storage (e-runtime-sqlite--cron-storage runtime))
+          (attempt (lambda () (e-cron-configure-storage nil)))
+          ;; A test or extension may signal before its setter runs.  Do not
+          ;; leave a dead composition installed globally in that case.
+          (when (eq e-cron-storage (e-runtime-sqlite--cron-storage runtime))
+            (setq e-cron-storage nil)))
+        (when (eq e-voice-adjustment-storage
+                  (e-runtime-sqlite--voice-storage runtime))
+          (attempt (lambda () (e-voice-adjustment-configure-storage nil)))
+          (when (eq e-voice-adjustment-storage
+                    (e-runtime-sqlite--voice-storage runtime))
+            (setq e-voice-adjustment-storage nil)))
+        (when (eq e-goodnite-resources-storage
+                  (e-runtime-sqlite--goodnite-storage runtime))
+          (attempt (lambda () (e-goodnite-resources-configure-storage nil)))
+          (when (eq e-goodnite-resources-storage
+                    (e-runtime-sqlite--goodnite-storage runtime))
+            (setq e-goodnite-resources-storage nil)))
+        (when (eq e-raw-results-storage
+                  (e-runtime-sqlite--raw-results-storage runtime))
+          (attempt (lambda () (e-raw-results-configure-storage nil)))
+          (when (eq e-raw-results-storage
+                    (e-runtime-sqlite--raw-results-storage runtime))
+            (setq e-raw-results-storage nil)))
+        (when (e-runtime-sqlite--session-store runtime)
+          (attempt (lambda ()
+                     (e-session-sqlite-store-close
+                      (e-runtime-sqlite--session-store runtime)))))
+        (when (and (e-runtime-sqlite--owns-runtime-store runtime)
+                   (e-runtime-store-p (e-runtime-sqlite--runtime-store runtime)))
+          (attempt (lambda ()
+                     (e-runtime-store-close
+                      (e-runtime-sqlite--runtime-store runtime))))))
+      (when first-error
+        (signal (car first-error) (cdr first-error)))
+      t)))
 
 (defun e-runtime-sqlite-status (runtime)
   "Return bounded shared-runtime and owner-injection status."

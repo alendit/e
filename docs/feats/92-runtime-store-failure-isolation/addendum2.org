@@ -27,8 +27,9 @@ may synchronously initialize its domain owners.
 supersedes only the parent =F92-DP6C= package relation.  The observable and
 ownership fields of =F92-C09= remain unchanged.
 
-=F92A2-DP1= is accepted for this implementation slice, pending the parent's
-exact-commit review.  =F92A2-DP2=--=F92A2-DP5= remain =not-started=.  The
+=F92A2-DP1= implementation is complete and pending independent correction
+review; the slice is not yet accepted.  =F92A2-DP2=--=F92A2-DP5= remain
+=not-started=.  The
 earlier =863b8265= startup-prewarm implementation was a failing behavioral
 baseline, not evidence for this plan: it called full runtime composition from
 =emacs-startup-hook= and could delay or prevent ordinary Emacs startup against
@@ -54,40 +55,45 @@ the operator's existing store.
 - Product authority :: Operator.
 - Owning contract :: =F92A2-C01=--=F92A2-C10= below plus retained
   =F92-C09= for requested-session validation and quarantine.
-- Behavioral status :: Failing.  Current startup enters synchronous session
-  catalog initialization, and existing-session access can synchronously decode
-  a large checkpoint and restore complete Board history.
+- Behavioral status :: Failing.  The DP1 startup/composition slice passes its
+  transport-only and zero-domain-traffic gates; the overall scenario remains
+  incomplete because existing Daily/history/Board/task access still uses
+  unbounded or synchronous durable restoration and remaining interactive
+  storage awaits are deferred to DP2--DP5.
 
-Mechanism progress is =F92A2-DP1 accepted=; =F92A2-DP2=--=F92A2-DP5= remain
-=not-started=.  Existing asynchronous mutation and failure-isolation mechanisms
-are retained evidence only where the contracts below explicitly preserve them.
+Mechanism progress is =F92A2-DP1 implementation complete, pending independent
+correction review=; =F92A2-DP2=--=F92A2-DP5= remain =not-started=.  Existing
+asynchronous mutation and failure-isolation mechanisms are retained evidence
+only where the contracts below explicitly preserve them.
 
 * Implementation ledger
 
-- =F92A2-DP1= :: Parent-accepted on 2026-09-06 for transport-only startup and
-  pure composition, pending exact-commit review.  The process-wide runtime-store
-  transport owns the prewarm handle and its sole close edge; default composition
-  borrows that handle and constructs bounded empty owner state.  Session and
-  task constructors issue no domain request until an explicit owner operation,
-  while the composed startup path records no session, Board, task, cron, voice,
-  Goodnite, or raw-result request.
-- Focused evidence :: =eldev test -f test/e-defaults-test.el= passes 35/35;
-  =eldev test -f test/e-runtime-sqlite-p3-test.el= passes 25/25;
-  =eldev test -f test/e-runtime-sqlite-p4-test.el= passes 15/15;
-  =eldev test -f test/e-session-sqlite-test.el= passes 17/17; and
-  =eldev test -f test/e-task-queue-test.el= passes 29/29.  These checks cover
-  prewarm reuse and directory ownership, borrowed close/error paths, pure
-  composition, session batch compatibility, and first explicit task storage
-  use.
-- Graphical evidence :: =E_GRAPHICAL_E2E_SELECTOR=startup-prewarm bash
-  e2e/run-graphical-tests.sh= passes 1/1.  With worker open held, startup
-  returns, at least three scheduled heartbeats advance, traffic contains only
-  private open control, no domain collection is materialized, and the v5
-  readiness/status diagnostic settles asynchronously after release.
+- =F92A2-DP1= :: Implementation is complete and pending independent correction
+  review for transport-only startup, pure composition, and unwind-safe close
+  ownership.  The process-wide runtime-store transport owns the prewarm handle
+  and its sole close edge; default composition borrows that handle and
+  constructs bounded empty owner state.  Session and task constructors issue no
+  domain request until an explicit owner operation, while the composed startup
+  path records no session, Board, task, cron, voice, Goodnite, or raw-result
+  request.
+- Focused evidence :: Candidate checks pass =e-defaults= 37/37,
+  =e-runtime-sqlite-p3= 28/28, =e-runtime-sqlite-p4= 15/15,
+  =e-session-sqlite= 17/17, =e-task-queue= 29/29, and =e-runtime-store= 72/72.
+  These cover prewarm reuse and directory ownership, unwind-safe borrowed/owned
+  close paths, pure composition, rejection of closed provided transports,
+  session batch compatibility, and first explicit task storage use.
+- Graphical evidence :: The exact =E_GRAPHICAL_E2E_SELECTOR=startup-prewarm
+  bash e2e/run-graphical-tests.sh= rerun passes 1/1 with 0 unexpected;
+  ERT timing is 0.046125 seconds (0.047432 seconds test-runner total), and
+  command wall time is approximately 17 seconds including daemon and source
+  loading.  With worker open held, startup returns, at least three scheduled
+  heartbeats advance, traffic contains only private open control, no domain
+  collection is materialized, and the v5 readiness/status diagnostic settles
+  asynchronously after release.
 - Runner isolation :: On macOS the graphical runner assigns its existing
   private =emacs_dir= to =CFFIXED_USER_HOME= for the isolated daemon launch.
-  It does not alter =HOME= or user defaults; the focused graphical pass confirms
-  reproducible isolation from shared AppKit crash-restoration state.
+  It does not alter =HOME= or user defaults; the graphical pass confirms this
+  isolated runner path.
 - Scope boundary :: =F92A2-DP2=, =F92A2-DP3=, =F92A2-DP4=, and
   =F92A2-DP5= remain =not-started=; the overall behavioral goal remains
   =Failing= until those packages and final public acceptance are complete.

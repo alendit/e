@@ -168,19 +168,37 @@ contains the established session directory and its sibling legacy owners."
 
 (defun e-default-runtime-close ()
   "Close the process-wide default runtime exactly once."
-  (let ((runtime-store e-default--runtime-store))
-    ;; The composition borrows the process-wide transport.  Retire the domain
-    ;; ports first, then let this sole process-wide owner close the worker.
-    (when (e-runtime-sqlite-p e-default--runtime)
-      (e-runtime-sqlite-close e-default--runtime))
-    (when (and (e-runtime-store-p runtime-store)
-               (not (e-runtime-store--closed runtime-store)))
-      (e-runtime-store-close runtime-store)))
-  (e-task-queue-actions-configure-queue nil)
-  (setq e-default--runtime nil
-        e-default--chat-sessions nil
-        e-default--runtime-store nil)
-  t)
+  (let ((runtime e-default--runtime)
+        (runtime-store e-default--runtime-store)
+        first-error)
+    (cl-labels
+        ((attempt (function)
+           ;; Shutdown is allowed to be interrupted by a hook or by quit, but
+           ;; one failing owner must not strand the remaining global teardown.
+           (condition-case err
+               (funcall function)
+             (error (unless first-error (setq first-error err)))
+             (quit (unless first-error (setq first-error err))))))
+      ;; Clear default ownership before fallible cleanup.  This makes a
+      ;; reentrant kill-emacs hook idempotent and prevents a failed close from
+      ;; advertising a live default composition.
+      (setq e-default--runtime nil
+            e-default--chat-sessions nil
+            e-default--runtime-store nil)
+      (when (and (e-runtime-sqlite-p runtime)
+                 (eq e-runtime-sqlite--live-composition runtime))
+        (setq e-runtime-sqlite--live-composition nil))
+      ;; The composition borrows the process-wide transport.  Retire domain
+      ;; ports first, then this sole default owner closes the worker.
+      (when (e-runtime-sqlite-p runtime)
+        (attempt (lambda () (e-runtime-sqlite-close runtime))))
+      (attempt (lambda () (e-task-queue-actions-configure-queue nil)))
+      (when (and (e-runtime-store-p runtime-store)
+                 (not (e-runtime-store--closed runtime-store)))
+        (attempt (lambda () (e-runtime-store-close runtime-store))))
+      (when first-error
+        (signal (car first-error) (cdr first-error)))
+      t)))
 
 (defun e-default-runtime-store ()
   "Return the process-wide default transport, opening it asynchronously.
@@ -202,12 +220,53 @@ not await readiness."
       (setq e-default--runtime-store (e-runtime-store-open directory)))
     e-default--runtime-store))
 
+(defun e-default--startup-prewarm-report (runtime)
+  "Write the explicit graphical startup report for RUNTIME, when requested.
+
+This is a bounded test seam.  It records the transport state immediately after
+the real default startup prewarm submits its private open control, before any
+test file is loaded; it never observes or queries domain state."
+  (when-let ((path (getenv "E_GRAPHICAL_E2E_STARTUP_REPORT")))
+    (let (pending)
+      (maphash
+       (lambda (_id request)
+         (push (list :kind (e-runtime-store-request--kind request)
+                     :operation (e-runtime-store--request-operation request)
+                     :state (e-runtime-store-request--state request))
+               pending))
+       (e-runtime-store--pending runtime))
+      (with-temp-file (expand-file-name path)
+        (let ((active (e-runtime-store--active-request runtime)))
+          (prin1
+           (list :prewarm-called t
+                 :directory (e-runtime-store--directory runtime)
+                 :active (and active
+                              (list :kind (e-runtime-store-request--kind active)
+                                    :operation
+                                    (e-runtime-store--request-operation active)
+                                    :state
+                                    (e-runtime-store-request--state active)))
+                 :pending (nreverse pending)
+                 :queue (mapcar
+                         (lambda (request)
+                           (list :kind
+                                 (e-runtime-store-request--kind request)
+                                 :operation
+                                 (e-runtime-store--request-operation request)
+                                 :state
+                                 (e-runtime-store-request--state request)))
+                         (e-runtime-store--client-queue runtime))
+                 :startup (plist-get (e-runtime-store-status runtime) :startup))
+           (current-buffer))
+        (insert "\n"))))))
+
 (defun e-default--prewarm-runtime ()
   "Begin opening the default transport without composing domain owners.
 
 The hook never waits for the worker acknowledgement or constructs a session,
 Board, task, cron, voice, Goodnite, or raw-result owner."
-  (e-default-runtime-store)
+  (let ((runtime (e-default-runtime-store)))
+    (e-default--startup-prewarm-report runtime))
   nil)
 
 (defun e-default--install-runtime-prewarm ()

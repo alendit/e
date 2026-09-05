@@ -146,16 +146,21 @@ request/token budget so a full cold queue can still become ready.")
 
 Source-adjacent byte code can legitimately lag a checkout.  The subordinate
 process must execute the same repository revision as its client without
-deleting or rewriting those unrelated artifacts."
-  (let* ((library (locate-library "e-runtime-store-worker"))
-         (source (and library
-                      (string-suffix-p ".elc" library)
-                      (substring library 0 -1))))
-    (or (and source (file-exists-p source)
-             (file-newer-than-file-p source library)
-             source)
-        library
-        (signal 'e-runtime-store-error (list "Worker module is missing")))))
+deleting or rewriting those unrelated artifacts.  The explicit test-only
+environment override is used by isolated graphical startup fixtures before
+the package itself loads; ordinary runtime callers leave it unset."
+  (let ((test-override (getenv "E_RUNTIME_STORE_TEST_WORKER_FILE")))
+    (if (and test-override (file-readable-p test-override))
+        (expand-file-name test-override)
+      (let* ((library (locate-library "e-runtime-store-worker"))
+             (source (and library
+                          (string-suffix-p ".elc" library)
+                          (substring library 0 -1))))
+        (or (and source (file-exists-p source)
+                 (file-newer-than-file-p source library)
+                 source)
+            library
+            (signal 'e-runtime-store-error (list "Worker module is missing")))))))
 
 (defun e-runtime-store--emacs-program ()
   "Return the current Emacs executable path."
@@ -163,11 +168,20 @@ deleting or rewriting those unrelated artifacts."
 
 (defun e-runtime-store--command ()
   "Return the private batch worker command."
-  (list (e-runtime-store--emacs-program) "--batch" "-Q"
-        "-L" (file-name-directory (e-runtime-store--worker-file))
-        "--eval" "(setq load-prefer-newer t)"
-        "-l" (e-runtime-store--worker-file)
-        "--funcall" "e-runtime-store-worker-main"))
+  (let* ((worker-file (e-runtime-store--worker-file))
+         ;; An isolated graphical fixture may replace only the worker source
+         ;; while retaining the repository's private worker dependencies.
+         ;; Keep the override directory first so its schema copy is loaded,
+         ;; then expose the ordinary core directory for those dependencies.
+         (core-directory
+          (file-name-directory
+           (or (locate-library "e-runtime-store-codec") worker-file))))
+    (list (e-runtime-store--emacs-program) "--batch" "-Q"
+          "-L" (file-name-directory worker-file)
+          "-L" core-directory
+          "--eval" "(setq load-prefer-newer t)"
+          "-l" worker-file
+          "--funcall" "e-runtime-store-worker-main")))
 
 (defun e-runtime-store--encode-frame (value &optional measured-bytes)
   "Return bounded canonical protocol bytes for VALUE.

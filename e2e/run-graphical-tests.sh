@@ -7,6 +7,7 @@ test_file=${E_GRAPHICAL_E2E_TEST_FILE:-$e2e_dir/graphical/e-graphical-test-suite
 runner_file=$e2e_dir/graphical/e-graphical-test-runner.el
 source_bootstrap_file=$e2e_dir/graphical/e-graphical-source-bootstrap.el
 daemon_bootstrap_file=$e2e_dir/graphical/e-graphical-daemon-bootstrap.el
+startup_bootstrap_file=$e2e_dir/graphical/e-graphical-startup-bootstrap.el
 
 cd "$project_dir"
 
@@ -16,6 +17,30 @@ if [[ $emacs_config_mode != isolated && $emacs_config_mode != current ]]; then
   exit 2
 fi
 export E_E2E_EMACS_CONFIG=$emacs_config_mode
+
+startup_fixture_directory=
+startup_stall_directory=
+startup_worker_file=
+startup_report_file=
+startup_fixture_enabled=0
+if [[ ${E_GRAPHICAL_E2E_SELECTOR:-} == startup-prewarm && $emacs_config_mode == isolated ]]; then
+  startup_fixture_enabled=1
+  startup_fixture_directory=$(mktemp -d -t e-graphical-startup-v5.XXXXXX)
+  startup_stall_directory=$(mktemp -d -t e-graphical-startup-stall.XXXXXX)
+  startup_worker_file=$startup_fixture_directory/e-runtime-store-worker-v6.el
+  startup_report_file=$startup_fixture_directory/startup-report
+  export E_RUNTIME_STATE_DIRECTORY=$startup_fixture_directory
+  export E_RUNTIME_STORE_TEST_STALL_DIRECTORY=$startup_stall_directory
+  export E_RUNTIME_STORE_TEST_WORKER_FILE=$startup_worker_file
+  export E_GRAPHICAL_E2E_STARTUP_REPORT=$startup_report_file
+fi
+
+cleanup_startup_fixture() {
+  if [[ $startup_fixture_enabled == 1 ]]; then
+    rm -f "$startup_worker_file" "$startup_report_file"
+    rm -rf "$startup_fixture_directory" "$startup_stall_directory"
+  fi
+}
 
 current_emacs_command=(emacs)
 if [[ -n ${E_E2E_EMACS_INIT_DIRECTORY:-} ]]; then
@@ -49,12 +74,22 @@ if [[ $emacs_config_mode == current ]]; then
     --load "$runner_file"
   )
 else
-  emacs_command=(
-    eldev emacs
-    --load "$source_bootstrap_file"
-    --load "$test_file"
-    --load "$runner_file"
-  )
+  if [[ $startup_fixture_enabled == 1 ]]; then
+    emacs_command=(
+      eldev emacs
+      --load "$startup_bootstrap_file"
+      --load "$source_bootstrap_file"
+      --load "$test_file"
+      --load "$runner_file"
+    )
+  else
+    emacs_command=(
+      eldev emacs
+      --load "$source_bootstrap_file"
+      --load "$test_file"
+      --load "$runner_file"
+    )
+  fi
 fi
 
 system_name=$(uname -s)
@@ -70,6 +105,7 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
     emacsclient --socket-name "$server_name" \
       --eval "(kill-emacs 0)" >/dev/null 2>&1 || true
     rm -f "$report_file"
+    cleanup_startup_fixture
     if [[ -n $emacs_dir ]]; then
       rm -rf "$emacs_dir"
     fi
@@ -81,9 +117,16 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
     "${current_emacs_command[@]}" \
       --daemon="$server_name" --load "$daemon_bootstrap_file"
   else
-    CFFIXED_USER_HOME="$emacs_dir" \
-      E_GRAPHICAL_E2E_EMACS_DIR="$emacs_dir" \
-      emacs --quick --daemon="$server_name" --load "$daemon_bootstrap_file"
+    if [[ $startup_fixture_enabled == 1 ]]; then
+      CFFIXED_USER_HOME="$emacs_dir" \
+        E_GRAPHICAL_E2E_EMACS_DIR="$emacs_dir" \
+        emacs --quick --daemon="$server_name" \
+        --load "$startup_bootstrap_file" --load "$daemon_bootstrap_file"
+    else
+      CFFIXED_USER_HOME="$emacs_dir" \
+        E_GRAPHICAL_E2E_EMACS_DIR="$emacs_dir" \
+        emacs --quick --daemon="$server_name" --load "$daemon_bootstrap_file"
+    fi
   fi
   result=$(emacsclient --socket-name "$server_name" --eval "
     (let ((frame
@@ -106,6 +149,7 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
   cat "$report_file"
   convert_graphical_screenshots
   [[ $result == 0 ]]
+  cleanup_startup_fixture
   exit
 fi
 
@@ -120,6 +164,7 @@ if [[ -z ${DISPLAY:-} && $system_name == Linux ]]; then
     test_status=$?
   fi
   convert_graphical_screenshots
+  cleanup_startup_fixture
   exit "$test_status"
 fi
 
@@ -130,4 +175,5 @@ else
   test_status=$?
 fi
 convert_graphical_screenshots
+cleanup_startup_fixture
 exit "$test_status"
