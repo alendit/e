@@ -1,0 +1,56 @@
+#+title: Feature 92 Accepted Session Projection Plan Review 04
+#+date: 2026-09-05
+#+startup: overview
+
+* Decision
+
+Result: =implementation-plan-fixed-point=.
+
+The same independent reviewer incrementally verified that the remediation of
+=plan-review-03.org= closes every prior P1 and P2 finding.
+
+Reviewed content identity:
+
+- commit :: =a88c7e604b11d424f0139e6ff760bd9fff98bde2=
+- addendum blob :: =38a70772720abff4d9597c33b3a02e3929dc6862=
+- unchanged-source baseline :: =f45a7a1c=
+- plan-owning content ::
+  =docs/feats/92-runtime-store-failure-isolation/addendum.org=
+- selected result level :: implementation plan
+
+* Closed findings
+
+- The aggregate prepares a bounded, prevalidated install token before enqueue;
+  the session service can synchronously drop the exact still-queued request on
+  a pre-install fault, while a post-install fault retains the whole projection
+  and marks only that owner suspect.
+- Runtime observer delivery is the sole bounded terminal carrier.  Session
+  pending/suspect state changes before =e-work= callbacks, and observer exits
+  cannot gate cleanup.
+- Pending state is bounded by runtime requests; suspect state is bounded to one
+  first-cause entry per session and released on close/reset/restart.
+- The activated-root topology covers aggregate preparation/apply, async
+  lifecycle, storage adapter, runtime observer, work settlement, default
+  activation, harness consumers, presentation, and the retained Board pickup
+  transaction.
+- Every supported ordinary persistent mutation facade and every allowed
+  synchronous, operator, legacy, or ephemeral exception is named.
+
+* Coverage
+
+| Contract | Package | Disposition |
+|----------+---------+-------------|
+| =F92A-C01= | =F92A-DP1= | Cleared plan: bounded token, FIFO admission, immediate whole projection, and closed install-fault outcome. |
+| =F92A-C02= | =F92A-DP1= | Cleared plan: one ordered effective projection for every session consumer. |
+| =F92A-C03= | =F92A-DP1= | Cleared plan: ACK retires pending through runtime delivery without semantic republish. |
+| =F92A-C04= | =F92A-DP1= | Cleared plan: owner-local first-cause suspect state and complete process lifetime. |
+| =F92A-C05= | =F92A-DP1= | Cleared plan: session journal is the sole durable authority. |
+| =F92A-C06= | =F92A-DP2= | Cleared plan: context-dependent two-turn public Daily acceptance. |
+
+The goal remains behaviorally failing and the mechanism remains partial until
+DP1 and DP2 pass.  External evidence is not applicable and timing is
+observational.  =docs/references/runtime_concepts.org= is the selected glossary;
+the addendum's two local terms do not conflict with it.
+
+No production source, tests, running Emacs state, or canonical database changed
+during this review.
