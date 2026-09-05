@@ -4,8 +4,11 @@
 
 * Status
 
-Planned.  This addendum is the current Feature 92 authority for interactive
-session visibility.  It supersedes conflicting =F92-C07=, =F92-DP6B=, and
+Done.  Implementation commit =9857214a= passed the exact-candidate owner,
+harness, Board, graphical, full-suite, structural, and independent-review gates
+recorded below.  This addendum remains the current Feature 92 authority for
+interactive session visibility.  It supersedes conflicting =F92-C07=,
+=F92-DP6B=, and
 =S92-DAILY= completion claims in =plan.org= without reopening accepted
 runtime-store transport, SQLite transaction, worker-ownership, practical-bound,
 or owner-isolation behavior.
@@ -86,13 +89,14 @@ application boundary.
   pub-sub pattern, rely on SQLite for durability, and place the behavior at the
   correct module boundary.
 - Owning contracts :: =F92A-C01= through =F92A-C06= below.
-- Behavioral status :: Failing.  The live second-turn counterexample invalidates
-  the prior =S92-DAILY= completion claim.
-- Mechanism status :: Partial.  Worker, journal, transactions, runtime FIFO,
-  practical limits, and owner-local failure partition exist.  Session visibility
-  remains acknowledgement-gated.  The uncommitted harness overlay is 134
-  insertions and 1 deletion, passes a focused unit suite, and has no two-turn
-  graphical proof.
+- Behavioral status :: Passing in repository-controlled evidence.  The
+  context-dependent two-turn public graphical scenario passes twice on the
+  exact accepted candidate; a restart of the user's Emacs remains required for
+  live use.
+- Mechanism status :: Complete for =F92A-DP1= and =F92A-DP2=.  Worker, journal,
+  transactions, runtime FIFO, practical limits, accepted projection, owner-local
+  failure, and public Daily composition are implemented.  The rejected harness
+  overlay was removed.
 
 * Normative contract matrix
 
@@ -101,12 +105,12 @@ representation detail is conditional implementation guidance.
 
 | ID | Observable contract | Semantic owner | Package | Evidence | Status |
 |----+---------------------+----------------+---------+----------+--------|
-| F92A-C01 | A bounded, prevalidated install token exists before enqueue.  Once the runtime FIFO accepts its prepared session mutation, the effective projection contains the complete mutation before the facade returns.  Admission rejection changes no semantic state; a pre-install fault synchronously drops the still-queued request or marks the owner suspect if non-submission cannot be proven. | Aggregate for preparation; session application service for admission/install | F92A-DP1 | S92A-SESSION-ADMISSION | Planned |
-| F92A-C02 | Accepted mutations from one session are visible exactly once in admission order to later session commands, provider context, tool-loop refresh, and presentation, regardless of acknowledgement timing. | Session application service; harness and shells consume it | F92A-DP1 | S92A-READ-YOUR-WRITES, S92A-TOOL-LOOP | Planned |
-| F92A-C03 | SQLite acknowledgement retires pending status without republishing the mutation.  Reopen reconstructs the same state from committed journal records. | SQLite adapter for commit; session service for settlement | F92A-DP1 | S92A-SETTLEMENT | Planned |
-| F92A-C04 | Eventual write failure preserves the already-published projection as visibly persistence-suspect, retains at most one first bounded diagnostic per session, fences only that owner, and leaves unrelated sessions able to enqueue, commit, and reopen.  Settlement changes authoritative pending/suspect state before non-gating observers; store close/reset releases all process-local status. | Runtime store owns opaque fencing; session service owns session status | F92A-DP1 | S92A-OWNER-FAILURE | Planned |
-| F92A-C05 | The session journal is the only durable event authority.  No harness, shell, Board, or storage adapter owns a parallel session-history overlay, and no new SQLite outbox or durable subscriber cursor exists. | Session application service and SQLite adapter boundary | F92A-DP1 | Source-boundary audit, S92A-SETTLEMENT | Planned |
-| F92A-C06 | Public Org Canvas Daily completes two context-dependent turns while SQLite is delayed; input and heartbeat remain responsive; release creates no duplicate visible or durable event. | Public Org Canvas/Grimoire composition | F92A-DP2 | S92A-DAILY-TWO-TURN | Planned |
+| F92A-C01 | A bounded, prevalidated install token exists before enqueue.  Once the runtime FIFO accepts its prepared session mutation, the effective projection contains the complete mutation before the facade returns.  Admission rejection changes no semantic state; a pre-install fault synchronously drops the still-queued request or marks the owner suspect if non-submission cannot be proven. | Aggregate for preparation; session application service for admission/install | F92A-DP1 | S92A-SESSION-ADMISSION | Passing |
+| F92A-C02 | Accepted mutations from one session are visible exactly once in admission order to later session commands, provider context, tool-loop refresh, and presentation, regardless of acknowledgement timing. | Session application service; harness and shells consume it | F92A-DP1 | S92A-READ-YOUR-WRITES, S92A-TOOL-LOOP | Passing |
+| F92A-C03 | SQLite acknowledgement retires pending status without republishing the mutation.  Reopen reconstructs the same state from committed journal records. | SQLite adapter for commit; session service for settlement | F92A-DP1 | S92A-SETTLEMENT | Passing |
+| F92A-C04 | Eventual write failure preserves the already-published projection as visibly persistence-suspect, retains at most one first bounded diagnostic per session, fences only that owner, and leaves unrelated sessions able to enqueue, commit, and reopen.  Settlement changes authoritative pending/suspect state before non-gating observers; store close/reset releases all process-local status. | Runtime store owns opaque fencing; session service owns session status | F92A-DP1 | S92A-OWNER-FAILURE | Passing |
+| F92A-C05 | The session journal is the only durable event authority.  No harness, shell, Board, or storage adapter owns a parallel session-history overlay, and no new SQLite outbox or durable subscriber cursor exists. | Session application service and SQLite adapter boundary | F92A-DP1 | Source-boundary audit, S92A-SETTLEMENT | Passing |
+| F92A-C06 | Public Org Canvas Daily completes two context-dependent turns while SQLite is delayed; input and heartbeat remain responsive; release creates no duplicate visible or durable event. | Public Org Canvas/Grimoire composition | F92A-DP2 | S92A-DAILY-TWO-TURN | Passing |
 
 * Design
 
@@ -508,8 +512,33 @@ Acceptance requires:
 7. Board pickup retains its composite commit-first transaction and tests.
 8. Full repository gates pass and leave no worker process behind.
 
-Do not mark the addendum implemented, claim Daily fixed, or commit production
-implementation before these conditions hold.
+All conditions above held for implementation commit =9857214a= before it was
+committed.
+
+* Implementation evidence
+
+Implementation commit =9857214a= replaced the session lane, post-ACK
+publication outbox, reconciliation, terminal-token queue, and exact
+application-level accounting with the accepted direct lifecycle.  It also
+removed the rejected harness history overlay, moved suspect policy into the
+session service, retained Board pickup's cross-owner transaction, and changed
+harness activity to an O(1) session read.
+
+The exact pre-commit manifest was
+=2821a8f96c308412d80b2e73686a130689f65851a180de11d47bb0161fe46bb2=.
+Repository evidence on that unchanged manifest:
+
+- session owner tests: 24/24;
+- public Org Canvas graphical selector: 1/1 twice, 2.174 and 2.050 seconds;
+- full repository suite: 2,844/2,844, zero unexpected, 292.16 seconds;
+- =eldev compile=, changed-Lisp =check-parens=, and =git diff --check=: pass;
+- deleted-helper, private chat-to-async, and rejected-overlay inventories: empty;
+- isolated graphical/runtime-worker/HTTP orphan audit: empty; and
+- independent implementation review: =implementation-fixed-point= with no
+  P0--P3 finding.
+
+No running Emacs or canonical SQLite database was opened or changed.  This core
+session lifecycle change requires a full Emacs restart before live validation.
 
 * Architecture self-check
 

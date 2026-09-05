@@ -15,20 +15,20 @@ rebaseline that feature's source anchors and assumptions against the accepted
 Feature 91 module boundaries.  Existing statuses remain unchanged because they
 record each feature's lifecycle state.
 
-Feature 92 is =In-review=: DP5A independently accepted its event-driven
+Feature 92 remains =In-review=: DP5A independently accepted its event-driven
 runtime-store substrate, and independent review accepted the bounded opt-in
 DP5B session-command foundation plus its non-fork durable-mutation expansion.
 The 2026-09-05 pragmatic rebaseline supersedes the unfinished fork/lifecycle and
 exact-accounting gates: current work is one enqueue-and-return worker FIFO,
 owner-local persistence-suspect warnings, public Daily/Board/chat composition,
 per-session validation/quarantine, and a classified all-interactive-path audit.
-The minimum public new-Daily delay/release/failure scenario passed its isolated
-one-turn graphical repository gate, but a live second turn exposed a stale
-provider-context gap that the fixed-output backend did not test.  The Feature 92
-accepted-session projection addendum is =Planned= and supersedes the Daily
-completion claim until its data-dependent two-turn graphical gate passes.  Live
-restart validation has not been run; per-session quarantine, the all-domain
-audit, and the broader roadmap remain.
+The accepted-session projection addendum is =Done= in implementation
+=9857214a=: its exact candidate passed a data-dependent public two-turn Org
+Canvas gate twice, 2,844/2,844 repository tests, and independent implementation
+review.  This closes the reproduced acknowledgement-gated provider-context gap
+without adding a second history authority.  Live restart validation has not
+been run; per-session quarantine, the all-domain audit, and the broader Feature
+92 roadmap remain, so the feature as a whole stays =In-review=.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

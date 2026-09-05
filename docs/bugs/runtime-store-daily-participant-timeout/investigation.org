@@ -3,6 +3,15 @@
 
 * Status
 
+The accepted-session projection correction is implemented in =9857214a= and
+passes the exact public two-turn Org Canvas graphical gate twice.  Provider
+request two contains prompt one, its data-dependent response, and prompt two
+while SQLite remains delayed; release republishes nothing, and owner failure
+does not prevent unrelated persistence/reopen.  The exact candidate also passed
+2,844/2,844 repository tests and independent implementation review with no
+P0--P3 finding.  The user's running Emacs and canonical database were untouched;
+a full Emacs restart is required before live validation.
+
 DP5A transport substrate, a bounded DP5B session-command foundation, and its
 non-fork durable-mutation expansion are independently accepted.  The earlier
 minimum-Daily acceptance claim was invalid: its graphical witness opened and
@@ -676,3 +685,28 @@ real open acknowledgement, and handles a successful subsequent request.  The
 runtime owner selector passes 68/68 in 23.14s; Board seam 1/1; RSS 240,664,576
 bytes; parens/diff/timer/no-orphan audits pass.  This is evidence only:
 Feature 92 remains =In-review= pending independent correction review.
+
+* Accepted-session projection correction
+
+Implementation =9857214a= removes the acknowledgement-gated session projection.
+One bounded command is prepared, admitted to the runtime FIFO, and installed in
+the session-owned effective aggregate before the facade returns.  SQLite ACK
+retires pending state only.  Failure retains the installed projection, records
+one bounded first cause for that session, and fences only writes for that owner.
+The runtime remains the only FIFO and terminal-delivery carrier; the SQLite
+journal remains the only durable history.
+
+The correction also removes the session lane scheduler, post-ACK publication
+outbox, reconciliation barrier, terminal-token queue, exact application-level
+graph accounting, and the rejected harness accepted-message overlay.  Board
+pickup retains its separate cross-owner commit-first transaction.  Chat and
+harness consumers now use the session facade, and activity identity reads the
+aggregate tail in O(1).
+
+The exact pre-commit manifest
+=2821a8f96c308412d80b2e73686a130689f65851a180de11d47bb0161fe46bb2=
+passed 24/24 session owner tests, the public data-dependent Org Canvas graphical
+scenario twice, and 2,844/2,844 repository tests.  Independent review found no
+P0--P3 issue.  Structural, deleted-helper, boundary, and no-orphan audits also
+passed.  No running Emacs or canonical SQLite store was touched; live behavior
+requires a full Emacs restart.

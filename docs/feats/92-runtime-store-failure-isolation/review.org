@@ -5,6 +5,14 @@
 
 * Status
 
+The accepted-session projection addendum reached
+=implementation-fixed-point= on pre-commit manifest
+=2821a8f96c308412d80b2e73686a130689f65851a180de11d47bb0161fe46bb2=
+and is implemented in =9857214a=.  Its six addendum contracts and two delivery
+packages are accepted.  Feature 92 as a whole remains =In-review= because the
+separately deferred session quarantine and all-domain reachability roadmap is
+not complete.
+
 In-review.  Independent implementation review reached
 =implementation-review-fixed-point= for DP5A under plan
 =eda83c928ba047dc0201d2f64922af927e0184da= on base
@@ -796,3 +804,32 @@ changed-Lisp =check-parens= and =git diff --check= pass; the selector-wide
 runtime timer audit and final read-only no-orphan audit pass.  No graphical or
 full repository suite ran for this narrow correction, and Feature 92 remains
 =In-review= pending independent review.
+
+* Accepted-session projection addendum acceptance
+
+The independent review/fix loop used plan blob
+=38a70772720abff4d9597c33b3a02e3929dc6862= and baseline
+=c0cb29f311c44cb6b118733d2320fec57a6cfefe=.  Two correction rounds closed the
+post-submit observer-install gap, pending registration rollback, suspect-owner
+fencing, suspect no-op behavior, reset/close callback isolation, pre-freeze
+practical bounds, chat/session dependency direction, facade-family evidence,
+dead accounting machinery, and O(1) activity lookup.  Final independent source
+review found no P0--P3 issue.
+
+The exact unchanged candidate passed:
+
+- session async owner tests 24/24;
+- context-dependent public Org Canvas graphical test twice, 1/1 at 2.174 and
+  2.050 seconds;
+- full repository tests 2,844/2,844 with zero unexpected results;
+- compilation, changed-Lisp parenthesis checks, and diff checks; and
+- deleted-helper/private-boundary inventories plus a no-orphan process audit.
+
+The graphical backend derives responses from captured provider requests.  Its
+second request must contain the first prompt, first derived answer, and second
+prompt while ordinary SQLite session appends remain delayed.  The same scenario
+also covers responsive input/heartbeat, same-Board timer admission, no duplicate
+publication after release, owner-local failure, and unrelated session reopen.
+
+No live Emacs or canonical database participated.  The implementation requires
+a full Emacs restart for live use.
