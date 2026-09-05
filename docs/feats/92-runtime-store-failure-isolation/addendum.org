@@ -536,6 +536,14 @@ Batch compilation also passes with only the pre-existing warnings.
 
 ** Default runtime prewarming
 
+This subsection records the implementation and evidence accepted at
+=863b8265=, but its architectural conclusion is superseded by
+[[file:addendum2.org][Addendum 2]].  Live startup later proved that calling full
+runtime composition from the startup hook synchronously hydrates the complete
+session catalog and enumerates durable identities.  The accepted asynchronous
+mutation, projection, latency, and owner-local failure contracts in this
+addendum remain in force; only full-composition startup prewarming is rejected.
+
 Interactive =e= startup now begins the default runtime's asynchronous cold-open
 phase after init-time configuration has established the final runtime directory.
 Loading =e= after Emacs initialization begins the same open immediately.  The

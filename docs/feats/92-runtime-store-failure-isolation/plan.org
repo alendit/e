@@ -66,6 +66,16 @@ authority for this gap.  Where it conflicts with =F92-C07=, =F92-DP6B=, or
 Daily behavior is failing until its context-dependent two-turn graphical gate
 passes.
 
+A later live startup counterexample invalidated the default-runtime prewarming
+claim: transport open was asynchronous, but full runtime composition
+immediately entered synchronous catalog hydration and durable identity
+reconciliation.  The [[file:addendum2.org][SQLite-owned query state addendum]]
+is the current authority for startup, session/catalog/checkpoint, Board restore,
+task restore, and remaining interactive-read architecture.  It removes
+whole-store Emacs mirrors and opaque catalog/checkpoint runtime projections
+instead of attempting to prewarm them in the background.  Feature 92 remains
+=In-review= and the addendum is =Planned=.
+
 * Behavioral goal
 
 - Goal ID :: =BUG-RUNTIME-STORE-ISOLATION=

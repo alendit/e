@@ -27,14 +27,15 @@ The accepted-session projection addendum is =Done= in implementation
 Canvas gate twice, 2,844/2,844 repository tests, and independent implementation
 review.  This closes the reproduced acknowledgement-gated provider-context gap
 without adding a second history authority.  Its minimal runtime-latency
-extension now reports bounded process-local active, queued, FIFO-wait,
+extension reports bounded process-local active, queued, FIFO-wait,
 dispatch-to-settlement, and end-to-end timing through the existing nonblocking
-status surface; it performs no SQLite read to observe SQLite work.  Interactive
-=e= startup also begins asynchronous default-runtime prewarming without
-materializing the lazy harnesses or awaiting worker readiness.  Live restart
-validation has not been run; per-session quarantine, the all-domain audit, and
-the broader Feature 92 roadmap remain, so the feature as a whole stays
-=In-review=.
+status surface; it performs no SQLite read to observe SQLite work.  A subsequent
+live startup counterexample invalidated the full-composition prewarm claim:
+session construction still synchronously hydrated the complete catalog and
+enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =Planned= to make startup
+transport-only, replace catalog/checkpoint blobs and process-wide mirrors with
+bounded SQLite queries and active working sets, bound Board/task restore, and
+remove remaining interactive storage awaits.  Feature 92 remains =In-review=.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
