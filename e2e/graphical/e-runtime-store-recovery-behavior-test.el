@@ -140,6 +140,7 @@ chat window tree after this test has already started its surface assertion."
          sessions reader runtime stream harness target input backing-chat session-id
          failure-target failure-input failure-chat failure-id
          unrelated-target unrelated-input unrelated-chat unrelated-id heartbeat-timer
+         first-response second-response
          (heartbeat 0)
          (e-org-canvas-input-auto-close-delay nil)
          synchronous-operation service-events service-subscription)
@@ -162,9 +163,19 @@ chat window tree after this test has already started its surface assertion."
                 (find-file-noselect
                  (expand-file-name "2026-09-05.org" canvas-directory)))
           (e-session-enable sessions)
+          ;; Match the public default harness's Org Canvas layer.  The injected
+          ;; stream replaces only the network backend; context still comes from
+          ;; the real gated capability used by production Daily.
+          (e-harness-set-intrinsic-capabilities
+           harness
+           (append (e-harness-intrinsic-capabilities harness)
+                   (e-layer-capabilities (e-org-canvas-layer-create))))
           (with-current-buffer target
             (org-mode)
-            (insert "* Daily\n")
+            (insert "* Daily\n"
+                    "Project codename: Juniper\n"
+                    "Alert color: amber\n"
+                    "Amber action: request a human review.\n")
             (save-buffer))
           (e-runtime-store-recovery-graphical--prepare-frame)
           (set-window-buffer (selected-window) target)
@@ -174,22 +185,20 @@ chat window tree after this test has already started its surface assertion."
                 (run-at-time 0.01 0.01 (lambda () (cl-incf heartbeat))))
           ;; This is the command Grimoire Daily invokes on a fresh Org buffer.
           ;; No test-only session or Canvas binding exists before this call.
-          (let ((started (float-time)))
-            (setq input
-                  (with-timeout
-                      (1.0 (error "Public Org Canvas Daily open blocked"))
-                    (cl-letf (((symbol-function 'e-org-canvas--default-harness)
-                               (lambda () harness))
-                              ((symbol-function 'e-runtime-store-await)
-                               (lambda (_store request &optional _timeout)
-                                 (setq synchronous-operation
-                                       (e-runtime-store-request--operation
-                                        request))
-                                 (error "Org Canvas open awaited %S"
-                                        synchronous-operation))))
-                      (with-current-buffer target
-                        (e-org-canvas-prompt-document)))))
-            (should (< (- (float-time) started) 0.1)))
+          (setq input
+                (with-timeout
+                    (1.0 (error "Public Org Canvas Daily open blocked"))
+                  (cl-letf (((symbol-function 'e-org-canvas--default-harness)
+                             (lambda () harness))
+                            ((symbol-function 'e-runtime-store-await)
+                             (lambda (_store request &optional _timeout)
+                               (setq synchronous-operation
+                                     (e-runtime-store-request--operation
+                                      request))
+                               (error "Org Canvas open awaited %S"
+                                      synchronous-operation))))
+                    (with-current-buffer target
+                      (e-org-canvas-prompt-document)))))
           (should (buffer-live-p input))
           (setq session-id
                 (buffer-local-value 'e-org-canvas-input--session-id input))
@@ -225,22 +234,8 @@ chat window tree after this test has already started its surface assertion."
           (with-current-buffer input
             (goto-char (point-max))
             (e-graphical-test-type-text
-             "Are there any background refreshers running on the daily board?")
-            (let ((started (float-time)))
-              (cl-letf (((symbol-function 'e-runtime-store-await)
-                         (lambda (_store request &optional _timeout)
-                           (setq synchronous-operation
-                                 (e-runtime-store-request--operation request))
-                           (error "Org Canvas turn awaited %S"
-                                  synchronous-operation))))
-                (e-org-canvas-input-submit))
-              (should (< (- (float-time) started) 0.1))))
-          (e-graphical-test-wait-until
-           (lambda ()
-             (e-runtime-store-recovery-graphical--pump-runtime runtime)
-             (e-runtime-store-recovery-graphical--runtime-operation-p
-              runtime 'board-routing-put))
-           1.0 "same-Board classification timer admission")
+             (concat "Remember this Daily decision: project Juniper uses alert "
+                     "amber. Confirm both.")))
           (should (> heartbeat 3))
           (should-not
            (e-board-mutation-frozen-p
@@ -262,9 +257,46 @@ chat window tree after this test has already started its surface assertion."
                   :state)
                  'finished))
            3.0 "Org Canvas session readiness")
+          ;; Hold ordinary transcript persistence only after composite
+          ;; readiness.  Both provider turns must consume the installed
+          ;; projection while their physical writes remain blocked.
+          (e-runtime-store-recovery-graphical--arm-stall
+           stall-directory 'session-append)
+          (with-current-buffer input
+            (cl-letf (((symbol-function 'e-runtime-store-await)
+                       (lambda (_store request &optional _timeout)
+                         (setq synchronous-operation
+                               (e-runtime-store-request--operation request))
+                         (error "Org Canvas turn awaited %S"
+                                synchronous-operation))))
+              (with-timeout
+                  (1.0 (error "Public first Org Canvas submit blocked"))
+                (e-org-canvas-input-submit))))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--runtime-operation-p
+              runtime 'board-routing-put))
+           1.0 "same-Board classification timer admission")
           (e-graphical-test-wait-until
            (lambda () (e-graphical-test-stream-active-p stream))
            1.0 "Org Canvas provider request after release")
+          (let* ((requests (e-graphical-test-stream-requests stream))
+                 (wire (prin1-to-string
+                        (plist-get (car requests) :messages))))
+            (should (= (length requests) 1))
+            (should (string-match-p "Org Canvas mode is active" wire))
+            (should (string-match-p "document-uri=.*2026-09-05.org" wire))
+            (should
+             (string-match
+              "project \\([[:alpha:]]+\\) uses alert \\([[:alpha:]]+\\)"
+              wire))
+            ;; Build the fake provider answer from the actual request.  A
+            ;; canned stream cannot satisfy this assertion or the next turn.
+            (setq first-response
+                  (format "Confirmed: project %s uses alert %s."
+                          (match-string 1 wire)
+                          (match-string 2 wire))))
           (cl-letf (((symbol-function 'e-runtime-store-await)
                      (lambda (_store request &optional _timeout)
                        (unless synchronous-operation
@@ -273,11 +305,10 @@ chat window tree after this test has already started its surface assertion."
                        (error "Org Canvas callback awaited %S"
                               synchronous-operation))))
             (e-graphical-test-stream-emit
-             stream '(:type reasoning-delta :content "checking background work")
+             stream '(:type reasoning-delta :content "reading the Daily facts")
              0.01)
             (e-graphical-test-stream-emit
-             stream '(:type assistant-message
-                      :content "No background refresher is blocking this Daily.")
+             stream (list :type 'assistant-message :content first-response)
              0.02)
             (e-graphical-test-stream-finish stream 0.03)
             (e-graphical-test-wait-until
@@ -294,25 +325,86 @@ chat window tree after this test has already started its surface assertion."
             (should-not (string-match-p "Turn failed" (buffer-string))))
           (e-graphical-test-wait-until
            (lambda ()
+             (with-current-buffer input
+               (string-match-p (regexp-quote first-response) (buffer-string))))
+           2.0 "first data-dependent Org Canvas response")
+          ;; Each Org Canvas prompt is a public one-shot composer.  Reopen the
+          ;; Daily prompt for the already-bound session instead of mutating the
+          ;; submitted result pane back into a composer.
+          (setq input
+                (with-timeout
+                    (1.0 (error "Public second Org Canvas prompt blocked"))
+                  (cl-letf (((symbol-function 'e-org-canvas--default-harness)
+                             (lambda () harness))
+                            ((symbol-function 'e-runtime-store-await)
+                             (lambda (_store request &optional _timeout)
+                               (setq synchronous-operation
+                                     (e-runtime-store-request--operation
+                                      request))
+                               (error "Second Org Canvas prompt awaited %S"
+                                      synchronous-operation))))
+                    (with-current-buffer target
+                      (e-org-canvas-prompt-document)))))
+          (should (eq (window-buffer (selected-window)) input))
+          (with-current-buffer input
+            (goto-char (point-max))
+            (e-graphical-test-type-text
+             (concat "Using the alert from our previous turn, which project "
+                     "needs a human review?"))
+            (cl-letf (((symbol-function 'e-runtime-store-await)
+                       (lambda (_store request &optional _timeout)
+                         (setq synchronous-operation
+                               (e-runtime-store-request--operation request))
+                         (error "Second Org Canvas turn awaited %S"
+                                synchronous-operation))))
+              (with-timeout
+                  (1.0 (error "Public second Org Canvas submit blocked"))
+                (e-org-canvas-input-submit))))
+          (e-graphical-test-wait-until
+           (lambda () (e-graphical-test-stream-active-p stream))
+           1.0 "second Org Canvas provider request while SQLite delayed")
+          (let* ((requests (e-graphical-test-stream-requests stream))
+                 (wire (prin1-to-string
+                        (plist-get (cadr requests) :messages))))
+            (should (= (length requests) 2))
+            (should (string-match-p (regexp-quote first-response) wire))
+            (should (string-match-p
+                     "which project needs a human review" wire))
+            (should
+             (string-match
+              "Confirmed: project \\([[:alpha:]]+\\) uses alert \\([[:alpha:]]+\\)"
+              wire))
+            (setq second-response
+                  (format "Request a human review for %s because %s requires it."
+                          (match-string 1 wire)
+                          (match-string 2 wire))))
+          (e-graphical-test-stream-emit
+           stream (list :type 'assistant-message :content second-response)
+           0.01)
+          (e-graphical-test-stream-finish stream 0.02)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (or (e-graphical-test-stream-failure stream)
+                 (not (e-graphical-test-stream-active-p stream))))
+           2.0 "second data-dependent provider completion")
+          (should-not (e-graphical-test-stream-failure stream))
+          (should (> heartbeat 3))
+          (should (e-session-async-pending-p sessions session-id))
+          (e-runtime-store-recovery-graphical--release-stall
+           stall-directory 'session-append)
+          (e-graphical-test-wait-until
+           (lambda ()
              (e-runtime-store-recovery-graphical--pump-runtime runtime)
              (and (not (e-session-async-pending-p sessions session-id))
                   (null (e-runtime-store--active-request runtime))
                   (null (e-runtime-store--client-queue runtime))))
            3.0 "Org Canvas persistence drain")
-          (condition-case _wait-error
-              (e-graphical-test-wait-until
-               (lambda ()
-                 (with-current-buffer input
-                   (string-match-p
-                    "No background refresher is blocking this Daily"
-                    (buffer-string))))
-               2.0 "Org Canvas visible response after persistence release")
-            (ert-test-failed
-             (ert-fail
-              (format "Org Canvas response missing: events=%S input=%S"
-                      (reverse service-events)
-                      (and (buffer-live-p input)
-                           (with-current-buffer input (buffer-string)))))))
+          (should (= (e-runtime-store-recovery-graphical--count-string
+                      first-response backing-chat)
+                     1))
+          (should (= (e-runtime-store-recovery-graphical--count-string
+                      second-response backing-chat)
+                     1))
           (should
            (cl-find-if
             (lambda (event)
@@ -322,7 +414,7 @@ chat window tree after this test has already started its surface assertion."
            (cl-find-if
             (lambda (message)
               (equal (plist-get message :content)
-                     "No background refresher is blocking this Daily."))
+                     second-response))
             (e-session-messages sessions session-id)))
 
           ;; Fail a second real Org Canvas Daily during its session admission.
@@ -389,12 +481,12 @@ chat window tree after this test has already started its surface assertion."
           (e-graphical-test-wait-until
            (lambda ()
              (e-runtime-store-recovery-graphical--pump-runtime runtime)
-             (and (e-session-storage-session-suspect sessions failure-id)
+             (and (e-session-persistence-suspect sessions failure-id)
                   (buffer-local-value
                    'e-org-canvas--persistence-warning failure-target)))
            2.0 "failure Daily visible owner-local warning")
           (should-not
-           (e-session-storage-session-suspect sessions session-id))
+           (e-session-persistence-suspect sessions session-id))
           (should
            (e-chat-service-binding-first-persistence-error
             (e-chat-service-binding harness failure-id)))
@@ -494,6 +586,8 @@ chat window tree after this test has already started its surface assertion."
       (ignore-errors
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'board-create)
+        (e-runtime-store-recovery-graphical--release-stall
+         stall-directory 'session-append)
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'session-append-batch))
       (dolist (buffer (list input backing-chat target

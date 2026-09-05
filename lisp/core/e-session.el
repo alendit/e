@@ -581,12 +581,10 @@ This historical facade name no longer selects or falls back to JSONL."
                      (e-session-missing nil))))
       (if (or (plist-get session :loaded)
               ;; A same-session operation may follow a pending create.  Its
-              ;; sealed command remains coordinator-owned; the facade gets no
-              ;; mutable aggregate before acknowledgement.
+              ;; aggregate install is already effective even though physical
+              ;; durability remains pending.
               (and (e-session-async-enabled-p store)
-                   (or (e-session-async-pending-p store session-id)
-                       (e-session-async-reconciliation-required-p
-                        store session-id))))
+                   (e-session-async-pending-p store session-id)))
           session
         (progn
           (puthash key t e-session--lazy-load-in-progress)
@@ -1199,6 +1197,18 @@ This historical facade name no longer selects or falls back to JSONL."
   "Return process-wide physical storage durability state."
   (e-session-storage-unsettled-state))
 
+(defun e-session-persistence-suspect (store session-id)
+  "Return SESSION-ID's bounded process-local persistence suspicion, or nil."
+  (e-session-async-session-suspect store session-id))
+
+(defun e-session-note-persistence-failure (store session-id error)
+  "Retain SESSION-ID's first bounded persistence ERROR and return it.
+
+This application-service boundary is for composite session/Board operations
+whose physical submission does not pass through the ordinary session command
+facade."
+  (e-session-async--note-suspect store session-id error))
+
 (defun e-session-checkpoint-dirty-session-ids (store)
   "Return STORE's sessions with pending physical checkpoints."
   (e-session-storage-checkpoint-dirty-session-ids store))
@@ -1228,6 +1238,11 @@ This historical facade name no longer selects or falls back to JSONL."
   "Return SESSION-ID activity events."
   (e-session--ensure-loaded store session-id)
   (e-session-aggregate-activity-events store session-id))
+
+(defun e-session-latest-activity-event (store session-id)
+  "Return SESSION-ID's latest durable activity event in constant time."
+  (e-session--ensure-loaded store session-id)
+  (e-session-aggregate-latest-activity-event store session-id))
 
 (defun e-session-latest-token-usage-event (store session-id)
   "Return latest token-usage activity event."

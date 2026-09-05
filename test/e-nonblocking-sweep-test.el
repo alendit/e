@@ -37,7 +37,6 @@
     ("lisp/core/e-runtime-store-offline.el" "process-file" 1)
     ;; The runtime client waits cooperatively for typed worker responses; all
     ;; SQLite work itself remains in the subordinate process.
-    ("lisp/core/e-runtime-store.el" "accept-process-output" 2)
     ;; The third occurrence is the explicit eager-store loop.  The sixth is
     ;; the offline migration-only catalog rebuild, which loads and unloads one
     ;; session at a time.  Interactive resume continues to use

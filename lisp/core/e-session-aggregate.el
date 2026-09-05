@@ -37,6 +37,12 @@
 (define-error 'e-session-command-too-large
   "Session command producer exceeds its domain limit" 'e-session-error)
 
+(defconst e-session-aggregate-command-practical-byte-limit (* 1024 1024)
+  "Maximum aggregate-owned producer bytes admitted before detachment.")
+
+(defconst e-session-aggregate-command-practical-node-limit 8192
+  "Maximum producer container visits admitted before detachment.")
+
 (defvar e-session-aggregate--committed-apply-fault-function nil
   "Optional test-only function called at committed-apply journal boundaries.")
 
@@ -74,11 +80,20 @@
 
 (cl-defstruct (e-session-aggregate-command
                (:constructor e-session-aggregate-command--create))
-  "One sealed C07 command, owned by an aggregate lane until interpretation.
+  "One sealed durable command owned by the session application service.
 
 The command deliberately stores semantic tag/identity/input only; it never
 contains a staged session or a caller-provided mutation closure."
-  tag session-id arguments request-id delta-id timestamp account)
+  tag session-id arguments request-id delta-id timestamp)
+
+(cl-defstruct (e-session-aggregate-install-token
+               (:constructor e-session-aggregate--install-token-create))
+  "One bounded prevalidated aggregate mutation prepared before FIFO admission.
+
+COMMAND, DELTA, and BODY share the frozen producer leaves.  Applying the token
+publishes at most DELTA's one record to the effective aggregate; it never owns
+a second session projection."
+  command delta body result installed)
 
 (defconst e-session-aggregate-command-tags
   '(create append-message append-activity context-curation-response
@@ -86,90 +101,6 @@ contains a staged session or a caller-provided mutation closure."
     context-generation context-curation-package clear-messages
     board-message board-state board-messages-clear delete session-info)
   "Closed durable command tags implemented by the C07 session grammar.")
-
-(defconst e-session-aggregate-command-schema
-  '((create :tags (create) :producer-max 16777216 :nodes 1024
-            :node-bytes 256
-            :fixed-nodes ((command . 32) (delta . 64) (undo . 128))
-            :delta-bytes 262144 :reference-nodes 32 :fixed-fields 12)
-    (append :tags (append-message append-activity context-curation-response
-                                  process-report context-generation
-                                  context-curation-package board-message)
-            :producer-max 16777216 :nodes 512 :node-bytes 256
-            :fixed-nodes ((command . 32) (delta . 96) (undo . 128))
-            :delta-bytes 131072 :reference-nodes 32 :fixed-fields 16)
-    (state :tags (session-info branch-summary compaction provider-anchor
-                               board-state)
-           :producer-max 16777216 :nodes 384
-           :node-bytes 256
-            :fixed-nodes ((command . 32) (delta . 96) (undo . 128))
-            :delta-bytes 98304 :reference-nodes 32 :fixed-fields 24)
-    (control :tags (message-display clear-messages board-messages-clear delete)
-             :producer-max 65536 :nodes 128 :node-bytes 256
-             :fixed-nodes ((command . 16) (delta . 16) (undo . 32))
-             :delta-bytes 32768 :reference-nodes 32 :fixed-fields 8))
-  "Normative accounting schema for the implemented sealed command families.
-
-The fixed-node ledger explicitly enumerates sealed-command, durable-delta, and
-transactional-undo nodes.  Every retained caller cons/vector/hash container
-and each hash entry consumes one of the remaining family N slots.  D is
-generated as N*NODE-BYTES and reserves that total physical container budget.
-The fixed-field count also drives the
-maximum transport-visible envelope used to calculate exact frame escrow;
-adding a tag or widening a family therefore changes one domain authority
-rather than a coordinator constant.")
-
-(defconst e-session-aggregate--maximum-identity (make-string 128 ?x))
-(defconst e-session-aggregate--maximum-time (make-string 32 ?9))
-(defconst e-session-aggregate--maximum-fixed-value (make-string 128 ?x))
-(defconst e-session-aggregate--maximum-fixed-keys
-  '(:fixed-00 :fixed-01 :fixed-02 :fixed-03 :fixed-04 :fixed-05
-    :fixed-06 :fixed-07 :fixed-08 :fixed-09 :fixed-10 :fixed-11
-    :fixed-12 :fixed-13 :fixed-14 :fixed-15 :fixed-16 :fixed-17
-    :fixed-18 :fixed-19 :fixed-20 :fixed-21 :fixed-22 :fixed-23)
-  "Pre-existing keys for the largest schema envelope.")
-
-(defun e-session-aggregate-command-family (tag)
-  "Return the closed accounting family containing command TAG."
-  (or (cl-loop for (family . spec) in e-session-aggregate-command-schema
-               when (memq tag (plist-get spec :tags)) return family)
-      (signal 'e-session-error (list "Unsupported session command tag" tag))))
-
-(defun e-session-aggregate-command-family-spec (family)
-  "Return the normative accounting specification for FAMILY."
-  (or (assq family e-session-aggregate-command-schema)
-      (signal 'e-session-error
-              (list "Unsupported session command family" family))))
-
-(defun e-session-aggregate-command-delta-bytes (family)
-  "Return FAMILY's generated D charge and verify its node equation."
-  (let* ((spec (e-session-aggregate-command-family-spec family))
-         (generated (* (plist-get (cdr spec) :node-bytes)
-                       (plist-get (cdr spec) :nodes)))
-         (declared (plist-get (cdr spec) :delta-bytes)))
-    (unless (= generated declared)
-      (signal 'e-session-error
-              (list "Session command schema D/node mismatch" family)))
-    generated))
-
-(defun e-session-aggregate-command-fixed-nodes (family)
-  "Return FAMILY's mechanically summed command/delta/undo node ledger."
-  (let* ((spec (cdr (e-session-aggregate-command-family-spec family)))
-         (groups (plist-get spec :fixed-nodes)))
-    (unless (equal (mapcar #'car groups) '(command delta undo))
-      (signal 'e-session-error
-              (list "Session command fixed-node ledger is incomplete" family)))
-    (cl-loop for (_component . nodes) in groups
-             unless (and (integerp nodes) (> nodes 0))
-             do (signal 'e-session-error
-                        (list "Invalid session fixed-node budget" family groups))
-             sum nodes)))
-
-(defun e-session-aggregate-command-reference-bytes (family)
-  "Return FAMILY's schema-generated fixed R reference charge."
-  (* 256
-     (plist-get (cdr (e-session-aggregate-command-family-spec family))
-                :reference-nodes)))
 
 (defun e-session-aggregate--bounded-domain-string-p (value limit)
   "Return non-nil when VALUE is nil or a string of at most LIMIT bytes."
@@ -220,109 +151,73 @@ rather than a coordinator constant.")
             position (next-property-change position string (length string))))
     found))
 
-(defun e-session-aggregate--command-measure-producer-graph
-    (value byte-limit node-limit)
-  "Validate VALUE and return its exact retained producer graph measurement.
+(defun e-session-aggregate-command-practical-preflight (value)
+  "Reject impractical or cyclic producer VALUE before recursive detachment.
 
-The walk is cycle-safe and memoizes containers and strings by identity, so a
-shared producer leaf is charged once even when the command graph references it
-many times.  Every unique cons, vector, or hash table and every hash entry is
-charged as one physical container node.  It allocates no detached payload or
-canonical transport string."
+This bounded walk counts every wire-visible occurrence instead of retaining an
+exact object-graph ledger.  Shared values are therefore charged once per
+reference, while ACTIVE exists only to reject cycles."
   (let ((active (make-hash-table :test 'eq))
-        (seen (make-hash-table :test 'eq))
         (bytes 0)
         (nodes 0))
     (cl-labels
-        ((add-nodes
+        ((charge-bytes
           (count)
-          (cl-incf nodes count)
-          (when (> nodes node-limit)
+          (cl-incf bytes count)
+          (when (> bytes e-session-aggregate-command-practical-byte-limit)
             (signal 'e-session-command-too-large
-                    (list "Session command producer exceeds node limit"
-                          :limit node-limit :observed-at-least nodes))))
-         (add-string
-          (string)
-          (when (e-session-aggregate--string-properties-p string)
-            (signal 'e-session-error
-                    (list "Text properties are not durable")))
-          (unless (gethash string seen)
-            (puthash string t seen)
-            (cl-incf bytes (string-bytes string))
-            (when (> bytes byte-limit)
-              (signal 'e-session-command-too-large
-                      (list "Session command producer exceeds byte limit"
-                            :limit byte-limit :observed-at-least bytes)))))
+                    (list "Session command exceeds practical byte limit"
+                          :limit e-session-aggregate-command-practical-byte-limit
+                          :observed-at-least bytes))))
+         (charge-node
+          ()
+          (cl-incf nodes)
+          (when (> nodes e-session-aggregate-command-practical-node-limit)
+            (signal 'e-session-command-too-large
+                    (list "Session command exceeds practical node limit"
+                          :limit e-session-aggregate-command-practical-node-limit
+                          :observed-at-least nodes))))
+         (walk-container
+          (item thunk)
+          (when (gethash item active)
+            (signal 'e-session-error (list "Cyclic session command")))
+          (charge-node)
+          (puthash item t active)
+          (unwind-protect (funcall thunk) (remhash item active)))
          (walk
           (item)
           (cond
-           ((stringp item) (add-string item))
+           ((stringp item)
+            (when (e-session-aggregate--string-properties-p item)
+              (signal 'e-session-error (list "Text properties are not durable")))
+            (charge-bytes (string-bytes item)))
            ((null item) nil)
-           ((symbolp item)
-            (when (> (string-bytes (symbol-name item)) 128)
-              (signal 'e-session-error
-                      (list "Durable command symbol exceeds 128 bytes"))))
-           ((integerp item)
-            (when (> (string-bytes (number-to-string item)) 32)
-              (signal 'e-session-error
-                      (list "Durable command integer exceeds 32 bytes"))))
-           ((floatp item)
-            (unless (and (= item item) (not (= (abs item) 1.0e+INF)))
-              (signal 'e-session-error (list "Non-finite durable number")))
-            (when (> (string-bytes (prin1-to-string item)) 32)
-              (signal 'e-session-error
-                      (list "Durable command float exceeds 32 bytes"))))
+           ((symbolp item) (charge-bytes (string-bytes (symbol-name item))))
+           ((numberp item)
+            (charge-bytes (string-bytes (prin1-to-string item))))
            ((e-context-lifetime-generation-p item)
-            (when (gethash item active)
-              (signal 'e-session-error (list "Cyclic session command")))
-            (unless (gethash item seen)
-              (add-nodes 1)
-              (puthash item t active)
-              (puthash item t seen)
-              (unwind-protect
-                  (progn
-                    (walk (e-context-lifetime-generation-id item))
-                    (walk (e-context-lifetime-generation-checkpoint item))
-                    (walk (e-context-lifetime-generation-covered-session-boundary
-                           item)))
-                (remhash item active))))
-           ((or (consp item) (vectorp item) (hash-table-p item))
-            (when (gethash item active)
-              (signal 'e-session-error (list "Cyclic session command")))
-            (unless (gethash item seen)
-              ;; A hash entry is a retained association node in addition to
-              ;; the hash container itself.  Cons spines already present one
-              ;; distinct cons object per association/value pair.
-              (add-nodes (+ 1 (if (hash-table-p item)
-                                  (hash-table-count item)
-                                0)))
-              (puthash item t active)
-              (puthash item t seen)
-              (unwind-protect
-                  (cond
-                   ((consp item) (walk (car item)) (walk (cdr item)))
-                   ((vectorp item)
-                    (dotimes (index (length item)) (walk (aref item index))))
-                   (t (maphash (lambda (key entry)
-                                 (walk key) (walk entry)) item)))
-                (remhash item active))))
-           (t (signal 'e-session-error
-                      (list "Unsupported durable command value"
-                            (type-of item)))))))
+            (walk-container
+             item
+             (lambda ()
+               (walk (e-context-lifetime-generation-id item))
+               (walk (e-context-lifetime-generation-checkpoint item))
+               (walk
+                (e-context-lifetime-generation-covered-session-boundary item)))))
+           ((consp item)
+            (walk-container item (lambda () (walk (car item)) (walk (cdr item)))))
+           ((vectorp item)
+            (walk-container
+             item (lambda ()
+                    (dotimes (index (length item)) (walk (aref item index))))))
+           ((hash-table-p item)
+            (walk-container
+             item (lambda ()
+                    (maphash (lambda (key entry) (walk key) (walk entry)) item))))
+           (t
+            (signal 'e-session-error
+                    (list "Unsupported durable command value" (type-of item)))))))
       (walk value))
     (list :bytes bytes :nodes nodes)))
-
-(defun e-session-aggregate-command-measure-producer
-    (value byte-limit &optional node-limit)
-  "Validate VALUE and return exact uniquely retained mutable leaf bytes.
-
-When NODE-LIMIT is non-nil, reject a producer whose unique retained container
-and hash-entry count exceeds it.  Domain accounting uses the detailed graph
-measurement internally so byte and node limits are checked in one traversal."
-  (plist-get
-   (e-session-aggregate--command-measure-producer-graph
-    value byte-limit (or node-limit most-positive-fixnum))
-   :bytes))
 
 (defun e-session-aggregate-command-freeze (value)
   "Detach VALUE while preserving every shared container and string alias."
@@ -384,136 +279,6 @@ measurement internally so byte and node limits are checked in one traversal."
                     (remhash item active)))))
             item)))
       (freeze value))))
-
-(defun e-session-aggregate--maximum-fixed-fields (count)
-  "Return COUNT fixed maximum-width fields for a transport envelope."
-  (unless (<= count (length e-session-aggregate--maximum-fixed-keys))
-    (signal 'e-session-error
-            (list "Session command schema has too many fixed fields" count)))
-  (let ((keys e-session-aggregate--maximum-fixed-keys)
-        fields)
-    (dotimes (_index count fields)
-      (setq fields
-            (cons (pop keys)
-                  (cons e-session-aggregate--maximum-fixed-value fields))))))
-
-(defun e-session-aggregate-command-maximum-transport-body
-    (tag arguments &optional session-id)
-  "Return TAG's bounded maximum transport body referencing ARGUMENTS.
-
-Only its small fixed wrapper is constructed.  The caller graph is referenced,
-not copied, and the physical adapter measures the complete maximum request
-envelope without constructing a canonical frame."
-  (let* ((family (e-session-aggregate-command-family tag))
-         (spec (cdr (e-session-aggregate-command-family-spec family)))
-         (transport-arguments
-          (if-let* ((generation
-                     (and (eq tag 'context-generation)
-                          (plist-get arguments :generation)))
-                    (_ (e-context-lifetime-generation-p generation)))
-              (list :generation
-                    (list :record-version e-context-lifetime-record-version
-                          :type 'context-generation
-                          :id (e-context-lifetime-generation-id generation)
-                          :checkpoint
-                          (e-context-lifetime-generation-checkpoint generation)
-                          :covered-session-boundary
-                          (e-context-lifetime-generation-covered-session-boundary
-                           generation)))
-            arguments))
-         (fixed (e-session-aggregate--maximum-fixed-fields
-                 (plist-get spec :fixed-fields)))
-         (mirrors
-          (pcase tag
-            ('create
-             ;; The durable root repeats metadata :name as a top-level index
-             ;; field.  Mirror that caller leaf so Freserve counts both wire
-             ;; occurrences without copying it.
-             (list :mirror-name
-                   (plist-get (plist-get arguments :metadata) :name)))
-            ('append-message
-             ;; A caller-supplied creation time is both the nested message
-             ;; field and the durable record timestamp.
-             (list :mirror-created-at
-                   (plist-get (plist-get arguments :message) :created-at)))
-            ('board-state
-             (list :mirror-board-id (plist-get arguments :board-id)
-                   :mirror-principal (plist-get arguments :principal)))
-            ('process-report
-             (let ((report (plist-get arguments :report)))
-               (list :mirror-id (plist-get report :id)
-                     :mirror-parent-id (plist-get report :parent-id))))
-            (_ nil)))
-         (record
-          (append
-           (list :type e-session-aggregate--maximum-identity
-                 :session-id e-session-aggregate--maximum-identity
-                 :id e-session-aggregate--maximum-identity
-                 :delta-id e-session-aggregate--maximum-identity
-                 :parent-id e-session-aggregate--maximum-identity
-                 :timestamp e-session-aggregate--maximum-time
-                 :producer transport-arguments)
-           mirrors
-           fixed)))
-    (append
-     (list :op (if (eq family 'append)
-                   'session-append-with-tool-transition
-                 'session-append)
-           :session-id (or session-id e-session-aggregate--maximum-identity)
-           :record record)
-     (when (eq family 'append)
-       (list :continuity
-             (list :call-id e-session-aggregate--maximum-identity
-                   :state 'resulted
-                   :payload
-                   (list :turn-id e-session-aggregate--maximum-identity
-                         :event-id e-session-aggregate--maximum-identity
-                         :tool-name e-session-aggregate--maximum-identity)))))))
-
-(defun e-session-aggregate-command-accounting
-    (tag session-id arguments frame-measurer)
-  "Return TAG's exact domain accounting using physical FRAME-MEASURER.
-
-This function is the sole P/D/R/Freserve calculator.  FRAME-MEASURER accepts a
-maximum transport body and returns its exact complete protocol-frame bytes."
-  (let* ((family (e-session-aggregate-command-family tag))
-         (spec (cdr (e-session-aggregate-command-family-spec family)))
-         (producer-max (plist-get spec :producer-max))
-         (node-limit (plist-get spec :nodes))
-         (node-bytes (plist-get spec :node-bytes))
-         (fixed-nodes (e-session-aggregate-command-fixed-nodes family))
-         (producer-node-limit (- node-limit fixed-nodes))
-         (_valid-node-budget
-          (unless (> producer-node-limit 0)
-            (signal 'e-session-error
-                    (list "Session fixed nodes exhaust family budget" family))))
-         (producer-measurement
-          (e-session-aggregate--command-measure-producer-graph
-           arguments producer-max producer-node-limit))
-         (producer-bytes (plist-get producer-measurement :bytes))
-         (producer-nodes (plist-get producer-measurement :nodes))
-         ;; Graph measurement rejects cycles and unsupported objects before
-         ;; any semantic validator traverses nested producer structure.
-         (_semantic-valid
-          (e-session-aggregate-command-validate tag session-id arguments))
-         (delta-bytes (e-session-aggregate-command-delta-bytes family))
-         (reference-bytes
-          (e-session-aggregate-command-reference-bytes family))
-         (frame-reserve
-          (funcall frame-measurer
-                   (e-session-aggregate-command-maximum-transport-body
-                    tag arguments))))
-    (list :family family :producer-bytes producer-bytes
-          :producer-max producer-max :producer-nodes producer-nodes
-          :producer-node-limit producer-node-limit
-          :fixed-nodes fixed-nodes :total-nodes (+ fixed-nodes producer-nodes)
-          :producer-container-bytes (* producer-nodes node-bytes)
-          :fixed-container-bytes (* fixed-nodes node-bytes)
-          :accounted-container-bytes (* node-limit node-bytes)
-          :delta-bytes delta-bytes
-          :reference-bytes reference-bytes
-          :local-bytes (+ producer-bytes delta-bytes reference-bytes)
-          :frame-reserve frame-reserve)))
 
 (defun e-session-aggregate-command-validate (tag session-id arguments)
   "Validate the closed command TAG, SESSION-ID, and caller ARGUMENTS graph.
@@ -750,28 +515,54 @@ remains with the session application service because it owns admission."
                   (list "Invalid session-info command" field err)))))))
   t)
 
-(defun e-session-aggregate-command-seal
-    (tag session-id arguments accounting frame-measurer)
-  "Construct one aggregate-owned sealed command after admission.
+(defun e-session-aggregate-command-prepare (tag session-id arguments)
+  "Return a frozen validated TAG command without legacy exact graph accounting.
 
-ARGUMENTS is detached only after ACCOUNTING has been reserved.  FRAME-MEASURER
-rechecks frozen P/Freserve parity; a mismatch is an owner invariant failure."
+The caller must still preflight the resulting physical operation against the
+session adapter's practical record and batch limits before enqueue."
+  (e-session-aggregate-command-practical-preflight arguments)
   (e-session-aggregate-command-validate tag session-id arguments)
-  (let* ((frozen (e-session-aggregate-command-freeze arguments))
-         (session-id (or session-id (e-session-identity-generate-id)))
-         (frozen-accounting
-          (e-session-aggregate-command-accounting
-           tag session-id frozen frame-measurer)))
-    (unless (equal accounting frozen-accounting)
-      (signal 'e-session-error
-              (list "Frozen session command changed accounting" tag
-                    accounting frozen-accounting)))
+  (let ((frozen (e-session-aggregate-command-freeze arguments)))
     (e-session-aggregate-command--create
-     :tag tag :session-id (copy-sequence session-id) :arguments frozen
+     :tag tag
+     :session-id (copy-sequence
+                  (or session-id (e-session-identity-generate-id)))
+     :arguments frozen
      :request-id (e-session-identity-generate-ulid)
      :delta-id (e-session-identity-generate-ulid)
-     :timestamp (e-session-aggregate--timestamp)
-     :account accounting)))
+     :timestamp (e-session-aggregate--timestamp))))
+
+(defun e-session-aggregate-prepare-install-token (store command body-function)
+  "Prepare COMMAND's one install token against STORE's effective aggregate.
+
+BODY-FUNCTION receives the interpreted delta and returns the exact physical
+operation body.  No live state changes before the returned token is applied."
+  (let* ((delta (e-session-aggregate-command-interpret store command))
+         (body (and (plist-get delta :record)
+                    (funcall body-function delta))))
+    (e-session-aggregate--install-token-create
+     :command command :delta delta :body body)))
+
+(defun e-session-aggregate-apply-install-token (store token)
+  "Apply TOKEN once to STORE and return its frozen public facade result.
+
+The aggregate mutation and installed marker form one quit-inhibited
+transition.  `e-session-aggregate-apply-committed-record' supplies rollback
+for every touched aggregate reference when application fails."
+  (unless (e-session-aggregate-install-token-p token)
+    (signal 'wrong-type-argument
+            (list 'e-session-aggregate-install-token-p token)))
+  (when (e-session-aggregate-install-token-installed token)
+    (signal 'e-session-error (list "Session install token was already applied")))
+  (let ((delta (e-session-aggregate-install-token-delta token))
+        (command (e-session-aggregate-install-token-command token)))
+    (let ((inhibit-quit t))
+      (when-let ((record (plist-get delta :record)))
+        (e-session-aggregate-apply-committed-record store record))
+      (setf (e-session-aggregate-install-token-installed token) t))
+    (let ((result (e-session-aggregate-command-result store command delta)))
+      (setf (e-session-aggregate-install-token-result token) result)
+      result)))
 
 (defun e-session-aggregate-reset (store)
   "Clear all loaded semantic state in STORE before a replay pass.
@@ -2039,6 +1830,12 @@ its dedicated board journal accessors."
 (defun e-session-aggregate-activity-events (store session-id)
   "Return durable activity events for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-aggregate-get-live store session-id) :activity-events)))
+
+(defun e-session-aggregate-latest-activity-event (store session-id)
+  "Return the latest durable activity event for SESSION-ID in STORE."
+  (when-let* ((session (e-session-aggregate-get-live store session-id))
+              (tail (plist-get session :activity-events-tail)))
+    (copy-tree (car tail))))
 
 (defun e-session-aggregate-latest-token-usage-event (store session-id)
   "Return the latest durable token usage event for SESSION-ID in STORE."

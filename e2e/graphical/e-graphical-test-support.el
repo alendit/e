@@ -32,7 +32,8 @@
   on-error
   request
   timers
-  failure)
+  failure
+  requests)
 
 (defun e-graphical-test-stream-cancel (stream)
   "Cancel pending timers and clear callbacks owned by STREAM."
@@ -52,9 +53,12 @@
    :start
    (cl-function
     (lambda (&key messages options on-item on-done on-error on-request-start)
-      (ignore messages options)
       (when (e-graphical-test-stream-request stream)
         (error "Graphical test backend already has an active request"))
+      (setf (e-graphical-test-stream-requests stream)
+            (append (e-graphical-test-stream-requests stream)
+                    (list (list :messages (copy-tree messages)
+                                :options (copy-tree options)))))
       (let ((request
              (e-backend-request-create
               :cancel (lambda ()

@@ -37,6 +37,32 @@
       (should (= (plist-get event :board-activity-sequence)
                  (plist-get activity :board-activity-sequence))))))
 
+(ert-deftest e-harness-test-async-activity-install-uses-constant-time-tail ()
+  "Async activity publication reads the installed tail without a list scan."
+  (let* ((directory (make-temp-file "e-harness-activity-tail-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-storage-submit-owned)
+                   (lambda (&rest _) (list :held t))))
+          (e-harness-create-session harness :id "session-1")
+          (cl-letf (((symbol-function 'e-session-activity-events)
+                     (lambda (&rest _)
+                       (ert-fail "async activity path scanned the full list"))))
+            (let ((entry
+                   (e-harness-activity--append-durable-activity-event
+                    harness "session-1" "turn-1" 'note '(:value 1))))
+              (should (eq (plist-get entry :event-type) 'note))
+              (should
+               (equal (plist-get entry :id)
+                      (plist-get (e-session-latest-activity-event
+                                  store "session-1")
+                                 :id))))))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (delete-directory directory t))))
+
 (ert-deftest e-harness-test-abort-cancels-active-provider-request ()
   "Aborting an active async provider call cancels its request handle."
   (let* ((cancelled nil)
@@ -1532,7 +1558,12 @@ Return request options, persisted anchors, and the final context."
          write-index
          refreshed)
     (e-harness-create-session harness :id "session-1")
-    (e-session-async-enable (e-harness-sessions harness))
+    ;; This unit isolates activity publication with persistence itself mocked.
+    ;; Supply only the runtime-availability precondition of the public enable
+    ;; seam; real persistent composition is covered by session integration.
+    (cl-letf (((symbol-function 'e-session-storage-runtime-store)
+               (lambda (_store) t)))
+      (e-session-async-enable (e-harness-sessions harness)))
     (e-harness-activity-subscribe
      harness (lambda (event) (push event events)) :session-id "session-1")
     (cl-letf (((symbol-function 'e-session-append-activity-event)

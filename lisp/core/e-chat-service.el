@@ -1582,10 +1582,15 @@ resolved participant identity so restart never needs shell or caller policy."
     (operation _storage _result error)
   "Observe one Board settlement belonging to create OPERATION."
   (when (and error (null (e-chat-service-create-operation-error operation)))
-    (setf (e-chat-service-create-operation-error operation) (copy-tree error))
+    (let ((cause
+           (e-session-note-persistence-failure
+            (e-chat-service-create-operation-store operation)
+            (e-chat-service-create-operation-session-id operation)
+            error)))
+      (setf (e-chat-service-create-operation-error operation) cause)
     (when-let* ((binding (e-chat-service-create-operation-binding operation)))
       (setf (e-chat-service-binding-first-persistence-error binding)
-            (copy-tree error))))
+              (copy-tree cause)))))
   (e-chat-service--settle-create-operation operation))
 
 (defun e-chat-service--start-create-operation (operation)
@@ -1645,12 +1650,13 @@ resolved participant identity so restart never needs shell or caller policy."
              :records (vconcat records))
        (lambda (_result error)
          (if error
-             (progn
+             (let ((cause
+                    (e-session-note-persistence-failure
+                     store session-id error)))
                (unless (e-chat-service-create-operation-error operation)
-                 (setf (e-chat-service-create-operation-error operation)
-                       (copy-tree error)))
+                 (setf (e-chat-service-create-operation-error operation) cause))
                (setf (e-chat-service-binding-first-persistence-error binding)
-                     (copy-tree error)))
+                     (copy-tree cause)))
            (e-session-aggregate-commit-board-admission store session-id)
            (setf (e-chat-service-create-operation-session-committed operation) t))
          (e-chat-service--settle-create-operation operation))))))

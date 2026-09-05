@@ -521,7 +521,14 @@ fields outside that error contract."
                     :checkpoint-retain checkpoint-retain)))
        (when (and flush-index-p (not async-p))
          (e-session-refresh-index store))
-       event))))
+       ;; Async admission returns the durability work, while the successful
+       ;; enqueue has already installed the authoritative activity projection.
+       ;; Read that projection at the application boundary so Board source
+       ;; identity uses the durable activity sequence instead of a fallback
+       ;; counter that can collide with restored history.
+       (if (e-work-handle-p event)
+           (e-session-latest-activity-event store session-id)
+         event)))))
 
 (defun e-harness-activity--flush-reasoning-stream
     (harness session-id turn-id)

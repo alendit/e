@@ -14,6 +14,12 @@
   "Return FILE permission bits."
   (logand (file-modes file) #o777))
 
+(defun e-runtime-sqlite-p4-test--wait-ready (store)
+  "Observe STORE's asynchronous open before direct fixture access."
+  (when-let* ((request (e-runtime-store--open-control-request store)))
+    (e-runtime-store-await store request 5.0))
+  store)
+
 (defun e-runtime-sqlite-p4-test--write (file text)
   "Write TEXT to FILE for a disposable legacy fixture."
   (make-directory (file-name-directory file) t)
@@ -249,7 +255,9 @@
             (sqlite-execute db "DROP TABLE runtime_store_receipts")
             (sqlite-execute db "DROP TABLE runtime_store_state")
             (sqlite-close db))
-          (should-error (e-runtime-store-open directory)
+          (should-error
+           (e-runtime-sqlite-p4-test--wait-ready
+            (e-runtime-store-open directory))
                         :type 'e-runtime-store-schema-too-old)
           ;; Ordinary v4 open is a refusal, not an implicit partial upgrade.
           (let ((db (sqlite-open database)))
@@ -263,9 +271,10 @@
             (should (= (plist-get result :to) 5))
             (should (equal (plist-get result :integrity) "ok"))
             (should (= (e-runtime-sqlite-p4-test--mode backup) #o600)))
-          (setq store (e-runtime-store-open directory))
-          (should (= (plist-get (plist-get (e-runtime-store-status store)
-                                           :startup)
+          (setq store
+                (e-runtime-sqlite-p4-test--wait-ready
+                 (e-runtime-store-open directory)))
+          (should (= (plist-get (e-runtime-store-metrics store)
                                 :schema-version)
                      5))
           (should (equal
@@ -307,6 +316,7 @@
          (backup (expand-file-name "operator/pre-v5.sqlite3" directory)))
     (unwind-protect
         (progn
+          (e-runtime-sqlite-p4-test--wait-ready store)
           (e-runtime-store-close store)
           (setq store nil)
           (let ((db (sqlite-open database)))

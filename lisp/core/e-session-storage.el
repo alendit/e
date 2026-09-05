@@ -13,7 +13,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'e-runtime-store-codec)
 (require 'e-session-storage-sqlite)
 
 (define-error 'e-session-persistence-unavailable
@@ -21,6 +20,9 @@
 (define-error 'e-session-storage-error "Session persistence error")
 (define-error 'e-session-storage-command-error
   "Invalid session persistence command" 'e-session-storage-error)
+(define-error 'e-session-storage-admission-ambiguous
+  "Session persistence admission could not be proven cancelled"
+  'e-session-storage-error)
 (define-error 'e-session-storage-migration-required
   "Offline session migration is required" 'e-session-storage-error)
 
@@ -30,7 +32,6 @@
                (:conc-name e-session-storage--state-))
   owner directory persistent
   (checkpoint-dirty-session-ids (make-hash-table :test 'equal))
-  (suspect-sessions (make-hash-table :test 'equal))
   (unsettled-write-count 0) (unsettled-generation 0)
   index-projection checkpoint-projection-operation projection-last-error)
 
@@ -45,7 +46,6 @@
   "Hook run after session durability state changes.")
 
 (defconst e-session-storage--projection-error-message-limit 512)
-(defconst e-session-storage--suspect-diagnostic-byte-limit 1024)
 
 (defun e-session-storage--state (owner)
   "Return storage state for opaque OWNER, creating an ephemeral state."
@@ -76,8 +76,11 @@ caller receives the targeted error instead of an opaque keyword failure."
                           (file-name-as-directory (expand-file-name directory)))
           :persistent (and persistent t))))
     (puthash owner state e-session-storage--states)
+    ;; RESERVATION is retained as a compatibility keyword for callers that
+    ;; compose the runtime.  The runtime itself owns that ledger.
+    (ignore reservation)
     (e-session-storage-sqlite-register owner backend runtime-store
-                                       owns-runtime-store reservation)
+                                       owns-runtime-store)
     state))
 
 (defun e-session-storage--profile-call (event options thunk)
@@ -135,106 +138,25 @@ coordinator.  It does not expose DP5A request details to session callers."
   (e-session-storage--require-sqlite store "Asynchronous session operation")
   (e-session-storage-sqlite-submit store kind body on-settle escrow))
 
-(defun e-session-storage--utf8-prefix (string byte-limit)
-  "Return STRING's longest prefix occupying at most BYTE-LIMIT UTF-8 bytes."
-  (if (<= (string-bytes string) byte-limit)
-      string
-    (let ((low 0) (high (length string)))
-      (while (< low high)
-        (let ((middle (/ (+ low high 1) 2)))
-          (if (<= (string-bytes (substring string 0 middle)) byte-limit)
-              (setq low middle)
-            (setq high (1- middle)))))
-      (substring string 0 low))))
-
-(defun e-session-storage--detached-suspect-error (session-id error)
-  "Return bounded detached ERROR state owned by SESSION-ID's service."
-  (let* ((type (if (and (consp error) (symbolp (car error))
-                        (get (car error) 'error-conditions))
-                   (car error)
-                 'e-session-storage-error))
-         (properties (and (consp error) (cddr error)))
-         (diagnostic
-          (e-session-storage--utf8-prefix
-           (let ((print-circle t) (print-level 6) (print-length 32))
-             (condition-case nil
-                 (error-message-string error)
-               (error "Session persistence failed")))
-           e-session-storage--suspect-diagnostic-byte-limit)))
-    (list type (copy-sequence diagnostic)
-          :session-id (copy-sequence session-id)
-          :operation (plist-get properties :operation)
-          :kind (plist-get properties :kind)
-          :request-id
-          (when-let* ((request-id (plist-get properties :request-id)))
-            (copy-sequence request-id)))))
-
-(defun e-session-storage--note-session-suspect (store session-id error)
-  "Retain SESSION-ID's first bounded persistence ERROR in STORE."
-  (let* ((state (e-session-storage--state store))
-         (suspects (e-session-storage--state-suspect-sessions state)))
-    (or (gethash session-id suspects)
-        (let ((detached
-               (e-session-storage--detached-suspect-error session-id error)))
-          (puthash (copy-sequence session-id) detached suspects)
-          detached))))
-
-(defun e-session-storage-session-suspect (store session-id)
-  "Return detached process-local persistence suspicion for SESSION-ID, or nil."
-  (when-let* ((status
-               (gethash session-id
-                        (e-session-storage--state-suspect-sessions
-                         (e-session-storage--state store)))))
-    (copy-tree status)))
+(defun e-session-storage-validate-operation-body (store body)
+  "Preflight STORE's one physical session mutation BODY."
+  (e-session-storage--require-sqlite store "Session operation validation")
+  (e-session-storage-sqlite-validate-operation-body store body))
 
 (defun e-session-storage-submit-owned
     (store session-id body on-settle &optional escrow)
-  "Submit one optimistic SESSION-ID write and report detached settlement.
+  "Submit one SESSION-ID write and report its physical settlement.
 
-The private owner key never crosses the session storage port.  Any eventual
-failure is retained by the session application service before ON-SETTLE runs;
-successful enqueue itself remains non-blocking."
+The private owner key never crosses the session storage port.  Session-domain
+pending and suspect policy belongs to the application service."
   (e-session-storage--require-sqlite store "Owned session operation")
-  (condition-case err
-      (e-session-storage-sqlite-submit-owned
-       store 'write body (cons 'session session-id)
-       (lambda (result error)
-         (if error
-             (let ((detached
-                    (e-session-storage--detached-suspect-error
-                     session-id error)))
-               (e-session-storage--note-session-suspect
-                store session-id detached)
-               (funcall on-settle nil (copy-tree detached)))
-           (funcall on-settle result nil)))
-       escrow)
-    (e-runtime-store-persistence-suspect
-     (let ((detached
-            (e-session-storage--detached-suspect-error session-id err)))
-       (e-session-storage--note-session-suspect store session-id detached)
-       (signal (car detached) (cdr detached))))))
+  (e-session-storage-sqlite-submit-owned
+   store 'write body (cons 'session session-id) on-settle escrow))
 
-(defun e-session-storage-reserve-frame-escrow (store bytes)
-  "Reserve BYTES through STORE's composition-owned adapter boundary."
-  (e-session-storage--require-sqlite store "Session frame reservation")
-  (e-session-storage-sqlite-reserve-frame-escrow store bytes))
-
-(defun e-session-storage-release-frame-escrow (store bytes)
-  "Release STORE's untransferred frame escrow BYTES exactly once."
-  (e-session-storage-sqlite-release-frame-escrow store bytes))
-
-(defun e-session-storage-measure-frame-escrow (store kind body)
-  "Measure KIND BODY's bounded DP5A frame escrow through STORE's adapter."
-  (e-session-storage--require-sqlite store "Session frame measurement")
-  (e-session-storage-sqlite-measure-frame-escrow store kind body))
-
-(defun e-session-storage-freeze-operation-body (body limit)
-  "Return exact bounded detached durable BODY for a session operation."
-  (e-runtime-store-codec-freeze-bounded body limit))
-
-(defun e-session-storage-measure-operation-body (body limit)
-  "Return exact bounded canonical bytes for durable BODY without copying it."
-  (e-runtime-store-codec-measure-bounded body limit))
+(defun e-session-storage-cancel-operation (store operation)
+  "Cancel queued opaque session OPERATION through STORE's adapter."
+  (e-session-storage--require-sqlite store "Session operation cancellation")
+  (e-session-storage-sqlite-cancel-operation store operation))
 
 (defun e-session-storage--require-sqlite (store operation)
   "Require current persistent STORE for OPERATION."
@@ -478,14 +400,14 @@ already authoritative.  It deliberately neither writes nor cleans checkpoints."
 (defun e-session-storage-close (store)
   "Close STORE when it owns a runtime worker.
 
-When the optional C07 coordinator is loaded, a settled close releases its
-bounded reconciliation barriers first.  An unsettled lane is deliberately
-rejected by that owner rather than being silently discarded; the reserve,
-fence, and asynchronous close protocol remain later DP5B work."
-  (when (fboundp 'e-session-async-teardown)
-    (e-session-async-teardown store))
-  (when (e-session-storage-sqlite-p store)
-    (e-session-storage-sqlite-close store)))
+When the optimistic session service is loaded, close first releases its
+process-local pending and suspect status.  Runtime close remains responsible
+for settling or fencing physical requests."
+  (unwind-protect
+      (when (fboundp 'e-session-async-teardown)
+        (e-session-async-teardown store))
+    (when (e-session-storage-sqlite-p store)
+      (e-session-storage-sqlite-close store))))
 
 (provide 'e-session-storage)
 
