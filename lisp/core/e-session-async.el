@@ -568,8 +568,8 @@ only then are the O(1) terminal tokens made observable."
              (store (e-session-async--coordinator-store coordinator))
              (delta (e-session-async--operation-delta operation))
              (inhibit-quit t))
-        (e-session-aggregate-apply-committed-record
-         store (plist-get delta :record))
+        (when-let* ((record (plist-get delta :record)))
+          (e-session-aggregate-apply-committed-record store record))
         ;; Aggregate return and this marker are one quit-inhibited transition.
         ;; The injected after-return fault runs only after the marker, and the
         ;; handler below checks it before considering reconciliation.
@@ -605,7 +605,8 @@ only then are the O(1) terminal tokens made observable."
          (e-session-async--advance-completion
           operation 'applied 'projected 'projection
           (lambda ()
-            (when (e-session-async--operation-write-index operation)
+            (when (and (e-session-async--operation-write-index operation)
+                       (plist-get delta :record))
               (condition-case projection-error
                   (e-session-storage--mark-checkpoint-dirty
                    store (e-session-async--operation-session-id operation))
@@ -785,71 +786,83 @@ an error or quit in any completion action therefore cannot lose publication."
              (delta (e-session-aggregate-command-interpret
                      store (e-session-async--operation-command operation)))
              (record (plist-get delta :record))
-             ;; The body and delta share RECORD.  No whole-session stage or
-             ;; second durable payload survives this lane-head turn.
-             (continuity
-              (when-let* ((augment
-                           (e-session-async--operation-before-submit operation)))
-                (funcall augment delta)))
-             (body (if continuity
-                       (list :op 'session-append-with-tool-transition
-                             :session-id
-                             (e-session-async--operation-session-id operation)
-                             :record record :continuity continuity)
-                     (list :op 'session-append
-                           :session-id
-                           (e-session-async--operation-session-id operation)
-                           :record record)))
-             (actual-frame (e-session-storage-measure-frame-escrow
-                            store 'write body))
              (reserved-frame (e-session-async--operation-frame-escrow operation)))
-        (when (> actual-frame reserved-frame)
-          (signal 'e-session-async-capacity-exhausted
-                  (list "Interpreted session delta exceeded its frame escrow"
-                        :actual actual-frame :reserved reserved-frame
-                        :family (e-session-async--operation-family operation))))
-        (setf (e-session-async--operation-delta operation) delta
-              (e-session-async--operation-body operation) body)
-        (setf (e-session-async--operation-state operation) 'submitted)
-        ;; The storage contract returns a non-nil opaque submission only
-        ;; after DP5A accepted the composition escrow.  Until that point the
-        ;; operation remains its sole owner and `--release' rolls it back.
-        ;; This keeps an adapter/preflight exception from silently losing or
-        ;; double-releasing shared frame bytes.
-        (let ((submitted
-               (e-session-storage-submit
-                store 'write body
-                (lambda (result error)
-                  (e-session-async--storage-settled operation result error))
-                (e-session-async--operation-frame-escrow operation))))
-          (unless submitted
-            (signal 'e-session-storage-error
-                    (list "Storage did not accept composition frame escrow")))
-          (setf (e-session-async--operation-storage-operation operation)
-                submitted))
-        ;; The runtime owns the surviving actual frame now.  Its terminal
-        ;; release is the only release path after this transfer.
-        (setf (e-session-async--operation-frame-escrow operation) nil))
+        (setf (e-session-async--operation-delta operation) delta)
+        (if (null record)
+            ;; A semantic no-op is ordered at the lane head but emits no
+            ;; storage request.  Its already-reserved ownership remains with
+            ;; the operation until ordinary terminal retirement.
+            (progn
+              (setf (e-session-async--operation-result operation) nil
+                    (e-session-async--operation-state operation) 'acknowledged)
+              (e-session-async--enqueue-publication operation))
+          (let* (;; The body and delta share RECORD.  No whole-session stage or
+                 ;; second durable payload survives this lane-head turn.
+                 (continuity
+                  (when-let* ((augment
+                               (e-session-async--operation-before-submit operation)))
+                    (funcall augment delta)))
+                 (body
+                  (cond
+                   ((eq (e-session-aggregate-command-tag
+                         (e-session-async--operation-command operation))
+                        'delete)
+                    (list :op 'session-delete
+                          :session-id
+                          (e-session-async--operation-session-id operation)))
+                   (continuity
+                    (list :op 'session-append-with-tool-transition
+                          :session-id
+                          (e-session-async--operation-session-id operation)
+                          :record record :continuity continuity))
+                   (t
+                    (list :op 'session-append
+                          :session-id
+                          (e-session-async--operation-session-id operation)
+                          :record record))))
+                 (actual-frame (e-session-storage-measure-frame-escrow
+                                store 'write body)))
+            (when (> actual-frame reserved-frame)
+              (signal 'e-session-async-capacity-exhausted
+                      (list "Interpreted session delta exceeded its frame escrow"
+                            :actual actual-frame :reserved reserved-frame
+                            :family (e-session-async--operation-family operation))))
+            (setf (e-session-async--operation-body operation) body
+                  (e-session-async--operation-state operation) 'submitted)
+            ;; DP5A accepts composition escrow before returning a submission.
+            (let ((submitted
+                   (e-session-storage-submit
+                    store 'write body
+                    (lambda (result error)
+                      (e-session-async--storage-settled operation result error))
+                    (e-session-async--operation-frame-escrow operation))))
+              (unless submitted
+                (signal 'e-session-storage-error
+                        (list "Storage did not accept composition frame escrow")))
+              (setf (e-session-async--operation-storage-operation operation)
+                    submitted))
+            ;; The runtime owns the surviving actual frame now.
+            (setf (e-session-async--operation-frame-escrow operation) nil))))
     ((error quit)
      (e-session-async--retire-lane-failure operation err))))
 
 (cl-defun e-session-async--submit-command
-    (store session-id tag arguments &key before-submit write-index)
+    (store session-id tag arguments &key before-submit write-index accounting)
   "Admit one sealed aggregate TAG with ARGUMENTS and return its `e-work'.
 
 Validation and exact allocation-free measurement precede every retained
 representation.  The coordinator then atomically reserves the lane slot and
 P+D+R+Freserve, seals the command, and queues it.  Interpretation occurs only
   at the lane head against acknowledged live state."
-  (e-session-aggregate-command-validate tag session-id arguments)
   (let* ((frame-measurer
           (lambda (body)
             (e-session-storage-measure-frame-escrow store 'write body)))
          ;; The aggregate's schema calculator is the only accounting pass over
          ;; the caller graph.  It returns exact unique-leaf P, generated D/R,
          ;; and the measured maximum transport envelope before detachment.
-         (accounting (e-session-aggregate-command-accounting
-                      tag session-id arguments frame-measurer))
+         (accounting (or accounting
+                         (e-session-aggregate-command-accounting
+                          tag session-id arguments frame-measurer)))
          (family (plist-get accounting :family))
          (producer-bytes (plist-get accounting :producer-bytes))
          (local-bytes (plist-get accounting :local-bytes))
@@ -945,18 +958,39 @@ P+D+R+Freserve, seals the command, and queues it.  Interpretation occurs only
 Expected producer/composition exhaustion is part of the asynchronous facade:
 it returns an already-failed `e-work' and owns no lane, payload, or escrow.
 Invariant, validation, freeze, parity, and constructor bugs still surface."
-  (condition-case err
-      (e-session-async--submit-command
-       store session-id tag arguments
-       :before-submit before-submit :write-index write-index)
-    ((e-session-command-too-large e-runtime-store-codec-too-large)
-     (e-session-async--failed-work
-      session-id
-      (list 'e-session-async-capacity-exhausted
-            "Session command producer exceeds its byte capacity"
-            :cause err)))
-    (e-session-async-capacity-exhausted
-     (e-session-async--failed-work session-id err))))
+  (let* ((frame-measurer
+          (lambda (body)
+            (e-session-storage-measure-frame-escrow store 'write body)))
+         (preflight
+          (condition-case err
+              (cons t (e-session-aggregate-command-accounting
+                       tag session-id arguments frame-measurer))
+            ((e-session-command-too-large e-runtime-store-codec-too-large)
+             (e-session-async--failed-work
+              session-id
+              (list 'e-session-async-capacity-exhausted
+                    "Session command producer exceeds its byte capacity"
+                    :cause err)))
+            ((e-session-error e-session-board-message-invalid-record-type
+                              e-context-lifetime-invalid-record)
+             (e-session-async--failed-work
+              session-id
+              (list 'e-session-storage-command-error
+                    "Invalid asynchronous session command" :cause err))))))
+    (if (not (consp preflight))
+        preflight
+      (condition-case err
+          (e-session-async--submit-command
+           store session-id tag arguments :accounting (cdr preflight)
+           :before-submit before-submit :write-index write-index)
+        ((e-session-command-too-large e-runtime-store-codec-too-large)
+         (e-session-async--failed-work
+          session-id
+          (list 'e-session-async-capacity-exhausted
+                "Session command producer exceeds its byte capacity"
+                :cause err)))
+        (e-session-async-capacity-exhausted
+         (e-session-async--failed-work session-id err))))))
 
 (defun e-session-async-unsupported-command (session-id name)
   "Return a terminal typed work for unsupported asynchronous command NAME."

@@ -81,22 +81,33 @@ contains a staged session or a caller-provided mutation closure."
   tag session-id arguments request-id delta-id timestamp account)
 
 (defconst e-session-aggregate-command-tags
-  '(create append-message append-activity context-curation-response session-info)
-  "Closed durable command tags implemented by the first C07 command slice.")
+  '(create append-message append-activity context-curation-response
+    message-display process-report branch-summary compaction provider-anchor
+    context-generation context-curation-package clear-messages
+    board-message board-state board-messages-clear delete session-info)
+  "Closed durable command tags implemented by the C07 session grammar.")
 
 (defconst e-session-aggregate-command-schema
   '((create :tags (create) :producer-max 16777216 :nodes 1024
             :node-bytes 256
             :fixed-nodes ((command . 32) (delta . 64) (undo . 128))
             :delta-bytes 262144 :reference-nodes 32 :fixed-fields 12)
-    (append :tags (append-message append-activity context-curation-response)
+    (append :tags (append-message append-activity context-curation-response
+                                  process-report context-generation
+                                  context-curation-package board-message)
             :producer-max 16777216 :nodes 512 :node-bytes 256
             :fixed-nodes ((command . 32) (delta . 96) (undo . 128))
             :delta-bytes 131072 :reference-nodes 32 :fixed-fields 16)
-    (state :tags (session-info) :producer-max 16777216 :nodes 384
+    (state :tags (session-info branch-summary compaction provider-anchor
+                               board-state)
+           :producer-max 16777216 :nodes 384
            :node-bytes 256
-           :fixed-nodes ((command . 32) (delta . 96) (undo . 128))
-           :delta-bytes 98304 :reference-nodes 32 :fixed-fields 24))
+            :fixed-nodes ((command . 32) (delta . 96) (undo . 128))
+            :delta-bytes 98304 :reference-nodes 32 :fixed-fields 24)
+    (control :tags (message-display clear-messages board-messages-clear delete)
+             :producer-max 65536 :nodes 128 :node-bytes 256
+             :fixed-nodes ((command . 16) (delta . 16) (undo . 32))
+             :delta-bytes 32768 :reference-nodes 32 :fixed-fields 8))
   "Normative accounting schema for the implemented sealed command families.
 
 The fixed-node ledger explicitly enumerates sealed-command, durable-delta, and
@@ -169,6 +180,38 @@ rather than a coordinator constant.")
   (and (or (stringp value) (symbolp value))
        (<= (string-bytes (if (stringp value) value (symbol-name value))) limit)))
 
+(defun e-session-aggregate--proper-list-length-at-most-p (value limit)
+  "Return non-nil when VALUE is a proper list no longer than LIMIT."
+  (let ((tail value)
+        (count 0))
+    (while (and (consp tail) (<= count limit))
+      (setq tail (cdr tail) count (1+ count)))
+    (and (null tail) (<= count limit))))
+
+(defun e-session-aggregate--context-generation-record-admissible-p (record)
+  "Return non-nil when RECORD is an already-canonical generation record."
+  (and (e-session-aggregate--exact-plist-keys-p
+        record '(:record-version :type :id :checkpoint
+                 :covered-session-boundary))
+       (equal (plist-get record :record-version)
+              e-context-lifetime-record-version)
+       (eq (plist-get record :type) 'context-generation)
+       (e-session-aggregate--bounded-id-value-p (plist-get record :id))
+       (e-session-aggregate--bounded-id-value-p
+        (plist-get record :covered-session-boundary))
+       (let ((checkpoint (plist-get record :checkpoint))
+             (valid t))
+         (unless (proper-list-p checkpoint) (setq valid nil))
+         (dolist (message checkpoint)
+           (unless (and (e-session-aggregate--exact-plist-keys-p
+                         message '(:role :content))
+                        (memq (plist-get message :role)
+                              e-context-lifetime-portable-message-roles)
+                        (e-session-aggregate--canonical-context-value-p
+                         (plist-get message :content)))
+             (setq valid nil)))
+         valid)))
+
 (defun e-session-aggregate--string-properties-p (string)
   "Return non-nil when STRING contains presentation text properties."
   (let ((position 0) found)
@@ -229,6 +272,20 @@ canonical transport string."
             (when (> (string-bytes (prin1-to-string item)) 32)
               (signal 'e-session-error
                       (list "Durable command float exceeds 32 bytes"))))
+           ((e-context-lifetime-generation-p item)
+            (when (gethash item active)
+              (signal 'e-session-error (list "Cyclic session command")))
+            (unless (gethash item seen)
+              (add-nodes 1)
+              (puthash item t active)
+              (puthash item t seen)
+              (unwind-protect
+                  (progn
+                    (walk (e-context-lifetime-generation-id item))
+                    (walk (e-context-lifetime-generation-checkpoint item))
+                    (walk (e-context-lifetime-generation-covered-session-boundary
+                           item)))
+                (remhash item active))))
            ((or (consp item) (vectorp item) (hash-table-p item))
             (when (gethash item active)
               (signal 'e-session-error (list "Cyclic session command")))
@@ -276,6 +333,7 @@ measurement internally so byte and node limits are checked in one traversal."
         ((freeze
           (item)
           (if (or (stringp item) (consp item) (vectorp item)
+                  (e-context-lifetime-generation-p item)
                   (hash-table-p item))
               (let ((known (gethash item memo missing)))
                 (cond
@@ -294,6 +352,20 @@ measurement internally so byte and node limits are checked in one traversal."
                           (puthash item copy memo)
                           (setcar copy (freeze (car item)))
                           (setcdr copy (freeze (cdr item))) copy))
+                       ((e-context-lifetime-generation-p item)
+                        (let ((copy (e-context-lifetime-generation--create)))
+                          (puthash item copy memo)
+                          (setf (e-context-lifetime-generation-id copy)
+                                (freeze (e-context-lifetime-generation-id item))
+                                (e-context-lifetime-generation-checkpoint copy)
+                                (freeze
+                                 (e-context-lifetime-generation-checkpoint item))
+                                (e-context-lifetime-generation-covered-session-boundary
+                                 copy)
+                                (freeze
+                                 (e-context-lifetime-generation-covered-session-boundary
+                                  item)))
+                          copy))
                        ((vectorp item)
                         (let ((copy (make-vector (length item) nil)))
                           (puthash item copy memo)
@@ -334,8 +406,44 @@ not copied, and the physical adapter measures the complete maximum request
 envelope without constructing a canonical frame."
   (let* ((family (e-session-aggregate-command-family tag))
          (spec (cdr (e-session-aggregate-command-family-spec family)))
+         (transport-arguments
+          (if-let* ((generation
+                     (and (eq tag 'context-generation)
+                          (plist-get arguments :generation)))
+                    (_ (e-context-lifetime-generation-p generation)))
+              (list :generation
+                    (list :record-version e-context-lifetime-record-version
+                          :type 'context-generation
+                          :id (e-context-lifetime-generation-id generation)
+                          :checkpoint
+                          (e-context-lifetime-generation-checkpoint generation)
+                          :covered-session-boundary
+                          (e-context-lifetime-generation-covered-session-boundary
+                           generation)))
+            arguments))
          (fixed (e-session-aggregate--maximum-fixed-fields
                  (plist-get spec :fixed-fields)))
+         (mirrors
+          (pcase tag
+            ('create
+             ;; The durable root repeats metadata :name as a top-level index
+             ;; field.  Mirror that caller leaf so Freserve counts both wire
+             ;; occurrences without copying it.
+             (list :mirror-name
+                   (plist-get (plist-get arguments :metadata) :name)))
+            ('append-message
+             ;; A caller-supplied creation time is both the nested message
+             ;; field and the durable record timestamp.
+             (list :mirror-created-at
+                   (plist-get (plist-get arguments :message) :created-at)))
+            ('board-state
+             (list :mirror-board-id (plist-get arguments :board-id)
+                   :mirror-principal (plist-get arguments :principal)))
+            ('process-report
+             (let ((report (plist-get arguments :report)))
+               (list :mirror-id (plist-get report :id)
+                     :mirror-parent-id (plist-get report :parent-id))))
+            (_ nil)))
          (record
           (append
            (list :type e-session-aggregate--maximum-identity
@@ -344,7 +452,8 @@ envelope without constructing a canonical frame."
                  :delta-id e-session-aggregate--maximum-identity
                  :parent-id e-session-aggregate--maximum-identity
                  :timestamp e-session-aggregate--maximum-time
-                 :producer arguments)
+                 :producer transport-arguments)
+           mirrors
            fixed)))
     (append
      (list :op (if (eq family 'append)
@@ -367,7 +476,6 @@ envelope without constructing a canonical frame."
 
 This function is the sole P/D/R/Freserve calculator.  FRAME-MEASURER accepts a
 maximum transport body and returns its exact complete protocol-frame bytes."
-  (e-session-aggregate-command-validate tag session-id arguments)
   (let* ((family (e-session-aggregate-command-family tag))
          (spec (cdr (e-session-aggregate-command-family-spec family)))
          (producer-max (plist-get spec :producer-max))
@@ -384,6 +492,10 @@ maximum transport body and returns its exact complete protocol-frame bytes."
            arguments producer-max producer-node-limit))
          (producer-bytes (plist-get producer-measurement :bytes))
          (producer-nodes (plist-get producer-measurement :nodes))
+         ;; Graph measurement rejects cycles and unsupported objects before
+         ;; any semantic validator traverses nested producer structure.
+         (_semantic-valid
+          (e-session-aggregate-command-validate tag session-id arguments))
          (delta-bytes (e-session-aggregate-command-delta-bytes family))
          (reference-bytes
           (e-session-aggregate-command-reference-bytes family))
@@ -419,7 +531,16 @@ remains with the session application service because it owns admission."
   (unless (e-session-aggregate-keyword-plist-shape-p arguments)
     (signal 'e-session-error (list "Session command arguments must be a plist" tag)))
   (pcase tag
-    ('create nil)
+    ('create
+     ;; Interpretation performs legacy replay normalization after admission;
+     ;; every value that survives that normalization is validated here without
+     ;; constructing the normalized copy.
+     (let ((metadata (plist-get arguments :metadata)))
+       (condition-case err
+           (e-session-metadata-validate-create-input metadata)
+         (error
+          (signal 'e-session-error
+                  (list "Invalid create metadata" err))))))
     ('append-message
      (unless (plist-member arguments :message)
        (signal 'e-session-error (list "Append-message command requires :message")))
@@ -465,6 +586,97 @@ remains with the session application service because it owns admission."
                   (<= (string-bytes (plist-get arguments :response-entry-id)) 128))
        (signal 'e-session-error
                (list "Invalid context-curation-response command"))))
+    ('message-display
+     (unless (and (stringp (plist-get arguments :message-id))
+                  (<= (string-bytes (plist-get arguments :message-id)) 128)
+                  (or (null (plist-get arguments :display))
+                      (symbolp (plist-get arguments :display))))
+       (signal 'e-session-error (list "Invalid message-display command"))))
+    ('process-report
+     (let ((report (plist-get arguments :report)))
+       (unless (and (plist-member arguments :report)
+                    (e-session-aggregate-keyword-plist-shape-p report)
+                    (not (e-session-aggregate--context-record-duplicate-key-p
+                          report)))
+         (signal 'e-session-error (list "Invalid process-report command")))
+       (dolist (field '(:id :parent-id))
+         (unless (e-session-aggregate--bounded-domain-string-p
+                  (plist-get report field) 128)
+           (signal 'e-session-error
+                   (list "Process-report identity exceeds 128 bytes" field))))))
+    ('branch-summary
+     (unless (and (e-session-aggregate--bounded-domain-string-p
+                   (plist-get arguments :branch-id) 128)
+                  (plist-member arguments :summary))
+       (signal 'e-session-error (list "Invalid branch-summary command"))))
+    ('compaction
+     (unless (plist-member arguments :summary)
+       (signal 'e-session-error (list "Compaction command requires :summary"))))
+    ('provider-anchor
+     (unless (e-session-aggregate--bounded-domain-identity-p
+              (plist-get arguments :provider-id) 128)
+       (signal 'e-session-error (list "Invalid provider-anchor command"))))
+    ('context-generation
+     (let ((generation (plist-get arguments :generation)))
+       (unless (and (plist-member arguments :generation)
+                    (or (e-context-lifetime-generation-p generation)
+                        (e-session-aggregate--context-generation-record-admissible-p
+                         generation)))
+         (signal 'e-session-error (list "Invalid context-generation command")))))
+    ('context-curation-package
+     (unless (and (plist-member arguments :package)
+                  (e-session-aggregate--context-curation-package-shape-p
+                   (plist-get arguments :package)))
+       (signal 'e-session-error (list "Invalid context-curation package"))))
+    ('board-message
+     (let ((message (plist-get arguments :message)))
+       (unless (and (plist-member arguments :message)
+                    (e-session-aggregate-keyword-plist-shape-p message)
+                    (e-session-aggregate--proper-list-length-at-most-p
+                     message 32)
+                    (e-session-aggregate--bounded-domain-string-p
+                     (plist-get message :id) 128)
+                    (e-session-aggregate--proper-list-length-at-most-p
+                     (plist-get message :tags) 32)
+                    (or (null (plist-get message :attributes))
+                        (and (e-session-aggregate-keyword-plist-shape-p
+                              (plist-get message :attributes))
+                             (e-session-aggregate--proper-list-length-at-most-p
+                              (plist-get message :attributes) 32))))
+         (signal 'e-session-error (list "Invalid board-message command")))
+       (dolist (field '(:kind :mode :activity-kind :routing-state
+                        :unrouted-reason :record-type :outcome
+                        :failure-policy))
+         (let ((value (plist-get message field)))
+           (unless (or (null value)
+                       (e-session-aggregate--bounded-domain-identity-p value 128))
+             (signal 'e-session-error
+                     (list "Board category exceeds 128 bytes" field)))))
+       (dolist (tag-value (plist-get message :tags))
+         (unless (e-session-aggregate--bounded-domain-identity-p tag-value 128)
+           (signal 'e-session-error
+                   (list "Board tag exceeds 128 bytes"))))
+       (when-let* ((attributes (plist-get message :attributes))
+                   (status (plist-get attributes :status)))
+         (unless (e-session-aggregate--bounded-domain-identity-p status 128)
+           (signal 'e-session-error
+                   (list "Board status exceeds 128 bytes"))))
+       (e-session-aggregate--canonical-board-record-type
+        (plist-get message :record-type))))
+    ('board-state
+     (unless (and (stringp (plist-get arguments :principal))
+                  (<= (string-bytes (plist-get arguments :principal)) 128)
+                  (stringp (plist-get arguments :board-id))
+                  (<= (string-bytes (plist-get arguments :board-id)) 128)
+                  (member (plist-get arguments :association-role)
+                          '(nil "owner" "participant"))
+                  (or (null (plist-get arguments :routing-policy))
+                      (e-session-board-routing-policy-valid-p
+                       (plist-get arguments :routing-policy))))
+       (signal 'e-session-error (list "Invalid board-state command"))))
+    ((or 'clear-messages 'board-messages-clear 'delete)
+     (when arguments
+       (signal 'e-session-error (list "Control command takes no arguments" tag))))
     ('session-info
      (let ((field (plist-get arguments :field)))
        (unless (memq field
@@ -472,27 +684,70 @@ remains with the session application service because it owns admission."
                        capability-state turn-options current-branch name))
          (signal 'e-session-error
                  (list "Unsupported session-info field" field)))
-       (pcase field
-         ('context-references
-          (unless (e-session-aggregate--bounded-domain-identity-p
-                   (plist-get arguments :owner) 128)
-            (signal 'e-session-error
-                    (list "Context owner exceeds 128 bytes"))))
-         ('context-reference
-          (unless (e-session-aggregate--bounded-domain-identity-p
-                   (plist-get arguments :key) 128)
-            (signal 'e-session-error
-                    (list "Context reference key exceeds 128 bytes"))))
-         ('capability-state
-          (unless (e-session-aggregate--bounded-domain-identity-p
-                   (plist-get arguments :capability-id) 128)
-            (signal 'e-session-error
-                    (list "Capability identity exceeds 128 bytes"))))
-         ('current-branch
-         (unless (e-session-aggregate--bounded-domain-string-p
-                   (plist-get arguments :value) 128)
-            (signal 'e-session-error
-                    (list "Current branch identity exceeds 128 bytes"))))))))
+       (condition-case err
+           (pcase field
+             ('metadata
+              (e-session-metadata-validate (plist-get arguments :value)))
+             ('config
+              (e-session-metadata-validate-class
+               (plist-get arguments :value) 'session-config))
+             ('context-references
+              (unless (e-session-aggregate--bounded-domain-identity-p
+                       (plist-get arguments :owner) 128)
+                (signal 'e-session-error
+                        (list "Context owner exceeds 128 bytes"))))
+             ('context-reference
+              (let ((key (plist-get arguments :key)))
+                (unless (e-session-aggregate--bounded-domain-identity-p key 128)
+                  (signal 'e-session-error
+                          (list "Context reference key exceeds 128 bytes")))
+                (e-session-metadata-validate-entry
+                 key (plist-get arguments :value) 'current-state-reference)))
+             ('capability-state
+              (unless (e-session-aggregate--bounded-domain-identity-p
+                       (plist-get arguments :capability-id) 128)
+                (signal 'e-session-error
+                        (list "Capability identity exceeds 128 bytes"))))
+             ('turn-options
+              (let ((tail (plist-get arguments :value))
+                    seen)
+                (unless (e-session-metadata-keyword-plist-p tail)
+                  (signal 'e-session-error (list "Invalid turn options")))
+                (while tail
+                  (let ((key (pop tail))
+                        (value (pop tail)))
+                    (when (or (not (memq key
+                                         '(:model :reasoning-effort
+                                           :prompt-cache-default
+                                           :prompt-cache-key
+                                           :prompt-cache-retention)))
+                              (memq key seen)
+                              (if (eq key :prompt-cache-default)
+                                  (not (memq value '(nil t)))
+                                (and value (not (stringp value)))))
+                      (signal 'e-session-error
+                              (list "Invalid turn option" key)))
+                    (push key seen)))))
+             ('current-branch
+              (unless (e-session-aggregate--bounded-domain-string-p
+                       (plist-get arguments :value) 128)
+                (signal 'e-session-error
+                        (list "Current branch identity exceeds 128 bytes"))))
+             ('name
+              (let ((name (plist-get arguments :value)))
+                (unless (and (stringp name)
+                             (let ((index 0)
+                                   (length (length name)))
+                               (while (and (< index length)
+                                           (memq (aref name index)
+                                                 '(?\s ?\t ?\n ?\r)))
+                                 (setq index (1+ index)))
+                               (< index length)))
+                  (signal 'e-session-error
+                          (list "Session name must not be empty"))))))
+         (error
+          (signal 'e-session-error
+                  (list "Invalid session-info command" field err)))))))
   t)
 
 (defun e-session-aggregate-command-seal
@@ -1556,6 +1811,27 @@ Nil means an ordinary board message."
         (plist-put attributes :status (intern status)))))
   message)
 
+(defun e-session-aggregate--normalize-owned-board-message (message)
+  "Normalize sealed MESSAGE with only schema-bounded spine wrappers.
+
+Large content and nested producer leaves remain shared with the command by
+identity.  The copied top-level, tags, and attributes spines are bounded by
+the async admission schema and belong to D."
+  (let ((normalized (copy-sequence message)))
+    (when-let* ((attributes (plist-get normalized :attributes)))
+      (plist-put normalized :attributes (copy-sequence attributes)))
+    (e-session-aggregate--normalize-board-message normalized)))
+
+(defun e-session-aggregate--copy-owned-board-state (state)
+  "Copy bounded STATE spines while retaining its frozen producer leaves."
+  (when state
+    (let ((copy (copy-sequence state)))
+      (when (plist-member copy :routing-policy)
+        (plist-put copy :routing-policy
+                   (e-session-board-routing-policy-normalize-owned
+                    (plist-get copy :routing-policy))))
+      copy)))
+
 (defun e-session-aggregate-board-message-identity (message)
   "Return the durable journal identity for board MESSAGE.
 Processing records have a record type, while ordinary board messages occupy the
@@ -1569,7 +1845,9 @@ silently replacing records from another namespace."
 (defun e-session-aggregate--existing-board-message (journal message)
   "Return MESSAGE's retained duplicate, or signal for a typed conflict."
   (let* ((identity (e-session-aggregate-board-message-identity message))
-         (existing (gethash identity (e-session-board-journal-id-index journal))))
+         (existing (and journal
+                        (gethash identity
+                                 (e-session-board-journal-id-index journal)))))
     (when (and existing
                (plist-get message :record-type)
                (not (equal existing message)))
@@ -2494,6 +2772,199 @@ record decoding remain in `e-session-codec'."
                     generation-id)))
     context-record))
 
+(defun e-session-aggregate--exact-plist-keys-p (value keys)
+  "Return non-nil when VALUE has exactly KEYS in canonical order."
+  (and (e-session-aggregate-keyword-plist-shape-p value)
+       (let ((tail value)
+             (expected keys))
+         (while (and tail expected (eq (car tail) (car expected)))
+           (setq tail (cddr tail)
+                 expected (cdr expected)))
+         (and (null tail) (null expected)))))
+
+(defun e-session-aggregate--bounded-id-value-p (value)
+  "Return non-nil for one canonical non-empty identity scalar."
+  (and (stringp value) (not (string-empty-p value))
+       (<= (string-bytes value) 128)))
+
+(defun e-session-aggregate--canonical-context-value-p (value)
+  "Return non-nil when VALUE is already in context canonical form."
+  (cond
+   ((or (null value) (eq value t) (eq value :json-false)
+        (stringp value) (numberp value)) t)
+   ((or (symbolp value) (vectorp value) (hash-table-p value)) nil)
+   ((e-session-aggregate-keyword-plist-shape-p value)
+    (let ((tail value) previous valid)
+      (setq valid t)
+      (while (and tail valid)
+        (let ((key (pop tail))
+              (item (pop tail)))
+          (when (and previous
+                     (not (string< (symbol-name previous) (symbol-name key))))
+            (setq valid nil))
+          (unless (e-session-aggregate--canonical-context-value-p item)
+            (setq valid nil))
+          (setq previous key)))
+      valid))
+   ((proper-list-p value)
+    (let ((tail value) (valid t))
+      (while (and tail valid)
+        (unless (e-session-aggregate--canonical-context-value-p (pop tail))
+          (setq valid nil)))
+      valid))
+   (t nil)))
+
+(defun e-session-aggregate--prin1-bytes-at-most-p (value limit)
+  "Return non-nil when VALUE's default `prin1' form is at most LIMIT bytes.
+
+The printer emits directly into a scalar counter; no payload-sized string or
+buffer exists before admission."
+  (let ((bytes 0)
+        exceeded)
+    (catch 'too-large
+      (cl-labels
+          ((output
+            (character)
+            (cl-incf bytes
+                     (cond ((<= character #x7f) 1)
+                           ((<= character #x7ff) 2)
+                           ((<= character #xffff) 3)
+                           (t 4)))
+            (when (> bytes limit)
+              (setq exceeded t)
+              (throw 'too-large nil))))
+        (let ((print-circle nil) (print-level nil) (print-length nil)
+              (print-quoted t) (print-escape-newlines nil)
+              (print-escape-control-characters nil) (print-escape-nonascii nil)
+              (print-gensym nil) (print-integers-as-characters nil))
+          (prin1 value #'output))))
+    (not exceeded)))
+
+(defun e-session-aggregate--context-component-admissible-p
+    (record type version)
+  "Return non-nil when RECORD is a canonical bounded TYPE/VERSION component."
+  (if (null record)
+      t
+    (let ((identities-valid t))
+      (dolist (field '(:id :frame-id :generation-id :consumer-request-id
+                       :response-entry-id))
+        (unless (e-session-aggregate--bounded-id-value-p
+                 (plist-get record field))
+          (setq identities-valid nil)))
+      (and
+       (e-session-aggregate--exact-plist-keys-p
+        record
+        (if (eq type 'context-promotion)
+            '(:record-version :type :id :frame-id :generation-id
+              :consumer-request-id :response-entry-id :items)
+          '(:record-version :type :id :frame-id :generation-id
+            :consumer-request-id :response-entry-id :sources)))
+       (equal (plist-get record :record-version) version)
+       (eq (plist-get record :type) type)
+       identities-valid
+       (e-session-aggregate--prin1-bytes-at-most-p
+        record e-context-lifetime-curation-max-record-bytes)
+       (if (eq type 'context-promotion)
+           (let ((items (plist-get record :items))
+                 (source-count 0)
+                 (valid t))
+             (unless (and (proper-list-p items) items)
+               (setq valid nil))
+             (dolist (item items)
+               (let* ((kind (plist-get item :kind))
+                      (ids (plist-get item :source-observation-ids))
+                      (refs (plist-get item :source-refs))
+                      (fingerprints (plist-get item :source-fingerprints))
+                      (count (and (proper-list-p ids) (length ids))))
+                 (unless
+                     (and (memq kind '(exact summary))
+                          (e-session-aggregate--exact-plist-keys-p
+                           item
+                           (if (eq kind 'exact)
+                               '(:kind :value :source-observation-ids
+                                 :source-refs :source-fingerprints)
+                             '(:kind :text :source-observation-ids
+                               :source-refs :source-fingerprints)))
+                          count (> count 0)
+                          (or (eq kind 'summary) (= count 1))
+                          (proper-list-p refs) (proper-list-p fingerprints)
+                          (= count (length refs)) (= count (length fingerprints))
+                          (cl-every #'e-session-aggregate--bounded-id-value-p ids)
+                          (cl-every #'e-session-aggregate--bounded-id-value-p refs)
+                          (cl-every #'e-session-aggregate--bounded-id-value-p
+                                    fingerprints)
+                          (if (eq kind 'exact)
+                              (e-session-aggregate--canonical-context-value-p
+                               (plist-get item :value))
+                            (let ((text (plist-get item :text)))
+                              (and (stringp text) (not (string-empty-p text))))))
+                   (setq valid nil))
+                 (setq source-count (+ source-count (or count 0)))))
+             ;; Source observation identities are unique across the package.
+             (dolist (item items)
+               (dolist (identity (plist-get item :source-observation-ids))
+                 (let ((occurrences 0))
+                   (dolist (other items)
+                     (dolist (candidate
+                              (plist-get other :source-observation-ids))
+                       (when (equal identity candidate)
+                         (cl-incf occurrences))))
+                   (unless (= occurrences 1) (setq valid nil)))))
+             (and valid
+                  (<= source-count e-context-lifetime-curation-max-sources)))
+         (let ((sources (plist-get record :sources))
+               (count 0)
+               (valid t))
+           (unless (and (proper-list-p sources) sources)
+             (setq valid nil))
+           (dolist (source sources)
+             (cl-incf count)
+             (unless
+                 (and (e-session-aggregate--exact-plist-keys-p
+                       source '(:source-observation-id :source-ref
+                                :source-fingerprint :tool-call-id))
+                      (let ((fields-valid t))
+                        (dolist (field '(:source-observation-id :source-ref
+                                         :source-fingerprint :tool-call-id))
+                          (unless (e-session-aggregate--bounded-id-value-p
+                                   (plist-get source field))
+                            (setq fields-valid nil)))
+                        fields-valid))
+               (setq valid nil)))
+           (dolist (source sources)
+             (dolist (field '(:source-observation-id :tool-call-id))
+               (let ((identity (plist-get source field))
+                     (occurrences 0))
+                 (dolist (other sources)
+                   (when (equal identity (plist-get other field))
+                     (cl-incf occurrences)))
+                 (unless (= occurrences 1) (setq valid nil)))))
+           (and valid
+                (<= count e-context-lifetime-curation-max-sources))))))))
+
+(defun e-session-aggregate--context-curation-package-shape-p (package)
+  "Return non-nil when PACKAGE is a canonical bounded component envelope."
+  (and (e-session-aggregate-keyword-plist-shape-p package)
+       (not (e-session-aggregate--context-record-duplicate-key-p package))
+       (= (length package) 4)
+       (plist-member package :promotion)
+       (plist-member package :erasure)
+       (or (plist-get package :promotion) (plist-get package :erasure))
+       (e-session-aggregate--context-component-admissible-p
+        (plist-get package :promotion) 'context-promotion
+        e-context-lifetime-curation-record-version)
+       (e-session-aggregate--context-component-admissible-p
+        (plist-get package :erasure) 'context-erasure
+        e-context-lifetime-curation-erasure-record-version)
+       (or (null (plist-get package :promotion))
+           (null (plist-get package :erasure))
+           (cl-every
+            (lambda (field)
+              (equal (plist-get (plist-get package :promotion) field)
+                     (plist-get (plist-get package :erasure) field)))
+            '(:frame-id :generation-id :consumer-request-id
+              :response-entry-id)))))
+
 (defun e-session-aggregate--normalize-context-curation-package (package)
   "Return detached validated semantic components from curation PACKAGE.
 
@@ -2542,15 +3013,152 @@ are the optional version-3 promotion and version-1 erasure components."
                         field)))))
     (list :promotion promotion :erasure erasure)))
 
+(defun e-session-aggregate--validate-owned-context-curation-package (package)
+  "Validate sealed PACKAGE and return its already-owned component graph.
+
+The compatibility codecs are used only as bounded validators.  Their detached
+result is discarded; the command, delta, live entry, and public result retain
+the single frozen producer leaves from PACKAGE by identity."
+  (unless (e-session-aggregate--context-curation-package-shape-p package)
+    (signal 'e-session-error (list "Invalid context curation package")))
+  ;; Canonical component leaves are retained by identity.  Only the fixed
+  ;; two-slot semantic wrapper is newly constructed after admission.
+  (list :promotion (plist-get package :promotion)
+        :erasure (plist-get package :erasure)))
+
+(defconst e-session-aggregate--sha256-k
+  [#x428a2f98 #x71374491 #xb5c0fbcf #xe9b5dba5 #x3956c25b #x59f111f1
+   #x923f82a4 #xab1c5ed5 #xd807aa98 #x12835b01 #x243185be #x550c7dc3
+   #x72be5d74 #x80deb1fe #x9bdc06a7 #xc19bf174 #xe49b69c1 #xefbe4786
+   #x0fc19dc6 #x240ca1cc #x2de92c6f #x4a7484aa #x5cb0a9dc #x76f988da
+   #x983e5152 #xa831c66d #xb00327c8 #xbf597fc7 #xc6e00bf3 #xd5a79147
+   #x06ca6351 #x14292967 #x27b70a85 #x2e1b2138 #x4d2c6dfc #x53380d13
+   #x650a7354 #x766a0abb #x81c2c92e #x92722c85 #xa2bfe8a1 #xa81a664b
+   #xc24b8b70 #xc76c51a3 #xd192e819 #xd6990624 #xf40e3585 #x106aa070
+   #x19a4c116 #x1e376c08 #x2748774c #x34b0bcb5 #x391c0cb3 #x4ed8aa4a
+   #x5b9cca4f #x682e6ff3 #x748f82ee #x78a5636f #x84c87814 #x8cc70208
+   #x90befffa #xa4506ceb #xbef9a3f7 #xc67178f2]
+  "SHA-256 round constants for bounded streaming package identity.")
+
+(defun e-session-aggregate--sha256-rotr (word amount)
+  "Rotate unsigned 32-bit WORD right by AMOUNT bits."
+  (logand #xffffffff
+          (logior (lsh word (- amount))
+                  (lsh word (- 32 amount)))))
+
+(defun e-session-aggregate--sha256-compress (state block)
+  "Compress one 64-byte BLOCK into SHA-256 STATE."
+  (let ((words (make-vector 64 0)))
+    (dotimes (index 16)
+      (let ((offset (* index 4)))
+        (aset words index
+              (logior (lsh (aref block offset) 24)
+                      (lsh (aref block (+ offset 1)) 16)
+                      (lsh (aref block (+ offset 2)) 8)
+                      (aref block (+ offset 3))))))
+    (cl-loop for index from 16 below 64 do
+             (let* ((left (aref words (- index 15)))
+                    (right (aref words (- index 2)))
+                    (sigma0 (logxor
+                             (e-session-aggregate--sha256-rotr left 7)
+                             (e-session-aggregate--sha256-rotr left 18)
+                             (lsh left -3)))
+                    (sigma1 (logxor
+                             (e-session-aggregate--sha256-rotr right 17)
+                             (e-session-aggregate--sha256-rotr right 19)
+                             (lsh right -10))))
+               (aset words index
+                     (logand #xffffffff
+                             (+ (aref words (- index 16)) sigma0
+                                (aref words (- index 7)) sigma1)))))
+    (let ((a (aref state 0)) (b (aref state 1))
+          (c (aref state 2)) (d (aref state 3))
+          (e (aref state 4)) (f (aref state 5))
+          (g (aref state 6)) (h (aref state 7)))
+      (dotimes (index 64)
+        (let* ((sum1 (logxor
+                      (e-session-aggregate--sha256-rotr e 6)
+                      (e-session-aggregate--sha256-rotr e 11)
+                      (e-session-aggregate--sha256-rotr e 25)))
+               (choice (logxor (logand e f) (logand (lognot e) g)))
+               (temp1 (logand #xffffffff
+                              (+ h sum1 choice
+                                 (aref e-session-aggregate--sha256-k index)
+                                 (aref words index))))
+               (sum0 (logxor
+                      (e-session-aggregate--sha256-rotr a 2)
+                      (e-session-aggregate--sha256-rotr a 13)
+                      (e-session-aggregate--sha256-rotr a 22)))
+               (majority (logxor (logand a b) (logand a c) (logand b c)))
+               (temp2 (logand #xffffffff (+ sum0 majority))))
+          (setq h g g f f e e (logand #xffffffff (+ d temp1))
+                d c c b b a a (logand #xffffffff (+ temp1 temp2)))))
+      (dotimes (index 8)
+        (aset state index
+              (logand #xffffffff
+                      (+ (aref state index)
+                         (nth index (list a b c d e f g h)))))))))
+
+(defun e-session-aggregate--sha256-prin1 (value)
+  "Return VALUE's SHA-256 `prin1' digest without a canonical payload copy.
+
+Only one 64-byte block and the fixed compression vectors are retained.  The
+explicit printer bindings make package identity independent of caller display
+settings while matching the historical default `prin1-to-string' form."
+  (let ((state (vector #x6a09e667 #xbb67ae85 #x3c6ef372 #xa54ff53a
+                       #x510e527f #x9b05688c #x1f83d9ab #x5be0cd19))
+        (block (make-vector 64 0))
+        (fill 0)
+        (total 0))
+    (cl-labels
+        ((byte
+          (octet)
+          (aset block fill octet)
+          (setq fill (1+ fill) total (1+ total))
+          (when (= fill 64)
+            (e-session-aggregate--sha256-compress state block)
+            (setq fill 0)))
+         (character
+          (character)
+          (cond
+           ((<= character #x7f) (byte character))
+           ((<= character #x7ff)
+            (byte (logior #xc0 (lsh character -6)))
+            (byte (logior #x80 (logand character #x3f))))
+           ((<= character #xffff)
+            (byte (logior #xe0 (lsh character -12)))
+            (byte (logior #x80 (logand (lsh character -6) #x3f)))
+            (byte (logior #x80 (logand character #x3f))))
+           (t
+            (byte (logior #xf0 (lsh character -18)))
+            (byte (logior #x80 (logand (lsh character -12) #x3f)))
+            (byte (logior #x80 (logand (lsh character -6) #x3f)))
+            (byte (logior #x80 (logand character #x3f))))))
+         (output
+          (chunk)
+          (if (integerp chunk)
+              (character chunk)
+            (mapc #'character (string-to-list chunk)))))
+      (let ((print-circle nil) (print-level nil) (print-length nil)
+            (print-quoted t) (print-escape-newlines nil)
+            (print-escape-control-characters nil) (print-escape-nonascii nil)
+            (print-gensym nil) (print-integers-as-characters nil))
+        (prin1 value #'output))
+      (let ((bit-length (* total 8)))
+        (byte #x80)
+        (while (/= fill 56) (byte 0))
+        (dotimes (index 8)
+          (byte (logand (lsh bit-length (- (* 8 (- 7 index)))) #xff))))
+      (mapconcat (lambda (word) (format "%08x" word)) state ""))))
+
 (defun e-session-aggregate--context-curation-package-id (session-id package)
   "Return the deterministic identity for semantic curation PACKAGE."
   (format "context-curation-package:%s"
           (substring
-           (secure-hash 'sha256
-                        (prin1-to-string
-                         (list session-id
-                               (plist-get package :promotion)
-                               (plist-get package :erasure))))
+           (e-session-aggregate--sha256-prin1
+            (list session-id
+                  (plist-get package :promotion)
+                  (plist-get package :erasure)))
            0 32)))
 
 (defun e-session-aggregate--context-curation-package-record
@@ -2561,10 +3169,8 @@ are the optional version-3 promotion and version-1 erasure components."
         :id package-id
         :parent-id parent-id
         :timestamp timestamp
-        :promotion (and (plist-get package :promotion)
-                        (copy-tree (plist-get package :promotion)))
-        :erasure (and (plist-get package :erasure)
-                      (copy-tree (plist-get package :erasure)))))
+        :promotion (plist-get package :promotion)
+        :erasure (plist-get package :erasure)))
 
 (defun e-session-aggregate--prepare-context-curation-package
     (store session-id package)
@@ -3310,6 +3916,160 @@ indexes, head identity, and incremental derived fields in bounded work."
            (e-session-aggregate--committed-apply-fault 'after-derived)
            (e-session-aggregate--index-entry store session-id entry)
            (e-session-aggregate--committed-apply-fault 'after-index))))
+      ("message-display"
+       (when session
+         (when-let* ((message
+                      (e-session-aggregate--message-by-id
+                       store session-id (plist-get record :id))))
+           (let ((display (plist-get record :display)))
+             (if display
+                 (plist-put message :display
+                            (if (stringp display) (intern display) display))
+               (cl-remf message :display)))
+           (e-session-aggregate--committed-apply-fault 'after-list-state))
+         (e-session-aggregate--touch store session timestamp)
+         (e-session-aggregate--committed-apply-fault 'after-derived)))
+      ((or "process-report" "branch-summary" "compaction" "provider-anchor"
+           "context-generation")
+       (when session
+         (let* ((entry-type (intern type))
+                (field (pcase type
+                         ("process-report" :process-reports)
+                         ("branch-summary" :branch-summaries)
+                         ("compaction" :compactions)
+                         ("provider-anchor" :provider-anchors)
+                         (_ :context-generations)))
+                (fields
+                 (pcase type
+                   ("process-report" (plist-get record :report))
+                   ("branch-summary"
+                    (list :id (plist-get record :id)
+                          :parent-id (plist-get record :parent-id)
+                          :branch-id (plist-get record :branch-id)
+                          :summary (plist-get record :summary)
+                          :metadata (plist-get record :metadata)))
+                   ("compaction"
+                    (cl-loop for key in '(:id :parent-id :summary :branch-id
+                                          :range :first-kept-entry-id
+                                          :tokens-before :tokens-kept :metadata)
+                             append (list key (plist-get record key))))
+                   ("provider-anchor"
+                    (cl-loop for key in '(:id :parent-id :provider-id :model
+                                          :covered-entry-id :fingerprints :metadata)
+                             append (list key (plist-get record key))))
+                   (_
+                    (let ((context-record (plist-get record :context-record)))
+                      (e-session-aggregate--validate-context-entry-ownership
+                       store session-id 'context-generation context-record)
+                      (list :id (plist-get record :id)
+                            :parent-id (plist-get record :parent-id)
+                            :context-record context-record)))))
+                (entry (e-session-aggregate--normalize-entry-from-record
+                        session entry-type fields timestamp record)))
+           (e-session-aggregate--append-list-item session field entry)
+           (e-session-aggregate--committed-apply-fault 'after-list-state)
+           (e-session-aggregate--touch store session timestamp)
+           (e-session-aggregate--refresh-file-field store session)
+           (e-session-aggregate--committed-apply-fault 'after-derived)
+           (e-session-aggregate--index-entry store session-id entry)
+           (e-session-aggregate--committed-apply-fault 'after-index))))
+      ("context-curation-package"
+       (when session
+         (let* ((promotion (plist-get record :promotion))
+                (erasure (plist-get record :erasure))
+                (id (plist-get record :id))
+                (existing (gethash id
+                                   (e-session-aggregate--entry-index
+                                    store session-id))))
+           (unless existing
+             (dolist (component
+                      (list (cons 'context-promotion
+                                  promotion)
+                            (cons 'context-erasure
+                                  erasure)))
+               (when (cdr component)
+                 (e-session-aggregate--validate-context-entry-ownership
+                  store session-id (car component) (cdr component))))
+             (let ((entry
+                    (e-session-aggregate--normalize-entry-from-record
+                     session 'context-curation-package
+                     (list :id id :parent-id (plist-get record :parent-id)
+                           :promotion promotion :erasure erasure)
+                     timestamp record)))
+               (e-session-aggregate--append-list-item
+                session :context-curation-packages entry)
+               (e-session-aggregate--committed-apply-fault 'after-list-state)
+               (e-session-aggregate--touch store session timestamp)
+               (e-session-aggregate--committed-apply-fault 'after-derived)
+               (e-session-aggregate--index-entry store session-id entry)
+               (e-session-aggregate--committed-apply-fault 'after-index))))))
+      ("messages-cleared"
+       (when session
+         (e-session-aggregate--replace-list-field session :messages nil)
+         (e-session-aggregate--replace-list-field session :activity-events nil)
+         (e-session-aggregate--replace-list-field session :provider-anchors nil)
+         (plist-put session :latest-token-usage-event nil)
+         (e-session-aggregate--clear-message-derived-fields store session)
+         (e-session-aggregate--clear-entry-index store session-id)
+         (dolist (field '(:session-events :branch-summaries :compactions
+                          :provider-anchors))
+           (dolist (entry (plist-get session field))
+             (e-session-aggregate--index-entry store session-id entry)))
+         (plist-put session :current-head-id
+                    (e-session-aggregate--root-event-id session))
+         (let ((event (e-session-aggregate--append-session-event
+                       session 'messages-cleared timestamp
+                       (list :parent-id
+                             (e-session-aggregate--root-event-id session))
+                       record)))
+           (e-session-aggregate--committed-apply-fault 'after-list-state)
+           (e-session-aggregate--touch store session timestamp)
+           (e-session-aggregate--committed-apply-fault 'after-derived)
+           (e-session-aggregate--index-entry store session-id event)
+           (e-session-aggregate--committed-apply-fault 'after-index))))
+      ("board-message"
+       (when session
+         (let* ((journal (e-session-aggregate--board-journal store session-id))
+                (message (plist-get record :message))
+                (existing
+                 (e-session-aggregate--existing-board-message journal message)))
+           (unless existing
+             (puthash (e-session-aggregate-board-message-identity message)
+                      message (e-session-board-journal-id-index journal))
+             (let ((cell (list message)))
+               (if-let* ((tail (e-session-board-journal-tail journal)))
+                   (setcdr tail cell)
+                 (setf (e-session-board-journal-messages journal) cell))
+               (setf (e-session-board-journal-tail journal) cell)))
+           (e-session-aggregate--committed-apply-fault 'after-list-state)
+           (e-session-aggregate--touch store session timestamp)
+           (e-session-aggregate--committed-apply-fault 'after-derived))))
+      ("board-messages-cleared"
+       (when session
+         (e-session-aggregate--clear-board-journal store session-id)
+         (e-session-aggregate--committed-apply-fault 'after-list-state)
+         (e-session-aggregate--touch store session timestamp)
+         (e-session-aggregate--committed-apply-fault 'after-derived)))
+      ("board-session-state"
+       (when session
+         (let ((state (plist-get record :board-state)))
+           ;; This path consumes only aggregate-produced acknowledged deltas;
+           ;; replay uses the separate projection normalizer.  Retain the
+           ;; already-frozen leaves instead of allocating a second policy.
+           (unless (e-session-aggregate--valid-board-association-p state)
+             (signal 'e-session-error
+                     (list "Invalid committed board association" state)))
+           (plist-put session :board-session-state state))
+         (e-session-aggregate--committed-apply-fault 'after-list-state)
+         (e-session-aggregate--touch store session timestamp)
+         (e-session-aggregate--committed-apply-fault 'after-derived)))
+      ("session-deleted"
+       (remhash session-id (e-session-store-sessions store))
+       (remhash session-id (e-session-store-entry-indexes store))
+       (remhash session-id (e-session-store-board-journals store))
+       (e-session-aggregate--committed-apply-fault 'after-list-state)
+       (e-session-aggregate--committed-apply-fault 'after-derived)
+       (e-session-aggregate--committed-apply-fault 'after-index))
       ("session-info"
        (when session
          (let ((fields (e-session-aggregate--session-info-fields
@@ -3382,6 +4142,27 @@ This is the active C07 post-ACK aggregate boundary."
          (old-index-entry (and old-index record-id
                                (gethash record-id old-index)))
          (old-journal (and session-id (gethash session-id journals)))
+         (old-journal-messages
+          (and old-journal (e-session-board-journal-messages old-journal)))
+         (old-journal-tail
+          (and old-journal (e-session-board-journal-tail old-journal)))
+         (old-journal-tail-cdr (and old-journal-tail (cdr old-journal-tail)))
+         (old-journal-index
+          (and old-journal (e-session-board-journal-id-index old-journal)))
+         (board-message (and (equal (plist-get record :type) "board-message")
+                             (plist-get record :message)))
+         (board-identity
+          (and board-message
+               (e-session-aggregate-board-message-identity board-message)))
+         (old-board-entry
+          (and old-journal-index board-identity
+               (gethash board-identity old-journal-index)))
+         (old-message
+          (and (equal (plist-get record :type) "message-display")
+               old-session
+               (e-session-aggregate--message-by-id
+                store session-id (plist-get record :id))))
+         (old-message-spine (and old-message (copy-sequence old-message)))
          (old-sequence (e-session-store-sequence store))
          success)
     (unwind-protect
@@ -3412,8 +4193,23 @@ This is the active C07 post-ACK aggregate boundary."
                   (remhash record-id old-index))))
           (remhash session-id indexes))
         (if old-journal
-            (puthash session-id old-journal journals)
+            (progn
+              (when old-journal-tail
+                (setcdr old-journal-tail old-journal-tail-cdr))
+              (setf (e-session-board-journal-messages old-journal)
+                    old-journal-messages
+                    (e-session-board-journal-tail old-journal) old-journal-tail
+                    (e-session-board-journal-id-index old-journal)
+                    old-journal-index)
+              (when board-identity
+                (if old-board-entry
+                    (puthash board-identity old-board-entry old-journal-index)
+                  (remhash board-identity old-journal-index)))
+              (puthash session-id old-journal journals))
           (remhash session-id journals))
+        (when old-message
+          (setcar old-message (car old-message-spine))
+          (setcdr old-message (cdr old-message-spine)))
         (setf (e-session-store-sequence store) old-sequence)))))
 
 (defun e-session-aggregate--command-entry
@@ -3594,6 +4390,214 @@ with the sealed command."
                   (list :checkpoint-retain t)))
                result-kind 'entry
                result-id (plist-get entry :id))))
+      ('message-display
+       (let ((message-id (plist-get arguments :message-id)))
+         (if (not (e-session-aggregate--message-by-id store session-id message-id))
+             (setq result-kind 'nil-result)
+           (setq record
+                 (list :type "message-display" :session-id session-id
+                       :request-id request-id :delta-id delta-id
+                       :timestamp command-time :id message-id
+                       :display (when-let* ((display
+                                             (plist-get arguments :display)))
+                                  (symbol-name display)))
+                 result-kind 'message-display
+                 result-id message-id))))
+      ('process-report
+       (let* ((entry (e-session-aggregate--command-entry
+                      session 'process-report (plist-get arguments :report)
+                      delta-id command-time)))
+         (setq record
+               (list :type "process-report" :session-id session-id
+                     :request-id request-id :delta-id delta-id
+                     :id (plist-get entry :id)
+                     :parent-id (plist-get entry :parent-id)
+                     :timestamp command-time :report entry)
+               result-kind 'entry result-id (plist-get entry :id))))
+      ('branch-summary
+       (let ((entry (e-session-aggregate--command-entry
+                     session 'branch-summary
+                     (list :branch-id (plist-get arguments :branch-id)
+                           :summary (plist-get arguments :summary)
+                           :metadata (plist-get arguments :metadata))
+                     delta-id command-time)))
+         (setq record
+               (list :type "branch-summary" :session-id session-id
+                     :request-id request-id :delta-id delta-id
+                     :id (plist-get entry :id)
+                     :parent-id (plist-get entry :parent-id)
+                     :timestamp command-time
+                     :branch-id (plist-get entry :branch-id)
+                     :summary (plist-get entry :summary)
+                     :metadata (plist-get entry :metadata))
+               result-kind 'entry result-id (plist-get entry :id))))
+      ('compaction
+       (let ((entry (e-session-aggregate--command-entry
+                     session 'compaction
+                     (list :summary (plist-get arguments :summary)
+                           :branch-id (plist-get arguments :branch-id)
+                           :range (plist-get arguments :range)
+                           :first-kept-entry-id
+                           (plist-get arguments :first-kept-entry-id)
+                           :tokens-before (plist-get arguments :tokens-before)
+                           :tokens-kept (plist-get arguments :tokens-kept)
+                           :metadata (plist-get arguments :metadata))
+                     delta-id command-time)))
+         (setq record
+               (append
+                (list :type "compaction" :session-id session-id
+                      :request-id request-id :delta-id delta-id
+                      :id (plist-get entry :id)
+                      :parent-id (plist-get entry :parent-id)
+                      :timestamp command-time)
+                (cl-loop for key in '(:summary :branch-id :range
+                                      :first-kept-entry-id :tokens-before
+                                      :tokens-kept :metadata)
+                         append (list key (plist-get entry key))))
+               result-kind 'entry result-id (plist-get entry :id))))
+      ('provider-anchor
+       (let ((entry (e-session-aggregate--command-entry
+                     session 'provider-anchor
+                     (list :provider-id (plist-get arguments :provider-id)
+                           :model (plist-get arguments :model)
+                           :covered-entry-id
+                           (plist-get arguments :covered-entry-id)
+                           :fingerprints (plist-get arguments :fingerprints)
+                           :metadata (plist-get arguments :metadata))
+                     delta-id command-time)))
+         (setq record
+               (append
+                (list :type "provider-anchor" :session-id session-id
+                      :request-id request-id :delta-id delta-id
+                      :id (plist-get entry :id)
+                      :parent-id (plist-get entry :parent-id)
+                      :timestamp command-time)
+                (cl-loop for key in '(:provider-id :model :covered-entry-id
+                                      :fingerprints :metadata)
+                         append (list key (plist-get entry key))))
+               result-kind 'entry result-id (plist-get entry :id))))
+      ('context-generation
+       (let* ((raw (plist-get arguments :generation))
+              (context-record
+               (if (e-context-lifetime-generation-p raw)
+                   ;; This fixed five-field wrapper is constructed only at the
+                   ;; lane head, after reservation, and shares frozen leaves.
+                   (e-context-lifetime-generation-record raw)
+                 (let ((normalized
+                        (e-session-aggregate--normalize-context-record
+                         'context-generation raw)))
+                   (unless (equal normalized raw)
+                     (signal 'e-session-error
+                             (list "Context generation is not canonical")))
+                   raw)))
+              (_ownership
+               (e-session-aggregate--validate-context-entry-ownership
+                store session-id 'context-generation context-record))
+              (entry (e-session-aggregate--command-entry
+                      session 'context-generation
+                      (list :context-record context-record)
+                      delta-id command-time)))
+         (setq record
+               (list :type "context-generation" :session-id session-id
+                     :request-id request-id :delta-id delta-id
+                     :id (plist-get entry :id)
+                     :parent-id (plist-get entry :parent-id)
+                     :timestamp command-time :context-record context-record)
+               result-kind 'entry result-id (plist-get entry :id))))
+      ('context-curation-package
+       (let* ((package
+               (e-session-aggregate--validate-owned-context-curation-package
+                (plist-get arguments :package)))
+              (_promotion
+               (when-let* ((component (plist-get package :promotion)))
+                 (e-session-aggregate--validate-context-entry-ownership
+                  store session-id 'context-promotion component)))
+              (_erasure
+               (when-let* ((component (plist-get package :erasure)))
+                 (e-session-aggregate--validate-context-entry-ownership
+                  store session-id 'context-erasure component)))
+              (package-id (e-session-aggregate--context-curation-package-id
+                           session-id package))
+              (package-record
+               (e-session-aggregate--context-curation-package-record
+                session-id package package-id
+                (plist-get session :current-head-id) command-time))
+              (entry (e-session-aggregate--command-entry
+                      session 'context-curation-package
+                      (list :promotion (plist-get package :promotion)
+                            :erasure (plist-get package :erasure))
+                      delta-id command-time package-id))
+              (prepared (list :package package :package-id package-id
+                              :entry entry :record package-record))
+              (existing
+               (e-session-aggregate--context-curation-package-existing-state
+                store session-id prepared)))
+         (setq record (unless existing package-record)
+               result-kind 'curation-package
+               result-id package-id)
+         (when existing
+           (setq result-kind 'curation-package-existing))))
+      ('clear-messages
+       (setq record
+             (list :type "messages-cleared" :session-id session-id
+                   :request-id request-id :delta-id delta-id :id delta-id
+                   :parent-id (e-session-aggregate--root-event-id session)
+                   :timestamp command-time)
+             result-kind 'entry result-id delta-id))
+      ('board-message
+       (let* ((message
+               (e-session-aggregate--normalize-owned-board-message
+                (plist-get arguments :message)))
+              (_type (e-session-aggregate--canonical-board-record-type
+                      (plist-get message :record-type))))
+         (let* ((journal (gethash session-id
+                                  (e-session-store-board-journals store)))
+                (existing
+                 (e-session-aggregate--existing-board-message journal message))
+                (identity
+                 (e-session-aggregate-board-message-identity message)))
+           (setq record
+                 (unless existing
+                   (list :type "board-message" :session-id session-id
+                         :request-id request-id :delta-id delta-id
+                         :id delta-id :timestamp command-time :message message))
+                 result-kind 'board-message
+                 result-id identity))))
+      ('board-messages-clear
+       (setq record
+             (list :type "board-messages-cleared" :session-id session-id
+                   :request-id request-id :delta-id delta-id
+                   :id delta-id :timestamp command-time)
+             result-kind 'nil-result))
+      ('board-state
+       (let ((state (list :board-id (plist-get arguments :board-id)
+                          :principal (plist-get arguments :principal))))
+         (when-let* ((role (plist-get arguments :association-role)))
+           (setq state (plist-put state :association-role role)))
+         (when-let* ((policy (plist-get arguments :routing-policy)))
+           (setq state
+                 (plist-put state :routing-policy
+                            (e-session-board-routing-policy-normalize-owned
+                             policy))))
+         (setq record
+               (list :type "board-session-state" :session-id session-id
+                     :request-id request-id :delta-id delta-id :id delta-id
+                     :timestamp command-time :board-state state
+                     :board-id (plist-get state :board-id)
+                     :principal (plist-get state :principal)
+                     :board-output-sequence
+                     (or (plist-get session :board-output-sequence) 0)
+                     :board-activity-sequence
+                     (or (plist-get session :board-activity-sequence) 0))
+               result-kind 'board-state)))
+      ('delete
+       ;; This domain-only delta is never sent as a session record; it gives
+       ;; transactional live retirement the same rollback boundary as appends.
+       (setq record
+             (list :type "session-deleted" :session-id session-id
+                   :request-id request-id :delta-id delta-id
+                   :id delta-id :timestamp command-time)
+             result-kind 'true-result))
       ('session-info
        (let* ((field (plist-get arguments :field))
               (parent-id (plist-get session :current-head-id))
@@ -3646,21 +4650,73 @@ with the sealed command."
                         :parent-id parent-id
                         :timestamp command-time)
                   bounded-fields))))))
-    (unless record
+    (unless (or record (memq result-kind
+                             '(nil-result board-message
+                               curation-package-existing true-result)))
       (signal 'e-session-error
               (list "Session command produced no durable delta" tag)))
     ;; The public result is resolved after ACK from authoritative live state.
     (list :record record :result-kind result-kind :result-id result-id)))
 
+(defun e-session-aggregate--public-command-entry (entry)
+  "Return ENTRY's bounded public spine without replay-only metadata."
+  (when entry
+    (let ((public (copy-sequence entry)))
+      (cl-remf public :durability-state)
+      public)))
+
 (defun e-session-aggregate-command-result (store command delta)
   "Resolve COMMAND's O(1) public result from acknowledged DELTA in STORE."
   (let* ((session-id (e-session-aggregate-command-session-id command))
          (arguments (e-session-aggregate-command-arguments command))
-         (session (e-session-aggregate-get-live store session-id)))
-    (pcase (plist-get delta :result-kind)
+         (kind (plist-get delta :result-kind))
+         (session (unless (eq kind 'true-result)
+                    (e-session-aggregate-get-live store session-id))))
+    (pcase kind
       ('session session)
-      ('entry (e-session-aggregate-entry-by-id
-               store session-id (plist-get (plist-get delta :record) :id)))
+      ('entry
+       (e-session-aggregate--public-command-entry
+        (e-session-aggregate-entry-by-id
+         store session-id (plist-get (plist-get delta :record) :id))))
+      ('message-display
+       (e-session-aggregate--public-command-entry
+        (e-session-aggregate--message-by-id
+         store session-id (plist-get delta :result-id))))
+      ('board-message
+       (let* ((journal (gethash session-id
+                                (e-session-store-board-journals store)))
+              (retained
+               (and journal
+                    (gethash (plist-get delta :result-id)
+                             (e-session-board-journal-id-index journal)))))
+         (and retained (copy-sequence retained))))
+      ('board-state
+       (e-session-aggregate--copy-owned-board-state
+        (plist-get (e-session-aggregate-get-live store session-id)
+                   :board-session-state)))
+      ('curation-package
+       (let* ((record (plist-get delta :record))
+              (id (plist-get delta :result-id))
+              (entry (e-session-aggregate-entry-by-id store session-id id)))
+         (list :id id
+               :package (list :promotion (plist-get entry :promotion)
+                              :erasure (plist-get entry :erasure))
+               :record record
+               :entry (e-session-aggregate--public-command-entry entry)
+               :promotion (plist-get entry :promotion)
+               :erasure (plist-get entry :erasure))))
+      ('curation-package-existing
+       (let* ((id (plist-get delta :result-id))
+              (entry (e-session-aggregate-entry-by-id store session-id id)))
+         (list :id id
+               :package (list :promotion (plist-get entry :promotion)
+                              :erasure (plist-get entry :erasure))
+               :entry (e-session-aggregate--public-command-entry entry)
+               :promotion (plist-get entry :promotion)
+               :erasure (plist-get entry :erasure)
+               :already-present t)))
+      ('nil-result nil)
+      ('true-result t)
       ('metadata (plist-get session :metadata))
       ('producer-value (plist-get arguments :value))
       ('capability-state

@@ -231,6 +231,38 @@ writer cannot reinterpret a list of plists as one object."
      (e-session-metadata--validate-capability-state value))
     (_ nil)))
 
+(defun e-session-metadata-validate-entry (key value expected-class)
+  "Validate durable metadata KEY and VALUE in EXPECTED-CLASS.
+
+Unlike the plist validators this entry-shaped boundary requires no temporary
+wrapper allocation, so command admission can reject a bad typed mutation
+before reserving or freezing caller state."
+  (let* ((descriptor (e-session-metadata--descriptor key))
+         (state-class (plist-get (cdr descriptor) :state-class)))
+    (unless descriptor
+      (error "Session metadata key %S has no durable state schema" key))
+    (unless (eq state-class expected-class)
+      (error "Session metadata key %S is %S, not %S"
+             key state-class expected-class))
+    (e-session-metadata--validate-metadata-value key value))
+  value)
+
+(defun e-session-metadata-validate-create-input (metadata)
+  "Validate caller METADATA accepted by session creation without copying it.
+
+Legacy presentation-only keys are permitted because create normalization drops
+them before persistence.  Every surviving key must have a durable schema."
+  (unless (or (null metadata) (e-session-metadata-keyword-plist-p metadata))
+    (error "Session metadata must be a keyword plist"))
+  (let ((tail metadata))
+    (while tail
+      (let ((key (pop tail))
+            (value (pop tail)))
+        (unless (memq key e-session-metadata--presentation-metadata-keys)
+          (e-session-metadata-validate-entry
+           key value (e-session-metadata-policy-key-state-class key))))))
+  metadata)
+
 (defun e-session-metadata-validate-class (metadata expected-class)
   "Validate that METADATA only contains keys in EXPECTED-CLASS."
   (let ((tail metadata))
@@ -238,15 +270,9 @@ writer cannot reinterpret a list of plists as one object."
       (let ((key (pop tail)))
         (unless (consp tail)
           (error "Session metadata has key %S without value" key))
-        (let* ((value (pop tail))
-               (descriptor (e-session-metadata--descriptor key))
-               (state-class (plist-get (cdr descriptor) :state-class)))
-          (unless descriptor
-            (error "Session metadata key %S has no durable state schema" key))
-          (unless (eq state-class expected-class)
-            (error "Session metadata key %S is %S, not %S"
-                   key state-class expected-class))
-          (e-session-metadata--validate-metadata-value key value)))))
+        (let ((value (pop tail)))
+          (e-session-metadata-validate-entry
+           key value expected-class)))))
   metadata)
 
 (defun e-session-metadata-validate (metadata)

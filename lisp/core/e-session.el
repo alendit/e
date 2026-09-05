@@ -715,16 +715,19 @@ This historical facade name no longer selects or falls back to JSONL."
   (unless (e-session-storage-sqlite-p store)
     (signal 'e-session-storage-error
             (list "Session deletion is available on SQLite stores")))
-  (e-session--call-with-commit-barrier
-   store session-id
-   (lambda ()
-     ;; Deletion is already storage-first.  The admission barrier keeps a
-     ;; reentrant append from being ordered between the delete ACK and the live
-     ;; aggregate removal.
-     (e-session-storage-sqlite-delete store session-id)
-     (e-session-aggregate-reset-session store session-id)
-     (e-session--write-index-after-primary store)
-     t)))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command store session-id 'delete nil
+                                      :write-index t)
+    (e-session--call-with-commit-barrier
+     store session-id
+     (lambda ()
+       ;; Deletion is already storage-first.  The admission barrier keeps a
+       ;; reentrant append from being ordered between the delete ACK and the live
+       ;; aggregate removal.
+       (e-session-storage-sqlite-delete store session-id)
+       (e-session-aggregate-reset-session store session-id)
+       (e-session--write-index-after-primary store)
+       t))))
 
 (defun e-session-append-message (store session-id message)
   "Append MESSAGE to SESSION-ID and persist its semantic entry."
@@ -755,17 +758,21 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-set-message-display (store session-id message-id display)
   "Set DISPLAY on one message and persist its display disposition."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-message-display
-      aggregate session-id message-id display))
-   (lambda (_aggregate message)
-     (when message
-       (list :type "message-display" :session-id session-id
-             :timestamp (e-session--timestamp) :id message-id
-             :display (and display (symbol-name display)))))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'message-display
+       (list :message-id message-id :display display) :write-index t)
+    (e-session--commit-session-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-message-display
+        aggregate session-id message-id display))
+     (lambda (_aggregate message)
+       (when message
+         (list :type "message-display" :session-id session-id
+               :timestamp (e-session--timestamp) :id message-id
+               :display (and display (symbol-name display)))))
+     :write-index t)))
 
 (cl-defun e-session-append-activity-event
     (store session-id turn-id event-type payload &key (write-index t)
@@ -828,73 +835,107 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-append-process-report (store session-id report)
   "Append an out-of-band process REPORT."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-process-report aggregate session-id report))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command store session-id 'process-report
+                                      (list :report report) :write-index t)
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-process-report aggregate session-id report))
+     :write-index t)))
 
 (cl-defun e-session-append-branch-summary
     (store session-id branch-id summary &key metadata)
   "Append BRANCH-ID SUMMARY."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-branch-summary
-      aggregate session-id branch-id summary :metadata metadata))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'branch-summary
+       (list :branch-id branch-id :summary summary :metadata metadata)
+       :write-index t)
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-branch-summary
+        aggregate session-id branch-id summary :metadata metadata))
+     :write-index t)))
 
 (cl-defun e-session-append-compaction
     (store session-id summary &key branch-id range first-kept-entry-id
            tokens-before tokens-kept metadata)
   "Append compaction SUMMARY."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-compaction
-      aggregate session-id summary :branch-id branch-id :range range
-      :first-kept-entry-id first-kept-entry-id
-      :tokens-before tokens-before :tokens-kept tokens-kept
-      :metadata metadata))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'compaction
+       (list :summary summary :branch-id branch-id :range range
+             :first-kept-entry-id first-kept-entry-id
+             :tokens-before tokens-before :tokens-kept tokens-kept
+             :metadata metadata)
+       :write-index t)
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-compaction
+        aggregate session-id summary :branch-id branch-id :range range
+        :first-kept-entry-id first-kept-entry-id
+        :tokens-before tokens-before :tokens-kept tokens-kept
+        :metadata metadata))
+     :write-index t)))
 
 (cl-defun e-session-append-provider-anchor
     (store session-id provider-id &key model covered-entry-id fingerprints metadata)
   "Append opaque PROVIDER-ID anchor state."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-provider-anchor
-      aggregate session-id provider-id :model model
-      :covered-entry-id covered-entry-id :fingerprints fingerprints
-      :metadata metadata))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'provider-anchor
+       (list :provider-id provider-id :model model
+             :covered-entry-id covered-entry-id :fingerprints fingerprints
+             :metadata metadata)
+       :write-index t)
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-provider-anchor
+        aggregate session-id provider-id :model model
+        :covered-entry-id covered-entry-id :fingerprints fingerprints
+        :metadata metadata))
+     :write-index t)))
 
 (cl-defun e-session-append-context-generation
     (store session-id generation &key (write-index t))
   "Append semantic context GENERATION."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-context-generation
-      aggregate session-id generation :write-index write-index))
-   :write-index write-index))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'context-generation
+       ;; The bounded durable wrapper is constructed by the aggregate only
+       ;; after capacity reservation; GENERATION is the single sealed P owner.
+       (list :generation generation)
+       :write-index write-index)
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-context-generation
+        aggregate session-id generation :write-index write-index))
+     :write-index write-index)))
 
 (cl-defun e-session-append-context-curation-package
     (store session-id package &key (write-index t))
   "Append one atomic semantic context curation PACKAGE."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-context-curation-package
-      aggregate session-id package :write-index write-index))
-   (lambda (_aggregate result) (plist-get result :record))
-   :write-index write-index))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'context-curation-package (list :package package)
+       :write-index write-index)
+    (e-session--commit-session-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-context-curation-package
+        aggregate session-id package :write-index write-index))
+     (lambda (_aggregate result) (plist-get result :record))
+     :write-index write-index)))
 
 (defun e-session-set-metadata (store session-id metadata)
   "Replace durable session METADATA."
@@ -1003,11 +1044,14 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-clear-messages (store session-id)
   "Clear transcript-derived state with an append-only reset event."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-clear-messages aggregate session-id))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command store session-id 'clear-messages nil
+                                      :write-index t)
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-clear-messages aggregate session-id))
+     :write-index t)))
 
 (defun e-session-rename (store session-id name)
   "Rename SESSION-ID."
@@ -1025,43 +1069,55 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-append-board-message (store session-id message)
   "Append one immutable board envelope."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-board-message
-      aggregate session-id message))
-   (lambda (_aggregate result)
-     (list :type "board-message" :session-id session-id
-           :timestamp (e-session--timestamp) :message result))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command store session-id 'board-message
+                                      (list :message message) :write-index t)
+    (e-session--commit-session-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-board-message
+        aggregate session-id message))
+     (lambda (_aggregate result)
+       (list :type "board-message" :session-id session-id
+             :timestamp (e-session--timestamp) :message result))
+     :write-index t)))
 
 (defun e-session-clear-board-messages (store session-id)
   "Clear the independent board journal."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-clear-board-messages aggregate session-id))
-   (lambda (_aggregate _result)
-     (list :type "board-messages-cleared" :session-id session-id
-           :id (e-session-generate-ulid) :timestamp (e-session--timestamp)))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command store session-id 'board-messages-clear nil
+                                      :write-index t)
+    (e-session--commit-session-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-clear-board-messages aggregate session-id))
+     (lambda (_aggregate _result)
+       (list :type "board-messages-cleared" :session-id session-id
+             :id (e-session-generate-ulid) :timestamp (e-session--timestamp)))
+     :write-index t)))
 
 (defun e-session-declare-board-state
     (store session-id principal board-id &optional association-role routing-policy)
   "Set and persist board identity and routing policy."
   (e-session--ensure-loaded store session-id)
-  (let ((state
-         (e-session--commit-session-mutation
-          store session-id
-          (lambda (aggregate)
-            (e-session-aggregate-declare-board-state
-             aggregate session-id principal board-id association-role
-             routing-policy))
-          (lambda (aggregate _result)
-            (e-session--board-state-record aggregate session-id))
-          :write-index t)))
-    (copy-tree state)))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'board-state
+       (list :principal principal :board-id board-id
+             :association-role association-role :routing-policy routing-policy)
+       :write-index t)
+    (let ((state
+           (e-session--commit-session-mutation
+            store session-id
+            (lambda (aggregate)
+              (e-session-aggregate-declare-board-state
+               aggregate session-id principal board-id association-role
+               routing-policy))
+            (lambda (aggregate _result)
+              (e-session--board-state-record aggregate session-id))
+            :write-index t)))
+      (copy-tree state))))
 
 (cl-defun e-session-fork (store session-id &key at metadata name)
   "Fork SESSION-ID and publish the new aggregate through storage."

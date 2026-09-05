@@ -69,7 +69,11 @@
 
 Each graph contains nested cons, vector, and hash containers plus one separately
 charged hash entry."
-  (let* ((wrapper-nodes (pcase tag ('create 2) ('append-message 6) (_ 4)))
+  (let* ((wrapper-nodes (pcase tag
+                          ('create 4)
+                          ('append-message 6)
+                          ('session-info 6)
+                          (_ 4)))
          ;; Hash + one entry + vector account for three further nodes.
          (tree-nodes (- node-count wrapper-nodes 3))
          (table (make-hash-table :test 'eq)))
@@ -79,20 +83,24 @@ charged hash entry."
              (vector (e-session-async-test--balanced-cons-tree tree-nodes))
              table)
     (pcase tag
-      ('create (list :metadata table))
+      ('create (list :metadata (list :project-root table)))
       ('append-message (list :message (list :role 'user :content table)))
-      ('session-info (list :field 'metadata :value table)))))
+      ('session-info
+       (list :field 'metadata :value (list :project-root table))))))
 
 (ert-deftest e-session-async-s92-domain-accounting-schema-is-exact ()
   "One aggregate schema owns generated D/R and exact family frame escrow."
   (let* ((directory (make-temp-file "e-session-accounting-" t))
          (store (e-session-sqlite-store-create directory :asynchronous t))
-         (cases '((create (:metadata nil) 262144)
-                  (append-message (:message (:role user :content "x")) 131072)
-                  (session-info (:field name :value "name") 98304))))
+         (cases '((create (:metadata nil) 262144 16777216)
+                  (append-message (:message (:role user :content "x"))
+                                  131072 16777216)
+                  (session-info (:field name :value "name") 98304 16777216)
+                  (message-display (:message-id "m" :display hidden)
+                                   32768 65536))))
     (unwind-protect
         (dolist (case cases)
-          (pcase-let ((`(,tag ,arguments ,expected-d) case))
+          (pcase-let ((`(,tag ,arguments ,expected-d ,expected-p) case))
             (let* ((measure
                     (lambda (body)
                       (e-session-storage-measure-frame-escrow
@@ -104,7 +112,7 @@ charged hash entry."
                     (e-session-aggregate-command-maximum-transport-body
                      tag arguments)))
               (should (= (plist-get accounting :delta-bytes) expected-d))
-              (should (= (plist-get accounting :producer-max) 16777216))
+              (should (= (plist-get accounting :producer-max) expected-p))
               (should (= (plist-get accounting :reference-bytes) 8192))
               (should (= (plist-get accounting :local-bytes)
                          (+ (plist-get accounting :producer-bytes)
@@ -217,9 +225,9 @@ charged hash entry."
          (_session (e-session-aggregate-create store :id "frame-base"))
          (maximum (make-string 16777216 ?x))
          (cases
-          `((create "frame-create" (:metadata (:project-root ,maximum)))
+          `((create "frame-create" (:metadata (:name ,maximum)))
             (append-message "frame-base"
-                            (:message (:role user :content ,maximum)))
+                            (:message (:role user :created-at ,maximum)))
             (session-info "frame-base"
                           (:field metadata :value (:project-root ,maximum)))))
          (measure
@@ -837,6 +845,121 @@ charged hash entry."
                   (e-session-append-context-curation-response
                    store session-id "turn" "response-entry"))))
             (should (equal (plist-get entry :id) "response-entry")))
+          (let ((message
+                 (e-session-async-test--wait-finished
+                  (e-session-append-message
+                   store session-id '(:id "display-me" :role user
+                                      :content "visible")))))
+            (should
+             (eq (plist-get
+                  (e-session-async-test--wait-finished
+                   (e-session-set-message-display
+                    store session-id (plist-get message :id) 'hidden))
+                  :display)
+                 'hidden)))
+          (should
+           (equal (plist-get
+                   (e-session-async-test--wait-finished
+                    (e-session-append-process-report
+                     store session-id '(:kind note :value "report")))
+                   :value)
+                  "report"))
+          (should
+           (equal (plist-get
+                   (e-session-async-test--wait-finished
+                    (e-session-append-branch-summary
+                     store session-id "branch-summary" "summary"))
+                   :summary)
+                  "summary"))
+          (should
+           (equal (plist-get
+                   (e-session-async-test--wait-finished
+                    (e-session-append-compaction
+                     store session-id "compact" :tokens-before 10
+                     :tokens-kept 3))
+                   :summary)
+                  "compact"))
+          (should
+           (equal (plist-get
+                   (e-session-async-test--wait-finished
+                    (e-session-append-provider-anchor
+                     store session-id 'openai :model "model-a"
+                     :covered-entry-id "display-me"))
+                   :provider-id)
+                  'openai))
+          (let* ((root-id (plist-get (e-session-get store session-id)
+                                     :root-event-id))
+                 (generation
+                  (e-context-lifetime-generation-create
+                   :id "generation-async" :checkpoint nil
+                   :covered-session-boundary root-id)))
+            (should
+             (eq (plist-get
+                  (e-session-async-test--wait-finished
+                   (e-session-append-context-generation
+                    store session-id generation))
+                  :type)
+                 'context-generation)))
+          (let* ((promotion
+                  '(:record-version 3 :type context-promotion
+                    :id "curation-async" :frame-id "frame-async"
+                    :generation-id "generation-async"
+                    :consumer-request-id "consumer-async"
+                    :response-entry-id "response-async"
+                    :items ((:kind exact :value "kept"
+                             :source-observation-ids ("observation-async")
+                             :source-refs ("source-async")
+                             :source-fingerprints ("fingerprint-async")))))
+                 (package (list :promotion promotion :erasure nil))
+                 (first-package
+                  (e-session-async-test--wait-finished
+                   (e-session-append-context-curation-package
+                    store session-id package)))
+                 (submits 0)
+                 duplicate)
+            (should (plist-member first-package :record))
+            (cl-letf (((symbol-function 'e-session-storage-submit)
+                       (lambda (&rest _arguments)
+                         (cl-incf submits)
+                         (ert-fail "duplicate package submitted storage"))))
+              (setq duplicate
+                    (e-session-async-test--wait-finished
+                     (e-session-append-context-curation-package
+                      store session-id package))))
+            (should (plist-get duplicate :already-present))
+            (should-not (plist-member duplicate :record))
+            (should (= submits 0)))
+          (let* ((envelope (list :id "board-message" :kind 'output
+                                 :content "detached"))
+                 (returned
+                  (e-session-async-test--wait-finished
+                   (e-session-append-board-message
+                    store session-id envelope)))
+                 (submits 0)
+                 duplicate)
+            (setf (plist-get envelope :content) "mutated")
+            (should (equal (plist-get returned :content) "detached"))
+            (cl-letf (((symbol-function 'e-session-storage-submit)
+                       (lambda (&rest _arguments)
+                         (cl-incf submits)
+                         (ert-fail "duplicate board envelope submitted"))))
+              (setq duplicate
+                    (e-session-async-test--wait-finished
+                     (e-session-append-board-message
+                      store session-id returned))))
+            (should (equal duplicate returned))
+            (should-not (eq duplicate returned))
+            (should (= submits 0)))
+          (should
+           (equal
+            (e-session-async-test--wait-finished
+             (e-session-declare-board-state
+              store session-id "principal" "board" "participant" nil))
+            '(:board-id "board" :principal "principal"
+              :association-role "participant")))
+          (should-not
+           (e-session-async-test--wait-finished
+            (e-session-clear-board-messages store session-id)))
           (should
            (equal
             (e-session-async-test--wait-finished
@@ -959,6 +1082,183 @@ charged hash entry."
           (e-session-async-test--assert-zero-ownership store))
       (e-session-async-test--close store)
       (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-clear-and-delete-are-durable-before-visible ()
+  "Transcript clear and delete publish only after their durable ACKs."
+  (let* ((directory (make-temp-file "e-session-control-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         callback body clear delete)
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-session-create store :id "controls"))
+          (e-session-async-test--wait-finished
+           (e-session-append-message
+            store "controls" '(:role user :content "before clear")))
+          (cl-letf (((symbol-function 'e-session-storage-submit)
+                     (lambda (owner _kind submitted settle &optional escrow)
+                       (e-session-storage-release-frame-escrow owner escrow)
+                       (setq body submitted callback settle)
+                       t)))
+            (setq clear (e-session-clear-messages store "controls"))
+            (while (null callback) (sit-for 0.01))
+            (should (equal (plist-get body :op) 'session-append))
+            (should (= (length (e-session-messages store "controls")) 1))
+            (funcall callback '(:revision 2) nil)
+            (let ((result (e-session-async-test--wait-finished clear)))
+              (should (eq (plist-get result :type) 'session-event))
+              (should (eq (plist-get result :event-type) 'messages-cleared))))
+          (should-not (e-session-messages store "controls"))
+          (setq callback nil body nil)
+          (cl-letf (((symbol-function 'e-session-storage-submit)
+                     (lambda (owner _kind submitted settle &optional escrow)
+                       (e-session-storage-release-frame-escrow owner escrow)
+                       (setq body submitted callback settle)
+                       t)))
+            (setq delete (e-session-delete store "controls"))
+            (while (null callback) (sit-for 0.01))
+            (should (equal body '(:op session-delete :session-id "controls")))
+            (should (e-session-session-present-p store "controls"))
+            (funcall callback '(:revision 3) nil)
+            (should (eq (e-session-async-test--wait-finished delete) t)))
+          (should-not (e-session-session-present-p store "controls"))
+          (e-session-async-test--assert-zero-ownership store))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-noop-display-submits-no-storage-request ()
+  "A display request for a missing message retires without physical I/O."
+  (let* ((directory (make-temp-file "e-session-noop-display-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (submits 0))
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-session-create store :id "noop-display"))
+          (cl-letf (((symbol-function 'e-session-storage-submit)
+                     (lambda (&rest _arguments)
+                       (cl-incf submits)
+                       (ert-fail "missing display submitted storage"))))
+            (should-not
+             (e-session-async-test--wait-finished
+              (e-session-set-message-display
+               store "noop-display" "missing" 'hidden))))
+          (should (= submits 0))
+          (e-session-async-test--assert-zero-ownership store))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-clear-and-delete-survive-reopen ()
+  "Actual control transports restore clear state and permanently delete."
+  (let* ((directory (make-temp-file "e-session-control-reopen-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t)))
+    (unwind-protect
+        (progn
+          (dolist (id '("clear-reopen" "delete-reopen"))
+            (e-session-async-test--wait-finished
+             (e-session-create store :id id))
+            (e-session-async-test--wait-finished
+             (e-session-append-message
+              store id '(:role user :content "temporary"))))
+          (e-session-async-test--wait-finished
+           (e-session-clear-messages store "clear-reopen"))
+          (should
+           (eq (e-session-async-test--wait-finished
+                (e-session-delete store "delete-reopen"))
+               t))
+          (e-session-async-test--assert-zero-ownership store)
+          (e-session-async-test--close store)
+          (setq store (e-session-sqlite-store-create directory :load-all t))
+          (should-not (e-session-messages store "clear-reopen"))
+          (should-not (e-session-session-present-p store "delete-reopen")))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-clear-context-and-board-rollback-owned-state ()
+  "Faults restore transcript indexes and Board journal roots/tails exactly."
+  (dolist (tag '(clear-messages context-curation-package board-message
+                 board-messages-clear board-state delete))
+    (let* ((store (e-session-store-create))
+           (_session (e-session-aggregate-create store :id "rollback-family"))
+           (_message (e-session-aggregate-append-message
+                      store "rollback-family"
+                      '(:id "seed" :role user :content "seed")))
+           (_board (e-session-aggregate-append-board-message
+                    store "rollback-family"
+                    '(:id "board-seed" :kind output :content "seed")))
+           (_generation
+            (e-session-aggregate-append-context-generation
+             store "rollback-family"
+             (e-context-lifetime-generation-create
+              :id "rollback-generation" :checkpoint nil
+              :covered-session-boundary
+              (plist-get (e-session-get store "rollback-family")
+                         :root-event-id))))
+           (arguments
+            (pcase tag
+              ('clear-messages nil)
+              ('context-curation-package
+               '(:package
+                 (:promotion
+                  (:record-version 3 :type context-promotion
+                   :id "rollback-curation" :frame-id "rollback-frame"
+                   :generation-id "rollback-generation"
+                   :consumer-request-id "rollback-consumer"
+                   :response-entry-id "rollback-response"
+                   :items ((:kind exact :value "kept"
+                            :source-observation-ids ("rollback-observation")
+                            :source-refs ("rollback-source")
+                            :source-fingerprints ("rollback-fingerprint"))))
+                  :erasure nil)))
+              ('board-message
+               '(:message (:id "board-new" :kind output :content "new")))
+              ('board-messages-clear nil)
+              ('board-state
+               '(:principal "principal" :board-id "board"
+                 :association-role "owner" :routing-policy nil))
+              ('delete nil)))
+           (command (e-session-async-test--seal
+                     store tag "rollback-family" arguments))
+           (delta (e-session-aggregate-command-interpret store command))
+           (session (e-session-get store "rollback-family"))
+           (index (gethash "rollback-family"
+                           (e-session-store-entry-indexes store)))
+           (journal (gethash "rollback-family"
+                             (e-session-store-board-journals store)))
+           (before-session (prin1-to-string session))
+           (before-index-count (hash-table-count index))
+           (before-board
+            (prin1-to-string
+             (e-session-board-journal-messages journal)))
+           (before-tail (e-session-board-journal-tail journal)))
+      (dolist (boundary
+               (pcase tag
+                 ((or 'board-message 'board-messages-clear 'board-state)
+                  '(after-list-state after-derived))
+                 ('delete '(after-list-state after-derived after-index))
+                 (_ '(after-list-state after-derived after-index))))
+        (let ((e-session-aggregate--committed-apply-fault-function
+               (lambda (at)
+                 (when (eq at boundary)
+                   (signal 'e-session-error (list "injected" tag boundary))))))
+          (should-error
+           (e-session-aggregate-apply-committed-record
+            store (plist-get delta :record))
+           :type 'e-session-error))
+        (should (eq (e-session-get store "rollback-family") session))
+        (should (eq (gethash "rollback-family"
+                             (e-session-store-entry-indexes store))
+                    index))
+        (should (eq (gethash "rollback-family"
+                             (e-session-store-board-journals store))
+                    journal))
+        (should (equal (prin1-to-string session) before-session))
+        (should (= (hash-table-count index) before-index-count))
+        (should (equal
+                 (prin1-to-string
+                  (e-session-board-journal-messages journal))
+                 before-board))
+        (should (eq (e-session-board-journal-tail journal) before-tail))))))
 
 (ert-deftest e-session-async-s92-session-info-persists-bounded-delta ()
   "Session-info transport excludes a complete resulting metadata projection."
@@ -1219,7 +1519,11 @@ charged hash entry."
   (should-not (fboundp 'e-session-async--lane-projection-bytes))
   (should (equal e-session-aggregate-command-tags
                  '(create append-message append-activity
-                   context-curation-response session-info))))
+                   context-curation-response message-display process-report
+                   branch-summary compaction provider-anchor
+                   context-generation context-curation-package clear-messages
+                   board-message board-state board-messages-clear delete
+                   session-info))))
 
 (ert-deftest e-session-async-s92-interpreter-never-stages-a-session ()
   "Lane-head interpretation reads committed state without a session clone."
@@ -1235,6 +1539,486 @@ charged hash entry."
       (setq delta (e-session-aggregate-command-interpret store command)))
     (should (equal (plist-get (plist-get delta :record) :type) "message"))
     (should-not (e-session-messages store "direct-delta"))))
+
+(ert-deftest e-session-async-s92-streaming-package-hash-preserves-legacy-id ()
+  "Bounded streaming SHA matches the historical materialized printer bytes."
+  (dolist (value (list nil
+                       '("ascii" :value 3)
+                       '("météo" (:city "中"))
+                       (list :payload (make-string 8192 ?x))))
+    (should
+     (equal (e-session-aggregate--sha256-prin1 value)
+            (secure-hash 'sha256 (prin1-to-string value))))))
+
+(ert-deftest e-session-async-s92-control-producer-bounds-are-exact ()
+  "The control family enforces its 64 KiB and producer-node remainder."
+  (let* ((spec (cdr (e-session-aggregate-command-family-spec 'control)))
+         (node-limit (- (plist-get spec :nodes)
+                        (e-session-aggregate-command-fixed-nodes 'control)))
+         (exact-nodes (e-session-async-test--balanced-cons-tree node-limit))
+         (over-nodes (e-session-async-test--balanced-cons-tree (1+ node-limit)))
+         (exact-bytes (make-string 65536 ?x))
+         (over-bytes (make-string 65537 ?x)))
+    (should (= (plist-get
+                (e-session-aggregate--command-measure-producer-graph
+                 exact-nodes 65536 node-limit)
+                :nodes)
+               node-limit))
+    (should-error
+     (e-session-aggregate--command-measure-producer-graph
+      over-nodes 65536 node-limit)
+     :type 'e-session-command-too-large)
+    (should (= (e-session-aggregate-command-measure-producer
+                exact-bytes 65536)
+               65536))
+    (should-error
+     (e-session-aggregate-command-measure-producer over-bytes 65536)
+     :type 'e-session-command-too-large)))
+
+(ert-deftest e-session-async-s92-every-command-tag-has-generated-frame-fixture ()
+  "Every tag's generated Freserve also covers an interpreted physical body."
+  (let* ((store (e-session-store-create))
+         (_session (e-session-aggregate-create store :id "s"))
+         (_message (e-session-aggregate-append-message
+                    store "s" '(:id "m" :role user :content "existing")))
+         (generation
+          (e-context-lifetime-generation-create
+           :id "generation" :checkpoint nil
+           :covered-session-boundary (plist-get _session :root-event-id)))
+         (_generation
+          (e-session-aggregate-append-context-generation
+           store "s" generation))
+         (promotion
+          '(:record-version 3 :type context-promotion :id "promotion"
+            :frame-id "frame" :generation-id "generation"
+            :consumer-request-id "consumer" :response-entry-id "response"
+            :items ((:kind exact :value "kept"
+                     :source-observation-ids ("observation")
+                     :source-refs ("source")
+                     :source-fingerprints ("fingerprint")))))
+         (cases
+          `((create nil (:metadata nil))
+            (append-message "s" (:message (:id "m" :role user :content "x")))
+            (append-activity "s" (:turn-id "t" :event-type note :payload nil))
+            (context-curation-response "s" (:turn-id "t" :response-entry-id "r"))
+            (message-display "s" (:message-id "m" :display hidden))
+            (process-report "s" (:report (:id "p" :kind note)))
+            (branch-summary "s" (:branch-id "b" :summary "x" :metadata nil))
+            (compaction "s" (:summary "x"))
+            (provider-anchor "s" (:provider-id openai))
+            (context-generation "s" (:generation ,generation))
+            (context-curation-package "s"
+                                      (:package (:promotion ,promotion :erasure nil)))
+            (clear-messages "s" nil)
+            (board-message "s" (:message (:id "board" :kind output)))
+            (board-state "s" (:principal "p" :board-id "b"
+                              :association-role nil :routing-policy nil))
+            (board-messages-clear "s" nil)
+            (delete "s" nil)
+            (session-info "s" (:field name :value "name"))))
+         (measure (lambda (body)
+                    (e-runtime-store-codec-measure-bounded
+                     body e-runtime-store-codec-protocol-canonical-byte-limit))))
+    (should (equal (mapcar #'car cases) e-session-aggregate-command-tags))
+    (dolist (case cases)
+      (pcase-let ((`(,tag ,session-id ,arguments) case))
+        (let* ((accounting (e-session-aggregate-command-accounting
+                            tag session-id arguments measure))
+               (command (e-session-aggregate-command-seal
+                         tag session-id arguments accounting measure))
+               (command-session-id
+                (e-session-aggregate-command-session-id command))
+               (delta (e-session-aggregate-command-interpret store command))
+               (actual-body
+                (if (eq tag 'delete)
+                    (list :op 'session-delete :session-id command-session-id)
+                  (list :op 'session-append
+                        :session-id command-session-id
+                        :record (plist-get delta :record)))))
+          (should (= (plist-get accounting :frame-reserve)
+                     (funcall measure
+                              (e-session-aggregate-command-maximum-transport-body
+                               tag arguments))))
+          (should (<= (funcall measure actual-body)
+                      (plist-get accounting :frame-reserve))))))))
+
+(ert-deftest e-session-async-s92-board-and-curation-share-one-frozen-p ()
+  "Command, delta, live state, and result share variable producer leaves."
+  (let* ((store (e-session-store-create))
+         (_session (e-session-aggregate-create store :id "identity"))
+         (_generation
+          (e-session-aggregate-append-context-generation
+           store "identity"
+           (e-context-lifetime-generation-create
+            :id "generation" :checkpoint nil
+            :covered-session-boundary
+            (plist-get (e-session-get store "identity") :root-event-id))))
+         (large (make-string 7000 ?x))
+         (promotion
+          (list :record-version 3 :type 'context-promotion :id "promotion"
+                :frame-id "frame" :generation-id "generation"
+                :consumer-request-id "consumer" :response-entry-id "response"
+                :items
+                (list (list :kind 'exact :value large
+                            :source-observation-ids '("observation")
+                            :source-refs '("source")
+                            :source-fingerprints '("fingerprint")))))
+         (package (list :promotion promotion :erasure nil))
+         (command (e-session-async-test--seal
+                   store 'context-curation-package "identity"
+                   (list :package package)))
+         (frozen-promotion
+          (plist-get (plist-get (e-session-aggregate-command-arguments command)
+                                :package)
+                     :promotion))
+         (delta (e-session-aggregate-command-interpret store command)))
+    (should-not (eq frozen-promotion promotion))
+    (should (eq (plist-get (plist-get delta :record) :promotion)
+                frozen-promotion))
+    (e-session-aggregate-apply-committed-record store (plist-get delta :record))
+    (let* ((entry (e-session-aggregate-entry-by-id
+                   store "identity" (plist-get delta :result-id)))
+           (result (e-session-aggregate-command-result store command delta)))
+      (should (eq (plist-get entry :promotion) frozen-promotion))
+      (should (eq (plist-get result :promotion) frozen-promotion))
+      (should-not (plist-member (plist-get result :entry) :durability-state)))
+    (let* ((content (make-string 16384 ?b))
+           (board-command
+            (e-session-async-test--seal
+             store 'board-message "identity"
+             (list :message (list :id "board" :kind 'output :content content))))
+           (frozen-message
+            (plist-get (e-session-aggregate-command-arguments board-command)
+                       :message))
+           (board-delta
+            (e-session-aggregate-command-interpret store board-command))
+           (durable-message
+            (plist-get (plist-get board-delta :record) :message)))
+      ;; The interpreter owns a separately bounded normalized spine, but the
+      ;; variable producer leaf is the one frozen allocation charged to P.
+      (should-not (eq durable-message frozen-message))
+      (should (eq (plist-get durable-message :content)
+                  (plist-get frozen-message :content)))
+      (e-session-aggregate-apply-committed-record
+       store (plist-get board-delta :record))
+      (let* ((journal (gethash "identity"
+                               (e-session-store-board-journals store)))
+             (live (car (e-session-board-journal-messages journal)))
+             (result (e-session-aggregate-command-result
+                      store board-command board-delta)))
+        (should (eq live durable-message))
+        (should-not (eq result live))
+        (should (eq (plist-get result :content)
+                    (plist-get frozen-message :content)))))))
+
+(ert-deftest e-session-async-s92-noop-never-dirties-projection ()
+  "Missing and duplicate semantic no-ops neither submit nor mark projection."
+  (let* ((directory (make-temp-file "e-session-noop-projection-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (marks 0))
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-session-create store :id "noop"))
+          (e-session-async-test--wait-finished
+           (e-session-append-board-message
+            store "noop" '(:id "same" :kind output :content "same")))
+          (cl-letf (((symbol-function 'e-session-storage--mark-checkpoint-dirty)
+                     (lambda (&rest _) (cl-incf marks))))
+            (e-session-async-test--wait-finished
+             (e-session-set-message-display store "noop" "missing" 'hidden))
+            (e-session-async-test--wait-finished
+             (e-session-append-board-message
+              store "noop" '(:id "same" :kind output :content "same"))))
+          (should (= marks 0))
+          (e-session-async-test--assert-zero-ownership store))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-first-board-append-creates-journal-only-after-ack ()
+  "Held or failed first Board transport never creates pre-ACK journal state."
+  (let* ((directory (make-temp-file "e-session-board-held-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         callback work)
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-session-create store :id "held-board"))
+          (cl-letf (((symbol-function 'e-session-storage-submit)
+                     (lambda (owner _kind _body settle &optional escrow)
+                       (e-session-storage-release-frame-escrow owner escrow)
+                       (setq callback settle)
+                       t)))
+            (setq work (e-session-append-board-message
+                        store "held-board" '(:id "first" :kind output)))
+            (let ((deadline (+ (float-time) 2.0)))
+              (while (and (null callback) (< (float-time) deadline))
+                (sit-for 0.01)))
+            (should callback)
+            (should-not (gethash "held-board"
+                                 (e-session-store-board-journals store)))
+            (funcall callback nil '(e-session-storage-error "failed"))
+            (should (eq (plist-get (e-session-async-test--wait work) :state)
+                        'failed)))
+          (should-not (gethash "held-board"
+                               (e-session-store-board-journals store)))
+          (e-session-async-test--assert-zero-ownership store))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-malformed-new-families-fail-before-admission ()
+  "Malformed Board, context, and process inputs cannot poison a valid tail."
+  (let* ((directory (make-temp-file "e-session-invalid-command-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t)))
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-session-create store :id "invalid"))
+          (dolist (work
+                   (list
+                    (e-session-append-board-message
+                     store "invalid" '(:id "bad" :record-type unknown))
+                    (e-session-append-context-curation-package
+                     store "invalid"
+                     '(:promotion (:record-version 2 :type context-promotion)
+                       :erasure nil))
+                    (e-session-append-process-report
+                     store "invalid" '(not-a-plist))))
+            (should (eq (plist-get (e-session-async-test--wait work) :state)
+                        'failed))
+            (e-session-async-test--assert-zero-ownership store))
+          (should
+           (equal (plist-get
+                   (e-session-async-test--wait-finished
+                    (e-session-append-process-report
+                     store "invalid" '(:kind note :value "tail")))
+                   :value)
+                  "tail"))
+          (dolist (too-long
+                   (list
+                    (e-session-declare-board-state
+                     store "invalid" "p" (make-string 129 ?b))
+                    (e-session-append-process-report
+                     store "invalid" (list :id (make-string 129 ?p)))))
+            (should (eq (plist-get (e-session-async-test--wait too-long) :state)
+                        'failed)))
+          (e-session-async-test--assert-zero-ownership store))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-session-info-invalid-subtypes-never-submit ()
+  "Every state-independent session-info error precedes ownership and I/O."
+  (let* ((directory (make-temp-file "e-session-invalid-info-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (long-id (make-string 129 ?x))
+         before works)
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-session-create store :id "invalid-info"))
+          (setq before
+                (length (plist-get (e-session-get store "invalid-info")
+                                   :session-events)))
+          (cl-letf (((symbol-function 'e-session-storage-submit)
+                     (lambda (&rest _)
+                       (ert-fail "invalid session-info reached storage I/O"))))
+            (setq works
+                  (list
+                   (e-session-set-metadata
+                    store "invalid-info" '(:unknown 1))
+                   (e-session-set-session-config
+                    store "invalid-info" '(:org-canvas-ref nil))
+                   (e-session-set-context-references
+                    store "invalid-info" long-id nil)
+                   (e-session-set-context-reference
+                    store "invalid-info" :unknown nil)
+                   (e-session-set-capability-state
+                    store "invalid-info" long-id nil)
+                   (e-session-set-turn-options
+                    store "invalid-info" '(:unknown 1))
+                   (e-session-set-current-branch
+                    store "invalid-info" long-id)
+                   (e-session-rename store "invalid-info" " \t\n"))))
+          (dolist (work works)
+            (should (eq (plist-get (e-session-async-test--wait work) :state)
+                        'failed))
+            (e-session-async-test--assert-zero-ownership store))
+          (should (= before
+                     (length (plist-get (e-session-get store "invalid-info")
+                                        :session-events))))
+          (should
+           (equal (plist-get
+                   (e-session-async-test--wait-finished
+                    (e-session-append-process-report
+                     store "invalid-info" '(:kind note :value "tail")))
+                   :value)
+                  "tail"))
+          (e-session-async-test--assert-zero-ownership store))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-board-categories-bound-before-intern ()
+  "Repeated oversized Board categories settle without I/O or symbol leakage."
+  (let* ((directory (make-temp-file "e-session-board-category-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (category (concat "uninterned-board-category-" (make-string 129 ?x)))
+         works)
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-session-create store :id "board-category"))
+          (should-not (intern-soft category))
+          (cl-letf (((symbol-function 'e-session-storage-submit)
+                     (lambda (&rest _)
+                       (ert-fail "oversized Board category reached storage"))))
+            (dotimes (iteration 2)
+              (dolist (message
+                       (list (list :id (format "kind-%s" iteration)
+                                   :kind category)
+                             (list :id (format "tag-%s" iteration)
+                                   :tags (list category))
+                             (list :id (format "status-%s" iteration)
+                                   :attributes (list :status category))))
+                (push (e-session-append-board-message
+                       store "board-category" message)
+                      works))))
+          (dolist (work works)
+            (should (eq (plist-get (e-session-async-test--wait work) :state)
+                        'failed))
+            (e-session-async-test--assert-zero-ownership store))
+          (should-not (intern-soft category)))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-s92-board-routing-retains-frozen-leaves ()
+  "Board routing copies bounded spines while sharing its one frozen payload."
+  (let* ((store (e-session-store-create))
+         (_session (e-session-aggregate-create store :id "routing"))
+         (large (make-string 60000 ?r))
+         (policy
+          (list :participant-id "participant"
+                :pickup-selector
+                (list :kind "input" :tags '(private)
+                      :attributes (list :source large))
+                :observer-selector '(:kind activity :tags-all (private))
+                :default-tags '(private)
+                :default-to "participant"))
+         (arguments (list :principal "principal" :board-id "board"
+                          :association-role nil :routing-policy policy))
+         (command (e-session-async-test--seal
+                   store 'board-state "routing" arguments))
+         (frozen-policy
+          (plist-get (e-session-aggregate-command-arguments command)
+                     :routing-policy))
+         (frozen-leaf
+          (plist-get
+           (plist-get (plist-get frozen-policy :pickup-selector) :attributes)
+           :source))
+         (delta (e-session-aggregate-command-interpret store command))
+         (state (plist-get (plist-get delta :record) :board-state))
+         (durable-policy (plist-get state :routing-policy))
+         (measure
+          (lambda (body)
+            (e-runtime-store-codec-measure-bounded
+             body e-runtime-store-codec-protocol-canonical-byte-limit))))
+    (should-not (eq frozen-leaf large))
+    (should (eq (plist-get
+                 (plist-get (plist-get durable-policy :pickup-selector)
+                            :attributes)
+                 :source)
+                frozen-leaf))
+    (should (<= (funcall measure
+                         (list :op 'session-append :session-id "routing"
+                               :record (plist-get delta :record)))
+                (plist-get (e-session-aggregate-command-account command)
+                           :frame-reserve)))
+    (e-session-aggregate-apply-committed-record store (plist-get delta :record))
+    (let* ((live (plist-get (e-session-get store "routing")
+                            :board-session-state))
+           (result (e-session-aggregate-command-result store command delta)))
+      (should (eq live state))
+      (should-not (eq result live))
+      (should (eq (plist-get
+                   (plist-get
+                    (plist-get (plist-get result :routing-policy)
+                               :pickup-selector)
+                    :attributes)
+                   :source)
+                  frozen-leaf)))))
+
+(ert-deftest e-session-async-s92-board-routing-preflight-measures-virtual-wire ()
+  "Routing admission measures exact tagged wire bytes without materializing."
+  (let* ((make-policy
+          (lambda (attributes)
+            (list :participant-id "participant"
+                  :pickup-selector
+                  (list :kind "input" :tags '(private)
+                        :attributes attributes)
+                  :observer-selector '(:kind activity :tags-all (private))
+                  :default-tags '(private)
+                  :default-to "participant")))
+         (representatives
+          (list (funcall make-policy
+                         (list :source
+                               (concat "ascii/\\\"" (string 0 8 9 10 12 13 31))))
+                (funcall make-policy
+                         (list :source (concat "météo-中"
+                                              (string #x2028 #x2029))
+                               :mode 'compact))
+                (funcall make-policy
+                         (list :source (vector "vector" '(nested values))))
+                (funcall make-policy
+                         (list :source (unibyte-string 128 255)))
+                (plist-put (funcall make-policy nil)
+                           :observer-selector nil))))
+    (dolist (policy representatives)
+      (should
+       (= (e-session-board-policy-wire-json-byte-size policy)
+          (string-bytes
+           (json-encode
+            (e-session-codec-board-routing-policy-for-json policy))))))
+    (dolist (scalar (list nil t json-false 0 -1 1.5 'category :category
+                          "a/b\\c\"d" (string 0 8 9 10 12 13 31 32
+                                                   #x2028 #x2029 #x00e9 #x4e2d)
+                          (unibyte-string 128 255)))
+      (should (= (e-session-board-policy--json-scalar-byte-size scalar)
+                 (string-bytes (json-encode scalar)))))
+    (let* ((empty-policy (funcall make-policy '(:source "")))
+           (overhead (e-session-board-policy-wire-json-byte-size empty-policy))
+           (payload-bytes (- e-session-board-policy--byte-budget overhead))
+           (exact (funcall make-policy
+                           (list :source (make-string payload-bytes ?x))))
+           (one-over (funcall make-policy
+                              (list :source
+                                    (make-string (1+ payload-bytes) ?x)))))
+      (should (= (e-session-board-policy-wire-json-byte-size exact)
+                 e-session-board-policy--byte-budget))
+      (should
+       (= (string-bytes
+           (json-encode
+            (e-session-codec-board-routing-policy-for-json exact)))
+          e-session-board-policy--byte-budget))
+      (should (e-session-board-routing-policy-valid-p exact))
+      (should (= (e-session-board-policy-wire-json-byte-size one-over)
+                 (1+ e-session-board-policy--byte-budget)))
+      (should-not (e-session-board-routing-policy-valid-p one-over)))
+    (let ((policy (funcall make-policy '(:source "no-copy"))))
+      (cl-letf (((symbol-function
+                  'e-session-codec-board-routing-policy-for-json)
+                 (lambda (&rest _)
+                   (ert-fail "routing preflight materialized codec value")))
+                ((symbol-function 'json-encode)
+                 (lambda (&rest _)
+                   (ert-fail "routing preflight encoded a scalar")))
+                ((symbol-function 'json-serialize)
+                 (lambda (&rest _)
+                   (ert-fail "routing preflight serialized a scalar"))))
+        (should
+         (e-session-aggregate-command-accounting
+          'board-state "routing-preflight"
+          (list :principal "principal" :board-id "board"
+                :association-role nil :routing-policy policy)
+          (lambda (_body) 1)))))))
 
 (provide 'e-session-async-test)
 
