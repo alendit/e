@@ -16,6 +16,10 @@ if [[ $emacs_config_mode != isolated && $emacs_config_mode != current ]]; then
   echo "E_E2E_EMACS_CONFIG must be isolated or current." >&2
   exit 2
 fi
+if [[ ${E_GRAPHICAL_E2E_SELECTOR:-} == startup-prewarm && $emacs_config_mode != isolated ]]; then
+  echo "startup-prewarm requires E_E2E_EMACS_CONFIG=isolated; refusing to launch Emacs." >&2
+  exit 2
+fi
 export E_E2E_EMACS_CONFIG=$emacs_config_mode
 
 startup_fixture_directory=
@@ -23,8 +27,27 @@ startup_stall_directory=
 startup_worker_file=
 startup_report_file=
 startup_fixture_enabled=0
+
+cleanup_startup_fixture() {
+  if [[ $startup_fixture_enabled == 1 ]]; then
+    startup_fixture_enabled=0
+    if [[ -n $startup_worker_file || -n $startup_report_file ]]; then
+      rm -f "$startup_worker_file" "$startup_report_file"
+    fi
+    if [[ -n $startup_fixture_directory ]]; then
+      rm -rf "$startup_fixture_directory"
+    fi
+    if [[ -n $startup_stall_directory ]]; then
+      rm -rf "$startup_stall_directory"
+    fi
+  fi
+}
+
 if [[ ${E_GRAPHICAL_E2E_SELECTOR:-} == startup-prewarm && $emacs_config_mode == isolated ]]; then
   startup_fixture_enabled=1
+  # Install the EXIT cleanup before allocating either directory so an early
+  # validation failure or a headless runner exit cannot leak a partial fixture.
+  trap cleanup_startup_fixture EXIT
   startup_fixture_directory=$(mktemp -d -t e-graphical-startup-v5.XXXXXX)
   startup_stall_directory=$(mktemp -d -t e-graphical-startup-stall.XXXXXX)
   startup_worker_file=$startup_fixture_directory/e-runtime-store-worker-v6.el
@@ -34,13 +57,6 @@ if [[ ${E_GRAPHICAL_E2E_SELECTOR:-} == startup-prewarm && $emacs_config_mode == 
   export E_RUNTIME_STORE_TEST_WORKER_FILE=$startup_worker_file
   export E_GRAPHICAL_E2E_STARTUP_REPORT=$startup_report_file
 fi
-
-cleanup_startup_fixture() {
-  if [[ $startup_fixture_enabled == 1 ]]; then
-    rm -f "$startup_worker_file" "$startup_report_file"
-    rm -rf "$startup_fixture_directory" "$startup_stall_directory"
-  fi
-}
 
 current_emacs_command=(emacs)
 if [[ -n ${E_E2E_EMACS_INIT_DIRECTORY:-} ]]; then

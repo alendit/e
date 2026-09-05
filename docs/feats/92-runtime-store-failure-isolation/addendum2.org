@@ -27,9 +27,9 @@ may synchronously initialize its domain owners.
 supersedes only the parent =F92-DP6C= package relation.  The observable and
 ownership fields of =F92-C09= remain unchanged.
 
-=F92A2-DP1= implementation is complete and pending independent correction
-review; the slice is not yet accepted.  =F92A2-DP2=--=F92A2-DP5= remain
-=not-started=.  The
+=F92A2-DP1= is Accepted after the independent correction review of =aa893823=
+closed with no P0--P2 findings and the prior findings resolved.  =F92A2-DP2=
+--=F92A2-DP5= remain =not-started= pending parent admission.  The
 earlier =863b8265= startup-prewarm implementation was a failing behavioral
 baseline, not evidence for this plan: it called full runtime composition from
 =emacs-startup-hook= and could delay or prevent ordinary Emacs startup against
@@ -61,27 +61,27 @@ the operator's existing store.
   unbounded or synchronous durable restoration and remaining interactive
   storage awaits are deferred to DP2--DP5.
 
-Mechanism progress is =F92A2-DP1 implementation complete, pending independent
-correction review=; =F92A2-DP2=--=F92A2-DP5= remain =not-started=.  Existing
-asynchronous mutation and failure-isolation mechanisms are retained evidence
-only where the contracts below explicitly preserve them.
+Mechanism progress is =F92A2-DP1 Accepted=; =F92A2-DP2=--=F92A2-DP5= remain
+=not-started= pending parent admission.  Existing asynchronous mutation and
+failure-isolation mechanisms are retained evidence only where the contracts
+below explicitly preserve them.
 
 * Implementation ledger
 
-- =F92A2-DP1= :: Implementation is complete and pending independent correction
-  review for transport-only startup, pure composition, and unwind-safe close
-  ownership.  The process-wide runtime-store transport owns the prewarm handle
-  and its sole close edge; default composition borrows that handle and
-  constructs bounded empty owner state.  Session and task constructors issue no
-  domain request until an explicit owner operation, while the composed startup
-  path records no session, Board, task, cron, voice, Goodnite, or raw-result
-  request.
-- Focused evidence :: Candidate checks pass =e-defaults= 37/37,
+- =F92A2-DP1= :: Accepted after independent correction review of =aa893823=
+  closed with no P0--P2 findings and the prior findings resolved.  The
+  process-wide runtime-store transport owns the prewarm handle and its sole
+  close edge; default composition borrows that handle and constructs bounded
+  empty owner state.  Session and task constructors issue no domain request
+  until an explicit owner operation, while the composed startup path records
+  no session, Board, task, cron, voice, Goodnite, or raw-result request.
+- Focused evidence :: Checks pass =e-defaults= 37/37,
   =e-runtime-sqlite-p3= 28/28, =e-runtime-sqlite-p4= 15/15,
   =e-session-sqlite= 17/17, =e-task-queue= 29/29, and =e-runtime-store= 72/72.
   These cover prewarm reuse and directory ownership, unwind-safe borrowed/owned
   close paths, pure composition, rejection of closed provided transports,
-  session batch compatibility, and first explicit task storage use.
+  session batch compatibility, first explicit task storage use, and the
+  runner's pre-launch configuration guard and fixture-failure behavior.
 - Graphical evidence :: The exact =E_GRAPHICAL_E2E_SELECTOR=startup-prewarm
   bash e2e/run-graphical-tests.sh= rerun passes 1/1 with 0 unexpected;
   ERT timing is 0.046125 seconds (0.047432 seconds test-runner total), and
@@ -95,8 +95,9 @@ only where the contracts below explicitly preserve them.
   It does not alter =HOME= or user defaults; the graphical pass confirms this
   isolated runner path.
 - Scope boundary :: =F92A2-DP2=, =F92A2-DP3=, =F92A2-DP4=, and
-  =F92A2-DP5= remain =not-started=; the overall behavioral goal remains
-  =Failing= until those packages and final public acceptance are complete.
+  =F92A2-DP5= remain =not-started= pending parent admission; the overall
+  behavioral goal remains =Failing= until those packages and final public
+  acceptance are complete.
 
 * Reason for the rebaseline
 

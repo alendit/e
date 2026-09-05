@@ -158,10 +158,17 @@ close wrapper to submit another request to a non-unavailable store."
          transport
          heartbeat-timers
          (heartbeat 0))
-    (unless (and directory stall-directory report-file
-                 (file-exists-p report-file))
-      (ert-skip
-       "startup-prewarm requires the runner's pre-e startup fixture"))
+    (if (not (equal (getenv "E_GRAPHICAL_E2E_SELECTOR") "startup-prewarm"))
+        (ert-skip
+         "startup-prewarm requires the runner's pre-e startup fixture")
+      (unless (and directory stall-directory report-file
+                   (file-directory-p directory)
+                   (file-directory-p stall-directory)
+                   (file-regular-p report-file))
+        (ert-fail
+         (format
+          "startup-prewarm runner promised fixture paths, but they are missing: directory=%S stall-directory=%S report-file=%S"
+          directory stall-directory report-file))))
     ;; Capture the runner-owned transport before any assertion can transfer
     ;; control to the unwind cleanup.
     (setq transport e-default--runtime-store)
