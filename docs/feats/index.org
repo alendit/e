@@ -22,9 +22,13 @@ The 2026-09-05 pragmatic rebaseline supersedes the unfinished fork/lifecycle and
 exact-accounting gates: current work is one enqueue-and-return worker FIFO,
 owner-local persistence-suspect warnings, public Daily/Board/chat composition,
 per-session validation/quarantine, and a classified all-interactive-path audit.
-The minimum public new-Daily delay/release/failure scenario now passes its
-isolated graphical repository gate.  Live restart validation has not been run;
-per-session quarantine, the all-domain audit, and the broader roadmap remain.
+The minimum public new-Daily delay/release/failure scenario passed its isolated
+one-turn graphical repository gate, but a live second turn exposed a stale
+provider-context gap that the fixed-output backend did not test.  The Feature 92
+accepted-session projection addendum is =Planned= and supersedes the Daily
+completion claim until its data-dependent two-turn graphical gate passes.  Live
+restart validation has not been run; per-session quarantine, the all-domain
+audit, and the broader roadmap remain.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

@@ -1,0 +1,437 @@
+#+title: Addendum: Accepted Session Projection Before SQLite Acknowledgement
+#+date: 2026-09-05
+#+startup: overview
+
+* Status
+
+Planned.  This addendum is the current Feature 92 authority for interactive
+session visibility.  It supersedes conflicting =F92-C07=, =F92-DP6B=, and
+=S92-DAILY= completion claims in =plan.org= without reopening accepted
+runtime-store transport, SQLite transaction, worker-ownership, practical-bound,
+or owner-isolation behavior.
+
+The implementation baseline is =af8d1addba63e096187130b357e5891b21e463b4=.
+The current uncommitted harness-local accepted-message overlay is neither
+accepted evidence nor part of this design.  Do not commit or describe a
+production correction as complete until =S92A-DAILY-TWO-TURN= passes.
+
+* Decision
+
+Keep the external SQLite worker, its ordinary transactions, the existing
+append-only session journal, and the runtime store's single bounded client FIFO.
+Do not add a second SQLite event table, polling loop, durable subscriber cursor,
+or application queue.
+
+After a session command passes bounded preparation and the runtime FIFO accepts
+its immutable SQLite operation, the session application service publishes that
+command into the process-local session projection before returning.  Provider
+context, presentation, and later session commands read that projection.  SQLite
+acknowledgement changes persistence status; it does not first make the semantic
+change visible.
+
+In this addendum:
+
+- an *accepted session mutation* is a validated immutable session command whose
+  physical operation has entered the runtime store's bounded FIFO;
+- the *effective session projection* is the live session aggregate produced by
+  committed SQLite records plus accepted mutations in admission order; and
+- *committed* means that SQLite acknowledged the journal transaction.
+
+These are session-service lifecycle distinctions, not model-facing concepts or
+a generic event framework.
+
+* Reason for the addendum
+
+The corrected graphical witness proved fresh Daily open, one turn,
+responsiveness during a worker stall, release, owner-local failure, and unrelated
+recovery.  Its backend response did not depend on the provider request's actual
+messages.  A live second turn supplied a new counterexample: the second user
+message had entered asynchronous persistence, but provider context still came
+from the post-acknowledgement aggregate.  The backend received stale history and
+answered the previous prompt.
+
+#+begin_example
+session append accepted by asynchronous application code
+  -> durable operation waits for SQLite acknowledgement
+  -> session aggregate still contains only acknowledged records
+  -> harness context reads that aggregate
+  -> provider request omits the new user message
+#+end_example
+
+A harness-local accepted-message list can hide this defect for one active turn,
+but it creates a second session-history authority.  It does not naturally cover
+the next turn, tool calls and results, context refresh, Board/session operations,
+compaction, or another session consumer.  The correction belongs at the session
+application boundary.
+
+* Behavioral trace
+
+- Goal ID :: =F92-ACCEPTED-SESSION-PROJECTION=
+- Behavioral goal :: A user can continue a Daily conversation while SQLite is
+  delayed, and every provider request observes all session mutations previously
+  accepted in that process, exactly once and in order, without blocking Emacs.
+- Direct scenario :: Open a public Org Canvas Daily.  After initial binding,
+  deliberately delay the real external SQLite worker.  Submit a first prompt
+  and finish its response while its session writes remain unacknowledged.
+  Submit a different second prompt.  The second provider request contains the
+  first prompt, first response, and second prompt exactly once in that order,
+  and its response is computed from the second prompt.  Composer input and an
+  independent heartbeat continue throughout.  Releasing the worker commits the
+  same ordered journal without duplicate publication.  A later owner-local
+  failure marks only that Daily suspect while an unrelated Daily persists and
+  reads back.  A focused harness composition separately proves that a tool-loop
+  context refresh sees its accepted tool call and result through the same
+  session read path.
+- Product authority :: The operator's 2026-09-05 direction to use a simple
+  pub-sub pattern, rely on SQLite for durability, and place the behavior at the
+  correct module boundary.
+- Owning contracts :: =F92A-C01= through =F92A-C06= below.
+- Behavioral status :: Failing.  The live second-turn counterexample invalidates
+  the prior =S92-DAILY= completion claim.
+- Mechanism status :: Partial.  Worker, journal, transactions, runtime FIFO,
+  practical limits, and owner-local failure partition exist.  Session visibility
+  remains acknowledgement-gated.  The uncommitted harness overlay is 134
+  insertions and 1 deletion, passes a focused unit suite, and has no two-turn
+  graphical proof.
+
+* Normative contract matrix
+
+This matrix is the sole normative authority for the addendum.  Later
+representation detail is conditional implementation guidance.
+
+| ID | Observable contract | Semantic owner | Package | Evidence | Status |
+|----+---------------------+----------------+---------+----------+--------|
+| F92A-C01 | Once the runtime FIFO accepts a prepared session mutation, the effective projection contains it before the facade returns.  Synchronous admission rejection changes no semantic state. | Session application service | F92A-DP1 | S92A-SESSION-ADMISSION | Planned |
+| F92A-C02 | Accepted mutations from one session are visible exactly once in admission order to later session commands, provider context, tool-loop refresh, and presentation, regardless of acknowledgement timing. | Session application service; harness and shells consume it | F92A-DP1 | S92A-READ-YOUR-WRITES, S92A-TOOL-LOOP | Planned |
+| F92A-C03 | SQLite acknowledgement retires pending status without republishing the mutation.  Reopen reconstructs the same state from committed journal records. | SQLite adapter for commit; session service for settlement | F92A-DP1 | S92A-SETTLEMENT | Planned |
+| F92A-C04 | Eventual write failure preserves the already-published projection as visibly persistence-suspect, retains the first bounded diagnostic, fences only that owner, and leaves unrelated sessions able to enqueue, commit, and reopen. | Runtime store owns opaque fencing; session service owns session status | F92A-DP1 | S92A-OWNER-FAILURE | Planned |
+| F92A-C05 | The session journal is the only durable event authority.  No harness, shell, Board, or storage adapter owns a parallel session-history overlay, and no new SQLite outbox or durable subscriber cursor exists. | Session application service and SQLite adapter boundary | F92A-DP1 | Source-boundary audit, S92A-SETTLEMENT | Planned |
+| F92A-C06 | Public Org Canvas Daily completes two context-dependent turns while SQLite is delayed; input and heartbeat remain responsive; release creates no duplicate visible or durable event. | Public Org Canvas/Grimoire composition | F92A-DP2 | S92A-DAILY-TWO-TURN | Planned |
+
+* Design
+
+** One event path, two observable phases
+
+#+begin_example
+caller
+  -> session service prepares immutable record + semantic result
+  -> session storage adapter submits the record to the runtime FIFO
+  -> successful FIFO admission
+  -> session service installs the prepared effective projection
+  -> session service emits the semantic event and returns
+
+later, SQLite COMMIT acknowledgement
+  -> session service retires pending status only
+
+or, terminal persistence failure
+  -> runtime fences the opaque owner key
+  -> session service retains first bounded suspect status
+  -> already-visible semantic state remains visibly suspect
+#+end_example
+
+Install the effective projection only after FIFO admission succeeds.
+Preparation may use a detached aggregate stage so validation and record creation
+cannot partially mutate live state.  Installation and semantic notification
+complete in the same non-yielding Emacs turn before the facade returns.
+
+SQLite remains authoritative across process lifetime.  The effective projection
+is rebuildable: restart or canonical reload replays committed journal rows and
+discards process-local pending state.  Process exit may lose accepted but
+uncommitted mutations; pending/suspect UI makes that durability boundary
+explicit.  Interactive shutdown does not wait to eliminate the window.
+
+** SQLite responsibilities
+
+Use SQLite for the guarantees it already provides:
+
+- the session-record journal is the append-only durable event log;
+- SQLite owns unique row positions and typed append transactions; semantic
+  record identities and parent links remain session-domain values validated on
+  replay;
+- ordinary transaction commit is the durability boundary;
+- acknowledged records replay into the session after restart; and
+- rebuildable catalog/checkpoint projections may lag the primary journal.
+
+Do not serialize an ahead-of-commit effective aggregate into a durable catalog
+or checkpoint.  A derived durable projection must be updated inside the worker
+transaction from committed data or rebuilt later from committed journal rows.
+It cannot become a second authority for pending state.
+
+A transactional outbox is deliberately absent.  That pattern serves publication
+that must occur after commit and durable delivery to another process.  This
+contract intentionally publishes process-local semantic state before commit,
+and its subscribers live in the same Emacs process.  A future external durable
+subscriber would require a separate product decision.
+
+** Projection and settlement state
+
+The aggregate remains the one live semantic projection.  It represents accepted
+session history, not a second copy of SQLite commit state.  The session service
+retains only settlement metadata needed to expose =pending= or =suspect= and
+correlate terminal work.  It retains neither a second transcript nor an encoded
+frame: the aggregate owns live semantics and the runtime request owns the frame.
+
+Pending metadata is bounded one-for-one by admitted runtime requests, whose
+existing global capacity is 128.  No second cap or exact object-graph accounting
+is required.  Successful settlement removes its pending entry.  Failure removes
+terminal pending ownership, preserves the first bounded diagnostic, and relies
+on the runtime's owner fence to reject further same-owner durable mutation until
+canonical reload clears it under Feature 92's validation roadmap.
+
+** Publication and subscribers
+
+The session service emits semantic publication after installing the accepted
+projection.  Harness/Board subscription surfaces may forward or render it, but
+do not store authoritative session history.  A persistence-settled notification,
+when a readiness or warning consumer needs one, is a separate status event and
+cannot cause a second message, activity, or Board publication.
+
+Provider context consumes the effective projection through a consumer-shaped
+session read.  It does not inspect runtime requests, worker state, pending
+records, or an active-turn message cache.  Tool-loop refresh and a new turn use
+the same session-owned path.
+
+* Architecture scope decision
+
+** Qualifying signal
+
+| Field | Evidence and decision |
+|-------+-----------------------|
+| Trigger | A live second Daily prompt was absent from provider context until acknowledgement; the backend answered stale history. |
+| Contract | F92A-C01, F92A-C02, F92A-C06. |
+| Expected owner | Session application service, which pairs one semantic mutation with its durable record and exposes session reads. |
+| Actual impact | =e-session-async.el=, =e-session.el=, session status in =e-session-storage.el=, harness context consumers, and tests. |
+| Causal path | Post-ack aggregate publication makes every aggregate consumer stale.  A harness overlay fixes one reader and creates a second ordering authority. |
+| Architecture property | The harness patch duplicates semantic authority at a turn/context owner.  The async module also duplicates the runtime FIFO with lanes and retains superseded post-ack reconciliation machinery. |
+| Desired direction | One session semantic owner/projection, one runtime FIFO, one SQLite journal; consumers read or subscribe without owning persistence state. |
+| Local-patch defect | An active-turn suffix overlay cannot cover later turns, all command families, tool refresh, or independent readers without becoming a parallel session implementation. |
+
+The implementation branch is *correct now*.  Correct modularization is explicit
+scope, and the smallest proper correction fits Daily/session ownership: move
+visibility to the session service and remove duplicate coordination.  This does
+not authorize DP6C quarantine, DP6D all-domain migration, or repository-wide
+session decomposition.
+
+** Proper-correction bound
+
+| Dimension | Bound |
+|-----------+-------|
+| Owners | Session application service, aggregate, storage port, runtime FIFO, and provider-context consumer. |
+| Consumers | Session mutation facades, harness context, tool refresh, Org Canvas Daily, and warning/readiness composition. |
+| Contracts | Establish F92A-C01--C06; preserve F92-C01--C06 and practical limits.  Amend Feature 87 commit-first behavior only for process-local visibility; durability remains commit-first. |
+| Dependencies | Harness/shell -> session facade -> aggregate and storage port -> runtime store -> SQLite worker.  No reverse or harness-to-storage edge. |
+| State | One effective aggregate plus bounded settlement metadata.  SQLite is the only cross-restart state. |
+| Compatibility | Keep existing public semantic results and the stable runtime submit ABI.  Explicit batch/operator committed observation may remain outside interactive composition. |
+| Evidence | Replace post-ack mechanism assertions; strengthen session, context, tool-loop, and graphical Daily scenarios. |
+| Removal | Harness message overlay, session lane scheduler, post-ack semantic publication outbox, reconciliation barriers/retries, and tests that require them. |
+
+* Target ownership and physical decomposition
+
+Modularization here primarily removes misplaced and duplicate responsibilities;
+it does not create a generic event-bus package.
+
+| Boundary | Semantic responsibility | Target disposition | Cohesion reason |
+|----------+-------------------------+--------------------+-----------------|
+| =e-session.el= | Stable session facade and consumer-shaped reads. | Retain as public composition root; route persistent mutation through one private async operation. | Public session contract is its reason to change; aggregate, codec, storage, and async mechanics remain behind modules. |
+| =e-session-async.el= | Accept a prepared command, submit it, install projection, and translate settlement into pending/suspect status. | Keep this private boundary but simplify around direct runtime-FIFO admission. | Admission, local publication, and settlement are one ordered session-persistence lifecycle. |
+| =e-session-aggregate.el= | Validate/reduce commands and produce semantic records/results. | Retain; add no worker, request, timer, or subscriber state. | Pure session semantics change independently of transport. |
+| =e-session-storage.el= | Consumer-shaped physical storage port. | Remove session-domain suspect policy; report detached settlement to the session service. | A physical port must not decide user-visible session state. |
+| =e-session-storage-sqlite.el= | Map typed operations to runtime protocol. | Retain; add no event table or subscriber cursor. | SQLite protocol adaptation is its reason to change. |
+| =e-runtime-store.el= | One FIFO, worker lifecycle, opaque fence, terminal delivery. | Retain; session code adds no scheduler ahead of it. | Queueing and worker progress are transport lifecycle. |
+| harness context | Build provider context from session contract. | Consume effective session projection; own no pending overlay. | Context policy is independent of persistence timing. |
+| harness turn | Active turn/provider lifecycle and event forwarding. | Retain only turn-local response state; remove accepted session history. | Turn state ends with the turn and cannot own cross-turn history. |
+| Org Canvas/chat | Buffers, input, warnings, rendering. | Subscribe to semantic/status events; never await or reconstruct session state. | Presentation changes independently of persistence. |
+
+** Activated-root residual topology
+
+Implementation review must refresh this inventory against its exact source
+baseline.  An =unknown= row blocks the modularization contract.
+
+| Root and responsibility cluster | Current representation | Complete target boundary | Disposition |
+|---------------------------------+------------------------+--------------------------+-------------|
+| =e-session-async.el=: preparation/admission | Closed commands, exact accounting, lane admission. | Session-owned prepare/direct-submit/install using practical preflight. | extracted: retain in simplified private module. |
+| =e-session-async.el=: scheduling | Session lanes and coordinator ahead of runtime store. | Direct runtime FIFO admission. | extracted: delete duplicate scheduler. |
+| =e-session-async.el=: publication | Post-ack publication outbox. | Immediate projection install after FIFO admission. | extracted: replace at same private boundary. |
+| =e-session-async.el=: terminal delivery | Session terminal-token queue over runtime notification. | Direct bounded settlement into session status unless evidence proves another isolation boundary necessary. | unknown pending complete-boundary implementation proof. |
+| =e-session-async.el=: reconciliation | Apply retries, reconciliation barrier, retained accounting, teardown. | Canonical SQLite reload; no application ambiguity protocol. | extracted: delete. |
+| =e-session-async.el=: object-graph capacity | Producer/delta/reference schemas and pathological fixtures. | Practical encoded record/frame limits and runtime request cap. | extracted: delete superseded machinery. |
+| =e-session.el=: mutation/read facade | Repeated async branches and aggregate reads. | Thin facade over async lifecycle and effective projection. | retained-with-proof: stable application contract composes semantic and durable owners. |
+| =e-session.el=: synchronous compatibility | Commit barriers and synchronous operations. | Guarded batch/operator or ephemeral callers only; otherwise delete. | retained-with-proof only for named current callers. |
+| =e-session-storage.el=: suspect state | Domain suspect table and diagnostic mapping in physical port. | Session application state; storage reports physical settlement. | extracted: move out of storage. |
+| =e-session-storage-sqlite.el=: append adaptation | Runtime observation and operation mapping. | Same adapter, without semantic projection or subscribers. | retained-with-proof: otherwise runtime protocol leaks into session owner. |
+| harness: accepted-message overlay | Uncommitted active-turn list and suffix replacement. | No boundary; read session projection. | extracted: delete. |
+| tests: post-ack/canned-response assumptions | Mechanism tests and fixed-output one-turn stream. | Owner scenarios and context-dependent public test. | extracted: replace or strengthen. |
+
+The terminal-delivery row is the only pre-implementation unknown.  It is not
+permission to retain the current outbox by default.  First test whether the
+runtime's bounded observer delivery supplies the required isolation.  Retention
+requires a named failure invariant that direct settlement would break.
+
+* Delivery packages
+
+** F92A-DP1: Session-owned accepted projection
+
+Establish =F92A-C01=--=F92A-C05=.  Simplify the session async boundary so one
+prepared record enters the runtime FIFO directly.  After admission, install and
+publish the semantic projection before returning.  Track only bounded settlement
+metadata.  Acknowledgement retires pending status without republishing; failure
+records session suspect state while the runtime isolates the opaque owner.
+
+Remove the harness overlay and default-path lane/publication/reconciliation
+machinery.  Move session suspect state out of the storage port.  Keep SQLite
+transactions and receipt behavior private to the adapter, and the aggregate
+transport-free.
+
+Useful stopping point: every session consumer has coherent read-your-writes
+semantics while SQLite remains the durable log.
+
+Evidence proves admission rejection without publication, accepted visibility
+before acknowledgement, ordered dependent mutations, acknowledgement without
+duplication, owner failure, sibling persistence, and canonical reopen.
+
+** F92A-DP2: Public two-turn Daily acceptance
+
+Depends on DP1 and establishes =F92A-C06=.  Strengthen the Org Canvas fixture so
+the backend captures and validates actual provider messages.  Complete two
+different prompts while session persistence is delayed; derive the second answer
+from the second prompt.  Keep tool-loop ordering in the focused DP1 harness
+composition instead of expanding the graphical scenario.
+
+Retain composer, heartbeat, same-Board timer, release, exactly-once rendering,
+owner-local failure, unrelated persistence, and independent reopen assertions.
+Owner partitions remain DP1 evidence rather than being debugged only through the
+graphical fixture.
+
+Useful stopping point: one deterministic public gate fails if either blocking or
+acknowledgement-gated context returns.
+
+* Scenario portfolio
+
+- S92A-SESSION-ADMISSION :: Hold SQLite after runtime admission.  An append is
+  visible before acknowledgement; exact/one-over and exhausted-FIFO rejection
+  publish nothing.
+- S92A-READ-YOUR-WRITES :: Accept user A, assistant A, and user B without
+  acknowledgement.  Session reads and later preparation return A/A/B exactly
+  once in order.  Acknowledgement does not change semantic cardinality.
+- S92A-TOOL-LOOP :: Accept a tool call and result while SQLite is delayed.  The
+  next provider refresh sees the complete sequence through the session API,
+  without a harness overlay.
+- S92A-SETTLEMENT :: Release, drain, reopen independently, and compare journal
+  replay with the accepted sequence.  Derived projections never lead the log.
+- S92A-OWNER-FAILURE :: Fail one accepted write, retain its first suspect warning
+  and effective state, reject later same-owner mutation, and commit/read back an
+  interleaved unrelated session.
+- S92A-DAILY-TWO-TURN :: Run the direct scenario through
+  =e-org-canvas-prompt-document= and the graphical composer.  The backend asserts
+  request contents and produces data-dependent responses; a canned stream cannot
+  satisfy it.
+
+* Test disposition
+
+| Existing evidence | Disposition | Required change |
+|-------------------+-------------+-----------------|
+| Runtime FIFO, ownership, transaction, practical-bound, owner-partition suites | retain | Re-run affected selectors without rewriting around session representation. |
+| One-turn Org Canvas delay/release/failure test | strengthen | Preserve responsiveness/failure assertions; add two context-dependent turns and exact-order reopen. |
+| Session async FIFO/reopen scenarios | strengthen | Assert visibility before acknowledgement and no duplicate at acknowledgement. |
+| Post-ack publication, outbox retry, reconciliation, lane scheduler, exact object-graph tests | delete or replace | Preserve only behavior surviving the simplified contract. |
+| Uncommitted harness accepted-message suffix tests | delete | Replace with session-owner and harness-consumer evidence. |
+| Harness semantic-result compatibility tests | retain | They protect return shape but do not prove session visibility. |
+| Full suite and graphical cleanup | retain | Run on exact candidate revision after focused scenarios pass. |
+
+* Compatibility and migration
+
+No SQLite schema upgrade is required.  Existing journal records, identities,
+transactions, runtime ownership, and offline upgrade path remain valid.  Reopen
+continues to expose only committed rows.
+
+Feature 87's commit-first statement is narrowed: durable and restart-visible
+state still changes only after commit; the live effective projection changes
+after bounded enqueue.  Code genuinely requiring committed observation must use
+an explicit batch/operator/storage boundary and cannot be reachable from
+interactive context composition.
+
+This core session lifecycle change requires a full Emacs restart.  Repository
+validation must not reload or mutate the user's Emacs or canonical SQLite store.
+
+* Performance and bounds
+
+The correctness gate is causal, not a latency benchmark: the public call returns
+and a heartbeat advances while the worker remains blocked.  Return duration is
+observational; test timeouts only terminate broken runs and are not product
+limits.
+
+Pending metadata is bounded by the existing 128 admitted runtime clients.
+Existing session record and frame limits remain.  Projection installation costs
+one accepted command, not durable session length.  No second transcript, polling
+scan, database integrity check, or SQLite read belongs on the interactive path.
+
+* Explicit non-goals
+
+- a generic SQLite pub-sub or event-bus API;
+- a new =event_log= or =outbox= table;
+- durable cross-process subscribers, cursors, leases, or acknowledgements;
+- DP6C quarantine or DP6D all-domain completion;
+- fork, source-cut pins, cross-lane protocols, or application-level ambiguous
+  commit handling;
+- reworking accepted worker ownership, transaction receipts, or migration; and
+- broad aggregate/harness decomposition unrelated to the ownership correction.
+
+* Verification and acceptance
+
+Run focused owner tests before the graphical gate:
+
+#+begin_src sh
+eldev test -f test/e-session-async-test.el
+eldev test -f test/e-harness-turn-composition-test.el
+eldev test -f test/e-harness-tool-composition-test.el
+E_GRAPHICAL_E2E_SELECTOR=s92-org-canvas \
+  bash e2e/run-graphical-tests.sh
+#+end_src
+
+The final selector must name the context-dependent two-turn Org Canvas scenario,
+not a classic-chat substitute.  After it passes twice from clean disposable
+runtime directories, run the full repository gate, =git diff --check=, and batch
+=check-parens= for changed Lisp.
+
+Acceptance requires:
+
+1. DP1 owner scenarios pass, including failure and independent reopen.
+2. Graphical backend capture proves exact first-turn and second-turn request
+   contents, and focused harness capture proves tool-loop contents; visible
+   matching text alone is insufficient.
+3. The public graphical scenario passes twice without live reload.
+4. The activated-root inventory has no =unknown= row.
+5. Source search finds no harness history overlay or default session scheduler
+   ahead of the runtime FIFO.
+6. Full repository gates pass and leave no worker process behind.
+
+Do not mark the addendum implemented, claim Daily fixed, or commit production
+implementation before these conditions hold.
+
+* Architecture self-check
+
+1. DP1 is useful alone because all session consumers gain coherent
+   read-your-writes; DP2 proves the reported UI.
+2. It advances toward SQLite as sole durable event authority with thin,
+   nonblocking application services.
+3. Durability, session semantic ownership, and FIFO ownership are stable.  Exact
+   settlement representation remains local and reversible.
+4. Session service owns accepted visibility/status; runtime owns transport and
+   fencing; SQLite owns cross-restart state; harness/shells consume.
+5. Deleting the harness overlay and session scheduler reduces coupling.
+6. Dependencies point from shells/harness through session and adapters to the
+   worker; policy does not depend on SQLite/provider detail.
+7. I/O, transactions, receipt recovery, and frames remain adapter/runtime side
+   effects.
+8. New state is bounded process-local settlement metadata, rebuilt empty after
+   restart.
+9. Interactive work is proportional to one command; timing is observational.
+10. No new public abstraction is needed; the private async module represents a
+    real lifecycle.
+11. Existing SQLite records and public callers remain compatible.
+12. Lane scheduling, publication outbox, reconciliation, exact pathological
+    accounting, and harness history overlay become removable.
+13. Admission rejection occurs before publication; eventual failure becomes
+    owner-local suspect state; unexpected reducer/adapter errors remain visible.
+14. Owner tests prove lifecycle partitions, harness integration proves the
+    consumer boundary, and data-dependent graphical E2E proves composition.

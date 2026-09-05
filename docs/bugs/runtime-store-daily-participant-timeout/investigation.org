@@ -10,10 +10,16 @@ submitted through the classic =e-chat= shell, not the Grimoire Org Canvas shell
 used by the reported Daily.  A live Org Canvas turn on 2026-09-05 exposed the
 resulting regression as =Wrong type argument: e-event-type, nil=.  The exact
 Org Canvas submission failure and remaining public Canvas blocking assumptions
-are now repository-reproduced and corrected.  The complete actual public
-new-Daily open/delay/release/failure scenario passes its graphical acceptance
-gate.  The user's running Emacs and canonical database have not been used to
-validate the correction.  The historical
+are repository-reproduced, and their first-turn correction passed its graphical
+gate.  A later live second turn invalidated that gate as complete evidence: the
+test backend did not depend on captured provider messages, while session history
+remained acknowledgement-gated.  The second request could therefore omit its
+new prompt and receive the previous answer.  The
+[[../../feats/92-runtime-store-failure-isolation/addendum.org][Feature 92
+accepted-session projection addendum]] records the corrected owner boundary and
+two-turn acceptance scenario.  The user's running Emacs and canonical database
+have not been used to validate a correction for this latest recurrence.  The
+historical
 post-restart recurrence identified a submitted =catalog-put= whose lost
 acknowledgement killed the shared worker and froze queued Board work.  The
 runtime store now resolves the same durable write identity through an ACID
@@ -525,13 +531,15 @@ Focused regression evidence is Canvas 9/9, Org Canvas 74/74, harness activity
 async 44/44.  Diff whitespace checks and isolated process cleanup also pass.
 =eldev compile= exits zero with only the repository's existing warnings.
 
-This finding closes the complete minimum new-Daily repository scenario.  It
-does not claim independent completion of DP6A--DP6D, and it deliberately
-does not implement DP6C quarantine, DP6D all-domain migration, generalized
-lifecycle clearing, a separate participant-start facade, fork support, or
-additional recovery partitions.  The user's running Emacs and canonical
-SQLite database remained unchanged; a full Emacs restart is required to use
-the new core runtime/session behavior live.
+This evidence closes the first-turn return-shape and responsiveness partitions,
+not the complete minimum new-Daily scenario.  The later second-turn recurrence
+proves that acknowledgement-gated session visibility remains unresolved.  It
+also does not claim independent completion of DP6A--DP6D or implement DP6C
+quarantine, DP6D all-domain migration, generalized lifecycle clearing, a
+separate participant-start facade, fork support, or additional recovery
+partitions.  The user's running Emacs and canonical SQLite database remained
+unchanged; a full Emacs restart is required to use any later core
+runtime/session correction live.
 
 * Historical DP5A correction evidence (superseded by accepted DP5A)
 

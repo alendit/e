@@ -55,6 +55,17 @@ still assumed committed session state.  The corrected =S92-DAILY= test now
 passes through the actual Org Canvas entry, delay/release turn, owner failure,
 unrelated Daily persistence, and independent reopen.
 
+A later live second turn invalidated that completion claim as well.  The
+graphical backend emitted a canned response and did not prove that the provider
+request contained the newly accepted user message.  Provider context still read
+the acknowledgement-gated session aggregate, so a second prompt could receive
+the previous turn's answer while SQLite was pending.  The
+[[file:addendum.org][accepted-session projection addendum]] is the current
+authority for this gap.  Where it conflicts with =F92-C07=, =F92-DP6B=, or
+=S92-DAILY= status below, the addendum supersedes this plan; the minimum public
+Daily behavior is failing until its context-dependent two-turn graphical gate
+passes.
+
 * Behavioral goal
 
 - Goal ID :: =BUG-RUNTIME-STORE-ISOLATION=
@@ -79,14 +90,13 @@ unrelated Daily persistence, and independent reopen.
   they conflict; accepted DP1--DP5A behavior remains available but is not
   reimplemented in application layers.
 - Owning contracts :: =F92-C01= through =F92-C11= below.
-- Behavioral status :: The minimum public Grimoire Daily slice passes its
-  actual Org Canvas graphical gate: fresh Canvas open returns immediately;
-  session, participant, metadata, and same-Board timer work queue while SQLite
-  is delayed; composer input and an independent heartbeat remain responsive;
-  release renders one ordered result; and worker failure marks only that Daily
-  suspect while an unrelated public Canvas persists and reads back.  Session
-  quarantine, the all-domain hot-path audit, and the rest of the roadmap remain
-  unresolved.
+- Behavioral status :: Failing.  The public Org Canvas gate proves fresh open,
+  one turn, responsiveness, release, and owner-local failure, but its canned
+  backend did not inspect provider context.  A live second prompt was absent
+  from that context until SQLite acknowledgement and received the preceding
+  answer.  The addendum's data-dependent two-turn scenario now owns minimum
+  Daily acceptance.  Session quarantine, the all-domain hot-path audit, and the
+  rest of the roadmap also remain unresolved.
 - Mechanism status :: =F92-DP1= through =F92-DP4= remain passing and
   independently accepted =F92-DP5A= establishes the autonomous runtime
   substrate.  DP5A's independent owner gate passes 68/68, the Board replay
