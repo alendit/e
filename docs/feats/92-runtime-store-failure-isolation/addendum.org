@@ -101,10 +101,10 @@ representation detail is conditional implementation guidance.
 
 | ID | Observable contract | Semantic owner | Package | Evidence | Status |
 |----+---------------------+----------------+---------+----------+--------|
-| F92A-C01 | Once the runtime FIFO accepts a prepared session mutation, the effective projection contains it before the facade returns.  Synchronous admission rejection changes no semantic state. | Session application service | F92A-DP1 | S92A-SESSION-ADMISSION | Planned |
+| F92A-C01 | A bounded, prevalidated install token exists before enqueue.  Once the runtime FIFO accepts its prepared session mutation, the effective projection contains the complete mutation before the facade returns.  Admission rejection changes no semantic state; a pre-install fault synchronously drops the still-queued request or marks the owner suspect if non-submission cannot be proven. | Aggregate for preparation; session application service for admission/install | F92A-DP1 | S92A-SESSION-ADMISSION | Planned |
 | F92A-C02 | Accepted mutations from one session are visible exactly once in admission order to later session commands, provider context, tool-loop refresh, and presentation, regardless of acknowledgement timing. | Session application service; harness and shells consume it | F92A-DP1 | S92A-READ-YOUR-WRITES, S92A-TOOL-LOOP | Planned |
 | F92A-C03 | SQLite acknowledgement retires pending status without republishing the mutation.  Reopen reconstructs the same state from committed journal records. | SQLite adapter for commit; session service for settlement | F92A-DP1 | S92A-SETTLEMENT | Planned |
-| F92A-C04 | Eventual write failure preserves the already-published projection as visibly persistence-suspect, retains the first bounded diagnostic, fences only that owner, and leaves unrelated sessions able to enqueue, commit, and reopen. | Runtime store owns opaque fencing; session service owns session status | F92A-DP1 | S92A-OWNER-FAILURE | Planned |
+| F92A-C04 | Eventual write failure preserves the already-published projection as visibly persistence-suspect, retains at most one first bounded diagnostic per session, fences only that owner, and leaves unrelated sessions able to enqueue, commit, and reopen.  Settlement changes authoritative pending/suspect state before non-gating observers; store close/reset releases all process-local status. | Runtime store owns opaque fencing; session service owns session status | F92A-DP1 | S92A-OWNER-FAILURE | Planned |
 | F92A-C05 | The session journal is the only durable event authority.  No harness, shell, Board, or storage adapter owns a parallel session-history overlay, and no new SQLite outbox or durable subscriber cursor exists. | Session application service and SQLite adapter boundary | F92A-DP1 | Source-boundary audit, S92A-SETTLEMENT | Planned |
 | F92A-C06 | Public Org Canvas Daily completes two context-dependent turns while SQLite is delayed; input and heartbeat remain responsive; release creates no duplicate visible or durable event. | Public Org Canvas/Grimoire composition | F92A-DP2 | S92A-DAILY-TWO-TURN | Planned |
 
@@ -114,10 +114,10 @@ representation detail is conditional implementation guidance.
 
 #+begin_example
 caller
-  -> session service prepares immutable record + semantic result
+  -> aggregate prepares immutable record + semantic result + install token
   -> session storage adapter submits the record to the runtime FIFO
   -> successful FIFO admission
-  -> session service installs the prepared effective projection
+  -> session service installs the prevalidated effective projection token
   -> session service emits the semantic event and returns
 
 later, SQLite COMMIT acknowledgement
@@ -129,10 +129,27 @@ or, terminal persistence failure
   -> already-visible semantic state remains visibly suspect
 #+end_example
 
-Install the effective projection only after FIFO admission succeeds.
-Preparation may use a detached aggregate stage so validation and record creation
-cannot partially mutate live state.  Installation and semantic notification
-complete in the same non-yielding Emacs turn before the facade returns.
+Install the effective projection only after FIFO admission succeeds.  Before
+enqueue, the aggregate must validate the bounded record and prepare a no-fail
+install token containing every preallocated reference and rollback value needed
+for one command.  It must not stage or copy the whole session.  Submission and
+installation then complete in the same non-yielding Emacs turn: the runtime
+schedules worker progress for a later timer turn, so the exact request is still
+queued while installation runs.
+
+The normal post-admission operation is only the authoritative token install; it
+must not decode, validate, allocate a variable-size graph, call a subscriber, or
+yield.  If an unexpected error occurs before the token's installation point,
+the session service synchronously cancels that exact runtime request.  A
+runtime =dropped= result proves that neither semantic nor durable state changed
+and the facade returns a failed work handle.  Any result other than =dropped=
+is an invariant breach: retain the first bounded suspect diagnostic for that
+owner and surface the error because the request can no longer be proven
+unsubmitted.  If a fault occurs after the installation point, the projection is
+already authoritative and remains visible; the owner becomes suspect, and the
+queued write is allowed to settle.  Fault injection immediately before and
+after the installation point must prove that there is no partially installed
+projection and no committed mutation hidden behind a successful facade result.
 
 SQLite remains authoritative across process lifetime.  The effective projection
 is rebuildable: restart or canonical reload replays committed journal rows and
@@ -173,10 +190,13 @@ frame: the aggregate owns live semantics and the runtime request owns the frame.
 
 Pending metadata is bounded one-for-one by admitted runtime requests, whose
 existing global capacity is 128.  No second cap or exact object-graph accounting
-is required.  Successful settlement removes its pending entry.  Failure removes
-terminal pending ownership, preserves the first bounded diagnostic, and relies
-on the runtime's owner fence to reject further same-owner durable mutation until
-canonical reload clears it under Feature 92's validation roadmap.
+is required.  Successful settlement removes the exact pending entry.  Failure
+atomically converts it to at most one first-cause suspect entry per session;
+later failures do not add entries or replace the first diagnostic.  Store
+close/reset and process restart release all process-local pending and suspect
+entries.  The runtime owner fence rejects further same-owner durable mutation.
+Clearing one owner by canonical reload remains deferred to DP6C under Feature
+92's validation roadmap; this package does not pretend that reload path exists.
 
 ** Publication and subscribers
 
@@ -185,6 +205,16 @@ projection.  Harness/Board subscription surfaces may forward or render it, but
 do not store authoritative session history.  A persistence-settled notification,
 when a readiness or warning consumer needs one, is a separate status event and
 cannot cause a second message, activity, or Board publication.
+
+Delete the session terminal-token queue and timer.  Runtime observer delivery is
+the sole bounded carrier.  Its session callback first performs one non-yielding
+authoritative transition: remove the exact pending entry and, on failure,
+retain the first bounded suspect status.  It then clears private operation links
+and settles =e-work=.  Work callbacks and semantic/status subscribers therefore
+run only after authoritative state and are non-gating.  An =error= or =quit=
+from them cannot restore pending state, lose suspect state, strand work, or
+prevent runtime request/token release.  Close/reset failures use the same
+settlement path before process-local state is released.
 
 Provider context consumes the effective projection through a consumer-shaped
 session read.  It does not inspect runtime requests, worker state, pending
@@ -245,37 +275,95 @@ it does not create a generic event-bus package.
 ** Activated-root residual topology
 
 Implementation review must refresh this inventory against its exact source
-baseline.  An =unknown= row blocks the modularization contract.
+baseline.  Every row names state/lifetime, callers and dependency direction,
+transaction or ABI boundary, evidence, target boundary, and the invariant that
+justifies colocation.  There is no remaining =unknown= disposition.
 
-| Root and responsibility cluster | Current representation | Complete target boundary | Disposition |
-|---------------------------------+------------------------+--------------------------+-------------|
-| =e-session-async.el=: preparation/admission | Closed commands, exact accounting, lane admission. | Session-owned prepare/direct-submit/install using practical preflight. | extracted: retain in simplified private module. |
-| =e-session-async.el=: scheduling | Session lanes and coordinator ahead of runtime store. | Direct runtime FIFO admission. | extracted: delete duplicate scheduler. |
-| =e-session-async.el=: publication | Post-ack publication outbox. | Immediate projection install after FIFO admission. | extracted: replace at same private boundary. |
-| =e-session-async.el=: terminal delivery | Session terminal-token queue over runtime notification. | Direct bounded settlement into session status unless evidence proves another isolation boundary necessary. | unknown pending complete-boundary implementation proof. |
-| =e-session-async.el=: reconciliation | Apply retries, reconciliation barrier, retained accounting, teardown. | Canonical SQLite reload; no application ambiguity protocol. | extracted: delete. |
-| =e-session-async.el=: object-graph capacity | Producer/delta/reference schemas and pathological fixtures. | Practical encoded record/frame limits and runtime request cap. | extracted: delete superseded machinery. |
-| =e-session.el=: mutation/read facade | Repeated async branches and aggregate reads. | Thin facade over async lifecycle and effective projection. | retained-with-proof: stable application contract composes semantic and durable owners. |
-| =e-session.el=: synchronous compatibility | Commit barriers and synchronous operations. | Guarded batch/operator or ephemeral callers only; otherwise delete. | retained-with-proof only for named current callers. |
-| =e-session-storage.el=: suspect state | Domain suspect table and diagnostic mapping in physical port. | Session application state; storage reports physical settlement. | extracted: move out of storage. |
-| =e-session-storage-sqlite.el=: append adaptation | Runtime observation and operation mapping. | Same adapter, without semantic projection or subscribers. | retained-with-proof: otherwise runtime protocol leaks into session owner. |
-| harness: accepted-message overlay | Uncommitted active-turn list and suffix replacement. | No boundary; read session projection. | extracted: delete. |
-| tests: post-ack/canned-response assumptions | Mechanism tests and fixed-output one-turn stream. | Owner scenarios and context-dependent public test. | extracted: replace or strengthen. |
+| Root / responsibility | Current state and lifetime | Callers / dependencies | Transaction or ABI | Evidence | Target and disposition / colocation invariant |
+|-----------------------+----------------------------+------------------------+--------------------+----------+-----------------------------------------------|
+| =e-session-aggregate.el=: command validation, accounting, freezing, sealing | Closed command and exact producer/object-graph schemas retained through lane settlement. | Session async calls aggregate; aggregate depends only on session domain/codec helpers. | Private command object; no storage ABI. | Command validation/result parity tests. | Replace exact graph ledgers with practical encoded command/record bounds; keep validation and immutable command preparation in aggregate because only the semantic owner can validate domain values. |
+| =e-session-aggregate.el=: interpretation and accepted install | Delta/record is interpreted against acknowledged live state; incremental record apply is fallible and post-ACK. | Session async calls aggregate; readers consume aggregate through session facade. | New private prevalidated install token; install/rollback is one non-yielding in-process transaction. | Admission, ordered read-your-writes, before/after-install faults. | Retain interpretation and bounded token preparation here; move install before ACK.  Domain mutation and rollback remain colocated so no transport layer edits session state. |
+| =e-session-aggregate.el=: legacy whole-session stage/publication | Copies/stages a whole session for commit-first facades.  Stage lives through one synchronous call. | Legacy/non-default session facade and Board admission helpers. | =e-session-aggregate-stage-session-mutation= / =publish-staged-session= private ABI. | Legacy facade parity and Board pickup tests. | Delete from the default ordinary async path.  Retain only for the named cross-owner Board transaction and legacy non-async compatibility because those transactions publish several owner states together. |
+| =e-session-async.el=: admission and settlement | Per-store coordinator, per-session lanes, pending operations, terminal/publication queues, reconciliation and exact reservations. | =e-session.el= only; depends on aggregate and storage port. | Private =e-work= handle returned by persistent facades; stable runtime submit ABI stays below storage adapter. | DP1 owner scenarios. | Simplify to prepare -> submit -> install -> pending -> settle.  It owns this lifecycle because it is the only boundary combining session semantics with detached durable work. |
+| =e-session-async.el=: duplicate scheduling/publication/reconciliation | Session lane FIFO, post-ACK publication, apply retry/barrier, terminal-token queue and timers. | Internal only, ahead of runtime FIFO. | No public ABI. | Source-boundary audit plus replacement owner tests. | Delete.  Runtime owns the only FIFO/terminal carrier; aggregate owns the only live semantic state; adapter owns acknowledgement recovery. |
+| =e-session.el=: public mutation/read facade | Repeated async branches, aggregate reads, commit barrier and admitted-callback FIFO. | Harness, tools, Board composition, shells and tests. | Stable public facade; persistent async mutation returns its private =e-work= handle, reads return semantic values. | Facade matrix below, harness/context tests. | Retain thin facade and consumer-shaped reads.  Ordinary default-session mutations use accepted projection; no caller observes storage internals. |
+| =e-session.el=: pending/suspect owner state | Commit-in-progress and callback tables are process-local; suspect state currently lives in storage port. | Session async mutates; session facade/status and presentation read. | Private keyed state by store/session/request. | Repeated failure, sibling isolation, close/reset. | Replace barrier state for ordinary async writes with one pending entry per request and one first-cause suspect entry per session; release all on store close/reset/restart.  Colocate because these are session durability statuses, not physical storage facts. |
+| =e-session-storage.el=: physical port and suspect table | Storage API plus process-local domain suspect hash. | Session service depends on port; implementations satisfy it. | Consumer-shaped prepare/submit/read API. | Storage contract and session owner-failure tests. | Remove suspect policy and diagnostic ownership; return detached settlement only.  Keep physical operations here so session policy does not depend on SQLite/runtime shapes. |
+| =e-session-storage-sqlite.el=: SQLite operation adaptation | Maps session append/delete/read bodies to runtime requests and observers. | Storage port calls runtime store. | Stable runtime submit/observe/cancel ABI; SQLite transaction body. | Adapter mapping and readback tests. | Retain without semantic projection/subscribers.  It owns protocol mapping, not session state. |
+| =e-runtime-store.el=: FIFO, cancellation, fencing, terminal delivery | One bounded client FIFO, opaque owner fence, terminal outbox drained in pages of 16, request/token lifetime through notification. | SQLite adapters only; worker protocol below. | =submit-owned=, private observe, queued cancel returning =dropped=, terminal response. | Existing FIFO/fence tests plus observer error/quit. | Retain as sole queue and bounded carrier.  Transport ordering, cancellation and resource release must stay colocated. |
+| =e-work.el=: public async settlement | Lifecycle/result/error installed before cleanup and callbacks; handle lives until caller releases it. | Session async settles; harness/Board may subscribe. | Stable =e-work-finish= / =e-work-fail= / settle callback contract. | Existing work tests plus DP1 callback faults. | Retain.  Session authoritative state changes before work settlement; callbacks are non-gating. |
+| =e-default-harnesses.el=: =e-default-session-store= activation | Enables SQLite session storage and async coordinator for normal harnesses. | Public default harness construction. | Default composition boundary. | Defaults activation plus graphical Daily. | Retain activation but point it at simplified async lifecycle; this proves the fixed code is the path users actually run. |
+| =e-session-board-input-admission.el= and =e-board-pickup-admission.el= | Detached session stage plus Board/session owner barriers held through one composite SQLite ACK and paired publication. | Board pickup application service; depends on Board storage and session admission adapter. | One cross-owner =board-admit-pickup= transaction; no ordinary async facade ABI. | Existing pickup atomicity/reentry/failure tests. | Retain commit-first as the sole named cross-owner exception.  Board pickup and session input must publish together or neither publishes. |
+| Harness context and turn runtime | Committed aggregate reads plus uncommitted active-turn accepted-message overlay. | Provider request/context refresh reads session facade. | Session read contract only. | Harness turn and tool-loop composition. | Delete overlay and read effective projection.  Harness owns request composition, never transcript authority. |
+| Org Canvas/chat presentation | Buffer/composer rendering and Board subscriptions. | Calls session/harness contracts. | Public interactive commands; no storage ABI. | Two-turn graphical Daily. | Retain and consume semantic/status outcomes only.  Presentation may warn but cannot await persistence. |
+| Tests for lanes, outboxes, reconciliation, exact graphs and canned response | Representation-specific fixtures and one-turn graphical stream. | Test-only. | None. | Replacement mapping below. | Delete or replace with contract owner tests and a data-dependent public scenario. |
 
-The terminal-delivery row is the only pre-implementation unknown.  It is not
-permission to retain the current outbox by default.  First test whether the
-runtime's bounded observer delivery supplies the required isolation.  Retention
-requires a named failure invariant that direct settlement would break.
+** Persistent facade and result inventory
+
+Every ordinary default-store row below follows one lifecycle: validate and
+prepare through the aggregate; return one private =e-work= owned by the session
+service after runtime admission and accepted projection installation; expose
+the listed semantic result when that work settles; and publish only the listed
+effective-projection change before ACK.  ACK never republishes.  “No-op” means
+no runtime request, pending entry, or semantic publication.
+
+| Public facade | Command tag / pre-admission validation | Semantic result and no-op | Accepted publication | Evidence disposition |
+|---------------+----------------------------------------+---------------------------+----------------------+----------------------|
+| =e-session-create= | =create=; identity/metadata/root uniqueness | session value; duplicate rejects | session root | replace async-create ordering test |
+| =e-session-delete= | =delete=; loaded session and supported SQLite store | =t=; missing rejects | session removal | replace post-ACK delete test |
+| =e-session-append-message= | =append-message=; canonical message and tool-continuity admission | appended entry; no no-op | message/current head | strengthen FIFO/read-your-writes |
+| =e-session-set-message-display= | =message-display=; message id/display | updated message; missing id is no-op | message display only when present | retain result parity; replace ACK timing |
+| =e-session-append-activity-event= | =append-activity=; activity payload and tool-continuity transition | appended activity entry; no no-op | activity/current head | strengthen tool-loop |
+| =e-session-append-context-curation-response= | =context-curation-response=; turn/response identity | appended activity entry; no no-op | activity/current head | retain semantic parity |
+| =e-session-append-process-report= | =process-report=; report shape | appended entry; no no-op | process report/current head | retain semantic parity |
+| =e-session-append-branch-summary= | =branch-summary=; branch/summary/metadata | appended entry; no no-op | branch summary/current head | retain semantic parity |
+| =e-session-append-compaction= | =compaction=; range/token/metadata shape | appended entry; no no-op | compaction/current head | retain semantic parity |
+| =e-session-append-provider-anchor= | =provider-anchor=; provider/model/fingerprint shape | appended entry; no no-op | provider anchor/current head | retain semantic parity |
+| =e-session-append-context-generation= | =context-generation=; canonical generation and ownership | appended entry; no no-op | context generation/current head | retain semantic parity |
+| =e-session-append-context-curation-package= | =context-curation-package=; owned promotion/erasure package | package result; identical existing package returns =:already-present= and is no-op | package/current head only when new | retain idempotence; replace ACK timing |
+| =e-session-set-metadata= | =session-info/metadata=; metadata schema | caller metadata | session metadata event | retain result parity |
+| =e-session-set-session-config= | =session-info/config=; config metadata class | merged metadata | session metadata event | retain result parity |
+| =e-session-set-context-references= | =session-info/context-references=; owner/reference schema | caller references | session metadata event | retain result parity |
+| =e-session-set-context-reference= | =session-info/context-reference=; key/reference schema | resulting metadata | session metadata event | retain result parity |
+| =e-session-set-capability-state= | =session-info/capability-state=; capability/version/state schema | state or versioned state | session metadata event | retain result parity |
+| =e-session-set-turn-options= | =session-info/turn-options=; normalized options | normalized options | session options event | retain result parity |
+| =e-session-set-current-branch= | =session-info/current-branch=; branch identity | current branch | branch event/current head | retain result parity |
+| =e-session-rename= | =session-info/name=; trimmed nonempty name | session value | session info event | retain validation/result parity |
+| =e-session-clear-messages= | =clear-messages=; loaded session | reset entry; no no-op | transcript reset/current head | retain semantic parity |
+| =e-session-append-board-message= | =board-message=; canonical record type and identity | retained board envelope; duplicate identity is no-op | independent Board journal only when new | strengthen exactly-once Daily result |
+| =e-session-clear-board-messages= | =board-messages-clear=; loaded session | =nil=; no no-op | Board journal cleared | retain semantic parity |
+| =e-session-declare-board-state= | =board-state=; principal/Board/role/routing policy | copied Board state | Board/session association | strengthen Daily association |
+
+The allowed synchronous paths are exhaustively named:
+
+- nonpersistent aggregate stores and explicitly async-disabled legacy/test
+  stores retain their existing synchronous facade behavior;
+- =e-session-create :defer-persistence t= is an ephemeral reservation only;
+- =e-session-create-board-admission=, =e-session-commit-board-admission=,
+  =e-session-abort-created=, and =e-board-pickup-admission-commit= retain their
+  explicit cross-owner admission transaction and barriers;
+- =e-session-load=, =e-session-load-session=,
+  =e-session-migrate-session-checkpoint=, checkpoint/catalog/index rebuild and
+  refresh operations, =e-session-finalize=, and
+  =e-session-flush-write-queue= are batch/operator boundaries and cannot be
+  called from interactive context composition; and
+- =e-session-fork= remains explicitly unsupported when async mode is enabled;
+  its legacy synchronous implementation is not expanded by this addendum.
+
+No other default interactive caller may enter
+=e-session--call-with-commit-barrier= or a storage acknowledgement wait.
 
 * Delivery packages
 
 ** F92A-DP1: Session-owned accepted projection
 
 Establish =F92A-C01=--=F92A-C05=.  Simplify the session async boundary so one
-prepared record enters the runtime FIFO directly.  After admission, install and
-publish the semantic projection before returning.  Track only bounded settlement
-metadata.  Acknowledgement retires pending status without republishing; failure
-records session suspect state while the runtime isolates the opaque owner.
+prepared record and its aggregate install token enter the runtime FIFO directly.
+After admission, install and publish the semantic projection before returning.
+Track only bounded settlement metadata.  Acknowledgement retires pending status
+without republishing; failure records session suspect state while the runtime
+isolates the opaque owner.  Delete the session terminal outbox and settle from
+the runtime observer only after authoritative pending/suspect state changes.
 
 Remove the harness overlay and default-path lane/publication/reconciliation
 machinery.  Move session suspect state out of the storage port.  Keep SQLite
@@ -287,7 +375,8 @@ semantics while SQLite remains the durable log.
 
 Evidence proves admission rejection without publication, accepted visibility
 before acknowledgement, ordered dependent mutations, acknowledgement without
-duplication, owner failure, sibling persistence, and canonical reopen.
+duplication, install fault rollback, terminal observer isolation, owner failure,
+sibling persistence, close/reset lifetime, and canonical reopen.
 
 ** F92A-DP2: Public two-turn Daily acceptance
 
@@ -309,7 +398,9 @@ acknowledgement-gated context returns.
 
 - S92A-SESSION-ADMISSION :: Hold SQLite after runtime admission.  An append is
   visible before acknowledgement; exact/one-over and exhausted-FIFO rejection
-  publish nothing.
+  publish nothing.  Inject immediately before install and prove the exact queued
+  request is dropped with no projection change; inject immediately after install
+  and prove the complete projection remains visible and suspect, never partial.
 - S92A-READ-YOUR-WRITES :: Accept user A, assistant A, and user B without
   acknowledgement.  Session reads and later preparation return A/A/B exactly
   once in order.  Acknowledgement does not change semantic cardinality.
@@ -320,7 +411,10 @@ acknowledgement-gated context returns.
   replay with the accepted sequence.  Derived projections never lead the log.
 - S92A-OWNER-FAILURE :: Fail one accepted write, retain its first suspect warning
   and effective state, reject later same-owner mutation, and commit/read back an
-  interleaved unrelated session.
+  interleaved unrelated session.  Repeated failure does not grow or replace the
+  diagnostic.  Success/failure settlement, store close/reset, and callbacks that
+  signal =error= or =quit= leave no pending entry, stranded work, or runtime
+  reservation.
 - S92A-DAILY-TWO-TURN :: Run the direct scenario through
   =e-org-canvas-prompt-document= and the graphical composer.  The backend asserts
   request contents and produces data-dependent responses; a canned stream cannot
@@ -336,6 +430,9 @@ acknowledgement-gated context returns.
 | Post-ack publication, outbox retry, reconciliation, lane scheduler, exact object-graph tests | delete or replace | Preserve only behavior surviving the simplified contract. |
 | Uncommitted harness accepted-message suffix tests | delete | Replace with session-owner and harness-consumer evidence. |
 | Harness semantic-result compatibility tests | retain | They protect return shape but do not prove session visibility. |
+| Aggregate incremental-apply rollback tests | strengthen | Cover prevalidated install token, before/after-install faults, and no partial projection. |
+| Runtime terminal observer error/quit tests | retain and compose | Prove direct session settlement does not strand pending state, work, or reservations. |
+| Board pickup admission tests | retain | Re-prove composite commit-first atomicity and owner-barrier behavior. |
 | Full suite and graphical cleanup | retain | Run on exact candidate revision after focused scenarios pass. |
 
 * Compatibility and migration
@@ -362,8 +459,10 @@ limits.
 
 Pending metadata is bounded by the existing 128 admitted runtime clients.
 Existing session record and frame limits remain.  Projection installation costs
-one accepted command, not durable session length.  No second transcript, polling
-scan, database integrity check, or SQLite read belongs on the interactive path.
+one accepted command and its preallocated install token, not durable session
+length.  Suspect metadata is bounded to one first-cause entry per affected
+session and is released with the store.  No second transcript, polling scan,
+database integrity check, or SQLite read belongs on the interactive path.
 
 * Explicit non-goals
 
@@ -403,7 +502,11 @@ Acceptance requires:
 4. The activated-root inventory has no =unknown= row.
 5. Source search finds no harness history overlay or default session scheduler
    ahead of the runtime FIFO.
-6. Full repository gates pass and leave no worker process behind.
+6. Fault tests prove before-install cancellation, after-install whole projection,
+   authoritative terminal ordering, repeated-failure boundedness, and close/reset
+   cleanup under observer =error= and =quit=.
+7. Board pickup retains its composite commit-first transaction and tests.
+8. Full repository gates pass and leave no worker process behind.
 
 Do not mark the addendum implemented, claim Daily fixed, or commit production
 implementation before these conditions hold.
@@ -414,8 +517,8 @@ implementation before these conditions hold.
    read-your-writes; DP2 proves the reported UI.
 2. It advances toward SQLite as sole durable event authority with thin,
    nonblocking application services.
-3. Durability, session semantic ownership, and FIFO ownership are stable.  Exact
-   settlement representation remains local and reversible.
+3. Durability, session semantic ownership, and FIFO ownership are stable.  The
+   prevalidated install-token representation remains private and reversible.
 4. Session service owns accepted visibility/status; runtime owns transport and
    fencing; SQLite owns cross-restart state; harness/shells consume.
 5. Deleting the harness overlay and session scheduler reduces coupling.
@@ -423,15 +526,16 @@ implementation before these conditions hold.
    worker; policy does not depend on SQLite/provider detail.
 7. I/O, transactions, receipt recovery, and frames remain adapter/runtime side
    effects.
-8. New state is bounded process-local settlement metadata, rebuilt empty after
-   restart.
+8. New state is bounded process-local settlement metadata: one entry per pending
+   request and at most one suspect entry per session, released on close/restart.
 9. Interactive work is proportional to one command; timing is observational.
 10. No new public abstraction is needed; the private async module represents a
     real lifecycle.
 11. Existing SQLite records and public callers remain compatible.
 12. Lane scheduling, publication outbox, reconciliation, exact pathological
     accounting, and harness history overlay become removable.
-13. Admission rejection occurs before publication; eventual failure becomes
+13. Admission rejection occurs before publication; a before-install fault drops
+    the exact queued request; a post-install or terminal failure becomes
     owner-local suspect state; unexpected reducer/adapter errors remain visible.
 14. Owner tests prove lifecycle partitions, harness integration proves the
     consumer boundary, and data-dependent graphical E2E proves composition.
