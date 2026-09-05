@@ -196,8 +196,8 @@ but no UI or timer awaits it.  Successful enqueue may publish the prepared
 process-local transition immediately; acknowledgement finishes the handle,
 while failure leaves that optimistic state visibly suspect.  Suspect state is
 process-local, keyed by domain and owner identity, and first-cause preserving.
-A session fence clears only after DP6C page-bounded validation rebuilds the
-canonical session and replaces failed optimistic state.  A Board fence clears
+A session fence clears only after =F92A2-DP2= page-bounded validation rebuilds
+the canonical session and replaces failed optimistic state.  A Board fence clears
 only after its associated session and Board association reload canonically;
 invalid validation quarantines the session and leaves the Board warning visible.
 
@@ -319,7 +319,7 @@ Superseded as an establishing package by =F92A2-DP2= in
 =F92-C09= behavior and evidence consumed by that package; it is not a second
 delivery-package assignment.
 
-Depends on DP6A.  Reopen returns a pending =e-work= (and public chat open still
+Reopen returns a pending =e-work= (and public chat open still
 returns its buffer) before storage activity.  A timer/callback validator reads
 existing bounded pages, yields between pages, decodes records, and checks
 exactly one root, unique durable record identities, parent references and chain
@@ -347,7 +347,8 @@ useful independently because one damaged session no longer blocks catalog use.
 
 ** F92-DP6D: Complete interactive reachability
 
-Depends on DP6A, DP6B, and DP6C; DP6B is its representative graphical proof.
+Depends on DP6A, DP6B, and =F92A2-DP2=; DP6B is its representative graphical
+proof.
 Establishes =F92-C11= after classifying every shared-runtime caller:
 
 | Surface | Immediate result and retained work | Eventual failure owner |
@@ -1314,8 +1315,9 @@ remains historical implementation evidence.
 * Design self-check
 
 1. DP6A makes shared persistence survive one owner's failure; DP6B fixes the
-   reported Daily hang; DP6C isolates damaged sessions; DP6D closes the wider
-   hot-path inventory.  Each stopping point is independently useful.
+   reported Daily hang; =F92A2-DP2= isolates damaged sessions while replacing
+   the obsolete session query architecture; DP6D closes the wider hot-path
+   inventory.  Each stopping point is independently useful.
 2. The final direction is one external persistence worker with autonomous
    single-FIFO transport and domain-owned optimistic application operations.
 3. The worker, SQLite transactions, and enqueue-return rule are stable.  The

@@ -442,6 +442,10 @@ Establishes =F92A2-C03=--=F92A2-C05= and =F92A2-C09=, and completes the
 retained requested-session validation/quarantine contract =F92-C09= needed by
 =F92A2-C10=.
 
+=F92A2-DP2= starts only after =F92A2-DP1= and accepted =F92-DP6A=.  The
+=F92-DP6A= dependency supplies the owner-local session/Board suspect state that
+unchanged =F92-C09= clears after successful canonical reload.
+
 DP2 remains one package because installing v6 without both its session-query
 consumers and removal of the obsolete projection paths would create the
 forbidden dual or inoperable runtime boundary.  Its internal order is domain
