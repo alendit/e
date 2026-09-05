@@ -1,0 +1,139 @@
+#+title: Feature 92 SQLite-Owned Query State Plan Review 05
+#+date: 2026-09-05
+#+startup: overview
+
+* Decision
+
+Result: =changes-requested=.  Addendum 2 is not at an
+=implementation-plan-fixed-point= and does not yet admit production edits.
+
+One independent reviewer performed a read-only rebaseline review of commit
+=99e7caff1ffc28fc2470ef20b5f4ea27226a9b35= and these plan authorities:
+
+- Addendum 2 blob :: =540422a7ac84a17b61e7ca7e71c8acd81ec79ccd=
+- Parent plan blob :: =be6adeec8ecb1ee9c6e880b51378112c96486586=
+- Projection addendum blob :: =8a1668de2635d20bba208922420d799b6755e10b=
+- Architecture authority blob :: =f99250ccf1ca0e717860e6ea27d8611fe4829819=
+- Runtime glossary blob :: =c80fb8cade9100dac00c33ff7d43ffaac3a053f4=
+
+The SQLite-owned query direction is sound, but seven specification defects
+leave failure policy, active-session lifetime, migration derivation, physical
+scope, and package closure unsafe or ambiguous.
+
+* Findings
+
+** P1: Separate read, validation, and optimistic-write failure outcomes
+
+Addendum 2 currently says a failed session or Board operation marks its owner
+suspect and its failure scenario combines failed loads and writes.  That
+conflicts with the retained Feature 92 authorities:
+
+- transient reads fail only their request-scoped work and remain retryable;
+- invalid decoded state quarantines only the requested session or Board; and
+- only eventual failure of an already-published optimistic mutation creates
+  suspect state and fences that owner.
+
+The owning contract and scenario must distinguish all three partitions while
+leaving unrelated owners eligible for service.
+
+** P1: Specify the asynchronous facade and active-session lifecycle
+
+The plan names an =e-work= or callback result and a last-owner release, but it
+does not close concurrent open, partial reconstruction, accepted writes during
+load, late completion, or release.  Current synchronous getters and the current
+cooperative loader cannot supply those guarantees implicitly.
+
+DP2 must define detached metadata/page work, a separate Daily readiness work,
+ready-only synchronous active-session getters, and this owner lifecycle:
+
+#+begin_example
+unloaded -> loading(generation, durable high-water) -> active(owner set)
+         -> releasing -> unloaded
+#+end_example
+
+Concurrent opens coalesce.  Reconstruction remains invisible until one atomic
+install.  Intents accepted during load preserve owner order after the captured
+durable high-water mark.  Generation fencing prevents a closed or replaced
+load from publishing.  Failure settles every waiter without exposing a partial
+aggregate, and repeated acquire/release leaves the active map bounded.
+
+** P1: Close query-row semantic ownership and v5-to-v6 derivation
+
+The session aggregate currently interprets commands while the worker stores
+opaque records.  The plan requires transactional query rows without specifying
+how the semantic delta reaches that transaction.  It also permits unspecified
+legacy projection data to supply migration facts, contradicting the retained
+journal-only durable authority.
+
+The session domain must own one exhaustive record-to-query-state derivation.
+A live mutation submits its journal record and bounded query-state delta
+together; the SQLite adapter validates/maps the delta, and the worker commits
+the journal, query rows, and receipt atomically.  Receipt replay cannot apply
+the delta twice.  Migration must derive query rows only from canonical journal
+records through the same derivation.  Catalogs and checkpoints are validation
+witnesses only; missing derivable state fails the upgrade.
+
+** P2: Cover every activated root and avoid mandating lazy allocation
+
+Residual-topology review names only Session, Task, and Board roots, although
+the affected composition constructs the runtime plus session, Board, task,
+cron, voice, Goodnite, and raw-result owners, and the cutover reaches their
+storage, migration, harness, chat, and Org Canvas consumers.
+
+The activated-root inventory must cover every changed owner and consumer.  It
+must not require lazy empty-object allocation: eager construction of bounded,
+side-effect-free ports or empty runtime objects is valid.  The contract is zero
+domain SQL, zero durable-row materialization, and no readiness wait before
+first owner use.
+
+** P2: Normalize one contract authority and separate two status lanes
+
+The current matrix omits public composition, package mapping, external
+evidence, and telemetry disposition.  It also mixes accepted contract status
+with failing current behavior while unique normative requirements appear only
+in later prose.
+
+The matrix must become the sole normative authority.  Each row needs the
+observable contract, semantic owner/public composition, one establishing
+package, deterministic evidence, external-evidence disposition, telemetry,
+accepted contract status, and current behavior.  Later sections must reference
+the row IDs.  Package mechanism progress remains a separate lane.
+
+** P2: Explain package cohesion and split Board from Task
+
+DP2 combines schema/query semantics, migration, facade cutover, and obsolete
+path removal.  Keeping those together is defensible only because a v6 install
+without its consumers and removal would create the forbidden dual or
+inoperable runtime boundary; the plan must state that causal order.
+
+Board and Task have separate semantic owners, lifetimes, transactions, and
+evidence.  Split the current DP3 into independently acceptable Board and Task
+packages unless a source-backed shared invariant is established.  Renumber the
+remaining package and update the bidirectional contract map.
+
+** P3: Make graphical responsiveness deterministic
+
+The current requirement that a 100ms heartbeat advance repeatedly during a
+one-second hold has no passing count and promotes host timing into acceptance.
+The graphical gate should observe at least three independently scheduled
+heartbeat callbacks and one composer edit while a test-controlled worker hold
+remains active.  Timer period and harness timeout remain private test defaults.
+
+* Coverage
+
+| Area | Disposition |
+|------+-------------|
+| Stable contract direction | =F92A2-C01=--=F92A2-C09= provisionally clear; =C10= blocked by the failure contradiction. |
+| Contract/package map | Bidirectionally present, but DP2 and DP3 closure are unresolved. |
+| Cleared specification cells | Behavioral trace, durable direction, external evidence not applicable, telemetry classification, compatibility direction, and non-goals. |
+| Blocked specification cells | Single authority, failure partitions, active-session lifecycle, v6 derivation, residual topology, package-size tradeoff, and deterministic responsiveness. |
+| Architecture branch | =correct-now=; no safe-deferral ledger applies. |
+
+The goal =F92A2-SQLITE-WORKING-SET= remains behaviorally =Failing= at
+synchronous startup catalog hydration.  Mechanism progress remains
+=not-started=.  No production source, tests, running Emacs state, or canonical
+database changed during this review.
+
+=docs/references/runtime_concepts.org= remains the selected glossary and fits
+the active session, harness, and Board scope.  =active working set= is explained
+locally; there are no unresolved terminology candidates.
