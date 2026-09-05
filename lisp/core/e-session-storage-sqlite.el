@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'e-runtime-store)
+(require 'e-session-storage-limits)
 
 (defvar e-session-storage-sqlite--backends
   (make-hash-table :test 'eq :weakness 'key))
@@ -86,21 +87,45 @@
   (let ((runtime (e-session-storage-sqlite-runtime store)))
     (unless runtime
       (signal 'e-session-storage-error (list "SQLite runtime is unavailable")))
+    (when (eq kind 'write)
+      (e-session-storage-sqlite--preflight-session-body body))
     (e-runtime-store-call runtime kind body)))
 
-(defun e-session-storage-sqlite-submit (store kind body on-settle &optional escrow)
-  "Submit STORE's typed KIND BODY and call ON-SETTLE with RESULT and ERROR.
+(defun e-session-storage-sqlite--preflight-session-body (body)
+  "Enforce practical record and batch limits for session mutation BODY."
+  (pcase (plist-get body :op)
+    ((or 'session-append 'session-append-with-tool-transition)
+     (e-runtime-store-codec-measure-bounded
+      (plist-get body :record) e-session-storage-record-byte-limit))
+    ('session-append-batch
+     (let ((records (plist-get body :records)))
+       (unless (or (listp records) (vectorp records))
+         (signal 'wrong-type-argument (list '(or list vector) records)))
+       (when (> (length records) e-session-storage-batch-record-limit)
+         (signal 'e-runtime-store-request-too-large
+                 (list "Session batch exceeds record-count limit"
+                       :limit e-session-storage-batch-record-limit)))
+       (mapc (lambda (record)
+               (e-runtime-store-codec-measure-bounded
+                record e-session-storage-record-byte-limit))
+             (append records nil))
+       (e-runtime-store-codec-measure-bounded
+        body e-session-storage-batch-byte-limit))))
+  body)
+
+(defun e-session-storage-sqlite-submit-owned
+    (store kind body owner-key on-settle &optional escrow)
+  "Submit STORE's typed KIND BODY for OWNER-KEY and observe its settlement.
 
 The session application service owns any resulting work handle and publishes
 aggregate state only from this consumer-shaped terminal observation.  The
-runtime request and its private protocol fields stay inside this adapter."
+runtime request, OWNER-KEY, and protocol fields stay inside this adapter."
   (let ((runtime (e-session-storage-sqlite-runtime store)))
     (unless runtime
       (signal 'e-session-storage-error (list "SQLite runtime is unavailable")))
-    (let ((request (if escrow
-                       (e-runtime-store--submit-with-frame-escrow
-                        runtime kind body escrow)
-                     (e-runtime-store-submit runtime kind body))))
+    (e-session-storage-sqlite--preflight-session-body body)
+    (let ((request (e-runtime-store--submit-owned
+                    runtime kind body owner-key escrow)))
       (e-runtime-store--observe
        request
        (lambda (settled)
@@ -111,6 +136,11 @@ runtime request and its private protocol fields stay inside this adapter."
                         '(e-session-storage-error
                           "Runtime request did not commit"))))))
       (e-session-storage-sqlite--async-operation-create :request request))))
+
+(defun e-session-storage-sqlite-submit (store kind body on-settle &optional escrow)
+  "Submit STORE's typed KIND BODY and call ON-SETTLE with RESULT and ERROR."
+  (e-session-storage-sqlite-submit-owned
+   store kind body nil on-settle escrow))
 
 (defun e-session-storage-sqlite-reference (session-id)
   "Return the opaque catalog reference for SESSION-ID."

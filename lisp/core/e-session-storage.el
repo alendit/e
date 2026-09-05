@@ -30,6 +30,7 @@
                (:conc-name e-session-storage--state-))
   owner directory persistent
   (checkpoint-dirty-session-ids (make-hash-table :test 'equal))
+  (suspect-sessions (make-hash-table :test 'equal))
   (unsettled-write-count 0) (unsettled-generation 0)
   index-projection checkpoint-projection-operation projection-last-error)
 
@@ -44,6 +45,7 @@
   "Hook run after session durability state changes.")
 
 (defconst e-session-storage--projection-error-message-limit 512)
+(defconst e-session-storage--suspect-diagnostic-byte-limit 1024)
 
 (defun e-session-storage--state (owner)
   "Return storage state for opaque OWNER, creating an ephemeral state."
@@ -132,6 +134,85 @@ This narrow physical operation is for the session application's FIFO
 coordinator.  It does not expose DP5A request details to session callers."
   (e-session-storage--require-sqlite store "Asynchronous session operation")
   (e-session-storage-sqlite-submit store kind body on-settle escrow))
+
+(defun e-session-storage--utf8-prefix (string byte-limit)
+  "Return STRING's longest prefix occupying at most BYTE-LIMIT UTF-8 bytes."
+  (if (<= (string-bytes string) byte-limit)
+      string
+    (let ((low 0) (high (length string)))
+      (while (< low high)
+        (let ((middle (/ (+ low high 1) 2)))
+          (if (<= (string-bytes (substring string 0 middle)) byte-limit)
+              (setq low middle)
+            (setq high (1- middle)))))
+      (substring string 0 low))))
+
+(defun e-session-storage--detached-suspect-error (session-id error)
+  "Return bounded detached ERROR state owned by SESSION-ID's service."
+  (let* ((type (if (and (consp error) (symbolp (car error))
+                        (get (car error) 'error-conditions))
+                   (car error)
+                 'e-session-storage-error))
+         (properties (and (consp error) (cddr error)))
+         (diagnostic
+          (e-session-storage--utf8-prefix
+           (let ((print-circle t) (print-level 6) (print-length 32))
+             (condition-case nil
+                 (error-message-string error)
+               (error "Session persistence failed")))
+           e-session-storage--suspect-diagnostic-byte-limit)))
+    (list type (copy-sequence diagnostic)
+          :session-id (copy-sequence session-id)
+          :operation (plist-get properties :operation)
+          :kind (plist-get properties :kind)
+          :request-id
+          (when-let* ((request-id (plist-get properties :request-id)))
+            (copy-sequence request-id)))))
+
+(defun e-session-storage--note-session-suspect (store session-id error)
+  "Retain SESSION-ID's first bounded persistence ERROR in STORE."
+  (let* ((state (e-session-storage--state store))
+         (suspects (e-session-storage--state-suspect-sessions state)))
+    (or (gethash session-id suspects)
+        (let ((detached
+               (e-session-storage--detached-suspect-error session-id error)))
+          (puthash (copy-sequence session-id) detached suspects)
+          detached))))
+
+(defun e-session-storage-session-suspect (store session-id)
+  "Return detached process-local persistence suspicion for SESSION-ID, or nil."
+  (when-let* ((status
+               (gethash session-id
+                        (e-session-storage--state-suspect-sessions
+                         (e-session-storage--state store)))))
+    (copy-tree status)))
+
+(defun e-session-storage-submit-owned
+    (store session-id body on-settle &optional escrow)
+  "Submit one optimistic SESSION-ID write and report detached settlement.
+
+The private owner key never crosses the session storage port.  Any eventual
+failure is retained by the session application service before ON-SETTLE runs;
+successful enqueue itself remains non-blocking."
+  (e-session-storage--require-sqlite store "Owned session operation")
+  (condition-case err
+      (e-session-storage-sqlite-submit-owned
+       store 'write body (cons 'session session-id)
+       (lambda (result error)
+         (if error
+             (let ((detached
+                    (e-session-storage--detached-suspect-error
+                     session-id error)))
+               (e-session-storage--note-session-suspect
+                store session-id detached)
+               (funcall on-settle nil (copy-tree detached)))
+           (funcall on-settle result nil)))
+       escrow)
+    (e-runtime-store-persistence-suspect
+     (let ((detached
+            (e-session-storage--detached-suspect-error session-id err)))
+       (e-session-storage--note-session-suspect store session-id detached)
+       (signal (car detached) (cdr detached))))))
 
 (defun e-session-storage-reserve-frame-escrow (store bytes)
   "Reserve BYTES through STORE's composition-owned adapter boundary."

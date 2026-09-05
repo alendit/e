@@ -23,7 +23,8 @@
 (cl-defstruct (e-board-storage
                (:constructor e-board-storage--create)
                (:conc-name e-board-storage--))
-  runtime call-operation)
+  runtime call-operation asynchronous pending-count first-error
+  next-revision next-position settlement-function)
 
 (defun e-board-storage-signature-hash (value)
   "Return the stable hash used for one canonical Board source VALUE."
@@ -32,6 +33,18 @@
 (defun e-board-storage-runtime (storage)
   "Return STORAGE's shared runtime-store identity."
   (e-board-storage--runtime storage))
+
+(defun e-board-storage-asynchronous-p (storage)
+  "Return non-nil when STORAGE admits writes without waiting for ACK."
+  (and (e-board-storage-p storage)
+       (e-board-storage--asynchronous storage)))
+
+(defun e-board-storage-set-settlement-function (storage function)
+  "Set STORAGE's bounded asynchronous settlement observer to FUNCTION."
+  (unless (or (null function) (functionp function))
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (setf (e-board-storage--settlement-function storage) function)
+  storage)
 
 (defun e-board-storage--call (storage operation &rest arguments)
   "Invoke STORAGE OPERATION with ARGUMENTS."

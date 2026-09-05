@@ -55,7 +55,8 @@ not allow a caller mutation to bypass the barrier."
 
 (defun e-board--call-with-storage-barrier (board operation)
   "Call OPERATION while BOARD rejects reentrant semantic mutation."
-  (if (not (e-board-storage-backed-p board))
+  (if (or (not (e-board-storage-backed-p board))
+          (e-board-storage-asynchronous-p (e-board-storage board)))
       (funcall operation)
     (when (e-board-mutation-frozen-p board)
       (signal 'e-board-mutation-frozen (list (e-board-id board))))

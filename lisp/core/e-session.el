@@ -1121,8 +1121,10 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (cl-defun e-session-fork (store session-id &key at metadata name)
   "Fork SESSION-ID and publish the new aggregate through storage."
-  (e-session--ensure-loaded store session-id)
-  (if (not (e-session-storage-sqlite-p store))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-unsupported-command session-id 'fork)
+    (e-session--ensure-loaded store session-id)
+    (if (not (e-session-storage-sqlite-p store))
       (let* ((fork (e-session-aggregate-fork
                     store session-id :at at :metadata metadata :name name))
              (fork-id (plist-get fork :id))
@@ -1182,7 +1184,7 @@ This historical facade name no longer selects or falls back to JSONL."
             (signal (car err) (cdr err))))
          (e-session-aggregate-publish-staged-session store stage fork-id)
          (e-session--write-index-after-primary store)
-         fork)))))
+         fork))))))
 
 (defun e-session-finalize (store on-done on-error)
   "Finalize STORE's asynchronous storage durability boundary."
@@ -1190,7 +1192,8 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-enable (store)
   "Attach STORE's asynchronous persistence adapter and return its handle."
-  (e-session-storage-enable store))
+  (e-session-storage-enable store)
+  (e-session-async-enable store))
 
 (defun e-session-persistence-unsettled-state (&rest _args)
   "Return process-wide physical storage durability state."

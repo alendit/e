@@ -326,8 +326,8 @@
              (expand-file-name "store.sqlite3.owner" directory)))
     (should (e-runtime-store-live-p store))))
 
-(ert-deftest e-runtime-store-s2-idle-worker-loss-requires-reopen ()
-  "Worker loss freezes the store; its same identity can reopen canonically."
+(ert-deftest e-runtime-store-s2-idle-worker-loss-restarts-lazily ()
+  "Worker loss while idle restarts on the next submission."
   (e-runtime-store-test--with-store (store directory)
     (let ((runtime-id (e-runtime-store--runtime-id store)))
       (e-runtime-store-call
@@ -335,22 +335,17 @@
     (delete-process (e-runtime-store--process store))
     (while (e-runtime-store--live-p store)
       (accept-process-output nil 0.01))
-    (should-error
-     (e-runtime-store-call
-      store 'write '(:op session-append :session-id "s" :record (:value two)))
-     :type 'e-runtime-store-unavailable)
-    (should (plist-get (e-runtime-store-status store) :unavailable))
-      (e-runtime-store-close store)
-      (setq store (e-runtime-store-open directory :runtime-id runtime-id))
-      (let ((page (e-runtime-store-call
-                   store 'read '(:op session-record-page :session-id "s"))))
-        (should (= (length (plist-get page :records)) 1)))
+      (should-not (plist-get (e-runtime-store-status store) :unavailable))
       (should (= (plist-get
                   (e-runtime-store-call
                    store 'write '(:op session-append :session-id "s"
                                   :record (:value two)))
                   :revision)
-                 2)))))
+                 2))
+      (let ((page (e-runtime-store-call
+                   store 'read '(:op session-record-page :session-id "s"))))
+        (should (= (length (plist-get page :records)) 2)))
+      (should (equal runtime-id (e-runtime-store--runtime-id store))))))
 
 (ert-deftest e-runtime-store-s92-worker-exit-before-write-response-recovers-once ()
   "Worker exit before a write acknowledgement resolves the same receipt once."
@@ -553,12 +548,10 @@
             (should (= (length (plist-get page :records)) 1)))
           (should-not (plist-get (e-runtime-store-status store) :unavailable))))))))
 
-(ert-deftest e-runtime-store-s92-c04-retained-16mib-frame-recovers-below-envelope ()
-  "A retained 16MiB canonical write is replayed only from its bounded frame."
+(ert-deftest e-runtime-store-s92-c04-retained-bounded-frame-recovers ()
+  "A retained legal batch is replayed only from its bounded frame."
   (let ((e-runtime-store-request-timeout 20.0)
-        ;; Two independently valid records form a roughly 16MiB canonical
-        ;; transport frame without exceeding the private per-record cap.
-        (payload (make-string (* 6 1024 1024) ?x)))
+        (payload (make-string (* 512 1024) ?x)))
     (e-runtime-store-test--with-worker-fault "after-commit"
       (e-runtime-store-test--with-store (store _directory)
         (let ((result
@@ -580,27 +573,34 @@
                      1))
           (should-not (plist-get (e-runtime-store-status store) :unavailable)))))))
 
-(ert-deftest e-runtime-store-s92-repeated-worker-stall-exhausts-once ()
-  "A second fault preserves the first cause and settles active plus queued work."
+(ert-deftest e-runtime-store-s92-repeated-worker-stall-partitions-owner ()
+  "A second fault preserves the first cause and fences one owner locally."
   (let ((process-environment
          (cons "E_RUNTIME_STORE_TEST_FAULT=before-commit" process-environment)))
     (e-runtime-store-test--with-store (store _directory)
-      (let ((active (e-runtime-store-submit
+      (let ((active (e-runtime-store--submit-owned
                      store 'write '(:op session-append :session-id "exhaust"
-                                         :record (:value once))))
+                                         :record (:value once))
+                     '(session . "exhaust")))
             queued first)
-        (setq queued (e-runtime-store-submit
-                       store 'write '(:op session-append :session-id "exhaust"
-                                           :record (:value queued))))
+        (setq queued (e-runtime-store--submit-owned
+                      store 'write '(:op session-append :session-id "exhaust"
+                                          :record (:value queued))
+                      '(session . "exhaust")))
         (e-runtime-store-test--wait-terminal-without-await active)
         (setq first (e-runtime-store-request--error active))
-        (dolist (request (list active queued))
-          (should (eq (e-runtime-store-request--state request) 'failed))
-          (should (equal (e-runtime-store-request--error request) first)))
-        (should (plist-get (e-runtime-store-status store) :unavailable))
-        (should (equal (plist-get (e-runtime-store-status store)
-                                  :unavailable-cause)
-                       first))))))
+        (should (eq (e-runtime-store-request--state active) 'failed))
+        (should (eq (e-runtime-store-request--state queued) 'failed))
+        (should (eq (car (e-runtime-store-request--error queued))
+                    'e-runtime-store-persistence-suspect))
+        (should-not (plist-get (e-runtime-store-status store) :unavailable))
+        (should (equal (plist-get first :request-id)
+                       (e-runtime-store-request--id active)))
+        (should-error
+         (e-runtime-store--submit-owned
+          store 'write '(:op session-delete :session-id "exhaust")
+          '(session . "exhaust"))
+         :type 'e-runtime-store-persistence-suspect)))))
 
 (ert-deftest e-runtime-store-s92-repeated-corruption-exhausts-with-first-cause ()
   "A second malformed response cannot replace the first recovery diagnosis."
@@ -621,9 +621,8 @@
     (e-runtime-store--recover-or-fail store second)
     (should (eq (e-runtime-store-request--state request) 'failed))
     (should (equal (e-runtime-store-request--error request) first))
-    (should (plist-get (e-runtime-store-status store) :unavailable))
-    (should (equal (plist-get (e-runtime-store-status store) :unavailable-cause)
-                   first))))
+    (should-not (plist-get (e-runtime-store-status store) :unavailable))
+    (should (equal (e-runtime-store--last-error store) first))))
 
 (ert-deftest e-runtime-store-s92-replacement-open-loss-settles-original-and-queue ()
   "A replacement open loss consumes the one attempt with the original cause."
@@ -655,14 +654,13 @@
             (delete-process process)
             (e-runtime-store-test--wait-terminal active))
           (should (eq (e-runtime-store-request--state active) 'failed))
-          (should (eq (e-runtime-store-request--state queued) 'failed))
-          (should (equal (e-runtime-store-request--error queued)
-                         (e-runtime-store-request--error active)))
-          (should (= (e-runtime-store--recovery-attempt store) 1))
+          (e-runtime-store-test--wait-terminal-without-await queued)
+          (should (eq (e-runtime-store-request--state queued) 'committed))
+          (should (= (e-runtime-store--recovery-attempt store) 0))
           (should (equal (plist-get (cddr (e-runtime-store-request--error active))
                                     :request-id)
                          (e-runtime-store-request--id active)))
-          (should (plist-get (e-runtime-store-status store) :unavailable)))
+          (should-not (plist-get (e-runtime-store-status store) :unavailable)))
       (when (file-exists-p marker) (delete-file marker))
       (ignore-errors (e-runtime-store-close store))
       (delete-directory directory t))))
@@ -678,7 +676,7 @@
          (pending (make-hash-table :test 'equal))
          (store (e-runtime-store--create
                  :directory "/tmp/" :runtime-id "replacement-contention"
-                 :pending pending :active-request active :write-queue (list queued)))
+                 :pending pending :active-request active :client-queue (list queued)))
          (first (list 'e-runtime-store-timeout "first" :request-id "replace:active")))
     (puthash (e-runtime-store-request--id active) active pending)
     (cl-letf (((symbol-function 'e-runtime-store--fence-worker) #'ignore)
@@ -692,11 +690,13 @@
       (e-runtime-store--scheduler-fired
        store (e-runtime-store--scheduler-generation store)))
     (should (eq (e-runtime-store-request--state active) 'failed))
-    (should (eq (e-runtime-store-request--state queued) 'failed))
+    (should (eq (e-runtime-store-request--state queued) 'queued))
     (should (equal (e-runtime-store-request--error active) first))
-    (should (equal (e-runtime-store-request--error queued) first))
-    (should (= (e-runtime-store--recovery-attempt store) 1))
-    (should (plist-get (e-runtime-store-status store) :unavailable))))
+    (should-not (e-runtime-store-request--error queued))
+    (should (= (e-runtime-store--recovery-attempt store) 0))
+    (should-not (plist-get (e-runtime-store-status store) :unavailable))
+    (e-runtime-store--fail-all store '(e-runtime-store-error "cleanup"))
+    (e-runtime-store--drain-terminal-notifications store t)))
 
 (ert-deftest e-runtime-store-s92-close-recovery-retains-one-retired-state ()
   "Close loss on either COMMIT side resolves its original retirement identity."
@@ -928,7 +928,7 @@
           ;; The second symptom is recorded for diagnosis, but must not start
           ;; or fence a second replacement worker.
           (should (= fenced 1))
-          (should (e-runtime-store--unavailable store)))
+          (should-not (e-runtime-store--unavailable store)))
       (e-runtime-store-test--cancel-store-timers store)
       (e-runtime-store-test--assert-no-store-timers store))))
 
@@ -1106,7 +1106,7 @@
          (store (e-runtime-store--create
                  :directory "/tmp/open-send/" :runtime-id "open-send"
                  :process 'old-worker :starting-request selected
-                 :write-queue (list selected) :pending (make-hash-table :test 'equal)))
+                 :client-queue (list selected) :pending (make-hash-table :test 'equal)))
          (fenced 0))
     (unwind-protect
         (cl-letf (((symbol-function 'process-send-string)
@@ -1615,7 +1615,7 @@
       (should (eq (e-runtime-store-request--state queued) 'failed))
       (should (e-runtime-store-live-p store))
       (should-not (plist-get (e-runtime-store-status store) :unavailable))
-      (should-not (memq queued (e-runtime-store--write-queue store)))
+      (should-not (memq queued (e-runtime-store--client-queue store)))
       (let ((deadline (+ (float-time) 5.0)))
         (while (and (not (string-match-p "\n" captured))
                     (< (float-time) deadline))
@@ -1717,12 +1717,12 @@
                              (e-runtime-store-request--id request)))
               (should (equal (plist-get (cddr failure) :cause)
                              (cons cause-type cause-data))))
-            (should (eq (e-runtime-store--unavailable-cause store)
+            (should (eq (e-runtime-store--last-error store)
                         (e-runtime-store-request--error request)))
+            (should-not (e-runtime-store--unavailable store))
             (should-not (e-runtime-store--starting-request store))
             (should-not (e-runtime-store--active-request store))
-            (should-not (e-runtime-store--write-queue store))
-            (should-not (e-runtime-store--read-queue store))
+            (should-not (e-runtime-store--client-queue store))
             (should (= (hash-table-count (e-runtime-store--pending store)) 0))))))))
 
 (ert-deftest e-runtime-store-s92-submission-restarts-the-timeout-interval ()
@@ -1748,14 +1748,14 @@
               (pcase kind
                 ('open
                  (setq open-request active
-                       candidate (car (e-runtime-store--write-queue store)))
+                       candidate (car (e-runtime-store--client-queue store)))
                  ;; The selected domain request stays queue-owned throughout
                  ;; real internal open setup rather than being popped early.
                  (should (eq (e-runtime-store--starting-request store)
                              candidate))
                  (should (eq (e-runtime-store-request--state candidate)
                              'queued))
-                 (should (memq candidate (e-runtime-store--write-queue store)))
+                 (should (memq candidate (e-runtime-store--client-queue store)))
                  (should-not (eq active candidate)))
                 ('write
                  (should (eq active candidate))
@@ -1786,7 +1786,7 @@
       (should (eq (e-runtime-store-request--state request) 'submitted))
       (should (equal (nreverse sent-kinds) '(open write)))
       (should (= (e-runtime-store-request--admitted-at request) 0.0))
-      (should-not (memq request (e-runtime-store--write-queue store)))
+      (should-not (memq request (e-runtime-store--client-queue store)))
       (should-not (e-runtime-store--starting-request store))
       (should (eq (gethash (e-runtime-store-request--id request)
                            (e-runtime-store--pending store))
@@ -1815,7 +1815,7 @@
          (pending (make-hash-table :test 'equal))
          (store (e-runtime-store--create
                  :runtime-id "deadline" :pending pending :active-request active
-                 :write-queue (list queued)))
+                 :client-queue (list queued)))
          (transitions 0) causes)
     (puthash (e-runtime-store-request--id active) active pending)
     (cl-letf (((symbol-function 'float-time) (lambda (&optional _time) clock))
@@ -1834,7 +1834,7 @@
                                         (e-runtime-store--scheduler-generation store))
       (should (eq (e-runtime-store-request--result queued) :continued)))
     (should (= transitions 1))
-    (should (memq queued (e-runtime-store--write-queue store)))
+    (should (memq queued (e-runtime-store--client-queue store)))
     (should (equal (plist-get (cddr (car causes)) :request-id) "active:1"))))
 
 (ert-deftest e-runtime-store-s92-definitive-worker-error-stays-local ()
@@ -1994,10 +1994,10 @@
     (should (= (logand (file-modes directory) #o777) #o700))))
 
 (ert-deftest e-runtime-store-s2-bounded-large-response-frames-remain-exact ()
-  "A multi-megabyte row flushes as one response without more stdin."
+  "A large legal row flushes as one response without more stdin."
   (let ((e-runtime-store-request-timeout 15.0))
     (e-runtime-store-test--with-store (store directory)
-      (let* ((large (make-string (* 3 1024 1024) ?x))
+      (let* ((large (make-string (* 512 1024) ?x))
              (records (vector (list :id 0 :content large)
                               '(:id 1 :content "tail"))))
         (e-runtime-store-call
@@ -2088,7 +2088,7 @@ tests can present a raw frame that production would refuse to create."
             (cl-letf (((symbol-function 'e-runtime-store--dispatch-next) #'ignore))
               (let ((request (e-runtime-store-submit store 'write body)))
                 (should (eq (e-runtime-store-request--state request) 'queued))
-                (should (memq request (e-runtime-store--write-queue store)))
+                (should (memq request (e-runtime-store--client-queue store)))
                 (should (= (string-bytes (e-runtime-store-request--frame request))
                            canonical-limit))))
           (e-runtime-store-test--cancel-store-timers store)
@@ -2105,8 +2105,7 @@ tests can present a raw frame that production would refuse to create."
                 (plist-put (copy-sequence body) :padding
                            (concat (plist-get body :padding) "x")))
                :type 'e-runtime-store-request-too-large)
-              (should-not (e-runtime-store--write-queue store))
-              (should-not (e-runtime-store--read-queue store))
+              (should-not (e-runtime-store--client-queue store))
               (should (= (hash-table-count (e-runtime-store--pending store)) 0)))
           (e-runtime-store-test--cancel-store-timers store)
           (e-runtime-store-test--assert-no-store-timers store))))))
@@ -2249,7 +2248,7 @@ tests can present a raw frame that production would refuse to create."
     (e-runtime-store--fail-request store failed
                                    '(e-runtime-store-error "local failure"))
     (should-not (e-runtime-store-request--frame failed))
-    (setf (e-runtime-store--write-queue store) (list cancelled))
+    (setf (e-runtime-store--client-queue store) (list cancelled))
     (should (eq (e-runtime-store-cancel store cancelled) 'dropped))
     (should-not (e-runtime-store-request--frame cancelled))))
 
@@ -2313,7 +2312,8 @@ tests can present a raw frame that production would refuse to create."
       ;; DP5A leaves the bounded transport request scheduler-owned while the
       ;; timer advances DP4 replacement; a caller/filter does not settle it.
       (should (eq (e-runtime-store-request--state request) 'submitted))
-      (should (= (e-runtime-store--recovery-attempt overflow-store) 1)))))
+      (should (= (e-runtime-store--recovery-attempt overflow-store) 1))
+      (e-runtime-store-test--cancel-store-timers overflow-store))))
 
 (ert-deftest e-runtime-store-s92-c04-overflow-read-is-correlated-write-is-fatal ()
   "A large read gets a small typed response; a write acknowledgement cannot."
@@ -2490,7 +2490,7 @@ tests can present a raw frame that production would refuse to create."
         (e-runtime-store-test--fire-current-scheduler store)
         (should (= starts 1))
         (should (= opens 1))
-        (should (memq request (e-runtime-store--write-queue store)))))
+        (should (memq request (e-runtime-store--client-queue store)))))
       (e-runtime-store-test--cancel-store-timers store)
       (e-runtime-store-test--assert-no-store-timers store))))
 
@@ -2506,16 +2506,18 @@ tests can present a raw frame that production would refuse to create."
          (recoveries 0))
     (puthash (e-runtime-store-request--id request) request
              (e-runtime-store--pending store))
-    (cl-letf (((symbol-function 'float-time) (lambda (&optional _time) clock))
-              ((symbol-function 'sit-for) (lambda (&rest _args) nil))
-              ((symbol-function 'e-runtime-store--recover-or-fail)
-               (lambda (_store _cause) (cl-incf recoveries))))
-      (should-error (e-runtime-store-await store request 1.0)
-                    :type 'e-runtime-store-timeout)
-      (should (= recoveries 0))
-      (e-runtime-store--scheduler-fired store
-                                        (e-runtime-store--scheduler-generation store))
-      (should (= recoveries 1)))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _time) clock))
+                  ((symbol-function 'sit-for) (lambda (&rest _args) nil))
+                  ((symbol-function 'e-runtime-store--recover-or-fail)
+                   (lambda (_store _cause) (cl-incf recoveries))))
+          (should-error (e-runtime-store-await store request 1.0)
+                        :type 'e-runtime-store-timeout)
+          (should (= recoveries 0))
+          (e-runtime-store--scheduler-fired
+           store (e-runtime-store--scheduler-generation store))
+          (should (= recoveries 1)))
+      (e-runtime-store-test--cancel-store-timers store))))
 
 (ert-deftest e-runtime-store-s92-c06-terminal-observer-is-local-and-one-shot ()
   "Observer failure occurs outside settlement and cannot poison the store."
@@ -2787,7 +2789,7 @@ tests can present a raw frame that production would refuse to create."
                                      :body '(:op status) :state 'queued
                                      :admitted-at 0.0)))
          (store (e-runtime-store--create :runtime-id "expiry"
-                                         :read-queue requests
+                                         :client-queue requests
                                          :pending (make-hash-table :test 'equal)))
          heartbeat heartbeat-timer)
     (unwind-protect
@@ -2802,7 +2804,7 @@ tests can present a raw frame that production would refuse to create."
                                             (e-runtime-store--scheduler-generation store))
           (should (= 16 (cl-count 'failed requests
                                   :key #'e-runtime-store-request--state)))
-          (should (= 1 (length (e-runtime-store--read-queue store))))
+          (should (= 1 (length (e-runtime-store--client-queue store))))
           (sit-for 0.02)
           (should heartbeat)
           (sit-for 0.02)
@@ -2830,7 +2832,7 @@ tests can present a raw frame that production would refuse to create."
                       :id "start:open" :kind 'open :state 'submitted))
                (store (e-runtime-store--create
                        :runtime-id "start" :active-request open
-                       :starting-request stale :write-queue (delq nil (list stale next))
+                       :starting-request stale :client-queue (delq nil (list stale next))
                        :process 'test-process :pending (make-hash-table :test 'equal)))
                scheduled)
           (cl-letf (((symbol-function 'e-runtime-store--schedule)
@@ -2887,7 +2889,7 @@ tests can present a raw frame that production would refuse to create."
                     :submitted-at 0.0))
              (store (e-runtime-store--create
                      :runtime-id "startup" :active-request open
-                     :starting-request stale :write-queue (list stale next)
+                     :starting-request stale :client-queue (list stale next)
                      :pending (make-hash-table :test 'equal))))
         (puthash (e-runtime-store-request--id open) open
                  (e-runtime-store--pending store))
@@ -2914,7 +2916,7 @@ tests can present a raw frame that production would refuse to create."
                 (should (eq (plist-get (cddr error) :kind) 'write))
                 (should (equal (plist-get (cddr error) :request-id) "startup:next")))
               (should-not (e-runtime-store--starting-request store))
-              (should (e-runtime-store--unavailable store)))
+              (should-not (e-runtime-store--unavailable store)))
           (e-runtime-store-test--cancel-store-timers store)
           (e-runtime-store-test--assert-no-store-timers store))))))
 

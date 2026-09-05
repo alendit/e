@@ -19,11 +19,13 @@
 (require 'e-board-runtime)
 (require 'e-board-session-association)
 (require 'e-board-orchestration)
+(require 'e-board-storage-sqlite)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
 (require 'e-session-board-policy)
+(require 'e-work)
 (require 'seq)
 (require 'subr-x)
 
@@ -226,7 +228,21 @@
   observer-drain-scheduled pending-input-head pending-input-tail turn-map
   input-sequence default-tags default-to idle-close-timer
   message-projection activity-projection lifecycle-generation
-  observer-drain-timer lifecycle-state)
+  observer-drain-timer lifecycle-state readiness-work first-persistence-error
+  pending-delivery-head pending-delivery-tail)
+
+(cl-defstruct (e-chat-service-create-operation
+               (:constructor e-chat-service--create-operation-create))
+  work store session-id board-storage binding session-committed error)
+
+(defconst e-chat-service--create-operation-spec
+  (e-work-spec-create
+   :id "chat-session-create" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (_work operation _context)
+     (e-chat-service--start-create-operation operation)
+     :deferred)))
 
 (cl-defstruct (e-chat-service-projection
                (:constructor e-chat-service--projection-create))
@@ -1099,12 +1115,15 @@ so a sibling cannot settle a selected binding through a malformed projection."
 (defun e-chat-service--schedule-subscription-drain (subscription)
   "Schedule one later bounded independent observer drain for SUBSCRIPTION."
   (let* ((binding (e-chat-service-subscription-binding subscription))
+         (readiness (e-chat-service-binding-readiness-work binding))
          (binding-generation
           (or (e-chat-service-binding-lifecycle-generation binding) 0))
          (subscription-generation
           (or (e-chat-service-subscription-lifecycle-generation subscription)
               0)))
-    (when (and (e-chat-service-subscription-active-p subscription)
+    (when (and (or (null readiness)
+                   (eq (plist-get (e-work-status readiness) :state) 'finished))
+               (e-chat-service-subscription-active-p subscription)
                (not (e-chat-service-subscription-drain-scheduled subscription)))
       (setf (e-chat-service-subscription-drain-scheduled subscription) t
             (e-chat-service-subscription-drain-timer subscription)
@@ -1339,6 +1358,44 @@ resolved participant identity so restart never needs shell or caller policy."
               (list "Legacy board participant has no complete routing policy"
                     (plist-get session :id)))))))
 
+(defun e-chat-service--deliver-or-defer-pending-session
+    (binding attachment pickup message)
+  "Deliver PICKUP, or retain its id on BINDING until session readiness."
+  (let ((work (and binding (e-chat-service-binding-readiness-work binding))))
+    (if (and work
+             (not (memq (plist-get (e-work-status work) :state)
+                        '(finished failed cancelled))))
+        (let ((delivery-id (e-board-pickup-delivery-id pickup)))
+          (unless (member delivery-id
+                          (e-chat-service-binding-pending-delivery-head binding))
+            (let ((cell (list (copy-tree delivery-id))))
+              (if (e-chat-service-binding-pending-delivery-tail binding)
+                  (setcdr (e-chat-service-binding-pending-delivery-tail binding)
+                          cell)
+                (setf (e-chat-service-binding-pending-delivery-head binding)
+                      cell))
+              (setf (e-chat-service-binding-pending-delivery-tail binding) cell)))
+          (list :deferred 'session-admission-pending))
+      (e-board-runtime-deliver-to-harness attachment pickup message))))
+
+(defun e-chat-service--drain-pending-session-deliveries (binding)
+  "Resume BINDING's application-owned pending pickup ids once."
+  (let ((delivery-ids
+         (e-chat-service-binding-pending-delivery-head binding)))
+    (setf (e-chat-service-binding-pending-delivery-head binding) nil
+          (e-chat-service-binding-pending-delivery-tail binding) nil)
+    (when delivery-ids
+      (e-board-runtime-resume-pickup-deliveries
+       (e-chat-service-binding-board binding) delivery-ids))))
+
+(defun e-chat-service--publish-ready-binding (binding)
+  "Release BINDING's presentation and delivery gates after readiness."
+  (dolist (subscription
+           (copy-sequence (e-chat-service-binding-subscribers binding)))
+    (e-chat-service--schedule-subscription-drain subscription))
+  (e-chat-service--schedule-observer-drain binding)
+  (e-chat-service--drain-pending-session-deliveries binding))
+
 (cl-defun e-chat-service--install-participant-binding
     (board harness session-id &key principal participant-id
            (pickup-selector '(:tags (main)))
@@ -1366,11 +1423,19 @@ resolved participant identity so restart never needs shell or caller policy."
                           (e-board-runtime-reattach
                            board harness session-id participant-id
                            :principal principal :controller principal
-                           :author "e-chat")
+                           :author "e-chat"
+                           :delivery-function
+                           (lambda (current pickup message)
+                             (e-chat-service--deliver-or-defer-pending-session
+                              binding current pickup message)))
                         (e-board-runtime-attach
                          board harness session-id :participant-id participant-id
                          :principal principal :controller principal
                          :author "e-chat"
+                         :delivery-function
+                         (lambda (current pickup message)
+                           (e-chat-service--deliver-or-defer-pending-session
+                            binding current pickup message))
                          :defer-participant-publication
                          defer-participant-publication)))
                 (setq participant
@@ -1490,6 +1555,138 @@ resolved participant identity so restart never needs shell or caller policy."
                (e-board-registry-participant-missing nil)))
           (e-chat-service--install-participant-binding
            board harness session-id :principal principal)))))
+
+(defun e-chat-service--settle-create-operation (operation)
+  "Settle OPERATION once all admitted session and Board writes finish."
+  (let ((work (e-chat-service-create-operation-work operation))
+        (error (e-chat-service-create-operation-error operation))
+        (storage (e-chat-service-create-operation-board-storage operation))
+        (binding (e-chat-service-create-operation-binding operation)))
+    (cond
+     ((and error
+           (not (memq (plist-get (e-work-status work) :state)
+                      '(finished failed cancelled))))
+      (e-work-fail work error))
+     ((and (e-chat-service-create-operation-session-committed operation)
+           (zerop (e-board-storage--pending-count storage))
+           (not (memq (plist-get (e-work-status work) :state)
+                      '(finished failed cancelled))))
+      (e-work-finish
+       work
+       (e-session-get (e-chat-service-create-operation-store operation)
+                      (e-chat-service-create-operation-session-id operation)))
+      (when binding
+        (e-chat-service--publish-ready-binding binding))))))
+
+(defun e-chat-service--note-create-board-settlement
+    (operation _storage _result error)
+  "Observe one Board settlement belonging to create OPERATION."
+  (when (and error (null (e-chat-service-create-operation-error operation)))
+    (setf (e-chat-service-create-operation-error operation) (copy-tree error))
+    (when-let* ((binding (e-chat-service-create-operation-binding operation)))
+      (setf (e-chat-service-binding-first-persistence-error binding)
+            (copy-tree error))))
+  (e-chat-service--settle-create-operation operation))
+
+(defun e-chat-service--start-create-operation (operation)
+  "Build OPERATION's local binding and enqueue its durable writes."
+  (let* ((store (e-chat-service-create-operation-store operation))
+         (harness (plist-get (e-work-handle-arguments
+                              (e-chat-service-create-operation-work operation))
+                             :harness))
+         (metadata (plist-get (e-work-handle-arguments
+                               (e-chat-service-create-operation-work operation))
+                              :metadata))
+         (session-id (e-chat-service-create-operation-session-id operation))
+         (principal (format "chat:%s" session-id))
+         (board (e-board-registry-create :principal principal))
+         (board-id (e-board-registry-board-id board))
+         (source (e-board-registry-board-source-board board))
+         (storage
+          (e-board-storage-sqlite-create-async
+           (e-session-storage-runtime-store store))))
+    (setf (e-chat-service-create-operation-board-storage operation) storage)
+    (e-board-storage-set-settlement-function
+     storage (lambda (current result error)
+               (e-chat-service--note-create-board-settlement
+                operation current result error)))
+    ;; Root admission is first in the shared FIFO.  The local Board starts at
+    ;; the same generation/revision immediately after successful enqueue.
+    (e-board-storage-create-board
+     storage board-id principal (list :board-id board-id))
+    (setf (e-board-storage source) storage
+          (e-board-generation source) 1
+          (e-board-revision source) 1)
+    (let* ((participant-id (e-board-registry-allocate-participant-id board))
+           (routing-policy
+            (e-chat-service--routing-policy
+             participant-id '(:tags (main)) '(:tags (main)) '(main) nil))
+           (session
+            (e-session-create-board-admission
+             store :id session-id :metadata metadata :principal principal
+             :board-id board-id
+             :association-role e-chat-service--board-role-root
+             :routing-policy routing-policy))
+           (records (plist-get session :admission-records))
+           (binding
+            (e-chat-service--install-participant-binding
+             board harness session-id :principal principal
+             :participant-id participant-id
+             :pickup-selector (plist-get routing-policy :pickup-selector)
+             :observer-selector (plist-get routing-policy :observer-selector)
+             :default-tags (plist-get routing-policy :default-tags)
+             :default-to (plist-get routing-policy :default-to))))
+      (setf (e-chat-service-create-operation-binding operation) binding
+            (e-chat-service-binding-readiness-work binding)
+            (e-chat-service-create-operation-work operation))
+      (e-session-storage-submit-owned
+       store session-id
+       (list :op 'session-append-batch :session-id session-id
+             :records (vconcat records))
+       (lambda (_result error)
+         (if error
+             (progn
+               (unless (e-chat-service-create-operation-error operation)
+                 (setf (e-chat-service-create-operation-error operation)
+                       (copy-tree error)))
+               (setf (e-chat-service-binding-first-persistence-error binding)
+                     (copy-tree error)))
+           (e-session-aggregate-commit-board-admission store session-id)
+           (setf (e-chat-service-create-operation-session-committed operation) t))
+         (e-chat-service--settle-create-operation operation))))))
+
+(cl-defun e-chat-service-create-session-start (&key harness metadata id)
+  "Start durable chat session creation and return a stable `e-work'."
+  (let* ((harness (or harness (e-chat-service-default-harness)))
+         (store (e-harness-sessions harness))
+         (session-id (or id (e-session-generate-id))))
+    (if (not (e-session-storage-sqlite-p store))
+        (e-work-start
+         (e-work-spec-create
+          :id "chat-session-create-ephemeral" :execution 'cheap
+          :interactive-policy 'async :owner 'e-chat-service
+          :runner (lambda (_arguments _context)
+                    (e-chat-service-create-session
+                     :harness harness :metadata metadata :id session-id)))
+         nil :context (list :domain-ref session-id
+                            :work-kind 'chat-session-create))
+      (let* ((operation
+              (e-chat-service--create-operation-create
+               :store store :session-id session-id))
+             (arguments
+              (list :harness harness
+                    :metadata (e-harness--normalize-session-metadata metadata)))
+             (work
+              (e-work-prepare
+               e-chat-service--create-operation-spec arguments
+               :context (list :domain-ref session-id
+                              :work-kind 'chat-session-create))))
+        (setf (e-chat-service-create-operation-work operation) work
+              (e-work-handle-arguments work) arguments)
+        ;; The operation itself is the cooperative runner argument; HARNESS
+        ;; and detached metadata remain on the work until local admission.
+        (e-work-start-prepared work :arguments operation)
+        work))))
 
 (cl-defun e-chat-service-create-board (&key harness metadata id)
   "Create a top-level board with one main participant and return its binding."
@@ -1724,11 +1921,17 @@ LIMIT defaults to the registry's fixed page bound."
 
 (cl-defun e-chat-service-create-session (&key harness metadata id)
   "Create a new board's main participant and return its private session record."
-  (let ((binding (e-chat-service-create-board
-                  :harness harness :metadata metadata :id id)))
-    (e-session-get
-     (e-harness-sessions (e-chat-service-binding-harness binding))
-     (e-chat-service-binding-session-id binding))))
+  (let* ((harness (or harness (e-chat-service-default-harness)))
+         (store (e-harness-sessions harness)))
+    (if (e-session-storage-sqlite-p store)
+        (e-work-with-batch-await
+          (e-work-await-batch
+           (e-chat-service-create-session-start
+            :harness harness :metadata metadata :id id)))
+      (let ((binding (e-chat-service-create-board
+                      :harness harness :metadata metadata :id id)))
+        (e-session-get store
+                       (e-chat-service-binding-session-id binding))))))
 
 (defun e-chat-service-ensure-binding (harness session-id)
   "Return HARNESS SESSION-ID's board binding, creating it when needed."

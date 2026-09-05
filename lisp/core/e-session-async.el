@@ -831,8 +831,8 @@ an error or quit in any completion action therefore cannot lose publication."
                   (e-session-async--operation-state operation) 'submitted)
             ;; DP5A accepts composition escrow before returning a submission.
             (let ((submitted
-                   (e-session-storage-submit
-                    store 'write body
+                   (e-session-storage-submit-owned
+                    store (e-session-async--operation-session-id operation) body
                     (lambda (result error)
                       (e-session-async--storage-settled operation result error))
                     (e-session-async--operation-frame-escrow operation))))

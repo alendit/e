@@ -58,6 +58,14 @@
   'e-runtime-store-worker-error)
 (define-error 'e-runtime-store-migration-required
   "Offline runtime migration is required" 'e-runtime-store-error)
+(define-error 'e-runtime-store-persistence-suspect
+  "Runtime store owner persistence is suspect" 'e-runtime-store-error)
+
+(defconst e-runtime-store-owner-diagnostic-byte-limit 1024
+  "Maximum retained UTF-8 bytes in one owner-local failure diagnostic.")
+
+(defconst e-runtime-store-owner-domains '(session board)
+  "Domains permitted to attach private optimistic-mutation owner keys.")
 
 (defcustom e-runtime-store-request-timeout 60.0
   "Maximum seconds for each bounded runtime-store request phase.
@@ -108,8 +116,9 @@ request/token budget so a full cold queue can still become ready.")
                (:predicate e-runtime-store-p)
                (:conc-name e-runtime-store--))
   directory database-file runtime-id process opened-process stderr-buffer input-fragment
-  (sequence 0) pending write-queue read-queue active-request
+  (sequence 0) pending client-queue active-request
   starting-request last-error unavailable-cause startup-status unavailable closed
+  suspect-owners
   recovering-request recovery-cause (recovery-attempt 0) (acknowledged-write-prefix 0)
   (write-prefix-sequence 0)
   open-control-request
@@ -122,7 +131,8 @@ request/token budget so a full cold queue can still become ready.")
                (:constructor e-runtime-store-request--create)
                (:predicate e-runtime-store-request-p)
                (:conc-name e-runtime-store-request--))
-  id kind body frame state result error admitted-at submitted-at write-prefix
+  id kind body frame state result error admitted-at submitted-at timeout-interval
+  write-prefix owner-key
   operation frame-bytes retained-bytes notification observer observer-detached
   frame-escrow)
 
@@ -195,7 +205,8 @@ nor a notification token."
       (let* ((request
               (e-runtime-store-request--create
                :id (e-runtime-store--next-id store "open") :kind 'open
-               :body nil :state 'submitted :submitted-at (float-time)))
+               :body nil :state 'submitted :submitted-at (float-time)
+               :timeout-interval e-runtime-store-request-timeout))
              (value (e-runtime-store--open-control-frame store request))
              (bytes (e-runtime-store-codec-measure-bounded
                      value e-runtime-store-open-control-canonical-byte-limit))
@@ -294,7 +305,11 @@ and the current queue head is selected instead."
   (let ((selected (e-runtime-store--starting-request store)))
     (if (and selected (e-runtime-store--queued-request-p store selected))
         selected
-      (e-runtime-store--next-queued-request store))))
+      (or (e-runtime-store--next-queued-request store)
+          (let ((closing (e-runtime-store--closing-request store)))
+            (and closing
+                 (eq (e-runtime-store-request--state closing) 'queued)
+                 closing))))))
 
 (defun e-runtime-store--failure-request (store &optional fallback)
   "Return the request whose identity explains STORE's current failure.
@@ -554,7 +569,13 @@ continues to own its own admission reservation."
     (let ((err (condition-case caught
                    (e-runtime-store--signal-response-error response)
                  (error caught))))
-      (e-runtime-store--fail-request store request err)))
+      (if (and (eq (e-runtime-store-request--kind request) 'write)
+               (e-runtime-store-request--owner-key request))
+          ;; A valid, correlated negative response is a domain failure, not a
+          ;; transport incident.  Partition this optimistic owner while keeping
+          ;; the healthy process and unrelated FIFO entries in place.
+          (e-runtime-store--partition-owner-failure store request err t)
+        (e-runtime-store--fail-request store request err))))
   (unless (eq (e-runtime-store-request--kind request) 'close)
     (setf (e-runtime-store-request--frame request) nil
           (e-runtime-store-request--frame-bytes request) nil))
@@ -618,16 +639,16 @@ continues to own its own admission reservation."
         (if selected
             (progn
               (setf (e-runtime-store--starting-request store) selected)
-              (e-runtime-store--fail-all
-               store
+              (e-runtime-store--partition-owner-failure
+               store selected
                (e-runtime-store--startup-error
                 selected (e-runtime-store-request--error request))))
           ;; A cold open has no selected domain request to explain failure.
           ;; Its own typed worker result is still terminal: retaining an
           ;; unowned opening state would leave compatibility observers and
           ;; close teardown waiting until a phase timeout.
-          (e-runtime-store--fail-all store
-                                     (e-runtime-store-request--error request)))))
+          (e-runtime-store--partition-owner-failure
+           store nil (e-runtime-store-request--error request)))))
     (e-runtime-store--schedule store t))
    ((eq (e-runtime-store-request--kind request) 'close)
     (e-runtime-store--schedule-close-finalization store))
@@ -735,8 +756,7 @@ continues to own its own admission reservation."
                                 (e-runtime-store--active-request store)
                                 (e-runtime-store--open-control-request store)
                                 (e-runtime-store--closing-request store))
-                          (e-runtime-store--write-queue store)
-                          (e-runtime-store--read-queue store)
+                          (e-runtime-store--client-queue store)
                           pending-requests))
             :test #'eq)))
       (unless (e-runtime-store--unavailable-cause store)
@@ -744,8 +764,7 @@ continues to own its own admission reservation."
       (setf (e-runtime-store--active-request store) nil
             (e-runtime-store--starting-request store) nil
             (e-runtime-store--open-control-request store) nil
-            (e-runtime-store--write-queue store) nil
-            (e-runtime-store--read-queue store) nil
+            (e-runtime-store--client-queue store) nil
             (e-runtime-store--opened-process store) nil
             (e-runtime-store--unavailable store) t
             (e-runtime-store--last-error store) error)
@@ -753,6 +772,136 @@ continues to own its own admission reservation."
         (unless (memq (e-runtime-store-request--state request)
                       '(committed failed cancelled))
           (e-runtime-store--fail-request store request error))))))
+
+(defun e-runtime-store--utf8-prefix (string limit)
+  "Return the longest prefix of STRING occupying at most LIMIT UTF-8 bytes."
+  (if (<= (string-bytes string) limit)
+      string
+    (let ((low 0) (high (length string)))
+      (while (< low high)
+        (let ((mid (/ (+ low high 1) 2)))
+          (if (<= (string-bytes (substring string 0 mid)) limit)
+              (setq low mid)
+            (setq high (1- mid)))))
+      (substring string 0 low))))
+
+(defun e-runtime-store--bounded-diagnostic (cause)
+  "Return CAUSE's first diagnostic bounded to 1,024 UTF-8 bytes."
+  (e-runtime-store--utf8-prefix
+   (let ((print-circle t) (print-level 6) (print-length 32))
+     (condition-case nil
+         (error-message-string cause)
+       (error "Runtime-store persistence failed")))
+   e-runtime-store-owner-diagnostic-byte-limit))
+
+(defun e-runtime-store--copy-owner-key (owner-key)
+  "Return a detached copy of bounded OWNER-KEY, or nil."
+  (and owner-key
+       (cons (car owner-key) (copy-sequence (cdr owner-key)))))
+
+(defun e-runtime-store--owner-first-error (request cause)
+  "Return REQUEST's bounded first terminal error derived from CAUSE."
+  ;; Do not retain arbitrary worker/transport error data: it may contain a
+  ;; payload-sized string or a caller-owned container.  The condition type and
+  ;; request correlation remain exact, while the only free-form value is the
+  ;; bounded detached diagnostic.
+  (let ((type (if (and (consp cause) (symbolp (car cause))
+                       (get (car cause) 'error-conditions))
+                  (car cause)
+                'e-runtime-store-error)))
+    (list type (e-runtime-store--bounded-diagnostic cause)
+          :operation (e-runtime-store--request-operation request)
+          :kind (and request (e-runtime-store-request--kind request))
+          :request-id (and request (e-runtime-store-request--id request)))))
+
+(defun e-runtime-store--owner-successor-error (request cause)
+  "Return REQUEST's typed owner-fence error derived from first CAUSE."
+  (list 'e-runtime-store-persistence-suspect
+        "Persistence is suspect after an earlier owner mutation failed"
+        :operation (e-runtime-store--request-operation request)
+        :kind (e-runtime-store-request--kind request)
+        :request-id (e-runtime-store-request--id request)
+        :owner-key
+        (e-runtime-store--copy-owner-key
+         (e-runtime-store-request--owner-key request))
+        :first-diagnostic
+        (copy-sequence (e-runtime-store--bounded-diagnostic cause))))
+
+(defun e-runtime-store--partition-owner-failure
+    (store request cause &optional preserve-worker-p)
+  "Fail REQUEST and same-owner successors, retaining unrelated FIFO entries.
+
+Nil owner keys never group: a nil-key read or non-optimistic operation fails
+only itself.  Every terminal client still passes through `--fail-request', so
+its pre-reserved notification token remains owned until isolated delivery.
+When PRESERVE-WORKER-P is non-nil, CAUSE is a correlated negative response:
+the healthy worker and already-consumed input remainder stay authoritative."
+  (let* ((owner-key (and request (e-runtime-store-request--owner-key request)))
+         ;; Only optimistic session/Board owners need the bounded detached
+         ;; diagnostic retained by the owner fence.  Transport control,
+         ;; startup, close, and reads have no owner key; preserve their exact
+         ;; first cause for the existing recovery contract.
+         (first-error (and request
+                           (if owner-key
+                               (e-runtime-store--owner-first-error request cause)
+                             cause)))
+         (active (e-runtime-store--active-request store))
+         (open (and active
+                    (eq (e-runtime-store-request--kind active) 'open)
+                    active))
+         kept successors)
+    (dolist (queued (e-runtime-store--client-queue store))
+      (cond
+       ((eq queued request) nil)
+       ((and owner-key
+             (equal owner-key (e-runtime-store-request--owner-key queued)))
+        (push queued successors))
+       (t (push queued kept))))
+    (when owner-key
+      (unless (hash-table-p (e-runtime-store--suspect-owners store))
+        (setf (e-runtime-store--suspect-owners store)
+              (make-hash-table :test #'equal)))
+      (unless (gethash owner-key (e-runtime-store--suspect-owners store))
+        (puthash (e-runtime-store--copy-owner-key owner-key)
+                 (copy-sequence
+                  (e-runtime-store--bounded-diagnostic
+                   (or first-error cause)))
+                 (e-runtime-store--suspect-owners store))))
+    (setf (e-runtime-store--client-queue store) (nreverse kept)
+          (e-runtime-store--starting-request store) nil
+          (e-runtime-store--recovering-request store) nil
+          (e-runtime-store--recovery-cause store) nil
+          (e-runtime-store--recovery-attempt store) 0
+          (e-runtime-store--active-request store) nil
+          (e-runtime-store--last-error store) (or first-error cause))
+    (unless preserve-worker-p
+      (setf (e-runtime-store--opened-process store) nil
+            (e-runtime-store--input-fragment store) ""))
+    (when open
+      (e-runtime-store--release-open-control store open)
+      (setf (e-runtime-store-request--state open) 'failed
+            (e-runtime-store-request--error open) cause))
+    (when (and request (e-runtime-store--request-live-p request))
+      (e-runtime-store--fail-request
+       store request first-error))
+    (dolist (successor (nreverse successors))
+      (e-runtime-store--fail-request
+       store successor (e-runtime-store--owner-successor-error successor cause)))
+    ;; Real transport processes must be detached before the retained FIFO can
+    ;; restart.  Synthetic scheduler fixtures use non-process sentinels; do
+    ;; not count those as another physical fence after recovery exhaustion.
+    (when (and (not preserve-worker-p)
+               (processp (e-runtime-store--process store)))
+      (e-runtime-store--fence-worker store))
+    (unless preserve-worker-p
+      (setf (e-runtime-store--process store) nil))
+    ;; Replacement is demand-driven: a retained unrelated head restarts now;
+    ;; an empty queue stays idle until a later submission schedules it.
+    (cond
+     ((and request (eq (e-runtime-store-request--kind request) 'close))
+      (e-runtime-store--schedule-close-finalization store))
+     ((e-runtime-store--client-queue store)
+      (e-runtime-store--schedule store t)))))
 
 (defun e-runtime-store--freeze-and-stop (store error)
   "Freeze STORE with ERROR and stop its worker without processing more output."
@@ -780,11 +929,11 @@ Old filter and sentinel callbacks must not settle a replayed request."
         (delete-process process)))))
 
 (defun e-runtime-store--recovery-exhausted (store cause)
-  "Fail STORE's owned work once, preserving the original recovery CAUSE."
-  (let ((first (or (e-runtime-store--recovery-cause store) cause)))
-    (setf (e-runtime-store--recovering-request store) nil
-          (e-runtime-store--recovery-cause store) nil)
-    (e-runtime-store--freeze-and-stop store first)))
+  "Partition one owner after recovery exhausts, preserving the first CAUSE."
+  (let ((first (or (e-runtime-store--recovery-cause store) cause))
+        (request (or (e-runtime-store--recovering-request store)
+                     (e-runtime-store--failure-request store))))
+    (e-runtime-store--partition-owner-failure store request first)))
 
 (defun e-runtime-store--recover-active (store cause)
   "Replace STORE's worker once and replay its exact retained active frame.
@@ -837,16 +986,18 @@ whether the mutation already committed.  Reads are safe to retry directly."
     ;; queue owner receives the typed startup cause; replay is only for an
     ;; already submitted domain request or a replacement open above.
     (let ((selected (e-runtime-store--startup-request store)))
-      (e-runtime-store--freeze-and-stop
-       store
-       (if selected
-           (e-runtime-store--startup-error selected error)
-         error))))
+      (if selected
+          (e-runtime-store--partition-owner-failure
+           store selected (e-runtime-store--startup-error selected error))
+        ;; No client owns a cold-open attempt.  Retire only the transport
+        ;; control and remain restartable for the next submission.
+        (e-runtime-store--partition-owner-failure store nil error))))
    ((and (e-runtime-store--active-request store)
          (eq (e-runtime-store-request--state
               (e-runtime-store--active-request store)) 'submitted))
     (e-runtime-store--recover-active store error))
-   (t (e-runtime-store--freeze-and-stop store error))))
+   (t (e-runtime-store--partition-owner-failure
+       store (e-runtime-store--failure-request store) error))))
 
 (defun e-runtime-store--worker-exited (store)
   "Recover one submitted request after worker loss when possible."
@@ -929,10 +1080,11 @@ whether the mutation already committed.  Reads are safe to retry directly."
            (if (e-runtime-store--recovering-request store)
                (e-runtime-store--recovery-exhausted
                 store (or (e-runtime-store--recovery-cause store) send-error))
-             (e-runtime-store--freeze-and-stop
-              store (if selected
-                        (e-runtime-store--startup-error selected send-error)
-                      send-error)))))))))
+             (e-runtime-store--partition-owner-failure
+              store selected
+              (if selected
+                  (e-runtime-store--startup-error selected send-error)
+                send-error)))))))))
 
 (defun e-runtime-store--next-id (store prefix)
   "Return STORE's next process-local protocol id with PREFIX."
@@ -1063,15 +1215,12 @@ wrapper."
 (defun e-runtime-store--queued-request-p (store request)
   "Return non-nil when REQUEST remains scheduler-owned in STORE's queues."
   (and (eq (e-runtime-store-request--state request) 'queued)
-       (or (memq request (e-runtime-store--write-queue store))
-           (memq request (e-runtime-store--read-queue store)))))
+       (memq request (e-runtime-store--client-queue store))))
 
 (defun e-runtime-store--remove-queued-request (store request)
   "Remove REQUEST from STORE's scheduler queues and return REQUEST."
-  (setf (e-runtime-store--write-queue store)
-        (delq request (e-runtime-store--write-queue store))
-        (e-runtime-store--read-queue store)
-        (delq request (e-runtime-store--read-queue store)))
+  (setf (e-runtime-store--client-queue store)
+        (delq request (e-runtime-store--client-queue store)))
   (when (eq request (e-runtime-store--starting-request store))
     (setf (e-runtime-store--starting-request store) nil))
   request)
@@ -1085,19 +1234,21 @@ wrapper."
 
 (defun e-runtime-store--next-queued-request (store)
   "Return STORE's next request without releasing scheduler ownership."
-  (or (car (e-runtime-store--write-queue store))
-      (car (e-runtime-store--read-queue store))))
+  (car (e-runtime-store--client-queue store)))
 
 (defun e-runtime-store--scheduler-deadline (store)
   "Return STORE's earliest owned phase deadline, or nil when idle."
   (let ((active (e-runtime-store--active-request store)) deadlines)
     (when (and active (eq (e-runtime-store-request--state active) 'submitted))
       (push (e-runtime-store--request-deadline
-             active e-runtime-store-request-timeout) deadlines))
-    (dolist (request (append (e-runtime-store--write-queue store)
-                             (e-runtime-store--read-queue store)))
+             active (or (e-runtime-store-request--timeout-interval active)
+                        e-runtime-store-request-timeout))
+            deadlines))
+    (dolist (request (e-runtime-store--client-queue store))
       (push (e-runtime-store--request-deadline
-             request e-runtime-store-request-timeout) deadlines))
+             request (or (e-runtime-store-request--timeout-interval request)
+                         e-runtime-store-request-timeout))
+            deadlines))
     (when deadlines (apply #'min deadlines))))
 
 (defun e-runtime-store--expire-overdue-queued (store interval)
@@ -1106,17 +1257,26 @@ wrapper."
 Return non-nil when another immediate timer turn is needed."
   (let ((expired 0) more)
     (catch 'page-full
-      (dolist (request (append (copy-sequence (e-runtime-store--write-queue store))
-                               (copy-sequence (e-runtime-store--read-queue store))))
+      (dolist (request (copy-sequence (e-runtime-store--client-queue store)))
     (when (and (e-runtime-store--queued-request-p store request)
-               (>= (float-time) (e-runtime-store--request-deadline request interval)))
-      (e-runtime-store--remove-queued-request store request)
-      (e-runtime-store--fail-request
-       store request
-       (e-runtime-store--request-error
-        'e-runtime-store-timeout
-        "Runtime-store request expired before submission"
-        request :request-state 'queued))
+               (>= (float-time)
+                   (e-runtime-store--request-deadline
+                    request
+                    (or (e-runtime-store-request--timeout-interval request)
+                        interval))))
+      (let ((active (e-runtime-store--active-request store)))
+        (e-runtime-store--remove-queued-request store request)
+        (e-runtime-store--fail-request
+         store request
+         (e-runtime-store--request-error
+          'e-runtime-store-timeout
+          "Runtime-store request expired before submission"
+          request :request-state 'queued
+          :blocking-operation (e-runtime-store--request-operation active)
+          :blocking-kind
+          (and active (e-runtime-store-request--kind active))
+          :blocking-request-id
+          (and active (e-runtime-store-request--id active)))))
       (setq expired (1+ expired))
       (when (>= expired e-runtime-store-notification-drain-limit)
         (setq more t)
@@ -1187,7 +1347,8 @@ choose immediate local finalization without letting the close escape the cap."
                       :id (format "%s:close:%d" (e-runtime-store--runtime-id store)
                                   (1+ (e-runtime-store--sequence store)))
                       :kind 'close :body nil :state 'queued
-                      :admitted-at (float-time))))
+                      :admitted-at (float-time)
+                      :timeout-interval e-runtime-store-request-timeout)))
         ;; This is a client request, not scheduler scaffolding.  Preflight
         ;; measures/reserves the complete immutable close frame and its token
         ;; atomically before publishing closing-request or fencing anything.
@@ -1296,7 +1457,8 @@ increments its generation so stale callbacks are inert."
        ;; started the one permitted recovery attempt.
        (if (e-runtime-store--recovering-request store)
            (e-runtime-store--recovery-exhausted store err)
-         (e-runtime-store--freeze-and-stop store err))))
+         (e-runtime-store--partition-owner-failure
+          store (e-runtime-store--failure-request store) err))))
     (unless (timerp (e-runtime-store--scheduler-timer store))
       (e-runtime-store--schedule store))))
 
@@ -1353,39 +1515,71 @@ increments its generation so stale callbacks are inert."
                    'e-runtime-store-timeout
                    "Worker transport failed after request submission"
                    failure-request :cause err))
-                (e-runtime-store--fail-all
-                 store
+                (e-runtime-store--partition-owner-failure
+                 store failure-request
                  (e-runtime-store--startup-error failure-request err))))))))))
 
-(defun e-runtime-store-submit (store kind body)
-  "Submit typed KIND BODY to STORE and return its request.
-Write identity is also the private durable receipt key used for recovery."
+(defun e-runtime-store--submit-owned (store kind body owner-key &optional escrow)
+  "Submit KIND BODY with private unencoded OWNER-KEY and optional ESCROW.
+
+OWNER-KEY is nil for ordinary reads and non-optimistic operations, or a
+bounded `(DOMAIN . OWNER-ID)' pair supplied by a session/Board adapter.  It is
+retained only on the private request and never enters BODY or the worker frame."
   (unless (memq kind '(read write))
     (signal 'wrong-type-argument (list '(member read write) kind)))
+  (unless (or (null owner-key)
+              (and (eq kind 'write)
+                   (consp owner-key)
+                   (memq (car owner-key) e-runtime-store-owner-domains)
+                   (stringp (cdr owner-key))
+                   (<= (string-bytes (cdr owner-key)) 128)))
+    (signal 'wrong-type-argument
+            (list '(or null (and write (cons (member session board) string)))
+                  owner-key)))
+  ;; Detach the bounded private identity before frame preflight can reserve any
+  ;; request, byte, or notification ownership.  A copy failure is therefore an
+  ;; atomic admission rejection rather than a leaked preflight reservation.
+  (setq owner-key (e-runtime-store--copy-owner-key owner-key))
   (when (e-runtime-store--closed store)
     (signal 'e-runtime-store-unavailable (list "Store is closed")))
   (when (e-runtime-store--unavailable store)
     (e-runtime-store--signal-unavailable store))
+  (when (and owner-key
+             (hash-table-p (e-runtime-store--suspect-owners store))
+             (gethash owner-key (e-runtime-store--suspect-owners store)))
+    (signal 'e-runtime-store-persistence-suspect
+            (list "Persistence is suspect for this owner"
+                  :owner-key (e-runtime-store--copy-owner-key owner-key)
+                  :first-diagnostic
+                  (copy-sequence
+                   (gethash owner-key
+                            (e-runtime-store--suspect-owners store))))))
   (let ((request
          (e-runtime-store-request--create
           :id (e-runtime-store--next-id store
                                          (if (eq kind 'write) "w" "r"))
           :kind kind :body body :state 'queued :admitted-at (float-time)
+          :timeout-interval e-runtime-store-request-timeout
           :write-prefix (and (eq kind 'write)
                              (cl-incf (e-runtime-store--write-prefix-sequence store))))))
     ;; Capture and bound the complete transport frame, including its generated
     ;; correlation id and request envelope, before this request enters either
     ;; scheduler queue.  Later caller mutation cannot change sent bytes.
-    (e-runtime-store--preflight-request store request t)
-    (if (eq kind 'write)
-        (setf (e-runtime-store--write-queue store)
-              (nconc (e-runtime-store--write-queue store) (list request)))
-      (setf (e-runtime-store--read-queue store)
-            (nconc (e-runtime-store--read-queue store) (list request))))
+    (e-runtime-store--preflight-request store request (or escrow t))
+    ;; OWNER-KEY is deliberately private and was detached before reservation;
+    ;; attach it only after successful protocol preflight.
+    (setf (e-runtime-store-request--owner-key request) owner-key)
+    (setf (e-runtime-store--client-queue store)
+          (nconc (e-runtime-store--client-queue store) (list request)))
     ;; Submission stops at bounded ownership transfer.  The zero-delay event
     ;; below runs only after this caller has its stable private handle.
     (e-runtime-store--schedule store t)
     request))
+
+(defun e-runtime-store-submit (store kind body)
+  "Submit typed KIND BODY to STORE and return its request.
+Write identity is also the private durable receipt key used for recovery."
+  (e-runtime-store--submit-owned store kind body nil))
 
 (defun e-runtime-store--submit-with-frame-escrow (store kind body escrow)
   "Submit KIND BODY by transferring one composition-owned frame ESCROW.
@@ -1393,27 +1587,7 @@ Write identity is also the private durable receipt key used for recovery."
 ESCROW is already included in STORE's shared reservation and must dominate the
 exact protocol frame.  This private adapter seam is intentionally separate
 from the stable public `e-runtime-store-submit' ABI."
-  (unless (memq kind '(read write))
-    (signal 'wrong-type-argument (list '(member read write) kind)))
-  (when (e-runtime-store--closed store)
-    (signal 'e-runtime-store-unavailable (list "Store is closed")))
-  (when (e-runtime-store--unavailable store)
-    (e-runtime-store--signal-unavailable store))
-  (let ((request
-         (e-runtime-store-request--create
-          :id (e-runtime-store--next-id store
-                                        (if (eq kind 'write) "w" "r"))
-          :kind kind :body body :state 'queued :admitted-at (float-time)
-          :write-prefix (and (eq kind 'write)
-                             (cl-incf (e-runtime-store--write-prefix-sequence store))))))
-    (e-runtime-store--preflight-request store request escrow)
-    (if (eq kind 'write)
-        (setf (e-runtime-store--write-queue store)
-              (nconc (e-runtime-store--write-queue store) (list request)))
-      (setf (e-runtime-store--read-queue store)
-            (nconc (e-runtime-store--read-queue store) (list request))))
-    (e-runtime-store--schedule store t)
-    request))
+  (e-runtime-store--submit-owned store kind body nil escrow))
 
 (defun e-runtime-store-cancel (store request)
   "Cancel REQUEST before submission.
@@ -1475,7 +1649,10 @@ execution deadline rather than waiting for their own later admission timeout."
   (when-let* ((active (e-runtime-store--active-request store))
               ((eq (e-runtime-store-request--state active) 'submitted))
               ((>= (float-time)
-                   (e-runtime-store--request-deadline active interval))))
+                   (e-runtime-store--request-deadline
+                    active
+                    (or (e-runtime-store-request--timeout-interval active)
+                        interval)))))
     (let* ((request (if (eq (e-runtime-store-request--kind active) 'open)
                         (e-runtime-store--startup-request store)
                       active))
@@ -1501,6 +1678,12 @@ opens, dispatches, expires, recovers, cancels, or settles transport work."
       ;; `sit-for' lets process filters and scheduler timers run, but this
       ;; function does not call a scheduler transition itself.
       (sit-for 0.01))
+    ;; The observer deadline and scheduler-owned phase deadline may be the
+    ;; same instant.  Give an already-due timer one bounded event-loop turn so
+    ;; its authoritative terminal state wins that race; this observer still
+    ;; never invokes or owns a scheduler transition.
+    (when (memq (e-runtime-store-request--state request) '(queued submitted))
+      (sit-for 0.001))
     (pcase (e-runtime-store-request--state request)
       ('committed (e-runtime-store-request--result request))
       ('failed (signal (car (e-runtime-store-request--error request))
@@ -1649,8 +1832,7 @@ be constructed with the private constructor used by scheduler tests."
           :worker-live (and (e-runtime-store--live-p store) t)
           :worker-pid (and (e-runtime-store--live-p store)
                            (process-id (e-runtime-store--process store)))
-          :pending-count (+ (length (e-runtime-store--write-queue store))
-                            (length (e-runtime-store--read-queue store))
+          :pending-count (+ (length (e-runtime-store--client-queue store))
                             (if active 1 0))
           :oldest-age (and active (e-runtime-store-request--submitted-at active)
                            (- (float-time)
@@ -1661,6 +1843,17 @@ be constructed with the private constructor used by scheduler tests."
           (e-runtime-store--request-operation active)
           :unavailable (and (e-runtime-store--unavailable store) t)
           :unavailable-cause (e-runtime-store--unavailable-cause store)
+          :suspect-owners
+          (and (hash-table-p (e-runtime-store--suspect-owners store))
+               (let (owners)
+                 (maphash (lambda (key diagnostic)
+                            (push (list :owner-key
+                                        (e-runtime-store--copy-owner-key key)
+                                        :first-diagnostic
+                                        (copy-sequence diagnostic))
+                                  owners))
+                          (e-runtime-store--suspect-owners store))
+                 (nreverse owners)))
           :last-error (e-runtime-store--last-error store)
           :startup (e-runtime-store--startup-status store))))
 

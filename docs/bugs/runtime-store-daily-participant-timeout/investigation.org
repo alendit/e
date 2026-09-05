@@ -4,10 +4,10 @@
 * Status
 
 DP5A transport substrate, a bounded DP5B session-command foundation, and its
-non-fork durable-mutation expansion are independently accepted; the Daily
-application behavior remains unresolved.  The DP5B work is explicitly opt-in
-and does not yet establish asynchronous fork/resume/finalize/close or the
-default/public Daily path.  The historical
+non-fork durable-mutation expansion are independently accepted.  The minimum
+public new-Daily behavior now passes its isolated graphical repository gate;
+the user's running Emacs and canonical database have not been used to validate
+the correction.  The historical
 post-restart recurrence identified a submitted =catalog-put= whose lost
 acknowledgement killed the shared worker and froze queued Board work.  The
 runtime store now resolves the same durable write identity through an ACID
@@ -34,10 +34,11 @@ acceptance gate is now the public graphical Daily worker-delay/failure scenario.
 DP5A makes runtime-store cold submit, timeout, and recovery settlement
 autonomous; =e-runtime-store-await= observes rather than drives it.  The opt-in
 DP5B per-session coordinator is accepted historical implementation but is not
-the current direction and must be removed or bypassed in default composition.
-The remaining direction is one runtime client FIFO, owner-local suspect
-metadata, and enqueue-return application services; default session and
-Board/chat services still wait inline today.
+the current direction.  The current minimum correction uses one runtime client
+FIFO, owner-local suspect metadata, and enqueue-return session/Board/chat
+composition for public new-Daily open.  Post-hoc quarantine, all-domain
+hot-path migration, generalized lifecycle work, and async participant creation
+remain roadmap items.
 
 #+begin_comment
 The following DP5B detail is historical evidence for accepted commits through
@@ -66,8 +67,8 @@ turn-options/current-branch/name session-info; Board message/state/clear; and
 delete.
 An exhausted post-ACK apply historically retained a counted durable barrier.
 The pragmatic rebaseline does not complete that coordinator, resume barrier, or
-fork/cut protocol; it replaces/bypasses them for default composition.  This
-accepted history does not change the unresolved Daily status.
+fork/cut protocol; it replaces/bypasses them for default composition.  At this
+historical boundary, Daily behavior was still unresolved.
 
 #+end_comment
 
@@ -121,8 +122,8 @@ handle before cold open or acknowledgement, and the runtime-owned timer advances
 open, dispatch, deadline recovery, and settlement without =await=.  DP5A alone
 did not make session, Board, or chat application operations asynchronous.  The
 later accepted DP5B foundation now covers an opt-in subset of session commands;
-the default composition, full C07 grammar, Board/chat lanes, and historical
-Daily behavior remain unresolved.
+at that historical boundary the default composition, full C07 grammar,
+Board/chat lanes, and Daily behavior remained unresolved.
 
 DP5A also bounds scheduler-owned canonical frames and terminal
 notification tokens, releases them on terminal/cancel/close paths, and keeps
@@ -134,8 +135,8 @@ change, a full restart is required to use it.
 
 The accepted DP5A correction also makes cold/idle close scheduler-owned,
 keeps its acknowledgement recovery off an awaiter, and centralizes transport
-reservation release.  This remains transport-only evidence and does not alter
-the unresolved Daily session/Board/chat composition status.
+reservation release.  This remains transport-only evidence; the minimum Daily
+session/Board/chat correction is established separately below.
 
 * Fresh post-restart recurrence
 
@@ -433,9 +434,8 @@ restart to take effect.
 
 * Remaining pragmatic correction
 
-The external worker remains the appropriate SQLite adapter.  The unresolved
-defect is synchronous ownership above it and global failure propagation below
-it.  The minimum correction is:
+The external worker remains the appropriate SQLite adapter.  The formerly
+unresolved minimum Daily correction is now implemented and repository-proven:
 
 - one client FIFO for reads and writes, with internal open remaining
   transport-only control and no default per-owner scheduling/reconciliation;
@@ -476,6 +476,31 @@ inventory plus runtime hot-path guards for indirect adapter injection.
 The primary release gate is the deterministic graphical Daily topology through
 public =e-chat-open=.  CPU percentage, database size, and wall-clock duration
 remain observational.
+
+* Minimum Daily correction evidence
+
+The final focused public graphical scenario passes 1/1 in 1.027 seconds on the
+integrated tree.  It uses the public default session-enablement path and a real
+external SQLite worker with deterministic delay and failure controls.  It
+proves immediate buffer return, queued session and participant association,
+same-Board classification admission without =e-board-mutation-frozen=,
+responsive composer input and heartbeat, exactly one classification message
+after release, and failure isolation followed by unrelated durable readback.
+
+Focused regression evidence is runtime store 69/69, Board SQLite 19/19, DP6
+runtime 11/11, and session async 44/44.  Compilation,
+changed-file parenthesis checks, diff whitespace checks, and isolated process
+cleanup also pass.  The implementation/test manifest before this evidence-only
+documentation update is
+=2cd4d1c64e39815251f38682013c3abd96f7922f4029f476803bd6ea4cd6a679=.
+
+This finding closes only the reported minimum new-Daily repository scenario.
+It does not claim independent completion of DP6A--DP6D, and it deliberately
+does not implement DP6C quarantine, DP6D all-domain migration, generalized
+lifecycle clearing, a separate participant-start facade, fork support, or
+additional recovery partitions.  The user's running Emacs and canonical
+SQLite database remained unchanged; a full Emacs restart is required to use
+the new core runtime/session behavior live.
 
 * Historical DP5A correction evidence (superseded by accepted DP5A)
 

@@ -69,19 +69,27 @@ in =S92-DAILY=.
   they conflict; accepted DP1--DP5A behavior remains available but is not
   reimplemented in application layers.
 - Owning contracts :: =F92-C01= through =F92-C11= below.
-- Behavioral status :: Failed by a fresh live same-Board timer counterexample
-  and by source proof that interactive session, Board, and chat stacks still
-  synchronously wait for worker open or acknowledgement.  Lost runtime-store
-  acknowledgements resolve correctly, but an admitted timer mutation can still
-  be rejected while an earlier mutation on that Board waits synchronously.
+- Behavioral status :: The minimum =S92-DAILY= slice now passes its isolated
+  public graphical acceptance test: new chat open returns a pending buffer,
+  session and participant persistence enqueue, same-Board timer work queues,
+  composer input and an independent heartbeat continue during a deliberate
+  SQLite delay, release renders one classification message, and a failed Daily
+  owner does not prevent an unrelated session from persisting and reading back.
+  This is repository evidence, not a live validation of the user's running
+  Emacs or canonical database.  Session quarantine, the all-domain hot-path
+  audit, and the rest of the roadmap remain unresolved.
 - Mechanism status :: =F92-DP1= through =F92-DP4= remain passing and
   independently accepted =F92-DP5A= establishes the autonomous runtime
   substrate.  DP5A's independent owner gate passes 68/68, the Board replay
   seam passes 1/1, and its retained-frame probe peaks at 242,204,672 bytes,
   below 536,870,912.  Runtime-local C10 count/byte/drain/release machinery is
-  installed, but it is no longer the application-layer acceptance model.
-  Owner-local failure isolation, the public Daily path, post-hoc session
-  quarantine, and the complete hot-path audit remain planned in DP6A--DP6D.
+  installed, but it is no longer the application-layer acceptance model.  The
+  current slice installs one client FIFO, practical session write limits,
+  session/Board owner-local suspect partitioning, async fork rejection, and the
+  minimum new-Daily application wiring needed by =S92-DAILY=.  The matrix rows
+  remain =Planned= until their complete roadmap packages are delivered;
+  =F92-DP6C=, =F92-DP6D=, generalized lifecycle migration, and independent
+  =e-chat-service-create-participant-start= remain deferred.
 
 * Normative contract matrix
 
@@ -229,6 +237,32 @@ merely that a heartbeat ran.  A companion failure branch kills the worker,
 checks the Daily owner ID and bounded first cause in the warning, then persists
 and durably reads back an unrelated session through lazy replacement.  This is
 the primary release gate and directly removes the reported hang.
+
+*** Minimum Daily implementation evidence (2026-09-05)
+
+The implemented slice uses the ordinary public default-enablement path and the
+real external SQLite worker.  Its final focused graphical test passes 1/1 in
+1.027 seconds on the integrated tree.  The test proves only the six current
+acceptance points: immediate =e-chat-open= buffer return; queued
+session and participant association; queued same-Board classification without
+=e-board-mutation-frozen=; live composer input and heartbeat during the worker
+delay; one classification Board message after release; and owner-local suspect
+failure followed by unrelated session persistence and independent readback.
+
+Focused repository checks pass: runtime store 69/69, Board SQLite 19/19, DP6
+runtime 11/11, and session async 44/44.  =eldev compile=
+exits zero with pre-existing warnings; batch parenthesis checks pass for all 18
+changed Lisp files; =git diff --check= is clean; and the isolated harness leaves
+no Emacs or runtime-store worker process behind.  The implementation/test
+manifest before this evidence-only documentation update is
+=2cd4d1c64e39815251f38682013c3abd96f7922f4029f476803bd6ea4cd6a679=.
+
+This evidence does not complete =F92-DP6A=--=F92-DP6D= independently.  It does
+not add session quarantine, the all-domain reachability migration, generalized
+lifecycle clearing, a separate participant-start facade, fork support, or
+additional recovery partitions.  The user's running Emacs and canonical
+SQLite database were not opened, reloaded, or changed.  These core runtime and
+session changes require a full Emacs restart before live use.
 
 ** F92-DP6C: Session validation and quarantine
 

@@ -13,6 +13,168 @@
 (require 'e-board-storage)
 (require 'e-runtime-store)
 
+(defconst e-board-storage-sqlite--diagnostic-byte-limit 1024)
+
+(defun e-board-storage-sqlite--utf8-prefix (string limit)
+  "Return STRING truncated to at most LIMIT UTF-8 bytes."
+  (if (<= (string-bytes string) limit)
+      (copy-sequence string)
+    (let ((low 0) (high (length string)))
+      (while (< low high)
+        (let ((mid (/ (+ low high 1) 2)))
+          (if (<= (string-bytes (substring string 0 mid)) limit)
+              (setq low mid)
+            (setq high (1- mid)))))
+      (substring string 0 low))))
+
+(defun e-board-storage-sqlite--detached-error (error board-id)
+  "Return bounded detached ERROR status for BOARD-ID."
+  (let ((print-circle t) (print-level 6) (print-length 32))
+    (list (if (and (consp error) (symbolp (car error)))
+              (car error)
+            'e-board-storage-error)
+          (e-board-storage-sqlite--utf8-prefix
+           (condition-case nil (error-message-string error)
+             (error "Board persistence failed"))
+           e-board-storage-sqlite--diagnostic-byte-limit)
+          :board-id (copy-sequence board-id))))
+
+(defun e-board-storage-sqlite--async-submit (storage board-id body result)
+  "Submit BOARD-ID BODY and immediately return optimistic RESULT."
+  (let* ((runtime (e-board-storage--runtime storage))
+         (request (e-runtime-store--submit-owned
+                   runtime 'write body (cons 'board board-id))))
+    (cl-incf (e-board-storage--pending-count storage))
+    (e-runtime-store--observe
+     request
+     (lambda (settled)
+       (cl-decf (e-board-storage--pending-count storage))
+       (let ((error
+              (unless (eq (e-runtime-store-request--state settled) 'committed)
+                (e-board-storage-sqlite--detached-error
+                 (or (e-runtime-store-request--error settled)
+                     '(e-board-storage-error "Board persistence did not commit"))
+                 board-id))))
+         (when (and error (null (e-board-storage--first-error storage)))
+           (setf (e-board-storage--first-error storage) error))
+         (when-let* ((observer (e-board-storage--settlement-function storage)))
+           (funcall observer storage result error)))))
+    result))
+
+(defun e-board-storage-sqlite--async-call (storage operation arguments)
+  "Dispatch asynchronous Board OPERATION with optimistic local projection."
+  (pcase operation
+    ('create-board
+     (pcase-let ((`(,board-id ,principal ,root) arguments))
+       (let ((result (list :board-id board-id :trusted-principal principal
+                           :generation 1 :revision 1 :status 'created)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-create :board-id board-id
+                :trusted-principal principal :root root)
+          result)
+         (setf (e-board-storage--next-revision storage) 1)
+         result)))
+    ('publish-record
+     (pcase-let ((`(,board-id ,generation ,record ,source) arguments))
+       (when source
+         (setq source
+               (list :kind (plist-get source :kind)
+                     :key (plist-get source :key)
+                     :hash (e-board-storage-signature-hash
+                            (plist-get source :signature)))))
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (position (1+ (or (e-board-storage--next-position storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :revision revision :position position
+                            :status 'created :record record)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-record-put :board-id board-id :generation generation
+                :record record :source source)
+          result)
+         (setf (e-board-storage--next-revision storage) revision
+               (e-board-storage--next-position storage) position)
+         result)))
+    ('put-participant
+     (pcase-let ((`(,board-id ,generation ,participant) arguments))
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :revision revision :participant participant)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-participant-put :board-id board-id
+                :generation generation :participant participant)
+          result)
+         (setf (e-board-storage--next-revision storage) revision)
+         result)))
+    ('commit-routing
+     (pcase-let ((`(,board-id ,generation ,message-id ,outcome ,pickups)
+                   arguments))
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (committed
+               (cl-loop for pickup in pickups
+                        for position from 1
+                        collect (append pickup
+                                        (list :fifo-position position
+                                              :revision 1 :state 'ready))))
+              (result (list :board-id board-id :generation generation
+                            :revision revision :message-id message-id
+                            :outcome outcome :pickups committed)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-routing-put :board-id board-id
+                :generation generation :message-id message-id
+                :outcome outcome :pickups (vconcat pickups))
+          result)
+         (setf (e-board-storage--next-revision storage) revision)
+         result)))
+    ('transition-pickup
+     (pcase-let ((`(,board-id ,generation ,delivery-id ,transition ,data)
+                   arguments))
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :revision revision :pickup-revision 1)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-pickup-transition :board-id board-id
+                :generation generation :delivery-id delivery-id
+                :transition transition :data data)
+          result)
+         (setf (e-board-storage--next-revision storage) revision)
+         result)))
+    ('admit-pickup
+     (pcase-let
+         ((`(,board-id ,generation ,delivery-id ,session-id ,record ,lane)
+           arguments))
+       ;; Daily pickup delivery is the directly reached cross-owner write.
+       ;; Keep the Board classification timer enqueue-only: the worker owns
+       ;; the atomic Board/session transaction and the application-service
+       ;; settlement observer owns any later suspect publication.
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :board-revision revision :pickup-revision 2
+                            :delivery-id delivery-id :session-id session-id
+                            :lane lane :record record)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-pickup-session-admit :board-id board-id
+                :generation generation :delivery-id delivery-id
+                :session-id session-id :record record :lane lane)
+          result)
+         (setf (e-board-storage--next-revision storage) revision)
+         result)))
+    ('status
+     (append (list :backend 'sqlite
+                   :pending (e-board-storage--pending-count storage)
+                   :first-error (copy-tree (e-board-storage--first-error storage)))
+             (e-runtime-store-status (e-board-storage--runtime storage))))
+    (_
+     ;; DP6B migrates only the public Daily writes.  Reads and unrelated Board
+     ;; lifecycle operations retain their established explicit observer path.
+     (e-board-storage-sqlite--call
+      (e-board-storage--runtime storage) operation arguments))))
+
 (defun e-board-storage-sqlite--call (runtime operation arguments)
   "Dispatch OPERATION ARGUMENTS through RUNTIME."
   (pcase operation
@@ -146,6 +308,19 @@
    :call-operation
    (lambda (operation &rest arguments)
      (e-board-storage-sqlite--call runtime operation arguments))))
+
+(defun e-board-storage-sqlite-create-async (runtime)
+  "Return the enqueue-return Board storage used by public Daily chat."
+  (unless (e-runtime-store-p runtime)
+    (signal 'wrong-type-argument (list 'e-runtime-store-p runtime)))
+  (let ((storage
+         (e-board-storage--create
+          :runtime runtime :asynchronous t :pending-count 0
+          :next-revision 0 :next-position 0)))
+    (setf (e-board-storage--call-operation storage)
+          (lambda (operation &rest arguments)
+            (e-board-storage-sqlite--async-call storage operation arguments)))
+    storage))
 
 (provide 'e-board-storage-sqlite)
 

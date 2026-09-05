@@ -591,6 +591,9 @@ those owner ports into the host hook lists."
 (defvar-local e-chat-session-id nil
   "Session id used by the current chat buffer.")
 
+(defvar-local e-chat--session-readiness-work nil
+  "Private session creation work retained by the current chat surface.")
+
 (defvar-local e-chat-board-id nil
   "Board id owned by the current chat buffer's public interaction context.")
 
@@ -1510,10 +1513,14 @@ condition after the chat buffer renders it.  User-facing commands should call
          (chat-instance-id (or instance-id
                                (and instance
                                     (e-harness-instance-id instance))))
-         (session (when (or new-session (not session-id))
-                    (e-chat--create-session
-                     chat-harness nil chat-instance-id)))
-         (chat-session-id (or session-id (plist-get session :id)))
+         (creating-p (or new-session (not session-id)))
+         (chat-session-id (or session-id
+                              (and creating-p (e-session-generate-id))))
+         (creation-work
+          (when creating-p
+            (e-chat-service-create-session-start
+             :harness chat-harness :id chat-session-id
+             :metadata (e-chat--session-metadata chat-instance-id))))
          (buffer (or (e-chat--find-session-buffer
                       chat-session-id chat-harness chat-instance-id)
                      (get-buffer-create
@@ -1527,6 +1534,23 @@ condition after the chat buffer renders it.  User-facing commands should call
        on-session-load-error))
     (e-chat--prune-duplicate-session-buffers
      buffer chat-session-id chat-harness chat-instance-id)
+    (when creation-work
+      (with-current-buffer buffer
+        (setq-local e-chat--session-readiness-work creation-work)
+        (e-chat-surface-set-status "persistence pending" t))
+      (e-work-on-settle
+       creation-work
+       (lambda (work)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (if (eq (plist-get (e-work-status work) :state) 'finished)
+                 (e-chat-surface-set-status "idle" t)
+               (e-chat-surface-set-status
+                (format "persistence suspect %s: %s"
+                        chat-session-id
+                        (e-work-error-message
+                         (plist-get (e-work-status work) :error)))
+                t)))))))
     buffer))
 
 (cl-defun e-chat-create-session (&key harness metadata id)

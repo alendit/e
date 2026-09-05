@@ -416,7 +416,7 @@ charged hash entry."
                          (list :owner (list :text text :vector vector))))
          callback retained-body work)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-session-storage-submit)
+        (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                    (lambda (owner _kind body settle &optional escrow)
                      (e-session-storage-release-frame-escrow owner escrow)
                      (setq retained-body body callback settle)
@@ -459,7 +459,7 @@ charged hash entry."
         (progn
           (e-session-async-test--wait-finished
            (e-session-create store :id "activity-freeze"))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (owner _kind body settle &optional escrow)
                        (e-session-storage-release-frame-escrow owner escrow)
                        (setq retained-body body callback settle)
@@ -524,7 +524,7 @@ charged hash entry."
          (store (e-session-sqlite-store-create directory :asynchronous t))
          work)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-session-storage-submit)
+        (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                    (lambda (&rest _arguments) nil)))
           (setq work (e-session-create store :id "refused"))
           (should (eq (plist-get (e-session-async-test--wait work) :state)
@@ -918,7 +918,7 @@ charged hash entry."
                  (submits 0)
                  duplicate)
             (should (plist-member first-package :record))
-            (cl-letf (((symbol-function 'e-session-storage-submit)
+            (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                        (lambda (&rest _arguments)
                          (cl-incf submits)
                          (ert-fail "duplicate package submitted storage"))))
@@ -939,7 +939,7 @@ charged hash entry."
                  duplicate)
             (setf (plist-get envelope :content) "mutated")
             (should (equal (plist-get returned :content) "detached"))
-            (cl-letf (((symbol-function 'e-session-storage-submit)
+            (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                        (lambda (&rest _arguments)
                          (cl-incf submits)
                          (ert-fail "duplicate board envelope submitted"))))
@@ -1053,7 +1053,7 @@ charged hash entry."
                        legacy session-id capability-id
                        (copy-tree state t) :version version))
                      callback work)
-                (cl-letf (((symbol-function 'e-session-storage-submit)
+                (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                            (lambda (owner _kind _body settle &optional escrow)
                              (e-session-storage-release-frame-escrow owner escrow)
                              (setq callback settle)
@@ -1095,7 +1095,7 @@ charged hash entry."
           (e-session-async-test--wait-finished
            (e-session-append-message
             store "controls" '(:role user :content "before clear")))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (owner _kind submitted settle &optional escrow)
                        (e-session-storage-release-frame-escrow owner escrow)
                        (setq body submitted callback settle)
@@ -1110,7 +1110,7 @@ charged hash entry."
               (should (eq (plist-get result :event-type) 'messages-cleared))))
           (should-not (e-session-messages store "controls"))
           (setq callback nil body nil)
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (owner _kind submitted settle &optional escrow)
                        (e-session-storage-release-frame-escrow owner escrow)
                        (setq body submitted callback settle)
@@ -1135,7 +1135,7 @@ charged hash entry."
         (progn
           (e-session-async-test--wait-finished
            (e-session-create store :id "noop-display"))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (&rest _arguments)
                        (cl-incf submits)
                        (ert-fail "missing display submitted storage"))))
@@ -1270,7 +1270,7 @@ charged hash entry."
           (e-session-async-test--wait-finished
            (e-session-create store :id "bounded-state"
                              :metadata '(:project-root "/old/")))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (owner _kind body settle &optional escrow)
                        (e-session-storage-release-frame-escrow owner escrow)
                        (setq retained-body body callback settle)
@@ -1400,7 +1400,7 @@ charged hash entry."
         (progn
           (e-session-async-test--wait-finished
            (e-session-create store :id "reconcile"))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (owner _kind _body settle &optional escrow)
                        (e-session-storage-release-frame-escrow owner escrow)
                        (setq storage-callback settle)
@@ -1744,7 +1744,7 @@ charged hash entry."
         (progn
           (e-session-async-test--wait-finished
            (e-session-create store :id "held-board"))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (owner _kind _body settle &optional escrow)
                        (e-session-storage-release-frame-escrow owner escrow)
                        (setq callback settle)
@@ -1819,7 +1819,7 @@ charged hash entry."
           (setq before
                 (length (plist-get (e-session-get store "invalid-info")
                                    :session-events)))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (&rest _)
                        (ert-fail "invalid session-info reached storage I/O"))))
             (setq works
@@ -1868,7 +1868,7 @@ charged hash entry."
           (e-session-async-test--wait-finished
            (e-session-create store :id "board-category"))
           (should-not (intern-soft category))
-          (cl-letf (((symbol-function 'e-session-storage-submit)
+          (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                      (lambda (&rest _)
                        (ert-fail "oversized Board category reached storage"))))
             (dotimes (iteration 2)
@@ -2019,6 +2019,41 @@ charged hash entry."
           (list :principal "principal" :board-id "board"
                 :association-role nil :routing-policy policy)
           (lambda (_body) 1)))))))
+
+(ert-deftest e-session-async-s92-dp6-fork-is-typed-unsupported-work ()
+  "Asynchronous fork returns terminal work without touching session state."
+  (let ((store (list :dp6-async-store)) touched)
+    (unwind-protect
+        (progn
+          (e-session-async-enable store)
+          (cl-letf (((symbol-function 'e-session--ensure-loaded)
+                     (lambda (&rest _) (setq touched t))))
+            (let* ((work (e-session-fork store "source"))
+                   (status (e-work-status work))
+                   (error (plist-get status :error)))
+              (should (eq (plist-get status :state) 'failed))
+              (should (eq (car error) 'e-session-storage-command-error))
+              (should (equal (car (last error)) 'fork))
+              (should-not touched))))
+      (remhash store e-session-async--enabled-stores))))
+
+(ert-deftest e-session-async-s92-dp6-public-enable-is-idempotent ()
+  "The public enable seam idempotently installs asynchronous persistence."
+  (let ((store (list :dp6-public-enable-store))
+        (storage-enable-count 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-storage-enable)
+                   (lambda (current)
+                     (should (eq current store))
+                     (cl-incf storage-enable-count)
+                     current)))
+          (should-not (e-session-async-enabled-p store))
+          (should (eq (e-session-enable store) store))
+          (should (e-session-async-enabled-p store))
+          (should (eq (e-session-enable store) store))
+          (should (e-session-async-enabled-p store))
+          (should (= storage-enable-count 2)))
+      (remhash store e-session-async--enabled-stores))))
 
 (provide 'e-session-async-test)
 

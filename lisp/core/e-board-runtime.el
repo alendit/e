@@ -2789,6 +2789,10 @@ steering lane while queue-mode enters the later-turn inbox."
                     (e-board-runtime-attachment-turn-tags attachment))
            :consumed))))))
 
+(defun e-board-runtime-deliver-to-harness (attachment pickup message)
+  "Deliver PICKUP through ATTACHMENT's ordinary harness endpoint."
+  (e-board-runtime--deliver-to-harness attachment pickup message))
+
 (cl-defun e-board-runtime-attach
     (board-or-id harness session-id
                  &key participant-id author principal controller delivery-function
@@ -3773,6 +3777,14 @@ and pickup tombstones remain on the source board."
                                          'acceptance-endpoint-changed)))
                               (e-board-runtime--enqueue-pickups
                                board (list next-id)))))
+                         (:deferred
+                          ;; The application-service attachment owns the
+                          ;; bounded delivery id until its prerequisite work
+                          ;; settles.  Restore the pickup to ready without
+                          ;; scheduling a generic runtime retry; the owner
+                          ;; explicitly resumes this exact id once.
+                          (e-board-pickup-return-ready
+                           source-board delivery-id (cadr result)))
                          (:uncertain
                           (when-let ((next-id
                                       (e-board-pickup-mark-uncertain
@@ -3830,6 +3842,10 @@ and pickup tombstones remain on the source board."
             ;; never by a board-wide scan.
             (e-board-runtime--forget-terminal-pickup-for-board
              board delivery-id)))))))
+
+(defun e-board-runtime-resume-pickup-deliveries (board pickup-ids)
+  "Resume application-owned ready PICKUP-IDS for BOARD exactly once."
+  (e-board-runtime--deliver-pickups board (copy-sequence pickup-ids)))
 
 (cl-defun e-board-runtime--post-client-input
     (board-or-id &key id author tags attributes to requester

@@ -14,6 +14,7 @@
 (require 'sqlite)
 (require 'subr-x)
 (require 'e-runtime-store-codec)
+(require 'e-session-storage-limits)
 
 (unless (get 'e-runtime-store-worker-error 'error-conditions)
   (define-error 'e-runtime-store-worker-error "Runtime store worker error"))
@@ -55,7 +56,11 @@
 (defconst e-runtime-store-worker-session-page-byte-limit (* 1024 1024)
   "Private encoded-payload budget for one session page result.")
 (defconst e-runtime-store-worker-session-record-byte-limit (* 16 1024 1024)
-  "Private encoded limit for one exact session record.")
+  "Maximum stored payload bytes accepted by legacy session reads.
+
+New writes are checked against `e-session-storage-record-byte-limit' before
+encoding.  The larger historical ceiling remains read-compatible with records
+that were legal before Feature 92 introduced the practical write bound.")
 (defconst e-runtime-store-worker-checkpoint-canonical-byte-limit
   e-runtime-store-codec-checkpoint-canonical-byte-limit
   "Maximum canonical bytes in one rebuildable checkpoint value.")
@@ -89,6 +94,22 @@ consumed through a marker file shared with the replacement subprocess."
       (when (or (not marker) (not (file-exists-p marker)))
         (when marker (write-region "used" nil marker nil 'silent))
         (kill-emacs 70)))))
+
+(defun e-runtime-store-worker--test-stall (request)
+  "Wait at REQUEST's private file-controlled graphical test seam.
+The seam is inert unless `E_RUNTIME_STORE_TEST_STALL_DIRECTORY' names a
+directory containing OPERATION.hold.  It writes OPERATION.ready, then waits
+until OPERATION.release exists.  Only this disposable worker is blocked."
+  (when-let* ((directory (getenv "E_RUNTIME_STORE_TEST_STALL_DIRECTORY"))
+              (operation (plist-get (plist-get request :body) :op)))
+    (let* ((name (format "%s" operation))
+           (hold (expand-file-name (concat name ".hold") directory))
+           (ready (expand-file-name (concat name ".ready") directory))
+           (release (expand-file-name (concat name ".release") directory)))
+      (when (file-exists-p hold)
+        (write-region "ready" nil ready nil 'silent)
+        (while (not (file-exists-p release))
+          (sleep-for 0.01))))))
 
 (defun e-runtime-store-worker--column (row index)
   "Return INDEX from SQLite ROW across supported Emacs return shapes."
@@ -397,17 +418,13 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
 
 (defun e-runtime-store-worker--session-append (body)
   "Append BODY's one session record."
+  (e-runtime-store-codec-measure-bounded
+   (plist-get body :record) e-session-storage-record-byte-limit)
   (let* ((session-id (plist-get body :session-id))
          (revision (e-runtime-store-worker--session-position session-id))
          (next (1+ revision))
          (payload (e-runtime-store-worker--sql-value
                    (plist-get body :record))))
-    (when (> (string-bytes payload)
-             e-runtime-store-worker-session-record-byte-limit)
-      (signal 'e-runtime-store-worker-error
-              (list "Session record exceeds private limit"
-                    (string-bytes payload)
-                    e-runtime-store-worker-session-record-byte-limit)))
     (sqlite-execute
      e-runtime-store-worker--database
      "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
@@ -416,17 +433,25 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
 
 (defun e-runtime-store-worker--session-append-batch (body)
   "Append BODY's session record batch atomically."
+  (let ((records (plist-get body :records)))
+    (unless (or (listp records) (vectorp records))
+      (signal 'e-runtime-store-worker-error
+              (list "Invalid session batch records")))
+    (when (> (length records) e-session-storage-batch-record-limit)
+      (signal 'e-runtime-store-worker-error
+              (list "Session batch exceeds record-count limit"
+                    (length records) e-session-storage-batch-record-limit)))
+    (e-runtime-store-codec-measure-bounded
+     body e-session-storage-batch-byte-limit)
+    (mapc (lambda (record)
+            (e-runtime-store-codec-measure-bounded
+             record e-session-storage-record-byte-limit))
+          (append records nil)))
   (let* ((session-id (plist-get body :session-id))
          (revision (e-runtime-store-worker--session-position session-id))
          (position revision))
     (dolist (record (append (plist-get body :records) nil))
       (let ((payload (e-runtime-store-worker--sql-value record)))
-        (when (> (string-bytes payload)
-                 e-runtime-store-worker-session-record-byte-limit)
-          (signal 'e-runtime-store-worker-error
-                  (list "Session record exceeds private limit"
-                        (string-bytes payload)
-                        e-runtime-store-worker-session-record-byte-limit)))
         (cl-incf position)
         (sqlite-execute
          e-runtime-store-worker--database
@@ -1019,8 +1044,10 @@ protocol.  Its canonical journal remains available for replay from zero."
 (defun e-runtime-store-worker--response (request)
   "Return one correlated success or typed-error response for REQUEST."
   (condition-case err
-      (list :id (plist-get request :id) :ok t
-            :result (e-runtime-store-worker--handle request))
+      (progn
+        (e-runtime-store-worker--test-stall request)
+        (list :id (plist-get request :id) :ok t
+              :result (e-runtime-store-worker--handle request)))
     (error
      (list :id (plist-get request :id) :ok nil
            :error-symbol (car err) :error-data (cdr err)))))
