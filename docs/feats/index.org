@@ -18,9 +18,11 @@ record each feature's lifecycle state.
 Feature 92 is =In-review=: DP5A independently accepted its event-driven
 runtime-store substrate, and independent review accepted the bounded opt-in
 DP5B session-command foundation plus its non-fork durable-mutation expansion.
-Atomic fork, the session resume/finalize/close lifecycle, default/public-path
-composition, Board/chat C08, and C09/C10 reachability and whole-runtime budget
-proof remain.  The live Daily behavior is unresolved.
+The 2026-09-05 pragmatic rebaseline supersedes the unfinished fork/lifecycle and
+exact-accounting gates: current work is one enqueue-and-return worker FIFO,
+owner-local persistence-suspect warnings, public Daily/Board/chat composition,
+per-session validation/quarantine, and a classified all-interactive-path audit.
+The live Daily behavior is unresolved and remains the primary gate.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

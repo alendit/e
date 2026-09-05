@@ -14,15 +14,34 @@ runtime store now resolves the same durable write identity through an ACID
 receipt and one bounded worker replacement, preserving exact-once mutation and
 continuing the queue on either side of COMMIT.
 
-DP5A makes runtime-store cold submit, timeout, and recovery settlement
-autonomous; =e-runtime-store-await= observes rather than drives it.  An opt-in
-subset of session facades now returns pending work through bounded per-session
-lanes, while the default session composition and Board/chat application services
-still wait inline for durable results.  The remaining DP5 direction keeps the
-external worker while completing the domain-operation and composition-owned
-asynchronous lanes.
+The operator rebaselined the unfinished correction on 2026-09-05.  The current
+product contract keeps the external SQLite worker but treats the synchronous
+application composition above it as the defect: no interactive Daily, chat,
+session, participant, composer, or Board-timer path may await worker open,
+execution, acknowledgement, retry, or recovery.  Successful enqueue may publish
+process-local state before COMMIT acknowledgement.  A later failure marks only
+the affected session or Board persistence-suspect, preserves one bounded first
+diagnostic, exposes a visible warning, and permits unrelated sessions to
+continue through lazy worker replacement.
 
-The accepted DP5B foundation implements the bounded command/delta admission
+This rebaseline preserves accepted commits through =4e4872e9= but supersedes
+the unfinished cut-pin, reconciliation-barrier, exact retained-object graph,
+custom streaming-identity, bespoke cancellation, and pathological maximum-size
+release gates.  Those mechanisms must not be extended without a common
+reproduced failure.  Async fork may remain explicitly unsupported.  The primary
+acceptance gate is now the public graphical Daily worker-delay/failure scenario.
+
+DP5A makes runtime-store cold submit, timeout, and recovery settlement
+autonomous; =e-runtime-store-await= observes rather than drives it.  The opt-in
+DP5B per-session coordinator is accepted historical implementation but is not
+the current direction and must be removed or bypassed in default composition.
+The remaining direction is one runtime client FIFO, owner-local suspect
+metadata, and enqueue-return application services; default session and
+Board/chat services still wait inline today.
+
+#+begin_comment
+The following DP5B detail is historical evidence for accepted commits through
+=4e4872e9=, not a remaining requirement.  The accepted foundation implements the bounded command/delta admission
 correction: a generic mutation closure cannot know its post-mutation retained
 projection size before staging, so async admission instead uses an
 aggregate-owned closed immutable command grammar and interpreter.  Its single
@@ -45,12 +64,14 @@ process-report, branch-summary, compaction, provider-anchor, context
 generation/curation; metadata/config/context-reference/capability-state/
 turn-options/current-branch/name session-info; Board message/state/clear; and
 delete.
-An exhausted post-ACK apply atomically releases/fails its tail before observer
-delivery and retains one counted 2,048-byte durable barrier with matching
-identity proof.  Priority bounded resume and atomic fork/cut ownership remain
-full DP5B work.  This does not change the unresolved Daily status.
+An exhausted post-ACK apply historically retained a counted durable barrier.
+The pragmatic rebaseline does not complete that coordinator, resume barrier, or
+fork/cut protocol; it replaces/bypasses them for default composition.  This
+accepted history does not change the unresolved Daily status.
 
-* DP5B session-command foundation evidence (accepted, partial)
+#+end_comment
+
+* COMMENT DP5B session-command foundation evidence (accepted history)
 
 Independent review of the current shared implementation tree returned exactly
 =slice-review-fixed-point=.  The repository gate compiled successfully
@@ -66,13 +87,11 @@ notification.  Persistent projection-mark or diagnostic failure is secondary:
 each is attempted once, successful authoritative work settles, and the next
 FIFO command advances without a zero-delay retry loop.
 
-This evidence does not accept =F92-C07= as a whole.  Atomic asynchronous fork,
-asynchronous resume/finalize/close, default cutover, and complete
-public-path/reachability proof remain open, as do Board/chat C08,
-whole-path C09/C10, and the graphical Daily topology.  The running Emacs and
-canonical database were left unchanged.
+This evidence did not accept the old =F92-C07= as a whole.  Its former fork,
+resume/finalize/close, reconciliation, and exact-accounting continuation is now
+superseded.  The running Emacs and canonical database were left unchanged.
 
-* DP5B non-fork mutation expansion evidence (accepted, partial)
+* COMMENT DP5B non-fork mutation expansion evidence (accepted history)
 
 Commit =50ffa901= expands the opt-in session command lane across every current
 non-fork durable mutation family named above.  Independent review used base
@@ -412,27 +431,51 @@ No live reload was attempted.  The user's running Emacs and canonical SQLite
 files remain unchanged; this core runtime/schema change requires a full Emacs
 restart to take effect.
 
-* Remaining asynchronous correction
+* Remaining pragmatic correction
 
-The acknowledgement ambiguity and runtime autonomous settlement are closed,
-and the bounded opt-in session-command foundation is accepted, but the
-interactive application contract remains open.  Feature 92 contracts
-=F92-C07= through =F92-C10= still require:
+The external worker remains the appropriate SQLite adapter.  The unresolved
+defect is synchronous ownership above it and global failure propagation below
+it.  The minimum correction is:
 
-- complete sealed-command coverage plus asynchronous session resume, finalize,
-  and close before enabling the default SQLite composition;
-- bounded per-Board application-service lanes that preserve durable-before-visible
-  publication and admit same-owner timer work in FIFO order;
-- public chat composition that returns a pending surface and queues immediate
-  Daily start/input behind durable binding readiness; and
-- aggregate count, retained-byte, completion-work, and lifecycle-release bounds
-  at both transport and domain-operation owners.
+- one client FIFO for reads and writes, with internal open remaining
+  transport-only control and no default per-owner scheduling/reconciliation;
+- public Daily/chat open returns its buffer immediately;
+- session creation and participant association enqueue without waiting;
+- same-Board timer work queues instead of raising
+  =e-board-mutation-frozen=;
+- composer edits, redisplay, and an independent heartbeat continue while the
+  worker is deliberately delayed;
+- release produces one ordered visible result; and
+- worker failure marks only the affected session or Board suspect, then an
+  already-queued same-owner successor settles locally while unrelated queued
+  work starts lazy restart and persists without a later trigger submission.
 
-The release gate is a deterministic graphical Daily topology through public
-=e-chat-open=: hold the real same-Board response, prove the call returns and a
-heartbeat plus composer edit run during the hold, show pending state, then
-release and observe exactly one ordered visible transition.  CPU percentage,
-database size, and wall-clock duration remain observational.
+Only failed optimistic session/Board mutations create suspect state.  Failed
+reads and task/cron/voice/Goodnite/raw-result writes settle their retained work
+or domain-local status.  A private unencoded owner key enables the runtime queue
+partition without changing the public three-argument submit ABI.
+
+On reopen or explicit inspection, return first, then validate bounded pages for
+decoding, one root, unique record identities, parent-chain consistency, and
+Board/session association shape.  A process-local loader table quarantines only
+an invalid session with the first 1,024-byte diagnostic; catalog/list shows
+=unvalidated= until this process checks it and then shows any warning.
+Successful canonical reload after repair clears it, and restart reconstructs it
+on the next inspection.  Full database =quick_check= or
+=integrity_check= remains explicit operator work, never an interactive barrier.
+Fork returns typed unsupported work in async mode for this release.
+
+After the primary Daily gate, a classified reachability package must remove
+synchronous persistence from task, cron, voice, Goodnite, raw-result,
+session-tmp, default-runtime, command, timer, callback, resource, and action
+paths.  Only explicit batch/operator/offline/test APIs may await; shutdown only
+detaches and never flushes or closes synchronously.  The gate extends
+=test/e-nonblocking-sweep-test.el= with an audited blocking-symbol/call-site
+inventory plus runtime hot-path guards for indirect adapter injection.
+
+The primary release gate is the deterministic graphical Daily topology through
+public =e-chat-open=.  CPU percentage, database size, and wall-clock duration
+remain observational.
 
 * Historical DP5A correction evidence (superseded by accepted DP5A)
 

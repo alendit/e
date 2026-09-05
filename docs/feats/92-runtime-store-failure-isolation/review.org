@@ -14,8 +14,8 @@ Independent gates were runtime owner 68/68, Board replay seam 1/1, retained
 frame RSS 242,204,672 bytes, clean diff, and no orphan process.  The bounded
 DP5B session-command foundation and its non-fork durable-mutation expansion
 described below are independently accepted, but Feature 92 remains =In-review=:
-they do not establish asynchronous fork/resume/finalize/close,
-default/public-path composition, C08--C10, or the Daily behavior.  Earlier DP5A
+they do not establish default/public-path composition, the DP6 contracts, or
+the Daily behavior.  Async fork is no longer a release requirement.  Earlier DP5A
 pending-review records below are
 historical chronology.  A fresh Daily run invalidated the original fixed point at =25c574fd= by
 showing that a lost =catalog-put= acknowledgement could still freeze the shared
@@ -27,9 +27,24 @@ claimed graphical composition evidence.  A timer reentered a durable mutation
 on the same Board and escaped as =e-board-mutation-frozen=.  See
 [[file:../../bugs/board-timer-reentrant-durability-barrier/investigation.org][the live investigation]].
 
-The accepted DP5B foundation replaces the rejected generic staged-mutation
-closure with an aggregate-owned closed immutable command grammar and
-interpreter.  A single normative schema calculator counts
+The operator's 2026-09-05 pragmatic rebaseline supersedes the unfinished
+DP5B--DP5D acceptance model.  Keep the external worker; enqueue and return on
+every interactive Daily path; permit optimistic process-local publication after
+successful enqueue; localize later failure to one persistence-suspect session
+or Board; restart lazily; and validate/quarantine individual sessions post hoc.
+The public graphical Daily worker-delay/failure scenario is now the primary
+release gate.  Accepted commits through =4e4872e9= remain, but fork cut pins,
+reconciliation barriers, exact retained-object proofs, and bespoke cancellation
+partitions are not current requirements.
+
+#+begin_comment
+The following DP5B material records accepted implementation history through
+=4e4872e9=; it is not the remaining acceptance model.  Default composition will
+remove or bypass its per-session coordinator, reconciliation barrier, exact
+escrow proofs, and fork/cut continuation in favor of the DP6 single client FIFO.
+The accepted foundation replaced the rejected generic staged-mutation closure
+with an aggregate-owned closed immutable command grammar and interpreter.  Its
+schema calculator counts
 every fixed-width command/delta/undo node, constructs each family maximum, and
 runs the exact transport-visible delta through the production codec.  Admission
 reserves producer leaves =P=, calculator-derived wrappers =D=, 32 fixed
@@ -57,7 +72,9 @@ session delete behind explicit async opt-in.  The default SQLite
 composition remains on the legacy synchronous path until the rest of the closed
 grammar, resume/finalize/close orchestration, and public-path proof are complete.
 
-** DP5B foundation acceptance
+#+end_comment
+
+** COMMENT DP5B foundation acceptance (historical)
 
 Independent slice review of the current shared implementation tree returned
 exactly =slice-review-fixed-point= after the accounting,
@@ -78,13 +95,11 @@ does not preserve parameter names, and proves the stable three-argument public
 surface.  The host orphan audit found no runtime-store worker or batch Emacs
 process.  No live Emacs or canonical database was opened or mutated.
 
-Still open for =F92-C07=: migrate every remaining durable session command,
-resume, finalize, and close; remove the partial-slice unsupported surface;
-enable the async default only after that closed grammar is complete; and prove
-the complete public entrypoint/reachability composition.  C08--C10 and the
-graphical Daily topology remain separate acceptance gates.
+The former continuation through fork, resume, finalize, close, reconciliation,
+and exact accounting is superseded.  DP6 owns default/public composition,
+reachability, and the graphical Daily gate.
 
-** DP5B non-fork mutation expansion acceptance
+** COMMENT DP5B non-fork mutation expansion acceptance (historical)
 
 Commit =50ffa901= extends the accepted command lane across the remaining
 non-fork durable mutation facades listed above.  Independent review of exact
@@ -120,13 +135,14 @@ live failure requires one durable Board mutation to hold
 a timer that attempts another mutation on the same Board.
 
 Timer-specific deferral is not sufficient because the original durable caller
-would still occupy the main event loop.  The accepted product direction keeps
-the SQLite worker but requires autonomous runtime-store settlement and
-domain-owned asynchronous session/Board operation lanes.  C06/DP5A is now
-accepted; final Feature 92 completion still requires =F92-C07= through
-=F92-C10= and =F92-DP5B= through =F92-DP5D=, followed by focused and graphical
-evidence through the real Daily path.  Eventual projection polling alone is
-insufficient.
+would still occupy the main event loop.  The current product direction keeps
+the SQLite worker but requires straightforward enqueue-and-return session/Board
+composition.  Same-Board work queues; successful enqueue may publish locally;
+later failure marks only that owner suspect and never freezes the shared store.
+Final Feature 92 completion now follows DP6A--DP6D in the amended plan, led by
+the graphical public Daily gate and followed by quarantine plus the complete
+hot-path reachability audit.  Fork is unsupported for this release; hardening
+and pathological accounting are explicitly deferred.
 Independent specification review reached =implementation-plan-fixed-point= for
 exact semantic plan blob =4a7b996a38d754b4ee20cfdc982c1a6a3e23de4f= on source baseline
 =696e514e9a0ce9694e20ea3e263a153dc1a9ef8c=.  At that plan-review point,
@@ -291,16 +307,17 @@ found no further actionable issue.
 | F92-C04 | Passing | Exact canonical/wire bounds; raw-byte coverage; bounded response handling; paged identities; catalog/checkpoint limits; oversized-checkpoint journal replay. |
 | F92-C05 | Passing | Mutation and full-response-bounded receipt share one SQLite transaction; same-identity replay, migration, retention, close, live-parent contention, and graphical Board composition pass. |
 | F92-C06 | Passing / accepted | DP5A event-driven runtime settlement without an awaiter. |
-| F92-C07 | Foundation accepted / incomplete | Opt-in sealed-command lanes cover create, selected append operations, and session-info mutations; full grammar, resume/finalize/close, default cutover, and public-path proof remain. |
-| F92-C08 | Planned / not started | Board durability lane and chat readiness reconciliation. |
-| F92-C09 | Planned / not started | Complete hot-path owner migration and reachability gate. |
-| F92-C10 | Planned | DP5A installed runtime-local count/byte/work and lifecycle release machinery; whole-runtime composition remains DP5D. |
+| F92-C07 | Planned | Minimum enqueue-return public Daily/session/participant/composer/timer path in DP6B. |
+| F92-C08 | Planned | Same-Board FIFO admission plus visible pending/suspect chat state in DP6B. |
+| F92-C09 | Planned | Async page-bounded per-session validation and process-local quarantine in DP6C. |
+| F92-C10 | Planned | One 128-request client FIFO, practical record/batch limits, and unsupported async fork in DP6A. |
+| F92-C11 | Planned | Complete classified interactive-path migration and reachability gate in DP6D. |
 
 The historical four delivery packages pass their focused mechanism and
 composition evidence.  The following statement was true before DP5A and is
 now historical: DP5A through DP5D had no production implementation or
-acceptance evidence.  DP5A and the bounded DP5B command foundation are accepted;
-full DP5B plus DP5C--DP5D remain open.
+acceptance evidence.  DP5A and the bounded DP5B command foundation are accepted
+history; DP6A--DP6D are the current open packages.
 
 * Verification
 
@@ -419,10 +436,9 @@ The independent reviewer evaluated the frozen amended plan blob
 =8be7429b71408eca57942549b8922b540146f327= and every DP4 correction.  On exact
 clean revision =857fcb1f8bdae66d13df4c628e6675096ab82c5d= it returned exactly
 =implementation-review-fixed-point=.  The subsequent live same-Board timer
-counterexample invalidated Feature 92 closure and required DP5.  DP5A and the
-bounded DP5B command foundation have since reached independent implementation
-review fixed points, but full C07, C08--C10, and the Daily composition remain
-unresolved.
+counterexample invalidated Feature 92 closure.  DP5A and the bounded DP5B
+command foundation reached independent implementation review fixed points and
+remain accepted history, but DP6A--DP6D and the Daily composition are unresolved.
 
 * Live runtime disposition
 
