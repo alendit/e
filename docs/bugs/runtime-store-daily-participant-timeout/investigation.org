@@ -3,8 +3,10 @@
 
 * Status
 
-DP5A transport substrate is resolved and independently accepted; the Daily
-application behavior remains unresolved pending DP5B--DP5D.  The historical
+DP5A transport substrate and a bounded DP5B session-command foundation are
+independently accepted; the Daily application behavior remains unresolved.
+The DP5B foundation is explicitly opt-in and does not yet establish full C07
+command coverage or the default/public Daily path.  The historical
 post-restart recurrence identified a submitted =catalog-put= whose lost
 acknowledgement killed the shared worker and froze queued Board work.  The
 runtime store now resolves the same durable write identity through an ACID
@@ -12,16 +14,17 @@ receipt and one bounded worker replacement, preserving exact-once mutation and
 continuing the queue on either side of COMMIT.
 
 DP5A makes runtime-store cold submit, timeout, and recovery settlement
-autonomous; =e-runtime-store-await= observes rather than drives it.  Session,
-Board, and chat application services still wait inline for durable results.
-The remaining DP5 direction keeps the external worker while DP5B--DP5D add
-pending domain-operation handles and composition-owned asynchronous lanes.
+autonomous; =e-runtime-store-await= observes rather than drives it.  An opt-in
+subset of session facades now returns pending work through bounded per-session
+lanes, while the default session composition and Board/chat application services
+still wait inline for durable results.  The remaining DP5 direction keeps the
+external worker while completing the domain-operation and composition-owned
+asynchronous lanes.
 
-DP5B foundation implementation is paused pending plan re-review of a bounded
-command/delta admission correction: a generic mutation closure cannot know its
-post-mutation retained projection size before staging, so it cannot honestly
-meet the capacity-before-staging contract.  The proposed correction gives the
-aggregate a closed immutable command grammar and interpreter.  Its single
+The accepted DP5B foundation implements the bounded command/delta admission
+correction: a generic mutation closure cannot know its post-mutation retained
+projection size before staging, so async admission instead uses an
+aggregate-owned closed immutable command grammar and interpreter.  Its single
 normative schema calculator enumerates fixed-width command/delta/undo nodes,
 builds each maximum family fixture, and sends the exact transport-visible delta
 schema through the production codec.  Admission reserves frozen producer leaves
@@ -35,13 +38,36 @@ The 68 MiB =Fmax= is an absolute ceiling only.  DP5A atomically transfers the
 same escrow to the actual runtime frame, releases the difference, and never
 double counts it.  The absolute maximum reservation is 88,350,720 bytes against
 a proposed 85 MiB (89,128,960-byte) composition allowance, leaving 778,240
-bytes and requiring a fresh disposable RSS probe before C07 can be accepted.
+bytes; a fresh disposable RSS probe remains part of full C07 acceptance.  This
+slice covers create, message append, activity and
+context-curation-response append, plus metadata/config/context-reference/
+capability-state/turn-options/current-branch/name session-info mutations.
 An exhausted post-ACK apply atomically releases/fails its tail before observer
-delivery, retains one counted 2,048-byte durable barrier, and runs matching
-resume first through a bounded page/frame escrow.  A submitted existing atomic
-fork batch/cut remains owned through DP4 same-ID resolution, while only
-pre-submit cancellation can release it.  This does not change the unresolved
-Daily status.
+delivery and retains one counted 2,048-byte durable barrier with matching
+identity proof.  Priority bounded resume and atomic fork/cut ownership remain
+full DP5B work.  This does not change the unresolved Daily status.
+
+* DP5B session-command foundation evidence (accepted, partial)
+
+Independent review of the current shared implementation tree returned exactly
+=slice-review-fixed-point=.  The repository gate compiled successfully
+and the combined async/runtime/storage plus legacy session/SQLite set passed
+253/253 tests.  The stable public =e-runtime-store-submit= ABI is checked with
+=func-arity= because compiled Emacs 31 erases source parameter names.  A host
+=pgrep= audit found no orphan runtime-store worker or batch Emacs process.
+
+The accepted mechanics are bounded FIFO command admission, exact shared escrow
+accounting and transfer, lane-head interpretation, transactional post-ACK
+aggregate publication, exact ownership release, and isolated terminal
+notification.  Persistent projection-mark or diagnostic failure is secondary:
+each is attempted once, successful authoritative work settles, and the next
+FIFO command advances without a zero-delay retry loop.
+
+This evidence does not accept =F92-C07= as a whole.  The remaining session
+command families, asynchronous resume/finalize/close, default cutover, and
+complete public-path/reachability proof remain open, as do Board/chat C08,
+whole-path C09/C10, and the graphical Daily topology.  The running Emacs and
+canonical database were left unchanged.
 
 The lower-level timing condition that delayed the historical live worker for
 60 seconds is not reproduced by the disposable database clone.  That unknown
@@ -51,11 +77,12 @@ failure behavior independently of the trigger.
 * DP5A transport implementation evidence (accepted)
 
 The accepted runtime transport substrate returns a private immutable request
-handle before cold open or acknowledgement, and the runtime-owned timer advances open, dispatch,
-deadline recovery, and settlement without =await=.  This does not yet make
-session, Board, or chat application operations asynchronous; those remain the
-separate DP5B--DP5D packages, so the historical Daily behavior is not marked
-resolved by this record.
+handle before cold open or acknowledgement, and the runtime-owned timer advances
+open, dispatch, deadline recovery, and settlement without =await=.  DP5A alone
+did not make session, Board, or chat application operations asynchronous.  The
+later accepted DP5B foundation now covers an opt-in subset of session commands;
+the default composition, full C07 grammar, Board/chat lanes, and historical
+Daily behavior remain unresolved.
 
 DP5A also bounds scheduler-owned canonical frames and terminal
 notification tokens, releases them on terminal/cancel/close paths, and keeps
@@ -367,14 +394,14 @@ restart to take effect.
 * Remaining asynchronous correction
 
 The acknowledgement ambiguity and runtime autonomous settlement are closed,
-but the interactive application contract remains open.  Feature 92 contracts
-=F92-C07= through =F92-C10= require:
+and the bounded opt-in session-command foundation is accepted, but the
+interactive application contract remains open.  Feature 92 contracts
+=F92-C07= through =F92-C10= still require:
 
-- autonomous cold open, dispatch, phase deadlines, recovery, and terminal
-  settlement when no caller awaits;
-- bounded per-session and per-Board application-service lanes that preserve
-  durable-before-visible publication and admit same-owner timer work in FIFO
-  order;
+- complete sealed-command coverage plus asynchronous session resume, finalize,
+  and close before enabling the default SQLite composition;
+- bounded per-Board application-service lanes that preserve durable-before-visible
+  publication and admit same-owner timer work in FIFO order;
 - public chat composition that returns a pending surface and queues immediate
   Daily start/input behind durable binding readiness; and
 - aggregate count, retained-byte, completion-work, and lifecycle-release bounds

@@ -11,9 +11,11 @@ In-review.  Independent implementation review reached
 =66cbfd91321dc8ae011bd023911cfe8e19e1bea3=, with scoped diff SHA-256
 =1da248c3c78a600982a43c52fdfc3f673fe31397de8d9ab6820027947e1b34f6=.
 Independent gates were runtime owner 68/68, Board replay seam 1/1, retained
-frame RSS 242,204,672 bytes, clean diff, and no orphan process.  Feature 92
-remains =In-review= because DP5B--DP5D, C07--C10, and the Daily application
-composition are not accepted.  Earlier DP5A pending-review records below are
+frame RSS 242,204,672 bytes, clean diff, and no orphan process.  The bounded
+DP5B session-command foundation described below is also independently accepted,
+but Feature 92 remains =In-review=: that foundation does not establish full
+=F92-C07= command coverage, default/public-path composition, C08--C10, or the
+Daily behavior.  Earlier DP5A pending-review records below are
 historical chronology.  A fresh Daily run invalidated the original fixed point at =25c574fd= by
 showing that a lost =catalog-put= acknowledgement could still freeze the shared
 store.  DP4 and its review correction add ACID acknowledgement recovery in
@@ -24,11 +26,9 @@ claimed graphical composition evidence.  A timer reentered a durable mutation
 on the same Board and escaped as =e-board-mutation-frozen=.  See
 [[file:../../bugs/board-timer-reentrant-durability-barrier/investigation.org][the live investigation]].
 
-DP5B foundation correction is paused for renewed specification review.  The
-generic staged-mutation closure cannot truthfully promise capacity-before-stage
-admission because its retained projection size is not knowable until mutation.
-The pending plan delta replaces it with an aggregate-owned closed immutable
-command grammar and interpreter.  A single normative schema calculator counts
+The accepted DP5B foundation replaces the rejected generic staged-mutation
+closure with an aggregate-owned closed immutable command grammar and
+interpreter.  A single normative schema calculator counts
 every fixed-width command/delta/undo node, constructs each family maximum, and
 runs the exact transport-visible delta through the production codec.  Admission
 reserves producer leaves =P=, calculator-derived wrappers =D=, 32 fixed
@@ -46,13 +46,43 @@ The absolute max remains 88,350,720 bytes (=P=16,777,216 + =D=262,144 +
 =R=8,192 + =Freserve=Fmax=71,303,168), under proposed 85 MiB
 (89,128,960), leaving 778,240 bytes; it requires a fresh RSS probe.  An
 exhausted post-ACK apply atomically fails/releases its tail before observer
-delivery, keeps one counted 2,048-byte barrier slot, and gives matching resume
-priority with one bounded page/frame escrow.  A submitted atomic fork batch/cut
-remains owned through DP4 same-ID resolution, while only pre-submit cancellation
-can release it.  No DP5B acceptance or Daily-resolution claim follows from this
-plan-only correction.
+delivery and keeps one counted 2,048-byte barrier slot with matching durable
+proof.  Priority bounded resume and atomic fork/cut ownership remain full DP5B
+work.  The implemented foundation covers create, message append,
+activity/context-curation-response append, and the
+metadata/config/context-reference/capability-state/turn-options/current-branch/
+name session-info family behind explicit async opt-in.  The default SQLite
+composition remains on the legacy synchronous path until the rest of the closed
+grammar, resume/finalize/close orchestration, and public-path proof are complete.
 
-** TODO High: Interactive persistence remains synchronous
+** DP5B foundation acceptance
+
+Independent slice review of the current shared implementation tree returned
+exactly =slice-review-fixed-point= after the accounting,
+post-ACK apply, ownership-retirement, result-parity, and projection-isolation
+corrections.  This accepts a useful DP5B foundation, not =F92-C07= as a whole.
+
+The accepted slice provides bounded per-session FIFO admission, aggregate-owned
+sealed commands, exact =P+D+R+Freserve= reservation and DP5A escrow transfer,
+lane-head interpretation of committed state, transactional post-ACK aggregate
+apply, and bounded isolated terminal notification.  Projection marking is one
+non-gating attempt with one independently isolated diagnostic attempt; neither
+can retain authoritative completion or delay the next lane operation.
+
+The acceptance gate compiled the tree and ran the combined async/runtime/
+storage plus legacy session/SQLite set: 253/253 tests passed.  The public
+=e-runtime-store-submit= ABI test uses =func-arity= because compiled Emacs 31
+does not preserve parameter names, and proves the stable three-argument public
+surface.  The host orphan audit found no runtime-store worker or batch Emacs
+process.  No live Emacs or canonical database was opened or mutated.
+
+Still open for =F92-C07=: migrate every remaining durable session command,
+resume, finalize, and close; remove the partial-slice unsupported surface;
+enable the async default only after that closed grammar is complete; and prove
+the complete public entrypoint/reachability composition.  C08--C10 and the
+graphical Daily topology remain separate acceptance gates.
+
+** TODO High: Default interactive persistence remains synchronous
 
 The Feature 92 batch and graphical tests schedule a Board pickup transition
 behind session-owned =catalog-put=.  That proves shared runtime-store ordering,
@@ -233,7 +263,7 @@ found no further actionable issue.
 | F92-C04 | Passing | Exact canonical/wire bounds; raw-byte coverage; bounded response handling; paged identities; catalog/checkpoint limits; oversized-checkpoint journal replay. |
 | F92-C05 | Passing | Mutation and full-response-bounded receipt share one SQLite transaction; same-identity replay, migration, retention, close, live-parent contention, and graphical Board composition pass. |
 | F92-C06 | Passing / accepted | DP5A event-driven runtime settlement without an awaiter. |
-| F92-C07 | Planned / not started | Session application-service lanes and store-wide coordinator. |
+| F92-C07 | Foundation accepted / incomplete | Opt-in sealed-command lanes cover create, selected append operations, and session-info mutations; full grammar, resume/finalize/close, default cutover, and public-path proof remain. |
 | F92-C08 | Planned / not started | Board durability lane and chat readiness reconciliation. |
 | F92-C09 | Planned / not started | Complete hot-path owner migration and reachability gate. |
 | F92-C10 | Planned | DP5A installed runtime-local count/byte/work and lifecycle release machinery; whole-runtime composition remains DP5D. |
@@ -241,7 +271,8 @@ found no further actionable issue.
 The historical four delivery packages pass their focused mechanism and
 composition evidence.  The following statement was true before DP5A and is
 now historical: DP5A through DP5D had no production implementation or
-acceptance evidence.  DP5A is accepted; DP5B--DP5D remain planned.
+acceptance evidence.  DP5A and the bounded DP5B command foundation are accepted;
+full DP5B plus DP5C--DP5D remain open.
 
 * Verification
 
@@ -360,8 +391,10 @@ The independent reviewer evaluated the frozen amended plan blob
 =8be7429b71408eca57942549b8922b540146f327= and every DP4 correction.  On exact
 clean revision =857fcb1f8bdae66d13df4c628e6675096ab82c5d= it returned exactly
 =implementation-review-fixed-point=.  The subsequent live same-Board timer
-counterexample invalidates that acceptance and requires a new correction and
-independent review round.
+counterexample invalidated Feature 92 closure and required DP5.  DP5A and the
+bounded DP5B command foundation have since reached independent implementation
+review fixed points, but full C07, C08--C10, and the Daily composition remain
+unresolved.
 
 * Live runtime disposition
 
@@ -375,9 +408,10 @@ bug report.
 * Unresolved
 
 - High: an admitted timer mutation can escape as =e-board-mutation-frozen=
-  while another durable mutation on the same Board awaits storage.  The DP5
-  correction and its named deterministic topology through the timer-backed
-  input-classification scheduler, =e-board-runtime--drain-input-routing=, and
+  while another durable mutation on the same Board awaits storage.  The
+  remaining DP5 command coverage and its named deterministic topology through
+  the timer-backed input-classification scheduler,
+  =e-board-runtime--drain-input-routing=, and
   public Daily chat composition still require implementation evidence.  The
   exact historical timer producer remains observational and non-gating.
 - The timing-dependent reason the historical live worker failed to acknowledge

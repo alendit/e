@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-runtime-store-codec)
 (require 'e-session-storage-sqlite)
 
 (define-error 'e-session-persistence-unavailable
@@ -55,7 +56,7 @@
 
 (cl-defun e-session-storage-register
     (owner &key directory sessions-directory index-file persistent write-mode
-           (backend 'legacy) runtime-store (owns-runtime-store t))
+           (backend 'legacy) runtime-store (owns-runtime-store t) reservation)
   "Register OWNER's current physical adapter and return its state.
 
 Persistent legacy registration is rejected with migration guidance.  DIRECTORY,
@@ -74,7 +75,7 @@ caller receives the targeted error instead of an opaque keyword failure."
           :persistent (and persistent t))))
     (puthash owner state e-session-storage--states)
     (e-session-storage-sqlite-register owner backend runtime-store
-                                       owns-runtime-store)
+                                       owns-runtime-store reservation)
     state))
 
 (defun e-session-storage--profile-call (event options thunk)
@@ -123,6 +124,36 @@ caller receives the targeted error instead of an opaque keyword failure."
 (defun e-session-storage-runtime-store (store)
   "Return STORE's injected runtime-store adapter, or nil when ephemeral."
   (e-session-storage-sqlite-runtime store))
+
+(defun e-session-storage-submit (store kind body on-settle &optional escrow)
+  "Submit current SQLite KIND BODY and report `(RESULT ERROR)' asynchronously.
+
+This narrow physical operation is for the session application's FIFO
+coordinator.  It does not expose DP5A request details to session callers."
+  (e-session-storage--require-sqlite store "Asynchronous session operation")
+  (e-session-storage-sqlite-submit store kind body on-settle escrow))
+
+(defun e-session-storage-reserve-frame-escrow (store bytes)
+  "Reserve BYTES through STORE's composition-owned adapter boundary."
+  (e-session-storage--require-sqlite store "Session frame reservation")
+  (e-session-storage-sqlite-reserve-frame-escrow store bytes))
+
+(defun e-session-storage-release-frame-escrow (store bytes)
+  "Release STORE's untransferred frame escrow BYTES exactly once."
+  (e-session-storage-sqlite-release-frame-escrow store bytes))
+
+(defun e-session-storage-measure-frame-escrow (store kind body)
+  "Measure KIND BODY's bounded DP5A frame escrow through STORE's adapter."
+  (e-session-storage--require-sqlite store "Session frame measurement")
+  (e-session-storage-sqlite-measure-frame-escrow store kind body))
+
+(defun e-session-storage-freeze-operation-body (body limit)
+  "Return exact bounded detached durable BODY for a session operation."
+  (e-runtime-store-codec-freeze-bounded body limit))
+
+(defun e-session-storage-measure-operation-body (body limit)
+  "Return exact bounded canonical bytes for durable BODY without copying it."
+  (e-runtime-store-codec-measure-bounded body limit))
 
 (defun e-session-storage--require-sqlite (store operation)
   "Require current persistent STORE for OPERATION."
@@ -364,7 +395,14 @@ already authoritative.  It deliberately neither writes nor cleans checkpoints."
   (e-session-storage-runtime-store store))
 
 (defun e-session-storage-close (store)
-  "Close STORE when it owns a runtime worker."
+  "Close STORE when it owns a runtime worker.
+
+When the optional C07 coordinator is loaded, a settled close releases its
+bounded reconciliation barriers first.  An unsettled lane is deliberately
+rejected by that owner rather than being silently discarded; the reserve,
+fence, and asynchronous close protocol remain later DP5B work."
+  (when (fboundp 'e-session-async-teardown)
+    (e-session-async-teardown store))
   (when (e-session-storage-sqlite-p store)
     (e-session-storage-sqlite-close store)))
 

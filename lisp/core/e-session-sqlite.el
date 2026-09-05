@@ -93,12 +93,20 @@
       request)))
 
 (cl-defun e-session-sqlite-store-create
-    (&optional directory &key load-all runtime-store)
+    (&optional directory &key load-all runtime-store asynchronous)
   "Create an opt-in SQLite-backed session store in DIRECTORY."
   (let* ((directory (file-name-as-directory
                      (expand-file-name (or directory e-session-directory))))
          (owns-runtime-store (null runtime-store))
-         (runtime-store (or runtime-store (e-runtime-store-open directory)))
+         ;; The session/runtime composition root owns one shared byte ledger.
+         ;; DP5A client frames and later C07 command escrows transfer through
+         ;; this object instead of maintaining a parallel local approximation.
+         (reservation
+          (or (and runtime-store (e-runtime-store--reservation runtime-store))
+              (e-runtime-store--reservation-create)))
+         (runtime-store
+          (or runtime-store
+              (e-runtime-store-open directory :reservation reservation)))
          (store (e-session-store-create
                  :directory directory :sessions-directory nil :index-file nil
                  :persistent t :write-mode 'sqlite)))
@@ -107,7 +115,10 @@
           (e-session-storage-register
            store :directory directory :persistent t :write-mode 'sqlite
            :backend 'sqlite :runtime-store runtime-store
-           :owns-runtime-store owns-runtime-store)
+           :owns-runtime-store owns-runtime-store :reservation reservation)
+          (when asynchronous
+            (require 'e-session-async)
+            (e-session-async-enable store))
           (if load-all
               (e-session-load store)
             (if (e-session--load-index store)

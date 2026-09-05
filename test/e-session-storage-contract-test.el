@@ -177,6 +177,10 @@ one Emacs process."
          owner runtime)
     (unwind-protect
         (progn
+          ;; Cold open is asynchronous.  Observe a worker-owned read before
+          ;; closing so the schema exists before this fixture seeds it with
+          ;; direct SQL.
+          (e-runtime-store-call initializer 'read '(:op store-metrics))
           (e-runtime-store-close initializer)
           (let ((database (sqlite-open (expand-file-name "store.sqlite3" directory))))
             (unwind-protect

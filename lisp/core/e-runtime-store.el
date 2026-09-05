@@ -70,7 +70,7 @@ submitted timeout fences and replaces the worker once."
 ;; several stores; the default keeps independently opened stores bounded too.
 (defconst e-runtime-store-request-capacity 128)
 (defconst e-runtime-store-retained-byte-capacity (* 68 1024 1024))
-(defconst e-runtime-store-global-byte-capacity (* 84 1024 1024))
+(defconst e-runtime-store-global-byte-capacity (* 85 1024 1024))
 (defconst e-runtime-store-notification-capacity 128)
 (defconst e-runtime-store-notification-drain-limit 16)
 (defconst e-runtime-store-open-control-capacity 1
@@ -123,7 +123,8 @@ request/token budget so a full cold queue can still become ready.")
                (:predicate e-runtime-store-request-p)
                (:conc-name e-runtime-store-request--))
   id kind body frame state result error admitted-at submitted-at write-prefix
-  operation frame-bytes retained-bytes notification observer observer-detached)
+  operation frame-bytes retained-bytes notification observer observer-detached
+  frame-escrow)
 
 (defun e-runtime-store--worker-file ()
   "Return the newest installed worker source or byte-code path.
@@ -351,6 +352,44 @@ already admitted notification because a burst filled the outbox meanwhile."
           (e-runtime-store-request--retained-bytes request) bytes
           (e-runtime-store-request--notification request) 'reserved)))
 
+(defun e-runtime-store--reserve-request-from-escrow (store request bytes escrow)
+  "Transfer ESCROW's already-counted frame bytes into REQUEST exactly once.
+
+The composition owner has already charged ESCROW against STORE's shared
+reservation.  The runtime adds only its private request/token ownership, keeps
+BYTES live for terminal release, and immediately returns the unused portion.
+This is private plumbing for a consumer-shaped storage adapter; public submit
+continues to own its own admission reservation."
+  (let ((reservation (or (e-runtime-store--reservation store)
+                         e-runtime-store--default-reservation)))
+    (unless (and (integerp escrow) (>= escrow bytes) (>= bytes 0))
+      (signal 'e-runtime-store-error
+              (list "Invalid composition frame escrow" :escrow escrow :bytes bytes)))
+    (when (or (< (e-runtime-store--reservation-used reservation) escrow)
+              (> (+ (e-runtime-store--reserved-bytes store) bytes)
+                 e-runtime-store-retained-byte-capacity)
+              (>= (e-runtime-store--request-count store)
+                  e-runtime-store-request-capacity)
+              (>= (e-runtime-store--notification-count store)
+                  e-runtime-store-notification-capacity))
+      (signal 'e-runtime-store-capacity-exhausted
+              (list "Runtime-store escrow admission capacity is exhausted"
+                    :request-count (e-runtime-store--request-count store)
+                    :retained-bytes (e-runtime-store--reserved-bytes store)
+                    :global-bytes (e-runtime-store--reservation-used reservation))))
+    ;; The owner reserved ESCROW before it could construct the canonical
+    ;; frame.  It transfers the surviving actual allocation to this request;
+    ;; the difference cannot remain charged after this point.
+    (setf (e-runtime-store--request-count store) (1+ (e-runtime-store--request-count store))
+          (e-runtime-store--reserved-bytes store) (+ (e-runtime-store--reserved-bytes store) bytes)
+          (e-runtime-store--reservation-used reservation)
+          (- (e-runtime-store--reservation-used reservation) (- escrow bytes))
+          (e-runtime-store--notification-count store)
+          (1+ (e-runtime-store--notification-count store))
+          (e-runtime-store-request--retained-bytes request) bytes
+          (e-runtime-store-request--frame-escrow request) escrow
+          (e-runtime-store-request--notification request) 'reserved)))
+
 (defun e-runtime-store--request-slot-available-p (store)
   "Return non-nil when STORE can cheaply admit one request/token pair."
   (and (< (e-runtime-store--request-count store)
@@ -362,14 +401,23 @@ already admitted notification because a burst filled the outbox meanwhile."
   "Release REQUEST's one admission reservation exactly once."
   (when-let* ((bytes (e-runtime-store-request--retained-bytes request)))
     (let ((reservation (or (e-runtime-store--reservation store)
-                           e-runtime-store--default-reservation)))
+                           e-runtime-store--default-reservation))
+          (escrow (e-runtime-store-request--frame-escrow request)))
       (setf (e-runtime-store--reserved-bytes store)
             (max 0 (- (e-runtime-store--reserved-bytes store) bytes))
             (e-runtime-store--reservation-used reservation)
-            (max 0 (- (e-runtime-store--reservation-used reservation) bytes))
+            ;; Before the canonical frame is successfully retained, the
+            ;; composition still owns ESCROW.  Restore that exact charge so
+            ;; its caller performs the one rollback.  After preflight clears
+            ;; FRAME-ESCROW, DP5A owns and releases the actual frame itself.
+            (if escrow
+                (+ (e-runtime-store--reservation-used reservation)
+                   (- escrow bytes))
+              (max 0 (- (e-runtime-store--reservation-used reservation) bytes)))
             (e-runtime-store--request-count store)
             (max 0 (1- (e-runtime-store--request-count store)))
-            (e-runtime-store-request--retained-bytes request) nil))))
+            (e-runtime-store-request--retained-bytes request) nil
+            (e-runtime-store-request--frame-escrow request) nil))))
 
 (defun e-runtime-store--release-terminal (store request)
   "Release REQUEST's token and frame reservation exactly once."
@@ -904,6 +952,32 @@ whether the mutation already committed.  Reads are safe to retry directly."
              :ack-prefix (and (eq (e-runtime-store-request--kind request) 'write)
                               (e-runtime-store--acknowledged-write-prefix store)))))))
 
+(defun e-runtime-store--measure-frame-escrow (store kind body)
+  "Return an allocation-free upper bound for STORE KIND BODY's protocol frame.
+
+The session composition uses this before it can allocate a retained immutable
+frame.  A maximal same-runtime request id and write/ack prefixes dominate the
+later concrete request while BODY remains only referenced by the measured
+wrapper."
+  (let* ((prefix (if (eq kind 'write) "w" "r"))
+         (maximum most-positive-fixnum)
+         (value
+          ;; `e-runtime-store--request-frame' carries the prefix keys for
+          ;; both reads and writes (read values are nil).  Measure the same
+          ;; complete wire-visible shape; a maximal numeric read prefix is a
+          ;; harmless upper bound and keeps future frame changes explicit.
+          (list :id (format "%s:%s:%d" (e-runtime-store--runtime-id store)
+                            prefix maximum)
+                :kind kind :body body :write-prefix maximum
+                :ack-prefix (and (eq kind 'write) maximum)))
+         (bytes (e-runtime-store-codec-measure-bounded
+                 value e-runtime-store-codec-protocol-canonical-byte-limit)))
+    (when (> (e-runtime-store-codec-wire-byte-count bytes)
+             e-runtime-store-codec-protocol-wire-byte-limit)
+      (signal 'e-runtime-store-codec-too-large
+              (list "Protocol frame escrow exceeds wire limit" :bytes bytes)))
+    bytes))
+
 (defun e-runtime-store--preflight-request (store-or-request &optional maybe-request admit)
   "Return REQUEST's exact bounded canonical frame before queue admission."
   (let ((store (and maybe-request store-or-request))
@@ -934,7 +1008,10 @@ whether the mutation already committed.  Reads are safe to retry directly."
               ;; large string.  Once encoded, scheduler ownership retains the
               ;; immutable frame and typed operation, never caller BODY.
               (when admit
-                (e-runtime-store--reserve-request store request bytes)
+                (if (integerp admit)
+                    (e-runtime-store--reserve-request-from-escrow
+                     store request bytes admit)
+                  (e-runtime-store--reserve-request store request bytes))
                 (setq reserved t))
               (unwind-protect
                   (progn
@@ -944,6 +1021,11 @@ whether the mutation already committed.  Reads are safe to retry directly."
                           (e-runtime-store-request--operation request)
                           (plist-get (e-runtime-store-request--body request) :op)
                           (e-runtime-store-request--body request) nil
+                          ;; The retained exact frame is now DP5A-owned.  A
+                          ;; later terminal release subtracts its actual bytes;
+                          ;; only an earlier setup failure restores ESCROW to
+                          ;; the composition owner.
+                          (e-runtime-store-request--frame-escrow request) nil
                           success t))
                 (unless success
                   (when reserved (e-runtime-store--release-terminal store request))))))
@@ -1302,6 +1384,34 @@ Write identity is also the private durable receipt key used for recovery."
             (nconc (e-runtime-store--read-queue store) (list request))))
     ;; Submission stops at bounded ownership transfer.  The zero-delay event
     ;; below runs only after this caller has its stable private handle.
+    (e-runtime-store--schedule store t)
+    request))
+
+(defun e-runtime-store--submit-with-frame-escrow (store kind body escrow)
+  "Submit KIND BODY by transferring one composition-owned frame ESCROW.
+
+ESCROW is already included in STORE's shared reservation and must dominate the
+exact protocol frame.  This private adapter seam is intentionally separate
+from the stable public `e-runtime-store-submit' ABI."
+  (unless (memq kind '(read write))
+    (signal 'wrong-type-argument (list '(member read write) kind)))
+  (when (e-runtime-store--closed store)
+    (signal 'e-runtime-store-unavailable (list "Store is closed")))
+  (when (e-runtime-store--unavailable store)
+    (e-runtime-store--signal-unavailable store))
+  (let ((request
+         (e-runtime-store-request--create
+          :id (e-runtime-store--next-id store
+                                        (if (eq kind 'write) "w" "r"))
+          :kind kind :body body :state 'queued :admitted-at (float-time)
+          :write-prefix (and (eq kind 'write)
+                             (cl-incf (e-runtime-store--write-prefix-sequence store))))))
+    (e-runtime-store--preflight-request store request escrow)
+    (if (eq kind 'write)
+        (setf (e-runtime-store--write-queue store)
+              (nconc (e-runtime-store--write-queue store) (list request)))
+      (setf (e-runtime-store--read-queue store)
+            (nconc (e-runtime-store--read-queue store) (list request))))
     (e-runtime-store--schedule store t)
     request))
 

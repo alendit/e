@@ -16,10 +16,11 @@ Feature 91 module boundaries.  Existing statuses remain unchanged because they
 record each feature's lifecycle state.
 
 Feature 92 is =In-review=: DP5A independently accepted its event-driven
-runtime-store substrate, while live evidence still leaves the interactive
-session/Board/chat composition boundary unresolved.  DP5B--DP5D retain the
-remaining asynchronous application services, reachability, and whole-runtime
-budget work.
+runtime-store substrate, and independent review accepted the bounded opt-in
+DP5B session-command foundation.  Full C07 command coverage, default/public-path
+composition, the session resume/finalize/close lifecycle, Board/chat C08, and
+C09/C10 reachability and whole-runtime budget proof remain.  The live Daily
+behavior is unresolved.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

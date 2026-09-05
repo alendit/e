@@ -22,8 +22,17 @@
   (make-hash-table :test 'eq :weakness 'key))
 (defvar e-session-storage-sqlite--owned-runtimes
   (make-hash-table :test 'eq :weakness 'key))
+(defvar e-session-storage-sqlite--reservations
+  (make-hash-table :test 'eq :weakness 'key)
+  "Composition-owned runtime reservations keyed by session store.")
 
-(defun e-session-storage-sqlite-register (store backend runtime owns-runtime)
+(cl-defstruct (e-session-storage-sqlite--async-operation
+               (:constructor e-session-storage-sqlite--async-operation-create))
+  "Opaque consumer-facing session operation; its request remains adapter-private."
+  request)
+
+(defun e-session-storage-sqlite-register
+    (store backend runtime owns-runtime &optional reservation)
   "Register STORE's physical BACKEND and optional RUNTIME."
   (puthash store backend e-session-storage-sqlite--backends)
   (if runtime
@@ -31,7 +40,10 @@
     (remhash store e-session-storage-sqlite--runtimes))
   (if (and runtime owns-runtime)
       (puthash store t e-session-storage-sqlite--owned-runtimes)
-    (remhash store e-session-storage-sqlite--owned-runtimes)))
+    (remhash store e-session-storage-sqlite--owned-runtimes))
+  (if reservation
+      (puthash store reservation e-session-storage-sqlite--reservations)
+    (remhash store e-session-storage-sqlite--reservations)))
 
 (defun e-session-storage-sqlite-store-p (store)
   "Return non-nil when STORE uses the opt-in SQLite adapter."
@@ -41,12 +53,64 @@
   "Return STORE's runtime-store adapter, or nil."
   (gethash store e-session-storage-sqlite--runtimes))
 
+(defun e-session-storage-sqlite-measure-frame-escrow (store kind body)
+  "Return STORE KIND BODY's bounded DP5A frame escrow without retaining a frame."
+  (let ((runtime (e-session-storage-sqlite-runtime store)))
+    (unless runtime
+      (signal 'e-session-storage-error (list "SQLite runtime is unavailable")))
+    (e-runtime-store--measure-frame-escrow runtime kind body)))
+
+(defun e-session-storage-sqlite-reserve-frame-escrow (store bytes)
+  "Reserve BYTES in STORE's composition-owned runtime reservation."
+  (let ((reservation (gethash store e-session-storage-sqlite--reservations)))
+    (unless reservation
+      (signal 'e-session-storage-error
+              (list "Session composition reservation is unavailable")))
+    (when (> (+ (e-runtime-store--reservation-used reservation) bytes)
+             (e-runtime-store--reservation-limit reservation))
+      (signal 'e-session-async-capacity-exhausted
+              (list "Session composition frame capacity is exhausted"
+                    :requested-bytes bytes
+                    :used-bytes (e-runtime-store--reservation-used reservation))))
+    (cl-incf (e-runtime-store--reservation-used reservation) bytes)
+    bytes))
+
+(defun e-session-storage-sqlite-release-frame-escrow (store bytes)
+  "Release an untransferred session composition frame escrow of BYTES."
+  (when-let* ((reservation (gethash store e-session-storage-sqlite--reservations)))
+    (setf (e-runtime-store--reservation-used reservation)
+          (max 0 (- (e-runtime-store--reservation-used reservation) bytes)))))
+
 (defun e-session-storage-sqlite--call (store kind body)
   "Call STORE's typed runtime KIND BODY operation."
   (let ((runtime (e-session-storage-sqlite-runtime store)))
     (unless runtime
       (signal 'e-session-storage-error (list "SQLite runtime is unavailable")))
     (e-runtime-store-call runtime kind body)))
+
+(defun e-session-storage-sqlite-submit (store kind body on-settle &optional escrow)
+  "Submit STORE's typed KIND BODY and call ON-SETTLE with RESULT and ERROR.
+
+The session application service owns any resulting work handle and publishes
+aggregate state only from this consumer-shaped terminal observation.  The
+runtime request and its private protocol fields stay inside this adapter."
+  (let ((runtime (e-session-storage-sqlite-runtime store)))
+    (unless runtime
+      (signal 'e-session-storage-error (list "SQLite runtime is unavailable")))
+    (let ((request (if escrow
+                       (e-runtime-store--submit-with-frame-escrow
+                        runtime kind body escrow)
+                     (e-runtime-store-submit runtime kind body))))
+      (e-runtime-store--observe
+       request
+       (lambda (settled)
+         (if (eq (e-runtime-store-request--state settled) 'committed)
+             (funcall on-settle (e-runtime-store-request--result settled) nil)
+           (funcall on-settle nil
+                    (or (e-runtime-store-request--error settled)
+                        '(e-session-storage-error
+                          "Runtime request did not commit"))))))
+      (e-session-storage-sqlite--async-operation-create :request request))))
 
 (defun e-session-storage-sqlite-reference (session-id)
   "Return the opaque catalog reference for SESSION-ID."
@@ -244,6 +308,7 @@ that separately through `e-runtime-store-integrity'."
     (e-runtime-store-close runtime))
   (remhash store e-session-storage-sqlite--owned-runtimes)
   (remhash store e-session-storage-sqlite--runtimes)
+  (remhash store e-session-storage-sqlite--reservations)
   (remhash store e-session-storage-sqlite--backends)
   t)
 

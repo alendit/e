@@ -470,9 +470,10 @@
                   :id 'replace :when '(:every 20) :enabled nil :storage storage
                   :action #'ignore))))
         (setf (e-cron-schedule-enabled old) t)
-        (cl-letf (((symbol-function 'run-at-time)
-                   (lambda (&rest _args) (cl-incf arms) 'stub-timer))
-                  ((symbol-function 'timerp) (lambda (_value) nil)))
+        ;; Stub the cron-owned arm seam, not the global timer primitive: the
+        ;; latter now also drives DP5A's autonomous worker scheduler.
+        (cl-letf (((symbol-function 'e-cron--arm)
+                   (lambda (&rest _args) (cl-incf arms) 'stub-timer)))
           (e-cron--on-timer 'replace))
         (should (= arms 0))
         (should-not (eq old (e-cron-get 'replace)))))))
@@ -734,6 +735,11 @@
            (eq runtime
                (e-session-storage-runtime-store
                 (e-runtime-sqlite-session-store composition))))
+          ;; The default remains legacy until the full session command grammar
+          ;; is migrated; partial opt-in must not expose unsupported facades.
+          (should-not
+           (e-session-async-enabled-p
+            (e-runtime-sqlite-session-store composition)))
           (should
            (eq runtime
                (e-board-storage-runtime

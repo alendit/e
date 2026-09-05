@@ -34,6 +34,16 @@
 (define-error 'e-session-board-message-cycle "Cyclic board message envelope")
 (define-error 'e-session-board-message-invalid-record-type "Invalid board message record type")
 (define-error 'e-session-error "Session error")
+(define-error 'e-session-command-too-large
+  "Session command producer exceeds its domain limit" 'e-session-error)
+
+(defvar e-session-aggregate--committed-apply-fault-function nil
+  "Optional test-only function called at committed-apply journal boundaries.")
+
+(defun e-session-aggregate--committed-apply-fault (boundary)
+  "Invoke the test-only committed-apply fault seam at BOUNDARY."
+  (when e-session-aggregate--committed-apply-fault-function
+    (funcall e-session-aggregate--committed-apply-fault-function boundary)))
 
 (defgroup e-session nil "Session storage for e." :group 'e :prefix "e-session-")
 (defcustom e-session-directory (locate-user-emacs-file "e/sessions/")
@@ -61,6 +71,452 @@
 (cl-defstruct (e-session-board-journal
                (:constructor e-session-aggregate--board-journal-create))
   messages tail (id-index (make-hash-table :test 'equal)))
+
+(cl-defstruct (e-session-aggregate-command
+               (:constructor e-session-aggregate-command--create))
+  "One sealed C07 command, owned by an aggregate lane until interpretation.
+
+The command deliberately stores semantic tag/identity/input only; it never
+contains a staged session or a caller-provided mutation closure."
+  tag session-id arguments request-id delta-id timestamp account)
+
+(defconst e-session-aggregate-command-tags
+  '(create append-message append-activity context-curation-response session-info)
+  "Closed durable command tags implemented by the first C07 command slice.")
+
+(defconst e-session-aggregate-command-schema
+  '((create :tags (create) :producer-max 16777216 :nodes 1024
+            :node-bytes 256
+            :fixed-nodes ((command . 32) (delta . 64) (undo . 128))
+            :delta-bytes 262144 :reference-nodes 32 :fixed-fields 12)
+    (append :tags (append-message append-activity context-curation-response)
+            :producer-max 16777216 :nodes 512 :node-bytes 256
+            :fixed-nodes ((command . 32) (delta . 96) (undo . 128))
+            :delta-bytes 131072 :reference-nodes 32 :fixed-fields 16)
+    (state :tags (session-info) :producer-max 16777216 :nodes 384
+           :node-bytes 256
+           :fixed-nodes ((command . 32) (delta . 96) (undo . 128))
+           :delta-bytes 98304 :reference-nodes 32 :fixed-fields 24))
+  "Normative accounting schema for the implemented sealed command families.
+
+The fixed-node ledger explicitly enumerates sealed-command, durable-delta, and
+transactional-undo nodes.  Every retained caller cons/vector/hash container
+and each hash entry consumes one of the remaining family N slots.  D is
+generated as N*NODE-BYTES and reserves that total physical container budget.
+The fixed-field count also drives the
+maximum transport-visible envelope used to calculate exact frame escrow;
+adding a tag or widening a family therefore changes one domain authority
+rather than a coordinator constant.")
+
+(defconst e-session-aggregate--maximum-identity (make-string 128 ?x))
+(defconst e-session-aggregate--maximum-time (make-string 32 ?9))
+(defconst e-session-aggregate--maximum-fixed-value (make-string 128 ?x))
+(defconst e-session-aggregate--maximum-fixed-keys
+  '(:fixed-00 :fixed-01 :fixed-02 :fixed-03 :fixed-04 :fixed-05
+    :fixed-06 :fixed-07 :fixed-08 :fixed-09 :fixed-10 :fixed-11
+    :fixed-12 :fixed-13 :fixed-14 :fixed-15 :fixed-16 :fixed-17
+    :fixed-18 :fixed-19 :fixed-20 :fixed-21 :fixed-22 :fixed-23)
+  "Pre-existing keys for the largest schema envelope.")
+
+(defun e-session-aggregate-command-family (tag)
+  "Return the closed accounting family containing command TAG."
+  (or (cl-loop for (family . spec) in e-session-aggregate-command-schema
+               when (memq tag (plist-get spec :tags)) return family)
+      (signal 'e-session-error (list "Unsupported session command tag" tag))))
+
+(defun e-session-aggregate-command-family-spec (family)
+  "Return the normative accounting specification for FAMILY."
+  (or (assq family e-session-aggregate-command-schema)
+      (signal 'e-session-error
+              (list "Unsupported session command family" family))))
+
+(defun e-session-aggregate-command-delta-bytes (family)
+  "Return FAMILY's generated D charge and verify its node equation."
+  (let* ((spec (e-session-aggregate-command-family-spec family))
+         (generated (* (plist-get (cdr spec) :node-bytes)
+                       (plist-get (cdr spec) :nodes)))
+         (declared (plist-get (cdr spec) :delta-bytes)))
+    (unless (= generated declared)
+      (signal 'e-session-error
+              (list "Session command schema D/node mismatch" family)))
+    generated))
+
+(defun e-session-aggregate-command-fixed-nodes (family)
+  "Return FAMILY's mechanically summed command/delta/undo node ledger."
+  (let* ((spec (cdr (e-session-aggregate-command-family-spec family)))
+         (groups (plist-get spec :fixed-nodes)))
+    (unless (equal (mapcar #'car groups) '(command delta undo))
+      (signal 'e-session-error
+              (list "Session command fixed-node ledger is incomplete" family)))
+    (cl-loop for (_component . nodes) in groups
+             unless (and (integerp nodes) (> nodes 0))
+             do (signal 'e-session-error
+                        (list "Invalid session fixed-node budget" family groups))
+             sum nodes)))
+
+(defun e-session-aggregate-command-reference-bytes (family)
+  "Return FAMILY's schema-generated fixed R reference charge."
+  (* 256
+     (plist-get (cdr (e-session-aggregate-command-family-spec family))
+                :reference-nodes)))
+
+(defun e-session-aggregate--bounded-domain-string-p (value limit)
+  "Return non-nil when VALUE is nil or a string of at most LIMIT bytes."
+  (or (null value) (and (stringp value) (<= (string-bytes value) limit))))
+
+(defun e-session-aggregate--bounded-domain-identity-p (value limit)
+  "Return non-nil when VALUE is a string/symbol identity within LIMIT bytes."
+  (and (or (stringp value) (symbolp value))
+       (<= (string-bytes (if (stringp value) value (symbol-name value))) limit)))
+
+(defun e-session-aggregate--string-properties-p (string)
+  "Return non-nil when STRING contains presentation text properties."
+  (let ((position 0) found)
+    (while (and (< position (length string)) (not found))
+      (setq found (text-properties-at position string)
+            position (next-property-change position string (length string))))
+    found))
+
+(defun e-session-aggregate--command-measure-producer-graph
+    (value byte-limit node-limit)
+  "Validate VALUE and return its exact retained producer graph measurement.
+
+The walk is cycle-safe and memoizes containers and strings by identity, so a
+shared producer leaf is charged once even when the command graph references it
+many times.  Every unique cons, vector, or hash table and every hash entry is
+charged as one physical container node.  It allocates no detached payload or
+canonical transport string."
+  (let ((active (make-hash-table :test 'eq))
+        (seen (make-hash-table :test 'eq))
+        (bytes 0)
+        (nodes 0))
+    (cl-labels
+        ((add-nodes
+          (count)
+          (cl-incf nodes count)
+          (when (> nodes node-limit)
+            (signal 'e-session-command-too-large
+                    (list "Session command producer exceeds node limit"
+                          :limit node-limit :observed-at-least nodes))))
+         (add-string
+          (string)
+          (when (e-session-aggregate--string-properties-p string)
+            (signal 'e-session-error
+                    (list "Text properties are not durable")))
+          (unless (gethash string seen)
+            (puthash string t seen)
+            (cl-incf bytes (string-bytes string))
+            (when (> bytes byte-limit)
+              (signal 'e-session-command-too-large
+                      (list "Session command producer exceeds byte limit"
+                            :limit byte-limit :observed-at-least bytes)))))
+         (walk
+          (item)
+          (cond
+           ((stringp item) (add-string item))
+           ((null item) nil)
+           ((symbolp item)
+            (when (> (string-bytes (symbol-name item)) 128)
+              (signal 'e-session-error
+                      (list "Durable command symbol exceeds 128 bytes"))))
+           ((integerp item)
+            (when (> (string-bytes (number-to-string item)) 32)
+              (signal 'e-session-error
+                      (list "Durable command integer exceeds 32 bytes"))))
+           ((floatp item)
+            (unless (and (= item item) (not (= (abs item) 1.0e+INF)))
+              (signal 'e-session-error (list "Non-finite durable number")))
+            (when (> (string-bytes (prin1-to-string item)) 32)
+              (signal 'e-session-error
+                      (list "Durable command float exceeds 32 bytes"))))
+           ((or (consp item) (vectorp item) (hash-table-p item))
+            (when (gethash item active)
+              (signal 'e-session-error (list "Cyclic session command")))
+            (unless (gethash item seen)
+              ;; A hash entry is a retained association node in addition to
+              ;; the hash container itself.  Cons spines already present one
+              ;; distinct cons object per association/value pair.
+              (add-nodes (+ 1 (if (hash-table-p item)
+                                  (hash-table-count item)
+                                0)))
+              (puthash item t active)
+              (puthash item t seen)
+              (unwind-protect
+                  (cond
+                   ((consp item) (walk (car item)) (walk (cdr item)))
+                   ((vectorp item)
+                    (dotimes (index (length item)) (walk (aref item index))))
+                   (t (maphash (lambda (key entry)
+                                 (walk key) (walk entry)) item)))
+                (remhash item active))))
+           (t (signal 'e-session-error
+                      (list "Unsupported durable command value"
+                            (type-of item)))))))
+      (walk value))
+    (list :bytes bytes :nodes nodes)))
+
+(defun e-session-aggregate-command-measure-producer
+    (value byte-limit &optional node-limit)
+  "Validate VALUE and return exact uniquely retained mutable leaf bytes.
+
+When NODE-LIMIT is non-nil, reject a producer whose unique retained container
+and hash-entry count exceeds it.  Domain accounting uses the detailed graph
+measurement internally so byte and node limits are checked in one traversal."
+  (plist-get
+   (e-session-aggregate--command-measure-producer-graph
+    value byte-limit (or node-limit most-positive-fixnum))
+   :bytes))
+
+(defun e-session-aggregate-command-freeze (value)
+  "Detach VALUE while preserving every shared container and string alias."
+  (let ((active (make-hash-table :test 'eq))
+        (memo (make-hash-table :test 'eq))
+        (missing (make-symbol "missing")))
+    (cl-labels
+        ((freeze
+          (item)
+          (if (or (stringp item) (consp item) (vectorp item)
+                  (hash-table-p item))
+              (let ((known (gethash item memo missing)))
+                (cond
+                 ((not (eq known missing)) known)
+                 ((gethash item active)
+                  (signal 'e-session-error (list "Cyclic session command")))
+                 (t
+                  (puthash item t active)
+                  (unwind-protect
+                      (cond
+                       ((stringp item)
+                        (let ((copy (copy-sequence item)))
+                          (puthash item copy memo) copy))
+                       ((consp item)
+                        (let ((copy (cons nil nil)))
+                          (puthash item copy memo)
+                          (setcar copy (freeze (car item)))
+                          (setcdr copy (freeze (cdr item))) copy))
+                       ((vectorp item)
+                        (let ((copy (make-vector (length item) nil)))
+                          (puthash item copy memo)
+                          (dotimes (index (length item))
+                            (aset copy index (freeze (aref item index))))
+                          copy))
+                       (t
+                        (let ((copy (make-hash-table
+                                     :test (hash-table-test item)
+                                     :size (hash-table-count item))))
+                          (puthash item copy memo)
+                          (maphash (lambda (key entry)
+                                     (puthash (freeze key) (freeze entry) copy))
+                                   item)
+                          copy)))
+                    (remhash item active)))))
+            item)))
+      (freeze value))))
+
+(defun e-session-aggregate--maximum-fixed-fields (count)
+  "Return COUNT fixed maximum-width fields for a transport envelope."
+  (unless (<= count (length e-session-aggregate--maximum-fixed-keys))
+    (signal 'e-session-error
+            (list "Session command schema has too many fixed fields" count)))
+  (let ((keys e-session-aggregate--maximum-fixed-keys)
+        fields)
+    (dotimes (_index count fields)
+      (setq fields
+            (cons (pop keys)
+                  (cons e-session-aggregate--maximum-fixed-value fields))))))
+
+(defun e-session-aggregate-command-maximum-transport-body
+    (tag arguments &optional session-id)
+  "Return TAG's bounded maximum transport body referencing ARGUMENTS.
+
+Only its small fixed wrapper is constructed.  The caller graph is referenced,
+not copied, and the physical adapter measures the complete maximum request
+envelope without constructing a canonical frame."
+  (let* ((family (e-session-aggregate-command-family tag))
+         (spec (cdr (e-session-aggregate-command-family-spec family)))
+         (fixed (e-session-aggregate--maximum-fixed-fields
+                 (plist-get spec :fixed-fields)))
+         (record
+          (append
+           (list :type e-session-aggregate--maximum-identity
+                 :session-id e-session-aggregate--maximum-identity
+                 :id e-session-aggregate--maximum-identity
+                 :delta-id e-session-aggregate--maximum-identity
+                 :parent-id e-session-aggregate--maximum-identity
+                 :timestamp e-session-aggregate--maximum-time
+                 :producer arguments)
+           fixed)))
+    (append
+     (list :op (if (eq family 'append)
+                   'session-append-with-tool-transition
+                 'session-append)
+           :session-id (or session-id e-session-aggregate--maximum-identity)
+           :record record)
+     (when (eq family 'append)
+       (list :continuity
+             (list :call-id e-session-aggregate--maximum-identity
+                   :state 'resulted
+                   :payload
+                   (list :turn-id e-session-aggregate--maximum-identity
+                         :event-id e-session-aggregate--maximum-identity
+                         :tool-name e-session-aggregate--maximum-identity)))))))
+
+(defun e-session-aggregate-command-accounting
+    (tag session-id arguments frame-measurer)
+  "Return TAG's exact domain accounting using physical FRAME-MEASURER.
+
+This function is the sole P/D/R/Freserve calculator.  FRAME-MEASURER accepts a
+maximum transport body and returns its exact complete protocol-frame bytes."
+  (e-session-aggregate-command-validate tag session-id arguments)
+  (let* ((family (e-session-aggregate-command-family tag))
+         (spec (cdr (e-session-aggregate-command-family-spec family)))
+         (producer-max (plist-get spec :producer-max))
+         (node-limit (plist-get spec :nodes))
+         (node-bytes (plist-get spec :node-bytes))
+         (fixed-nodes (e-session-aggregate-command-fixed-nodes family))
+         (producer-node-limit (- node-limit fixed-nodes))
+         (_valid-node-budget
+          (unless (> producer-node-limit 0)
+            (signal 'e-session-error
+                    (list "Session fixed nodes exhaust family budget" family))))
+         (producer-measurement
+          (e-session-aggregate--command-measure-producer-graph
+           arguments producer-max producer-node-limit))
+         (producer-bytes (plist-get producer-measurement :bytes))
+         (producer-nodes (plist-get producer-measurement :nodes))
+         (delta-bytes (e-session-aggregate-command-delta-bytes family))
+         (reference-bytes
+          (e-session-aggregate-command-reference-bytes family))
+         (frame-reserve
+          (funcall frame-measurer
+                   (e-session-aggregate-command-maximum-transport-body
+                    tag arguments))))
+    (list :family family :producer-bytes producer-bytes
+          :producer-max producer-max :producer-nodes producer-nodes
+          :producer-node-limit producer-node-limit
+          :fixed-nodes fixed-nodes :total-nodes (+ fixed-nodes producer-nodes)
+          :producer-container-bytes (* producer-nodes node-bytes)
+          :fixed-container-bytes (* fixed-nodes node-bytes)
+          :accounted-container-bytes (* node-limit node-bytes)
+          :delta-bytes delta-bytes
+          :reference-bytes reference-bytes
+          :local-bytes (+ producer-bytes delta-bytes reference-bytes)
+          :frame-reserve frame-reserve)))
+
+(defun e-session-aggregate-command-validate (tag session-id arguments)
+  "Validate the closed command TAG, SESSION-ID, and caller ARGUMENTS graph.
+
+This pass allocates no detached command representation.  Exact graph sizing
+remains with the session application service because it owns admission."
+  (unless (memq tag e-session-aggregate-command-tags)
+    (signal 'e-session-error (list "Unsupported session command tag" tag)))
+  (unless (or (and (eq tag 'create) (null session-id))
+              (and (stringp session-id) (not (string-empty-p session-id))))
+    (signal 'e-session-error (list "Session command requires an id" session-id)))
+  (when (and session-id (> (string-bytes session-id) 128))
+    (signal 'e-session-error
+            (list "Session command id exceeds 128 UTF-8 bytes" session-id)))
+  (unless (e-session-aggregate-keyword-plist-shape-p arguments)
+    (signal 'e-session-error (list "Session command arguments must be a plist" tag)))
+  (pcase tag
+    ('create nil)
+    ('append-message
+     (unless (plist-member arguments :message)
+       (signal 'e-session-error (list "Append-message command requires :message")))
+     (let ((message (plist-get arguments :message)))
+       (dolist (field '(:id :parent-id))
+         (unless (e-session-aggregate--bounded-domain-string-p
+                  (plist-get message field) 128)
+           (signal 'e-session-error
+                   (list "Message identity exceeds 128 bytes" field))))
+       (when (eq (plist-get message :role) 'tool-call)
+         (let ((call (plist-get message :content)))
+           (dolist (field '(:id :name))
+             (when-let* ((identity (plist-get call field)))
+               (unless (e-session-aggregate--bounded-domain-string-p
+                        identity 128)
+                 (signal 'e-session-error
+                         (list "Tool call identity exceeds 128 bytes"
+                               field)))))))))
+    ('append-activity
+     (unless (and (plist-member arguments :turn-id)
+                  (symbolp (plist-get arguments :event-type))
+                  (plist-member arguments :payload))
+       (signal 'e-session-error (list "Invalid append-activity command")))
+     (unless (e-session-aggregate--bounded-domain-string-p
+              (plist-get arguments :turn-id) 128)
+       (signal 'e-session-error (list "Activity turn id exceeds 128 bytes")))
+     (when (memq (plist-get arguments :event-type)
+                 '(tool-started tool-finished))
+       (let* ((payload (plist-get arguments :payload))
+              (tool-call (plist-get payload :tool-call)))
+         (dolist (identity
+                  (list (plist-get payload :tool-call-id)
+                        (plist-get tool-call :id)
+                        (plist-get tool-call :name)))
+           (unless (e-session-aggregate--bounded-domain-string-p identity 128)
+             (signal 'e-session-error
+                     (list "Tool activity identity exceeds 128 bytes")))))))
+    ('context-curation-response
+     (unless (and (plist-member arguments :turn-id)
+                  (e-session-aggregate--bounded-domain-string-p
+                   (plist-get arguments :turn-id) 128)
+                  (stringp (plist-get arguments :response-entry-id))
+                  (<= (string-bytes (plist-get arguments :response-entry-id)) 128))
+       (signal 'e-session-error
+               (list "Invalid context-curation-response command"))))
+    ('session-info
+     (let ((field (plist-get arguments :field)))
+       (unless (memq field
+                     '(metadata config context-references context-reference
+                       capability-state turn-options current-branch name))
+         (signal 'e-session-error
+                 (list "Unsupported session-info field" field)))
+       (pcase field
+         ('context-references
+          (unless (e-session-aggregate--bounded-domain-identity-p
+                   (plist-get arguments :owner) 128)
+            (signal 'e-session-error
+                    (list "Context owner exceeds 128 bytes"))))
+         ('context-reference
+          (unless (e-session-aggregate--bounded-domain-identity-p
+                   (plist-get arguments :key) 128)
+            (signal 'e-session-error
+                    (list "Context reference key exceeds 128 bytes"))))
+         ('capability-state
+          (unless (e-session-aggregate--bounded-domain-identity-p
+                   (plist-get arguments :capability-id) 128)
+            (signal 'e-session-error
+                    (list "Capability identity exceeds 128 bytes"))))
+         ('current-branch
+         (unless (e-session-aggregate--bounded-domain-string-p
+                   (plist-get arguments :value) 128)
+            (signal 'e-session-error
+                    (list "Current branch identity exceeds 128 bytes"))))))))
+  t)
+
+(defun e-session-aggregate-command-seal
+    (tag session-id arguments accounting frame-measurer)
+  "Construct one aggregate-owned sealed command after admission.
+
+ARGUMENTS is detached only after ACCOUNTING has been reserved.  FRAME-MEASURER
+rechecks frozen P/Freserve parity; a mismatch is an owner invariant failure."
+  (e-session-aggregate-command-validate tag session-id arguments)
+  (let* ((frozen (e-session-aggregate-command-freeze arguments))
+         (session-id (or session-id (e-session-identity-generate-id)))
+         (frozen-accounting
+          (e-session-aggregate-command-accounting
+           tag session-id frozen frame-measurer)))
+    (unless (equal accounting frozen-accounting)
+      (signal 'e-session-error
+              (list "Frozen session command changed accounting" tag
+                    accounting frozen-accounting)))
+    (e-session-aggregate-command--create
+     :tag tag :session-id (copy-sequence session-id) :arguments frozen
+     :request-id (e-session-identity-generate-ulid)
+     :delta-id (e-session-identity-generate-ulid)
+     :timestamp (e-session-aggregate--timestamp)
+     :account accounting)))
 
 (defun e-session-aggregate-reset (store)
   "Clear all loaded semantic state in STORE before a replay pass.
@@ -134,7 +590,8 @@ application service."
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session-aggregate--list-tail-fields
-  '((:messages . :messages-tail)
+  '((:session-events . :session-events-tail)
+    (:messages . :messages-tail)
     (:activity-events . :activity-events-tail)
     (:branch-summaries . :branch-summaries-tail)
     (:compactions . :compactions-tail)
@@ -435,9 +892,7 @@ and RECORD supplies persisted identity fields during replay."
   "Append a normalized session EVENT-TYPE entry to SESSION."
   (let ((event (e-session-aggregate--session-event
                 session event-type timestamp fields record)))
-    (plist-put session
-               :session-events
-               (append (plist-get session :session-events) (list event)))
+    (e-session-aggregate--append-list-item session :session-events event)
     (when (eq event-type 'session-created)
       (plist-put session :root-event-id (plist-get event :id)))
     event))
@@ -2504,6 +2959,9 @@ RECORD must already be detached by `e-session-codec-decode-record'."
                  (plist-get record :metadata) t)))
               (session
                (list :id session-id
+                     ;; C07 applies an acknowledged record directly to the
+                     ;; live aggregate; it is not a lazy-loader placeholder.
+                     :loaded t
                      :metadata metadata
                      :session-events nil
                      :messages nil
@@ -2727,33 +3185,21 @@ RECORD must already be detached by `e-session-codec-decode-record'."
          (e-session-aggregate--touch store session timestamp)))
       ("session-info"
        (when session
-         (let (fields)
-           (when (plist-member record :name)
-             (setq fields (plist-put fields :name (plist-get record :name))))
-           (when (plist-member record :metadata)
-             (setq fields
-                   (plist-put
-                    fields :metadata
-                    (e-session-metadata-normalize-for-replay
-                     (plist-get record :metadata) t))))
-           (when (plist-member record :turn-options)
-             (setq fields
-                   (plist-put fields :turn-options
-                              (e-session-aggregate--normalize-turn-options
-                               (plist-get record :turn-options)))))
+         (let ((fields (e-session-aggregate--session-info-fields
+                        session record)))
            (e-session-aggregate--prepend-replayed-session-event
-            session 'session-info timestamp fields record))
-         (when (plist-member record :name)
-           (plist-put session :name (plist-get record :name)))
-         (when (plist-member record :metadata)
-           (plist-put session :metadata
-                      (e-session-metadata-normalize-for-replay
-                       (plist-get record :metadata) t)))
-         (when (plist-member record :turn-options)
-           (plist-put session :turn-options
-                      (e-session-aggregate--normalize-turn-options
-                       (plist-get record :turn-options))))
-         (e-session-aggregate--touch store session timestamp)))
+            session 'session-info timestamp fields record)
+           (when (plist-member fields :name)
+             (plist-put session :name (plist-get fields :name)))
+           (when (plist-member fields :metadata)
+             (plist-put session :metadata
+                        (e-session-metadata-normalize-for-replay
+                         (plist-get fields :metadata) t)))
+           (when (plist-member fields :turn-options)
+             (plist-put session :turn-options
+                        (e-session-aggregate--normalize-turn-options
+                         (plist-get fields :turn-options))))
+           (e-session-aggregate--touch store session timestamp))))
       ("messages-cleared"
        (when session
          (e-session-aggregate--replace-list-field session :messages nil)
@@ -2768,6 +3214,466 @@ RECORD must already be detached by `e-session-codec-decode-record'."
           (list :parent-id (e-session-aggregate--root-event-id session)) record)
          (e-session-aggregate--touch store session timestamp))))))
 
+(defun e-session-aggregate--apply-committed-record (store record)
+  "Apply one acknowledged detached RECORD to live STORE in commit order.
+
+This is intentionally separate from `e-session-aggregate-apply-record', which
+reconstructs reverse journal pages.  The session coordinator calls this after
+one durable acknowledgement, preserving forward list order, cached tails,
+indexes, head identity, and incremental derived fields in bounded work."
+  (let* ((type (plist-get record :type))
+         (session-id (plist-get record :session-id))
+         (timestamp (plist-get record :timestamp))
+         (session (and session-id
+                       (gethash session-id (e-session-store-sessions store)))))
+    (pcase type
+      ("session"
+       (let* ((metadata
+               (e-session-metadata-validate
+                (e-session-metadata-normalize-for-replay
+                 (plist-get record :metadata) t)))
+              (created
+               (list :id session-id :loaded t :metadata metadata
+                     :session-events nil :messages nil :activity-events nil
+                     :branch-summaries nil :compactions nil :provider-anchors nil
+                     :process-reports nil :context-generations nil
+                     :context-promotions nil :context-curation-packages nil
+                     :board-output-sequence
+                     (or (plist-get record :board-output-sequence) 0)
+                     :board-activity-sequence
+                     (or (plist-get record :board-activity-sequence) 0)
+                     :current-branch (plist-get record :current-branch)
+                     :created-at (or (plist-get record :created-at) timestamp)
+                     :updated-at (or (plist-get record :updated-at) timestamp)
+                     :turn-options (e-session-aggregate--normalize-turn-options
+                                    (plist-get record :turn-options))
+                     :name (plist-get record :name))))
+         (e-session-aggregate-initialize-list-state created)
+         (e-session-aggregate--append-session-event
+          created 'session-created (or (plist-get record :created-at) timestamp)
+          (list :metadata metadata) record)
+         (e-session-aggregate--touch store created
+                                     (plist-get created :updated-at))
+         (puthash session-id created (e-session-store-sessions store))
+         (e-session-aggregate--committed-apply-fault 'after-list-state)
+         (e-session-aggregate--refresh-derived-fields store created)
+         (e-session-aggregate--committed-apply-fault 'after-derived)
+         (e-session-aggregate--index-session-entries store created)
+         (e-session-aggregate--committed-apply-fault 'after-index)))
+      ("message"
+       (when session
+         (let ((entry
+                (e-session-aggregate--normalize-entry-from-record
+                 session 'message
+                 (e-session-aggregate--message-with-created-at
+                  (plist-get record :message) timestamp)
+                 timestamp record)))
+           (e-session-aggregate--append-list-item session :messages entry)
+           (e-session-aggregate--committed-apply-fault 'after-list-state)
+           (when-let* ((sequence (plist-get entry :board-output-sequence)))
+             (plist-put session :board-output-sequence
+                        (max (or (plist-get session :board-output-sequence) 0)
+                             sequence)))
+           (e-session-aggregate--touch store session timestamp)
+           (e-session-aggregate--update-message-derived-fields-on-append
+            store session entry)
+           (e-session-aggregate--committed-apply-fault 'after-derived)
+           (e-session-aggregate--index-entry store session-id entry)
+           (e-session-aggregate--committed-apply-fault 'after-index))))
+      ("activity-event"
+       (when session
+         (let ((entry
+                (e-session-aggregate--normalize-entry-from-record
+                 session 'activity-event
+                 (or (plist-get record :semantic-event)
+                     (list :id (plist-get record :id)
+                           :parent-id (plist-get record :parent-id)
+                           :turn-id (plist-get record :turn-id)
+                           :event-type (plist-get record :event-type)
+                           :payload (plist-get record :payload)
+                           :created-at timestamp))
+                 timestamp record)))
+           (when (plist-member record :checkpoint-retain)
+             (plist-put entry :checkpoint-retain
+                        (plist-get record :checkpoint-retain)))
+           (when (plist-member record :board-activity-sequence)
+             (plist-put entry :board-activity-sequence
+                        (plist-get record :board-activity-sequence)))
+           (e-session-aggregate--append-list-item session :activity-events entry)
+           (e-session-aggregate--committed-apply-fault 'after-list-state)
+           (when-let* ((sequence (plist-get entry :board-activity-sequence)))
+             (plist-put session :board-activity-sequence
+                        (max (or (plist-get session :board-activity-sequence) 0)
+                             sequence)))
+           (e-session-aggregate--update-activity-derived-fields session entry)
+           (e-session-aggregate--touch store session timestamp)
+           (e-session-aggregate--committed-apply-fault 'after-derived)
+           (e-session-aggregate--index-entry store session-id entry)
+           (e-session-aggregate--committed-apply-fault 'after-index))))
+      ("session-info"
+       (when session
+         (let ((fields (e-session-aggregate--session-info-fields
+                        session record)))
+           (let ((event (e-session-aggregate--append-session-event
+                         session 'session-info timestamp fields record)))
+             (e-session-aggregate--committed-apply-fault 'after-list-state)
+             (when (plist-member fields :name)
+               (plist-put session :name (plist-get fields :name)))
+             (when (plist-member fields :metadata)
+               (plist-put session :metadata
+                          (e-session-metadata-normalize-for-replay
+                           (plist-get fields :metadata) t)))
+             (when (plist-member fields :turn-options)
+               (plist-put session :turn-options
+                          (e-session-aggregate--normalize-turn-options
+                           (plist-get fields :turn-options))))
+             (e-session-aggregate--touch store session timestamp)
+             (e-session-aggregate--committed-apply-fault 'after-derived)
+             (e-session-aggregate--index-entry store session-id event)
+             (e-session-aggregate--committed-apply-fault 'after-index)))))
+      ("current-branch"
+       (when session
+         (plist-put session :current-branch (plist-get record :branch-id))
+         (let ((event (e-session-aggregate--append-session-event
+                       session 'current-branch timestamp
+                       (list :branch-id (plist-get record :branch-id)) record)))
+           (e-session-aggregate--committed-apply-fault 'after-list-state)
+           (e-session-aggregate--touch store session timestamp)
+           (e-session-aggregate--committed-apply-fault 'after-derived)
+           (e-session-aggregate--index-entry store session-id event)
+           (e-session-aggregate--committed-apply-fault 'after-index))))
+      (_
+       (signal 'e-session-error
+               (list "Unsupported incremental committed session record" type)))))
+  (e-session-aggregate--committed-apply-fault 'after-record)
+  store)
+
+(defun e-session-aggregate-apply-committed-record (store record)
+  "Transactionally apply acknowledged RECORD to live STORE in forward order.
+
+The incremental interpreter owns the closed C07 record families and uses O(1)
+forward append/index/derived updates.  It neither stages a whole session nor
+runs replay finalization.  A fixed undo journal restores every touched live
+reference and append tail before an invariant error escapes, so a caller never
+observes an intermediate list/tail/head state.
+
+This is the active C07 post-ACK aggregate boundary."
+  (let* ((session-id (plist-get record :session-id))
+         (sessions (e-session-store-sessions store))
+         (indexes (e-session-store-entry-indexes store))
+         (journals (e-session-store-board-journals store))
+         (old-session (and session-id (gethash session-id sessions)))
+         ;; Plist mutation changes existing cons cells.  A shallow spine copy
+         ;; restores every field reference; append-only tail cdrs are journaled
+         ;; separately because O(1) append mutates that shared cell.
+         (old-session-spine (and old-session (copy-sequence old-session)))
+         (old-tail-cdrs
+          (and old-session
+               (delq nil
+                     (mapcar
+                      (lambda (pair)
+                        (when-let ((tail (plist-get old-session (cdr pair))))
+                          (cons tail (cdr tail))))
+                      e-session-aggregate--list-tail-fields))))
+         ;; Incremental apply never mutates an old index table wholesale.  It
+         ;; inserts at most one command identity, which rollback removes below.
+         (old-index (and session-id (gethash session-id indexes)))
+         (record-id (plist-get record :id))
+         (old-index-entry (and old-index record-id
+                               (gethash record-id old-index)))
+         (old-journal (and session-id (gethash session-id journals)))
+         (old-sequence (e-session-store-sequence store))
+         success)
+    (unwind-protect
+        (progn
+          (e-session-aggregate--committed-apply-fault 'before-record)
+          (e-session-aggregate--apply-committed-record store record)
+          (setq success t)
+          store)
+      (unless success
+        ;; Restore mutated append cells before reinstalling the old aggregate
+        ;; spine so no failed delta remains reachable through an old tail.
+        (dolist (tail-state old-tail-cdrs)
+          (setcdr (car tail-state) (cdr tail-state)))
+        (if old-session
+            (progn
+              ;; Keep the aggregate root identity stable for every existing
+              ;; reader while restoring the old plist spine and field refs.
+              (setcar old-session (car old-session-spine))
+              (setcdr old-session (cdr old-session-spine))
+              (puthash session-id old-session sessions))
+          (remhash session-id sessions))
+        (if old-index
+            (progn
+              (puthash session-id old-index indexes)
+              (when record-id
+                (if old-index-entry
+                    (puthash record-id old-index-entry old-index)
+                  (remhash record-id old-index))))
+          (remhash session-id indexes))
+        (if old-journal
+            (puthash session-id old-journal journals)
+          (remhash session-id journals))
+        (setf (e-session-store-sequence store) old-sequence)))))
+
+(defun e-session-aggregate--command-entry
+    (session type fields command-id timestamp &optional explicit-id)
+  "Build one detached command entry without mutating SESSION.
+
+FIELDS is already frozen or newly constructed from bounded command wrappers.
+Its variable leaves remain shared; only the small semantic plist spine is new."
+  (let ((entry (copy-sequence fields)))
+    (plist-put entry :type type)
+    (plist-put entry :id (or explicit-id (plist-get entry :id) command-id))
+    (unless (plist-member entry :parent-id)
+      (plist-put entry :parent-id (plist-get session :current-head-id)))
+    (unless (plist-member entry :created-at)
+      (plist-put entry :created-at timestamp))
+    entry))
+
+(defun e-session-aggregate--command-resulting-metadata
+    (session field arguments)
+  "Return FIELD's validated full metadata delta for SESSION and ARGUMENTS."
+  (let ((value (plist-get arguments :value)))
+    (pcase field
+      ('metadata (e-session-metadata-validate value))
+      ('config
+       (e-session-metadata-validate-class value 'session-config)
+       (e-session-metadata-validate
+        (e-session-aggregate--merge-metadata
+         (plist-get session :metadata) value)))
+      ('context-references
+       (let* ((owner-key
+               (e-session-metadata-owner-key (plist-get arguments :owner)))
+              (metadata (copy-sequence (plist-get session :metadata)))
+              (references
+               (copy-sequence (plist-get metadata :context-references))))
+         (setq references
+               (plist-put references owner-key
+                          (e-session-metadata-reference-value value)))
+         (e-session-metadata-validate
+          (plist-put metadata :context-references references))))
+      ('context-reference
+       (let ((key (plist-get arguments :key)))
+         (e-session-metadata-validate-class
+          (list key value) 'current-state-reference)
+         (e-session-metadata-validate
+          (e-session-aggregate--merge-metadata
+           (plist-get session :metadata) (list key value)))))
+      ('capability-state
+       (let* ((owner-key
+               (e-session-metadata-owner-key
+                (plist-get arguments :capability-id)))
+              (metadata (copy-sequence (plist-get session :metadata)))
+              (all-state
+               (copy-sequence (plist-get metadata :capability-state)))
+              (entry (if (plist-get arguments :version)
+                         (list :version (plist-get arguments :version)
+                               :state value)
+                       value)))
+         (setq all-state (plist-put all-state owner-key entry))
+         (e-session-metadata-validate
+          (plist-put metadata :capability-state all-state))))
+      (_ (signal 'e-session-error
+                 (list "Command field does not produce metadata" field))))))
+
+(defun e-session-aggregate--session-info-fields (session record)
+  "Derive public session-event fields from bounded RECORD and SESSION.
+
+Older records containing complete metadata remain readable.  New C07 records
+carry :field plus only that mutation's frozen producer leaves."
+  (if-let* ((field (plist-get record :field)))
+      (pcase field
+        ((or 'metadata 'config 'context-references 'context-reference
+             'capability-state)
+         (list :metadata
+               (e-session-aggregate--command-resulting-metadata
+                session field record)))
+        ('turn-options
+         (list :turn-options
+               (e-session-aggregate--normalize-turn-options
+                (plist-get record :value))))
+        ('name (list :name (plist-get record :value)))
+        (_ (signal 'e-session-error
+                   (list "Unsupported bounded session-info field" field))))
+    (let (fields)
+      (dolist (field '(:name :metadata :turn-options))
+        (when (plist-member record field)
+          (setq fields (plist-put fields field (plist-get record field)))))
+      fields)))
+
+(defun e-session-aggregate-command-interpret (store command)
+  "Interpret sealed COMMAND against committed STORE and return its one delta.
+
+This is the aggregate-owned lane-head interpreter.  It reads only acknowledged
+live state and constructs the command's bounded durable record directly; it
+never copies or mutates a whole session.  Variable producer leaves are shared
+with the sealed command."
+  (let* ((session-id (e-session-aggregate-command-session-id command))
+         (arguments (e-session-aggregate-command-arguments command))
+         (tag (e-session-aggregate-command-tag command))
+         (session (and (not (eq tag 'create))
+                       (e-session-aggregate-get-live store session-id)))
+         (request-id (e-session-aggregate-command-request-id command))
+         (delta-id (e-session-aggregate-command-delta-id command))
+         (command-time (e-session-aggregate-command-timestamp command))
+         record result-kind result-id)
+    ;; Identity and time are already sealed, so repeated interpretation yields
+    ;; the same record without global generator rebinding or live mutation.
+    (pcase tag
+      ('create
+       (when (e-session-aggregate-session-present-p store session-id)
+         (signal 'e-session-duplicate (list session-id)))
+       (let ((metadata
+              (e-session-metadata-validate
+               (e-session-metadata-normalize-for-replay
+                (plist-get arguments :metadata)))))
+         (setq record
+               (list :type "session" :session-id session-id
+                     :id delta-id :request-id request-id :delta-id delta-id
+                     :timestamp command-time
+                     :created-at command-time :updated-at command-time
+                     :metadata metadata :name (plist-get metadata :name)
+                     :turn-options nil :current-branch nil
+                     :board-output-sequence 0 :board-activity-sequence 0)
+               result-kind 'session)))
+      ('append-message
+       (let* ((message
+               (e-session-aggregate--message-with-created-at
+                (plist-get arguments :message) command-time))
+              (entry
+                (e-session-aggregate--command-entry
+                session 'message message delta-id command-time)))
+         (when (and (eq (plist-get entry :role) 'assistant)
+                    (not (plist-member entry :board-output-sequence)))
+           (plist-put entry :board-output-sequence
+                      (1+ (or (plist-get session :board-output-sequence) 0))))
+         (setq record
+               (list :type "message" :session-id session-id
+                     :request-id request-id :delta-id delta-id
+                     :timestamp (plist-get entry :created-at)
+                     :id (plist-get entry :id)
+                     :parent-id (plist-get entry :parent-id)
+                     :message entry)
+               result-kind 'entry
+               result-id (plist-get entry :id))))
+      ((or 'append-activity 'context-curation-response)
+       (let* ((curation-p (eq tag 'context-curation-response))
+              (entry-id (and curation-p
+                             (plist-get arguments :response-entry-id)))
+              (event-type (if curation-p 'context-curation-response
+                            (plist-get arguments :event-type)))
+              (payload (if curation-p
+                           (list :response-entry-id entry-id)
+                         (plist-get arguments :payload)))
+              (entry
+               (e-session-aggregate--command-entry
+                session 'activity-event
+                (append
+                 (when (and (not curation-p)
+                            (plist-get arguments :checkpoint-retain))
+                   (list :checkpoint-retain t))
+                 (list :turn-id (plist-get arguments :turn-id)
+                       :event-type event-type :payload payload))
+                delta-id command-time entry-id))
+              (sequence
+               (or (plist-get entry :board-activity-sequence)
+                   (1+ (or (plist-get session :board-activity-sequence) 0)))))
+         (plist-put entry :board-activity-sequence sequence)
+         (setq record
+               (append
+                (list :type "activity-event" :session-id session-id
+                      :request-id request-id :delta-id delta-id
+                      :id (plist-get entry :id)
+                      :parent-id (plist-get entry :parent-id)
+                      :turn-id (plist-get entry :turn-id)
+                      :board-activity-sequence sequence
+                      :timestamp (plist-get entry :created-at)
+                      :event-type event-type :payload payload)
+                (when (plist-get entry :checkpoint-retain)
+                  (list :checkpoint-retain t)))
+               result-kind 'entry
+               result-id (plist-get entry :id))))
+      ('session-info
+       (let* ((field (plist-get arguments :field))
+              (parent-id (plist-get session :current-head-id))
+              bounded-fields)
+         (pcase field
+           ((or 'metadata 'config 'context-references 'context-reference
+                'capability-state)
+            ;; Persist only the bounded operation delta.  The acknowledged
+            ;; apply/replay path derives the complete resulting metadata from
+            ;; committed state; a queued command never retains that projection.
+            (setq bounded-fields
+                  (append (list :field field :value (plist-get arguments :value))
+                          (pcase field
+                            ('context-references
+                             (list :owner (plist-get arguments :owner)))
+                            ('context-reference
+                             (list :key (plist-get arguments :key)))
+                            ('capability-state
+                             (list :capability-id
+                                   (plist-get arguments :capability-id)
+                                   :version (plist-get arguments :version)))))
+                  result-kind
+                  (pcase field
+                    ((or 'metadata 'context-references) 'producer-value)
+                    ('capability-state 'capability-state)
+                    (_ 'metadata))))
+           ('turn-options
+            (setq bounded-fields
+                  (list :field field :value (plist-get arguments :value))
+                  result-kind 'turn-options))
+           ('current-branch
+            (setq record
+                  (list :type "current-branch" :session-id session-id
+                        :id delta-id :request-id request-id :delta-id delta-id
+                        :parent-id parent-id
+                        :timestamp command-time
+                        :branch-id (plist-get arguments :value))
+                  result-kind 'current-branch))
+           ('name
+            (let ((name (string-trim (or (plist-get arguments :value) ""))))
+              (when (string-empty-p name)
+                (user-error "Session name must not be empty"))
+              (setq bounded-fields (list :field field :value name)
+                    result-kind 'session))))
+         (unless record
+           (setq record
+                 (append
+                  (list :type "session-info" :session-id session-id
+                        :id delta-id :request-id request-id :delta-id delta-id
+                        :parent-id parent-id
+                        :timestamp command-time)
+                  bounded-fields))))))
+    (unless record
+      (signal 'e-session-error
+              (list "Session command produced no durable delta" tag)))
+    ;; The public result is resolved after ACK from authoritative live state.
+    (list :record record :result-kind result-kind :result-id result-id)))
+
+(defun e-session-aggregate-command-result (store command delta)
+  "Resolve COMMAND's O(1) public result from acknowledged DELTA in STORE."
+  (let* ((session-id (e-session-aggregate-command-session-id command))
+         (arguments (e-session-aggregate-command-arguments command))
+         (session (e-session-aggregate-get-live store session-id)))
+    (pcase (plist-get delta :result-kind)
+      ('session session)
+      ('entry (e-session-aggregate-entry-by-id
+               store session-id (plist-get (plist-get delta :record) :id)))
+      ('metadata (plist-get session :metadata))
+      ('producer-value (plist-get arguments :value))
+      ('capability-state
+       ;; Preserve the legacy facade's exact result shape from the detached
+       ;; producer input.  Reading the metadata projection here can normalize
+       ;; a caller vector into a list and breaks side-by-side return parity.
+       (let ((value (plist-get arguments :value))
+             (version (plist-get arguments :version)))
+         (if version (list :version version :state value) value)))
+      ('turn-options (plist-get session :turn-options))
+      ('current-branch (plist-get session :current-branch))
+      (_ (signal 'e-session-error
+                 (list "Unsupported session command result" delta))))))
 
 (provide 'e-session-aggregate)
 

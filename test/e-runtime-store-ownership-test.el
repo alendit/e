@@ -37,6 +37,12 @@
       (accept-process-output nil 0.01))
     (funcall predicate)))
 
+(defun e-runtime-store-ownership-test--wait-ready (store)
+  "Observe STORE's DP5A cold-open before asserting durable ownership facts."
+  (when-let* ((request (e-runtime-store--active-request store))
+              ((eq (e-runtime-store-request--kind request) 'open)))
+    (e-runtime-store-await store request 5.0)))
+
 (defun e-runtime-store-ownership-test--claimer-script (file)
   "Write the bounded disposable cross-process claimant program at FILE."
   (let ((coding-system-for-write 'utf-8-unix))
@@ -234,16 +240,19 @@
   (let* ((directory (make-temp-file "e-runtime-store-live-offline-" t))
          (backup-file (expand-file-name "offline-backup.sqlite3" directory))
          (store (e-runtime-store-open directory))
-         (database-file (expand-file-name "store.sqlite3" directory))
-         (before (e-runtime-store-ownership--read-metadata database-file)))
+         (database-file (expand-file-name "store.sqlite3" directory)))
     (unwind-protect
         (progn
+          ;; DP5A open returns before the worker claims ownership.  Snapshot
+          ;; only after the explicit legacy test observation completes.
+          (e-runtime-store-ownership-test--wait-ready store)
+          (let ((before (e-runtime-store-ownership--read-metadata database-file)))
           (should-error (e-runtime-store-offline-upgrade directory backup-file)
                         :type 'e-runtime-store-offline-error)
           (should (e-runtime-store-live-p store))
           (should (equal (e-runtime-store-ownership--read-metadata database-file)
                          before))
-          (should-not (file-exists-p backup-file)))
+          (should-not (file-exists-p backup-file))))
       (ignore-errors (e-runtime-store-close store))
       (delete-directory directory t))))
 

@@ -168,7 +168,62 @@ the total size of an intentionally unmaterialized value."
   "Return the private tagged form whose printed bytes encode VALUE."
   (vector 'e-runtime-store-value e-runtime-store-codec-version
           (e-runtime-store-codec--encode
-           value (make-hash-table :test 'eq))))
+          value (make-hash-table :test 'eq))))
+
+(defun e-runtime-store-codec-freeze-bounded (value limit)
+  "Return a deep immutable snapshot of closed durable VALUE within LIMIT.
+
+The exact codec measurer first rejects cycles and oversized values without a
+second complete representation.  Only after that admission check does this
+function copy mutable strings, cons cells, vectors, and hash entries.  Shared
+acyclic descendants remain shared in the copy, while every mutable descendant
+is detached from the caller."
+  (e-runtime-store-codec-measure-bounded value limit)
+  (let ((active (make-hash-table :test 'eq))
+        (memo (make-hash-table :test 'eq)))
+    (cl-labels
+        ((freeze (item)
+           (cond
+            ((stringp item) (copy-sequence item))
+            ((consp item)
+             (cond ((gethash item active)
+                    (signal 'e-runtime-store-codec-error (list "Cyclic value")))
+                   ((gethash item memo))
+                   (t
+                    (puthash item t active)
+                    (let ((copy (cons nil nil)))
+                      (puthash item copy memo)
+                      (setcar copy (freeze (car item)))
+                      (setcdr copy (freeze (cdr item)))
+                      (remhash item active)
+                      copy))))
+            ((vectorp item)
+             (cond ((gethash item active)
+                    (signal 'e-runtime-store-codec-error (list "Cyclic value")))
+                   ((gethash item memo))
+                   (t
+                    (puthash item t active)
+                    (let ((copy (make-vector (length item) nil)))
+                      (puthash item copy memo)
+                      (dotimes (index (length item))
+                        (aset copy index (freeze (aref item index))))
+                      (remhash item active)
+                      copy))))
+            ((hash-table-p item)
+             (cond ((gethash item active)
+                    (signal 'e-runtime-store-codec-error (list "Cyclic value")))
+                   ((gethash item memo))
+                   (t
+                    (puthash item t active)
+                    (let ((copy (make-hash-table :test (hash-table-test item)
+                                                 :size (hash-table-count item))))
+                      (puthash item copy memo)
+                      (maphash (lambda (key entry)
+                                 (puthash (freeze key) (freeze entry) copy)) item)
+                      (remhash item active)
+                      copy))))
+            (t item))))
+      (freeze value))))
 
 (defun e-runtime-store-codec--print-form (form)
   "Return canonical unibyte printed FORM.

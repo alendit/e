@@ -1935,8 +1935,10 @@
                         "e-runtime-store-test.el"))
       (should-not (string-match-p pattern
                                   (e-runtime-store-test--source relative))))
-    (should (equal (help-function-arglist #'e-runtime-store-submit)
-                   '(store kind body)))))
+    ;; Byte compilation is allowed to erase argument names (Emacs 31 reports
+    ;; them as ARG1..ARG3), but it preserves the public arity that excludes
+    ;; per-request callback hooks.
+    (should (equal (func-arity #'e-runtime-store-submit) '(3 . 3)))))
 
 (ert-deftest e-runtime-store-s2-permission-failure-precedes-mutation ()
   "A mode failure surfaces before BEGIN and leaves no durable mutation."
@@ -2699,6 +2701,51 @@ tests can present a raw frame that production would refuse to create."
     (e-runtime-store--drain-terminal-notifications store)
     (should-not called)
     (should (= (e-runtime-store--request-count store) 0))))
+
+(ert-deftest e-runtime-store-s92-c07-frame-escrow-handoff-is-exact-on-failure-and-terminal-release ()
+  "A failed transfer leaves composition escrow for its sole rollback owner."
+  (let* ((body '(:op status))
+         (reservation (e-runtime-store--reservation-create :limit (* 1024 1024)))
+         (store (e-runtime-store--create
+                 :runtime-id "escrow" :reservation reservation
+                 :pending (make-hash-table :test 'equal)))
+         (escrow (e-runtime-store--measure-frame-escrow store 'read body)))
+    ;; The session composition owns this first charge.  Runtime preflight may
+    ;; borrow it, but a failure before a retained frame exists must restore it
+    ;; rather than making the caller's rollback double-release it.
+    (setf (e-runtime-store--reservation-used reservation) escrow)
+    (cl-letf (((symbol-function 'e-runtime-store--encode-frame)
+               (lambda (&rest _)
+                 (signal 'file-error '("injected encode failure")))))
+      (should-error (e-runtime-store--submit-with-frame-escrow
+                     store 'read body escrow)
+                    :type 'file-error))
+    (should (= (e-runtime-store--request-count store) 0))
+    (should (= (e-runtime-store--notification-count store) 0))
+    (should (= (e-runtime-store--reserved-bytes store) 0))
+    (should (= (e-runtime-store--reservation-used reservation) escrow))
+    ;; The composition now performs its one rollback.
+    (cl-decf (e-runtime-store--reservation-used reservation) escrow)
+    (should (= (e-runtime-store--reservation-used reservation) 0))
+    ;; A successful transfer replaces escrow with the actual frame.  There is
+    ;; no second composition release after this point; runtime terminal
+    ;; settlement releases that exact surviving allocation once.
+    (setf (e-runtime-store--reservation-used reservation) escrow)
+    (cl-letf (((symbol-function 'e-runtime-store--schedule) #'ignore))
+      (let ((request (e-runtime-store--submit-with-frame-escrow
+                      store 'read body escrow)))
+        (should (<= (e-runtime-store-request--frame-bytes request) escrow))
+        ;; Escrow admission has the same queued/correlation partition as the
+        ;; public API: correlation begins only at physical dispatch.
+        (should-not (gethash (e-runtime-store-request--id request)
+                             (e-runtime-store--pending store)))
+        (should (= (e-runtime-store--reservation-used reservation)
+                   (e-runtime-store-request--frame-bytes request)))
+        (should (eq (e-runtime-store-cancel store request) 'dropped))
+        (e-runtime-store--drain-terminal-notifications store)
+        (should (= (e-runtime-store--request-count store) 0))
+        (should (= (e-runtime-store--notification-count store) 0))
+        (should (= (e-runtime-store--reservation-used reservation) 0))))))
 
 (ert-deftest e-runtime-store-s92-c06-stale-scheduler-generation-is-inert ()
   "A replaced earliest-deadline callback cannot advance a newer schedule."

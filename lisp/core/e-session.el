@@ -26,6 +26,7 @@
 (require 'e-session-provider-anchor)
 (require 'e-session-storage)
 (require 'e-session-sqlite)
+(require 'e-session-async)
 (require 'e-session-tool-continuity)
 
 (defvar e-session--load-in-progress nil
@@ -350,30 +351,35 @@ session application boundary, not a generic transaction builder."
             (funcall before-commit store result))
           (e-session--persist-record store session-id record write-index))
         result)
-    (e-session--call-with-commit-barrier
-     store session-id
-     (lambda ()
-       (let* ((source-present
-               (e-session-aggregate-session-present-p store session-id))
-              (stage
-               (e-session-aggregate-stage-session-mutation
-                store (and source-present session-id)))
-              (result (funcall mutate stage))
-              (record (funcall make-record stage result))
-              (prepared
-               (and record
-                    (e-session-storage-prepare-mutation
-                     store session-id record))))
-         (when record
-           (when before-commit
-             (funcall before-commit stage result))
-           (e-session-storage-commit-mutation store session-id prepared)
-           ;; The worker has acknowledged the durable record.  Only now may a
-           ;; model-facing callback observe the new live value.
-           (e-session-aggregate-publish-staged-session store stage session-id)
-           (when write-index
-             (e-session--write-index-after-primary store)))
-         result)))))
+    (if (e-session-async-enabled-p store)
+        ;; Async SQLite has a closed aggregate command grammar.  Facades that
+        ;; have not migrated must fail explicitly rather than retaining a
+        ;; caller mutation closure or falling back to a blocking commit.
+        (e-session-async-unsupported-command session-id 'generic-mutation)
+      (e-session--call-with-commit-barrier
+       store session-id
+       (lambda ()
+         (let* ((source-present
+                 (e-session-aggregate-session-present-p store session-id))
+                (stage
+                 (e-session-aggregate-stage-session-mutation
+                  store (and source-present session-id)))
+                (result (funcall mutate stage))
+                (record (funcall make-record stage result))
+                (prepared
+                 (and record
+                      (e-session-storage-prepare-mutation
+                       store session-id record))))
+           (when record
+             (when before-commit
+               (funcall before-commit stage result))
+             (e-session-storage-commit-mutation store session-id prepared)
+             ;; The worker has acknowledged the durable record.  Only now may a
+             ;; model-facing callback observe the new live value.
+             (e-session-aggregate-publish-staged-session store stage session-id)
+             (when write-index
+               (e-session--write-index-after-primary store)))
+           result))))))
 
 (cl-defun e-session--commit-entry-mutation
     (store session-id mutate &key before-commit write-index)
@@ -570,8 +576,17 @@ This historical facade name no longer selects or falls back to JSONL."
     (when (gethash key e-session--lazy-load-in-progress)
       (signal 'e-session-persistence-unavailable
               (list "Session load is in progress" session-id)))
-    (let ((session (e-session-aggregate-peek-session store session-id)))
-      (if (plist-get session :loaded)
+    (let ((session (condition-case nil
+                       (e-session-aggregate-peek-session store session-id)
+                     (e-session-missing nil))))
+      (if (or (plist-get session :loaded)
+              ;; A same-session operation may follow a pending create.  Its
+              ;; sealed command remains coordinator-owned; the facade gets no
+              ;; mutable aggregate before acknowledgement.
+              (and (e-session-async-enabled-p store)
+                   (or (e-session-async-pending-p store session-id)
+                       (e-session-async-reconciliation-required-p
+                        store session-id))))
           session
         (progn
           (puthash key t e-session--lazy-load-in-progress)
@@ -591,16 +606,21 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (cl-defun e-session-create (store &key id metadata defer-persistence)
   "Create SESSION in STORE and publish its root unless deferred."
-  (setq id (or id (e-session-generate-id)))
   (if (and (e-session-storage-sqlite-p store) (not defer-persistence))
-      (e-session--commit-session-mutation
-       store id
-       (lambda (stage)
-         (e-session-aggregate-create stage :id id :metadata metadata))
-       (lambda (stage _session)
-         (e-session--root-record-from-store stage id))
-       :write-index t)
-    (let ((session (e-session-aggregate-create
+      (if (e-session-async-enabled-p store)
+          (e-session-async-submit-command
+           store id 'create (list :metadata metadata)
+           :write-index t)
+        (let ((id (or id (e-session-generate-id))))
+          (e-session--commit-session-mutation
+           store id
+           (lambda (stage)
+             (e-session-aggregate-create stage :id id :metadata metadata))
+           (lambda (stage _session)
+             (e-session--root-record-from-store stage id))
+           :write-index t)))
+    (let* ((id (or id (e-session-generate-id)))
+           (session (e-session-aggregate-create
                     store :id id :metadata metadata
                     :defer-persistence defer-persistence)))
       (if defer-persistence
@@ -709,14 +729,28 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-append-message (store session-id message)
   "Append MESSAGE to SESSION-ID and persist its semantic entry."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-message aggregate session-id message))
-   :before-commit
-   (lambda (_aggregate entry)
-     (e-session-tool-continuity-admit-message store session-id message entry))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'append-message (list :message message)
+       :write-index t
+       :before-submit
+       (lambda (delta)
+         (let* ((record (plist-get delta :record))
+                (frozen-message (plist-get record :message)))
+           (when (eq (plist-get frozen-message :role) 'tool-call)
+             (let ((call (plist-get frozen-message :content)))
+               (when-let* ((call-id (plist-get call :id)))
+                 (list :call-id call-id :state 'admitted
+                       :payload (list :tool-name (plist-get call :name)
+                                      :entry-id (plist-get record :id)))))))))
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-message aggregate session-id message))
+     :before-commit
+     (lambda (_aggregate entry)
+       (e-session-tool-continuity-admit-message store session-id message entry))
+     :write-index t)))
 
 (defun e-session-set-message-display (store session-id message-id display)
   "Set DISPLAY on one message and persist its display disposition."
@@ -738,32 +772,58 @@ This historical facade name no longer selects or falls back to JSONL."
            checkpoint-retain)
   "Append durable activity EVENT-TYPE and optionally refresh the index."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-activity-event
-      aggregate session-id turn-id event-type payload
-      :write-index write-index :checkpoint-retain checkpoint-retain))
-   :before-commit
-   (lambda (_aggregate entry)
-     ;; This owner classification is the execution fence.  If the subsequent
-     ;; session record fails, restart classification is conservative while
-     ;; live session state remains old.
-      (e-session-tool-continuity-record-activity
-      store session-id turn-id event-type payload entry))
-   :write-index write-index))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'append-activity
+       (list :turn-id turn-id :event-type event-type :payload payload
+             :write-index write-index :checkpoint-retain checkpoint-retain)
+       :write-index write-index
+       :before-submit
+       (lambda (delta)
+         (let* ((record (plist-get delta :record))
+                (event-type (plist-get record :event-type))
+                (turn-id (plist-get record :turn-id))
+                (frozen-payload (plist-get record :payload)))
+           (when (memq event-type '(tool-started tool-finished))
+             (let* ((tool-call (plist-get frozen-payload :tool-call))
+                    (call-id (or (plist-get tool-call :id)
+                                 (plist-get frozen-payload :tool-call-id))))
+               (when call-id
+                 (list :call-id call-id
+                       :state (if (eq event-type 'tool-started)
+                                  'claimed 'resulted)
+                       :payload (list :turn-id turn-id
+                                      :event-id (plist-get record :id)
+                                      :tool-name (plist-get tool-call :name)))))))))
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-activity-event
+        aggregate session-id turn-id event-type payload
+        :write-index write-index :checkpoint-retain checkpoint-retain))
+     :before-commit
+     (lambda (_aggregate entry)
+       (e-session-tool-continuity-record-activity
+        store session-id turn-id event-type payload entry))
+     :write-index write-index)))
 
 (cl-defun e-session-append-context-curation-response
     (store session-id turn-id response-entry-id &key (write-index t))
   "Append the audit-only context curation response control entry."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-entry-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-append-context-curation-response
-      aggregate session-id turn-id response-entry-id
-      :write-index write-index))
-   :write-index write-index))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'context-curation-response
+       (list :turn-id turn-id :response-entry-id response-entry-id
+             :write-index write-index)
+       :write-index write-index)
+    (e-session--commit-entry-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-append-context-curation-response
+        aggregate session-id turn-id response-entry-id
+        :write-index write-index))
+     :write-index write-index)))
 
 (defun e-session-append-process-report (store session-id report)
   "Append an out-of-band process REPORT."
@@ -839,71 +899,106 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-set-metadata (store session-id metadata)
   "Replace durable session METADATA."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-metadata aggregate session-id metadata))
-   :write-index t)
-  metadata)
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info
+       (list :field 'metadata :value metadata)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-metadata aggregate session-id metadata))
+     :write-index t)
+    metadata))
 
 (defun e-session-set-session-config (store session-id config)
   "Merge durable session CONFIG."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-session-config aggregate session-id config))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info (list :field 'config :value config)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-session-config aggregate session-id config))
+     :write-index t)))
 
 (defun e-session-set-context-references (store session-id owner references)
   "Set current-state REFERENCES for OWNER."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-context-references
-      aggregate session-id owner references))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info
+       (list :field 'context-references :owner owner :value references)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-context-references
+        aggregate session-id owner references))
+     :write-index t)))
 
 (defun e-session-set-context-reference (store session-id key reference)
   "Set one durable current-state REFERENCE."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-context-reference
-      aggregate session-id key reference))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info
+       (list :field 'context-reference :key key :value reference)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-context-reference
+        aggregate session-id key reference))
+     :write-index t)))
 
 (cl-defun e-session-set-capability-state
     (store session-id capability-id state &key version)
   "Set durable CAPABILITY-ID STATE."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-capability-state
-      aggregate session-id capability-id state :version version))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info
+       (list :field 'capability-state :capability-id capability-id
+             :value state :version version)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-capability-state
+        aggregate session-id capability-id state :version version))
+     :write-index t)))
 
 (defun e-session-set-turn-options (store session-id options)
   "Replace session-scoped turn OPTIONS."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-turn-options aggregate session-id options))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info
+       (list :field 'turn-options :value options)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-turn-options aggregate session-id options))
+     :write-index t)))
 
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set the current branch cursor."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-set-current-branch
-      aggregate session-id branch-id))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info
+       (list :field 'current-branch :value branch-id)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-set-current-branch
+        aggregate session-id branch-id))
+     :write-index t)))
 
 (defun e-session-clear-messages (store session-id)
   "Clear transcript-derived state with an append-only reset event."
@@ -917,11 +1012,15 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-rename (store session-id name)
   "Rename SESSION-ID."
   (e-session--ensure-loaded store session-id)
-  (e-session--commit-session-event-mutation
-   store session-id
-   (lambda (aggregate)
-     (e-session-aggregate-rename aggregate session-id name))
-   :write-index t))
+  (if (e-session-async-enabled-p store)
+      (e-session-async-submit-command
+       store session-id 'session-info (list :field 'name :value name)
+       :write-index t)
+    (e-session--commit-session-event-mutation
+     store session-id
+     (lambda (aggregate)
+       (e-session-aggregate-rename aggregate session-id name))
+     :write-index t)))
 
 (defun e-session-append-board-message (store session-id message)
   "Append one immutable board envelope."
