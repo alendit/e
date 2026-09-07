@@ -37,8 +37,14 @@
   "tmp:// discovery command is not available")
 (define-error 'e-session-tmp-resources-process-failed
   "tmp:// discovery command failed")
+(define-error 'e-session-tmp-resources-async-required
+  "Persistent tmp:// resources require detached resource Work")
+(define-error 'e-session-tmp-resources-page-too-large
+  "Persistent tmp:// resource exceeds the bounded visible page")
 
 (declare-function e-harness-sessions "e-harness")
+(declare-function e-harness-executing-session-state "e-harness-state")
+(declare-function e-session-async-enabled-p "e-session-async")
 (declare-function e-session-get "e-session")
 
 (defvar e-session-tmp--roots (make-hash-table :test 'equal)
@@ -74,13 +80,17 @@ down, so a child harness cleanup never deletes a root the parent still uses.")
 The lineage id is the session's durable `:tmp-lineage-id' metadata when present,
 so a subagent lineage shares one root; otherwise it is SESSION-ID, so ordinary
 sessions stay isolated."
-  (or (when (and harness
-                 (fboundp 'e-harness-sessions)
-                 (fboundp 'e-session-get))
-        (ignore-errors
-          (when-let* ((store (e-harness-sessions harness))
-                      (session (e-session-get store session-id)))
-            (plist-get (plist-get session :metadata) :tmp-lineage-id))))
+  (or (when (and harness (fboundp 'e-harness-sessions))
+        (let* ((store (e-harness-sessions harness))
+               (session
+                (or (and (fboundp 'e-harness-executing-session-state)
+                         (e-harness-executing-session-state harness session-id))
+                    (unless (and (fboundp 'e-session-async-enabled-p)
+                                 (e-session-async-enabled-p store))
+                      (and (fboundp 'e-session-get)
+                           (ignore-errors
+                             (e-session-get store session-id)))))))
+          (plist-get (plist-get session :metadata) :tmp-lineage-id)))
       session-id))
 
 (defun e-session-tmp--reference-lineage (lineage-id harness)
@@ -461,10 +471,9 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
   "List tmp resources under parsed URI with PATTERN and LIMIT."
   (when (e-session-tmp--sqlite-store harness)
     (cl-return-from e-session-tmp--glob-resource
-      (e-session-tmp--glob-listed-resources
-       (e-session-tmp--sqlite-list harness session-id 4096)
-       uri pattern limit case-sensitive sort-by sort-order
-       created-after created-before updated-after updated-before)))
+      (signal 'e-session-tmp-resources-async-required
+              (list "Persistent tmp:// glob must run as detachable Work"
+                    (plist-get uri :uri)))))
   (let* ((root (e-session-tmp-directory harness session-id))
          (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
@@ -652,12 +661,9 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
   "Search tmp resources under parsed URI for QUERY with OPTIONS."
   (when (e-session-tmp--sqlite-store harness)
     (cl-return-from e-session-tmp--search-resource
-      (let ((rows (e-session-tmp--sqlite-list harness session-id 4096)))
-        (e-session-tmp--search-listed-resources
-         rows
-         (lambda (path)
-           (e-session-tmp--sqlite-read-content harness session-id path))
-         uri query options))))
+      (signal 'e-session-tmp-resources-async-required
+              (list "Persistent tmp:// search must run as detachable Work"
+                    (plist-get uri :uri)))))
   (if (or (> (length (e-resource-pattern-search-terms query)) 1)
           (e-session-tmp--search-advanced-p options))
       (e-session-tmp--search-resource-advanced harness session-id uri query options)
@@ -920,16 +926,9 @@ encode; without these bindings `write-region' would invoke
 (defun e-session-tmp--read-relative (harness session-id relative-name range)
   "Read RELATIVE-NAME through the active physical content primitive."
   (if (e-session-tmp--sqlite-store harness)
-      (let ((row (e-session-tmp--sqlite-get
-                  harness session-id relative-name)))
-        (unless row
-          (signal 'file-missing
-                  (list "Opening tmp resource"
-                        (e-session-tmp--uri relative-name))))
-        (e-session-tmp--read-content
-         (e-session-tmp--sqlite-read-content
-          harness session-id relative-name)
-         range))
+      (signal 'e-session-tmp-resources-async-required
+              (list "Persistent tmp:// read must run as detachable Work"
+                    (e-session-tmp--uri relative-name)))
     (e-session-tmp--read-file
      (e-session-tmp--path harness session-id relative-name) range)))
 
@@ -1150,6 +1149,163 @@ root and is suitable for streaming writes."
       (setq index (1+ index)))
     new-content))
 
+(defun e-session-tmp--sqlite-finish-work (handle result error transform)
+  "Settle HANDLE from RESULT or ERROR after applying TRANSFORM."
+  (if error
+      (e-work-fail handle error)
+    (condition-case err
+        (e-work-finish handle (funcall transform result))
+      (error (e-work-fail handle err)))))
+
+(defun e-session-tmp--sqlite-submit-work
+    (handle harness session-id kind body transform)
+  "Submit one tmp request and settle HANDLE through TRANSFORM."
+  (let ((request
+         (e-session-tmp-sqlite-submit
+          harness session-id kind body
+          (lambda (result error)
+            (e-session-tmp--sqlite-finish-work
+             handle result error transform)))))
+    (setf (e-work-handle-cancel-function handle)
+          (lambda (_handle)
+            (when-let ((runtime (e-session-tmp--sqlite-store harness)))
+              (e-runtime-store-cancel runtime request))
+            t))
+    :deferred))
+
+(defun e-session-tmp--sqlite-read-result (relative-name range page)
+  "Shape bounded PAGE for RELATIVE-NAME and optional line RANGE."
+  (unless page
+    (signal 'file-missing
+            (list "Opening tmp resource" (e-session-tmp--uri relative-name))))
+  (when (plist-get page :next)
+    (signal 'e-session-tmp-resources-page-too-large
+            (list (format "tmp://%s exceeds the 256 KiB visible read page"
+                          relative-name))))
+  (e-session-tmp--read-content (plist-get page :content) range))
+
+(defun e-session-tmp--sqlite-search-result (rows uri query options)
+  "Shape a bounded tmp search over detached ROWS."
+  (let ((content-by-path (make-hash-table :test 'equal)))
+    (dolist (row rows)
+      (puthash (plist-get row :path) (or (plist-get row :content) "")
+               content-by-path))
+    (let ((result
+           (e-session-tmp--search-listed-resources
+            rows (lambda (path) (gethash path content-by-path ""))
+            uri query options)))
+      (when (= (length rows) 256)
+        (plist-put result :truncated t))
+      result)))
+
+(defun e-session-tmp--sqlite-edit-work
+    (handle harness session-id parsed-uri edits)
+  "Run one bounded read-modify-write edit and settle HANDLE."
+  (let* ((relative-name
+          (e-session-tmp--safe-relative-name (plist-get parsed-uri :address)))
+         current-request)
+    (setf (e-work-handle-cancel-function handle)
+          (lambda (_handle)
+            (when (and current-request
+                       (e-session-tmp--sqlite-store harness))
+              (e-runtime-store-cancel
+               (e-session-tmp--sqlite-store harness) current-request))
+            t))
+    (setq
+     current-request
+     (e-session-tmp-sqlite-submit
+      harness session-id 'read
+      (list :op 'resource-read :path relative-name
+            :offset 0 :limit (* 256 1024))
+      (lambda (page error)
+        (if error
+            (e-work-fail handle error)
+          (condition-case err
+              (let* ((content
+                      (e-session-tmp--sqlite-read-result
+                       relative-name nil page))
+                     (new-content
+                      (e-session-tmp--apply-edits
+                       content edits (plist-get parsed-uri :uri))))
+                (setq
+                 current-request
+                 (e-session-tmp-sqlite-submit
+                  harness session-id 'write
+                  (list :op 'resource-put :session-id session-id
+                        :path relative-name :content new-content
+                        :expires-at
+                        (+ (float-time)
+                           e-session-tmp-default-max-age-seconds))
+                  (lambda (_result put-error)
+                    (if put-error
+                        (e-work-fail handle put-error)
+                      (e-work-finish handle
+                                     (e-session-tmp--uri relative-name)))))))
+            (error (e-work-fail handle err)))))))
+    :deferred))
+
+(defun e-session-tmp--sqlite-resource-work (harness session-id operation)
+  "Return detached SQLite tmp Work for OPERATION."
+  (e-work-spec-create
+   :id (format "tmp-resource.%s" (e-operation-id-of operation))
+   :description "Run one bounded SQLite-backed tmp resource operation."
+   :execution 'cooperative :interactive-policy 'async
+   :owner 'session-tmp-resources
+   :runner
+   (lambda (handle arguments _context)
+     (condition-case err
+         (let* ((parsed-uri (plist-get arguments :uri))
+                (operation-arguments
+                 (plist-get arguments :operation-arguments)))
+           (pcase (e-operation-id-of operation)
+             ('read
+              (let ((relative-name
+                     (e-session-tmp--safe-relative-name
+                      (plist-get parsed-uri :address))))
+                (e-session-tmp--sqlite-submit-work
+                 handle harness session-id 'read
+                 (list :op 'resource-read :path relative-name
+                       :offset 0 :limit (* 256 1024))
+                 (lambda (page)
+                   (e-session-tmp--sqlite-read-result
+                    relative-name (car operation-arguments) page)))))
+             ('write
+              (let ((relative-name
+                     (e-session-tmp--safe-relative-name
+                      (plist-get parsed-uri :address))))
+                (e-session-tmp--sqlite-submit-work
+                 handle harness session-id 'write
+                 (list :op 'resource-put :session-id session-id
+                       :path relative-name
+                       :content (format "%s" (car operation-arguments))
+                       :expires-at
+                       (+ (float-time) e-session-tmp-default-max-age-seconds))
+                 (lambda (_result) (e-session-tmp--uri relative-name)))))
+             ('edit
+              (e-session-tmp--sqlite-edit-work
+               handle harness session-id parsed-uri (car operation-arguments)))
+             ('glob
+              (e-session-tmp--sqlite-submit-work
+               handle harness session-id 'read
+               (list :op 'resource-list :limit 4096)
+               (lambda (rows)
+                 (apply #'e-session-tmp--glob-listed-resources
+                        rows parsed-uri operation-arguments))))
+             ('search
+              (e-session-tmp--sqlite-submit-work
+               handle harness session-id 'read
+               (list :op 'resource-search-source :limit 256)
+               (lambda (rows)
+                 (e-session-tmp--sqlite-search-result
+                  rows parsed-uri (car operation-arguments)
+                  (cadr operation-arguments)))))
+             (_
+              (signal 'e-resources-unsupported-operation
+                      (list "Unsupported persistent tmp operation"
+                            (e-operation-id-of operation))))))
+       (error (e-work-fail handle err)))
+     :deferred)))
+
 
 (cl-defun e-session-tmp--register-resource-methods
     (registry &key harness session-id &allow-other-keys)
@@ -1164,7 +1320,10 @@ root and is suitable for streaming writes."
     :range-modes '("line")
     :handler (lambda (uri range)
                (e-session-tmp--read-relative
-                harness session-id (plist-get uri :address) range))))
+                harness session-id (plist-get uri :address) range))
+    :work (when (e-session-tmp--sqlite-store harness)
+            (e-session-tmp--sqlite-resource-work
+             harness session-id e-operation-read))))
   (e-resources-register
    registry
    (e-resource-method-create
@@ -1177,7 +1336,10 @@ root and is suitable for streaming writes."
                 harness
                 session-id
                 (plist-get uri :address)
-                content))))
+                content))
+    :work (when (e-session-tmp--sqlite-store harness)
+            (e-session-tmp--sqlite-resource-work
+             harness session-id e-operation-write))))
   (e-resources-register
    registry
    (e-resource-method-create
@@ -1195,7 +1357,10 @@ root and is suitable for streaming writes."
                         edits
                         (plist-get uri :uri))))
                  (e-session-tmp-write
-                  harness session-id relative-name new-content)))))
+                  harness session-id relative-name new-content)))
+    :work (when (e-session-tmp--sqlite-store harness)
+            (e-session-tmp--sqlite-resource-work
+             harness session-id e-operation-edit))))
   (e-resources-register
    registry
    (e-resource-method-create
@@ -1219,7 +1384,9 @@ root and is suitable for streaming writes."
                created-before
                updated-after
                updated-before))
-   :work (unless (e-session-tmp--sqlite-store harness)
+   :work (if (e-session-tmp--sqlite-store harness)
+             (e-session-tmp--sqlite-resource-work
+              harness session-id e-operation-glob)
            (e-session-tmp--glob-work harness session-id))))
   (e-resources-register
    registry
@@ -1236,7 +1403,9 @@ root and is suitable for streaming writes."
                uri
                query
                options))
-   :work (unless (e-session-tmp--sqlite-store harness)
+   :work (if (e-session-tmp--sqlite-store harness)
+             (e-session-tmp--sqlite-resource-work
+              harness session-id e-operation-search)
            (e-session-tmp--search-work harness session-id))))
   nil)
 

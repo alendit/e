@@ -24,7 +24,9 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-session-board-policy)
+(require 'e-session-query)
 (require 'e-work)
 (require 'seq)
 (require 'subr-x)
@@ -48,6 +50,9 @@
 
 (defconst e-chat-service-subscriber-limit 8
   "Maximum presentation subscribers admitted to one chat binding.")
+
+(defconst e-chat-service-session-summary-page-limit 64
+  "Maximum persisted session summaries returned to one presentation request.")
 
 (defconst e-chat-service-projection-capacity 256
   "Maximum immutable board events retained per chat projection category.")
@@ -233,7 +238,13 @@
 
 (cl-defstruct (e-chat-service-create-operation
                (:constructor e-chat-service--create-operation-create))
-  work store session-id board-storage binding session-committed error)
+  work store session-id board-storage binding session-result session-committed
+  error)
+
+(cl-defstruct (e-chat-service-bind-operation
+               (:constructor e-chat-service--bind-operation-create))
+  "One request-local composition of association query and Board controller."
+  work harness session-id association child settled)
 
 (defconst e-chat-service--create-operation-spec
   (e-work-spec-create
@@ -262,6 +273,10 @@
 
 (defvar e-chat-service--board-bindings (make-hash-table :test 'equal)
   "Live chat bindings sharing each registered board identity.")
+
+(defvar e-chat-service--binding-works
+  (make-hash-table :test 'eq :weakness 'key)
+  "In-flight bounded binding work, first by harness then session id.")
 
 (defvar e-chat-service--continuation-reconciling (make-hash-table :test 'equal)
   "Boards whose terminal continuation is being reconciled synchronously.")
@@ -323,6 +338,12 @@ only observes durable claim decisions."
   (or (gethash harness e-chat-service--bindings)
       (puthash harness (make-hash-table :test 'equal)
                e-chat-service--bindings)))
+
+(defun e-chat-service--harness-binding-works (harness)
+  "Return HARNESS's request-local binding-work table."
+  (or (gethash harness e-chat-service--binding-works)
+      (puthash harness (make-hash-table :test 'equal)
+               e-chat-service--binding-works)))
 
 (defun e-chat-service--binding-live-p (binding)
   "Return non-nil when BINDING still names its active registered board."
@@ -640,13 +661,20 @@ removal: it emits no board removal event and removes the binding from every
         nil))))
 
 (defun e-chat-service-board-session-p (harness session-id)
-  "Return non-nil when HARNESS SESSION-ID has durable board identity."
-  (condition-case nil
-      (let* ((session (e-session-get (e-harness-sessions harness) session-id))
-             (state (plist-get session :board-session-state)))
-        (and (stringp (plist-get state :board-id))
-             (plist-get state :principal)))
-    (e-session-missing nil)))
+  "Return non-nil when SESSION-ID has a synchronously known Board identity.
+
+For SQLite this predicate consults only the process-local live binding.  An
+unopened durable association requires a bounded asynchronous query and must
+not turn a presentation predicate into an aggregate read."
+  (or (and (e-chat-service-binding harness session-id) t)
+      (let ((store (e-harness-sessions harness)))
+        (and (not (e-session-storage-sqlite-p store))
+             (condition-case nil
+                 (let* ((session (e-session-get store session-id))
+                        (state (plist-get session :board-session-state)))
+                   (and (stringp (plist-get state :board-id))
+                        (plist-get state :principal)))
+               (e-session-missing nil))))))
 
 (defun e-chat-service--board-has-active-subscriber-p (board-id)
   "Return non-nil when BOARD-ID has any live presentation subscriber."
@@ -1250,6 +1278,26 @@ resolved participant identity so restart never needs shell or caller policy."
       (signal 'e-session-error (list "Invalid board routing policy" policy)))
     (e-session-board-routing-policy-copy-value policy)))
 
+(defun e-chat-service--annotate-admission-records (records)
+  "Return bounded RECORDS with their v6 journal positions attached.
+
+Board-backed creation is admitted as one small root-plus-association batch.
+The query row is derived from those detached canonical records before the
+batch crosses the SQLite adapter, so the worker receives no session mirror or
+semantic interpretation responsibility."
+  (let ((position 0))
+    (mapcar
+     (lambda (record)
+       (setq position (1+ position))
+       (let ((copy (copy-tree record t)))
+         (plist-put copy :journal-position position)
+         (unless (plist-member copy :timestamp)
+           (when-let ((timestamp (or (plist-get copy :created-at)
+                                     (plist-get copy :updated-at))))
+             (plist-put copy :timestamp timestamp)))
+         copy))
+     records)))
+
 (defun e-chat-service--canonical-legacy-root-p (session association)
   "Return non-nil when SESSION has the established root identity defaults."
   (let ((role (plist-get association :association-role))
@@ -1401,11 +1449,11 @@ resolved participant identity so restart never needs shell or caller policy."
            (pickup-selector '(:tags (main)))
            (observer-selector '(:tags (main)))
            (default-tags '(main)) default-to
-           defer-participant-publication restore-existing-participant)
+           defer-participant-publication associated-participant
+           pending-session output-sequence activity-sequence)
   "Install one HARNESS SESSION-ID participant/client binding on BOARD."
   (or (e-chat-service-binding harness session-id)
       (progn
-        (e-session-get (e-harness-sessions harness) session-id)
         (let (client requester attachment participant main-subscription
                      source-board snapshot-cursor observer binding)
           (condition-case error
@@ -1419,15 +1467,30 @@ resolved participant identity so restart never needs shell or caller policy."
                       (e-board-registry-client-requester-context
                        board (e-board-registry-client-id client)))
                 (setq attachment
-                      (if restore-existing-participant
-                          (e-board-runtime-reattach
+                      (cond
+                       (associated-participant
+                          (e-board-runtime-attach-associated
                            board harness session-id participant-id
                            :principal principal :controller principal
                            :author "e-chat"
+                           :output-sequence output-sequence
+                           :activity-sequence activity-sequence
                            :delivery-function
                            (lambda (current pickup message)
                              (e-chat-service--deliver-or-defer-pending-session
-                              binding current pickup message)))
+                              binding current pickup message))))
+                       (pending-session
+                        (e-board-runtime-attach-pending-session
+                         board harness session-id :participant-id participant-id
+                         :principal principal :controller principal
+                         :author "e-chat"
+                         :delivery-function
+                         (lambda (current pickup message)
+                           (e-chat-service--deliver-or-defer-pending-session
+                            binding current pickup message))
+                         :defer-participant-publication
+                         defer-participant-publication))
+                       (t
                         (e-board-runtime-attach
                          board harness session-id :participant-id participant-id
                          :principal principal :controller principal
@@ -1437,7 +1500,7 @@ resolved participant identity so restart never needs shell or caller policy."
                            (e-chat-service--deliver-or-defer-pending-session
                             binding current pickup message))
                          :defer-participant-publication
-                         defer-participant-publication)))
+                         defer-participant-publication))))
                 (setq participant
                       (e-board-runtime-attachment-participant attachment))
                 (setq main-subscription
@@ -1524,10 +1587,153 @@ resolved participant identity so restart never needs shell or caller policy."
                (e-board-registry-detach-client-exact board client))
              (signal (car error) (cdr error))))))))
 
+(defun e-chat-service--finish-bind-operation (operation binding error)
+  "Settle OPERATION exactly once with BINDING or ERROR."
+  (unless (e-chat-service-bind-operation-settled operation)
+    (setf (e-chat-service-bind-operation-settled operation) t
+          (e-chat-service-bind-operation-child operation) nil)
+    (let* ((harness (e-chat-service-bind-operation-harness operation))
+           (session-id (e-chat-service-bind-operation-session-id operation))
+           (table (e-chat-service--harness-binding-works harness))
+           (work (e-chat-service-bind-operation-work operation)))
+      (when (eq (gethash session-id table) work)
+        (remhash session-id table))
+      (if error
+          (e-work-fail work error)
+        (e-work-finish work binding)))))
+
+(defun e-chat-service--bind-controller-settled (operation child)
+  "Install OPERATION's live binding from terminal controller CHILD."
+  (let ((status (e-work-status child)))
+    (if (not (eq (plist-get status :state) 'finished))
+        (e-chat-service--finish-bind-operation
+         operation nil (plist-get status :error))
+      (condition-case error
+          (let* ((association
+                  (e-chat-service-bind-operation-association operation))
+                 (policy (plist-get association :routing-policy))
+                 (principal (plist-get association :principal))
+                 (participant-id (plist-get policy :participant-id))
+                 (board (plist-get status :result)))
+            (unless (and (e-session-board-routing-policy-valid-p policy)
+                         principal participant-id)
+              (signal 'e-session-error
+                      (list "Malformed detached Board association"
+                            association)))
+            (e-chat-service--finish-bind-operation
+             operation
+             (e-chat-service--install-participant-binding
+              board
+              (e-chat-service-bind-operation-harness operation)
+              (e-chat-service-bind-operation-session-id operation)
+              :principal principal :participant-id participant-id
+              :pickup-selector (plist-get policy :pickup-selector)
+              :observer-selector (plist-get policy :observer-selector)
+              :default-tags (plist-get policy :default-tags)
+              :default-to (plist-get policy :default-to)
+              :associated-participant t
+              :output-sequence (plist-get association :board-output-sequence)
+              :activity-sequence (plist-get association :board-activity-sequence))
+             nil))
+        (error
+         (e-chat-service--finish-bind-operation operation nil error))))))
+
+(defun e-chat-service--start-bind-controller (operation association)
+  "Start OPERATION's bounded Board query from detached ASSOCIATION."
+  (condition-case error
+      (let ((child
+             (e-board-session-association-open-controller-start
+              (e-harness-sessions
+               (e-chat-service-bind-operation-harness operation))
+              association)))
+        (setf (e-chat-service-bind-operation-association operation)
+              (copy-tree association t)
+              (e-chat-service-bind-operation-child operation) child)
+        (e-work-on-settle
+         child
+         (lambda (settled)
+           (e-chat-service--bind-controller-settled operation settled))))
+    (error
+     (e-chat-service--finish-bind-operation operation nil error))))
+
+(defun e-chat-service--bind-association-settled (operation child)
+  "Continue OPERATION from terminal exact-association CHILD."
+  (let ((status (e-work-status child)))
+    (if (eq (plist-get status :state) 'finished)
+        (let ((association (plist-get status :result)))
+          (if association
+              (e-chat-service--start-bind-controller operation association)
+            (e-chat-service--finish-bind-operation
+             operation nil
+             (list 'e-session-missing
+                   (e-chat-service-bind-operation-session-id operation)))))
+      (e-chat-service--finish-bind-operation
+       operation nil (plist-get status :error)))))
+
+(defun e-chat-service--run-bind-operation (_handle operation _context)
+  "Start OPERATION without awaiting SQLite association or Board reads."
+  (if-let* ((association
+             (e-chat-service-bind-operation-association operation)))
+      (e-chat-service--start-bind-controller operation association)
+    (let ((child
+           (e-session-async-board-association
+            (e-harness-sessions
+             (e-chat-service-bind-operation-harness operation))
+            (e-chat-service-bind-operation-session-id operation))))
+      (setf (e-chat-service-bind-operation-child operation) child)
+      (e-work-on-settle
+       child
+       (lambda (settled)
+         (e-chat-service--bind-association-settled operation settled)))))
+  :deferred)
+
+(defconst e-chat-service--bind-operation-spec
+  (e-work-spec-create
+   :id "chat-board-bind" :execution 'cooperative :interactive-policy 'async
+   :owner 'e-chat-service :runner #'e-chat-service--run-bind-operation))
+
+(defun e-chat-service-binding-start (harness session-id &optional association)
+  "Return immediately with work opening SESSION-ID's bounded live binding.
+
+ASSOCIATION, when supplied, is the detached exact row already requested by a
+Daily surface.  Concurrent callers share only this in-flight work; its query
+result is not retained after the live controller has been built."
+  (if-let* ((binding (e-chat-service-binding harness session-id)))
+      (e-work-start
+       (e-work-spec-create
+        :id "chat-board-bound" :execution 'cheap :interactive-policy 'async
+        :owner 'e-chat-service
+        :runner (lambda (bound-binding _context) bound-binding))
+       binding)
+    (let* ((table (e-chat-service--harness-binding-works harness))
+           (current (gethash session-id table)))
+      (or current
+          (let* ((operation
+                  (e-chat-service--bind-operation-create
+                   :harness harness :session-id session-id
+                   :association (and association (copy-tree association t))))
+                 (work
+                  (e-work-prepare
+                   e-chat-service--bind-operation-spec operation
+                   :context (list :domain-ref session-id
+                                  :work-kind 'chat-board-bind))))
+            (setf (e-chat-service-bind-operation-work operation) work)
+            (puthash session-id work table)
+            (e-work-start-prepared work :arguments operation)
+            work)))))
+
 (defun e-chat-service--bind-session (harness session-id)
-  "Restore and bind board-native HARNESS SESSION-ID as its main member."
+  "Return an existing or explicitly ephemeral HARNESS SESSION-ID binding.
+
+SQLite callers must use `e-chat-service-binding-start'; this synchronous
+compatibility path never issues durable reads."
   (or (e-chat-service-binding harness session-id)
-      (let* ((session (e-session-get (e-harness-sessions harness) session-id))
+      (let* ((store (e-harness-sessions harness))
+             (_ (when (e-session-storage-sqlite-p store)
+                  (e-chat-service-binding-start harness session-id)
+                  (signal 'e-session-error
+                          (list "SQLite Board binding is pending" session-id))))
+             (session (e-session-get store session-id))
              (board-state (plist-get session :board-session-state))
              (routing-policy (e-chat-service--session-routing-policy session))
              (principal (plist-get board-state :principal))
@@ -1536,8 +1742,7 @@ resolved participant identity so restart never needs shell or caller policy."
                   (signal 'e-session-missing
                           (list session-id 'board-session-state))))
              (board
-              (e-board-session-association-restore
-               (e-harness-sessions harness) session)))
+              (e-board-session-association-compose-ephemeral store session)))
         (if routing-policy
             (e-chat-service--install-participant-binding
              board harness session-id :principal principal
@@ -1546,7 +1751,7 @@ resolved participant identity so restart never needs shell or caller policy."
              :observer-selector (plist-get routing-policy :observer-selector)
              :default-tags (plist-get routing-policy :default-tags)
              :default-to (plist-get routing-policy :default-to)
-             :restore-existing-participant
+             :associated-participant
              (condition-case nil
                  (progn
                    (e-board-registry-participant
@@ -1573,8 +1778,7 @@ resolved participant identity so restart never needs shell or caller policy."
                       '(finished failed cancelled))))
       (e-work-finish
        work
-       (e-session-get (e-chat-service-create-operation-store operation)
-                      (e-chat-service-create-operation-session-id operation)))
+       (copy-tree (e-chat-service-create-operation-session-result operation) t))
       (when binding
         (e-chat-service--publish-ready-binding binding))))))
 
@@ -1627,12 +1831,15 @@ resolved participant identity so restart never needs shell or caller policy."
             (e-chat-service--routing-policy
              participant-id '(:tags (main)) '(:tags (main)) '(main) nil))
            (session
-            (e-session-create-board-admission
-             store :id session-id :metadata metadata :principal principal
+            (e-session-board-admission-records
+             :id session-id :metadata metadata :principal principal
              :board-id board-id
              :association-role e-chat-service--board-role-root
              :routing-policy routing-policy))
            (records (plist-get session :admission-records))
+           (query-delta
+            (e-session-query-derive
+             (e-chat-service--annotate-admission-records records)))
            (binding
             (e-chat-service--install-participant-binding
              board harness session-id :principal principal
@@ -1640,14 +1847,23 @@ resolved participant identity so restart never needs shell or caller policy."
              :pickup-selector (plist-get routing-policy :pickup-selector)
              :observer-selector (plist-get routing-policy :observer-selector)
              :default-tags (plist-get routing-policy :default-tags)
-             :default-to (plist-get routing-policy :default-to))))
+             :default-to (plist-get routing-policy :default-to)
+             :pending-session t)))
       (setf (e-chat-service-create-operation-binding operation) binding
+            (e-chat-service-create-operation-session-result operation)
+            (copy-tree session t)
             (e-chat-service-binding-readiness-work binding)
             (e-chat-service-create-operation-work operation))
+      ;; The domain already owns the exact empty current row for this new
+      ;; session.  Retain it only as admission-time optimistic context while
+      ;; the setup writes below remain unacknowledged; settled sessions query
+      ;; SQLite and never reconstruct a durable aggregate here.
+      (e-session-async-prime-new-context-path store query-delta)
       (e-session-storage-submit-owned
        store session-id
        (list :op 'session-append-batch :session-id session-id
-             :records (vconcat records))
+             :records (vconcat records)
+             :query-delta query-delta)
        (lambda (_result error)
          (if error
              (let ((cause
@@ -1657,7 +1873,6 @@ resolved participant identity so restart never needs shell or caller policy."
                  (setf (e-chat-service-create-operation-error operation) cause))
                (setf (e-chat-service-binding-first-persistence-error binding)
                      (copy-tree cause)))
-           (e-session-aggregate-commit-board-admission store session-id)
            (setf (e-chat-service-create-operation-session-committed operation) t))
          (e-chat-service--settle-create-operation operation))))))
 
@@ -2090,13 +2305,12 @@ implementation detail of the chat service."
    prompt mode :tags tags :attributes attributes :to to
    :references references :metadata metadata))
 
-(cl-defun e-chat-service--post
-    (harness session-id prompt mode &key references metadata tags attributes to source-input-key)
-  "Post PROMPT to HARNESS SESSION-ID's board binding in MODE."
+(cl-defun e-chat-service--post-bound
+    (binding prompt mode &key references metadata tags attributes to source-input-key)
+  "Post PROMPT through already-live BINDING in MODE."
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
-  (let* ((binding (e-chat-service--bind-session harness session-id))
-         (client (e-chat-service-binding-client binding))
+  (let* ((client (e-chat-service-binding-client binding))
          (sequence (cl-incf (e-chat-service-binding-input-sequence binding)))
          (publication
           (e-board-runtime-post-input
@@ -2116,6 +2330,48 @@ implementation detail of the chat service."
                      (e-board-registry-client-generation client)
                      sequence)))))
     (e-board-message-id (e-board-publication-message publication))))
+
+(cl-defun e-chat-service--post
+    (harness session-id prompt mode &key references metadata tags attributes to source-input-key)
+  "Enqueue PROMPT for HARNESS SESSION-ID without awaiting SQLite.
+
+When the bounded live Board controller is not ready yet, retain only this one
+in-flight optimistic input closure and publish it after the request-local
+controller work finishes.  The returned provisional id is not durable state."
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Prompt must not be empty"))
+  (if-let* ((binding (e-chat-service-binding harness session-id)))
+      (e-chat-service--post-bound
+       binding prompt mode :references references :metadata metadata
+       :tags tags :attributes attributes :to to
+       :source-input-key source-input-key)
+    (let ((store (e-harness-sessions harness)))
+      (if (not (e-session-storage-sqlite-p store))
+          (e-chat-service--post-bound
+           (e-chat-service--bind-session harness session-id)
+           prompt mode :references references :metadata metadata
+           :tags tags :attributes attributes :to to
+           :source-input-key source-input-key)
+        (let* ((provisional-id (format "pending_%s" (e-session-generate-id)))
+               (work (e-chat-service-binding-start harness session-id))
+               (detached-prompt (copy-sequence prompt))
+               (detached-references (copy-tree references t))
+               (detached-metadata (copy-tree metadata t))
+               (detached-tags (copy-tree tags t))
+               (detached-attributes (copy-tree attributes t))
+               (detached-to (copy-tree to t))
+               (detached-source-key (copy-tree source-input-key t)))
+          (e-work-on-settle
+           work
+           (lambda (settled)
+             (when (eq (plist-get (e-work-status settled) :state) 'finished)
+               (e-chat-service--post-bound
+                (plist-get (e-work-status settled) :result)
+                detached-prompt mode
+                :references detached-references :metadata detached-metadata
+                :tags detached-tags :attributes detached-attributes
+                :to detached-to :source-input-key detached-source-key))))
+          provisional-id)))))
 
 (cl-defun e-chat-service-submit-session
     (harness session-id prompt &key references metadata)
@@ -2163,9 +2419,11 @@ harness turn here so state queries and events identify one turn consistently."
 (defun e-chat-service-active-turn (harness session-id)
   "Return SESSION-ID's running turn using presentation-facing identity.
 The returned `:id' is in the same namespace as board-derived event `:turn-id'
-values delivered by `e-chat-service-subscribe'."
-  (e-chat-service--binding-active-turn
-   (e-chat-service--bind-session harness session-id)))
+values delivered by `e-chat-service-subscribe'.  This is a live-controller
+query: an unopened persistent Board has no process-local running turn and must
+not trigger a durable read merely because presentation code asks for status."
+  (when-let* ((binding (e-chat-service-binding harness session-id)))
+    (e-chat-service--binding-active-turn binding)))
 
 (defun e-chat-service-active-turn-p (harness session-id)
   "Return non-nil when HARNESS SESSION-ID's board participant is running."
@@ -2186,8 +2444,94 @@ the harness context owner directly."
   (e-harness-sessions harness))
 
 (defun e-chat-service-session-list (harness)
-  "Return HARNESS's private session catalog for bounded shell navigation."
-  (e-harness-session-list harness))
+  "Return HARNESS's ephemeral session list for synchronous callers.
+
+Persistent SQLite consumers must use `e-chat-service-root-session-page-start';
+ordinary v6 navigation must never enumerate an Emacs-owned catalog."
+  (let ((store (e-harness-sessions harness)))
+    (when (e-session-async-enabled-p store)
+      (signal 'e-session-storage-error
+              (list "Persistent session navigation requires an asynchronous bounded page")))
+    (e-harness-session-list harness)))
+
+(defun e-chat-service--query-row-session-summary (row)
+  "Return the bounded shell summary represented by detached query ROW."
+  (let* ((session-id (plist-get row :session-id))
+         (board-id (plist-get row :board-id))
+         (principal (plist-get row :principal))
+         (association
+          (when (or board-id principal)
+            (append
+             (list :board-id board-id :principal principal)
+             (when-let* ((role (plist-get row :association-role)))
+               (list :association-role role))
+             (when-let* ((policy (plist-get row :routing-policy)))
+               (list :routing-policy (copy-tree policy t)))))))
+    (list :id session-id
+          :name (plist-get row :name)
+          :summary (plist-get row :summary)
+          :title (or (plist-get row :name)
+                     (plist-get row :summary)
+                     session-id)
+          :metadata (copy-tree (plist-get row :metadata) t)
+          :created-at (plist-get row :created-at)
+          :updated-at (plist-get row :updated-at)
+          :last-message-at (plist-get row :last-message-at)
+          :latest-assistant-marker
+          (copy-tree (plist-get row :latest-assistant-marker) t)
+          :message-count (plist-get row :message-count)
+          :current-branch (plist-get row :current-branch)
+          :turn-options (copy-tree (plist-get row :turn-options) t)
+          :board-id board-id
+          :principal principal
+          :board-session-state association
+          :journal-position (plist-get row :journal-position))))
+
+(cl-defun e-chat-service-root-session-page-start
+    (harness &key cursor (limit e-chat-service-session-summary-page-limit))
+  "Return immediately with work reading one bounded root-session page.
+
+CURSOR is a prior page's stable SQLite cursor.  The returned work owns its
+detached result; no page is installed in HARNESS or a process-wide catalog."
+  (let ((store (e-harness-sessions harness)))
+    (if (e-session-async-enabled-p store)
+        (e-session-async-query-page
+         store :cursor cursor :limit limit :root-p t)
+      (e-work-start
+       (e-work-spec-create
+        :id "chat-root-session-page-ephemeral" :execution 'cheap
+        :interactive-policy 'async :owner 'e-chat-service
+        :runner
+        (lambda (_arguments _context)
+          (let ((rows
+                 (seq-take (e-chat-service-root-session-list harness) limit)))
+            (list :rows rows :next nil :limit limit))))
+       nil))))
+
+(defun e-chat-service-root-session-page-value (work)
+  "Return WORK's detached shell-shaped root-session page.
+
+Signal when WORK has not finished successfully.  This accessor performs only
+bounded in-process mapping and never waits for storage."
+  (let ((status (e-work-status work)))
+    (unless (eq (plist-get status :state) 'finished)
+      (signal 'e-session-storage-error
+              (list "Root session page is not available"
+                    (plist-get status :state)
+                    (plist-get status :error))))
+    (let* ((page (plist-get status :result))
+           (rows
+            (mapcar
+             (lambda (row)
+               (if (plist-member row :session-id)
+                   (e-chat-service--query-row-session-summary row)
+                 (copy-tree row t)))
+             (plist-get page :rows))))
+      (list :rows (cl-remove-if-not #'e-chat-service--root-session-p rows)
+            :next (copy-tree (plist-get page :next) t)
+            :limit (plist-get page :limit)
+            :byte-count (plist-get page :byte-count)
+            :byte-limit (plist-get page :byte-limit)))))
 
 (defun e-chat-service--root-session-p (session)
   "Return non-nil when SESSION is a user-facing chat root.
@@ -2209,32 +2553,42 @@ identity so existing indexes remain readable without mutation."
            (equal principal (format "chat:%s" session-id)))))))
 
 (defun e-chat-service-root-session-list (harness)
-  "Return HARNESS's user-facing chat roots for shell navigation."
-  (cl-remove-if-not #'e-chat-service--root-session-p
-                    (e-harness-root-session-list harness)))
+  "Return HARNESS's ephemeral user-facing chat roots synchronously.
+
+Persistent navigation uses `e-chat-service-root-session-page-start'."
+  (let ((store (e-harness-sessions harness)))
+    (when (e-session-async-enabled-p store)
+      (signal 'e-session-storage-error
+              (list "Persistent root-session navigation requires an asynchronous bounded page")))
+    (cl-remove-if-not #'e-chat-service--root-session-p
+                      (e-harness-root-session-list harness))))
 
 (defun e-chat-service-messages (harness session-id)
-  "Return SESSION-ID's bounded board-derived message projection."
-  (e-chat-service--events-messages
-   (e-chat-service--projection-events
-    (e-chat-service--bind-session harness session-id))))
+  "Return SESSION-ID's bounded live-controller message projection.
+An unopened persistent Board has no process-local projection; this status
+query must not initiate durable I/O."
+  (when-let* ((binding (e-chat-service-binding harness session-id)))
+    (e-chat-service--events-messages
+     (e-chat-service--projection-events binding))))
 
 (defun e-chat-service-activity-events (harness session-id)
-  "Return SESSION-ID's bounded board-derived activity projection."
-  (e-chat-service--events-activity-events
-   (e-chat-service--projection-events
-    (e-chat-service--bind-session harness session-id))))
+  "Return SESSION-ID's bounded live-controller activity projection."
+  (when-let* ((binding (e-chat-service-binding harness session-id)))
+    (e-chat-service--events-activity-events
+     (e-chat-service--projection-events binding))))
 
 (defun e-chat-service-state (harness session-id)
   "Return SESSION-ID's bounded board-derived presentation state."
-  (let* ((binding (e-chat-service--bind-session harness session-id))
-         (activities (e-chat-service-activity-events harness session-id))
+  (if-let* ((binding (e-chat-service-binding harness session-id)))
+      (let* ((activities
+              (e-chat-service--events-activity-events
+               (e-chat-service--projection-events binding)))
          ;; Seed the public snapshot from the live attached-turn projection.
          ;; Retained board activity below reconciles terminal state and covers
          ;; restart/replay when no live attachment remains.
-         (active-turn (e-chat-service--binding-active-turn binding)))
-    (dolist (event activities)
-      (pcase (plist-get event :event-type)
+             (active-turn (e-chat-service--binding-active-turn binding)))
+        (dolist (event activities)
+          (pcase (plist-get event :event-type)
         ('turn-started
          (when (and (e-chat-service--event-selected-participant-p event)
                     (not active-turn))
@@ -2256,11 +2610,15 @@ identity so existing indexes remain readable without mutation."
                     (e-chat-service--event-selected-participant-p event)
                     (equal (plist-get active-turn :id)
                            (plist-get event :turn-id)))
-           (setq active-turn nil)))))
-    (list :board-id
-          (e-board-registry-board-id (e-chat-service-binding-board binding))
-          :message-count (length (e-chat-service-messages harness session-id))
-          :active-turn active-turn)))
+             (setq active-turn nil)))))
+        (list :board-id
+              (e-board-registry-board-id
+               (e-chat-service-binding-board binding))
+              :message-count
+              (length (e-chat-service--events-messages
+                       (e-chat-service--projection-events binding)))
+              :active-turn active-turn))
+    (list :board-id nil :message-count 0 :active-turn nil)))
 
 (defun e-chat-service-active-capabilities (harness)
   "Return HARNESS's active capabilities for shell affordance discovery."
@@ -2301,8 +2659,9 @@ need to know a block kind or capability policy."
   (e-harness-prompts harness))
 
 (defun e-chat-service-queued-inputs (harness session-id)
-  "Return SESSION-ID's queued board inputs for bounded local presentation."
-  (let* ((binding (e-chat-service--bind-session harness session-id))
+  "Return SESSION-ID's queued inputs from its live controller, if present."
+  (when-let* ((binding (e-chat-service-binding harness session-id)))
+    (let* (
          (source (e-board-registry-board-source-board
                   (e-chat-service-binding-board binding)))
          queued)
@@ -2325,7 +2684,7 @@ need to know a block kind or capability policy."
                          :content)
                         :references (plist-get event :reference)
                         :metadata (copy-tree (plist-get event :attributes)))
-                  queued)))))))
+                  queued))))))))
 
 (defun e-chat-service-active-turns (harness)
   "Return HARNESS's board-derived active-turn index for shell diagnostics."

@@ -27,6 +27,7 @@
 (require 'e-runtime-store-codec)
 (require 'e-session-catalog)
 (require 'e-session-legacy)
+(require 'e-session-query)
 (require 'e-session-storage)
 (require 'e-task-queue-legacy)
 (require 'e-task-storage)
@@ -250,22 +251,39 @@
                           (e-runtime-migration--files tmp-root)))))
 
 (defun e-runtime-migration--import-sessions (runtime decoded)
-  "Import session records from DECODED through RUNTIME."
+  "Import canonical session records and derived rows from DECODED.
+
+The translated journal is the sole source of current session facts.  Retired
+catalog and checkpoint values remain validation witnesses in the decode phase;
+they are never published into the v6 store."
   (let ((store (e-runtime-sqlite-session-store runtime)) (count 0))
     (dolist (entry (plist-get decoded :sessions))
       (when (cdr entry)
-        (e-session-storage-commit-mutation-batch store (car entry) (cdr entry))
+        (let* ((session-id (car entry))
+               (records (cdr entry))
+               ;; The v6 row uses the durable append position as its stable
+               ;; cursor.  Legacy JSONL has no physical position field, so
+               ;; supply it only to the detached derivation input and leave
+               ;; the translated record values otherwise intact.
+               (position 0)
+               (replay-records
+                (mapcar
+                 (lambda (record)
+                   (setq position (1+ position))
+                   (let ((copy (copy-tree record)))
+                     (unless (plist-member copy :timestamp)
+                       (when-let* ((created-at (plist-get copy :created-at)))
+                         (setq copy (plist-put copy :timestamp created-at))))
+                     (plist-put copy :journal-position position)))
+                 records))
+               (query-delta (e-session-query-derive replay-records)))
+          (unless query-delta
+            (signal 'e-runtime-migration-error
+                    (list "Session journal produced no query state"
+                          session-id)))
+          (e-session-storage-commit-mutation-batch-with-query-delta
+           store session-id records query-delta))
         (setq count (+ count (length (cdr entry))))))
-    count))
-
-(defun e-runtime-migration--import-session-checkpoints (runtime decoded)
-  "Import validated session checkpoints from DECODED through RUNTIME."
-  (let ((store (e-runtime-sqlite-session-store runtime)) (count 0))
-    (dolist (checkpoint (plist-get decoded :session-checkpoints))
-      (e-session-storage-persist-resume-checkpoint
-       store (plist-get checkpoint :session-id)
-       (plist-get checkpoint :value))
-      (setq count (1+ count)))
     count))
 
 (defun e-runtime-migration--import-boards (runtime decoded)
@@ -459,21 +477,17 @@ directory to TARGET.  SOURCE is never written."
     (set-file-modes work #o700)
     (unwind-protect
         (progn
-          (setq runtime (e-runtime-sqlite-open work))
+          (setq runtime (e-runtime-sqlite-open work :offline t))
           (let* ((session-records
-                  (e-runtime-migration--import-sessions runtime decoded))
-                 (session-checkpoints
-                  (e-runtime-migration--import-session-checkpoints
-                   runtime decoded)))
-            ;; The retired catalog is only an input-quality witness.  Rebuild
-            ;; the installed projection from canonical imported records, one
-            ;; aggregate at a time, before importing unrelated owners.
-            (e-session-rebuild-catalog
-             (e-runtime-sqlite-session-store runtime))
+                  (e-runtime-migration--import-sessions runtime decoded)))
             (let ((imported
                    (list
                     :session-records session-records
-                    :session-checkpoints session-checkpoints
+                    ;; These values are retained in the deterministic source
+                    ;; manifest as witnesses, not imported projections.
+                    :session-checkpoint-witnesses
+                    (length (plist-get decoded :session-checkpoints))
+                    :session-catalog-witness t
                     :boards (e-runtime-migration--import-boards runtime decoded)
                     :tasks (e-runtime-migration--import-tasks
                             runtime (plist-get decoded :tasks))

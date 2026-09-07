@@ -2523,6 +2523,31 @@ must not need to inspect its representation to schedule their own work."
   "Render bounded transcript replay from MESSAGES and ACTIVITY-EVENTS."
   (e-chat-transcript--render-session-replay messages activity-events))
 
+(defun e-chat-transcript-render-visible-message-window (messages)
+  "Render detached visible MESSAGE values without consulting a session store.
+
+This narrow presentation port is used by the persistent SQLite chat view.  It
+does not ask the chat service for a session, apply provider presentation, or
+replay activity/history; all values have already been bounded and detached by
+the session query application operation."
+  (let ((turn-index 0)
+        turn-id)
+    (dolist (message messages)
+      (when (or (plist-get message :turn-id)
+                (not turn-id)
+                (eq (plist-get message :role) 'user))
+        (setq turn-id
+              (or (plist-get message :turn-id)
+                  (format "visible-turn-%d" (1+ turn-index))))
+        (setq turn-index (1+ turn-index)))
+      (unless (eq (plist-get message :role) 'tool)
+        (let* ((entry (e-chat-transcript--message-entry message))
+               (content (cdr entry)))
+          (e-chat-transcript--insert-entry
+           (car entry)
+           (if (stringp content) content (format "%S" content))
+           nil turn-id nil (plist-get message :id) nil t))))))
+
 (defun e-chat-transcript-rerender ()
   "Rebuild the current transcript while preserving its paired composer."
   (e-chat-transcript--rerender-transcript))

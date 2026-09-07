@@ -48,15 +48,23 @@ METADATA is caller-provided turn activity metadata."
   (e-chat-service-steer-session harness session-id prompt :metadata metadata))
 
 (defun e-chat-session-ensure-project-root (harness session-id project-root)
-  "Ensure SESSION-ID has PROJECT-ROOT when no durable root is stored."
+  "Ensure live SESSION-ID has PROJECT-ROOT when no root is already known.
+
+For an asynchronous SQLite session, only the executing request's detached
+metadata may answer this question.  A presentation attach never reconstructs
+the durable aggregate merely to preserve this legacy convenience operation."
   (let* ((project-root (and project-root
                             (file-name-as-directory
                              (expand-file-name project-root))))
          (store (e-harness-sessions harness))
-         (session (and project-root (e-session-get store session-id)))
+         (session
+          (and project-root
+               (or (e-harness-executing-session-state harness session-id)
+                   (unless (e-session-async-enabled-p store)
+                     (e-session-get store session-id)))))
          (metadata (plist-get session :metadata))
          (current-root (plist-get metadata :project-root)))
-    (when (and project-root
+    (when (and session project-root
                (not current-root))
       (e-session-set-session-config
        store session-id (list :project-root project-root)))))
@@ -161,10 +169,19 @@ METADATA may come from a live session or a transcript-free catalog entry."
              (plist-get references :attachments)))))
 
 (defun e-chat-session-attachments (harness session-id)
-  "Return current live context attachments for SESSION-ID in HARNESS."
-  (e-chat-session-metadata-attachments
-   (plist-get (e-session-get (e-harness-sessions harness) session-id)
-              :metadata)))
+  "Return request-scoped context attachments for SESSION-ID in HARNESS.
+
+Persistent sessions expose attachment metadata through the detached state of
+the executing turn.  This accessor performs no durable read and deliberately
+returns nil outside that bounded lifetime.  Ephemeral stores retain their
+ordinary in-process session lookup."
+  (let* ((store (e-harness-sessions harness))
+         (state
+          (or (e-harness-executing-session-state harness session-id)
+              (unless (e-session-async-enabled-p store)
+                (e-session-get store session-id)))))
+    (when state
+      (e-chat-session-metadata-attachments (plist-get state :metadata)))))
 
 (defun e-chat-session--same-attachment-p (left right)
   "Return non-nil when LEFT and RIGHT identify the same attachment."
@@ -205,14 +222,21 @@ METADATA may come from a live session or a transcript-free catalog entry."
   attachments)
 
 (cl-defun e-chat-session-attach-context
-    (harness session-id attachment &key canvas)
+    (harness session-id attachment &key canvas
+             (current-attachments nil current-attachments-supplied-p))
   "Attach ATTACHMENT to SESSION-ID live context in HARNESS.
 ATTACHMENT is a plist with at least :uri.  Attachments are stored as session
 current-state references; their contents are read fresh whenever context is
-built.  When CANVAS is non-nil, ATTACHMENT replaces the session's primary canvas
-attachment."
+built.  When CANVAS is non-nil, ATTACHMENT replaces the session's primary
+canvas attachment.  CURRENT-ATTACHMENTS may provide bounded state already
+known by the caller, notably the empty set for a newly created session; this
+avoids a redundant durable read without installing a metadata mirror."
   (let* ((attachment (e-chat-session--normalize-attachment attachment canvas))
-         (attachments (e-chat-session-attachments harness session-id))
+         (attachments
+          (if current-attachments-supplied-p
+              (mapcar #'e-chat-session--normalize-attachment
+                      (e-chat-session--attachment-list current-attachments))
+            (e-chat-session-attachments harness session-id)))
          (next (if canvas
                    (e-chat-session--replace-canvas attachments attachment)
                  (e-chat-session--upsert-attachment attachments attachment))))
@@ -389,8 +413,7 @@ request-time source descriptor."
   "Return live attachment context messages for SESSION-ID in HARNESS."
   (let ((attachments (and harness
                           session-id
-                          (ignore-errors
-                            (e-chat-session-attachments harness session-id)))))
+                          (e-chat-session-attachments harness session-id))))
     (when attachments
       (let* ((has-canvas (cl-some (lambda (attachment)
                                     (plist-get attachment :canvas))

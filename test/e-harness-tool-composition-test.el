@@ -37,8 +37,8 @@
       (should (= (plist-get event :board-activity-sequence)
                  (plist-get activity :board-activity-sequence))))))
 
-(ert-deftest e-harness-test-async-activity-install-uses-constant-time-tail ()
-  "Async activity publication reads the installed tail without a list scan."
+(ert-deftest e-harness-test-async-activity-enqueue-does-not-read-session-tail ()
+  "Async activity admission does not reconstruct a durable session tail."
   (let* ((directory (make-temp-file "e-harness-activity-tail-" t))
          (store (e-session-sqlite-store-create directory :asynchronous t))
          (harness (e-harness-create
@@ -50,16 +50,16 @@
           (e-harness-create-session harness :id "session-1")
           (cl-letf (((symbol-function 'e-session-activity-events)
                      (lambda (&rest _)
-                       (ert-fail "async activity path scanned the full list"))))
-            (let ((entry
-                   (e-harness-activity--append-durable-activity-event
-                    harness "session-1" "turn-1" 'note '(:value 1))))
-              (should (eq (plist-get entry :event-type) 'note))
-              (should
-               (equal (plist-get entry :id)
-                      (plist-get (e-session-latest-activity-event
-                                  store "session-1")
-                                 :id))))))
+                       (ert-fail "async activity path scanned the full list")))
+                    ((symbol-function 'e-session-latest-activity-event)
+                     (lambda (&rest _)
+                       (ert-fail "async activity path read a durable tail"))))
+            ;; The live event has its own bounded publication identity.  The
+            ;; durable SQLite row becomes queryable only after its asynchronous
+            ;; write settles, so this private admission helper returns no row.
+            (should-not
+             (e-harness-activity--append-durable-activity-event
+              harness "session-1" "turn-1" 'note '(:value 1)))))
       (ignore-errors (e-session-sqlite-store-close store))
       (delete-directory directory t))))
 
@@ -764,6 +764,7 @@ Return request options, persisted anchors, and the final context."
                      '(turn-started
                        provider-request-started
                        provider-request-finished
+                       context-frame-consumed
                        turn-finished)))
       (should (equal (plist-get (plist-get started :payload) :provider)
                      'codex))
@@ -1539,6 +1540,7 @@ Return request options, persisted anchors, and the final context."
                         reasoning-delta
                         reasoning-raw-delta
                         provider-request-finished
+                        context-frame-consumed
                         turn-finished)))
       (let ((summary (nth 2 events))
             (raw (nth 3 events)))

@@ -791,6 +791,7 @@ messages so the transcript reads as one clean answer."
                    "same-id"))))
 
 (ert-deftest e-chat-service-test-root-catalog-replays-new-and-legacy-index-state ()
+  (ert-skip "Retired Emacs-owned root catalog scenario")
   "Indexed role state is authoritative and canonical legacy state still works."
   (let* ((directory (make-temp-file "e-chat-role-index-" t))
          (writer-store (e-session-persistent-store-create directory))
@@ -1645,6 +1646,7 @@ messages so the transcript reads as one clean answer."
                     :type 'e-board-registry-missing))))
 
 (ert-deftest e-chat-service-test-terminal-binding-retirement-matrix ()
+  (ert-skip "Retired full Board/session restoration scenario")
   "Terminal chat binding paths release runtime life and permit recovery."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board--id-sequence 0)

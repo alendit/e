@@ -110,6 +110,23 @@
     (make-list 70 (make-string e-session-query-state-string-byte-limit ?x)))
    :type 'e-session-query-delta-error))
 
+(ert-deftest e-session-query-test-large-message-projects-only-bounded-summary ()
+  "Large durable content does not become or invalidate a current-row copy."
+  (let* ((content (concat (make-string 5000 ?x) "é-tail"))
+         (record (e-session-query-test--record
+                  "message" "large-message"
+                  :message (list :id "large-message" :role 'user
+                                 :content content
+                                 :provider-payload (make-string 12000 ?p))))
+         (state (e-session-query-state-apply-record
+                 (e-session-query-test--state) record))
+         (summary (plist-get state :summary)))
+    (should (= (plist-get state :message-count) 1))
+    (should (string-prefix-p summary content))
+    (should (= (string-bytes summary)
+               e-session-query-state-string-byte-limit))
+    (should (equal (plist-get (plist-get record :message) :content) content))))
+
 (ert-deftest e-session-query-test-bignum-magnitude-is-bounded ()
   "Large integers cannot evade the total semantic-value byte bound."
   ;; Keep the fixture below Emacs' own maximum bignum size while shrinking

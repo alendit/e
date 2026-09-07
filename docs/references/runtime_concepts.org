@@ -12,10 +12,11 @@ reading feature plans or examples.
   sessions, turns, layer activation, effective capabilities, model/tool
   lifecycle, resource registries, compaction, durable records, and events.
 
-- =session= :: Durable conversation/runtime state owned by a harness. Session
-  metadata carries the project root, display title, model/effort overrides,
-  attachments, queued prompts, branch/compaction records, and transcript
-  records.
+- =session= :: Durable conversation/runtime state in the harness domain.  For
+  the SQLite runtime, SQLite is authoritative for its identity, metadata,
+  ordering, history, associations, and query indexes; the harness requests
+  bounded current rows or pages and retains only state with a live runtime or
+  presentation purpose.
 
 - =turn= :: One backend interaction loop for a submitted prompt. A turn may
   stream assistant output, execute model-facing tools, append tool results,
@@ -75,10 +76,13 @@ reading feature plans or examples.
 - =backend adapter= :: Provider-specific request, auth, retry, streaming, and
   response translation code behind the generic backend contract.
 
-- =board= :: The process-local interaction record and routing context.  A board
-  owns ordered messages/facts, participants, subscriptions, activations,
-  pickups, and their visible state transitions.  It is not a harness or UI;
-  runtime adapters perform delivery and publication outside its reducer.
+- =board= :: The process-local live controller and routing context.  It owns
+  subscribers, callbacks, timers, and active coordination.  SQLite is
+  authoritative for durable Board identity, ordered messages/facts,
+  participants, pickups, and routing state; a live Board requests bounded
+  current rows and visible windows rather than replaying durable history.  It
+  is not a harness or UI; runtime adapters perform delivery and publication
+  outside its reducer.
 
 - =participant= :: A board-local logical recipient that may be attached to one
   live harness session.  Its identity and pending pickups survive a proven

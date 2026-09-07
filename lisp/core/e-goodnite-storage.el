@@ -22,20 +22,32 @@
 (cl-defstruct (e-goodnite-storage
                (:constructor e-goodnite-storage--create)
                (:conc-name e-goodnite-storage--))
-  runtime call-operation)
+  runtime call-operation submit-operation)
 
 (defun e-goodnite-storage-runtime (storage)
   "Return STORAGE's shared runtime-store identity."
   (e-goodnite-storage--runtime storage))
 
 (defun e-goodnite-storage--call (storage operation &rest arguments)
-  "Invoke STORAGE OPERATION with ARGUMENTS."
+  "Invoke explicit blocking STORAGE OPERATION with ARGUMENTS.
+This compatibility boundary is reserved for offline migration and tests."
   (unless (e-goodnite-storage-p storage)
     (signal 'wrong-type-argument (list 'e-goodnite-storage-p storage)))
   (condition-case err
       (apply (e-goodnite-storage--call-operation storage) operation arguments)
     (e-runtime-store-goodnite-conflict
      (signal 'e-goodnite-storage-conflict (cdr err)))))
+
+(defun e-goodnite-storage-submit
+    (storage kind operation arguments on-settle)
+  "Submit KIND OPERATION with ARGUMENTS and invoke ON-SETTLE asynchronously."
+  (unless (e-goodnite-storage-p storage)
+    (signal 'wrong-type-argument (list 'e-goodnite-storage-p storage)))
+  (unless (functionp (e-goodnite-storage--submit-operation storage))
+    (signal 'e-goodnite-storage-error
+            (list "Goodnite storage has no asynchronous submission port")))
+  (funcall (e-goodnite-storage--submit-operation storage)
+           kind operation arguments on-settle))
 
 (defun e-goodnite-storage-append (storage event-id event)
   "Append immutable EVENT with stable EVENT-ID."

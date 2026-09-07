@@ -111,17 +111,7 @@ Return nil for ordinary children without a durable assignment."
      :summary (e-task-queue-record-display-summary record)
      :outputs (plist-get record :outputs) :error (plist-get record :error))))
 
-(defun e-board-orchestration-actions--queue-rehydrate (queue record persisted-status)
-  "Reconcile a restored queue RECORD's durable assignment before dispatch."
-  (ignore queue)
-  (when (and (eq persisted-status 'running)
-             (e-board-orchestration-actions--queue-assignment record))
-    (when-let ((board (e-board-orchestration-actions--queue-board record)))
-      (e-board-orchestration-actions--publish-attempt
-       board (e-board-orchestration-actions--queue-assignment record) 'queued))))
-
 (add-hook 'e-task-queue-terminal-functions #'e-board-orchestration-actions--queue-terminal)
-(add-hook 'e-task-queue-rehydrate-functions #'e-board-orchestration-actions--queue-rehydrate)
 
 (cl-defun e-board-orchestration-actions-dispatch-queue-task
     (queue board &key run-id task-key attempt prompt summary harness-instance-id)

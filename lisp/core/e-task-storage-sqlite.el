@@ -13,6 +13,51 @@
 (require 'e-runtime-store)
 (require 'e-task-storage)
 
+(defun e-task-storage-sqlite--body (operation arguments)
+  "Return the typed worker body for OPERATION and ARGUMENTS."
+  (pcase operation
+    ('open-queue
+     (list :op 'task-queue-open :queue-id (car arguments)))
+    ('enqueue
+     (pcase-let ((`(,queue-id ,record) arguments))
+       (list :op 'task-enqueue :queue-id queue-id :record record)))
+    ('claim-runnable
+     (pcase-let ((`(,queue-id ,started-at ,instance-id) arguments))
+       (list :op 'task-runnable-claim :queue-id queue-id
+             :started-at started-at :harness-instance-id instance-id)))
+    ('transition
+     (pcase-let ((`(,queue-id ,task-id ,expected-status ,record) arguments))
+       (list :op 'task-transition :queue-id queue-id :task-id task-id
+             :expected-status expected-status :record record)))
+    ('set-paused
+     (pcase-let ((`(,queue-id ,paused-p) arguments))
+       (list :op 'task-queue-pause :queue-id queue-id :paused-p paused-p)))
+    ('status
+     (list :op 'task-queue-status :queue-id (car arguments)))
+    (_ (signal 'e-task-storage-error
+               (list "Unknown asynchronous task storage operation"
+                     operation)))))
+
+(defun e-task-storage-sqlite--submit
+    (runtime kind operation arguments on-settle)
+  "Submit typed task OPERATION through RUNTIME and observe settlement."
+  (let* ((body (e-task-storage-sqlite--body operation arguments))
+         (queue-id (plist-get body :queue-id))
+         (request
+          (e-runtime-store--submit-owned
+           runtime kind body
+           (and (eq kind 'write) (cons 'task queue-id)))))
+    (e-runtime-store--observe
+     request
+     (lambda (settled)
+       (if (eq (e-runtime-store-request--state settled) 'committed)
+           (funcall on-settle (e-runtime-store-request--result settled) nil)
+         (funcall on-settle nil
+                  (or (e-runtime-store-request--error settled)
+                      '(e-task-storage-error
+                        "Runtime request did not commit"))))))
+    request))
+
 (defun e-task-storage-sqlite--call (runtime operation arguments)
   "Dispatch task OPERATION ARGUMENTS through RUNTIME."
   (pcase operation
@@ -75,7 +120,11 @@
    :runtime runtime
    :call-operation
    (lambda (operation &rest arguments)
-     (e-task-storage-sqlite--call runtime operation arguments))))
+     (e-task-storage-sqlite--call runtime operation arguments))
+   :submit-operation
+   (lambda (kind operation arguments on-settle)
+     (e-task-storage-sqlite--submit
+      runtime kind operation arguments on-settle))))
 
 (provide 'e-task-storage-sqlite)
 

@@ -207,11 +207,12 @@
   (when (and (e-harness-p harness)
              (stringp session-id)
              (stringp turn-id)
-             (fboundp 'e-harness-activity-emit-turn-event)
-             (ignore-errors
-               (e-session-get (e-harness-sessions harness) session-id)))
-    (e-harness-activity-emit-turn-event
-     harness session-id turn-id type payload)))
+             (fboundp 'e-harness-activity-emit-turn-event))
+    (let ((store (e-harness-sessions harness)))
+      (when (or (e-session-async-enabled-p store)
+                (ignore-errors (e-session-get store session-id)))
+        (e-harness-activity-emit-turn-event
+         harness session-id turn-id type payload)))))
 
 (defun e-actions--error-payload-fields (err)
   "Return payload fields for ERR."

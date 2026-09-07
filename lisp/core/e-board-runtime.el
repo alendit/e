@@ -2853,18 +2853,56 @@ removes the durable participant identity."
    :controller controller :delivery-function delivery-function
    :restored-participant-p t))
 
+(cl-defun e-board-runtime-attach-associated
+    (board-or-id harness session-id participant-id
+                 &key author principal controller delivery-function
+                 output-sequence activity-sequence)
+  "Attach the durable participant association for SESSION-ID to BOARD-OR-ID.
+
+This v6 runtime operation creates only the process-local endpoint needed for
+live Board coordination.  It does not require or create a reconstructed
+session aggregate; OUTPUT-SEQUENCE and ACTIVITY-SEQUENCE are detached durable
+high-watermarks returned by the exact association query."
+  (e-board-runtime--require-admission)
+  (e-board-runtime--attach-resolved
+   board-or-id harness session-id
+   :participant-id participant-id :author author :principal principal
+   :controller controller :delivery-function delivery-function
+   :restored-participant-p t :require-live-session-p nil
+   :output-sequence output-sequence :activity-sequence activity-sequence))
+
+(cl-defun e-board-runtime-attach-pending-session
+    (board-or-id harness session-id
+                 &key participant-id author principal controller
+                 delivery-function defer-participant-publication)
+  "Attach bounded live coordination for a newly enqueued SESSION-ID.
+
+The session declaration is an in-flight optimistic mutation owned by the
+caller.  This function creates no durable session object in Emacs and retains
+only the endpoint and participant needed while that mutation settles."
+  (e-board-runtime--require-admission)
+  (e-board-runtime--attach-resolved
+   board-or-id harness session-id
+   :participant-id participant-id :author author :principal principal
+   :controller controller :delivery-function delivery-function
+   :defer-participant-publication defer-participant-publication
+   :require-live-session-p nil :output-sequence 0 :activity-sequence 0))
+
 (cl-defun e-board-runtime--attach-resolved
     (board-or-id harness session-id
                  &key participant-id author principal controller delivery-function
                  instance-id instance-catalog-generation harness-id
                  harness-object-generation endpoint-token
-                 defer-participant-publication restored-participant-p)
+                 defer-participant-publication restored-participant-p
+                 (require-live-session-p t)
+                 output-sequence activity-sequence)
   "Attach one already-resolved endpoint with optional qualified metadata."
   (unless (e-harness-p harness)
     (signal 'wrong-type-argument (list 'e-harness-p harness)))
   (unless (or (null delivery-function) (functionp delivery-function))
     (signal 'wrong-type-argument (list 'functionp delivery-function)))
-  (e-board-runtime--require-live-session harness session-id)
+  (when require-live-session-p
+    (e-board-runtime--require-live-session harness session-id))
   (let ((session-key (e-board-runtime--session-key harness session-id))
         (endpoint-key (e-board-runtime--session-key harness session-id)))
     (when (or (gethash session-key e-board-runtime--session-attachments)
@@ -2911,7 +2949,10 @@ removes the durable participant identity."
                  :instance-catalog-generation instance-catalog-generation
                  :harness-id harness-id
                  :harness-object-generation harness-object-generation
-                 :endpoint-token endpoint-token))
+                 :endpoint-token endpoint-token
+                 :output-sequence output-sequence
+                 :activity-sequence activity-sequence
+                 :require-session-state require-live-session-p))
           (e-board-runtime--activate-attachment attachment)
           (when restored-participant-p
             (e-board-registry-activate-restored-participant board participant)
@@ -2977,11 +3018,14 @@ This operation never invokes an instance factory or loads dormant history."
   (let ((attachment
          (e-board-runtime-attachment--create
           :board board :participant participant :harness harness :session-id session-id
-          :activity-sequence 0
+          :activity-sequence
+          (or (plist-get metadata :activity-sequence) 0)
           :output-sequence
-          (or (plist-get
-               (e-session-get (e-harness-sessions harness) session-id)
-               :board-output-sequence)
+          (or (plist-get metadata :output-sequence)
+              (when (plist-get metadata :require-session-state)
+                (plist-get
+                 (e-session-get (e-harness-sessions harness) session-id)
+                 :board-output-sequence))
               0)
           :generation generation :state 'active
           :turn-activity (make-hash-table :test 'equal)

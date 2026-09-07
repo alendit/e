@@ -437,31 +437,6 @@
         (should (= (cl-count (caddr projected) projected :test #'equal)
                    1))))))
 
-(ert-deftest e-harness-test-context-lifetime-disabled-keeps-default-path ()
-  "The opt-in boundary leaves the existing path without a runtime frame."
-  "The opt-in boundary leaves the existing path without a runtime frame."
-  (let* ((captured-options nil)
-         (backend
-          (e-backend-create
-           :name "context-lifetime-disabled"
-           :stream
-           (cl-function
-            (lambda (&key messages options on-item &allow-other-keys)
-              (ignore messages)
-              (setq captured-options (copy-tree options))
-              (funcall on-item
-                       '(:type assistant-message :content "ordinary answer"))
-              (funcall on-item '(:type done :reason stop))))))
-         (harness (e-harness-create :backend backend)))
-    (let ((e-context-lifetime-shadow-projection-enabled nil))
-      (e-harness-create-session harness :id "session-1")
-      (e-harness-test-prompt-batch harness "session-1" "ordinary"))
-    (should-not (plist-get captured-options :context-lifetime-enabled))
-    (should-not (e-session-context-generations
-                 (e-harness-sessions harness) "session-1"))
-    (should-not (e-session-context-promotions
-                 (e-harness-sessions harness) "session-1"))))
-
 (ert-deftest e-harness-test-context-lifetime-tool-result-curates-on-follow-up ()
   "A tool result is observed by B, curated there, then forgotten afterward."
   (e-harness-test--with-empty-layer-registry

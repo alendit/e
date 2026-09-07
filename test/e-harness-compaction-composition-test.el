@@ -478,14 +478,13 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
       (should (= (cl-count "AUTO-RETAINED-SUFFIX"
                            provider-contents :test #'equal)
                  1))
-      (let ((e-context-lifetime-shadow-projection-enabled nil))
-        (let* ((legacy (e-harness-context harness "enabled-auto-session"))
-               (legacy-contents
-                (mapcar (lambda (message) (plist-get message :content))
-                        (plist-get legacy :messages))))
-          (should (= (cl-count "AUTO-RETAINED-SUFFIX"
-                               legacy-contents :test #'equal)
-                     1)))))))
+      (let* ((projected (e-harness-context harness "enabled-auto-session"))
+             (projected-contents
+              (mapcar (lambda (message) (plist-get message :content))
+                      (plist-get projected :messages))))
+        (should (= (cl-count "AUTO-RETAINED-SUFFIX"
+                             projected-contents :test #'equal)
+                   1))))))
 
 (ert-deftest e-harness-test-repeated-compaction-summarizes-from-previous-summary ()
   "Repeated compaction summarizes previous summary plus newly compacted suffix."
@@ -513,7 +512,8 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
       (e-session-append-message store "session-1" '(:role assistant :content "latest answer"))
       (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
       (let ((second-prompt (plist-get (cadr (car calls)) :content)))
-        (should (string-match-p "Previous summary:\nFirst summary\\." second-prompt))
+        (should (string-match-p "Portable checkpoint:\nFirst summary\\."
+                                second-prompt))
         (should (string-match-p "middle answer" second-prompt))
         (should-not (string-match-p "old answer" second-prompt)))
       (should (equal (plist-get (e-session-latest-valid-compaction

@@ -555,20 +555,25 @@ nil and `sqlite' both select the sole current physical adapter."
     (signal 'e-session-storage-migration-required
             (list "Legacy session write modes are retired; migrate offline"
                   write-mode)))
-  (e-session-sqlite-store-create directory))
+  (e-session-sqlite-store-create directory :asynchronous t))
 
 (cl-defun e-session-persistent-store-create (&optional directory &key write-mode)
-  "Open the current SQLite session STORE and eagerly restore its sessions.
+  "Open the current SQLite session STORE without reconstructing sessions.
 
-This historical facade name no longer selects or falls back to JSONL."
+This historical facade name no longer selects JSONL or eager replay.  The
+returned store uses detached queries and enqueue-and-return mutations."
   (unless (memq write-mode '(nil sqlite))
     (signal 'e-session-storage-migration-required
             (list "Legacy session write modes are retired; migrate offline"
                   write-mode)))
-  (e-session-sqlite-store-create directory :load-all t))
+  (e-session-sqlite-store-create directory :asynchronous t))
 
 (defun e-session--ensure-loaded (store session-id)
   "Return loaded SESSION-ID, loading its checkpoint suffix on demand."
+  (when (e-session-async-enabled-p store)
+    (signal 'e-session-storage-error
+            (list "Durable session aggregates are unavailable in async SQLite; use a bounded query"
+                  session-id)))
   (let ((key (cons store session-id)))
     (when (gethash key e-session--commit-in-progress)
       (signal 'e-session-persistence-unavailable
@@ -651,6 +656,56 @@ This historical facade name no longer selects or falls back to JSONL."
     (plist-put session :admission-records records)
     session))
 
+(cl-defun e-session-board-admission-records
+    (&key id metadata principal board-id association-role routing-policy)
+  "Return detached canonical root and Board-association records.
+
+This v6 constructor creates no aggregate, catalog entry, reservation, or other
+process-wide durable mirror.  SQLite admission of the returned records is the
+only durable identity boundary."
+  (let* ((session-id (or id (e-session-generate-id)))
+         (timestamp (e-session--timestamp))
+         (metadata (e-session-metadata-normalize-for-replay metadata))
+         (role
+          (and association-role
+               (if (symbolp association-role)
+                   (symbol-name association-role)
+                 association-role))))
+    (unless (and (stringp session-id) (not (string-empty-p session-id))
+                 (stringp board-id) (not (string-empty-p board-id))
+                 (stringp principal) (not (string-empty-p principal)))
+      (signal 'e-session-error
+              (list "Invalid board admission identity"
+                    session-id board-id principal)))
+    (when (and role (not (member role '("owner" "participant"))))
+      (signal 'e-session-error (list "Invalid board association role" role)))
+    (when (and routing-policy
+               (not (e-session-board-routing-policy-valid-p routing-policy)))
+      (signal 'e-session-board-routing-invalid
+              (list "Invalid board routing policy" routing-policy)))
+    (let* ((root-id (e-session-generate-ulid))
+           (board-state
+            (append
+             (list :board-id (copy-sequence board-id)
+                   :principal (copy-sequence principal))
+             (when role (list :association-role role))
+             (when routing-policy
+               (list :routing-policy
+                     (e-session-board-routing-policy-normalize
+                      routing-policy)))))
+           (records
+            (list
+             (list :type "session" :session-id session-id :id root-id
+                   :timestamp timestamp :created-at timestamp
+                   :updated-at timestamp :metadata metadata)
+             (list :type "board-session-state" :session-id session-id
+                   :board-state board-state :board-id board-id
+                   :principal principal :board-output-sequence 0
+                   :board-activity-sequence 0))))
+      (list :id session-id :metadata (copy-tree metadata t)
+            :board-session-state (copy-tree board-state t)
+            :admission-records records))))
+
 (defun e-session-commit-board-admission (store session-id)
   "Publish a prepared board admission as one storage transaction."
   (let* ((session (e-session-aggregate-get-live store session-id))
@@ -729,7 +784,6 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-append-message (store session-id message)
   "Append MESSAGE to SESSION-ID and persist its semantic entry."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'append-message (list :message message)
@@ -744,6 +798,7 @@ This historical facade name no longer selects or falls back to JSONL."
                  (list :call-id call-id :state 'admitted
                        :payload (list :tool-name (plist-get call :name)
                                       :entry-id (plist-get record :id)))))))))
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -755,11 +810,11 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-set-message-display (store session-id message-id display)
   "Set DISPLAY on one message and persist its display disposition."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'message-display
        (list :message-id message-id :display display) :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -776,7 +831,6 @@ This historical facade name no longer selects or falls back to JSONL."
     (store session-id turn-id event-type payload &key (write-index t)
            checkpoint-retain)
   "Append durable activity EVENT-TYPE and optionally refresh the index."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'append-activity
@@ -800,6 +854,7 @@ This historical facade name no longer selects or falls back to JSONL."
                        :payload (list :turn-id turn-id
                                       :event-id (plist-get record :id)
                                       :tool-name (plist-get tool-call :name)))))))))
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -815,13 +870,13 @@ This historical facade name no longer selects or falls back to JSONL."
 (cl-defun e-session-append-context-curation-response
     (store session-id turn-id response-entry-id &key (write-index t))
   "Append the audit-only context curation response control entry."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'context-curation-response
        (list :turn-id turn-id :response-entry-id response-entry-id
              :write-index write-index)
        :write-index write-index)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -832,10 +887,10 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-append-process-report (store session-id report)
   "Append an out-of-band process REPORT."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'process-report
                                       (list :report report) :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -845,12 +900,12 @@ This historical facade name no longer selects or falls back to JSONL."
 (cl-defun e-session-append-branch-summary
     (store session-id branch-id summary &key metadata)
   "Append BRANCH-ID SUMMARY."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'branch-summary
        (list :branch-id branch-id :summary summary :metadata metadata)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -862,7 +917,6 @@ This historical facade name no longer selects or falls back to JSONL."
     (store session-id summary &key branch-id range first-kept-entry-id
            tokens-before tokens-kept metadata)
   "Append compaction SUMMARY."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'compaction
@@ -871,6 +925,7 @@ This historical facade name no longer selects or falls back to JSONL."
              :tokens-before tokens-before :tokens-kept tokens-kept
              :metadata metadata)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -884,7 +939,6 @@ This historical facade name no longer selects or falls back to JSONL."
 (cl-defun e-session-append-provider-anchor
     (store session-id provider-id &key model covered-entry-id fingerprints metadata)
   "Append opaque PROVIDER-ID anchor state."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'provider-anchor
@@ -892,6 +946,7 @@ This historical facade name no longer selects or falls back to JSONL."
              :covered-entry-id covered-entry-id :fingerprints fingerprints
              :metadata metadata)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -904,7 +959,6 @@ This historical facade name no longer selects or falls back to JSONL."
 (cl-defun e-session-append-context-generation
     (store session-id generation &key (write-index t))
   "Append semantic context GENERATION."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'context-generation
@@ -912,6 +966,7 @@ This historical facade name no longer selects or falls back to JSONL."
        ;; after capacity reservation; GENERATION is the single sealed P owner.
        (list :generation generation)
        :write-index write-index)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -922,11 +977,11 @@ This historical facade name no longer selects or falls back to JSONL."
 (cl-defun e-session-append-context-curation-package
     (store session-id package &key (write-index t))
   "Append one atomic semantic context curation PACKAGE."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'context-curation-package (list :package package)
        :write-index write-index)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -937,12 +992,12 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-set-metadata (store session-id metadata)
   "Replace durable session METADATA."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info
        (list :field 'metadata :value metadata)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -952,11 +1007,11 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-set-session-config (store session-id config)
   "Merge durable session CONFIG."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info (list :field 'config :value config)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -965,12 +1020,12 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-set-context-references (store session-id owner references)
   "Set current-state REFERENCES for OWNER."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info
        (list :field 'context-references :owner owner :value references)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -980,12 +1035,12 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-set-context-reference (store session-id key reference)
   "Set one durable current-state REFERENCE."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info
        (list :field 'context-reference :key key :value reference)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -996,13 +1051,13 @@ This historical facade name no longer selects or falls back to JSONL."
 (cl-defun e-session-set-capability-state
     (store session-id capability-id state &key version)
   "Set durable CAPABILITY-ID STATE."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info
        (list :field 'capability-state :capability-id capability-id
              :value state :version version)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1012,12 +1067,12 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-set-turn-options (store session-id options)
   "Replace session-scoped turn OPTIONS."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info
        (list :field 'turn-options :value options)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1026,12 +1081,12 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set the current branch cursor."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info
        (list :field 'current-branch :value branch-id)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1041,10 +1096,10 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-clear-messages (store session-id)
   "Clear transcript-derived state with an append-only reset event."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'clear-messages nil
                                       :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -1053,11 +1108,11 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-rename (store session-id name)
   "Rename SESSION-ID."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'session-info (list :field 'name :value name)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1066,10 +1121,10 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-append-board-message (store session-id message)
   "Append one immutable board envelope."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'board-message
                                       (list :message message) :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -1082,10 +1137,10 @@ This historical facade name no longer selects or falls back to JSONL."
 
 (defun e-session-clear-board-messages (store session-id)
   "Clear the independent board journal."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'board-messages-clear nil
                                       :write-index t)
+    (e-session--ensure-loaded store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -1098,13 +1153,13 @@ This historical facade name no longer selects or falls back to JSONL."
 (defun e-session-declare-board-state
     (store session-id principal board-id &optional association-role routing-policy)
   "Set and persist board identity and routing policy."
-  (e-session--ensure-loaded store session-id)
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command
        store session-id 'board-state
        (list :principal principal :board-id board-id
              :association-role association-role :routing-policy routing-policy)
        :write-index t)
+    (e-session--ensure-loaded store session-id)
     (let ((state
            (e-session--commit-session-mutation
             store session-id

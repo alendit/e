@@ -19,9 +19,18 @@
 
 (defun e-runtime-store-offline--worker-file ()
   "Return the installed offline worker path."
-  (or (locate-library "e-runtime-store-offline-worker")
-      (signal 'e-runtime-store-offline-error
-              (list "Offline runtime-store worker is missing"))))
+  (let ((worker (locate-library "e-runtime-store-offline-worker")))
+    ;; `locate-library' commonly returns bytecode, but this operator process
+    ;; deliberately passes an explicit file path.  Prefer its source sibling
+    ;; so `load-prefer-newer' remains effective after an in-place upgrade and
+    ;; a stale ignored .elc cannot run a different migration implementation.
+    (when (and worker (string-suffix-p ".elc" worker))
+      (let ((source (substring worker 0 -1)))
+        (when (file-readable-p source)
+          (setq worker source))))
+    (or worker
+        (signal 'e-runtime-store-offline-error
+                (list "Offline runtime-store worker is missing")))))
 
 (defun e-runtime-store-offline--call (operation database argument)
   "Run offline OPERATION for DATABASE with ARGUMENT in batch Emacs."

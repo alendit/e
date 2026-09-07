@@ -14,7 +14,6 @@
 (require 'sqlite)
 (require 'subr-x)
 (require 'e-runtime-store-codec)
-(require 'e-session-storage-limits)
 
 (unless (get 'e-runtime-store-worker-error 'error-conditions)
   (define-error 'e-runtime-store-worker-error "Runtime store worker error"))
@@ -43,6 +42,7 @@
   "Runtime store predecessor parent is still live"
   'e-runtime-store-worker-error)
 
+(require 'e-runtime-store-session-worker)
 (require 'e-board-storage-sqlite-worker)
 (require 'e-cron-storage-sqlite-worker)
 (require 'e-goodnite-storage-sqlite-worker)
@@ -50,24 +50,9 @@
 (require 'e-task-storage-sqlite-worker)
 (require 'e-voice-storage-sqlite-worker)
 
-(defconst e-runtime-store-worker-schema-version 5)
+(defconst e-runtime-store-worker-schema-version 6)
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
-(defconst e-runtime-store-worker-session-page-byte-limit (* 1024 1024)
-  "Private encoded-payload budget for one session page result.")
-(defconst e-runtime-store-worker-session-record-byte-limit (* 16 1024 1024)
-  "Maximum stored payload bytes accepted by legacy session reads.
-
-New writes are checked against `e-session-storage-record-byte-limit' before
-encoding.  The larger historical ceiling remains read-compatible with records
-that were legal before Feature 92 introduced the practical write bound.")
-(defconst e-runtime-store-worker-checkpoint-canonical-byte-limit
-  e-runtime-store-codec-checkpoint-canonical-byte-limit
-  "Maximum canonical bytes in one rebuildable checkpoint value.")
-(defconst e-runtime-store-worker-session-id-page-row-limit 256
-  "Maximum durable identities returned by one session-id page.")
-(defconst e-runtime-store-worker-session-id-page-byte-limit (* 64 1024)
-  "Maximum raw UTF-8 identity bytes returned by one session-id page.")
 
 (defvar e-runtime-store-worker--database nil)
 (defvar e-runtime-store-worker--database-file nil)
@@ -198,6 +183,44 @@ bounded result payload for idempotent replay."
           (e-runtime-store-ownership-release e-runtime-store-worker--ownership)
         (setq e-runtime-store-worker--ownership nil)))))
 
+(defun e-runtime-store-worker--initialize-common-schema (database)
+  "Create the current generic runtime-store relations on DATABASE.
+
+The offline upgrader uses this after it has installed the v6 session
+relations.  Keeping the generic envelope here prevents the operator-only
+migration from acquiring a second, subtly different copy of the transport
+schema; this helper does not inspect or change `store_meta'."
+  (dolist
+      (statement
+       '("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)"
+         "CREATE TABLE IF NOT EXISTS tool_followups (session_id TEXT NOT NULL, call_id TEXT NOT NULL, state TEXT NOT NULL, payload TEXT, revision INTEGER NOT NULL, PRIMARY KEY(session_id, call_id))"
+         "CREATE INDEX IF NOT EXISTS tool_followups_session ON tool_followups(session_id, state)"
+         "CREATE TABLE IF NOT EXISTS resources (lineage_id TEXT NOT NULL, resource_path TEXT NOT NULL, session_id TEXT NOT NULL, content BLOB NOT NULL, metadata TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL, PRIMARY KEY(lineage_id, resource_path))"
+         "CREATE INDEX IF NOT EXISTS resources_session ON resources(session_id)"
+         "CREATE INDEX IF NOT EXISTS resources_expiry ON resources(expires_at)"
+         ;; A receipt is deliberately generic: domain writers remain unaware
+         ;; of transport acknowledgement loss.  Its row is committed with the
+         ;; domain mutation, so a replacement worker can distinguish no commit
+         ;; from a committed-but-unobserved response.
+         "CREATE TABLE IF NOT EXISTS runtime_store_receipts (runtime_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, write_prefix INTEGER NOT NULL, PRIMARY KEY(runtime_id, request_id))"
+         "CREATE INDEX IF NOT EXISTS runtime_store_receipts_watermark ON runtime_store_receipts(runtime_id, write_prefix)"
+         "CREATE TABLE IF NOT EXISTS runtime_store_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), runtime_id TEXT NOT NULL, parent_boot TEXT NOT NULL, parent_pid INTEGER NOT NULL, parent_process_start TEXT NOT NULL, acknowledged_prefix INTEGER NOT NULL DEFAULT 0, retired INTEGER NOT NULL DEFAULT 0, retirement_request_id TEXT, retirement_fingerprint TEXT, retirement_result TEXT)"))
+    (sqlite-execute database statement)))
+
+(defun e-runtime-store-worker--initialize-domain-schema (database)
+  "Create all current domain relations on DATABASE.
+
+Each domain worker owns its own physical mapping; this function only keeps
+the generic worker's current composition order in one reusable seam for the
+normal worker and the stopped-store upgrader."
+  (e-runtime-store-session-worker-initialize database)
+  (e-board-storage-sqlite-worker-initialize database)
+  (e-task-storage-sqlite-worker-initialize database)
+  (e-cron-storage-sqlite-worker-initialize database)
+  (e-voice-storage-sqlite-worker-initialize database)
+  (e-goodnite-storage-sqlite-worker-initialize database)
+  (e-raw-results-storage-sqlite-worker-initialize database))
+
 (defun e-runtime-store-worker--schema (new-store-p)
   "Create the current schema when NEW-STORE-P, otherwise verify it."
   ;; Inspect an existing store before creating current-version relations.  P4
@@ -230,43 +253,9 @@ bounded result payload for idempotent replay."
           (signal 'e-runtime-store-schema-too-new
                   (list :actual version
                         :supported e-runtime-store-worker-schema-version)))))))
-  (dolist
-      (statement
-       '("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)"
-         "CREATE TABLE IF NOT EXISTS session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, position))"
-         "CREATE TABLE IF NOT EXISTS session_checkpoints (session_id TEXT PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL)"
-         "CREATE TABLE IF NOT EXISTS catalog_projection (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL, revision INTEGER NOT NULL)"
-         "CREATE TABLE IF NOT EXISTS tool_followups (session_id TEXT NOT NULL, call_id TEXT NOT NULL, state TEXT NOT NULL, payload TEXT, revision INTEGER NOT NULL, PRIMARY KEY(session_id, call_id))"
-         "CREATE INDEX IF NOT EXISTS tool_followups_session ON tool_followups(session_id, state)"
-         "CREATE TABLE IF NOT EXISTS resources (lineage_id TEXT NOT NULL, resource_path TEXT NOT NULL, session_id TEXT NOT NULL, content BLOB NOT NULL, metadata TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL, PRIMARY KEY(lineage_id, resource_path))"
-         "CREATE INDEX IF NOT EXISTS resources_session ON resources(session_id)"
-         "CREATE INDEX IF NOT EXISTS resources_expiry ON resources(expires_at)"
-         ;; A receipt is deliberately generic: domain writers remain unaware
-         ;; of transport acknowledgement loss.  Its row is committed with the
-         ;; domain mutation, so a replacement worker can distinguish no commit
-         ;; from a committed-but-unobserved response.
-         "CREATE TABLE IF NOT EXISTS runtime_store_receipts (runtime_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, write_prefix INTEGER NOT NULL, PRIMARY KEY(runtime_id, request_id))"
-         "CREATE INDEX IF NOT EXISTS runtime_store_receipts_watermark ON runtime_store_receipts(runtime_id, write_prefix)"
-         "CREATE TABLE IF NOT EXISTS runtime_store_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), runtime_id TEXT NOT NULL, parent_boot TEXT NOT NULL, parent_pid INTEGER NOT NULL, parent_process_start TEXT NOT NULL, acknowledged_prefix INTEGER NOT NULL DEFAULT 0, retired INTEGER NOT NULL DEFAULT 0, retirement_request_id TEXT, retirement_fingerprint TEXT, retirement_result TEXT)"))
-    (sqlite-execute e-runtime-store-worker--database statement))
-  ;; Early v5 stores created this secondary index even though the composite
-  ;; primary key already creates the identical SQLite autoindex.  Index layout
-  ;; is a physical optimization rather than a persisted domain contract, so
-  ;; remove the redundant copy idempotently without consuming the planned v6
-  ;; logical-schema migration.
-  (sqlite-execute e-runtime-store-worker--database
-                  "DROP INDEX IF EXISTS session_records_position")
-  (e-board-storage-sqlite-worker-initialize
+  (e-runtime-store-worker--initialize-common-schema
    e-runtime-store-worker--database)
-  (e-task-storage-sqlite-worker-initialize
-   e-runtime-store-worker--database)
-  (e-cron-storage-sqlite-worker-initialize
-   e-runtime-store-worker--database)
-  (e-voice-storage-sqlite-worker-initialize
-   e-runtime-store-worker--database)
-  (e-goodnite-storage-sqlite-worker-initialize
-   e-runtime-store-worker--database)
-  (e-raw-results-storage-sqlite-worker-initialize
+  (e-runtime-store-worker--initialize-domain-schema
    e-runtime-store-worker--database)
   (let ((row (car (sqlite-select e-runtime-store-worker--database
                                  "SELECT value FROM store_meta WHERE key='schema_version'"))))
@@ -279,7 +268,7 @@ bounded result payload for idempotent replay."
        e-runtime-store-worker--database
        "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
        (vector e-runtime-store-worker-schema-version "new-current-schema"
-               (secure-hash 'sha256 "feature92-schema-v5") (float-time))))))
+               (secure-hash 'sha256 "feature92-schema-v6") (float-time))))))
 
 (defun e-runtime-store-worker--default-parent-identity ()
   "Return a bounded identity for direct worker-owner calls.
@@ -414,104 +403,20 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
       (unless opened
         (e-runtime-store-worker--close)))))
 
-(defun e-runtime-store-worker--session-position (session-id)
-  "Return SESSION-ID's current monotonic record position."
-  (e-runtime-store-worker--column
-   (car (sqlite-select
-         e-runtime-store-worker--database
-         "SELECT COALESCE(MAX(position),0) FROM session_records WHERE session_id=?"
-         (vector session-id)))
-   0))
-
 (defun e-runtime-store-worker--session-append (body)
-  "Append BODY's one session record."
-  (e-runtime-store-codec-measure-bounded
-   (plist-get body :record) e-session-storage-record-byte-limit)
-  (let* ((session-id (plist-get body :session-id))
-         (revision (e-runtime-store-worker--session-position session-id))
-         (next (1+ revision))
-         (payload (e-runtime-store-worker--sql-value
-                   (plist-get body :record))))
-    (sqlite-execute
-     e-runtime-store-worker--database
-     "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
-     (vector session-id next payload))
-    (list :session-id session-id :revision next :position next)))
+  "Append BODY's one session record through the session worker module."
+  (e-runtime-store-session-worker-write
+   e-runtime-store-worker--database body))
 
 (defun e-runtime-store-worker--session-append-batch (body)
-  "Append BODY's session record batch atomically."
-  (let ((records (plist-get body :records)))
-    (unless (or (listp records) (vectorp records))
-      (signal 'e-runtime-store-worker-error
-              (list "Invalid session batch records")))
-    (when (> (length records) e-session-storage-batch-record-limit)
-      (signal 'e-runtime-store-worker-error
-              (list "Session batch exceeds record-count limit"
-                    (length records) e-session-storage-batch-record-limit)))
-    (e-runtime-store-codec-measure-bounded
-     body e-session-storage-batch-byte-limit)
-    (mapc (lambda (record)
-            (e-runtime-store-codec-measure-bounded
-             record e-session-storage-record-byte-limit))
-          (append records nil)))
-  (let* ((session-id (plist-get body :session-id))
-         (revision (e-runtime-store-worker--session-position session-id))
-         (position revision))
-    (dolist (record (append (plist-get body :records) nil))
-      (let ((payload (e-runtime-store-worker--sql-value record)))
-        (cl-incf position)
-        (sqlite-execute
-         e-runtime-store-worker--database
-         "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
-         (vector session-id position payload))))
-    (list :session-id session-id :revision position
-          :first-position (and (> position revision) (1+ revision))
-          :last-position position)))
-
-(defun e-runtime-store-worker--checkpoint-put (body)
-  "Persist a bounded session checkpoint from BODY."
-  (let* ((session-id (plist-get body :session-id))
-         (revision (e-runtime-store-worker--session-position session-id))
-         ;; This physical backstop protects direct protocol callers.  The
-         ;; session adapter preflights the same value before queue admission so
-         ;; ordinary oversized checkpoints are omitted rather than submitted.
-         (canonical (e-runtime-store-codec-encode-bounded
-                     (plist-get body :value)
-                     e-runtime-store-worker-checkpoint-canonical-byte-limit)))
-    (sqlite-execute
-     e-runtime-store-worker--database
-     "INSERT INTO session_checkpoints(session_id,payload,revision) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision"
-     (vector session-id
-             (base64-encode-string canonical t)
-             revision))
-    (list :session-id session-id :revision revision)))
-
-(defun e-runtime-store-worker--catalog-put (body)
-  "Persist catalog projection from BODY."
-  (let* ((row (car (sqlite-select
-                    e-runtime-store-worker--database
-                    "SELECT revision FROM catalog_projection WHERE singleton=1")))
-         (revision (1+ (if row (e-runtime-store-worker--column row 0) 0)))
-         ;; Catalog is a rebuildable projection.  The session adapter checks
-         ;; this before transport; the worker repeats the cap for direct
-         ;; protocol callers so no oversized catalog payload reaches SQLite.
-         (canonical (e-runtime-store-codec-encode-bounded
-                     (plist-get body :value)
-                     e-runtime-store-codec-catalog-canonical-byte-limit)))
-    (sqlite-execute
-     e-runtime-store-worker--database
-     "INSERT INTO catalog_projection(singleton,payload,revision) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET payload=excluded.payload,revision=excluded.revision"
-     (vector (base64-encode-string canonical t) revision))
-    (list :revision revision)))
+  "Append BODY's session record batch through the session worker module."
+  (e-runtime-store-session-worker-write
+   e-runtime-store-worker--database body))
 
 (defun e-runtime-store-worker--session-delete (body)
-  "Delete one session and its private resources."
-  (let ((session-id (plist-get body :session-id)))
-    (dolist (table '("session_records" "session_checkpoints" "tool_followups" "resources"))
-      (sqlite-execute e-runtime-store-worker--database
-                      (format "DELETE FROM %s WHERE session_id=?" table)
-                      (vector session-id)))
-    (list :session-id session-id :deleted t)))
+  "Delete one session through the session worker module."
+  (e-runtime-store-session-worker-write
+   e-runtime-store-worker--database body))
 
 (defun e-runtime-store-worker--tool-transition (body)
   "Commit one typed tool follow-up transition from BODY."
@@ -594,8 +499,6 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
     ('session-append-with-tool-transition
      (e-runtime-store-worker--session-append-with-tool-transition body))
     ('session-append-batch (e-runtime-store-worker--session-append-batch body))
-    ('checkpoint-put (e-runtime-store-worker--checkpoint-put body))
-    ('catalog-put (e-runtime-store-worker--catalog-put body))
     ('session-delete (e-runtime-store-worker--session-delete body))
     ('tool-transition (e-runtime-store-worker--tool-transition body))
     ('resource-put (e-runtime-store-worker--resource-put body))
@@ -609,7 +512,8 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
          'board-replay-progress-put 'board-pickup-session-admit)
      (e-board-storage-sqlite-worker-write
       e-runtime-store-worker--database body))
-    ((or 'task-queue-open 'task-enqueue 'task-claim 'task-transition
+    ((or 'task-queue-open 'task-enqueue 'task-claim 'task-runnable-claim
+         'task-transition
          'task-queue-pause 'task-history-delete 'task-import-legacy-snapshot)
      (e-task-storage-sqlite-worker-write
       e-runtime-store-worker--database body))
@@ -740,109 +644,6 @@ acknowledgement prefix."
        (ignore-errors (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
        (signal (car err) (cdr err))))))
 
-(defun e-runtime-store-worker--base64-canonical-byte-count
-    (sqlite-text-bytes suffix)
-  "Return decoded canonical bytes for base64 SQLite TEXT metadata.
-
-SUFFIX contains at most the final two ASCII characters.  Nil means malformed
-or non-base64-sized metadata and is deliberately not considered usable for a
-checkpoint payload."
-  (when (and (integerp sqlite-text-bytes)
-             (> sqlite-text-bytes 0)
-             (= (% sqlite-text-bytes 4) 0)
-             (stringp suffix))
-    (let ((padding (cond
-                    ((string-suffix-p "==" suffix) 2)
-                    ((string-suffix-p "=" suffix) 1)
-                    (t 0))))
-      (- (* 3 (/ sqlite-text-bytes 4)) padding))))
-
-(defun e-runtime-store-worker--checkpoint-status (session-id)
-  "Return metadata-only bounded checkpoint status for SESSION-ID."
-  (when-let* ((row (car (sqlite-select
-                          e-runtime-store-worker--database
-                          "SELECT revision,LENGTH(CAST(payload AS BLOB)),SUBSTR(payload,-2) FROM session_checkpoints WHERE session_id=?"
-                          (vector session-id)))))
-    (let* ((revision (e-runtime-store-worker--column row 0))
-           (sqlite-text-bytes (e-runtime-store-worker--column row 1))
-           (canonical-bytes
-            (e-runtime-store-worker--base64-canonical-byte-count
-             sqlite-text-bytes (e-runtime-store-worker--column row 2))))
-      (list :present t :revision revision
-            :sqlite-text-bytes sqlite-text-bytes
-            :canonical-bytes canonical-bytes
-            :usable (and canonical-bytes
-                         (<= canonical-bytes
-                             e-runtime-store-worker-checkpoint-canonical-byte-limit))))))
-
-(defun e-runtime-store-worker--checkpoint-read (session-id)
-  "Return SESSION-ID's safe checkpoint payload after metadata preflight.
-
-No oversized legacy payload is selected into worker memory or crosses the
-protocol.  Its canonical journal remains available for replay from zero."
-  (when-let* ((status (e-runtime-store-worker--checkpoint-status session-id)))
-    (when (plist-get status :usable)
-      (when-let* ((row (car (sqlite-select
-                             e-runtime-store-worker--database
-                             "SELECT payload FROM session_checkpoints WHERE session_id=?"
-                             (vector session-id)))))
-        (list :value (e-runtime-store-worker--value
-                      (e-runtime-store-worker--column row 0))
-              :revision (plist-get status :revision))))))
-
-(defun e-runtime-store-worker--session-id-page (body)
-  "Return one cursor, row, and byte bounded durable session identity page."
-  (let* ((cursor (plist-get body :cursor))
-         (limit (min e-runtime-store-worker-session-id-page-row-limit
-                     (max 1 (or (plist-get body :limit)
-                               e-runtime-store-worker-session-id-page-row-limit))))
-         (query-limit (1+ limit)))
-    (unless (or (null cursor) (stringp cursor))
-      (signal 'e-runtime-store-worker-error
-              (list "Session identity cursor must be a string" cursor)))
-    (let* ((rows
-            (if cursor
-                (sqlite-select
-                 e-runtime-store-worker--database
-                 "SELECT DISTINCT session_id FROM session_records WHERE session_id>? ORDER BY session_id LIMIT ?"
-                 (vector cursor query-limit))
-              (sqlite-select
-               e-runtime-store-worker--database
-               "SELECT DISTINCT session_id FROM session_records ORDER BY session_id LIMIT ?"
-               (vector query-limit))))
-           (bytes 0) selected truncated (row-count 0))
-      (catch 'full
-        (dolist (row rows)
-          ;; The extra query row is lookahead only.  It establishes whether a
-          ;; full row-limited page has a successor without becoming a 257th
-          ;; result in a declared 256-row page.
-          (when (>= row-count limit)
-            (setq truncated t)
-            (throw 'full nil))
-          (let* ((session-id (e-runtime-store-worker--column row 0))
-                 (row-bytes (string-bytes session-id)))
-            (when (> row-bytes e-runtime-store-worker-session-id-page-byte-limit)
-              (signal 'e-runtime-store-worker-error
-                      (list "Session identity exceeds page byte budget"
-                            session-id row-bytes
-                            e-runtime-store-worker-session-id-page-byte-limit)))
-            (when (and selected
-                       (> (+ bytes row-bytes)
-                          e-runtime-store-worker-session-id-page-byte-limit))
-              (setq truncated t)
-              (throw 'full nil))
-            (cl-incf bytes row-bytes)
-            (cl-incf row-count)
-            (push session-id selected))))
-      (setq selected (nreverse selected))
-      (list :ids selected
-            :next (and selected
-                       (or truncated (= (length rows) query-limit))
-                       (car (last selected)))
-            :byte-count bytes
-            :row-limit limit
-            :byte-limit e-runtime-store-worker-session-id-page-byte-limit))))
-
 (defun e-runtime-store-worker--read (body)
   "Execute bounded typed query BODY."
   (pcase (plist-get body :op)
@@ -900,59 +701,18 @@ protocol.  Its canonical journal remains available for replay from zero."
        (list :destination destination
              :bytes (file-attribute-size (file-attributes destination))
              :verified t)))
-    ('session-header
-     (let* ((session-id (plist-get body :session-id))
-            (row (car (sqlite-select
-                       e-runtime-store-worker--database
-                       "SELECT COUNT(*),COALESCE(SUM(LENGTH(payload)),0),COALESCE(MAX(position),0) FROM session_records WHERE session_id=?"
-                       (vector session-id)))))
-       (list :session-id session-id :present (> (e-runtime-store-worker--column row 0) 0)
-             :record-count (e-runtime-store-worker--column row 0) :byte-size (e-runtime-store-worker--column row 1)
-             :revision (e-runtime-store-worker--column row 2) :reference session-id)))
-    ('session-id-page
-     (e-runtime-store-worker--session-id-page body))
-    ('session-record-page
-     (let* ((limit (min 1024 (max 1 (or (plist-get body :limit) 256))))
-            (rows (sqlite-select
-                   e-runtime-store-worker--database
-                   "SELECT position,payload,LENGTH(payload) FROM session_records WHERE session_id=? AND position>? ORDER BY position LIMIT ?"
-                   (vector (plist-get body :session-id)
-                           (or (plist-get body :after) 0) limit)))
-            (bytes 0) selected truncated)
-       (catch 'full
-         (dolist (row rows)
-           (let ((row-bytes (e-runtime-store-worker--column row 2)))
-             (when (> row-bytes e-runtime-store-worker-session-record-byte-limit)
-               (signal 'e-runtime-store-worker-error
-                       (list "Session record exceeds page result budget"
-                             (e-runtime-store-worker--column row 0)
-                             row-bytes)))
-             (when (and selected
-                        (> (+ bytes row-bytes)
-                           e-runtime-store-worker-session-page-byte-limit))
-               (setq truncated t)
-               (throw 'full nil))
-             (cl-incf bytes row-bytes)
-             (push (list :position
-                         (e-runtime-store-worker--column row 0)
-                         :value
-                         (e-runtime-store-worker--value
-                          (e-runtime-store-worker--column row 1)))
-                   selected))))
-       (setq selected (nreverse selected))
-       (list :records selected
-             :next (and selected
-                        (or truncated (= (length rows) limit))
-                        (plist-get (car (last selected)) :position)))))
-    ('checkpoint-get
-     (e-runtime-store-worker--checkpoint-status (plist-get body :session-id)))
-    ('checkpoint-read
-     (e-runtime-store-worker--checkpoint-read (plist-get body :session-id)))
-    ('catalog-get
-     (when-let* ((row (car (sqlite-select e-runtime-store-worker--database
-                                          "SELECT payload,revision FROM catalog_projection WHERE singleton=1"))))
-       (list :value (e-runtime-store-worker--value (e-runtime-store-worker--column row 0))
-             :revision (e-runtime-store-worker--column row 1))))
+    ((or 'session-query-state 'session-state-get
+         'session-query-state-get
+         'session-metadata 'session-metadata-get
+         'session-board-association 'session-board-association-get
+         'session-query-page 'session-state-page 'session-id-page
+         'session-recent-page 'session-root-page
+         'session-record-page 'session-history-page
+         'session-visible-message-page 'session-visible-messages
+         'session-context-path
+         'session-header)
+     (e-runtime-store-session-worker-read
+      e-runtime-store-worker--database body))
     ('tool-list
      (mapcar
       (lambda (row)
@@ -966,10 +726,10 @@ protocol.  Its canonical journal remains available for replay from zero."
                (min 1024 (max 1 (or (plist-get body :limit) 256)))))))
     ((or 'board-get 'board-list 'board-record-page 'board-routing-get
          'board-pickup-list 'board-participant-list
-         'board-replay-progress-get)
+         'board-replay-progress-get 'board-controller-state)
      (e-board-storage-sqlite-worker-read
       e-runtime-store-worker--database body))
-    ('task-snapshot
+    ((or 'task-snapshot 'task-queue-status)
      (e-task-storage-sqlite-worker-read
       e-runtime-store-worker--database body))
     ('cron-cadence
@@ -1002,16 +762,16 @@ protocol.  Its canonical journal remains available for replay from zero."
                             e-runtime-store-worker--database
                             "SELECT SUBSTR(CAST(content AS TEXT),?,?),LENGTH(CAST(content AS TEXT)),LENGTH(content) FROM resources WHERE lineage_id=? AND resource_path=? AND (expires_at IS NULL OR expires_at>=?)"
                             (vector (1+ (max 0 (or (plist-get body :offset) 0)))
-                                    (min 4096
+                                    (min (* 256 1024)
                                          (max 1 (or (plist-get body :limit)
-                                                    4096)))
+                                                    (* 256 1024))))
                                     (plist-get body :lineage-id)
                                     (plist-get body :path)
                                     (or (plist-get body :now) (float-time)))))))
        (let* ((content (e-runtime-store-worker--column row 0))
               (total (e-runtime-store-worker--column row 1))
               (offset (max 0 (or (plist-get body :offset) 0)))
-              (limit (min 4096
+              (limit (min (* 256 1024)
                           (max 1 (or (plist-get body :limit) (* 256 1024)))))
               (end (min total (+ offset limit))))
          (list :content content
@@ -1033,6 +793,28 @@ protocol.  Its canonical journal remains available for replay from zero."
                        :updated-at (e-runtime-store-worker--column row 3)
                        :expires-at (e-runtime-store-worker--column row 4)))
                rows)))
+    ('resource-search-source
+     ;; Search policy (literal/regexp/case/ranking) remains in the resource
+     ;; domain.  SQLite supplies one bounded detached source page so the
+     ;; caller never performs an N+1 series of resource reads or reconstructs
+     ;; a process-local resource catalog.
+     (let ((rows
+            (sqlite-select
+             e-runtime-store-worker--database
+             "SELECT resource_path,SUBSTR(CAST(content AS TEXT),1,4096),LENGTH(CAST(content AS BLOB)),metadata,updated_at,expires_at FROM resources WHERE lineage_id=? AND (expires_at IS NULL OR expires_at>=?) ORDER BY resource_path LIMIT ?"
+             (vector (plist-get body :lineage-id)
+                     (or (plist-get body :now) (float-time))
+                     (min 256 (max 1 (or (plist-get body :limit) 64)))))))
+       (mapcar
+        (lambda (row)
+          (list :path (e-runtime-store-worker--column row 0)
+                :content (e-runtime-store-worker--column row 1)
+                :bytes (e-runtime-store-worker--column row 2)
+                :metadata (e-runtime-store-worker--value
+                           (e-runtime-store-worker--column row 3))
+                :updated-at (e-runtime-store-worker--column row 4)
+                :expires-at (e-runtime-store-worker--column row 5)))
+        rows)))
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown read operation" (plist-get body :op))))))
 

@@ -121,8 +121,8 @@
         (remove-hook 'e-task-queue-change-functions
                      #'e-task-queue-shell--refresh-buffers)))))
 
-(ert-deftest e-task-queue-shell-test-default-list-reopens-sqlite-queue ()
-  "The default list action restores one task through the SQLite composition."
+(ert-deftest e-task-queue-shell-test-default-list-does-not-query-sqlite ()
+  "Opening the default list keeps terminal and queued rows in SQLite."
   (let* ((directory (make-temp-file "e-task-queue-shell-sqlite-" t))
          (process-environment (copy-sequence process-environment))
          (e-default--runtime nil)
@@ -133,33 +133,20 @@
          (e-voice-adjustment-storage nil)
          (e-goodnite-resources-storage nil)
          (e-raw-results-storage nil)
-         record buffer)
+         buffer)
     (setenv "E_RUNTIME_STATE_DIRECTORY" directory)
     (unwind-protect
         (progn
-          (let ((queue (e-runtime-sqlite-task-queue (e-default-runtime))))
-            (e-task-queue-load queue)
-            (e-task-queue-pause-all queue)
-            ;; Execution authority is process-local.  This task remains paused,
-            ;; but enqueue still requires a truthful runner capability.
-            (setf (e-task-queue-runner queue)
-                  (lambda (&rest _arguments)
-                    (ert-fail "A paused task must not start")))
-            (setq record
-                  (e-task-queue-enqueue
-                   queue :prompt "persisted through SQLite"
-                   :summary "Persisted task")))
-          (e-default-runtime-close)
-          (let ((queue (e-runtime-sqlite-task-queue (e-default-runtime))))
-            (should-not (e-task-queue-loaded-p queue)))
-          (setq buffer (e-task-queue-list-buffer))
+          (e-default-runtime)
+          (cl-letf (((symbol-function 'e-task-storage-submit)
+                     (lambda (&rest _arguments)
+                       (ert-fail "Opening the task list must not query SQLite"))))
+            (setq buffer (e-task-queue-list-buffer)))
           (with-current-buffer buffer
             (should (eq e-task-queue-shell--queue
                         e-task-queue-actions-default-queue))
             (should (e-task-queue-loaded-p e-task-queue-shell--queue))
-            (should (= (length tabulated-list-entries) 1))
-            (should (equal (caar tabulated-list-entries)
-                           (plist-get record :task-id)))))
+            (should-not tabulated-list-entries)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (remove-hook 'e-task-queue-change-functions

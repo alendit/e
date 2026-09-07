@@ -2100,12 +2100,14 @@ function records only lifecycle audit text."
     (dolist (message messages)
       (when-let ((turn-id (plist-get message :turn-id)))
         (cl-pushnew turn-id turn-ids :test #'equal)))
-    (when (e-chat-service-board-session-p e-chat-harness e-chat-session-id)
-      (when-let ((active-turn
-                  (e-chat-service-active-turn
-                   e-chat-harness e-chat-session-id)))
-        (when-let ((turn-id (plist-get active-turn :id)))
-          (cl-pushnew turn-id turn-ids :test #'equal))))
+    ;; Active-turn state belongs to the live Board controller.  Asking durable
+    ;; storage whether this is a Board session first is redundant and, for v6
+    ;; SQLite, would turn presentation replay into a forbidden aggregate read.
+    (when-let* ((active-turn
+                 (e-chat-service-active-turn
+                  e-chat-harness e-chat-session-id))
+                (turn-id (plist-get active-turn :id)))
+      (cl-pushnew turn-id turn-ids :test #'equal))
     turn-ids))
 
 (defun e-chat-activity--replay-message-tail (messages)

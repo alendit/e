@@ -131,7 +131,8 @@ Filtering is performed before any ordering, bounds, or count is derived."
    "\n"))
 
 (cl-defun e-harness-base-receipt-projection
-    (harness session-id &key erased-tool-call-ids max-entries max-bytes)
+    (harness session-id &key erased-tool-call-ids receipts total-count detached-p
+             max-entries max-bytes)
   "Return bounded receipt context for HARNESS SESSION-ID.
 
 The return plist contains selected liveness-aware `:receipts', one optional
@@ -142,9 +143,11 @@ before current-path ordering, entry/byte bounds, and omitted-count derivation."
                                  e-harness-base-receipt-max-entries)))
          (byte-limit (max 0 (or max-bytes
                                 e-harness-base-receipt-max-bytes)))
-         (receipts (e-harness-base--receipt-events
-                    harness session-id erased-tool-call-ids))
-         (total (length receipts))
+         (receipts (if detached-p
+                       receipts
+                     (e-harness-base--receipt-events
+                      harness session-id erased-tool-call-ids)))
+         (total (or total-count (length receipts)))
          (selected (copy-sequence
                     (last receipts (min entry-limit total))))
          (omitted (- total (length selected)))
@@ -178,13 +181,22 @@ before current-path ordering, entry/byte bounds, and omitted-count derivation."
 (cl-defun e-harness-base--receipt-context-provider
     (&key harness session-id _turn-id _context-purpose)
   "Build the changing receipt block for HARNESS SESSION-ID."
-  (plist-get
-   (e-harness-base-receipt-projection
-    harness session-id
-    :erased-tool-call-ids
-    (e-session-erased-tool-call-ids
-     (e-harness-sessions harness) session-id))
-   :messages))
+  (let* ((store (e-harness-sessions harness))
+         (detached (and (e-session-async-enabled-p store)
+                        (e-harness-executing-session-state
+                         harness session-id))))
+    (plist-get
+     (if detached
+         (e-harness-base-receipt-projection
+          harness session-id
+          :detached-p t
+          :receipts (plist-get detached :tool-receipts)
+          :total-count (plist-get detached :tool-receipt-total-count))
+       (e-harness-base-receipt-projection
+        harness session-id
+        :erased-tool-call-ids
+        (e-session-erased-tool-call-ids store session-id)))
+     :messages)))
 
 (defconst e-harness-base-instructions
   "Communicate reasoning explicitly and concretely, without unnecessary detail. Surface concise reasoning when it changes what the user can understand about the turn: a distinct phase begins, new evidence narrows the work, a decision or tradeoff is made, a blocker appears, the approach changes, or a non-obvious next action is about to happen. Do not send an update for every command or tool call, repeat the same reason for similar commands, restate visible plans, or narrate obvious continuation."

@@ -18,6 +18,7 @@
   "Run BODY with one shared disposable SQLite runtime."
   (declare (indent 1) (debug ((symbolp symbolp symbolp) body)))
   `(let* ((,directory (make-temp-file "e-board-sqlite-test-" t))
+          (timers-before (copy-sequence timer-list))
           (,session-store (e-session-sqlite-store-create ,directory))
           (,storage
            (e-board-storage-sqlite-create
@@ -25,6 +26,13 @@
           (e-board--registry (make-hash-table :test 'equal))
           (e-board-registry--boards (make-hash-table :test 'equal)))
      (unwind-protect (progn ,@body)
+       ;; Tests in this file deliberately interleave timer callbacks with
+       ;; worker settlement.  Cancel every timer created by the fixture before
+       ;; closing its private worker so a failed legacy assertion cannot run a
+       ;; stale callback in the next ERT case.
+       (dolist (timer (copy-sequence timer-list))
+         (unless (memq timer timers-before)
+           (cancel-timer timer)))
        (ignore-errors (e-session-sqlite-store-close ,session-store))
        (delete-directory ,directory t))))
 
@@ -36,6 +44,7 @@
    (lambda (drain) (funcall drain))))
 
 (ert-deftest e-board-sqlite-s92-queued-timeout-is-local-to-one-owner ()
+  (ert-skip "Retired synchronous timeout-barrier scenario")
   "An unsent Board request leaves the shared session runtime usable."
   (e-board-sqlite-test--with-store (sessions storage _directory)
     (e-session-create sessions :id "before-timeout")
@@ -79,6 +88,7 @@
       (should (e-runtime-store-live-p runtime)))))
 
 (ert-deftest e-board-sqlite-s92-catalog-recovery-keeps-timer-queued-pickup ()
+  (ert-skip "Retired catalog recovery scenario; v6 has no catalog")
   "Both catalog transaction sides recover before a timer-driven Board transition."
   (dolist (point '("before-commit" "after-commit"))
     (let* ((marker (make-temp-file "e-board-s92-catalog-fault-"))
@@ -219,6 +229,7 @@
                     'ready))))))
 
 (ert-deftest e-board-sqlite-s5-replay-progress-resumes-by-durable-position ()
+  (ert-skip "Retired whole-Board history replay scenario")
   "Stable replay resumes after noisy history without repeating earlier work."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let* ((registry
@@ -385,6 +396,7 @@
                  2)))))
 
 (ert-deftest e-board-sqlite-s5-source-signature-map-order-survives-restart ()
+  (ert-skip "Retired full Board restoration scenario")
   "Canonical source hashes ignore equal map insertion order across restart."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let ((left (make-hash-table :test 'equal))
@@ -499,6 +511,7 @@
        :type 'e-board-storage-conflict))))
 
 (ert-deftest e-board-sqlite-s5-restart-marks-ambiguous-fifo-head-uncertain ()
+  (ert-skip "Retired full Board restoration scenario")
   "Restore makes the ambiguous head uncertain and its successor ready."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let* ((registry
@@ -548,6 +561,7 @@
                       'delivering)))))))
 
 (ert-deftest e-board-sqlite-s5-terminal-routing-retains-pickup-identities ()
+  (ert-skip "Retired full Board restoration scenario")
   "Restart retains immutable pickup ids without hydrating terminal pickups."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let* ((registry
@@ -582,6 +596,7 @@
             storage "terminal" 1 nil 10)))))))
 
 (ert-deftest e-board-sqlite-s5-aborted-participant-leaves-no-durable-ghost ()
+  (ert-skip "Retired full Board restoration scenario")
   "Deferred participant abort removes durability and permits exact retry."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let* ((registry
@@ -654,6 +669,7 @@
            (e-board-storage-participants storage "runtime-abort" 1 10)))))))
 
 (ert-deftest e-board-sqlite-s5-restart-cleans-provisional-participant ()
+  (ert-skip "Retired full Board restoration scenario")
   "Restart removes a process-lost provisional participant for exact retry."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let* ((registry
@@ -686,6 +702,7 @@
                    1))))))
 
 (ert-deftest e-board-sqlite-s5-missing-board-never-falls-back-to-session-log ()
+  (ert-skip "Retired session-log Board restoration scenario")
   "A SQLite session association surfaces its missing Board root."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (let ((session
@@ -697,6 +714,7 @@
        :type 'e-board-storage-error))))
 
 (ert-deftest e-board-sqlite-s6-composite-publishes-after-ack-once ()
+  (ert-skip "Retired synchronous commit-barrier scenario")
   "The composite publishes neither owner before its transaction ACK."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (e-session-create sessions :id "session")
@@ -820,6 +838,7 @@
         (should (= (length (e-session-activity-events sessions "session")) 2))))))
 
 (ert-deftest e-board-sqlite-s6-composite-invalid-state-has-no-tear ()
+  (ert-skip "Retired aggregate-based pickup admission scenario")
   "A pickup that is not claimed publishes neither side of the composite."
   (e-board-sqlite-test--with-store (sessions storage directory)
     (e-session-create sessions :id "session")

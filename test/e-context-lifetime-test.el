@@ -144,20 +144,16 @@ the record-focused assertions concise without restoring the retired wrapper."
      (e-context-lifetime-project generation frame)
      :type 'e-context-lifetime-invalid-record)))
 
-(ert-deftest e-context-lifetime-test-shadow-boundary-is-opt-in ()
-  "Existing request context is unchanged until explicitly enabled."
+(ert-deftest e-context-lifetime-test-projection-is-enabled-by-default ()
+  "The semantic projection is the default request-context behavior."
   (let* ((legacy '(:messages ((:role user :content "legacy"))))
          (generation (e-context-lifetime-test--generation))
          (frame (e-context-lifetime-test--frame)))
-    (let ((e-context-lifetime-shadow-projection-enabled nil))
-      (should (eq (e-context-lifetime-shadow-context legacy generation frame)
-                  legacy)))
-    (let ((e-context-lifetime-shadow-projection-enabled t))
-      (should (equal (plist-get
-                      (e-context-lifetime-shadow-context
-                       legacy generation frame)
-                      :projection)
-                     'generational-context)))))
+    (should e-context-lifetime-shadow-projection-enabled)
+    (should (equal (plist-get
+                    (e-context-lifetime-shadow-context legacy generation frame)
+                    :projection)
+                   'generational-context))))
 
 (ert-deftest e-context-lifetime-test-generation-record-has-no-copied-tail ()
   "The durable generation record contains only its portable boundary."

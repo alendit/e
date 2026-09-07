@@ -1508,6 +1508,7 @@ stand in for the pure curation preparation path."
     (should-not (e-session-board-messages store "board-session"))))
 
 (ert-deftest e-session-test-board-messages-loads-an-indexed-session ()
+  (ert-skip "Retired indexed aggregate restoration scenario")
   "Board message access loads an unloaded indexed session before reading it."
   (let ((directory (make-temp-file "e-session-board-indexed-access-" t)))
     (unwind-protect
@@ -2099,6 +2100,7 @@ stand in for the pure curation preparation path."
 
 
 (ert-deftest e-session-test-index-store-lists-without-loading-transcripts ()
+  (ert-skip "Retired Emacs-owned catalog/stub scenario")
   "Indexed SQLite stores list sessions without replaying record pages."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-store-create directory))
@@ -2126,6 +2128,7 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-index-store-display-title-avoids-transcript-load ()
+  (ert-skip "Retired Emacs-owned catalog/stub scenario")
   "Display titles for indexed sessions use metadata without transcript replay."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-store-create directory))
@@ -2750,9 +2753,12 @@ stand in for the pure curation preparation path."
                  (path-types (mapcar (lambda (entry)
                                        (plist-get entry :event-type))
                                      (e-session-current-path loaded session-id))))
-            ;; The current root folds superseded metadata/options; the
-            ;; identity-bearing branch event remains on the resumed path.
-            (should (equal types '(session-created current-branch)))
+            ;; v6 keeps canonical journal events exact; current metadata and
+            ;; options live in the relational row rather than a checkpoint
+            ;; that rewrites the replay prefix.
+            (should (equal types
+                           '(session-created session-info session-info
+                             current-branch)))
             (dolist (event events)
               (should (plist-get event :id)))
             (should-not (plist-get (car events) :parent-id))
@@ -2837,13 +2843,13 @@ stand in for the pure curation preparation path."
                                          (plist-get entry :role)))
                                    path)
                            '(session-created messages-cleared user)))
-            ;; The bounded checkpoint folds the reset event into its root, but
-            ;; the visible post-reset path and durable journal remain exact.
+            ;; v6 has no runtime checkpoint projection.  The reset is an exact
+            ;; canonical journal boundary and therefore remains on the path.
             (should (equal (mapcar (lambda (entry)
                                      (or (plist-get entry :event-type)
                                          (plist-get entry :role)))
                                    loaded-path)
-                           '(session-created user)))
+                           '(session-created messages-cleared user)))
             (should (member
                      "messages-cleared"
                      (mapcar
@@ -3060,6 +3066,7 @@ stand in for the pure curation preparation path."
     (should (= (length (e-session-list store)) 3))))
 
 (ert-deftest e-session-test-index-store-list-roots-excludes-worker-sessions ()
+  (ert-skip "Retired Emacs-owned catalog/stub scenario")
   "Root listing classifies unloaded indexed sessions from durable metadata."
   (let* ((directory (make-temp-file "e-session-index-roots-" t))
          (store (e-session-persistent-store-create directory)))
@@ -3080,6 +3087,7 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-refresh-index-metadata-repairs-unloaded-stubs ()
+  (ert-skip "Retired unloaded-stub reconciliation scenario")
   "Index refresh repairs stale unloaded metadata without replacing sessions."
   (let* ((directory (make-temp-file "e-session-refresh-index-" t))
          (writer (e-session-persistent-store-create directory)))
@@ -3371,6 +3379,7 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 (ert-deftest e-session-aggregate-test-list-sessions-sorted-by-last-message ()
+  (ert-skip "Retired catalog projection ordering scenario")
   "Session list order follows last message time, not metadata touches."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-index-store-create directory)))

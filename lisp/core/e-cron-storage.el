@@ -19,20 +19,32 @@
 (cl-defstruct (e-cron-storage
                (:constructor e-cron-storage--create)
                (:conc-name e-cron-storage--))
-  runtime call-operation)
+  runtime call-operation submit-operation)
 
 (defun e-cron-storage-runtime (storage)
   "Return STORAGE's shared runtime-store identity."
   (e-cron-storage--runtime storage))
 
 (defun e-cron-storage--call (storage operation &rest arguments)
-  "Invoke STORAGE OPERATION with ARGUMENTS."
+  "Invoke explicit blocking STORAGE OPERATION with ARGUMENTS.
+This compatibility boundary is reserved for offline migration and tests."
   (unless (e-cron-storage-p storage)
     (signal 'wrong-type-argument (list 'e-cron-storage-p storage)))
   (condition-case err
       (apply (e-cron-storage--call-operation storage) operation arguments)
     (e-runtime-store-cron-conflict
      (signal 'e-cron-storage-conflict (cdr err)))))
+
+(defun e-cron-storage-submit
+    (storage kind operation arguments on-settle)
+  "Submit KIND OPERATION with ARGUMENTS and invoke ON-SETTLE asynchronously."
+  (unless (e-cron-storage-p storage)
+    (signal 'wrong-type-argument (list 'e-cron-storage-p storage)))
+  (unless (functionp (e-cron-storage--submit-operation storage))
+    (signal 'e-cron-storage-error
+            (list "Cron storage has no asynchronous submission port")))
+  (funcall (e-cron-storage--submit-operation storage)
+           kind operation arguments on-settle))
 
 (defun e-cron-storage-register
     (storage schedule-id definition anchor)

@@ -773,8 +773,8 @@ activity persistence."
                      :metadata metadata))
                    ;; Preserve the established compaction record as the
                    ;; audit/legacy owner, then deliberately supersede its
-                   ;; model prefix with a portable generation only when the
-                   ;; semantic lifetime feature is opted in.
+                   ;; model prefix with a portable generation while semantic
+                   ;; lifetime projection is enabled.
                    (portable-generation
                      (when portable-application
                       (e-compaction-apply-portable-boundary
@@ -1108,6 +1108,9 @@ also emitting the normal compaction failure event."
 
 (defun e-harness-turn--cancel-active-request (entry)
   "Cancel ENTRY's active backend or tool request when one exists."
+  (when-let* ((work (plist-get entry :context-work)))
+    (when (e-work-handle-p work)
+      (e-work-cancel work)))
   (when-let ((request (plist-get entry :request)))
     (condition-case err
         (cond
@@ -1250,6 +1253,12 @@ provider or loop failure."
                                     (symbol-name (plist-get message :role)))))
    (lambda ()
      (let ((message (copy-sequence message)))
+       ;; Allocate semantic identity at application admission.  Both the
+       ;; optimistic detached path and SQLite's eventual record must expose
+       ;; the same message; waiting for relational derivation would publish a
+       ;; transient id-less value to context providers and Board subscribers.
+       (unless (plist-get message :id)
+         (plist-put message :id (e-session-generate-ulid)))
        (when turn-id
          (plist-put message :turn-id turn-id))
        (let ((append-result
@@ -1323,12 +1332,16 @@ When a turn produced multiple assistant messages, return the last one."
                                   (e-harness-active-turns harness))))
         (when (equal (plist-get entry :id) turn-id)
           (copy-sequence (plist-get entry :assistant-message))))
-      (car (last (cl-remove-if-not
-                  (lambda (message)
-                    (and (eq (plist-get message :role) 'assistant)
-                         (equal (plist-get message :turn-id) turn-id)))
-                  (e-session-messages (e-harness-sessions harness)
-                                      session-id))))))
+      (let ((store (e-harness-sessions harness)))
+        ;; Async SQLite history is query-only.  A lifecycle hook may inspect
+        ;; the live turn value, but it must not reconstruct the session when
+        ;; that value is absent.
+        (unless (e-session-async-enabled-p store)
+          (car (last (cl-remove-if-not
+                      (lambda (message)
+                        (and (eq (plist-get message :role) 'assistant)
+                             (equal (plist-get message :turn-id) turn-id)))
+                      (e-session-messages store session-id))))))))
 
 (defun e-harness-turn--run-turn-finished-hooks
     (harness session-id turn-id result &optional model-context)
@@ -1491,6 +1504,13 @@ cancellation.  SESSION-ID identifies the session."
              (e-work-fail turn-work err)
              (signal (car err) (cdr err)))))
         (e-harness-turn-state-put-active-turn harness session-id entry)
+        ;; Prefetch the selected-path base before the prompt append enters the
+        ;; shared worker FIFO.  Turn start composes that detached result with
+        ;; bounded writes only after this prompt has been admitted.
+        (when (e-session-async-enabled-p (e-harness-sessions harness))
+          (plist-put entry :context-path-work
+                     (e-session-async-context-path-base
+                      (e-harness-sessions harness) session-id)))
         (condition-case err
             (plist-put entry
                       :prompt-message-id
@@ -1833,17 +1853,44 @@ cancellation.  SESSION-ID identifies the session."
 	            (start-turn
 	             ()
 	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-	               (let ((context (e-harness-turn-context
-	                               harness session-id turn-id))
-	                     (excluded (list (plist-get entry :prompt-message-id))))
-	                 (plist-put entry :timer nil)
-	                 (if (and
-	                      (e-harness-turn--auto-compaction-needed-p
-	                       harness session-id context)
-	                      (e-harness-turn--auto-compaction-useful-prefix-p
-	                       harness session-id excluded))
-		                     (start-auto-compaction context)
-		                   (start-provider context))))))
+	               (plist-put entry :timer nil)
+	               (if (e-session-storage-sqlite-p
+	                    (e-harness-sessions harness))
+	                   (let ((work
+	                          (or (plist-get entry :context-work)
+	                              (e-harness-turn-context-start
+	                               harness session-id turn-id))))
+	                     (plist-put entry :context-work work)
+	                     (e-work-on-settle
+	                      work
+	                      (lambda (settled)
+	                        (when (active-entry-p)
+	                          (plist-put entry :context-work nil)
+	                          (let ((status (e-work-status settled)))
+	                            (pcase (plist-get status :state)
+	                              ('finished
+	                               (unless (plist-get entry :cancelled)
+	                                 (start-provider
+	                                  (plist-get status :result))))
+	                              ('failed
+	                               (finish-error
+	                                (plist-get status :error)))
+	                              ('cancelled
+	                               (unless (plist-get entry :cancelled)
+	                                 (finish-error
+	                                  (list 'e-work-cancelled
+	                                        "Turn context query cancelled"))))))))))
+	                 (let ((context (e-harness-turn-context
+	                                 harness session-id turn-id))
+	                       (excluded
+	                        (list (plist-get entry :prompt-message-id))))
+	                   (if (and
+	                        (e-harness-turn--auto-compaction-needed-p
+	                         harness session-id context)
+	                        (e-harness-turn--auto-compaction-useful-prefix-p
+	                         harness session-id excluded))
+	                       (start-auto-compaction context)
+	                     (start-provider context)))))))
 	         (if (and delay (> delay 0))
 	             (plist-put entry :timer (run-at-time delay nil #'start-turn))
 	           (start-turn)))

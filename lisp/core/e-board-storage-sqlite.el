@@ -12,8 +12,70 @@
 
 (require 'e-board-storage)
 (require 'e-runtime-store)
+(require 'e-work)
 
 (defconst e-board-storage-sqlite--diagnostic-byte-limit 1024)
+
+(cl-defstruct (e-board-storage-sqlite--query
+               (:constructor e-board-storage-sqlite--query-create))
+  "One request-local bounded Board query."
+  runtime body work request settled)
+
+(defun e-board-storage-sqlite--settle-query (query request)
+  "Settle QUERY exactly once from terminal runtime REQUEST."
+  (unless (e-board-storage-sqlite--query-settled query)
+    (setf (e-board-storage-sqlite--query-settled query) t
+          (e-board-storage-sqlite--query-request query) nil)
+    (let ((work (e-board-storage-sqlite--query-work query)))
+      (if (eq (e-runtime-store-request--state request) 'committed)
+          (e-work-finish work
+                         (copy-tree
+                          (e-runtime-store-request--result request) t))
+        (e-work-fail
+         work
+         (or (copy-tree (e-runtime-store-request--error request) t)
+             '(e-board-storage-error "Board query did not commit")))))))
+
+(defun e-board-storage-sqlite--run-query (handle query _context)
+  "Submit request-local QUERY without waiting for its worker."
+  (let* ((runtime (e-board-storage-sqlite--query-runtime query))
+         (request
+          (e-runtime-store-submit
+           runtime 'read (e-board-storage-sqlite--query-body query))))
+    (setf (e-board-storage-sqlite--query-work query) handle
+          (e-work-handle-cancel-function handle)
+          (lambda (_handle)
+            (when-let* ((pending
+                         (e-board-storage-sqlite--query-request query)))
+              (e-runtime-store-cancel runtime pending))))
+    (e-runtime-store--observe
+     request (lambda (settled)
+               (e-board-storage-sqlite--settle-query query settled)))
+    (unless (e-board-storage-sqlite--query-settled query)
+      (setf (e-board-storage-sqlite--query-request query) request))
+    :deferred))
+
+(defconst e-board-storage-sqlite--query-spec
+  (e-work-spec-create
+   :id "board-query" :execution 'cooperative :interactive-policy 'async
+   :owner 'e-board-storage-sqlite
+   :runner #'e-board-storage-sqlite--run-query))
+
+(defun e-board-storage-sqlite-controller-state-start
+    (runtime board-id &optional record-limit)
+  "Return immediately with bounded detached controller state for BOARD-ID."
+  (let* ((query
+          (e-board-storage-sqlite--query-create
+           :runtime runtime
+           :body (list :op 'board-controller-state :board-id board-id
+                       :record-limit (or record-limit 64))))
+         (work
+          (e-work-prepare
+           e-board-storage-sqlite--query-spec query
+           :context (list :domain-ref board-id :work-kind 'board-query))))
+    (setf (e-board-storage-sqlite--query-work query) work)
+    (e-work-start-prepared work :arguments query)
+    work))
 
 (defun e-board-storage-sqlite--utf8-prefix (string limit)
   "Return STRING truncated to at most LIMIT UTF-8 bytes."
@@ -75,6 +137,19 @@
           result)
          (setf (e-board-storage--next-revision storage) 1)
          result)))
+    ('clear-board
+     (pcase-let ((`(,board-id) arguments))
+       (let* ((generation
+               (1+ (or (e-board-storage--next-generation storage) 1)))
+              (revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :revision revision)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id (list :op 'board-clear :board-id board-id) result)
+         (setf (e-board-storage--next-generation storage) generation
+               (e-board-storage--next-revision storage) revision
+               (e-board-storage--next-position storage) 0)
+         result)))
     ('publish-record
      (pcase-let ((`(,board-id ,generation ,record ,source) arguments))
        (when source
@@ -105,6 +180,32 @@
           storage board-id
           (list :op 'board-participant-put :board-id board-id
                 :generation generation :participant participant)
+          result)
+         (setf (e-board-storage--next-revision storage) revision)
+         result)))
+    ('delete-participant
+     (pcase-let ((`(,board-id ,generation ,participant-id) arguments))
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :revision revision :participant-id participant-id
+                            :deleted t)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-participant-delete :board-id board-id
+                :generation generation :participant-id participant-id)
+          result)
+         (setf (e-board-storage--next-revision storage) revision)
+         result)))
+    ('publish-participant
+     (pcase-let ((`(,board-id ,generation ,participant-id) arguments))
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :revision revision :participant-id participant-id
+                            :publication-pending nil)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-participant-publish :board-id board-id
+                :generation generation :participant-id participant-id)
           result)
          (setf (e-board-storage--next-revision storage) revision)
          result)))
@@ -164,16 +265,30 @@
           result)
          (setf (e-board-storage--next-revision storage) revision)
          result)))
+    ('put-replay-progress
+     (pcase-let
+         ((`(,board-id ,generation ,subscription-id ,position) arguments))
+       (let* ((revision (1+ (or (e-board-storage--next-revision storage) 0)))
+              (result (list :board-id board-id :generation generation
+                            :revision revision :subscription-id subscription-id
+                            :position position)))
+         (e-board-storage-sqlite--async-submit
+          storage board-id
+          (list :op 'board-replay-progress-put :board-id board-id
+                :generation generation :subscription-id subscription-id
+                :position position)
+          result)
+         (setf (e-board-storage--next-revision storage) revision)
+         result)))
     ('status
      (append (list :backend 'sqlite
                    :pending (e-board-storage--pending-count storage)
                    :first-error (copy-tree (e-board-storage--first-error storage)))
              (e-runtime-store-status (e-board-storage--runtime storage))))
     (_
-     ;; DP6B migrates only the public Daily writes.  Reads and unrelated Board
-     ;; lifecycle operations retain their established explicit observer path.
-     (e-board-storage-sqlite--call
-      (e-board-storage--runtime storage) operation arguments))))
+     (signal 'e-board-storage-error
+             (list "Interactive SQLite Board operation requires a bounded asynchronous query"
+                   operation)))))
 
 (defun e-board-storage-sqlite--call (runtime operation arguments)
   "Dispatch OPERATION ARGUMENTS through RUNTIME."
@@ -316,7 +431,7 @@
   (let ((storage
          (e-board-storage--create
           :runtime runtime :asynchronous t :pending-count 0
-          :next-revision 0 :next-position 0)))
+          :next-revision 0 :next-position 0 :next-generation 1)))
     (setf (e-board-storage--call-operation storage)
           (lambda (operation &rest arguments)
             (e-board-storage-sqlite--async-call storage operation arguments)))

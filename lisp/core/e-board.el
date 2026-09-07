@@ -3250,8 +3250,14 @@ subscription records the relationship without rewriting its terminal state."
 (defun e-board--queue-subscription-replay (board subscription start-seq)
   "Freeze SUBSCRIPTION and queue its explicit retained post-input replay.
 START-SEQ is exclusive.  The captured high watermark isolates the replay from
-ordinary future routing, which retains its existing append-time classifier."
-  (let* ((durable-p (e-board-storage-backed-p board))
+ordinary future routing, which retains its existing append-time classifier.
+
+An asynchronous SQLite Board uses only its bounded live controller window.
+Historical continuation is an inspection concern and is never paged into the
+controller merely because a subscriber was registered."
+  (let* ((durable-p (and (e-board-storage-backed-p board)
+                         (not (e-board-storage-asynchronous-p
+                               (e-board-storage board)))))
          (start-position
           (and durable-p
                (let ((position 0))
@@ -3333,13 +3339,16 @@ ordinary future routing, which retains its existing append-time classifier."
           (e-board-subscription-replay-next-position record) position)))
 
 (defun e-board-drain-subscription-replays (board)
-  "Classify one bounded page of explicit retained post-input replays."
+  "Classify one bounded live-window page of retained post-input replays.
+Only explicit blocking/offline Board ports may page historical durable rows."
   (setf (e-board-subscription-replay-scheduled board) nil)
   (let ((remaining e-board-subscription-replay-drain-limit))
     (while (and (> remaining 0) (e-board-subscription-replays board))
       (let* ((record (car (e-board-subscription-replays board)))
              (next-seq (e-board-subscription-replay-next-seq record)))
-        (if (e-board-storage-backed-p board)
+        (if (and (e-board-storage-backed-p board)
+                 (not (e-board-storage-asynchronous-p
+                       (e-board-storage board))))
             (let ((position (e-board-subscription-replay-next-position record))
                   (through (e-board-subscription-replay-through-position record)))
               (if (>= position through)

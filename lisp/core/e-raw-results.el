@@ -19,9 +19,16 @@
 (require 'e-resources)
 (require 'e-raw-results-storage)
 (require 'e-tools)
+(require 'e-work)
 
 (define-error 'e-raw-results-invalid-path
   "raw-result:// resource path is invalid")
+(define-error 'e-raw-results-async-required
+  "Persistent raw-result reads require asynchronous resource work"
+  'e-raw-results-storage-error)
+(define-error 'e-raw-results-too-large
+  "Raw result exceeds the practical persistence limit"
+  'e-raw-results-storage-error)
 
 (defcustom e-raw-results-preview-bytes 4096
   "Default maximum preview bytes included in raw-result references."
@@ -31,6 +38,14 @@
 (defcustom e-raw-results-default-max-age-seconds (* 24 60 60)
   "Default maximum idle age before generic raw-result files are expired."
   :type 'number
+  :group 'e)
+
+(defcustom e-raw-results-max-content-bytes (* 16 1024 1024)
+  "Maximum UTF-8 bytes admitted for one persistent raw result.
+
+This application limit matches the SQLite worker's row bound and, for file
+imports, is checked from metadata before reading the staging file."
+  :type 'integer
   :group 'e)
 
 (defvar e-raw-results--counter 0
@@ -94,7 +109,7 @@
 
 (cl-defun e-raw-results-write
     (&key id content owner redaction-policy cleanup-lifetime preview
-          preview-bytes metadata)
+          preview-bytes metadata on-settle)
   "Persist raw result CONTENT and return a bounded reference plist.
 ID, when non-nil, names the stored resource; otherwise a unique name is
 generated.  OWNER identifies the caller-visible owner of the result.
@@ -104,6 +119,7 @@ model/display preview; otherwise CONTENT is previewed with
 `e-tools-result-content-preview'."
   (let* ((name (e-raw-results--safe-name (or id (e-raw-results--generated-name))))
          (content-text (format "%s" content))
+         (content-bytes (string-bytes content-text))
          (limit (max 0 (or preview-bytes
                            e-raw-results-preview-bytes)))
          (preview-data
@@ -117,22 +133,29 @@ model/display preview; otherwise CONTENT is previewed with
           (list :uri uri
                 :owner owner
                 :storage 'raw-result-store
-                :original-bytes (string-bytes content-text)
+                :original-bytes content-bytes
                 :preview (plist-get preview-data :text)
                 :preview-bytes (plist-get preview-data :shown-bytes)
                 :preview-truncated (plist-get preview-data :truncated)
                 :redaction-policy (or redaction-policy 'none)
                 :cleanup-lifetime (or cleanup-lifetime 'raw-result-store)
                 :expires-at expires-at)))
-    (let ((result
-           (e-raw-results-storage-put
-            (e-raw-results--storage) uri content-text
-            (list :owner owner :redaction-policy redaction-policy
-                  :cleanup-lifetime cleanup-lifetime :metadata metadata)
-            created-at expires-at)))
-      ;; Preserve the originally committed expiry on same-content dedupe;
-      ;; reads never slide it.
-      (plist-put reference :expires-at (plist-get result :expires-at)))
+    (when (> content-bytes e-raw-results-max-content-bytes)
+      (signal 'e-raw-results-too-large
+              (list content-bytes e-raw-results-max-content-bytes)))
+    (e-raw-results-storage-submit
+     (e-raw-results--storage) 'write 'put
+     (list uri content-text
+           (list :owner owner :redaction-policy redaction-policy
+                 :cleanup-lifetime cleanup-lifetime :metadata metadata)
+           created-at expires-at)
+     (lambda (result error)
+       (if error
+           (progn
+             (message "Raw-result persistence failed for %s: %s"
+                      uri (error-message-string error))
+             (when on-settle (funcall on-settle nil error)))
+         (when on-settle (funcall on-settle result nil)))))
     (if metadata
         (append reference (list :metadata metadata))
       reference)))
@@ -147,7 +170,11 @@ PREVIEW is already bounded by the producer.  ORIGINAL-BYTES may be supplied
 from streaming counters; otherwise it is read from file metadata."
   (unless (and (stringp source) (file-regular-p source))
     (signal 'file-missing (list "Raw result source does not exist" source)))
-  (ignore original-bytes)
+  (let* ((source-bytes (or original-bytes
+                           (file-attribute-size (file-attributes source)))))
+    (when (> source-bytes e-raw-results-max-content-bytes)
+      (signal 'e-raw-results-too-large
+              (list source-bytes e-raw-results-max-content-bytes))))
   (let* ((content
           (with-temp-buffer
             (let ((coding-system-for-read 'utf-8-unix))
@@ -158,13 +185,20 @@ from streaming counters; otherwise it is read from file metadata."
            :id id :content content :owner owner
            :redaction-policy redaction-policy
            :cleanup-lifetime cleanup-lifetime :preview preview
-           :preview-bytes preview-bytes :metadata metadata)))
-    ;; SOURCE is a producer-owned staging artifact, disposed only after ACK.
-    (delete-file source)
+           :preview-bytes preview-bytes :metadata metadata
+           :on-settle
+           (lambda (_stored error)
+             ;; SOURCE is producer-owned staging and is disposed only after
+             ;; the durable acknowledgement.
+             (when (and (not error) (file-exists-p source))
+               (delete-file source))))))
     result))
 
 (defun e-raw-results-read (uri)
-  "Read raw-result URI and return its content."
+  "Read raw-result URI at an explicit blocking compatibility boundary."
+  (when (e-raw-results-storage--submit-operation (e-raw-results--storage))
+    (signal 'e-raw-results-async-required
+            (list "Use the raw-result resource Work path" uri)))
   (let ((result (e-raw-results-storage-read (e-raw-results--storage) uri)))
     (unless result
       (signal 'file-missing (list "Raw result does not exist" uri)))
@@ -178,10 +212,13 @@ referenced row is already absent."
   (when-let* ((uri (e-raw-results--reference-uri reference))
               (name (e-raw-results--name-from-uri uri)))
     (ignore name)
-    (and (plist-get
-          (e-raw-results-storage-delete (e-raw-results--storage) uri)
-          :deleted)
-         uri)))
+    (e-raw-results-storage-submit
+     (e-raw-results--storage) 'write 'delete (list uri)
+     (lambda (_result error)
+       (when error
+         (message "Raw-result cleanup failed for %s: %s"
+                  uri (error-message-string error)))))
+    uri))
 
 (defun e-raw-results-cleanup-references (references)
   "Delete raw-result REFERENCES and return the deleted URIs."
@@ -194,7 +231,44 @@ MAX-AGE-SECONDS is accepted for API compatibility; expiry is fixed at commit."
          (now (or now (float-time)))
          (storage (e-raw-results--storage)))
     (ignore max-age)
-    (plist-get (e-raw-results-storage-expire storage now 256) :deleted)))
+    (e-raw-results-storage-submit
+     storage 'write 'expire (list now 256)
+     (lambda (_result error)
+       (when error
+         (message "Raw-result expiry cleanup failed: %s"
+                  (error-message-string error)))))))
+
+(defun e-raw-results--read-work-spec ()
+  "Return the asynchronous resource work for one raw-result read."
+  (e-work-spec-create
+   :id "raw-result.read" :description "Read one bounded raw result."
+   :execution 'cooperative :interactive-policy 'async :owner 'raw-results
+   :runner
+   (lambda (handle arguments _context)
+     (condition-case err
+         (let* ((parsed (plist-get arguments :uri))
+                (uri (plist-get parsed :uri))
+                (storage (e-raw-results--storage))
+                request)
+           (setq request
+                 (e-raw-results-storage-submit
+                  storage 'read 'read (list uri (float-time))
+                  (lambda (result error)
+                    (cond
+                     (error (e-work-fail handle error))
+                     ((null result)
+                      (e-work-fail
+                       handle (list 'file-missing
+                                    "Raw result does not exist" uri)))
+                     (t (e-work-finish handle
+                                       (plist-get result :content)))))))
+           (setf (e-work-handle-cancel-function handle)
+                 (lambda (_handle)
+                   (e-runtime-store-cancel
+                    (e-raw-results-storage-runtime storage) request)
+                   t)))
+       (error (e-work-fail handle err)))
+     :deferred)))
 
 
 (defun e-raw-results--register-resource-methods (registry &rest _context)
@@ -206,6 +280,7 @@ MAX-AGE-SECONDS is accepted for API compatibility; expiry is fixed at commit."
     :operation e-operation-read
     :description "Read generic ephemeral raw tool result resources."
     :uri-patterns '("raw-result://<name>")
+    :work (e-raw-results--read-work-spec)
     :handler (lambda (parsed-uri _range)
                (e-raw-results-read (plist-get parsed-uri :uri)))))
   nil)

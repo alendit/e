@@ -64,7 +64,7 @@
 (defconst e-runtime-store-owner-diagnostic-byte-limit 1024
   "Maximum retained UTF-8 bytes in one owner-local failure diagnostic.")
 
-(defconst e-runtime-store-owner-domains '(session board)
+(defconst e-runtime-store-owner-domains '(session board task)
   "Domains permitted to attach private optimistic-mutation owner keys.")
 
 (defcustom e-runtime-store-request-timeout 60.0
@@ -726,20 +726,25 @@ continues to own its own admission reservation."
                  store (e-runtime-store--starting-request store)))
       (setf (e-runtime-store--starting-request store) nil))
     (when (not (eq (e-runtime-store-request--state request) 'committed))
-      (let ((selected (e-runtime-store--startup-request store)))
-        (if selected
-            (progn
-              (setf (e-runtime-store--starting-request store) selected)
-              (e-runtime-store--partition-owner-failure
-               store selected
-               (e-runtime-store--startup-error
-                selected (e-runtime-store-request--error request))))
-          ;; A cold open has no selected domain request to explain failure.
-          ;; Its own typed worker result is still terminal: retaining an
-          ;; unowned opening state would leave compatibility observers and
-          ;; close teardown waiting until a phase timeout.
-          (e-runtime-store--partition-owner-failure
-           store nil (e-runtime-store-request--error request)))))
+      (let ((selected (e-runtime-store--startup-request store))
+            (open-error (e-runtime-store-request--error request)))
+        (if (eq (car-safe open-error) 'e-runtime-store-schema-too-old)
+            ;; This is a store-wide operator prerequisite, not an optimistic
+            ;; mutation failure.  Settle every queued request with the exact
+            ;; schema condition and stop retrying; no owner becomes suspect.
+            (e-runtime-store--freeze-and-stop store open-error)
+          (if selected
+              (progn
+                (setf (e-runtime-store--starting-request store) selected)
+                (e-runtime-store--partition-owner-failure
+                 store selected
+                 (e-runtime-store--startup-error selected open-error)))
+            ;; A cold open has no selected domain request to explain failure.
+            ;; Its own typed worker result is still terminal: retaining an
+            ;; unowned opening state would leave compatibility observers and
+            ;; close teardown waiting until a phase timeout.
+            (e-runtime-store--partition-owner-failure
+             store nil open-error)))))
     (e-runtime-store--schedule store t))
    ((eq (e-runtime-store-request--kind request) 'close)
     (e-runtime-store--schedule-close-finalization store))
@@ -1924,6 +1929,19 @@ be constructed with the private constructor used by scheduler tests."
         (signal 'e-runtime-store-unavailable
                 (list "Runtime retirement recovery was exhausted"
                       :cause close-error)))))
+  t)
+
+(defun e-runtime-store-shutdown (store)
+  "Release STORE locally at process shutdown without worker coordination.
+
+This is the named process-exit boundary.  It submits no close request, starts
+no worker or recovery, and never waits for SQLite.  Durable work already
+acknowledged by SQLite remains durable; queued or in-flight work is failed
+locally because Emacs is exiting and cannot observe later completion.  Use
+`e-runtime-store-close' only at explicit graceful operator or test boundaries
+that require worker retirement acknowledgement."
+  (unless (e-runtime-store--closed store)
+    (e-runtime-store--finalize-close store))
   t)
 
 (defun e-runtime-store-status (store)

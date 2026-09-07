@@ -563,7 +563,7 @@
                          (lambda (&rest arguments)
                            (setq load-error-callback
                                  (plist-get arguments
-                                            :on-session-load-error))
+                                            :on-session-read-error))
                            (apply original-open arguments))))
                 (e-org-canvas-open-for-current-buffer))
               (should (functionp load-error-callback))

@@ -22,7 +22,8 @@
                (:constructor e-context-create)
                (:conc-name e-context--))
   name
-  build)
+  build
+  detached-build)
 
 (cl-defstruct (e-context-provider
                (:constructor e-context-provider-create)
@@ -233,6 +234,31 @@ backend-neutral messages that should appear before the session transcript."
                  (append prefix-segments (plist-get context :segments))))
     context))
 
+(cl-defun e-context-build-detached
+    (strategy path &key options prefix-messages prefix-segments)
+  "Build backend-neutral context from detached selected session PATH.
+
+PATH is a request-scoped SQLite query result.  This entry point never receives
+a session store and therefore cannot reconstruct or consult a durable mirror."
+  (unless (functionp (e-context--detached-build strategy))
+    (signal 'e-session-storage-error
+            (list "Context strategy has no detached SQLite implementation"
+                  (e-context--name strategy))))
+  (let ((context (funcall (e-context--detached-build strategy)
+                          :path path :options options)))
+    (when prefix-messages
+      (plist-put context :messages
+                 (append prefix-messages (plist-get context :messages))))
+    (when (and prefix-messages (not prefix-segments))
+      (setq prefix-segments
+            (list (e-context-segment-create
+                   :kind 'static-prefix :id 'prefix-messages
+                   :messages prefix-messages))))
+    (when prefix-segments
+      (plist-put context :segments
+                 (append prefix-segments (plist-get context :segments))))
+    context))
+
 (defun e-context-backend-message (message)
   "Return MESSAGE without presentation/storage-only metadata."
   (let ((copy (copy-sequence message)))
@@ -324,7 +350,28 @@ drop the unpaired tool-call so the transcript stays valid."
                      :kind 'history
                      :id 'transcript-history
                      :messages messages))
-                   :options options))))))
+                   :options options))))
+   :detached-build
+   (cl-function
+    (lambda (&key path options)
+      (let* ((messages (plist-get path :messages))
+             (compaction (plist-get path :compaction))
+             (messages
+              (if compaction
+                  (cons (list :role 'compaction-summary
+                              :content (plist-get compaction :summary)
+                              :id (plist-get compaction :id)
+                              :type 'compaction)
+                        (mapcar #'e-compaction-preview-kept-message messages))
+                messages))
+             (messages (e-context--backend-messages messages)))
+        (list :strategy 'transcript-stack
+              :messages messages
+              :segments
+              (list (e-context-segment-create
+                     :kind 'history :id 'transcript-history
+                     :messages messages))
+              :options options))))))
 
 (provide 'e-context)
 

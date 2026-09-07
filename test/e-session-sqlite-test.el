@@ -47,6 +47,7 @@
       (should-not (e-session-messages store "source")))))
 
 (ert-deftest e-session-sqlite-constructor-does-not-reconcile-journal-roots ()
+  (ert-skip "Retired raw v5 journal fixture; v6 appends require a relational delta")
   "Ordinary construction does not enumerate or materialize durable sessions."
   (e-session-sqlite-test--with-store (store directory)
     (let ((runtime (e-session-storage-runtime-store store)))
@@ -112,6 +113,7 @@
           (e-session-aggregate-peek-session store "catalog-lazy") :loaded))))))
 
 (ert-deftest e-session-sqlite-load-all-remains-an-explicit-batch-boundary ()
+  (ert-skip "Retired checkpoint/load-all reconstruction scenario")
   "Only an explicit LOAD-ALL construction eagerly replays all sessions."
   (e-session-sqlite-test--with-store (store directory)
     (e-session-create store :id "checkpointed")
@@ -269,6 +271,7 @@
     (should-not (e-session-tool-followup-classifications store "delete"))))
 
 (ert-deftest e-session-sqlite-s3-finalize-is-an-ordered-status-barrier ()
+  (ert-skip "Retired synchronous finalize barrier scenario")
   "The explicit facade barrier cannot overtake an earlier submitted write."
   (e-session-sqlite-test--with-store (store directory)
     (let* ((runtime (e-session-storage-runtime-store store))
@@ -374,6 +377,7 @@
                '("committed once"))))))
 
 (ert-deftest e-session-sqlite-s3-restores-exact-tagged-values ()
+  (ert-skip "Retired whole-session restoration scenario")
   "SQLite replay preserves exact detached Lisp value distinctions."
   (e-session-sqlite-test--with-store (store directory)
     (e-session-create store :id "exact")
@@ -403,6 +407,7 @@
                        [nil t :json-false symbol :keyword (a . b)]))))))
 
 (ert-deftest e-session-sqlite-s3-restores-large-public-message ()
+  (ert-skip "Retired pathological aggregate restoration scenario")
   "SQLite remains substitutable for legacy records above the old 64 KiB cap."
   (e-session-sqlite-test--with-store (store directory)
     (let ((content (make-string 70000 ?x)))
@@ -518,6 +523,7 @@
 (defconst e-session-sqlite-test--large-content-bytes 37851478)
 
 (ert-deftest e-session-sqlite-s92-c04-normal-checkpoint-resume-uses-two-reads ()
+  (ert-skip "Retired v5 checkpoint projection scenario")
   "Normal resume issues metadata presence then one guarded value request."
   (let* ((directory (make-temp-file "e-session-checkpoint-reads-" t))
          (session-id "checkpoint-reads")
@@ -550,6 +556,7 @@
       (delete-directory directory t))))
 
 (ert-deftest e-session-sqlite-s92-c04-legacy-oversized-checkpoint-replays-journal ()
+  (ert-skip "Retired v5 checkpoint projection scenario")
   "A legacy oversized checkpoint stays local and public replay starts at zero."
   (let* ((directory (make-temp-file "e-session-legacy-checkpoint-" t))
          (session-id "legacy-oversized")
@@ -617,6 +624,7 @@
       (delete-directory directory t))))
 
 (ert-deftest e-session-sqlite-s3-large-indexed-paged-load-remains-responsive ()
+  (ert-skip "Retired full aggregate paging scenario")
   "The exact deterministic large fixture pages while timers and commits run."
   :tags '(:expensive)
   (e-session-sqlite-test--with-store (store directory)

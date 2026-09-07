@@ -77,6 +77,7 @@ record; it is not an invented journal family.")
   '(:session-id :name :summary :metadata :created-at :updated-at
     :last-message-at :latest-assistant-marker :message-count
     :current-branch :turn-options :current-head-id :root-event-id
+    :current-context-generation-id
     :board-id :principal :association-role :routing-policy :root-p
     :board-output-sequence :board-activity-sequence :journal-position)
   "Closed row-shaped query-state ABI.
@@ -93,6 +94,29 @@ replay counter.")
   (or (null value)
       (and (stringp value)
            (<= (string-bytes value) e-session-query-state-string-byte-limit))))
+
+(defun e-session-query--string-prefix (value)
+  "Return a detached UTF-8-safe query-row prefix of string VALUE.
+
+The result contains at most `e-session-query-state-string-byte-limit' bytes.
+This is for deliberately lossy preview columns such as a session summary; it
+must not be used for durable identity or canonical content."
+  (unless (stringp value)
+    (signal 'wrong-type-argument (list 'stringp value)))
+  (let ((limit e-session-query-state-string-byte-limit))
+    (if (<= (string-bytes value) limit)
+        (copy-sequence value)
+      (let ((low 0)
+            (high (min (length value) limit)))
+        ;; A prefix's encoded byte size is monotonic in its character count.
+        ;; Binary search avoids repeatedly walking a potentially large durable
+        ;; message while finding the largest prefix admitted by the row ABI.
+        (while (< low high)
+          (let ((middle (/ (+ low high 1) 2)))
+            (if (<= (string-bytes (substring value 0 middle)) limit)
+                (setq low middle)
+              (setq high (1- middle)))))
+        (substring value 0 low)))))
 
 (defun e-session-query--bounded-copy (value)
   "Return detached VALUE when it fits the domain semantic-value bounds.
@@ -316,6 +340,12 @@ boundary later."
                   (plist-get session :turn-options))
                  :current-head-id (plist-get session :current-head-id)
                  :root-event-id (plist-get session :root-event-id)
+                 :current-context-generation-id
+                 (when-let* ((entry
+                              (car (last (plist-get session
+                                                    :context-generations))))
+                             (record (plist-get entry :context-record)))
+                   (plist-get record :id))
                  :root-p (e-session-query--root-p metadata)
                  :board-output-sequence
                  (or (plist-get session :board-output-sequence) 0)
@@ -350,6 +380,8 @@ boundary later."
                (e-session-query--string-p
                 (plist-get state :current-head-id))
                (e-session-query--string-p (plist-get state :root-event-id))
+               (e-session-query--string-p
+                (plist-get state :current-context-generation-id))
                (e-session-query--string-p (plist-get state :board-id))
                (e-session-query--string-p (plist-get state :principal))
                (e-session-query--string-p
@@ -526,6 +558,7 @@ session's parent-chain head, matching aggregate replay semantics."
                        (plist-get record :turn-options))
                       :current-head-id (plist-get record :id)
                       :root-event-id (plist-get record :id)
+                      :current-context-generation-id nil
                       :board-id nil :principal nil :association-role nil
                       :routing-policy nil
                       :root-p (e-session-query--root-p metadata)
@@ -557,17 +590,21 @@ session's parent-chain head, matching aggregate replay semantics."
 (defun e-session-query--message-role (message)
   "Return MESSAGE role as a symbol/string for query derivation."
   (let ((role (plist-get message :role)))
-    (if (stringp role) (intern role) role)))
+    (cond ((equal role "user") 'user)
+          ((equal role "assistant") 'assistant)
+          (t role))))
 
 (defun e-session-query--apply-message (state record)
   "Apply one message RECORD to STATE."
   (let* ((message (plist-get record :message))
-         (detached-message (e-session-query--copy-value message))
-         (created-at (or (plist-get detached-message :created-at)
+         (created-at (or (plist-get message :created-at)
                          (plist-get record :timestamp)))
-         (role (e-session-query--message-role detached-message)))
-    (unless (and (listp detached-message)
-                 (e-session-query--bounded-value-p detached-message)
+         (role (e-session-query--message-role message)))
+    ;; A message may contain large canonical content and structured provider
+    ;; data.  The current-row projection needs only these named scalars; do not
+    ;; copy or reject the durable message merely because an unused field is
+    ;; larger than a query-row value.
+    (unless (and (e-session-query--record-shape-p message)
                  (e-session-query--string-p created-at))
       (signal 'e-session-query-record-error
               (list "Invalid session message record" record)))
@@ -575,17 +612,19 @@ session's parent-chain head, matching aggregate replay semantics."
                (1+ (or (plist-get state :message-count) 0)))
     (when (and (null (plist-get state :summary))
                (eq role 'user)
-               (stringp (plist-get detached-message :content)))
-      (plist-put state :summary (plist-get detached-message :content)))
+               (stringp (plist-get message :content)))
+      (plist-put state :summary
+                 (e-session-query--string-prefix
+                  (plist-get message :content))))
     (plist-put state :last-message-at created-at)
     (when (eq role 'assistant)
       (plist-put state :latest-assistant-marker
-                 (or (plist-get detached-message :id)
+                 (or (plist-get message :id)
                      (plist-get record :id)
                      created-at)))
     (e-session-query--sequence-max
      state :board-output-sequence
-     (plist-get detached-message :board-output-sequence) detached-message)
+     (plist-get message :board-output-sequence) message)
     (e-session-query--touch state record t)))
 
 (defun e-session-query--context-v1-p (record)
@@ -666,6 +705,9 @@ when the application command emits no durable record."
            ;; Version-1 context history is readable but aggregate replay
            ;; intentionally ignores it; newer owned records touch recency.
            (unless (e-session-query--context-v1-p record)
+             (when (equal type "context-generation")
+               (plist-put next :current-context-generation-id
+                          (plist-get (plist-get record :context-record) :id)))
              (e-session-query--touch next record t)))
           ("messages-cleared"
            (plist-put next :message-count 0)
@@ -673,7 +715,9 @@ when the application command emits no durable record."
            (plist-put next :last-message-at nil)
            (plist-put next :latest-assistant-marker nil)
            ;; Aggregate replay clears message/activity lists but keeps Board
-           ;; output/activity sequence watermarks and resets the head to root.
+           ;; sequence watermarks and the current context-generation identity.
+           ;; The latter owns curation records independently of the visible
+           ;; transcript and cannot be discarded by a message reset.
            (plist-put next :current-head-id (plist-get next :root-event-id))
            (e-session-query--touch next record t))
           ("board-messages-cleared"

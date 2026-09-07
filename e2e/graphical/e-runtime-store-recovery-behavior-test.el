@@ -30,6 +30,9 @@
 (require 'e-harness)
 (require 'e-org-canvas)
 (require 'e-session)
+(require 'e-runtime-store-codec)
+(require 'e-runtime-store-offline)
+(require 'sqlite)
 (require 'e-graphical-test-support)
 
 (defun e-runtime-store-recovery-graphical--surface-windows (transcript)
@@ -148,6 +151,258 @@ close wrapper to submit another request to a non-unavailable store."
           (cl-incf count))
         count))))
 
+(defun e-runtime-store-recovery-graphical--fixture-payload (value)
+  "Return VALUE in the v6 session-record payload representation."
+  (base64-encode-string (e-runtime-store-codec-encode value) t))
+
+(defun e-runtime-store-recovery-graphical--make-daily-v6-fixture (directory)
+  "Create a disposable v6 store with one Daily and 1277 unrelated rows.
+
+The first runtime only creates the production schema.  It is closed before
+the direct fixture insert so the test never races SQLite against the worker;
+the second runtime is the one observed by the public chat path.  The direct
+insert is intentionally test-only and creates no process-local session
+aggregate or mirror."
+  (let ((bootstrap (e-runtime-store-open directory))
+        (database nil)
+        (database-file (expand-file-name "store.sqlite3" directory))
+        (unrelated-count 1277)
+        (daily-id "daily-known")
+        (daily-created "2026-09-06T00:00:00Z")
+        (daily-updated "2026-09-06T00:00:03Z")
+        (committed nil))
+    (unwind-protect
+        (progn
+          ;; A status read is only a bounded schema/open acknowledgement; it
+          ;; ensures no worker still owns the file when fixture SQL begins.
+          (e-runtime-store-call bootstrap 'read '(:op status))
+          (e-runtime-store-close bootstrap)
+          (setq bootstrap nil)
+          (setq database (sqlite-open database-file))
+          (sqlite-execute database "BEGIN IMMEDIATE")
+          (unwind-protect
+              (progn
+                (sqlite-execute
+                 database
+                 (concat
+                  "INSERT INTO session_records(session_id,position,payload,"
+                  "record_type,record_id,record_identity,parent_id,timestamp)"
+                  " VALUES(?,?,?,?,?,?,?,?)")
+                 (vector daily-id 1
+                         (e-runtime-store-recovery-graphical--fixture-payload
+                          (list :type "session" :session-id daily-id
+                                :id "daily-root" :created-at daily-created
+                                :updated-at daily-updated :metadata nil))
+                         "session" "daily-root" "daily-root-delta" nil
+                         daily-created))
+                (dolist
+                    (record
+                     (list
+                      (list :type "message" :session-id daily-id
+                            :id "daily-m1" :parent-id "daily-root"
+                            :timestamp "2026-09-06T00:00:01Z"
+                            :message (list :type 'message :id "daily-m1"
+                                           :role 'user :content "Daily user message"
+                                           :created-at "2026-09-06T00:00:01Z"
+                                           :parent-id "daily-root"))
+                      (list :type "message" :session-id daily-id
+                            :id "daily-m2" :parent-id "daily-m1"
+                            :timestamp "2026-09-06T00:00:02Z"
+                            :message (list :type 'message :id "daily-m2"
+                                           :role 'assistant
+                                           :content "Daily assistant message"
+                                           :created-at "2026-09-06T00:00:02Z"
+                                           :parent-id "daily-m1"))))
+                  (let* ((position (if (equal (plist-get record :id) "daily-m1")
+                                       2 3))
+                         (record-id (plist-get record :id)))
+                    (sqlite-execute
+                     database
+                     (concat
+                      "INSERT INTO session_records(session_id,position,payload,"
+                      "record_type,record_id,record_identity,parent_id,timestamp)"
+                      " VALUES(?,?,?,?,?,?,?,?)")
+                     (vector daily-id position
+                             (e-runtime-store-recovery-graphical--fixture-payload
+                              record)
+                             "message" record-id
+                             (format "%s-delta" record-id)
+                             (plist-get record :parent-id)
+                             (plist-get record :timestamp)))))
+                (sqlite-execute
+                 database
+                 (concat
+                  "INSERT INTO session_query_state(session_id,name,summary,"
+                  "metadata,created_at,updated_at,last_message_at,"
+                  "latest_assistant_marker,message_count,current_branch,"
+                  "turn_options,current_head_id,root_event_id,board_id,"
+                  "principal,association_role,routing_policy,root_p,"
+                  "board_output_sequence,board_activity_sequence,journal_position)"
+                  " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                 (vector daily-id "Daily" "Fixture Daily" nil daily-created
+                         daily-updated "2026-09-06T00:00:02Z" "daily-m2" 2
+                         "main" nil "daily-m2" "daily-root" "daily-board"
+                         "operator" "owner"
+                         (e-runtime-store-recovery-graphical--fixture-payload
+                          (list :participant-id "daily-main"
+                                :pickup-selector '(:tags (main))
+                                :observer-selector '(:tags (main))
+                                :default-tags '(main) :default-to nil))
+                         1 0 0 3))
+                (sqlite-execute
+                 database
+                 (concat
+                  "INSERT INTO boards(board_id,trusted_principal,generation,"
+                  "revision,next_position,root_payload) VALUES(?,?,?,?,?,?)")
+                 (vector
+                  "daily-board"
+                  (e-runtime-store-recovery-graphical--fixture-payload
+                   "operator")
+                  1 2 0
+                  (e-runtime-store-recovery-graphical--fixture-payload
+                   '(:board-id "daily-board"))))
+                (sqlite-execute
+                 database
+                 (concat
+                  "INSERT INTO board_participants(board_id,generation,"
+                  "participant_id,payload,revision) VALUES(?,?,?,?,?)")
+                 (vector
+                  "daily-board" 1 "daily-main"
+                  (e-runtime-store-recovery-graphical--fixture-payload
+                   (list :id "daily-main" :author "e-chat"
+                         :principal "operator" :controller "operator"
+                         :role 'owner :state 'dormant
+                         :subscription-id "daily-address"
+                         :publication-pending nil))
+                  1))
+                (dotimes (index unrelated-count)
+                  (let ((session-id (format "unrelated-%04d" index))
+                        (root-id (format "unrelated-%04d-root" index))
+                        (timestamp (format "2025-01-01T00:%02d:%02dZ"
+                                           (/ index 60) (% index 60))))
+                    ;; Keep the scale fixture relationally honest: every
+                    ;; query row has its canonical session root.  The roots
+                    ;; are unrelated to the requested Daily, so the query
+                    ;; path still proves exact-session filtering.
+                    (sqlite-execute
+                     database
+                     (concat
+                      "INSERT INTO session_records(session_id,position,payload,"
+                      "record_type,record_id,record_identity,parent_id,timestamp)"
+                      " VALUES(?,?,?,?,?,?,?,?)")
+                     (vector session-id 1
+                             (e-runtime-store-recovery-graphical--fixture-payload
+                              (list :type "session" :session-id session-id
+                                    :id root-id :timestamp timestamp
+                                    :created-at timestamp :updated-at timestamp
+                                    :metadata nil))
+                             "session" root-id nil nil timestamp))
+                    (sqlite-execute
+                     database
+                     (concat
+                      "INSERT INTO session_query_state(session_id,name,summary,"
+                      "metadata,created_at,updated_at,last_message_at,"
+                      "latest_assistant_marker,message_count,current_branch,"
+                      "turn_options,current_head_id,root_event_id,board_id,"
+                      "principal,association_role,routing_policy,root_p,"
+                      "board_output_sequence,board_activity_sequence,journal_position)"
+                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                     (vector session-id (format "Unrelated %04d" index) nil nil
+                             timestamp timestamp nil nil 0 "main" nil root-id
+                             root-id nil nil nil nil 1 0 0 1))))
+                (sqlite-execute database "COMMIT")
+                (setq committed t))
+            (unless committed
+              (ignore-errors (sqlite-execute database "ROLLBACK"))))
+          unrelated-count)
+      (when database
+        (ignore-errors (sqlite-close database)))
+      (when (e-runtime-store-p bootstrap)
+        (ignore-errors (e-runtime-store--finalize-close bootstrap))))))
+
+(defun e-runtime-store-recovery-graphical--make-upgrade-v5-fixture (directory)
+  "Create a nonempty v5 store with observed legacy journal shapes."
+  (let* ((database-file (expand-file-name "store.sqlite3" directory))
+         (database (sqlite-open database-file))
+         (session-id "graphical-v5-existing")
+         (rootless-id "graphical-v5-rootless")
+         (timestamp "2026-09-07T00:00:00Z")
+         (large-content (make-string 9000 ?m))
+         (records
+          (list
+           (list :type "session" :session-id session-id :id "root-1"
+                 :timestamp timestamp :created-at timestamp
+                 :updated-at timestamp :metadata '(:name "Before upgrade"))
+           (list :type "message" :session-id session-id :id "message-1"
+                 :parent-id "root-1" :timestamp timestamp
+                 :message (list :id "message-1" :role 'user
+                                :created-at timestamp :content large-content
+                                :provider-payload (make-string 12000 ?p)))
+           (list :type "probe" :session-id session-id :id "legacy-probe"
+                 :timestamp timestamp :payload "ignored historically")
+           (list :type "session" :session-id session-id :id "root-2"
+                 :timestamp timestamp :created-at timestamp
+                 :updated-at timestamp :name "After replacement"
+                 :metadata '(:name "After replacement")))))
+    (unwind-protect
+        (progn
+          (dolist
+              (statement
+               '("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                 "CREATE TABLE session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, position))"
+                 "CREATE TABLE session_checkpoints (session_id TEXT PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL)"
+                 "CREATE TABLE catalog_projection (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL, revision INTEGER NOT NULL)"))
+            (sqlite-execute database statement))
+          (sqlite-execute
+           database "INSERT INTO store_meta(key,value) VALUES('schema_version','5')")
+          (let ((position 0))
+            (dolist (record records)
+              (cl-incf position)
+              (sqlite-execute
+               database
+               "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
+               (vector session-id position
+                       (e-runtime-store-recovery-graphical--fixture-payload
+                        record)))))
+          (sqlite-execute
+           database
+           "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
+           (vector
+            rootless-id 1
+            (e-runtime-store-recovery-graphical--fixture-payload
+             (list :type "board-message" :session-id rootless-id
+                   :message '(:id "rootless-message" :kind "input"
+                              :author "client")))))
+          ;; These are intentionally stale copies.  The journal is the v5
+          ;; authority, so v6 migration must ignore and remove both relations.
+          (sqlite-execute
+           database
+           "INSERT INTO catalog_projection(singleton,payload,revision) VALUES(1,?,1)"
+           (vector
+            (e-runtime-store-recovery-graphical--fixture-payload
+             (list (list :id session-id :name "stale catalog"
+                         :summary large-content)))))
+          (sqlite-execute
+           database
+           "INSERT INTO session_checkpoints(session_id,payload,revision) VALUES(?,?,1)"
+           (vector
+            session-id
+            (e-runtime-store-recovery-graphical--fixture-payload
+             (list :session-id "wrong-owner" :root '(:id "wrong")))))
+          (sqlite-close database)
+          (setq database nil)
+          (set-file-modes database-file #o600)
+          (list :session-id session-id :rootless-id rootless-id))
+      (when database (sqlite-close database)))))
+
+(defun e-runtime-store-recovery-graphical--runtime-operations (runtime)
+  "Return active and queued operation names for RUNTIME in FIFO order."
+  (mapcar
+   #'e-runtime-store-request--operation
+   (append (and (e-runtime-store--active-request runtime)
+                (list (e-runtime-store--active-request runtime)))
+           (e-runtime-store--client-queue runtime))))
+
 (ert-deftest e-runtime-store-recovery-graphical-s92-startup-prewarm-is-transport-only ()
   "Graphical startup survives held open and reports an unupgraded v5 store."
   (let* ((directory (getenv "E_RUNTIME_STATE_DIRECTORY"))
@@ -174,9 +429,9 @@ close wrapper to submit another request to a non-unavailable store."
     (setq transport e-default--runtime-store)
     (unwind-protect
         (progn
-          ;; The runner created the nonempty v5 fixture, v6 worker copy, open
-          ;; hold, and report channel before the daemon loaded `e'.  The report
-          ;; is written by the real default prewarm, not by this ERT body.
+          ;; The runner created the honest nonempty v5 fixture, open hold, and
+          ;; report channel before the daemon loaded `e'.  The report is
+          ;; written by the real default prewarm, not by this ERT body.
           (let ((report
                  (e-runtime-store-recovery-graphical--read-startup-report
                   report-file)))
@@ -316,15 +571,9 @@ close wrapper to submit another request to a non-unavailable store."
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-org-canvas-turn-survives-delayed-persistence ()
   "A new public Org Canvas Daily stays usable while SQLite admission waits."
-  ;; The graphical runner loads `e' during interactive daemon startup.  Prove
-  ;; that this public process has already begun opening its default transport
-  ;; before any Daily/harness lookup in the scenario below.
-  (should (e-runtime-sqlite-p e-default--runtime))
-  (should-not (e-runtime-sqlite--closed e-default--runtime))
-  (should (memq
-           (plist-get
-            (e-runtime-sqlite-status e-default--runtime) :startup)
-           '(opening ready)))
+  ;; Startup transport prewarming has its own pre-init fixture and selector.
+  ;; This scenario owns a disposable runtime so its delay/failure controls can
+  ;; never touch the process default or a user's canonical database.
   (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-runtime-store-org-canvas-" t))
          (canvas-directory (make-temp-file "e-org-canvas-daily-" t))
@@ -338,7 +587,9 @@ close wrapper to submit another request to a non-unavailable store."
          first-response second-response
          (heartbeat 0)
          (e-org-canvas-input-auto-close-delay nil)
-         synchronous-operation service-events service-subscription)
+         synchronous-operation synchronous-backtrace synchronous-read-backtrace
+         original-session-get original-ensure-loaded
+         service-events service-subscription)
     (unwind-protect
         (progn
           ;; Server-hosted graphical ERT runs inside an Emacs process filter;
@@ -358,13 +609,34 @@ close wrapper to submit another request to a non-unavailable store."
                 (find-file-noselect
                  (expand-file-name "2026-09-05.org" canvas-directory)))
           (e-session-enable sessions)
-          ;; Match the public default harness's Org Canvas layer.  The injected
-          ;; stream replaces only the network backend; context still comes from
-          ;; the real gated capability used by production Daily.
-          (e-harness-set-intrinsic-capabilities
-           harness
-           (append (e-harness-intrinsic-capabilities harness)
-                   (e-layer-capabilities (e-org-canvas-layer-create))))
+          ;; Match the complete public default harness capability graph.  A
+          ;; lone Org Canvas capability misses chat-session and the configured
+          ;; layer hooks that execute in the user's real turn lifecycle.
+          ;; Only the network adapter is replaced by the controllable stream.
+          (e-default-chat-sync-harness-layers
+           harness nil canvas-directory)
+          (setq original-session-get (symbol-function 'e-session-get))
+          (setq original-ensure-loaded
+                (symbol-function 'e-session--ensure-loaded))
+          (fset 'e-session--ensure-loaded
+                (lambda (&rest arguments)
+                  (when (< (length synchronous-read-backtrace) 12)
+                    (push (let ((print-level 4) (print-length 50))
+                            (format "ensure-loaded: %S\narguments=%S"
+                                    (seq-take (backtrace-frames) 24)
+                                    arguments))
+                          synchronous-read-backtrace))
+                  (error "Forbidden interactive e-session--ensure-loaded %S"
+                         arguments)))
+          (fset 'e-session-get
+                (lambda (&rest arguments)
+                  (when (< (length synchronous-read-backtrace) 12)
+                    (push (let ((print-level 4) (print-length 50))
+                            (format "%S\narguments=%S"
+                                    (seq-take (backtrace-frames) 24)
+                                    arguments))
+                          synchronous-read-backtrace))
+                  (error "Forbidden interactive e-session-get %S" arguments)))
           (with-current-buffer target
             (org-mode)
             (insert "* Daily\n"
@@ -389,7 +661,15 @@ close wrapper to submit another request to a non-unavailable store."
                              (lambda (_store request &optional _timeout)
                                (setq synchronous-operation
                                      (e-runtime-store-request--operation
-                                      request))
+                                     request)
+                                     synchronous-backtrace
+                                     (let ((print-level 3)
+                                           (print-length 30))
+                                       (format "%S"
+                                               (seq-take
+                                                (seq-drop
+                                                 (backtrace-frames) 6)
+                                                18))))
                                (error "Org Canvas open awaited %S"
                                       synchronous-operation))))
                     (with-current-buffer target
@@ -413,7 +693,7 @@ close wrapper to submit another request to a non-unavailable store."
           (setq service-subscription
                 (e-chat-service-subscribe
                  harness session-id
-                 (lambda (event) (push (plist-get event :type) service-events))))
+                 (lambda (event) (push (copy-tree event t) service-events))))
           (e-graphical-test-wait-until
            (lambda ()
              (e-runtime-store-recovery-graphical--pump-runtime runtime)
@@ -438,8 +718,9 @@ close wrapper to submit another request to a non-unavailable store."
              (e-chat-service-binding-board
               (e-chat-service-binding harness session-id)))))
           (when synchronous-operation
-            (ert-fail (format "Org Canvas interactive path awaited %S"
-                              synchronous-operation)))
+            (ert-fail
+             (format "Org Canvas interactive path awaited %S\n%s"
+                     synchronous-operation synchronous-backtrace)))
           (e-runtime-store-recovery-graphical--release-stall
            stall-directory 'board-create)
           (e-graphical-test-wait-until
@@ -452,11 +733,13 @@ close wrapper to submit another request to a non-unavailable store."
                   :state)
                  'finished))
            3.0 "Org Canvas session readiness")
-          ;; Hold ordinary transcript persistence only after composite
-          ;; readiness.  Both provider turns must consume the installed
-          ;; projection while their physical writes remain blocked.
+          ;; Hold the public Board record so its same-Board classification timer
+          ;; must enqueue routing behind a live SQLite request without freezing
+          ;; the Board.  Transcript delay is armed after the provider starts,
+          ;; matching the real causal order: the input transcript settles before
+          ;; Board publication, while the response and next turn may overlap.
           (e-runtime-store-recovery-graphical--arm-stall
-           stall-directory 'session-append)
+           stall-directory 'board-record-put)
           (with-current-buffer input
             (cl-letf (((symbol-function 'e-runtime-store-await)
                        (lambda (_store request &optional _timeout)
@@ -470,16 +753,52 @@ close wrapper to submit another request to a non-unavailable store."
           (e-graphical-test-wait-until
            (lambda ()
              (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--stall-ready-p
+              stall-directory 'board-record-put))
+           3.0 "held public Board record")
+          (e-graphical-test-wait-until
+           (lambda ()
              (e-runtime-store-recovery-graphical--runtime-operation-p
               runtime 'board-routing-put))
-           1.0 "same-Board classification timer admission")
-          (e-graphical-test-wait-until
-           (lambda () (e-graphical-test-stream-active-p stream))
-           1.0 "Org Canvas provider request after release")
+           3.0 "same-Board classification queued behind held Board record")
+          (should-not
+           (e-board-mutation-frozen-p
+            (e-board-registry-board-source-board
+             (e-chat-service-binding-board
+              (e-chat-service-binding harness session-id)))))
+          (e-runtime-store-recovery-graphical--release-stall
+           stall-directory 'board-record-put)
+          (let ((deadline (+ (float-time) 1.0)))
+            (while (and (< (float-time) deadline)
+                        (not (e-graphical-test-stream-active-p stream)))
+              (sit-for 0.01))
+            (unless (e-graphical-test-stream-active-p stream)
+              (let* ((entry (gethash session-id
+                                     (e-harness-active-turns harness)))
+                     (context-work (plist-get entry :context-work)))
+                (ert-fail
+                 (format
+                  (concat
+                   "Org Canvas provider did not start: turn=%S context=%S "
+                   "events=%S runtime=%S\nforbidden-session-get=%s")
+                  (list :status (plist-get entry :status)
+                        :condition (plist-get entry :condition)
+                        :error (plist-get entry :error)
+                        :has-context (and (plist-get entry :context) t))
+                  (and context-work (e-work-status context-work))
+                  service-events (e-runtime-store-status runtime)
+                  synchronous-read-backtrace)))))
           (let* ((requests (e-graphical-test-stream-requests stream))
                  (wire (prin1-to-string
                         (plist-get (car requests) :messages))))
             (should (= (length requests) 1))
+            (when (equal wire "nil")
+              (let ((entry (gethash session-id
+                                    (e-harness-active-turns harness))))
+                (ert-fail
+                 (format "Empty provider request: request=%S context=%S query-state=%S"
+                         (car requests) (plist-get entry :context)
+                         (plist-get entry :session-query-state)))))
             (should (string-match-p "Org Canvas mode is active" wire))
             (should (string-match-p "document-uri=.*2026-09-05.org" wire))
             (should
@@ -492,6 +811,8 @@ close wrapper to submit another request to a non-unavailable store."
                   (format "Confirmed: project %s uses alert %s."
                           (match-string 1 wire)
                           (match-string 2 wire))))
+          (e-runtime-store-recovery-graphical--arm-stall
+           stall-directory 'session-append)
           (cl-letf (((symbol-function 'e-runtime-store-await)
                      (lambda (_store request &optional _timeout)
                        (unless synchronous-operation
@@ -517,7 +838,10 @@ close wrapper to submit another request to a non-unavailable store."
                               synchronous-operation)))
           (should-not (e-graphical-test-stream-failure stream))
           (with-current-buffer input
-            (should-not (string-match-p "Turn failed" (buffer-string))))
+            (when (string-match-p "Turn failed" (buffer-string))
+              (ert-fail
+               (format "Turn failed after synchronous session read: %s\n%s"
+                       (buffer-string) synchronous-read-backtrace))))
           (e-graphical-test-wait-until
            (lambda ()
              (with-current-buffer input
@@ -543,9 +867,15 @@ close wrapper to submit another request to a non-unavailable store."
           (should (eq (window-buffer (selected-window)) input))
           (with-current-buffer input
             (goto-char (point-max))
-            (e-graphical-test-type-text
-             (concat "Using the alert from our previous turn, which project "
-                     "needs a human review?"))
+            ;; Keyboard entry was already exercised above while the worker was
+            ;; held.  Populate this second one-shot composer directly: nested
+            ;; `execute-kbd-macro' calls after asynchronous provider callbacks
+            ;; can enter Emacs's recursive keyboard reader when graphical ERT
+            ;; itself is running inside a server process filter.  Direct input
+            ;; here keeps this assertion about optimistic context, not the test
+            ;; runner's recursive command-loop behavior.
+            (insert (concat "Using the alert from our previous turn, which project "
+                            "needs a human review?"))
             (cl-letf (((symbol-function 'e-runtime-store-await)
                        (lambda (_store request &optional _timeout)
                          (setq synchronous-operation
@@ -600,17 +930,22 @@ close wrapper to submit another request to a non-unavailable store."
           (should (= (e-runtime-store-recovery-graphical--count-string
                       second-response backing-chat)
                      1))
-          (should
-           (cl-find-if
-            (lambda (event)
-              (eq (plist-get event :event-type) 'reasoning-delta))
-            (e-session-activity-events sessions session-id)))
-          (should
-           (cl-find-if
-            (lambda (message)
-              (equal (plist-get message :content)
-                     second-response))
-            (e-session-messages sessions session-id)))
+          ;; This is an explicit test observation boundary.  Read only the
+          ;; consumer-shaped visible window from v6; never reconstruct the
+          ;; retired session aggregate merely to prove durable publication.
+          (let ((visible
+                 (cl-letf
+                     (((symbol-function 'e-runtime-store-await)
+                       #'e-runtime-store-recovery-graphical--await-with-pump))
+                   (e-runtime-store-call
+                    runtime 'read
+                    (list :op 'session-visible-message-page
+                          :session-id session-id :limit 16)))))
+            (should
+             (cl-find-if
+              (lambda (message)
+                (equal (plist-get message :content) second-response))
+              (plist-get visible :messages))))
 
           ;; Fail a second real Org Canvas Daily during its session admission.
           ;; Only that session/Board owner becomes suspect; the first Daily and
@@ -766,21 +1101,34 @@ close wrapper to submit another request to a non-unavailable store."
                 (cl-letf
                     (((symbol-function 'e-runtime-store-await)
                       #'e-runtime-store-recovery-graphical--await-with-pump))
-                  (e-session-sqlite-store-create directory :load-all t)))
-          (should (equal (plist-get (e-session-get reader unrelated-id) :id)
-                         unrelated-id))
-          (should
-           (plist-get
-            (plist-get (e-session-get reader unrelated-id) :metadata)
-            :org-canvas-ref)))
+                  (e-session-sqlite-store-create directory)))
+          (let ((query-state
+                 (cl-letf
+                     (((symbol-function 'e-runtime-store-await)
+                       #'e-runtime-store-recovery-graphical--await-with-pump))
+                   (e-runtime-store-call
+                    (e-session-storage-runtime-store reader) 'read
+                    (list :op 'session-query-state
+                          :session-id unrelated-id)))))
+            (should (equal (plist-get query-state :session-id) unrelated-id))
+            (should
+             (plist-get (plist-get query-state :metadata) :org-canvas-ref))))
       (when (timerp heartbeat-timer) (cancel-timer heartbeat-timer))
       (when (e-graphical-test-stream-p stream)
         (e-graphical-test-stream-cancel stream))
       (when service-subscription
         (e-chat-service-unsubscribe service-subscription))
+      (when original-session-get
+        (fset 'e-session-get original-session-get))
+      (when original-ensure-loaded
+        (fset 'e-session--ensure-loaded original-ensure-loaded))
       (ignore-errors
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'board-create)
+        (e-runtime-store-recovery-graphical--release-stall
+         stall-directory 'board-record-put)
+        (e-runtime-store-recovery-graphical--release-stall
+         stall-directory 'board-routing-put)
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'session-append)
         (e-runtime-store-recovery-graphical--release-stall
@@ -799,10 +1147,10 @@ close wrapper to submit another request to a non-unavailable store."
       (delete-directory canvas-directory t)
       (delete-directory stall-directory t))))
 
-(ert-deftest e-runtime-store-recovery-graphical-s92-daily-open-does-not-wait-for-worker ()
-  "Public Daily open returns a usable pending surface before SQLite replies."
+(ert-deftest e-runtime-store-recovery-graphical-s92-public-new-chat-survives-delayed-worker ()
+  "Public new-chat UI remains usable and ordered while SQLite is delayed."
   (e-board-e2e-reset-runtime)
-  (let* ((directory (make-temp-file "e-runtime-store-daily-" t))
+  (let* ((directory (make-temp-file "e-runtime-store-new-chat-" t))
          (stall-directory (make-temp-file "e-runtime-store-stall-" t))
          (process-environment
           (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" stall-directory)
@@ -812,7 +1160,16 @@ close wrapper to submit another request to a non-unavailable store."
          synchronous-operation)
     (unwind-protect
         (ert-info ((format "DP6B phase: %s" phase))
-          (progn
+          (let (synchronous-session-get)
+            (cl-letf (((symbol-function 'e-session-get)
+                       (lambda (&rest arguments)
+                         (setq synchronous-session-get
+                               (let ((print-level 4) (print-length 40))
+                                 (list arguments
+                                       (seq-take (backtrace-frames) 24))))
+                         (error "Public new-chat path called e-session-get %S"
+                                arguments))))
+              (progn
           (setq phase 'create-runtime)
           ;; Match the production default harness, which enables the session
           ;; application adapter before any public chat work is admitted.
@@ -827,7 +1184,7 @@ close wrapper to submit another request to a non-unavailable store."
                          :backend (e-graphical-test-stream-backend stream)
                          :sessions sessions))
           (e-runtime-store-recovery-graphical--prepare-frame)
-          (setq phase 'open-daily)
+          (setq phase 'open-new-chat)
           (e-runtime-store-recovery-graphical--arm-stall
            stall-directory 'board-create)
           (let ((started (float-time)))
@@ -837,10 +1194,16 @@ close wrapper to submit another request to a non-unavailable store."
                   (cl-letf (((symbol-function 'e-runtime-store-await)
                              (lambda (&rest arguments)
                                (signal 'error
-                                       (list "Daily path called synchronous runtime await"
-                                             arguments)))))
-                    (e-chat-open :harness harness :new-session t)))
-            (setq phase 'daily-opened)
+                                       (list "New-chat path called synchronous runtime await"
+                                             arguments))))
+                            ((symbol-function 'e-chat--select-chat-instance)
+                             (lambda (&optional _prompt) nil))
+                            ((symbol-function 'e-chat--default-harness)
+                             (lambda () harness)))
+                    ;; Exercise the user-facing command, including new-session
+                    ;; creation and the composer surface it returns.
+                    (e-chat-new)))
+            (setq phase 'new-chat-opened)
             (should (< (- (float-time) started) 0.1))
             (should (buffer-live-p transcript))
             (should (string-match-p
@@ -853,12 +1216,25 @@ close wrapper to submit another request to a non-unavailable store."
             (e-graphical-test-wait-until
              (lambda ()
                (e-runtime-store-recovery-graphical--surface-windows transcript))
-             1.0 "Daily transcript and composer windows")
-            (e-graphical-test-wait-until
-             (lambda ()
-               (e-runtime-store-recovery-graphical--stall-ready-p
-                stall-directory 'board-create))
-             2.0 "Daily persistence admission")
+             1.0 "new-chat transcript and composer windows")
+            (condition-case _wait-error
+                (e-graphical-test-wait-until
+                 (lambda ()
+                   (e-runtime-store-recovery-graphical--pump-runtime runtime)
+                   (e-runtime-store-recovery-graphical--stall-ready-p
+                    stall-directory 'board-create))
+                 5.0 "new-chat persistence admission")
+              (ert-test-failed
+               (ert-fail
+                (format
+                 (concat "Timed out waiting for new-chat persistence admission: "
+                         "synchronous=%S runtime=%S status=%S readiness=%S")
+                 synchronous-session-get
+                 (e-runtime-store-recovery-graphical--runtime-operations runtime)
+                 (e-chat-surface-status transcript)
+                 (e-work-status
+                  (buffer-local-value 'e-chat--session-readiness-work
+                                      transcript))))))
             (let* ((session-id
                     (buffer-local-value 'e-chat-session-id transcript))
                    (binding (e-chat-service-binding harness session-id))
@@ -866,7 +1242,7 @@ close wrapper to submit another request to a non-unavailable store."
                            (e-chat-service-binding-board binding)))
                    (composer (e-chat-surface-composer-buffer transcript))
                    (draft "draft survives persistence stall")
-                   (message "Daily classification marker")
+                   (message "public composer submit survives persistence stall")
                    message-id)
               (should (buffer-live-p composer))
               (let ((surface-windows
@@ -876,6 +1252,18 @@ close wrapper to submit another request to a non-unavailable store."
                 (should (eq (window-buffer (car surface-windows)) transcript))
                 (should (eq (window-buffer (cdr surface-windows)) composer))
                 (select-window (cdr surface-windows))
+                ;; Exercise the actual interactive composer path.  Calling
+                ;; `e-chat-submit-session' directly does not run submit-intent
+                ;; selection and therefore cannot detect a stale synchronous
+                ;; session-aggregate lookup in the public command.
+                (e-graphical-test-type-text message)
+                (call-interactively #'e-chat-submit)
+                (setq message-id
+                      (e-board-message-id
+                       (or (cl-find message (e-board-messages board)
+                                    :key #'e-board-message-content
+                                    :test #'equal)
+                           (ert-fail "Public composer did not post to Board"))))
                 (e-graphical-test-type-text draft))
               (should
                (e-runtime-store-recovery-graphical--runtime-operation-p
@@ -889,13 +1277,8 @@ close wrapper to submit another request to a non-unavailable store."
                            (setq synchronous-operation
                                  (e-runtime-store--request-operation request))
                            (signal 'error
-                                   (list "Daily timer called synchronous await"
+                                   (list "New-chat timer called synchronous await"
                                          synchronous-operation)))))
-                (setq message-id
-                      (with-timeout
-                          (1.0
-                           (error "Public e-chat-submit-session blocked behind worker"))
-                        (e-chat-submit-session harness session-id message)))
                 (setq phase 'classification-wait)
                 (condition-case _wait-error
                     (e-graphical-test-wait-until
@@ -920,7 +1303,7 @@ close wrapper to submit another request to a non-unavailable store."
                       (e-board-storage board))
                      synchronous-operation)))))
               (when synchronous-operation
-                (ert-fail (format "Daily timer awaited %S"
+                (ert-fail (format "New-chat timer awaited %S"
                                   synchronous-operation)))
               (setq phase 'classification-enqueued)
               (e-graphical-test-wait-until (lambda () (> heartbeat 3))
@@ -935,11 +1318,11 @@ close wrapper to submit another request to a non-unavailable store."
                            (setq synchronous-operation
                                  (e-runtime-store--request-operation request))
                            (signal 'error
-                                   (list "Daily release called synchronous await"
+                                   (list "New-chat release called synchronous await"
                                          synchronous-operation)))))
                 (e-runtime-store-recovery-graphical--release-stall
                  stall-directory 'board-create)
-                (setq phase 'daily-released)
+                (setq phase 'new-chat-released)
                 (e-graphical-test-wait-until
                  (lambda ()
                    (e-runtime-store-recovery-graphical--pump-runtime runtime)
@@ -949,21 +1332,63 @@ close wrapper to submit another request to a non-unavailable store."
                                              transcript))
                         :state)
                        'finished))
-                 2.0 "Daily session readiness"))
+                 2.0 "new-chat session readiness"))
               (when synchronous-operation
-                (ert-fail (format "Daily release awaited %S"
+                (ert-fail (format "New-chat release awaited %S"
                                   synchronous-operation)))
-              (setq phase 'daily-ready)
+              (setq phase 'new-chat-ready)
+              (e-graphical-test-wait-until
+               (lambda ()
+                 (e-runtime-store-recovery-graphical--pump-runtime runtime)
+                 (null (buffer-local-value 'e-chat--session-query-work
+                                           transcript)))
+               2.0 "new-chat detached session view")
+              (with-current-buffer transcript
+                (should-not (string-match-p "Unable to load recent messages"
+                                            (buffer-string)))
+                (should-not (string-match-p "Loading recent messages"
+                                            (buffer-string))))
               (should (eq (e-board-message-routing-state
                            (e-board-message board message-id))
                           'routed))
-              (e-graphical-test-wait-until
-               (lambda ()
-                 (= (e-runtime-store-recovery-graphical--count-string
-                     message transcript)
-                    1))
-               1.0 "classified message render")
+              (condition-case _render-timeout
+                  (e-graphical-test-wait-until
+                   (lambda ()
+                     (e-runtime-store-recovery-graphical--pump-runtime runtime)
+                     (= (e-runtime-store-recovery-graphical--count-string
+                         message transcript)
+                        1))
+                   3.0 "classified message render")
+                (ert-test-failed
+                 (ert-fail
+                  (let ((durable
+                         (cl-letf
+                             (((symbol-function 'e-runtime-store-await)
+                               #'e-runtime-store-recovery-graphical--await-with-pump))
+                           (list
+                            :state
+                            (e-runtime-store-call
+                             runtime 'read
+                             (list :op 'session-query-state
+                                   :session-id session-id))
+                            :records
+                            (e-runtime-store-call
+                             runtime 'read
+                             (list :op 'session-record-page
+                                   :session-id session-id :after 0
+                                   :limit 8))))))
+                    (format
+                     (concat "Timed out waiting for classified message render: "
+                             "transcript=%S suspect=%S runtime=%S "
+                             "synchronous=%S durable=%S")
+                     (with-current-buffer transcript (buffer-string))
+                     (e-session-persistence-suspect sessions session-id)
+                     (e-runtime-store-recovery-graphical--runtime-operations
+                      runtime)
+                     synchronous-session-get
+                     durable)))))
               (setq phase 'message-rendered)
+              (should-not synchronous-session-get)
               (should (= (e-runtime-store-recovery-graphical--count-string
                           message transcript)
                          1))
@@ -976,7 +1401,7 @@ close wrapper to submit another request to a non-unavailable store."
             ;; Exercise the owner-local failure branch on a fresh public chat.
             ;; Hold the session mutation after its Board root and participant
             ;; have committed, then kill only the isolated worker process.
-            (let ((failure-id "daily-failure-owner"))
+            (let ((failure-id "new-chat-failure-owner"))
               (setq phase 'failure-open)
               (e-runtime-store-recovery-graphical--arm-stall
                stall-directory 'session-append-batch)
@@ -988,7 +1413,7 @@ close wrapper to submit another request to a non-unavailable store."
                  (e-runtime-store-recovery-graphical--pump-runtime runtime)
                  (e-runtime-store-recovery-graphical--stall-ready-p
                   stall-directory 'session-append-batch))
-               2.0 "Daily failure session mutation")
+               2.0 "new-chat failure session mutation")
               (setq phase 'failure-stalled)
               (let ((failed-process (e-runtime-store--process runtime)))
                 (delete-process failed-process)
@@ -1005,7 +1430,7 @@ close wrapper to submit another request to a non-unavailable store."
                           (process-live-p replacement)
                           (e-runtime-store-recovery-graphical--runtime-operation-p
                            runtime 'session-append-batch))))
-                 2.0 "Daily same-ID recovery attempt")
+                 2.0 "new-chat same-ID recovery attempt")
                 (delete-process (e-runtime-store--process runtime)))
               (setq phase 'failure-worker-killed)
               (e-graphical-test-wait-until
@@ -1014,7 +1439,7 @@ close wrapper to submit another request to a non-unavailable store."
                  (string-match-p
                   (regexp-quote failure-id)
                   (or (e-chat-surface-status failure-transcript) "")))
-               2.0 "Daily owner suspect warning")
+               2.0 "new-chat owner suspect warning")
               (setq phase 'failure-suspect-visible)
               (let ((warning (e-chat-surface-status failure-transcript)))
                 (should (string-match-p "suspect" warning))
@@ -1025,7 +1450,7 @@ close wrapper to submit another request to a non-unavailable store."
                stall-directory 'session-append-batch)
               (setq unrelated-transcript
                     (e-chat-open :harness harness
-                                 :session-id "daily-unrelated-owner"
+                                 :session-id "new-chat-unrelated-owner"
                                  :new-session t))
               (setq phase 'unrelated-opened)
               (e-graphical-test-wait-until
@@ -1057,14 +1482,20 @@ close wrapper to submit another request to a non-unavailable store."
                     (cl-letf
                         (((symbol-function 'e-runtime-store-await)
                           #'e-runtime-store-recovery-graphical--await-with-pump))
-                      (e-session-sqlite-store-create
-                       directory :load-all t)))
-              (should
-               (equal (plist-get (e-session-get reader
-                                                "daily-unrelated-owner")
-                                 :id)
-                      "daily-unrelated-owner")))
-            (setq phase 'readback-complete))))
+                      (e-session-sqlite-store-create directory)))
+              (let ((query-state
+                     (cl-letf
+                         (((symbol-function 'e-runtime-store-await)
+                           #'e-runtime-store-recovery-graphical--await-with-pump))
+                       (e-runtime-store-call
+                        (e-session-storage-runtime-store reader) 'read
+                        (list :op 'session-query-state
+                              :session-id "new-chat-unrelated-owner")))))
+                (should
+                 (equal (plist-get query-state :session-id)
+                        "new-chat-unrelated-owner"))))
+            (setq phase 'readback-complete)
+            (should-not synchronous-session-get))))))
       (when (buffer-live-p transcript) (kill-buffer transcript))
       (when (buffer-live-p failure-transcript) (kill-buffer failure-transcript))
       (when (buffer-live-p unrelated-transcript) (kill-buffer unrelated-transcript))
@@ -1089,6 +1520,318 @@ close wrapper to submit another request to a non-unavailable store."
         (ignore-errors (e-runtime-store--finalize-close runtime)))
       (delete-directory directory t)
       (delete-directory stall-directory t))))
+
+(ert-deftest e-runtime-store-recovery-graphical-s92-public-v5-upgrade-opens-chat ()
+  "A real v5 refusal, offline upgrade, and fresh public chat work end to end."
+  (e-board-e2e-reset-runtime)
+  (let* ((directory (make-temp-file "e-runtime-store-v5-public-" t))
+         (backup (expand-file-name "operator/pre-v5.sqlite3" directory))
+         old-runtime sessions runtime stream harness transcript)
+    (unwind-protect
+        (progn
+          (e-runtime-store-recovery-graphical--make-upgrade-v5-fixture directory)
+          ;; Reproduce the user's first post-restart boundary.  A schema
+          ;; refusal is global readiness state, never owner-local damage.
+          (setq old-runtime (e-runtime-store-open directory))
+          (let ((open-request
+                 (e-runtime-store--open-control-request old-runtime)))
+            (should open-request)
+            (should-error
+             (e-runtime-store-recovery-graphical--await-with-pump
+              old-runtime open-request)
+             :type 'e-runtime-store-schema-too-old))
+          (should (e-runtime-store--unavailable old-runtime))
+          (should-not (e-runtime-store--suspect-owners old-runtime))
+          (e-runtime-store-recovery-graphical--finalize-private-transport
+           old-runtime)
+          (setq old-runtime nil)
+
+          ;; This is the named blocking operator/test boundary.  It launches
+          ;; the same private batch worker as scripts/e-runtime-upgrade.
+          (let ((result
+                 (e-runtime-store-offline-upgrade directory backup)))
+            (should (= (plist-get result :from) 5))
+            (should (= (plist-get result :to) 6))
+            (should (equal (plist-get result :integrity) "ok")))
+
+          ;; A fresh runtime after the upgrade is the restart boundary the old
+          ;; split tests failed to cover.
+          (setq sessions
+                (cl-letf (((symbol-function 'e-runtime-store-await)
+                           #'e-runtime-store-recovery-graphical--await-with-pump))
+                  (e-session-sqlite-store-create directory)))
+          (e-session-enable sessions)
+          (setq runtime (e-session-storage-runtime-store sessions)
+                stream (e-graphical-test-stream-create)
+                harness (e-harness-create
+                         :backend (e-graphical-test-stream-backend stream)
+                         :sessions sessions))
+          (e-runtime-store-recovery-graphical--prepare-frame)
+          (let (synchronous-session-get)
+            (cl-letf (((symbol-function 'e-session-get)
+                       (lambda (&rest arguments)
+                         (setq synchronous-session-get arguments)
+                         (error "Upgraded public chat called e-session-get")))
+                      ((symbol-function 'e-runtime-store-await)
+                       (lambda (&rest arguments)
+                         (error "Upgraded public chat awaited SQLite %S"
+                                arguments)))
+                      ((symbol-function 'e-chat--select-chat-instance)
+                       (lambda (&optional _prompt) nil))
+                      ((symbol-function 'e-chat--default-harness)
+                       (lambda () harness)))
+              (let ((started (float-time)))
+                (setq transcript (e-chat-new))
+                (should (< (- (float-time) started) 0.1)))
+              (should (buffer-live-p transcript))
+              (e-chat-surface-pop-to-buffer transcript)
+              (e-graphical-test-wait-until
+               (lambda ()
+                 (e-runtime-store-recovery-graphical--pump-runtime runtime)
+                 (and
+                  (e-runtime-store-recovery-graphical--surface-windows
+                   transcript)
+                  (null (buffer-local-value 'e-chat--session-query-work
+                                            transcript))
+                  (let ((work
+                         (buffer-local-value 'e-chat--session-readiness-work
+                                             transcript)))
+                    (and work
+                         (eq (plist-get (e-work-status work) :state)
+                             'finished)))))
+               3.0 "public chat after v5 upgrade")
+              (should-not synchronous-session-get)))
+          (with-current-buffer transcript
+            (should-not (string-match-p "Unable to load recent messages"
+                                        (buffer-string)))
+            (should-not (string-match-p "upgrade required"
+                                        (or (e-chat-surface-status transcript)
+                                            ""))))
+          (let ((composer (e-chat-surface-composer-buffer transcript)))
+            (should (buffer-live-p composer))
+            (with-current-buffer composer
+              (insert "composer works after upgrade")
+              (should (string-match-p "composer works after upgrade"
+                                      (buffer-string)))))
+          (e-graphical-test-capture-state "public-v5-upgrade-chat-ready")
+          (cl-letf (((symbol-function 'e-runtime-store-await)
+                     #'e-runtime-store-recovery-graphical--await-with-pump))
+            (let* ((existing
+                    (e-runtime-store-call
+                     runtime 'read
+                     '(:op session-query-state
+                       :session-id "graphical-v5-existing")))
+                   (rootless
+                    (e-runtime-store-call
+                     runtime 'read
+                     '(:op session-query-state
+                       :session-id "graphical-v5-rootless"))))
+              (should (equal (plist-get existing :name) "After replacement"))
+              (should (= (plist-get existing :journal-position) 4))
+              (should-not rootless))))
+      (when (buffer-live-p transcript) (kill-buffer transcript))
+      (when (e-graphical-test-stream-p stream)
+        (e-graphical-test-stream-cancel stream))
+      (when old-runtime
+        (ignore-errors
+          (e-runtime-store-recovery-graphical--finalize-private-transport
+           old-runtime)))
+      (when runtime
+        (ignore-errors (e-runtime-store--finalize-close runtime)))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-recovery-graphical-s92-daily-query-window-is-bounded ()
+  "Existing Daily opens before held v6 reads and renders one visible window."
+  (e-board-e2e-reset-runtime)
+  (let* ((directory (make-temp-file "e-runtime-store-daily-query-" t))
+         (stall-directory (make-temp-file "e-runtime-store-daily-query-stall-" t))
+         (process-environment
+          (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" stall-directory)
+                process-environment))
+         sessions runtime stream harness transcript heartbeat-timers
+         (heartbeat 0) submitted-bodies unrelated-count)
+    (unwind-protect
+        (progn
+          (setq unrelated-count
+                (e-runtime-store-recovery-graphical--make-daily-v6-fixture
+                 directory))
+          (dolist (operation
+                   '(session-metadata session-board-association
+                     session-visible-message-page))
+            (e-runtime-store-recovery-graphical--arm-stall
+             stall-directory operation))
+          (setq runtime (e-runtime-store-open directory))
+          ;; The bounded status observation settles the transport open before
+          ;; the session adapter starts its three held query reads.
+          (e-runtime-store-call runtime 'read '(:op status))
+          (setq sessions
+                (e-session-sqlite-store-create
+                 directory :runtime-store runtime))
+          (e-session-enable sessions)
+          (setq stream (e-graphical-test-stream-create)
+                harness (e-harness-create
+                         :backend (e-graphical-test-stream-backend stream)
+                         :sessions sessions))
+          (e-runtime-store-recovery-graphical--prepare-frame)
+          (setq heartbeat-timers
+                (list
+                 (run-at-time 0.01 nil (lambda () (cl-incf heartbeat)))
+                 (run-at-time 0.02 nil (lambda () (cl-incf heartbeat)))
+                 (run-at-time 0.03 nil (lambda () (cl-incf heartbeat)))))
+          (cl-letf (((symbol-function 'e-session-storage-submit)
+                     (let ((submit (symbol-function 'e-session-storage-submit)))
+                       (lambda (store kind body on-settle &optional escrow)
+                         (push (list kind body) submitted-bodies)
+                         (funcall submit store kind body on-settle escrow)))))
+            ;; All three worker responses are held before this call.  The
+            ;; returned buffer and composer therefore prove that attach did
+            ;; not synchronously load a catalog, header, or aggregate.
+            (setq transcript
+                  (e-chat-open :harness harness :session-id "daily-known"))
+            (should (buffer-live-p transcript))
+            (with-current-buffer transcript
+              (should (e-work-handle-p e-chat--session-query-work))
+              (should (= (hash-table-count (e-session-store-sessions sessions)) 0))
+              (should (string-match-p "Loading recent messages"
+                                      (buffer-string))))
+            (e-chat-surface-pop-to-buffer transcript)
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-runtime-store-recovery-graphical--surface-windows transcript))
+             1.0 "persistent Daily query surface")
+            (let ((surface-windows
+                   (e-runtime-store-recovery-graphical--surface-windows transcript)))
+              (should surface-windows)
+              (select-window (cdr surface-windows))
+              (e-graphical-test-type-text "draft while Daily reads wait")
+              (with-current-buffer (window-buffer (cdr surface-windows))
+                (should (string-match-p "draft while Daily reads wait"
+                                        (buffer-string)))))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-runtime-store-recovery-graphical--pump-runtime runtime)
+               (e-runtime-store-recovery-graphical--stall-ready-p
+                stall-directory 'session-metadata))
+             2.0
+             (format "held metadata read (query=%S submitted=%S runtime=%S)"
+                     (with-current-buffer transcript
+                       (e-work-status e-chat--session-query-work))
+                     (reverse submitted-bodies)
+                     (e-runtime-store-recovery-graphical--runtime-operations
+                      runtime)))
+            (should (= unrelated-count 1277))
+            (should
+             (equal
+              (e-runtime-store-recovery-graphical--runtime-operations runtime)
+              '(session-metadata session-board-association
+                session-visible-message-page)))
+            (should
+             (equal
+              (mapcar (lambda (entry) (plist-get (cadr entry) :op))
+                      (reverse submitted-bodies))
+              '(session-metadata session-board-association
+                session-visible-message-page)))
+            (should (= (hash-table-count (e-session-store-sessions sessions)) 0))
+            (e-graphical-test-wait-until
+             (lambda () (>= heartbeat 3))
+             1.0 "independent Daily heartbeats")
+            (should
+             (equal
+              (e-runtime-store-recovery-graphical--runtime-operations runtime)
+              '(session-metadata session-board-association
+                session-visible-message-page)))
+            (e-runtime-store-recovery-graphical--release-stall
+             stall-directory 'session-metadata)
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-runtime-store-recovery-graphical--pump-runtime runtime)
+               (e-runtime-store-recovery-graphical--stall-ready-p
+                stall-directory 'session-board-association))
+             2.0 "held Board association read")
+            (e-runtime-store-recovery-graphical--release-stall
+             stall-directory 'session-board-association)
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-runtime-store-recovery-graphical--pump-runtime runtime)
+               (e-runtime-store-recovery-graphical--stall-ready-p
+                stall-directory 'session-visible-message-page))
+             2.0 "held visible message read")
+            (e-runtime-store-recovery-graphical--release-stall
+             stall-directory 'session-visible-message-page)
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-runtime-store-recovery-graphical--pump-runtime runtime)
+               (and (buffer-live-p transcript)
+                    (with-current-buffer transcript
+                      (null e-chat--session-query-work))))
+             3.0 "Daily query composition")
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-runtime-store-recovery-graphical--pump-runtime runtime)
+               (and (buffer-live-p transcript)
+                    (with-current-buffer transcript
+                      (let ((state
+                             (plist-get
+                              (e-work-status e-chat--session-readiness-work)
+                              :state)))
+                        (memq state '(finished failed cancelled))))))
+             3.0 "bounded Board controller query")
+            (with-current-buffer transcript
+              (let ((status (e-work-status e-chat--session-readiness-work)))
+                (unless (eq (plist-get status :state) 'finished)
+                  (ert-fail (format "Board controller failed: %S" status))))
+              (should (equal e-chat-board-id "daily-board"))
+              (should (= (e-runtime-store-recovery-graphical--count-string
+                          "Daily user message" transcript)
+                         1))
+              (should (= (e-runtime-store-recovery-graphical--count-string
+                          "Daily assistant message" transcript)
+                         1))
+              (should-not (string-match-p "Unrelated" (buffer-string)))
+              (should (< (buffer-size) 4096)))
+            (let* ((binding
+                    (e-chat-service-binding harness "daily-known"))
+                   (source
+                    (e-board-registry-board-source-board
+                     (e-chat-service-binding-board binding)))
+                   (controller-samples
+                    (seq-filter
+                     (lambda (sample)
+                       (eq (plist-get sample :operation)
+                           'board-controller-state))
+                     (plist-get
+                      (plist-get (e-runtime-store-status runtime) :latencies)
+                      :recent))))
+              (should binding)
+              (should (<= (e-board-message-count source)
+                          e-board-sqlite-default-controller-record-limit))
+              (should (= (length controller-samples) 1)))
+            (should (= (hash-table-count (e-session-store-sessions sessions)) 0))
+            (should-not
+             (e-runtime-store-recovery-graphical--runtime-operations runtime))))
+        ;; Keep the runner's one-shot timers and the disposable transport out
+        ;; of subsequent graphical tests even when a held-read assertion
+        ;; fails halfway through the composition.
+        (dolist (timer heartbeat-timers)
+          (when (timerp timer) (cancel-timer timer)))
+        (dolist (operation
+                 '(session-metadata session-board-association
+                   session-visible-message-page))
+          (ignore-errors
+            (e-runtime-store-recovery-graphical--release-stall
+             stall-directory operation)))
+        (when (buffer-live-p transcript) (kill-buffer transcript))
+        (when (e-graphical-test-stream-p stream)
+          (e-graphical-test-stream-cancel stream))
+        (when sessions
+          (ignore-errors (e-session-sqlite-store-close sessions)))
+        (when (e-runtime-store-p runtime)
+          (ignore-errors (e-runtime-store--finalize-close runtime)))
+        (when (file-directory-p directory)
+          (delete-directory directory t))
+        (when (file-directory-p stall-directory)
+          (delete-directory stall-directory t)))))
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-durable-board-survives-catalog-ack-loss ()
   "A visible durable chat/Board surface remains usable after catalog recovery."

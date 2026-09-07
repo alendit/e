@@ -25,12 +25,12 @@
   "Generational context lifetime projection."
   :group 'e)
 
-(defcustom e-context-lifetime-shadow-projection-enabled nil
-  "When non-nil, callers may opt into the Feature 88 shadow projection.
+(defcustom e-context-lifetime-shadow-projection-enabled t
+  "When non-nil, use generational context-lifetime projection for turns.
 
-The default is nil so existing request construction and provider behavior do
-not change while semantic lifetime values are compared with the legacy
-projection."
+This is the normal runtime and test behavior.  A nil value is an emergency
+diagnostic escape hatch only; ordinary requests and tests exercise the
+generational projection."
   :type 'boolean
   :group 'e-context-lifetime)
 
@@ -2047,7 +2047,7 @@ observation bytes."
 (defalias 'e-context-lifetime-shadow-project #'e-context-lifetime-project)
 
 (defun e-context-lifetime-shadow-enabled-p ()
-  "Return non-nil when callers opted into the semantic shadow projection."
+  "Return non-nil when semantic lifetime projection is enabled."
   e-context-lifetime-shadow-projection-enabled)
 
 (cl-defun e-context-lifetime-shadow-context

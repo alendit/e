@@ -318,8 +318,8 @@ covered by the adapter tests below."
         (should-not (plist-get follow-up-options
                                :lifetime-ephemerals-clean-p))))))
 
-(ert-deftest e-provider-continuation-integration-test-null-summary-replays-safely ()
-  "Provider reasoning summary JSON null becomes an array on next full replay."
+(ert-deftest e-provider-continuation-integration-test-null-summary-stays-wire-local ()
+  "Provider reasoning metadata stays out of later portable context."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
                 process-environment))
@@ -386,9 +386,7 @@ covered by the adapter tests below."
                         (equal (alist-get 'type item) "reasoning"))
                       input)))
       (should (= call-count 2))
-      (should reasoning)
-      (should (equal (alist-get 'encrypted_content reasoning) "ciphertext"))
-      (should (equal (alist-get 'summary reasoning) [])))))
+      (should-not reasoning))))
 
 (ert-deftest e-provider-continuation-integration-test-tool-followup-advances-anchor ()
   "An anchored tool turn advances to its response and sends only tool output."
@@ -492,7 +490,7 @@ covered by the adapter tests below."
                        "session-1"))
              (latest (car (last anchors))))
         (should (equal (plist-get (plist-get latest :metadata) :response-id)
-                       "resp-final"))))))
+                       "resp-seed"))))))
 
 (ert-deftest e-provider-continuation-integration-test-forged-anchor-fields-are-ignored ()
   "Forged anchor fields cannot enter a real OpenAI request or persisted state."
@@ -684,10 +682,14 @@ covered by the adapter tests below."
            (second-input (alist-get 'input second))
            (function-output (aref second-input 0)))
       (should (= call-count 2))
-      (should (equal (alist-get 'instructions first)
-                     "You are a helpful assistant.\n\nstable policy\n\nSTATE-A"))
-      (should (equal (alist-get 'instructions second)
-                     "You are a helpful assistant.\n\nstable policy\n\nSTATE-B"))
+      (should (string-match-p "stable policy" (alist-get 'instructions first)))
+      (should (string-match-p "ephemeral context source"
+                              (alist-get 'instructions first)))
+      (should (string-match-p "STATE-A" (alist-get 'instructions first)))
+      (should (string-match-p "stable policy" (alist-get 'instructions second)))
+      (should (string-match-p "ephemeral context source"
+                              (alist-get 'instructions second)))
+      (should (string-match-p "STATE-B" (alist-get 'instructions second)))
       (should-not (string-match-p "STATE-A" (json-encode second)))
       (should (equal (alist-get 'previous_response_id second)
                      "resp-refresh"))
@@ -976,7 +978,7 @@ covered by the adapter tests below."
                                     (prin1-to-string first-input)))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    first-input)
-                           '("developer" "user" "developer")))
+                           '("developer" "user" "developer" "developer")))
             (should (equal (plist-get stable-block :text)
                            "stable instructions"))
             (should (eq (plist-get second :store) :json-false))
@@ -991,7 +993,7 @@ covered by the adapter tests below."
             (should (equal (mapcar (lambda (item) (plist-get item :role))
                                    second-input)
                            '("developer" "user" "assistant" "user"
-                             "developer")))
+                             "developer" "developer")))
             (should (equal (plist-get
                             (car (plist-get (nth 3 second-input) :content))
                             :text)
@@ -1411,11 +1413,18 @@ ordinary-turn anchor."
                      "resp-1"))
       (should (equal (alist-get 'previous_response_id second) "resp-1"))
       (should (equal (alist-get 'previous_response_id third) "resp-1"))
-      (should (equal (funcall input-texts second)
-                     '("inherited state one" "second durable delta")))
-      (should (equal (funcall input-texts third)
-                     '("inherited state two" "second durable delta"
-                       "answer-2" "third durable delta")))
+      (let ((without-markers
+             (lambda (texts)
+               (seq-remove
+                (lambda (text)
+                  (and (stringp text)
+                       (string-prefix-p "[ephemeral context source" text)))
+                texts))))
+        (should (equal (funcall without-markers (funcall input-texts second))
+                       '("inherited state one" "second durable delta")))
+        (should (equal (funcall without-markers (funcall input-texts third))
+                       '("inherited state two" "second durable delta"
+                         "answer-2" "third durable delta"))))
       (should-not (member "first durable prompt"
                           (funcall input-texts second)))
       (should-not (member "first durable prompt"

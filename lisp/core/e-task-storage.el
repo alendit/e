@@ -19,20 +19,35 @@
 (cl-defstruct (e-task-storage
                (:constructor e-task-storage--create)
                (:conc-name e-task-storage--))
-  runtime call-operation)
+  runtime call-operation submit-operation)
 
 (defun e-task-storage-runtime (storage)
   "Return STORAGE's shared runtime-store identity."
   (e-task-storage--runtime storage))
 
 (defun e-task-storage--call (storage operation &rest arguments)
-  "Invoke STORAGE OPERATION with ARGUMENTS."
+  "Invoke explicit blocking STORAGE OPERATION with ARGUMENTS.
+This compatibility boundary is for offline migration, operator actions, and
+tests.  Interactive task scheduling uses `e-task-storage-submit'."
   (unless (e-task-storage-p storage)
     (signal 'wrong-type-argument (list 'e-task-storage-p storage)))
   (condition-case err
       (apply (e-task-storage--call-operation storage) operation arguments)
     (e-runtime-store-task-conflict
      (signal 'e-task-storage-conflict (cdr err)))))
+
+(defun e-task-storage-submit
+    (storage kind operation arguments on-settle)
+  "Submit KIND OPERATION with ARGUMENTS and call ON-SETTLE asynchronously.
+ON-SETTLE receives RESULT and ERROR.  Return an adapter-private request handle;
+ordinary task policy does not wait for or inspect it."
+  (unless (e-task-storage-p storage)
+    (signal 'wrong-type-argument (list 'e-task-storage-p storage)))
+  (unless (functionp (e-task-storage--submit-operation storage))
+    (signal 'e-task-storage-error
+            (list "Task storage has no asynchronous submission port")))
+  (funcall (e-task-storage--submit-operation storage)
+           kind operation arguments on-settle))
 
 (defun e-task-storage-open-queue (storage queue-id)
   "Create or return durable QUEUE-ID root."

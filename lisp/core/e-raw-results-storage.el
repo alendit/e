@@ -16,14 +16,15 @@
 (cl-defstruct (e-raw-results-storage
                (:constructor e-raw-results-storage--create)
                (:conc-name e-raw-results-storage--))
-  runtime call-operation)
+  runtime call-operation submit-operation)
 
 (defun e-raw-results-storage-runtime (storage)
   "Return STORAGE's shared runtime-store identity."
   (e-raw-results-storage--runtime storage))
 
 (defun e-raw-results-storage--call (storage operation &rest arguments)
-  "Invoke STORAGE OPERATION with ARGUMENTS."
+  "Invoke explicit blocking STORAGE OPERATION with ARGUMENTS.
+This compatibility boundary is reserved for offline migration and tests."
   (unless (e-raw-results-storage-p storage)
     (signal 'wrong-type-argument (list 'e-raw-results-storage-p storage)))
   (condition-case err
@@ -33,6 +34,17 @@
      (signal 'e-raw-results-storage-conflict (cdr err)))
     (e-runtime-store-resource-too-large
      (signal 'e-raw-results-storage-too-large (cdr err)))))
+
+(defun e-raw-results-storage-submit
+    (storage kind operation arguments on-settle)
+  "Submit KIND OPERATION with ARGUMENTS and invoke ON-SETTLE asynchronously."
+  (unless (e-raw-results-storage-p storage)
+    (signal 'wrong-type-argument (list 'e-raw-results-storage-p storage)))
+  (unless (functionp (e-raw-results-storage--submit-operation storage))
+    (signal 'e-raw-results-storage-error
+            (list "Raw-result storage has no asynchronous submission port")))
+  (funcall (e-raw-results-storage--submit-operation storage)
+           kind operation arguments on-settle))
 
 (defun e-raw-results-storage-put
     (storage uri content metadata created-at expires-at)

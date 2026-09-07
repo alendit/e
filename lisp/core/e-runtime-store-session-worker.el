@@ -1,0 +1,1231 @@
+;;; e-runtime-store-session-worker.el --- Session SQLite schema and operations -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; This module is the worker-side physical boundary for session history and
+;; current query state.  The generic runtime worker owns process framing,
+;; lifecycle, and receipt transactions; this module only maps a validated
+;; session record plus a domain-owned query delta to SQLite statements.
+;;
+;; In particular, this file deliberately does not derive query semantics from
+;; a record.  `e-session-query' produces the complete row or control delta on
+;; the application side.  The worker validates that closed shape, maps it to
+;; named columns, and returns bounded detached values.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'seq)
+(require 'sqlite)
+(require 'e-context-lifetime)
+(require 'e-runtime-store-codec)
+(require 'e-session-query)
+(require 'e-session-storage-limits)
+
+(unless (get 'e-runtime-store-worker-error 'error-conditions)
+  (define-error 'e-runtime-store-worker-error "Runtime store worker error"))
+
+(defconst e-runtime-store-session-worker-page-row-limit 256
+  "Maximum rows returned by one session query page.")
+(defconst e-runtime-store-session-worker-record-page-row-limit 256
+  "Maximum records returned by one bounded forward page.")
+(defconst e-runtime-store-session-worker-visible-message-row-limit 64
+  "Maximum messages returned by one visible chat window read.")
+(defconst e-runtime-store-session-worker-context-path-row-limit 4096
+  "Maximum canonical path records inspected for one provider request.")
+(defconst e-runtime-store-session-worker-context-path-byte-limit (* 8 1024 1024)
+  "Maximum detached message bytes returned for one provider request.")
+(defconst e-runtime-store-session-worker-context-receipt-limit 8
+  "Maximum non-erased tool receipts returned for one provider request.")
+(defconst e-runtime-store-session-worker-context-receipt-byte-limit 4096
+  "Maximum encoded bytes returned in the selected tool-receipt tail.")
+(defconst e-runtime-store-session-worker-id-page-byte-limit (* 64 1024)
+  "Maximum UTF-8 identity bytes returned by one session-id page.")
+(defconst e-runtime-store-session-worker-page-byte-limit (* 1024 1024)
+  "Maximum encoded payload bytes returned by one session page.")
+(defconst e-runtime-store-session-worker-record-byte-limit (* 16 1024 1024)
+  "Maximum legacy payload bytes accepted while reading one record.")
+
+(defconst e-runtime-store-session-worker--state-columns
+  '(session_id name summary metadata created_at updated_at last_message_at
+    latest_assistant_marker message_count current_branch turn_options
+    current_head_id root_event_id current_context_generation_id
+    board_id principal association_role
+    routing_policy root_p board_output_sequence board_activity_sequence
+    journal_position)
+  "Physical `session_query_state' columns in row-ABI order.")
+
+(defvar e-runtime-store-session-worker--database nil)
+
+(defun e-runtime-store-session-worker--error (message &rest data)
+  "Signal a bounded worker error with MESSAGE and DATA."
+  (signal 'e-runtime-store-worker-error (cons message data)))
+
+(defun e-runtime-store-session-worker--column (row index)
+  "Return INDEX from SQLite ROW across supported Emacs return shapes."
+  (if (vectorp row) (aref row index) (nth index row)))
+
+(defun e-runtime-store-session-worker--proper-plist-p (value)
+  "Return non-nil when VALUE is a proper keyword plist with unique keys."
+  (and (proper-list-p value)
+       (let ((tail value)
+             (seen nil)
+             valid)
+         (setq valid t)
+         (while (and valid tail)
+           (let ((key (pop tail)))
+             (setq valid
+                   (and (keywordp key)
+                        (consp tail)
+                        (not (memq key seen))))
+             (when valid
+               (push key seen)
+               (pop tail))))
+         valid)))
+
+(defun e-runtime-store-session-worker--scalar (value field)
+  "Validate bounded scalar VALUE for physical FIELD and return VALUE."
+  (when (and value
+             (not (and (stringp value)
+                       (<= (string-bytes value)
+                           e-session-query-state-string-byte-limit))))
+    (e-runtime-store-session-worker--error
+     "Session physical scalar is invalid" field value))
+  value)
+
+(defun e-runtime-store-session-worker--required-scalar (value field)
+  "Validate nonempty bounded scalar VALUE for physical FIELD.
+
+Current query rows are page-sortable physical facts.  In particular their
+creation and update timestamps cannot be absent, otherwise a stable cursor
+could not identify the row it just returned."
+  (unless (and (stringp value)
+               (> (string-bytes value) 0)
+               (<= (string-bytes value)
+                   e-session-query-state-string-byte-limit))
+    (e-runtime-store-session-worker--error
+     "Session physical required scalar is invalid" field value))
+  value)
+
+(defun e-runtime-store-session-worker--session-id (value)
+  "Validate and return a bounded SESSION-ID."
+  (unless (and (stringp value)
+               (> (string-bytes value) 0)
+               (<= (string-bytes value)
+                   e-session-query-state-string-byte-limit))
+    (e-runtime-store-session-worker--error
+     "Session identity is invalid" value))
+  value)
+
+(defun e-runtime-store-session-worker--nonnegative-integer (value field)
+  "Validate nonnegative integer VALUE for FIELD."
+  (unless (and (integerp value) (>= value 0))
+    (e-runtime-store-session-worker--error
+     "Session physical integer is invalid" field value))
+  value)
+
+(defun e-runtime-store-session-worker--copy-value (value field)
+  "Validate, detach, and return bounded semantic VALUE for FIELD."
+  (condition-case err
+      (e-session-query--copy-value value)
+    (error
+     (e-runtime-store-session-worker--error
+      "Session physical value is invalid" field (car err)))))
+
+(defun e-runtime-store-session-worker--encode-value (value field)
+  "Encode bounded semantic VALUE for nullable physical FIELD."
+  (when value
+    (condition-case err
+        (base64-encode-string
+         (e-runtime-store-codec-encode-bounded
+          value e-session-query-state-value-byte-limit)
+         t)
+      (error
+       (e-runtime-store-session-worker--error
+        "Session physical value cannot be encoded" field (car err))))))
+
+(defun e-runtime-store-session-worker--decode-value (text field)
+  "Decode and detach nullable physical TEXT for FIELD."
+  (when text
+    (condition-case err
+        (e-session-query--copy-value
+         (e-runtime-store-codec-decode (base64-decode-string text)))
+      (error
+       (e-runtime-store-session-worker--error
+        "Session physical value cannot be decoded" field (car err))))))
+
+(defun e-runtime-store-session-worker--record-columns (record)
+  "Return typed physical columns for canonical RECORD.
+
+Only structural identity and ordering fields are extracted here.  Record
+meaning remains owned by the session domain's query derivation."
+  (unless (e-runtime-store-session-worker--proper-plist-p record)
+    (e-runtime-store-session-worker--error
+     "Session record is not a proper unique plist" record))
+    (let* ((record-session-id (plist-get record :session-id))
+         (type (plist-get record :type))
+         (record-type (cond ((stringp type) type)
+                            ((symbolp type) (symbol-name type))
+                            (t nil)))
+         (record-id (plist-get record :id))
+         (delta-id (and (plist-member record :delta-id)
+                        (plist-get record :delta-id)))
+         (parent-id (plist-get record :parent-id))
+         (timestamp (or (plist-get record :timestamp)
+                        (plist-get record :created-at))))
+    (unless (and (stringp record-session-id)
+                 (> (string-bytes record-session-id) 0)
+                 (<= (string-bytes record-session-id)
+                     e-session-query-state-string-byte-limit)
+                 (stringp record-type)
+                 (> (string-bytes record-type) 0)
+                 (<= (string-bytes record-type)
+                     e-session-query-state-string-byte-limit))
+      (e-runtime-store-session-worker--error
+       "Session record identity or type is invalid" record))
+    (when (and (equal record-type "session")
+               (not (and (stringp timestamp) (> (string-bytes timestamp) 0))))
+      (e-runtime-store-session-worker--error
+       "Session root record requires a timestamp" record))
+    (when delta-id
+      (unless (and (stringp delta-id)
+                   (> (string-bytes delta-id) 0)
+                   (<= (string-bytes delta-id)
+                       e-session-query-state-string-byte-limit))
+        (e-runtime-store-session-worker--error
+         "Session record delta identity is invalid" delta-id)))
+    (dolist (entry (list (cons :id record-id)
+                         (cons :parent-id parent-id)
+                         (cons :timestamp timestamp)))
+      (when (cdr entry)
+        (unless (and (stringp (cdr entry))
+                     (<= (string-bytes (cdr entry))
+                         e-session-query-state-string-byte-limit))
+          (e-runtime-store-session-worker--error
+           "Session record typed field is invalid" (car entry) (cdr entry)))))
+    ;; A missing/nil delta id is deliberately legacy-compatible and has no
+    ;; uniqueness claim.  When present it is the durable structural identity
+    ;; used for idempotent record admission, independent of semantic target
+    ;; ids such as a message-display's :id.
+    (list record-type record-id delta-id parent-id timestamp)))
+
+(defun e-runtime-store-session-worker--validate-state (state)
+  "Validate and detach a complete domain-owned query STATE."
+  (condition-case err
+      (progn
+        (e-session-query-state-validate state)
+        (e-session-query--copy-value state))
+    (error
+     (e-runtime-store-session-worker--error
+      "Session query delta is not a complete row" (car err)))))
+
+(defun e-runtime-store-session-worker--validate-delta (delta)
+  "Validate and detach complete row or exact control DELTA."
+  (cond
+   ((and (e-runtime-store-session-worker--proper-plist-p delta)
+         (plist-member delta :deleted))
+    (condition-case err
+        (progn
+          (e-session-query-control-delta-validate delta)
+          (e-session-query--copy-value delta))
+      (error
+       (e-runtime-store-session-worker--error
+        "Session deletion delta is invalid" (car err)))))
+   ((and (e-runtime-store-session-worker--proper-plist-p delta)
+         (plist-member delta :noop))
+    (condition-case err
+        (progn
+          (e-session-query-control-delta-validate delta)
+          (e-session-query--copy-value delta))
+      (error
+       (e-runtime-store-session-worker--error
+        "Session no-op delta is invalid" (car err)))))
+   (t (e-runtime-store-session-worker--validate-state delta))))
+
+(defun e-runtime-store-session-worker--state-values (state)
+  "Return STATE's encoded SQL values in physical column order."
+  (let ((state (e-runtime-store-session-worker--validate-state state)))
+    (vector
+     (e-runtime-store-session-worker--session-id
+      (plist-get state :session-id))
+     (e-runtime-store-session-worker--scalar (plist-get state :name) :name)
+     (e-runtime-store-session-worker--scalar (plist-get state :summary) :summary)
+     (e-runtime-store-session-worker--encode-value
+      (plist-get state :metadata) :metadata)
+     (e-runtime-store-session-worker--required-scalar
+      (plist-get state :created-at) :created-at)
+     (e-runtime-store-session-worker--required-scalar
+      (plist-get state :updated-at) :updated-at)
+     (e-runtime-store-session-worker--scalar
+      (plist-get state :last-message-at) :last-message-at)
+     (e-runtime-store-session-worker--scalar
+      (plist-get state :latest-assistant-marker)
+      :latest-assistant-marker)
+     (e-runtime-store-session-worker--nonnegative-integer
+      (plist-get state :message-count) :message-count)
+     (e-runtime-store-session-worker--scalar
+      (plist-get state :current-branch) :current-branch)
+     (e-runtime-store-session-worker--encode-value
+      (plist-get state :turn-options) :turn-options)
+     (e-runtime-store-session-worker--scalar
+      (plist-get state :current-head-id) :current-head-id)
+     (e-runtime-store-session-worker--scalar
+      (plist-get state :root-event-id) :root-event-id)
+     (e-runtime-store-session-worker--scalar
+      (plist-get state :current-context-generation-id)
+      :current-context-generation-id)
+     (e-runtime-store-session-worker--scalar (plist-get state :board-id) :board-id)
+     (e-runtime-store-session-worker--scalar (plist-get state :principal) :principal)
+     (e-runtime-store-session-worker--scalar
+      (plist-get state :association-role) :association-role)
+     (e-runtime-store-session-worker--encode-value
+      (plist-get state :routing-policy) :routing-policy)
+     (if (plist-get state :root-p) 1 0)
+     (e-runtime-store-session-worker--nonnegative-integer
+      (plist-get state :board-output-sequence) :board-output-sequence)
+     (e-runtime-store-session-worker--nonnegative-integer
+      (plist-get state :board-activity-sequence) :board-activity-sequence)
+     (e-runtime-store-session-worker--nonnegative-integer
+      (plist-get state :journal-position) :journal-position))))
+
+(defun e-runtime-store-session-worker--state-from-row (row)
+  "Return detached logical state represented by physical SQLite ROW."
+  (when row
+    (unless (= (length row) (length e-runtime-store-session-worker--state-columns))
+      (e-runtime-store-session-worker--error
+       "Session query row has an invalid physical shape" row))
+    (let ((root-p (e-runtime-store-session-worker--column row 18)))
+      (unless (memq root-p '(0 1))
+        (e-runtime-store-session-worker--error
+         "Session query root flag is invalid" root-p)))
+    (e-runtime-store-session-worker--required-scalar
+     (e-runtime-store-session-worker--column row 4) :created-at)
+    (e-runtime-store-session-worker--required-scalar
+     (e-runtime-store-session-worker--column row 5) :updated-at)
+    (let ((state
+           (list
+            :session-id (e-runtime-store-session-worker--column row 0)
+            :name (e-runtime-store-session-worker--column row 1)
+            :summary (e-runtime-store-session-worker--column row 2)
+            :metadata (e-runtime-store-session-worker--decode-value
+                       (e-runtime-store-session-worker--column row 3) :metadata)
+            :created-at (e-runtime-store-session-worker--column row 4)
+            :updated-at (e-runtime-store-session-worker--column row 5)
+            :last-message-at (e-runtime-store-session-worker--column row 6)
+            :latest-assistant-marker (e-runtime-store-session-worker--column row 7)
+            :message-count (e-runtime-store-session-worker--column row 8)
+            :current-branch (e-runtime-store-session-worker--column row 9)
+            :turn-options (e-runtime-store-session-worker--decode-value
+                           (e-runtime-store-session-worker--column row 10)
+                           :turn-options)
+            :current-head-id (e-runtime-store-session-worker--column row 11)
+            :root-event-id (e-runtime-store-session-worker--column row 12)
+            :current-context-generation-id
+            (e-runtime-store-session-worker--column row 13)
+            :board-id (e-runtime-store-session-worker--column row 14)
+            :principal (e-runtime-store-session-worker--column row 15)
+            :association-role (e-runtime-store-session-worker--column row 16)
+            :routing-policy (e-runtime-store-session-worker--decode-value
+                             (e-runtime-store-session-worker--column row 17)
+                             :routing-policy)
+            :root-p (= 1 (e-runtime-store-session-worker--column row 18))
+            :board-output-sequence (e-runtime-store-session-worker--column row 19)
+            :board-activity-sequence (e-runtime-store-session-worker--column row 20)
+            :journal-position (e-runtime-store-session-worker--column row 21))))
+      (e-runtime-store-session-worker--validate-state state))))
+
+(defun e-runtime-store-session-worker-initialize (database)
+  "Create the v6 session relations and indexes on DATABASE.
+
+This function is called from the generic worker's one schema transaction
+boundary.  It intentionally creates neither the retired catalog projection
+nor resume checkpoints."
+  (let ((e-runtime-store-session-worker--database database))
+    (dolist
+        (statement
+         '("CREATE TABLE IF NOT EXISTS session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, record_type TEXT NOT NULL DEFAULT '', record_id TEXT, record_identity TEXT, parent_id TEXT, timestamp TEXT, PRIMARY KEY(session_id, position))"
+           "CREATE UNIQUE INDEX IF NOT EXISTS session_records_identity ON session_records(session_id, record_identity) WHERE record_identity IS NOT NULL"
+           "CREATE INDEX IF NOT EXISTS session_records_session_page ON session_records(session_id, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_type_page ON session_records(session_id, record_type, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_id_page ON session_records(session_id, record_id, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_record_identity_page ON session_records(session_id, record_identity, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_parent_page ON session_records(session_id, parent_id, position)"
+           "CREATE TABLE IF NOT EXISTS session_query_state (session_id TEXT PRIMARY KEY, name TEXT, summary TEXT, metadata TEXT, created_at TEXT, updated_at TEXT, last_message_at TEXT, latest_assistant_marker TEXT, message_count INTEGER NOT NULL, current_branch TEXT, turn_options TEXT, current_head_id TEXT, root_event_id TEXT, current_context_generation_id TEXT, board_id TEXT, principal TEXT, association_role TEXT, routing_policy TEXT, root_p INTEGER NOT NULL, board_output_sequence INTEGER NOT NULL, board_activity_sequence INTEGER NOT NULL, journal_position INTEGER NOT NULL)"
+           "CREATE INDEX IF NOT EXISTS session_query_state_recent ON session_query_state(updated_at DESC, session_id DESC)"
+           "CREATE INDEX IF NOT EXISTS session_query_state_root ON session_query_state(root_p, updated_at DESC, session_id DESC)"
+           "CREATE INDEX IF NOT EXISTS session_query_state_board ON session_query_state(board_id, principal, updated_at DESC, session_id DESC)"
+           "CREATE INDEX IF NOT EXISTS session_query_state_cursor ON session_query_state(journal_position, session_id)"
+           ;; This redundant v5 physical index has no logical meaning.  It is
+           ;; safe to remove while opening an already-current store and keeps
+           ;; the v6 schema from carrying duplicate position coverage.
+           "DROP INDEX IF EXISTS session_records_position"))
+      (sqlite-execute database statement)))
+
+  ;; Feature 92's v6 work is still uncommitted, but development stores may
+  ;; already carry the earlier v6 table.  Extend that authoritative row in
+  ;; place; never rebuild a catalog or replay sessions merely to add a nullable
+  ;; current fact.
+  (unless (seq-some
+           (lambda (row)
+             (equal (e-runtime-store-session-worker--column row 1)
+                    "current_context_generation_id"))
+           (sqlite-select database "PRAGMA table_info(session_query_state)"))
+    (sqlite-execute
+     database
+     "ALTER TABLE session_query_state ADD COLUMN current_context_generation_id TEXT")))
+
+(defun e-runtime-store-session-worker--record-insert
+    (database session-id position record)
+  "Insert RECORD at POSITION for SESSION-ID into DATABASE."
+  (let* ((record-session-id (plist-get record :session-id))
+         (columns (e-runtime-store-session-worker--record-columns record))
+         (record-type (nth 0 columns))
+         (record-id (nth 1 columns))
+         (record-identity (nth 2 columns))
+         (parent-id (nth 3 columns))
+         (timestamp (nth 4 columns))
+         (payload
+          (condition-case err
+              (e-runtime-store-codec-encode-bounded
+               record e-session-storage-record-byte-limit)
+            (error
+             (e-runtime-store-session-worker--error
+              "Session record payload is too large or invalid" (car err))))))
+    (unless (equal session-id record-session-id)
+      (e-runtime-store-session-worker--error
+       "Session record identity does not match append owner"
+       session-id record-session-id))
+    (condition-case err
+        (sqlite-execute
+         database
+         "INSERT INTO session_records(session_id,position,payload,record_type,record_id,record_identity,parent_id,timestamp) VALUES(?,?,?,?,?,?,?,?)"
+         (vector session-id position (base64-encode-string payload t)
+                 record-type record-id record-identity parent-id timestamp))
+      (sqlite-error
+       ;; Keep physical uniqueness failures inside the worker's typed error
+       ;; vocabulary; the generic transaction then rolls back every prior
+       ;; insert in the request.
+       (e-runtime-store-session-worker--error
+        "Session record structural identity already exists"
+        :session-id session-id :record-identity record-identity
+        :sqlite-error (car err))))))
+
+(defun e-runtime-store-session-worker--position (database session-id)
+  "Return current durable high-water POSITION for SESSION-ID."
+  (or (let ((row (car (sqlite-select
+                       database
+                       "SELECT MAX(position) FROM session_records WHERE session_id=?"
+                       (vector session-id)))))
+        (and row (e-runtime-store-session-worker--column row 0)))
+      0))
+
+(defun e-runtime-store-session-worker--assert-delta-position
+    (delta expected-position)
+  "Require non-control DELTA's journal position to equal EXPECTED-POSITION.
+
+The journal position is supplied by the application/service adapter after it
+has assigned the actual durable position.  It is not a replay counter the
+worker may silently repair."
+  (unless (or (plist-get delta :deleted) (plist-get delta :noop))
+    (unless (= (plist-get delta :journal-position) expected-position)
+      (e-runtime-store-session-worker--error
+       "Session query delta position does not match journal append"
+       :expected expected-position
+       :actual (plist-get delta :journal-position)))))
+
+(defun e-runtime-store-session-worker--write-delta
+    (database session-id delta &optional expected-position)
+  "Apply validated query DELTA for SESSION-ID to DATABASE.
+
+When EXPECTED-POSITION is supplied, a non-control delta must name exactly
+that position before its row is written."
+  (let ((delta (e-runtime-store-session-worker--validate-delta delta)))
+    (unless (equal session-id (plist-get delta :session-id))
+      (e-runtime-store-session-worker--error
+       "Session delta identity does not match record" session-id delta))
+    (when expected-position
+      (e-runtime-store-session-worker--assert-delta-position
+       delta expected-position))
+    (cond
+     ((plist-get delta :deleted)
+      (sqlite-execute database
+                      "DELETE FROM session_query_state WHERE session_id=?"
+                      (vector session-id))
+      (list :session-id session-id :deleted t))
+     ((plist-get delta :noop)
+      (list :session-id session-id :noop t))
+     (t
+      (sqlite-execute
+       database
+       (concat
+        "INSERT INTO session_query_state(session_id,name,summary,metadata,created_at,updated_at,last_message_at,latest_assistant_marker,message_count,current_branch,turn_options,current_head_id,root_event_id,current_context_generation_id,board_id,principal,association_role,routing_policy,root_p,board_output_sequence,board_activity_sequence,journal_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(session_id) DO UPDATE SET name=excluded.name,summary=excluded.summary,metadata=excluded.metadata,created_at=excluded.created_at,updated_at=excluded.updated_at,last_message_at=excluded.last_message_at,latest_assistant_marker=excluded.latest_assistant_marker,message_count=excluded.message_count,current_branch=excluded.current_branch,turn_options=excluded.turn_options,current_head_id=excluded.current_head_id,root_event_id=excluded.root_event_id,current_context_generation_id=excluded.current_context_generation_id,board_id=excluded.board_id,principal=excluded.principal,association_role=excluded.association_role,routing_policy=excluded.routing_policy,root_p=excluded.root_p,board_output_sequence=excluded.board_output_sequence,board_activity_sequence=excluded.board_activity_sequence,journal_position=excluded.journal_position")
+       (e-runtime-store-session-worker--state-values delta))
+      delta))))
+
+(defun e-runtime-store-session-worker--append (database body)
+  "Append one session record and its complete query DELTA."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (record (plist-get body :record))
+         (delta (or (plist-get body :query-delta)
+                    (plist-get body :delta)))
+         (position (1+ (e-runtime-store-session-worker--position
+                       database session-id))))
+    (unless delta
+      (e-runtime-store-session-worker--error
+       "Session append requires a query delta" session-id))
+    (setq delta (e-runtime-store-session-worker--validate-delta delta))
+    (when (plist-get delta :noop)
+      (e-runtime-store-session-worker--error
+       "Semantic no-op has no durable session append" session-id))
+    (e-runtime-store-session-worker--assert-delta-position delta position)
+    (e-runtime-store-session-worker--record-insert
+     database session-id position record)
+    (e-runtime-store-session-worker--write-delta
+     database session-id delta position)
+    (let ((result
+           (list :session-id session-id :position position
+                 :high-water position)))
+      result)))
+
+(defun e-runtime-store-session-worker--append-batch (database body)
+  "Append BODY's records and final complete query DELTA atomically."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (records (plist-get body :records))
+         (delta (or (plist-get body :query-delta)
+                    (plist-get body :delta)))
+         (position (e-runtime-store-session-worker--position
+                    database session-id))
+         (first nil)
+         (last position))
+    (unless (or (listp records) (vectorp records))
+      (e-runtime-store-session-worker--error
+       "Session batch records must be a list or vector"))
+    (setq records (append records nil))
+    (when (null records)
+      (e-runtime-store-session-worker--error
+       "Session batch must contain at least one durable record" session-id))
+    (when (> (length records) e-session-storage-batch-record-limit)
+      (e-runtime-store-session-worker--error
+       "Session batch exceeds record-count limit" (length records)))
+    (condition-case err
+        (e-runtime-store-codec-measure-bounded
+         body e-session-storage-batch-byte-limit)
+      (error
+       (e-runtime-store-session-worker--error
+        "Session batch exceeds byte limit" (car err))))
+    (unless delta
+      (e-runtime-store-session-worker--error
+       "Session batch requires a query delta" session-id))
+    (setq delta (e-runtime-store-session-worker--validate-delta delta))
+    (when (plist-get delta :noop)
+      (e-runtime-store-session-worker--error
+       "Semantic no-op has no durable session batch" session-id))
+    ;; The batch delta describes the final row after the final inserted
+    ;; journal position, not the number of records in this request.
+    (e-runtime-store-session-worker--assert-delta-position
+     delta (+ position (length records)))
+    (dolist (record records)
+      (setq last (1+ last)
+            first (or first last))
+      (e-runtime-store-session-worker--record-insert
+       database session-id last record))
+    (e-runtime-store-session-worker--write-delta
+     database session-id delta (+ position (length records)))
+    (let ((result
+           (list :session-id session-id :first-position (and first first)
+                 :last-position last :high-water last)))
+      result)))
+
+(defun e-runtime-store-session-worker--delete (database body)
+  "Apply exact delete control BODY and remove its session records."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (delta (or (plist-get body :query-delta)
+                    (plist-get body :delta)
+                    (list :session-id session-id :deleted t))))
+    (setq delta (e-runtime-store-session-worker--validate-delta delta))
+    (unless (plist-get delta :deleted)
+      (e-runtime-store-session-worker--error
+       "Session delete requires a deleted control delta" delta))
+    (e-runtime-store-session-worker--write-delta database session-id delta)
+    (sqlite-execute database "DELETE FROM session_records WHERE session_id=?"
+                    (vector session-id))
+    (dolist (table '("tool_followups" "resources"))
+      (sqlite-execute database
+                      (format "DELETE FROM %s WHERE session_id=?" table)
+                      (vector session-id)))
+    (list :session-id session-id :deleted t)))
+
+(defun e-runtime-store-session-worker-write (database body)
+  "Execute a typed session write BODY on transaction-scoped DATABASE."
+  (let ((e-runtime-store-session-worker--database database))
+    (pcase (plist-get body :op)
+      ('session-append (e-runtime-store-session-worker--append database body))
+      ('session-append-with-tool-transition
+       (e-runtime-store-session-worker--append database body))
+      ('session-append-batch
+       (e-runtime-store-session-worker--append-batch database body))
+      ('session-delete (e-runtime-store-session-worker--delete database body))
+      (_ (e-runtime-store-session-worker--error
+          "Unknown session write operation" (plist-get body :op))))))
+
+(defun e-runtime-store-session-worker--limit (value cap)
+  "Validate positive requested VALUE against CAP and return it."
+  (let ((limit (or value cap)))
+    (unless (and (integerp limit) (> limit 0) (<= limit cap))
+      (e-runtime-store-session-worker--error
+       "Session page limit is outside its bound" value cap))
+    limit))
+
+(defun e-runtime-store-session-worker--page-cursor (cursor)
+  "Validate detached stable page CURSOR or return nil."
+  (when cursor
+    (let ((keys nil)
+          (tail cursor))
+      (while tail
+        (push (pop tail) keys)
+        (pop tail))
+      (unless (and (e-runtime-store-session-worker--proper-plist-p cursor)
+                   (= (length keys) 2)
+                   (memq :session-id keys)
+                   (memq :updated-at keys))
+        (e-runtime-store-session-worker--error
+         "Session page cursor is invalid" cursor)))
+    (let ((session-id (plist-get cursor :session-id))
+          (updated-at (plist-get cursor :updated-at)))
+      (unless (and (stringp session-id)
+                   (stringp updated-at))
+        (e-runtime-store-session-worker--error
+         "Session page cursor values are invalid" cursor))
+      (list :session-id session-id :updated-at updated-at))))
+
+(defun e-runtime-store-session-worker--query-state (database body)
+  "Read one exact detached query state."
+  (let ((session-id (e-runtime-store-session-worker--session-id
+                     (plist-get body :session-id))))
+    (e-runtime-store-session-worker--state-from-row
+     (car (sqlite-select
+           database
+           (concat "SELECT "
+                   (mapconcat #'symbol-name
+                              e-runtime-store-session-worker--state-columns ",")
+                   " FROM session_query_state WHERE session_id=?")
+           (vector session-id))))))
+
+(defun e-runtime-store-session-worker--metadata (database body)
+  "Read exact detached metadata for one session."
+  (let ((state (e-runtime-store-session-worker--query-state database body)))
+    (when state
+      (list :session-id (plist-get state :session-id)
+            :name (plist-get state :name)
+            :summary (plist-get state :summary)
+            :metadata (e-session-query--copy-value
+                       (plist-get state :metadata))
+            :created-at (plist-get state :created-at)
+            :updated-at (plist-get state :updated-at)
+            :current-branch (plist-get state :current-branch)
+            :turn-options (e-session-query--copy-value
+                           (plist-get state :turn-options))
+            :current-head-id (plist-get state :current-head-id)
+            :root-event-id (plist-get state :root-event-id)
+            :root-p (plist-get state :root-p)
+            :journal-position (plist-get state :journal-position)))))
+
+(defun e-runtime-store-session-worker--association (database body)
+  "Read exact detached Board association for one session."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         ;; Keep this projection physically narrow.  In particular, an
+         ;; unreadable metadata/options payload must not prevent a Board
+         ;; owner from discovering its association.
+         (row (car (sqlite-select
+                    database
+                    (concat
+                     "SELECT session_id,board_id,principal,association_role,"
+                     "routing_policy,board_output_sequence,"
+                     "board_activity_sequence FROM session_query_state "
+                     "WHERE session_id=?")
+                    (vector session-id)))))
+    (when row
+      (let ((row-session-id
+             (e-runtime-store-session-worker--session-id
+              (e-runtime-store-session-worker--column row 0)))
+            (board-id (e-runtime-store-session-worker--scalar
+                       (e-runtime-store-session-worker--column row 1)
+                       :board-id))
+            (principal (e-runtime-store-session-worker--scalar
+                        (e-runtime-store-session-worker--column row 2)
+                        :principal))
+            (association-role
+             (e-runtime-store-session-worker--scalar
+              (e-runtime-store-session-worker--column row 3)
+              :association-role))
+            (routing-policy
+             (e-runtime-store-session-worker--decode-value
+              (e-runtime-store-session-worker--column row 4)
+              :routing-policy))
+            (board-output-sequence
+             (e-runtime-store-session-worker--column row 5))
+            (board-activity-sequence
+             (e-runtime-store-session-worker--column row 6)))
+        (list :session-id row-session-id :board-id board-id
+              :principal principal :association-role association-role
+              :routing-policy routing-policy
+              :board-output-sequence board-output-sequence
+              :board-activity-sequence board-activity-sequence)))))
+
+(defun e-runtime-store-session-worker--query-page (database body)
+  "Read a stable newest/root bounded query-state page."
+  (let* ((limit (e-runtime-store-session-worker--limit
+                 (plist-get body :limit)
+                 e-runtime-store-session-worker-page-row-limit))
+         (cursor (e-runtime-store-session-worker--page-cursor
+                  (plist-get body :cursor)))
+         (root-p (if (eq (plist-get body :op) 'session-root-page)
+                     t
+                   (plist-get body :root-p)))
+         (board-id (and (plist-member body :board-id)
+                        (plist-get body :board-id)))
+         (principal (and (plist-member body :principal)
+                         (plist-get body :principal)))
+         (where nil)
+         (params nil))
+    (unless (or (null root-p) (eq root-p t))
+      (e-runtime-store-session-worker--error
+       "Session root filter is invalid" root-p))
+    (when root-p
+      (setq where (append where (list "root_p=1"))))
+    (when (plist-member body :board-id)
+      (if (null board-id)
+          (setq where (append where (list "board_id IS NULL")))
+        (unless (and (stringp board-id)
+                     (<= (string-bytes board-id)
+                         e-session-query-state-string-byte-limit))
+          (e-runtime-store-session-worker--error
+           "Session Board filter is invalid" board-id))
+        (setq where (append where (list "board_id=?"))
+              params (append params (list board-id)))))
+    (when (plist-member body :principal)
+      (if (null principal)
+          (setq where (append where (list "principal IS NULL")))
+        (unless (and (stringp principal)
+                     (<= (string-bytes principal)
+                         e-session-query-state-string-byte-limit))
+          (e-runtime-store-session-worker--error
+           "Session principal filter is invalid" principal))
+        (setq where (append where (list "principal=?"))
+              params (append params (list principal)))))
+    (when cursor
+      (setq where
+            (append where
+                    (list "(updated_at < ? OR (updated_at = ? AND session_id < ?))")))
+      (setq params
+            (append params
+                    (list (plist-get cursor :updated-at)
+                          (plist-get cursor :updated-at)
+                          (plist-get cursor :session-id)))))
+    (setq params (vconcat params (vector (1+ limit))))
+    (let* ((sql (concat "SELECT "
+                        (mapconcat #'symbol-name
+                                   e-runtime-store-session-worker--state-columns ",")
+                        " FROM session_query_state"
+                        (when where
+                          (concat " WHERE "
+                                  (mapconcat #'identity where " AND ")))
+                        " ORDER BY updated_at DESC, session_id DESC LIMIT ?"))
+           (rows (sqlite-select database sql params))
+           (states nil)
+           (bytes 0)
+           (truncated (> (length rows) limit)))
+      ;; Decode only the bounded page.  A lookahead row proves that a next
+      ;; cursor exists, while the byte budget prevents one page of large
+      ;; semantic values from becoming an oversized protocol response.
+      (catch 'page-full
+        (dolist (row rows)
+          (when (>= (length states) limit)
+            (setq truncated t)
+            (throw 'page-full nil))
+          (let* ((state (e-runtime-store-session-worker--state-from-row row))
+                 (state-bytes
+                  (e-runtime-store-codec-measure-bounded
+                   state e-runtime-store-session-worker-page-byte-limit)))
+            (when (and states
+                       (> (+ bytes state-bytes)
+                          e-runtime-store-session-worker-page-byte-limit))
+              (setq truncated t)
+              (throw 'page-full nil))
+            (setq bytes (+ bytes state-bytes))
+            (push state states))))
+      (setq states (nreverse states))
+      (let ((last-state (car (last states))))
+        (list :rows (mapcar #'e-session-query--copy-value states)
+              :next (and truncated last-state
+                         (list :updated-at (plist-get last-state :updated-at)
+                               :session-id (plist-get last-state :session-id)))
+              :limit limit :byte-count bytes
+              :byte-limit e-runtime-store-session-worker-page-byte-limit)))))
+
+(defun e-runtime-store-session-worker--id-page (database body)
+  "Return one bounded cursor page of durable session identities."
+  (let* ((cursor (plist-get body :cursor))
+         (limit (e-runtime-store-session-worker--limit
+                 (plist-get body :limit)
+                 e-runtime-store-session-worker-page-row-limit)))
+    (when cursor
+      (unless (and (stringp cursor)
+                   (<= (string-bytes cursor)
+                       e-session-query-state-string-byte-limit))
+        (e-runtime-store-session-worker--error
+         "Session identity cursor is invalid" cursor)))
+    (let* ((params (if cursor (vector cursor (1+ limit))
+                   (vector (1+ limit))))
+           (sql (if cursor
+                    "SELECT session_id FROM session_query_state WHERE session_id>? ORDER BY session_id ASC LIMIT ?"
+                  "SELECT session_id FROM session_query_state ORDER BY session_id ASC LIMIT ?"))
+           (rows (sqlite-select database sql params))
+           (truncated (> (length rows) limit))
+           (ids nil)
+           (bytes 0))
+      (catch 'page-full
+        (dolist (row rows)
+          (when (>= (length ids) limit)
+            (setq truncated t)
+            (throw 'page-full nil))
+          (let* ((session-id
+                  (e-runtime-store-session-worker--session-id
+                   (e-runtime-store-session-worker--column row 0)))
+                 (id-bytes (string-bytes session-id)))
+            (when (and ids
+                       (> (+ bytes id-bytes)
+                          e-runtime-store-session-worker-id-page-byte-limit))
+              (setq truncated t)
+              (throw 'page-full nil))
+            (when (> id-bytes e-runtime-store-session-worker-id-page-byte-limit)
+              (e-runtime-store-session-worker--error
+               "Session identity page exceeds byte bound" id-bytes))
+            (setq bytes (+ bytes id-bytes))
+            (push session-id ids))))
+      (setq ids (nreverse ids))
+      (list :ids ids
+            :next (and truncated (car (last ids)))
+            :limit limit :byte-count bytes
+            :byte-limit e-runtime-store-session-worker-id-page-byte-limit))))
+
+(defun e-runtime-store-session-worker--decode-record-row (row)
+  "Return detached bounded record result from physical ROW."
+  (unless (= (length row) 8)
+    (e-runtime-store-session-worker--error
+     "Session record row has an invalid physical shape" row))
+  (let ((position (e-runtime-store-session-worker--column row 0))
+        (record-type (e-runtime-store-session-worker--column row 1))
+        (record-id (e-runtime-store-session-worker--column row 2))
+        (record-identity (e-runtime-store-session-worker--column row 3))
+        (parent-id (e-runtime-store-session-worker--column row 4))
+        (timestamp (e-runtime-store-session-worker--column row 5))
+        (payload-bytes (e-runtime-store-session-worker--column row 6))
+        (payload (e-runtime-store-session-worker--column row 7)))
+    (unless (and (integerp position) (>= position 0)
+                 (stringp record-type) (> (string-bytes record-type) 0)
+                 (<= (string-bytes record-type)
+                     e-session-query-state-string-byte-limit)
+                 (or (null record-id)
+                     (and (stringp record-id)
+                          (<= (string-bytes record-id)
+                              e-session-query-state-string-byte-limit)))
+                 (or (null record-identity)
+                     (and (stringp record-identity)
+                          (> (string-bytes record-identity) 0)
+                          (<= (string-bytes record-identity)
+                              e-session-query-state-string-byte-limit)))
+                 (or (null parent-id)
+                     (and (stringp parent-id)
+                          (<= (string-bytes parent-id)
+                              e-session-query-state-string-byte-limit)))
+                 (or (null timestamp)
+                     (and (stringp timestamp)
+                          (<= (string-bytes timestamp)
+                              e-session-query-state-string-byte-limit)))
+                 (integerp payload-bytes) (>= payload-bytes 0)
+                 (stringp payload)
+                 (= payload-bytes (string-bytes payload)))
+      (e-runtime-store-session-worker--error
+       "Session record row has invalid physical fields" row))
+    (when (> payload-bytes e-runtime-store-session-worker-record-byte-limit)
+      (e-runtime-store-session-worker--error
+       "Session record exceeds read bound" payload-bytes))
+    (list :position position :record-type record-type :record-id record-id
+          :record-identity record-identity
+          :parent-id parent-id :timestamp timestamp
+          ;; The codec produces a fresh tree and PAYLOAD-BYTES was bounded
+          ;; above.  Query-row scalar limits apply to indexed current state,
+          ;; not to durable journal values such as message bodies.
+          :value (e-runtime-store-codec-decode
+                  (base64-decode-string payload)))))
+
+(defun e-runtime-store-session-worker--record-page (database body)
+  "Read one bounded forward record page with typed predicates."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (after (or (plist-get body :after) 0))
+         (limit (e-runtime-store-session-worker--limit
+                 (plist-get body :limit)
+                 e-runtime-store-session-worker-record-page-row-limit))
+         (where (list "session_id=?" "position>?"))
+         (params (list session-id after)))
+    (unless (and (integerp after) (>= after 0))
+      (e-runtime-store-session-worker--error
+       "Session record cursor is invalid" after))
+    (dolist (field '(record-type record-id record-identity parent-id))
+      (when (plist-member body (intern (concat ":" (symbol-name field))))
+        (let* ((key (intern (concat ":" (symbol-name field))))
+               (value (plist-get body key))
+               (column (pcase field
+                         ('record-type "record_type")
+                         ('record-id "record_id")
+                         ('record-identity "record_identity")
+                         ('parent-id "parent_id"))))
+          (unless (or (null value)
+                      (and (stringp value)
+                           (<= (string-bytes value)
+                               e-session-query-state-string-byte-limit)))
+            (e-runtime-store-session-worker--error
+             "Session record filter is invalid" field value))
+          (if (null value)
+              (setq where (append where (list (concat column " IS NULL"))))
+            (setq where (append where (list (concat column "=?")))
+                  params (append params (list value)))))))
+    (let* ((sql (concat "SELECT position,record_type,record_id,record_identity,parent_id,timestamp,LENGTH(payload),payload FROM session_records WHERE "
+                        (mapconcat #'identity where " AND ")
+                        " ORDER BY position ASC LIMIT ?"))
+           (rows (sqlite-select
+                  database sql
+                  (vconcat params (vector (1+ limit)))))
+           (truncated (> (length rows) limit))
+           (selected (if truncated (butlast rows) rows))
+           (records nil)
+           (bytes 0))
+      (catch 'page-full
+        (dolist (row selected)
+          (let* ((record (e-runtime-store-session-worker--decode-record-row row))
+                 (record-bytes (e-runtime-store-codec-measure-bounded
+                                record e-runtime-store-session-worker-page-byte-limit)))
+            (when (and records
+                       (> (+ bytes record-bytes)
+                          e-runtime-store-session-worker-page-byte-limit))
+              (setq truncated t)
+              (throw 'page-full nil))
+            (when (> record-bytes e-runtime-store-session-worker-page-byte-limit)
+              (e-runtime-store-session-worker--error
+               "Session record exceeds page byte bound" record-bytes))
+            (setq bytes (+ bytes record-bytes))
+            (push record records))))
+      (setq records (nreverse records))
+      (let ((last-record (car (last records))))
+        (list :records records
+              :next (and truncated last-record
+                         (plist-get last-record :position))
+              :limit limit :byte-count bytes
+              :byte-limit e-runtime-store-session-worker-page-byte-limit
+              :high-water (e-runtime-store-session-worker--position
+                           database session-id))))))
+
+(defun e-runtime-store-session-worker--visible-message-page (database body)
+  "Read the newest bounded message window for one chat session.
+
+This is deliberately a consumer-shaped read rather than a second spelling of
+the general journal-page API.  SQL filters on the typed `message' record
+family before decoding payloads, and the result contains only detached
+message values needed by the visible transcript.  The newest rows are
+returned in presentation order (oldest to newest within the window)."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (limit (e-runtime-store-session-worker--limit
+                 (plist-get body :limit)
+                 e-runtime-store-session-worker-visible-message-row-limit))
+         (rows
+          (sqlite-select
+           database
+           (concat
+            "SELECT position,record_type,record_id,record_identity,parent_id,timestamp,LENGTH(payload),payload "
+            "FROM session_records WHERE session_id=? AND record_type='message' "
+            "ORDER BY position DESC LIMIT ?")
+           (vector session-id (1+ limit))))
+         (truncated (> (length rows) limit))
+         (messages nil)
+         (bytes 0))
+    (catch 'visible-page-full
+      (dolist (row (if truncated (cl-subseq rows 0 limit) rows))
+        (let* ((record (e-runtime-store-session-worker--decode-record-row row))
+               (message (plist-get (plist-get record :value) :message))
+               (message-bytes
+                (e-runtime-store-codec-measure-bounded
+                 message e-runtime-store-session-worker-page-byte-limit)))
+          (unless (and (listp message)
+                       (plist-member message :id)
+                       (plist-member message :role))
+            (e-runtime-store-session-worker--error
+             "Session visible message has an invalid shape" message))
+          (when (and messages
+                     (> (+ bytes message-bytes)
+                        e-runtime-store-session-worker-page-byte-limit))
+            (setq truncated t)
+            (throw 'visible-page-full nil))
+          (when (> message-bytes e-runtime-store-session-worker-page-byte-limit)
+            (e-runtime-store-session-worker--error
+             "Session visible message exceeds page byte bound" message-bytes))
+          (setq bytes (+ bytes message-bytes))
+          (push (e-session-query--copy-value message) messages))))
+    (list :session-id session-id
+          ;; SQL visits newest first; PUSH restores presentation order, so do
+          ;; not reverse this list a second time.
+          :messages messages
+          :limit limit
+          :truncated truncated
+          :byte-count bytes
+          :byte-limit e-runtime-store-session-worker-page-byte-limit)))
+
+(defun e-runtime-store-session-worker--context-path (database body)
+  "Read exactly one selected parent path and apply its latest compaction.
+
+The recursive relation follows `session_query_state.current_head_id' toward
+the root.  Only message and compaction payloads cross the worker boundary;
+unselected branch rows and unrelated journal families are never returned."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (state-row
+          (car (sqlite-select
+                database
+                (concat
+                 "SELECT current_head_id,current_branch,turn_options,metadata "
+                 "FROM session_query_state WHERE session_id=?")
+                (vector session-id))))
+         (_ (unless state-row
+              (e-runtime-store-session-worker--error
+               "Missing session query state for context" session-id)))
+         (head-id (e-runtime-store-session-worker--column state-row 0))
+         (branch (e-runtime-store-session-worker--column state-row 1))
+         (turn-options
+          (e-runtime-store-session-worker--decode-value
+           (e-runtime-store-session-worker--column state-row 2)
+           :turn-options))
+         (metadata
+          (e-runtime-store-session-worker--decode-value
+           (e-runtime-store-session-worker--column state-row 3)
+           :metadata))
+         (rows
+          (if (null head-id)
+              nil
+            (sqlite-select
+             database
+             (concat
+              "WITH RECURSIVE selected(position,record_id,parent_id,record_type,payload,depth) AS ("
+              "SELECT position,record_id,parent_id,record_type,payload,0 "
+              "FROM session_records WHERE session_id=? AND record_id=? "
+              "UNION ALL "
+              "SELECT r.position,r.record_id,r.parent_id,r.record_type,r.payload,s.depth+1 "
+              "FROM session_records r JOIN selected s ON r.record_id=s.parent_id "
+              "WHERE r.session_id=? AND s.depth<?) "
+              "SELECT position,record_id,parent_id,record_type,payload,depth "
+              "FROM selected ORDER BY depth DESC")
+             (vector session-id head-id session-id
+                     e-runtime-store-session-worker-context-path-row-limit))))
+         (truncated
+          (and rows
+               (= (length rows)
+                  (1+ e-runtime-store-session-worker-context-path-row-limit))))
+         (path-ids (make-hash-table :test 'equal))
+         entries latest-compaction boundary messages message-path-indexes
+         context-records tool-receipts (tool-receipt-total-count 0)
+         (tool-receipt-bytes 0)
+         (erased-tool-call-ids (make-hash-table :test #'equal))
+         (bytes 0))
+    (when truncated
+      (e-runtime-store-session-worker--error
+       "Selected session context path exceeds record limit"
+       session-id e-runtime-store-session-worker-context-path-row-limit))
+    (cl-loop for row in rows
+             for path-index from 0
+             do
+      (let* ((record-id (e-runtime-store-session-worker--column row 1))
+             (record-type (e-runtime-store-session-worker--column row 3))
+             (record
+              (e-runtime-store-codec-decode
+               (base64-decode-string
+                (e-runtime-store-session-worker--column row 4)))))
+        (when record-id (puthash record-id path-index path-ids))
+        (push (list :path-index path-index :record-type record-type
+                    :record record)
+              entries)))
+    (setq entries (nreverse entries))
+    ;; Receipt context is part of this consumer-shaped selected-path query.
+    ;; Resolve durable erasures here and return only the small visible tail;
+    ;; Emacs never receives or retains the complete receipt history.
+    (dolist (entry entries)
+      (when (equal (plist-get entry :record-type)
+                   "context-curation-package")
+        (when-let* ((erasure (plist-get (plist-get entry :record) :erasure)))
+          (dolist (tool-call-id
+                   (e-context-lifetime-curation-erasure-tool-call-ids erasure))
+            (puthash tool-call-id t erased-tool-call-ids)))))
+    (dolist (entry entries)
+      (when (equal (plist-get entry :record-type) "activity-event")
+        (let* ((record (plist-get entry :record))
+               (payload (plist-get record :payload))
+               (receipt (and (eq (plist-get record :event-type) 'tool-finished)
+                             (plist-get payload :receipt)))
+               (tool-call-id (and (listp receipt)
+                                  (plist-get receipt :tool-call-id))))
+          (when (and (listp receipt)
+                     (stringp tool-call-id)
+                     (not (gethash tool-call-id erased-tool-call-ids)))
+            (let* ((projected
+                    (list :tool-call-id tool-call-id
+                          :tool (plist-get receipt :tool)
+                          :status (plist-get receipt :status)
+                          :stated-purpose (plist-get receipt :stated-purpose)
+                          :purpose-status (plist-get receipt :purpose-status)
+                          :details-uri (plist-get receipt :details-uri)))
+                   (receipt-bytes
+                    (e-runtime-store-codec-measure-bounded
+                     projected
+                     e-runtime-store-session-worker-context-receipt-byte-limit)))
+              (setq tool-receipt-total-count
+                    (1+ tool-receipt-total-count))
+              (push (cons receipt-bytes
+                          (e-session-query--copy-value projected))
+                    tool-receipts)
+              (setq tool-receipt-bytes (+ tool-receipt-bytes receipt-bytes))
+              (while (or (> (length tool-receipts)
+                            e-runtime-store-session-worker-context-receipt-limit)
+                         (> tool-receipt-bytes
+                            e-runtime-store-session-worker-context-receipt-byte-limit))
+                (let ((oldest (car (last tool-receipts))))
+                  (setq tool-receipt-bytes
+                        (- tool-receipt-bytes (car oldest))
+                        tool-receipts (butlast tool-receipts)))))))))
+    (dolist (entry entries)
+      (when (equal (plist-get entry :record-type) "compaction")
+        (let* ((record (plist-get entry :record))
+               (candidate (plist-get record :first-kept-entry-id)))
+          (when (and (stringp candidate) (gethash candidate path-ids))
+            (setq latest-compaction record boundary candidate)))))
+    (let ((inside (null boundary)))
+      (dolist (entry entries)
+        (let* ((record (plist-get entry :record))
+               (record-id (plist-get record :id))
+               (record-type (plist-get entry :record-type))
+               (path-index (plist-get entry :path-index)))
+          (when (equal record-id boundary) (setq inside t))
+          (when (and inside (equal record-type "message"))
+            (let* ((message (plist-get record :message))
+                   (message-bytes
+                    (e-runtime-store-codec-measure-bounded
+                     message
+                     e-runtime-store-session-worker-context-path-byte-limit)))
+              (when (> (+ bytes message-bytes)
+                       e-runtime-store-session-worker-context-path-byte-limit)
+                (e-runtime-store-session-worker--error
+                 "Selected session context exceeds byte limit"
+                 session-id
+                 e-runtime-store-session-worker-context-path-byte-limit))
+              (setq bytes (+ bytes message-bytes))
+              (push (e-session-query--copy-value message) messages)
+              (push path-index message-path-indexes)))
+          (when (and inside
+                     (member record-type
+                             '("context-generation" "context-promotion"
+                               "context-curation-package")))
+            (let ((record-bytes
+                   (e-runtime-store-codec-measure-bounded
+                    record
+                    e-runtime-store-session-worker-context-path-byte-limit)))
+              (when (> (+ bytes record-bytes)
+                       e-runtime-store-session-worker-context-path-byte-limit)
+                (e-runtime-store-session-worker--error
+                 "Selected session context exceeds byte limit"
+                 session-id
+                 e-runtime-store-session-worker-context-path-byte-limit))
+              (setq bytes (+ bytes record-bytes))
+              (push
+               (append
+                (list :path-index path-index :record-type record-type
+                      :record (e-session-query--copy-value record))
+                (when (equal record-type "context-generation")
+                  (let* ((context-record (plist-get record :context-record))
+                         (covered
+                          (plist-get context-record
+                                     :covered-session-boundary)))
+                    (list :covered-boundary-index
+                          (and covered (gethash covered path-ids))))))
+               context-records))))))
+    (list :session-id session-id :current-branch branch
+          :current-head-id head-id
+          :current-head-path-index (and entries (1- (length entries)))
+          :metadata (e-session-query--copy-value metadata)
+          :turn-options (e-session-query--copy-value turn-options)
+          :compaction
+          (and latest-compaction
+               (list :id (plist-get latest-compaction :id)
+                     :summary (plist-get latest-compaction :summary)
+                     :first-kept-entry-id boundary))
+          :messages (nreverse messages)
+          :message-path-indexes (nreverse message-path-indexes)
+          :context-records (nreverse context-records)
+          :tool-receipts (mapcar #'cdr (nreverse tool-receipts))
+          :tool-receipt-total-count tool-receipt-total-count
+          :tool-receipt-byte-count tool-receipt-bytes
+          :tool-receipt-byte-limit
+          e-runtime-store-session-worker-context-receipt-byte-limit
+          :record-limit e-runtime-store-session-worker-context-path-row-limit
+          :byte-count bytes
+          :byte-limit e-runtime-store-session-worker-context-path-byte-limit)))
+
+(defun e-runtime-store-session-worker--header (database body)
+  "Return bounded metadata for SESSION-ID's journal."
+  (let ((session-id (e-runtime-store-session-worker--session-id
+                     (plist-get body :session-id))))
+    (let ((row (car (sqlite-select
+                    database
+                    "SELECT COUNT(*),COALESCE(SUM(LENGTH(payload)),0),COALESCE(MAX(position),0) FROM session_records WHERE session_id=?"
+                    (vector session-id)))))
+      (list :session-id session-id
+            :present (> (e-runtime-store-session-worker--column row 0) 0)
+            :record-count (e-runtime-store-session-worker--column row 0)
+            :byte-size (e-runtime-store-session-worker--column row 1)
+            :revision (e-runtime-store-session-worker--column row 2)
+            :reference session-id))))
+
+(defun e-runtime-store-session-worker-read (database body)
+  "Execute one typed bounded session read BODY."
+  (let ((e-runtime-store-session-worker--database database))
+    (pcase (plist-get body :op)
+      ((or 'session-query-state 'session-query-state-get 'session-state-get)
+       (e-runtime-store-session-worker--query-state database body))
+      ((or 'session-metadata 'session-metadata-get)
+       (e-runtime-store-session-worker--metadata database body))
+      ((or 'session-board-association 'session-board-association-get)
+       (e-runtime-store-session-worker--association database body))
+      ((or 'session-query-page 'session-state-page
+           'session-recent-page 'session-root-page)
+       (e-runtime-store-session-worker--query-page database body))
+      ('session-id-page
+       (e-runtime-store-session-worker--id-page database body))
+      ((or 'session-record-page 'session-history-page)
+       (e-runtime-store-session-worker--record-page database body))
+      ((or 'session-visible-message-page 'session-visible-messages)
+       (e-runtime-store-session-worker--visible-message-page database body))
+      ('session-context-path
+       (e-runtime-store-session-worker--context-path database body))
+      ('session-header (e-runtime-store-session-worker--header database body))
+      (_ (e-runtime-store-session-worker--error
+          "Unknown session read operation" (plist-get body :op))))))
+
+(provide 'e-runtime-store-session-worker)
+
+;;; e-runtime-store-session-worker.el ends here

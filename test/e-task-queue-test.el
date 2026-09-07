@@ -473,27 +473,62 @@ tests need a runner whose handle carries one."
   (should-error (e-task-queue-create :directory "/tmp/retired-task-store")
                 :type 'e-task-queue-error))
 
-(ert-deftest e-task-queue-test-storage-root-opens-on-first-explicit-operation ()
-  "A durable queue opens its root only when an owner operation is requested."
+(ert-deftest e-task-queue-test-startup-load-issues-no-sql-and-start-claims ()
+  "Startup initializes no durable mirror; explicit scheduler start claims."
   (let* ((calls nil)
          (storage
           (e-task-storage--create
            :runtime :test-runtime
            :call-operation
-           (lambda (operation &rest arguments)
-             (push (list operation arguments) calls)
-             (pcase operation
-               ('open-queue '(:revision 3 :sequence 7 :paused-p t))
-               ('snapshot '(:revision 3 :sequence 7 :paused-p t :records nil))
-               (_ (error "Unexpected task storage operation: %S" operation))))))
+           (lambda (&rest arguments)
+             (error "Unexpected blocking task storage operation: %S"
+                    arguments))
+           :submit-operation
+           (lambda (kind operation arguments on-settle)
+             (push (list kind operation arguments) calls)
+             (funcall on-settle '(:claimed-p nil :paused-p nil) nil)
+             :request)))
          (queue (e-task-queue-create :storage storage :id "first-use")))
     (should-not calls)
     (e-task-queue-load queue)
-    (should (equal (mapcar #'car (nreverse calls)) '(open-queue snapshot)))
-    (should (= (e-task-queue-sequence queue) 7))
-    (should (= (e-task-queue-revision queue) 3))
-    (should (e-task-queue-paused-p queue))
-    (should (e-task-queue-loaded-p queue))))
+    (should-not calls)
+    (should (e-task-queue-loaded-p queue))
+    (e-task-queue-start queue)
+    (should (= (length calls) 1))
+    (should (equal (caar calls) 'write))
+    (should (equal (cadar calls) 'claim-runnable))
+    (should (= (hash-table-count (e-task-queue-records queue)) 0))))
+
+(ert-deftest e-task-queue-test-durable-enqueue-releases-nonexecuting-copy ()
+  "A committed queued task remains only in SQLite until atomically claimed."
+  (let* ((calls nil)
+         (storage
+          (e-task-storage--create
+           :runtime :test-runtime
+           :call-operation
+           (lambda (&rest arguments)
+             (error "Unexpected blocking task storage operation: %S"
+                    arguments))
+           :submit-operation
+           (lambda (kind operation arguments on-settle)
+             (setq calls (append calls (list (list kind operation arguments))))
+             (funcall on-settle
+                      (if (eq operation 'enqueue)
+                          '(:revision 1)
+                        '(:claimed-p nil :paused-p nil))
+                      nil)
+             :request)))
+         (queue
+          (e-task-queue-create
+           :storage storage :id "release-copy"
+           :runner (lambda (&rest _) (ert-fail "No task was claimed"))))
+         (record (e-task-queue-enqueue queue :prompt "persist only")))
+    (should (eq (plist-get record :status) 'queued))
+    (should (= (hash-table-count (e-task-queue-records queue)) 0))
+    (should-not (e-task-queue-order queue))
+    (should-not (e-task-queue-work-handle
+                 queue (plist-get record :task-id)))
+    (should (equal (mapcar #'cadr calls) '(enqueue claim-runnable)))))
 
 (ert-deftest e-task-queue-test-failed-task-auto-retries ()
   "A failed task with retries left is re-armed as a fresh queued attempt.

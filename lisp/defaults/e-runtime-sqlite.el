@@ -77,7 +77,8 @@
 
 (cl-defun e-runtime-sqlite-open
     (directory &key load-sessions load-task-queue task-runner
-               task-producer-binding (task-queue-id "default") runtime-store)
+               task-producer-binding (task-queue-id "default") runtime-store
+               offline)
   "Open one SQLite runtime rooted at DIRECTORY.
 
 The returned composition injects one shared physical runtime through separate
@@ -85,7 +86,9 @@ session, Board, task, cron, voice, Goodnite, and raw-result owner ports.
 LOAD-TASK-QUEUE should be used only after TASK-RUNNER or TASK-PRODUCER-BINDING
 provides process-local execution authority.  RUNTIME-STORE may supply an
 already-open transport prewarm handle; the composition borrows that handle and
-the caller remains its close owner."
+the caller remains its close owner.  OFFLINE selects blocking storage ports for
+the explicit stopped-runtime migrator; ordinary runtime composition always
+uses enqueue-and-return Board storage."
   (when e-runtime-sqlite--live-composition
     (signal 'e-runtime-sqlite-live-composition
             (list "Close the active SQLite runtime before opening another")))
@@ -126,7 +129,9 @@ the caller remains its close owner."
                  directory :load-all load-sessions
                  :runtime-store runtime-store)
                 board-storage
-                (e-board-storage-sqlite-create runtime-store)
+                (if offline
+                    (e-board-storage-sqlite-create runtime-store)
+                  (e-board-storage-sqlite-create-async runtime-store))
                 task-storage
                 (e-task-storage-sqlite-create runtime-store)
                 task-queue
@@ -149,7 +154,7 @@ the caller remains its close owner."
           (e-goodnite-resources-configure-storage goodnite-storage)
           (e-raw-results-configure-storage raw-storage)
           (when load-task-queue
-            (e-task-queue-load task-queue))
+            (e-task-queue-start task-queue))
           (setq composition
                 (e-runtime-sqlite--create
                  :directory directory :runtime-store runtime-store

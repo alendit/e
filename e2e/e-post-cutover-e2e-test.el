@@ -1,4 +1,4 @@
-;;; e-post-cutover-e2e-test.el --- Deterministic post-cutover E2E -*- lexical-binding: t; -*-
+;;; e-post-cutover-e2e-test.el --- SQLite-authoritative post-cutover E2E -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
@@ -7,44 +7,62 @@
 
 ;; Cross-boundary coverage for the ordinary post-migration startup path.  The
 ;; scenario owns a disposable legacy tree, performs the real same-root offline
-;; cutover, and then reaches the SQLite session store through the normal
-;; :chat-default registry factory.  Provider I/O is outside this contract.
+;; cutover, and then reaches its data through bounded asynchronous SQLite
+;; queries.  Neither initial open nor reopen may reconstruct a session catalog
+;; or durable session aggregate in Emacs.
 
 ;;; Code:
 
-(require 'cl-lib)
 (require 'ert)
+(require 'seq)
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-runtime-migration)
 (require 'e-session)
+(require 'e-session-async)
+(require 'e-work)
 (load (expand-file-name
        "e-post-cutover-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
-(defun e-post-cutover-e2e--assert-stubs (store loaded-id unloaded-id)
-  "Assert STORE has the complete catalog with selected load state.
+(defun e-post-cutover-e2e--query (work)
+  "Return WORK's value at this explicit E2E batch boundary."
+  (e-work-with-batch-await
+    (e-work-await-batch work :timeout 8)))
 
-LOADED-ID is nil before any semantic access.  UNLOADED-ID must remain an
-unloaded catalog stub throughout the scenario."
-  (should (= (length (e-session-list store))
-             e-post-cutover-e2e--session-count))
-  (dotimes (index e-post-cutover-e2e--session-count)
-    (let ((session-id (e-post-cutover-e2e--session-id index)))
-      (should (eq (e-post-cutover-e2e--loaded-p store session-id)
-                  (and loaded-id (equal loaded-id session-id))))))
-  (should-not (e-post-cutover-e2e--loaded-p store unloaded-id)))
+(defun e-post-cutover-e2e--assert-detached-state (store representative)
+  "Assert STORE exposes REPRESENTATIVE only through bounded detached queries."
+  (let* ((page
+          (e-post-cutover-e2e--query
+           (e-session-async-query-page
+            store :limit e-post-cutover-e2e--session-count)))
+         (row
+          (seq-find
+           (lambda (candidate)
+             (equal (plist-get candidate :session-id) representative))
+           (plist-get page :rows)))
+         (visible
+          (e-post-cutover-e2e--query
+           (e-session-async-visible-message-page store representative 1))))
+    (should (= (length (plist-get page :rows))
+               e-post-cutover-e2e--session-count))
+    (should row)
+    (should (= (plist-get page :limit) e-post-cutover-e2e--session-count))
+    (should (= (length (plist-get visible :messages)) 1))
+    (should (equal
+             (plist-get (car (plist-get visible :messages)) :content)
+             (e-post-cutover-e2e--message-content 17)))
+    (should (= (hash-table-count (e-session-store-sessions store)) 0))))
 
-(ert-deftest e-post-cutover-e2e-test-same-root-cutover-starts-lazy ()
-  "Cutover feeds the ordinary lazy :chat-default composition exactly."
+(ert-deftest e-post-cutover-e2e-test-same-root-cutover-queries-without-replay ()
+  "Cutover feeds bounded SQLite queries without reconstructing durable state."
   (let* ((base (make-temp-file "e-post-cutover-e2e-" t))
          (root (expand-file-name "e" base))
          (source (expand-file-name "e-copy" base))
          (backup (expand-file-name "e.backup" base))
          (representative (e-post-cutover-e2e--session-id 17))
-         (untouched (e-post-cutover-e2e--session-id 42))
          (process-environment (copy-sequence process-environment))
          (e-session-directory (expand-file-name "sessions" root))
          (e-default--runtime nil)
@@ -57,98 +75,42 @@ unloaded catalog stub throughout the scenario."
           (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
-         (e-harness-instance--generation 0)
-         (read-page (symbol-function 'e-session-storage-read-session-page))
-         (read-records
-          (symbol-function 'e-session-storage-read-session-records))
-         page-session-ids
-         record-session-ids)
+         (e-harness-instance--generation 0))
     (setenv "E_RUNTIME_STATE_DIRECTORY" nil)
     (unwind-protect
         (progn
           (e-post-cutover-e2e--make-legacy-root root)
           (copy-directory root source nil nil nil)
           (let* ((legacy-inventory (e-runtime-migration-inventory root))
-                 (cutover-start (float-time))
-                 (report (e-runtime-migration-cutover source root backup))
-                 (cutover-seconds (- (float-time) cutover-start)))
+                 (report (e-runtime-migration-cutover source root backup)))
             (should (eq (plist-get report :operation) 'cutover))
-            (should (equal (directory-file-name (plist-get report :installed))
-                           (directory-file-name root)))
             (should (equal legacy-inventory
                            (e-runtime-migration-inventory source)))
             (should (equal legacy-inventory
                            (e-runtime-migration-inventory backup)))
             (should (file-regular-p (expand-file-name "store.sqlite3" root)))
-            (should-not (file-exists-p (expand-file-name "sessions" root)))
-            (cl-letf
-                (((symbol-function 'e-session-storage-read-session-page)
-                  (lambda (store session-id &optional after limit)
-                    (push session-id page-session-ids)
-                    (funcall read-page store session-id after limit)))
-                 ((symbol-function 'e-session-storage-read-session-records)
-                  (lambda (store session-id &optional offset)
-                    (push session-id record-session-ids)
-                    (funcall read-records store session-id offset))))
-              (e-default-harnesses-register
-               '((:id :chat-default
-                  :name "Default Chat"
-                  :kind chat
-                  :default t
-                  :factory e-default-chat-harness-create
-                  :sync e-default-chat-harness-sync)))
-              (let* ((open-start (float-time))
-                     (harness
-                      (e-harness-registry-get-or-create :chat-default))
-                     (store (e-harness-sessions harness))
-                     (open-seconds (- (float-time) open-start)))
-                (should (equal (e-default-runtime-directory)
-                               (file-name-as-directory root)))
-                (should (equal (e-session-store-directory store)
-                               (file-name-as-directory root)))
-                (should-not page-session-ids)
-                (should-not record-session-ids)
-                (e-post-cutover-e2e--assert-stubs store nil untouched)
-                (let ((load-start (float-time)))
-                  (should
-                   (equal
-                    (mapcar (lambda (message) (plist-get message :content))
-                            (e-session-messages store representative))
-                    (list (e-post-cutover-e2e--message-content 17))))
-                  (message
-                   (concat
-                    "E87 post-cutover E2E observational seconds: "
-                    "cutover=%.3f open=%.3f first-load=%.3f")
-                   cutover-seconds open-seconds
-                   (- (float-time) load-start)))
-                (should (equal (delete-dups (copy-sequence record-session-ids))
-                               (list representative)))
-                (e-post-cutover-e2e--assert-stubs
-                 store representative untouched))
-              (e-default-runtime-close)
-              (e-harness-registry-clear-instance :chat-default)
-              (setq page-session-ids nil record-session-ids nil)
-              (let* ((reopen-start (float-time))
-                     (harness
-                      (e-harness-registry-get-or-create :chat-default))
-                     (store (e-harness-sessions harness))
-                     (reopen-seconds (- (float-time) reopen-start)))
-                (should-not page-session-ids)
-                (should-not record-session-ids)
-                (e-post-cutover-e2e--assert-stubs store nil untouched)
-                (should
-                 (equal
-                  (mapcar (lambda (message) (plist-get message :content))
-                          (e-session-messages store representative))
-                  (list (e-post-cutover-e2e--message-content 17))))
-                (should (equal
-                         (delete-dups (copy-sequence record-session-ids))
-                         (list representative)))
-                (e-post-cutover-e2e--assert-stubs
-                 store representative untouched)
-                (message
-                 "E87 post-cutover E2E observational reopen seconds: %.3f"
-                 reopen-seconds)))))
+            (should-not (file-exists-p (expand-file-name "sessions" root))))
+          (e-default-harnesses-register
+           '((:id :chat-default
+              :name "Default Chat"
+              :kind chat
+              :default t
+              :factory e-default-chat-harness-create
+              :sync e-default-chat-harness-sync)))
+          (let* ((harness
+                  (e-harness-registry-get-or-create :chat-default))
+                 (store (e-harness-sessions harness)))
+            ;; Harness construction is transport-only.  No session row or
+            ;; journal record is copied into the aggregate table.
+            (should (= (hash-table-count (e-session-store-sessions store)) 0))
+            (e-post-cutover-e2e--assert-detached-state store representative))
+          (e-default-runtime-close)
+          (e-harness-registry-clear-instance :chat-default)
+          (let* ((harness
+                  (e-harness-registry-get-or-create :chat-default))
+                 (store (e-harness-sessions harness)))
+            (should (= (hash-table-count (e-session-store-sessions store)) 0))
+            (e-post-cutover-e2e--assert-detached-state store representative)))
       (e-default-runtime-close)
       (when (file-directory-p base)
         (delete-directory base t)))))

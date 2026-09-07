@@ -73,10 +73,13 @@
 (defun e-task-storage-sqlite-worker--enqueue (body)
   "Append one queued task from BODY."
   (let* ((queue-id (plist-get body :queue-id))
+         (_root (e-task-storage-sqlite-worker--open body))
          (row (e-task-storage-sqlite-worker--queue queue-id))
          (record (plist-get body :record))
          (task-id (plist-get record :task-id))
-         (position (plist-get body :position))
+         ;; SQLite owns durable ordering.  A caller may optimistically name a
+         ;; task, but it never reserves or reconstructs the queue sequence.
+         (position (1+ (e-task-storage-sqlite-worker--column row 1)))
          (revision (1+ (e-task-storage-sqlite-worker--column row 0))))
     (sqlite-execute
      e-task-storage-sqlite-worker--database
@@ -88,7 +91,7 @@
                             (e-task-storage-sqlite-worker--column row 1))
      (= (e-task-storage-sqlite-worker--column row 2) 1))
     (list :queue-id queue-id :task-id task-id :revision revision
-          :task-revision 1 :record record)))
+          :sequence position :task-revision 1 :record record)))
 
 (defun e-task-storage-sqlite-worker--task-row (queue-id task-id)
   "Return QUEUE-ID TASK-ID row or signal."
@@ -139,6 +142,69 @@
     (list :queue-id queue-id :task-id task-id :attempt-id attempt-id
           :revision revision :task-revision task-revision :record record)))
 
+(defun e-task-storage-sqlite-worker--claim-runnable (body)
+  "Atomically claim the oldest runnable task described by BODY.
+
+The generic runtime worker wraps this handler in one SQLite transaction, so
+selection, state transition, and attempt creation have one commit boundary."
+  (let* ((queue-id (plist-get body :queue-id))
+         (_root (e-task-storage-sqlite-worker--open body))
+         (queue-row (e-task-storage-sqlite-worker--queue queue-id)))
+    (if (= (e-task-storage-sqlite-worker--column queue-row 2) 1)
+        (list :queue-id queue-id :claimed-p nil :paused-p t)
+      (if-let* ((row
+                 (car
+                  (sqlite-select
+                   e-task-storage-sqlite-worker--database
+                   (concat
+                    "SELECT task_id,revision,payload FROM task_records "
+                    "WHERE queue_id=? AND status='queued' "
+                    "ORDER BY position LIMIT 1")
+                   (vector queue-id)))))
+          (let* ((task-id (e-task-storage-sqlite-worker--column row 0))
+                 (task-revision
+                  (1+ (e-task-storage-sqlite-worker--column row 1)))
+                 (record
+                  (e-task-storage-sqlite-worker--unpack
+                   (e-task-storage-sqlite-worker--column row 2)))
+                 (number (1+ (or (plist-get record :attempt-number) 0)))
+                 (attempt-id (format "%s:a:%d" task-id number))
+                 (started-at (plist-get body :started-at))
+                 (instance-id
+                  (or (plist-get record :harness-instance-id)
+                      (plist-get body :harness-instance-id)))
+                 (revision
+                  (1+ (e-task-storage-sqlite-worker--column queue-row 0))))
+            (setq record (plist-put record :status 'running)
+                  record (plist-put record :started-at started-at)
+                  record (plist-put record :attempt-id attempt-id)
+                  record (plist-put record :attempt-number number)
+                  record (plist-put record :harness-instance-id instance-id))
+            (sqlite-execute
+             e-task-storage-sqlite-worker--database
+             (concat
+              "INSERT INTO task_attempts(queue_id,task_id,attempt_id,"
+              "attempt_number,state,started_at,payload) VALUES(?,?,?,?,?,?,?)")
+             (vector queue-id task-id attempt-id number "claimed" started-at
+                     (e-task-storage-sqlite-worker--pack
+                      (list :attempt-id attempt-id :number number
+                            :state 'claimed))))
+            (sqlite-execute
+             e-task-storage-sqlite-worker--database
+             (concat
+              "UPDATE task_records SET status='running',revision=?,payload=? "
+              "WHERE queue_id=? AND task_id=? AND status='queued'")
+             (vector task-revision
+                     (e-task-storage-sqlite-worker--pack record)
+                     queue-id task-id))
+            (e-task-storage-sqlite-worker--set-root
+             queue-id revision
+             (e-task-storage-sqlite-worker--column queue-row 1) nil)
+            (list :queue-id queue-id :claimed-p t :task-id task-id
+                  :attempt-id attempt-id :revision revision
+                  :task-revision task-revision :record record))
+        (list :queue-id queue-id :claimed-p nil :paused-p nil)))))
+
 (defun e-task-storage-sqlite-worker--transition (body)
   "Commit one task transition from BODY."
   (let* ((queue-id (plist-get body :queue-id))
@@ -178,6 +244,7 @@
 (defun e-task-storage-sqlite-worker--pause (body)
   "Commit queue pause gate from BODY."
   (let* ((queue-id (plist-get body :queue-id))
+         (_root (e-task-storage-sqlite-worker--open body))
          (row (e-task-storage-sqlite-worker--queue queue-id))
          (revision (1+ (e-task-storage-sqlite-worker--column row 0)))
          (paused-p (and (plist-get body :paused-p) t)))
@@ -271,6 +338,8 @@
     ('task-queue-open (e-task-storage-sqlite-worker--open body))
     ('task-enqueue (e-task-storage-sqlite-worker--enqueue body))
     ('task-claim (e-task-storage-sqlite-worker--claim body))
+    ('task-runnable-claim
+     (e-task-storage-sqlite-worker--claim-runnable body))
     ('task-transition (e-task-storage-sqlite-worker--transition body))
     ('task-queue-pause (e-task-storage-sqlite-worker--pause body))
     ('task-history-delete (e-task-storage-sqlite-worker--delete-history body))
@@ -283,6 +352,13 @@
   "Execute one bounded task read BODY using DATABASE."
   (setq e-task-storage-sqlite-worker--database database)
   (pcase (plist-get body :op)
+    ('task-queue-status
+     (let* ((queue-id (plist-get body :queue-id))
+            (root (e-task-storage-sqlite-worker--queue queue-id)))
+       (list :queue-id queue-id
+             :revision (e-task-storage-sqlite-worker--column root 0)
+             :sequence (e-task-storage-sqlite-worker--column root 1)
+             :paused-p (= (e-task-storage-sqlite-worker--column root 2) 1))))
     ('task-snapshot
      (let* ((queue-id (plist-get body :queue-id))
             (root (e-task-storage-sqlite-worker--queue queue-id))

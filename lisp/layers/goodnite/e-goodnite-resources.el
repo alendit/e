@@ -587,32 +587,53 @@ SQLite demand write is authoritative and failures surface to the caller."
       (unless e-goodnite-resources-storage
         (signal 'e-goodnite-storage-error
                 (list "Goodnite SQLite runtime is not configured")))
-      (e-goodnite-storage-append
-       e-goodnite-resources-storage event-id record))))
+      (e-goodnite-storage-submit
+       e-goodnite-resources-storage 'write 'append (list event-id record)
+       (lambda (_result error)
+         (when error
+           (message "Goodnite demand persistence failed: %s"
+                    (error-message-string error)))))
+      ;; This is the bounded immutable request value, not a durable mirror.
+      (append (list :event-id event-id) record))))
 
 (defun e-goodnite-resources-demand-page (&optional after limit)
   "Return one bounded durable Goodnite demand page."
   (unless e-goodnite-resources-storage
     (signal 'e-goodnite-storage-error
             (list "Goodnite demand storage is not configured")))
-  (e-goodnite-storage-page e-goodnite-resources-storage after limit
-                           e-goodnite-demand-consumer))
+  (e-goodnite-storage-submit
+   e-goodnite-resources-storage 'read 'page
+   (list (or after 0) (or limit 256) e-goodnite-demand-consumer)
+   (lambda (_result error)
+     (when error
+       (message "Goodnite demand query failed: %s"
+                (error-message-string error))))))
 
 (defun e-goodnite-resources-ack-demand (position)
   "Acknowledge durable Goodnite demand through POSITION."
   (unless e-goodnite-resources-storage
     (signal 'e-goodnite-storage-error
             (list "Goodnite demand storage is not configured")))
-  (e-goodnite-storage-ack e-goodnite-resources-storage position
-                          e-goodnite-demand-consumer))
+  (e-goodnite-storage-submit
+   e-goodnite-resources-storage 'write 'ack
+   (list e-goodnite-demand-consumer position)
+   (lambda (_result error)
+     (when error
+       (message "Goodnite demand acknowledgement failed: %s"
+                (error-message-string error))))))
 
 (defun e-goodnite-resources-cleanup-demand (&optional limit)
   "Delete one bounded acknowledged Goodnite demand prefix."
   (unless e-goodnite-resources-storage
     (signal 'e-goodnite-storage-error
             (list "Goodnite demand storage is not configured")))
-  (e-goodnite-storage-cleanup e-goodnite-resources-storage limit
-                              e-goodnite-demand-consumer))
+  (e-goodnite-storage-submit
+   e-goodnite-resources-storage 'write 'cleanup
+   (list e-goodnite-demand-consumer (or limit 256))
+   (lambda (_result error)
+     (when error
+       (message "Goodnite demand cleanup failed: %s"
+                (error-message-string error))))))
 
 ;;; Registration
 

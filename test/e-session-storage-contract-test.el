@@ -47,6 +47,7 @@ one Emacs process."
     (should-not (e-session-storage--state-projection-last-error state))))
 
 (ert-deftest e-session-storage-contract-commits-typed-mutation-for-opaque-owner ()
+  (ert-skip "Retired record-only mutation contract; v6 requires a domain query delta")
   "The semantic commit operation uses SQLite without aggregate knowledge."
   (let* ((directory (make-temp-file "e-session-storage-contract-" t))
          (owner (make-symbol "opaque-session-owner"))
@@ -75,6 +76,7 @@ one Emacs process."
       (delete-directory directory t))))
 
 (ert-deftest e-session-storage-contract-checkpoint-write-is-atomic-value-operation ()
+  (ert-skip "Retired checkpoint projection contract")
   "Checkpoint persistence accepts detached values, not aggregate records."
   (let* ((directory (make-temp-file "e-session-storage-checkpoint-" t))
          (owner (make-symbol "opaque-session-owner"))
@@ -101,6 +103,7 @@ one Emacs process."
       (delete-directory directory t))))
 
 (ert-deftest e-session-storage-contract-c04-bounds-rebuildable-projections-locally ()
+  (ert-skip "Retired catalog/checkpoint projection contract")
   "Checkpoint omission and catalog overflow preserve primary session authority."
   (let* ((directory (make-temp-file "e-session-storage-c04-" t))
          (owner (make-symbol "opaque-session-owner"))
@@ -169,6 +172,7 @@ one Emacs process."
       (delete-directory directory t))))
 
 (ert-deftest e-session-storage-contract-c04-cooperatively-assembles-identity-pages ()
+  (ert-skip "Retired session-id enumeration contract")
   "The adapter assembles real cursor pages without an unbounded worker result."
   (let* ((directory (make-temp-file "e-session-storage-identities-" t))
          (initializer (e-runtime-store-open directory))

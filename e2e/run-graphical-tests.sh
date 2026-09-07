@@ -24,15 +24,14 @@ export E_E2E_EMACS_CONFIG=$emacs_config_mode
 
 startup_fixture_directory=
 startup_stall_directory=
-startup_worker_file=
 startup_report_file=
 startup_fixture_enabled=0
 
 cleanup_startup_fixture() {
   if [[ $startup_fixture_enabled == 1 ]]; then
     startup_fixture_enabled=0
-    if [[ -n $startup_worker_file || -n $startup_report_file ]]; then
-      rm -f "$startup_worker_file" "$startup_report_file"
+    if [[ -n $startup_report_file ]]; then
+      rm -f "$startup_report_file"
     fi
     if [[ -n $startup_fixture_directory ]]; then
       rm -rf "$startup_fixture_directory"
@@ -50,11 +49,9 @@ if [[ ${E_GRAPHICAL_E2E_SELECTOR:-} == startup-prewarm && $emacs_config_mode == 
   trap cleanup_startup_fixture EXIT
   startup_fixture_directory=$(mktemp -d -t e-graphical-startup-v5.XXXXXX)
   startup_stall_directory=$(mktemp -d -t e-graphical-startup-stall.XXXXXX)
-  startup_worker_file=$startup_fixture_directory/e-runtime-store-worker-v6.el
   startup_report_file=$startup_fixture_directory/startup-report
   export E_RUNTIME_STATE_DIRECTORY=$startup_fixture_directory
   export E_RUNTIME_STORE_TEST_STALL_DIRECTORY=$startup_stall_directory
-  export E_RUNTIME_STORE_TEST_WORKER_FILE=$startup_worker_file
   export E_GRAPHICAL_E2E_STARTUP_REPORT=$startup_report_file
 fi
 
@@ -118,7 +115,7 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
     emacs_dir=$(mktemp -d -t e-graphical-e2e-emacs.XXXXXX)
   fi
   cleanup() {
-    emacsclient --socket-name "$server_name" \
+    emacsclient --no-wait --socket-name "$server_name" \
       --eval "(kill-emacs 0)" >/dev/null 2>&1 || true
     rm -f "$report_file"
     cleanup_startup_fixture
@@ -164,9 +161,13 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
         (e-graphical-test-runner-run-to-file \"$report_file\")))")
   cat "$report_file"
   convert_graphical_screenshots
-  [[ $result == 0 ]]
+  if [[ $result == 0 ]]; then
+    test_status=0
+  else
+    test_status=$?
+  fi
   cleanup_startup_fixture
-  exit
+  exit "$test_status"
 fi
 
 if [[ -z ${DISPLAY:-} && $system_name == Linux ]]; then

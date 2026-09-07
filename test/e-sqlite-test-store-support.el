@@ -46,13 +46,25 @@ LOAD-ALL selects eager replay for a second semantic facade over the same
 test-owned runtime worker."
   (let* ((key (e-sqlite-test-store-support--directory directory))
          (stores (gethash key e-sqlite-test-store-support--stores))
+         (live-store
+          (cl-find-if
+           (lambda (candidate)
+             (let ((runtime (e-session-storage-runtime-store candidate)))
+               (and runtime (not (e-runtime-store--closed runtime)))))
+           stores))
          (store
-          (if stores
+          (if live-store
               (e-session-sqlite-store-create
                directory :load-all load-all
                :runtime-store
-               (e-session-storage-runtime-store (car (last stores))))
-            (apply operation directory arguments))))
+               (e-session-storage-runtime-store live-store))
+            ;; These older aggregate semantics tests explicitly request their
+            ;; blocking batch fixture.  Do not call the public constructor:
+            ;; ordinary v6 constructors are intentionally asynchronous and
+            ;; refuse aggregate reconstruction.
+            (progn
+              (ignore operation arguments)
+              (e-session-sqlite-store-create directory :load-all load-all)))))
     (puthash key (cons store stores) e-sqlite-test-store-support--stores)
     store))
 

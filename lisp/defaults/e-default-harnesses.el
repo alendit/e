@@ -166,8 +166,8 @@ contains the established session directory and its sibling legacy owners."
      (e-runtime-sqlite-task-queue e-default--runtime))
     e-default--runtime))
 
-(defun e-default-runtime-close ()
-  "Close the process-wide default runtime exactly once."
+(defun e-default-runtime--close (transport-close)
+  "Close the default composition using TRANSPORT-CLOSE for its transport."
   (let ((runtime e-default--runtime)
         (runtime-store e-default--runtime-store)
         first-error)
@@ -195,10 +195,18 @@ contains the established session directory and its sibling legacy owners."
       (attempt (lambda () (e-task-queue-actions-configure-queue nil)))
       (when (and (e-runtime-store-p runtime-store)
                  (not (e-runtime-store--closed runtime-store)))
-        (attempt (lambda () (e-runtime-store-close runtime-store))))
+        (attempt (lambda () (funcall transport-close runtime-store))))
       (when first-error
         (signal (car first-error) (cdr first-error)))
       t)))
+
+(defun e-default-runtime-close ()
+  "Gracefully close the default runtime at an explicit blocking boundary."
+  (e-default-runtime--close #'e-runtime-store-close))
+
+(defun e-default-runtime-shutdown ()
+  "Release the default runtime for process exit without waiting for SQLite."
+  (e-default-runtime--close #'e-runtime-store-shutdown))
 
 (defun e-default-runtime-store ()
   "Return the process-wide default transport, opening it asynchronously.
@@ -313,7 +321,7 @@ Board, task, cron, voice, Goodnite, or raw-result owner."
     (e-session-enable store)
     store))
 
-(add-hook 'kill-emacs-hook #'e-default-runtime-close)
+(add-hook 'kill-emacs-hook #'e-default-runtime-shutdown)
 
 (defun e-default-chat--record-layer-ids (harness)
   "Record HARNESS explicitly enabled registered layer ids as default chat config."

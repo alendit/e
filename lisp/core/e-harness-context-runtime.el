@@ -25,6 +25,7 @@
 (require 'e-loop)
 (require 'e-request)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-telemetry)
 (require 'e-tools)
 (require 'e-work)
@@ -60,7 +61,14 @@ required; explicit `:deadline' options still apply."
 
 (defun e-harness-session-options (harness session-id)
   "Return session-specific turn options for SESSION-ID in HARNESS."
-  (e-session-turn-options (e-harness-sessions harness) session-id))
+  (or (plist-get (e-harness-executing-session-state harness session-id)
+                 :turn-options)
+      (let ((store (e-harness-sessions harness)))
+        ;; Query-backed sessions expose durable options only through detached
+        ;; async query results or the request-scoped executing turn state.
+        ;; Presentation must never turn a mode-line refresh into hydration.
+        (unless (e-session-async-enabled-p store)
+          (e-session-turn-options store session-id)))))
 
 (defun e-harness-display-options (harness session-id)
   "Return lightweight display options for HARNESS SESSION-ID.
@@ -272,6 +280,204 @@ Unlike preview, status, snapshot, or optional context, turn context must include
 the live dynamic providers needed for the model-facing request."
   (e-harness-context harness session-id turn-id 'turn))
 
+(defun e-harness-context-runtime--detached-turn-options
+    (harness session-id path)
+  "Return provider options from detached selected PATH."
+  (let* ((merged
+          (e-harness-context-runtime--merge-turn-options
+           (e-harness-default-options harness)
+           (plist-get path :turn-options)))
+         (tool-definitions
+          (e-tools-definitions (e-harness-tools harness session-id)))
+         (with-tools (if tool-definitions
+                         (plist-put merged :tools tool-definitions)
+                       merged)))
+    (e-harness-context-runtime--apply-deadline-default
+     (e-harness-context-runtime--apply-prompt-cache-defaults
+      harness session-id with-tools))))
+
+(defun e-harness-context-runtime--detached-lifetime-projection (path)
+  "Return context-lifetime inputs from one detached selected PATH.
+
+PATH contains only the selected branch's bounded messages and context records.
+This pure projection never consults or installs a session aggregate."
+  (let* ((records (plist-get path :context-records))
+         (generation-entry
+          (seq-find
+           (lambda (entry)
+             (equal (plist-get entry :record-type) "context-generation"))
+           (reverse records)))
+         (generation
+          (when generation-entry
+            (e-context-lifetime-generation-from-record
+             (plist-get (plist-get generation-entry :record)
+                        :context-record))))
+         (generation-id
+          (and generation (e-context-lifetime-generation-id generation)))
+         (boundary-index
+          (and generation
+               (e-context-lifetime-generation-checkpoint generation)
+               (plist-get generation-entry :covered-boundary-index)))
+         (message-indexes (plist-get path :message-path-indexes))
+         (messages (plist-get path :messages))
+         durable-tail promotions curations promotion-groups frontier)
+    (cl-mapc
+     (lambda (message path-index)
+       (when (or (null boundary-index) (> path-index boundary-index))
+         (when-let* ((durable
+                      (e-session-context-lifetime-durable-message message)))
+           (push durable durable-tail))))
+     messages message-indexes)
+    (dolist (entry records)
+      (let* ((type (plist-get entry :record-type))
+             (record (plist-get entry :record))
+             (components
+              (cond
+               ((equal type "context-promotion")
+                (list (plist-get record :context-record)))
+               ((equal type "context-curation-package")
+                (list (plist-get record :promotion)))
+               (t nil))))
+        (dolist (context-record components)
+          (when (and context-record generation-id
+                     (equal (plist-get context-record :generation-id)
+                            generation-id))
+            (if (equal (plist-get context-record :record-version)
+                       e-context-lifetime-curation-record-version)
+                (let ((curation
+                       (e-context-lifetime-curation-from-record
+                        context-record)))
+                  (push curation curations)
+                  (push
+                   (mapcar (lambda (message) (copy-tree message t))
+                           (e-context-lifetime-curation-messages curation))
+                   promotion-groups))
+              (let ((promotion
+                     (e-context-lifetime-promotion-from-record
+                      context-record)))
+                (push promotion promotions)
+                (push
+                 (mapcar (lambda (message) (copy-tree message t))
+                         (e-context-lifetime-promotion-fact-messages
+                          (list promotion)))
+                 promotion-groups)))
+            (push (plist-get context-record :id) frontier)))))
+    (list :generation generation
+          :current-head-id (plist-get path :current-head-id)
+          :durable-tail (nreverse durable-tail)
+          :promotions (nreverse promotions)
+          :curations (nreverse curations)
+          :promotion-messages
+          (if promotion-groups
+              (apply #'append (nreverse promotion-groups))
+            nil)
+          :promotion-frontier (nreverse frontier))))
+
+(defun e-harness-context-runtime--detached-context
+    (harness session-id turn-id path)
+  "Build one model context from request-scoped selected PATH."
+  (let* ((capability-context
+          (e-capabilities-context
+           (e-harness-effective-capabilities harness session-id turn-id)
+           :harness harness :session-id session-id :turn-id turn-id
+           :context-purpose 'turn))
+         (turn-options
+          (e-harness-context-runtime--strip-reserved-derived-context-options
+           (e-harness-context-runtime--detached-turn-options
+            harness session-id path)))
+         (context-capabilities
+          (e-harness-context-capabilities harness turn-options))
+         (context
+          (e-context-build-detached
+           (e-harness-context-strategy harness) path
+           :options turn-options
+           :prefix-messages (plist-get capability-context :messages)
+           :prefix-segments (plist-get capability-context :segments))))
+    (when (e-harness-context-runtime--context-lifetime-enabled-p 'turn)
+      (setq context
+            (e-harness-context-lifetime-apply-projection
+             harness session-id turn-id context context-capabilities
+             (e-harness-context-runtime--detached-lifetime-projection path))))
+    (plist-put context :provider-anchor-active-layer-ids
+               (e-harness-context-runtime--effective-layer-id-strings
+                harness session-id turn-id))
+    (plist-put context :provider-anchor-compaction-boundary
+               (when-let* ((compaction (plist-get path :compaction)))
+                 (list :id (plist-get compaction :id)
+                       :first-kept-entry-id
+                       (plist-get compaction :first-kept-entry-id))))
+    (e-harness-context-runtime--context-observation-frontier
+     context capability-context)
+    (e-harness-context-runtime--context-with-segment-message-boundary context)
+    ;; Anchor selection still needs additional detached relational fields.
+    ;; Fail inside this asynchronous request instead of reaching a synchronous
+    ;; session API when the active backend asks for that feature.
+    (when (plist-get (plist-get context :options)
+                     :provider-anchor-provider-id)
+      (signal 'e-session-storage-error
+              (list "SQLite detached provider-anchor query is not implemented"
+                    session-id)))
+    (e-harness-context-runtime--context-with-continuation-projection-identity
+     context)))
+
+(defun e-harness-turn-context-start (harness session-id turn-id)
+  "Return immediately with work building TURN-ID's provider context."
+  (if (not (e-session-async-enabled-p (e-harness-sessions harness)))
+      (e-work-start
+       (e-work-spec-create
+        :id "turn-context-memory" :execution 'cheap
+        :interactive-policy 'async :owner 'e-harness-context-runtime
+        :runner (lambda (_arguments _context)
+                  (e-harness-turn-context harness session-id turn-id)))
+       nil)
+    (let* ((store (e-harness-sessions harness))
+           (entry (gethash session-id (e-harness-active-turns harness)))
+           (query
+            (or (plist-get entry :context-path-work)
+                (e-session-async-context-path-base store session-id)))
+           (result
+            (e-work-prepare
+             (e-work-spec-create
+              :id "turn-context-sqlite" :execution 'cooperative
+              :interactive-policy 'async :owner 'e-harness-context-runtime
+              :runner (lambda (_handle _arguments _context) :deferred))
+             nil :context (list :session-id session-id :turn-id turn-id
+                                :work-kind 'turn-context))))
+      (e-work-start-prepared result :arguments nil)
+      (e-work-on-settle
+       query
+       (lambda (settled)
+         (let ((status (e-work-status settled)))
+           (if (not (eq (plist-get status :state) 'finished))
+               (e-work-fail result (plist-get status :error))
+             (condition-case error
+                 (let* ((path
+                         (e-session-async-context-path-overlay-pending
+                          store session-id (plist-get status :result)))
+                        (entry (gethash session-id
+                                        (e-harness-active-turns harness))))
+                   (unless (and entry (equal (plist-get entry :id) turn-id))
+                     (signal 'e-harness-no-active-turn (list session-id turn-id)))
+                   (plist-put
+                    entry :session-query-state
+                    (list :session-id session-id
+                          :metadata (copy-tree (plist-get path :metadata))
+                          :turn-options (copy-tree
+                                         (plist-get path :turn-options))
+                          :messages (copy-tree (plist-get path :messages) t)
+                          :current-branch (plist-get path :current-branch)
+                          :tool-receipts
+                          (copy-tree (plist-get path :tool-receipts) t)
+                          :tool-receipt-total-count
+                          (or (plist-get path :tool-receipt-total-count) 0)))
+                   (plist-put entry :context-path-work nil)
+                   (e-work-finish
+                    result
+                    (e-harness-context-runtime--detached-context
+                     harness session-id turn-id path)))
+               (error (e-work-fail result error)))))))
+      result)))
+
 (defun e-harness-context-runtime--provider-compaction-context
     (harness session-id generation)
   "Return a stable optional CONTEXT for provider compaction at GENERATION."
@@ -394,11 +600,10 @@ profile names."
       (e-backend-default-context-capabilities))))
 
 (defun e-harness-context-runtime--context-lifetime-enabled-p (context-purpose)
-  "Return non-nil when semantic lifetime projection is opted in for PURPOSE.
+  "Return non-nil when semantic lifetime projection applies to PURPOSE.
 
 The feature is deliberately limited to correctness-critical turn context.  A
-preview/status caller must not create a consumer frame or append a generation
-just because the global opt-in is enabled."
+preview/status caller must not create a consumer frame or append a generation."
   (and e-context-lifetime-shadow-projection-enabled
        (eq context-purpose 'turn)))
 
@@ -491,23 +696,44 @@ continuation-delta requests expose the same label-to-frame binding."
              (plist-get payload :provider-followup-messages))))))
 
 (defun e-harness-context-lifetime-apply-projection
-    (harness session-id turn-id context capabilities)
-  "Apply the opted-in semantic projection to CONTEXT for TURN-ID.
+    (harness session-id turn-id context capabilities &optional detached-projection)
+  "Apply the semantic lifetime projection to CONTEXT for TURN-ID.
 
 The canonical session path supplies durable message bodies and promotions.  A
 new runtime frame is captured for every invocation, even when the source
-fingerprints happen to be unchanged."
+fingerprints happen to be unchanged.  DETACHED-PROJECTION, when non-nil, is
+the request-scoped selected-path projection supplied by SQLite; it is never
+installed in the session store."
   (let* ((store (e-harness-sessions harness))
-         (projection (e-session-context-lifetime-projection store session-id))
+         (projection
+          (or detached-projection
+              (e-session-context-lifetime-projection store session-id)))
          (generation (or (plist-get projection :generation)
-                         (e-harness-context-runtime--context-lifetime-ensure-generation
-                          harness session-id)))
+                         (if detached-projection
+                             (let* ((boundary
+                                     (plist-get projection :current-head-id))
+                                    (generation
+                                     (e-context-lifetime-generation-create
+                                      :id (format "generation:%s" boundary)
+                                      :checkpoint nil
+                                      :covered-session-boundary boundary)))
+                               ;; This is an owner-local enqueue.  Context
+                               ;; construction may use the bounded optimistic
+                               ;; generation immediately and never waits for
+                               ;; its durable acknowledgement.
+                               (e-session-append-context-generation
+                                store session-id generation)
+                               generation)
+                           (e-harness-context-runtime--context-lifetime-ensure-generation
+                            harness session-id))))
          ;; The generation may have been created above; read the projection
          ;; again so the covered branch boundary and durable tail are current.
-         (projection (if (plist-get projection :generation)
-                         projection
-                       (e-session-context-lifetime-projection
-                        store session-id)))
+         (projection
+          (cond
+           ((plist-get projection :generation) projection)
+           (detached-projection
+            (plist-put (copy-tree projection t) :generation generation))
+           (t (e-session-context-lifetime-projection store session-id))))
          (promotions (plist-get projection :promotions))
          ;; Session projection is the semantic authority for both the
          ;; temporary v2 compatibility projection and the literal v3 curation
@@ -528,7 +754,21 @@ fingerprints happen to be unchanged."
          (durable-tail
           (append (copy-tree (plist-get projection :durable-tail))
                   promotion-messages))
-         (segments (plist-get context :segments))
+         ;; `e-context' has always permitted a consumer-shaped result with
+         ;; only `:messages'.  Keep that public contract valid when lifetime
+         ;; projection is enabled by default: such a result is request-local
+         ;; stable context, not durable session history to be reconstructed.
+         (segments
+          (or (plist-get context :segments)
+              (let ((messages (copy-tree (plist-get context :messages))))
+                (and messages
+                     (list
+                      (list :kind 'stable-context
+                            :id 'context-strategy-messages
+                            :messages messages
+                            :fingerprint
+                            (secure-hash 'sha256
+                                         (prin1-to-string messages))))))))
          (consumer-request-id (format "consumer:%s:%s"
                                       turn-id (e-session-generate-ulid)))
          (frame-id (format "frame:%s" consumer-request-id))
@@ -773,12 +1013,21 @@ append precedes frame consumption and the next provider request."
   (when (and e-context-lifetime-shadow-projection-enabled
              (e-harness-turn-state-active-turn-running-p active-entry))
     (let* ((previous (plist-get payload :previous-frame))
-           (generation (or (and previous
-                                (e-session-context-lifetime-current-generation
-                                 (e-harness-sessions harness) session-id))
-                           (e-harness-turn-state-lifetime-generation active-entry)
-                           (e-harness-context-runtime--context-lifetime-ensure-generation
-                            harness session-id)))
+           ;; The initial detached context installs this generation on the
+           ;; executing turn.  Tool callbacks must reuse that request-local
+           ;; value; consulting the durable aggregate here would reintroduce
+           ;; a synchronous SQLite read in the provider callback.
+           (generation
+            (or (e-harness-turn-state-lifetime-generation active-entry)
+                (unless (e-session-async-enabled-p
+                         (e-harness-sessions harness))
+                  (e-harness-context-runtime--context-lifetime-ensure-generation
+                   harness session-id))))
+           (_ (unless generation
+                (signal 'e-context-lifetime-invalid-record
+                        (list 'tool-observation
+                              :missing-executing-generation
+                              session-id))))
            (tool-call (plist-get payload :tool-call))
            (result (plist-get payload :result))
            (message (plist-get payload :message))
@@ -1610,13 +1859,12 @@ request emits no candidate at all."
 
 (defun e-harness-context-runtime--turn-assistant-message (harness session-id turn-id)
   "Return the final assistant message for SESSION-ID TURN-ID.
-The result is a detached session projection; no turn registry is inspected."
-  (car (last
-        (cl-remove-if-not
-         (lambda (message)
-           (and (eq (plist-get message :role) 'assistant)
-                (equal (plist-get message :turn-id) turn-id)))
-         (e-session-messages (e-harness-sessions harness) session-id)))))
+The result belongs to the live executing turn.  Completed history remains in
+SQLite and is not reconstructed merely to persist a provider anchor."
+  (when-let* ((entry (gethash session-id (e-harness-active-turns harness)))
+              ((equal (plist-get entry :id) turn-id))
+              (message (plist-get entry :assistant-message)))
+    (copy-sequence message)))
 
 
 (provide 'e-harness-context-runtime)

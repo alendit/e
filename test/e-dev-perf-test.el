@@ -172,7 +172,7 @@
       (should (member "turn.fake-backend" ids))
       (should (member "context.fixture" ids))
       (should (member "session.append-index" ids))
-      (should (member "session.replay-list" ids))
+      (should (member "session.visible-query" ids))
       (should (member "session.metadata-state" ids))
       (should (member "chat.activity-burst" ids))
       (should (member "chat.final-assistant-render" ids))

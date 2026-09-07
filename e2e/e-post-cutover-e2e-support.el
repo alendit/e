@@ -76,13 +76,6 @@
      (concat (json-encode (vconcat (nreverse catalog))) "\n")))
   root)
 
-(defun e-post-cutover-e2e--loaded-p (store session-id)
-  "Return non-nil when SESSION-ID is loaded in STORE."
-  (and (plist-get
-        (e-session-aggregate-peek-session store session-id)
-        :loaded)
-       t))
-
 (provide 'e-post-cutover-e2e-support)
 
 ;;; e-post-cutover-e2e-support.el ends here

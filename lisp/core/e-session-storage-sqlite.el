@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'e-runtime-store)
+(require 'e-session-query)
 (require 'e-session-storage-limits)
 
 (defvar e-session-storage-sqlite--backends
@@ -57,6 +58,16 @@
 
 (defun e-session-storage-sqlite--preflight-session-body (body)
   "Enforce practical record and batch limits for session mutation BODY."
+  (when-let* ((delta (or (plist-get body :query-delta)
+                         (plist-get body :delta))))
+    (condition-case err
+        (if (or (plist-member delta :deleted)
+                (plist-member delta :noop))
+            (e-session-query-control-delta-validate delta)
+          (e-session-query-state-validate delta))
+      (error
+       (signal 'e-session-storage-error
+               (list "Invalid session query delta" (car err))))))
   (pcase (plist-get body :op)
     ((or 'session-append 'session-append-with-tool-transition)
      (e-runtime-store-codec-measure-bounded
@@ -159,8 +170,17 @@ finite cancellation disposition to the session application service."
      runtime (e-session-storage-sqlite--async-operation-request operation))))
 
 (defun e-session-storage-sqlite-reference (session-id)
-  "Return the opaque catalog reference for SESSION-ID."
+  "Return the opaque SQLite reference for SESSION-ID."
   (format "sqlite:session:%s" session-id))
+
+(defun e-session-storage-sqlite-query-state-blocking (store session-id)
+  "Return SESSION-ID's detached current row at an explicit blocking boundary.
+
+Interactive callers must use the asynchronous session query service.  This
+operation exists only for offline migration, operator commands, and legacy
+batch tests whose public contract is already synchronous."
+  (e-session-storage-sqlite--call
+   store 'read (list :op 'session-query-state :session-id session-id)))
 
 (defun e-session-storage-sqlite-header (store session-id)
   "Return STORE's physical header for SESSION-ID."
@@ -172,45 +192,21 @@ finite cancellation disposition to the session application service."
     header))
 
 (defun e-session-storage-sqlite-read-checkpoint (store session-id)
-  "Return SESSION-ID's exact checkpoint or signal when absent."
-  ;; Call the worker's guarded read directly.  It performs its own metadata
-  ;; check before selecting a value, while the session loader has already used
-  ;; `checkpoint-get' to choose checkpoint versus full replay.  Avoiding a
-  ;; second metadata round-trip keeps normal checkpoint resume at two worker
-  ;; requests: presence then guarded value.
-  (let ((result (e-session-storage-sqlite--call
-                 store 'read
-                 (list :op 'checkpoint-read :session-id session-id))))
-    (if result
-        (let ((value (plist-get result :value)))
-          (when (vectorp (plist-get value :records))
-            (plist-put value :records (append (plist-get value :records) nil)))
-          value)
-      (signal 'file-missing (list "SQLite checkpoint" session-id)))))
+  "Signal because v6 has no runtime checkpoint relation.
+STORE is accepted for the explicit legacy aggregate test boundary, which then
+falls back to canonical journal rows."
+  (ignore store)
+  (signal 'file-missing (list "Retired SQLite checkpoint" session-id)))
 
 (defun e-session-storage-sqlite-checkpoint-present-p (store session-id)
-  "Return non-nil when SESSION-ID has a usable bounded checkpoint."
-  (let ((status (e-session-storage-sqlite--call
-                 store 'read (list :op 'checkpoint-get :session-id session-id))))
-    (and status (plist-get status :usable))))
+  "Return nil because v6 derives current state from relational rows."
+  (ignore store session-id)
+  nil)
 
 (defun e-session-storage-sqlite-write-checkpoint (store session-id value)
-  "Persist bounded SESSION-ID checkpoint VALUE, or omit an oversized one.
-
-Checkpoint values are rebuildable projections.  Their size is checked before
-the parent submits a worker request, so an oversized current projection cannot
-freeze or poison the authoritative session-record path."
-  (condition-case err
-      (progn
-        (e-runtime-store-codec-encode-bounded
-         value e-runtime-store-codec-checkpoint-canonical-byte-limit)
-        (e-session-storage-sqlite--call
-         store 'write (list :op 'checkpoint-put :session-id session-id
-                            :value value)))
-    (e-runtime-store-codec-too-large
-     (list :omitted t :session-id session-id
-           :canonical-limit e-runtime-store-codec-checkpoint-canonical-byte-limit
-           :cause err))))
+  "Omit retired checkpoint VALUE from the v6 runtime schema."
+  (ignore store value)
+  (list :omitted t :retired t :session-id session-id))
 
 (defun e-session-storage-sqlite-read-records (store session-id &optional after)
   "Return all semantic records for SESSION-ID after AFTER."
@@ -218,7 +214,7 @@ freeze or poison the authoritative session-record path."
     (while
         (progn
           (let ((page (e-session-storage-sqlite-read-page
-                       store session-id position 512)))
+                       store session-id position 256)))
             (setq records
                   (nconc records
                          (mapcar (lambda (entry) (plist-get entry :value))
@@ -260,46 +256,47 @@ freeze or poison the authoritative session-record path."
     ids))
 
 (defun e-session-storage-sqlite-read-catalog (store)
-  "Return STORE's catalog projection, or nil."
-  (when-let* ((result (e-session-storage-sqlite--call
-                       store 'read '(:op catalog-get))))
-    (plist-get result :value)))
+  "Return nil because v6 has no runtime catalog projection."
+  (ignore store)
+  nil)
 
 (defun e-session-storage-sqlite-write-catalog (store value)
-  "Persist bounded STORE catalog projection VALUE.
-
-The catalog is derived from authoritative session records.  Its private cap
-therefore reports an explicit projection failure after the primary commit; it
-does not truncate semantic content or freeze the shared runtime."
-  (condition-case err
-      (progn
-        (e-runtime-store-codec-encode-bounded
-         value e-runtime-store-codec-catalog-canonical-byte-limit)
-        (e-session-storage-sqlite--call
-         store 'write (list :op 'catalog-put :value value)))
-    (e-runtime-store-codec-too-large
-     (signal 'e-runtime-store-projection-too-large
-             (list "Catalog projection exceeds canonical byte limit"
-                   :projection 'catalog
-                   :limit e-runtime-store-codec-catalog-canonical-byte-limit
-                   :cause err)))))
+  "Omit retired catalog projection VALUE from the v6 runtime schema."
+  (ignore store value)
+  (list :omitted t :retired t :projection 'catalog))
 
 (defun e-session-storage-sqlite-status (store)
   "Return bounded adapter and runtime status for STORE."
   (append (list :backend 'sqlite :unsettled-write-count 0)
           (e-runtime-store-status (e-session-storage-sqlite-runtime store))))
 
-(defun e-session-storage-sqlite-append (store session-id record)
-  "Append one exact RECORD to SESSION-ID."
+(defun e-session-storage-sqlite-append (store session-id record
+                                               &optional query-delta)
+  "Append one exact RECORD and QUERY-DELTA to SESSION-ID.
+
+QUERY-DELTA is the complete row-shaped or exact control value produced by the
+session domain.  The v6 worker rejects an omitted delta before mutation."
   (e-session-storage-sqlite--call
    store 'write (list :op 'session-append :session-id session-id
-                      :record record)))
+                      :record record :query-delta query-delta)))
 
-(defun e-session-storage-sqlite-append-batch (store session-id records)
-  "Append exact RECORDS atomically to SESSION-ID."
+(defun e-session-storage-sqlite-append-batch (store session-id records
+                                                    &optional query-delta)
+  "Append exact RECORDS and final QUERY-DELTA atomically to SESSION-ID."
   (e-session-storage-sqlite--call
    store 'write (list :op 'session-append-batch :session-id session-id
-                      :records (vconcat records))))
+                      :records (vconcat records) :query-delta query-delta)))
+
+(defun e-session-storage-sqlite-append-with-query-delta
+    (store session-id record query-delta)
+  "Append RECORD with domain-owned complete QUERY-DELTA to SESSION-ID."
+  (e-session-storage-sqlite-append store session-id record query-delta))
+
+(defun e-session-storage-sqlite-append-batch-with-query-delta
+    (store session-id records query-delta)
+  "Append RECORDS with final domain-owned QUERY-DELTA atomically."
+  (e-session-storage-sqlite-append-batch
+   store session-id records query-delta))
 
 (defun e-session-storage-sqlite-prepare-append-batch (session-id records)
   "Return detached RECORDS after preflighting one complete batch frame."

@@ -17,6 +17,7 @@
 (require 'e-context-estimate)
 (require 'e-harness-context-runtime)
 (require 'e-session)
+(require 'e-session-async)
 
 (declare-function e-session-latest-token-usage-event "e-session")
 
@@ -97,9 +98,12 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
   "Return non-nil when HARNESS has SESSION-ID."
   (and harness
        session-id
-       (ignore-errors
-         (e-session-get (e-harness-sessions harness) session-id)
-         t)))
+       (let ((store (e-harness-sessions harness)))
+         (if (e-session-async-enabled-p store)
+             ;; Status redisplay is not a reason to query or reconstruct a
+             ;; durable session.  It may use only the detached executing turn.
+             (and (e-harness-executing-session-state harness session-id) t)
+           (ignore-errors (e-session-get store session-id) t)))))
 
 (defun e-context-budget-usage-before-compaction-p (usage-event compaction)
   "Return non-nil when USAGE-EVENT predates COMPACTION."

@@ -864,7 +864,7 @@ ordinary tool implementation used by the test capability."
                                                (plist-get message :role))
                                              messages)
                                      3)
-                               '(user tool-call tool))))
+                               '(tool-call system tool))))
                 (funcall on-item '(:type assistant-message :content "settled"))
                 (funcall on-item '(:type done :reason stop))))))
          (tools-capability

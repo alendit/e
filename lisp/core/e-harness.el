@@ -210,8 +210,18 @@ is left untouched.  See `e-session-fork'."
     harness))
 
 (defun e-harness-messages (harness session-id)
-  "Return messages for SESSION-ID in HARNESS."
-  (e-session-messages (e-harness-sessions harness) session-id))
+  "Return the bounded messages available to SESSION-ID's live consumer.
+
+For an asynchronous SQLite store this is the executing turn's detached query
+result, including its bounded optimistic overlay.  It is never a durable
+session replica and is nil when no live consumer owns such a result."
+  (let ((store (e-harness-sessions harness)))
+    (if (e-session-async-enabled-p store)
+        (copy-tree
+         (plist-get (e-harness-executing-session-state harness session-id)
+                    :messages)
+         t)
+      (e-session-messages store session-id))))
 
 (defun e-harness-message-hidden-p (message)
   "Return non-nil when MESSAGE should be hidden from display.
@@ -227,11 +237,17 @@ JSON replay, so both are recognized."
 
 (defun e-harness-session-title (harness session-id)
   "Return display title for SESSION-ID in HARNESS."
-  (e-session-display-title (e-harness-sessions harness) session-id))
+  (let ((store (e-harness-sessions harness)))
+    (unless (and (fboundp 'e-session-async-enabled-p)
+                 (e-session-async-enabled-p store))
+      (e-session-display-title store session-id))))
 
 (defun e-harness-session-name (harness session-id)
   "Return explicit name for SESSION-ID in HARNESS, or nil."
-  (plist-get (e-session-get (e-harness-sessions harness) session-id) :name))
+  (let ((store (e-harness-sessions harness)))
+    (unless (and (fboundp 'e-session-async-enabled-p)
+                 (e-session-async-enabled-p store))
+      (plist-get (e-session-get store session-id) :name))))
 
 (defun e-harness-session-list (harness)
   "Return display metadata for sessions owned by HARNESS."

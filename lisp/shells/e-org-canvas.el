@@ -24,9 +24,11 @@
 (require 'e-harness-registry)
 (require 'e-org-canvas-capabilities)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-shells)
 (require 'e-startup)
 (require 'e-ui-work)
+(require 'e-work)
 (require 'e-workspaces)
 (require 'org)
 (require 'org-element)
@@ -252,13 +254,13 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
     (ignore-errors
       (let* ((state (e-chat-service-state e-org-canvas-harness
                                           e-org-canvas-session-id))
+             (store (e-chat-service-session-store e-org-canvas-harness))
              (options (e-harness-display-options e-org-canvas-harness
                                                  e-org-canvas-session-id))
              (usage-event
-              (ignore-errors
+              (unless (e-session-async-enabled-p store)
                 (e-session-latest-token-usage-event
-                 (e-chat-service-session-store e-org-canvas-harness)
-                 e-org-canvas-session-id))))
+                 store e-org-canvas-session-id))))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)
               :latest-token-usage-id (plist-get usage-event :id)
@@ -471,7 +473,9 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
        store
        session-id
        (list :project-root (plist-get org-canvas-metadata :root))))
-    (plist-get (e-chat-service-session harness session-id) :metadata)))
+    ;; These are enqueue-and-return mutations.  The caller already owns this
+    ;; request-scoped value and does not need a synchronous metadata readback.
+    (copy-tree org-canvas-metadata t)))
 
 (cl-defun e-org-canvas--mark-session
     (harness session-id buffer &key scope target-folder needs-file-name focus)
@@ -498,7 +502,9 @@ NEEDS-FILE-NAME become stable Org Canvas metadata."
   (e-org-canvas--metadata-ref (plist-get session :metadata)))
 
 (defun e-org-canvas--all-sessions (harness)
-  "Return root session catalog entries for HARNESS without transcript hydration."
+  "Return ephemeral root sessions for HARNESS.
+
+Persistent presentation commands use a bounded asynchronous SQLite page."
   (e-chat-service-root-session-list harness))
 
 (defun e-org-canvas--normalize-directory (directory)
@@ -523,8 +529,10 @@ NEEDS-FILE-NAME become stable Org Canvas metadata."
           (e-org-canvas--normalize-directory project-root)))))
 
 (cl-defun e-org-canvas--session-candidates
-    (harness &key file project-root)
-  "Return Org Canvas sessions in HARNESS filtered by FILE or PROJECT-ROOT."
+    (source &key file project-root)
+  "Return Org Canvas sessions in SOURCE filtered by FILE or PROJECT-ROOT.
+
+SOURCE is a detached bounded page, or an ephemeral harness for compatibility."
    (seq-filter
     (lambda (session)
       (and (e-org-canvas--session-canvas session)
@@ -533,10 +541,12 @@ NEEDS-FILE-NAME become stable Org Canvas metadata."
           (or (not project-root)
               (e-org-canvas--session-matches-project-p
                session project-root))))
-     (e-org-canvas--all-sessions harness)))
+     (if (e-harness-p source)
+         (e-org-canvas--all-sessions source)
+       source)))
 
 (cl-defun e-org-canvas--sessions-by-file (harness &key project-root)
-  "Return Org Canvas sessions grouped by canvas URI."
+  "Return Org Canvas sessions from HARNESS/page grouped by canvas URI."
   (let (groups)
     (dolist (session (e-org-canvas--session-candidates
                       harness :project-root project-root))
@@ -549,7 +559,7 @@ NEEDS-FILE-NAME become stable Org Canvas metadata."
     (nreverse groups)))
 
 (defun e-org-canvas--session-or-nil (harness session-id)
-  "Return SESSION-ID's catalog entry from HARNESS, or nil."
+  "Return ephemeral SESSION-ID metadata from HARNESS, or nil."
   (e-canvas--catalog-session harness session-id))
 
 (defun e-org-canvas--session-matches-buffer-p (session buffer)
@@ -1303,7 +1313,13 @@ TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
                          (buffer-name target-buffer))
                     session-id
                     "canvas"))
-         (buffer (get-buffer-create
+         ;; One prompt owns one transient composer/result lifecycle.  Reusing
+         ;; a just-finished result buffer forces major-mode teardown across
+         ;; still-scheduled render work and subscriber state, which can make a
+         ;; second Daily prompt spin the UI.  Normal successful panes still
+         ;; auto-close; overlapping/manual-retained results receive Emacs's
+         ;; ordinary unique buffer suffix.
+         (buffer (generate-new-buffer
                   (format e-org-canvas-input-buffer-name-format title))))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
@@ -1474,10 +1490,21 @@ TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
 (defun e-org-canvas--ensure-current-session ()
   "Return (HARNESS SESSION-ID BUFFER) for the current Org Canvas buffer."
   (let* ((buffer (current-buffer))
-         (chat-buffer (e-org-canvas-open-for-current-buffer))
-         (harness (with-current-buffer chat-buffer e-chat-harness))
-         (session-id (with-current-buffer chat-buffer e-chat-session-id)))
-    (list harness session-id buffer)))
+         (live-harness e-org-canvas-harness)
+         (live-session-id e-org-canvas-session-id)
+         (live-chat
+          (and live-harness live-session-id
+               (e-chat--find-session-buffer
+                live-session-id live-harness))))
+    (if live-chat
+        ;; A prompt needs only the already-live controller identity.  Reopening
+        ;; or revalidating the backing chat here would restart presentation
+        ;; lifecycles and query durable state for no consumer-visible reason.
+        (list live-harness live-session-id buffer)
+      (let* ((chat-buffer (e-org-canvas-open-for-current-buffer))
+             (harness (with-current-buffer chat-buffer e-chat-harness))
+             (session-id (with-current-buffer chat-buffer e-chat-session-id)))
+        (list harness session-id buffer)))))
 
 (defun e-org-canvas--display-input-buffer (input)
   "Display INPUT and select its editable prompt body."
@@ -1658,11 +1685,9 @@ prompt enumerating them, and leave the draft for review before submission."
        (expand-file-name buffer-file-name)))
 
 ;;;###autoload
-(defun e-org-canvas-resume-session (harness session-id)
-  "Resume HARNESS SESSION-ID and return its Org canvas buffer."
-  (let* ((session (or (e-org-canvas--session-or-nil harness session-id)
-                      (user-error "Org Canvas session %s is not in the catalog"
-                                  session-id)))
+(defun e-org-canvas--resume-session-summary (harness session)
+  "Resume detached Org Canvas SESSION summary through HARNESS."
+  (let* ((session-id (plist-get session :id))
          (metadata (or (e-org-canvas--session-canvas session)
                        (user-error "Session %s is not an Org Canvas session"
                                    session-id)))
@@ -1678,20 +1703,78 @@ prompt enumerating them, and leave the draft for review before submission."
     buffer))
 
 ;;;###autoload
+(defun e-org-canvas-resume-session (harness session-id)
+  "Resume HARNESS SESSION-ID without synchronously reading persistence.
+
+Ephemeral stores return the buffer directly.  Persistent stores return
+request-scoped work immediately and open the buffer after exact metadata
+settles."
+  (let ((store (e-chat-service-session-store harness)))
+    (if (not (e-session-async-enabled-p store))
+        (e-org-canvas--resume-session-summary
+         harness
+         (or (e-org-canvas--session-or-nil harness session-id)
+             (user-error "No Org Canvas session %s" session-id)))
+      (let ((work (e-session-async-session-metadata store session-id)))
+        (e-work-on-settle
+         work
+         (lambda (settled)
+           (let ((status (e-work-status settled)))
+             (if (not (eq (plist-get status :state) 'finished))
+                 (message "Unable to query Org Canvas session %s: %s"
+                          session-id
+                          (e-work-error-message
+                           (or (plist-get status :error)
+                               '(e-work-cancelled "cancelled"))))
+               (let ((row (plist-get status :result)))
+                 (if (null row)
+                     (message "No Org Canvas session %s" session-id)
+                   (e-org-canvas--resume-session-summary
+                    harness
+                    (list :id session-id
+                          :name (plist-get row :name)
+                          :metadata (copy-tree (plist-get row :metadata) t)))))))))
+        work))))
+
+(defun e-org-canvas--queried-sessions (candidates)
+  "Return detached session summaries carried by CANDIDATES."
+  (mapcar (lambda (candidate) (plist-get candidate :session)) candidates))
+
+;;;###autoload
 (defun e-org-canvas-list-sessions ()
   "List and resume Org Canvas sessions, defaulting to the current Org file."
   (interactive)
   (let* ((harness (e-org-canvas--default-harness))
          (file (e-org-canvas--current-file-filter))
-         (sessions (or (and file
+         (work (e-chat-session-candidates-start harness)))
+    (e-work-on-settle
+     work
+     (lambda (settled)
+       (let ((status (e-work-status settled)))
+         (if (not (eq (plist-get status :state) 'finished))
+             (message "Unable to query Org Canvas sessions: %s"
+                      (e-work-error-message
+                       (or (plist-get status :error)
+                           '(e-work-cancelled "cancelled"))))
+           (let* ((all (e-org-canvas--queried-sessions
+                        (plist-get status :result)))
+                  (sessions
+                   (or (and file
                             (e-org-canvas--session-candidates
-                             harness :file file))
-                       (e-org-canvas--session-candidates harness))))
-    (unless sessions
-      (user-error "No Org Canvas sessions"))
-    (e-org-canvas-resume-session
-     harness
-     (e-org-canvas--read-session sessions "Org Canvas session: "))))
+                             all :file file))
+                       (e-org-canvas--session-candidates all))))
+             (if (null sessions)
+                 (message "No Org Canvas sessions")
+               (e-org-canvas--resume-session-summary
+                harness
+                (seq-find
+                 (lambda (session)
+                   (equal
+                    (plist-get session :id)
+                    (e-org-canvas--read-session
+                     sessions "Org Canvas session: ")))
+                 sessions))))))))
+    work))
 
 ;;;###autoload
 (defun e-org-canvas-resume ()
@@ -1705,16 +1788,37 @@ prompt enumerating them, and leave the draft for review before submission."
   (interactive)
   (let* ((harness (e-org-canvas--default-harness))
          (root (e-chat-project-root default-directory))
-         (groups (e-org-canvas--sessions-by-file
-                  harness :project-root root)))
-    (unless groups
-      (user-error "No Org Canvas sessions in project"))
-    (let* ((files (mapcar #'car groups))
-           (uri (completing-read "Org Canvas file: " files nil t))
-           (sessions (cdr (assoc uri groups))))
-      (e-org-canvas-resume-session
-       harness
-       (e-org-canvas--read-session sessions "Org Canvas session: ")))))
+         (work (e-chat-session-candidates-start harness)))
+    (e-work-on-settle
+     work
+     (lambda (settled)
+       (let ((status (e-work-status settled)))
+         (if (not (eq (plist-get status :state) 'finished))
+             (message "Unable to query Org Canvas sessions: %s"
+                      (e-work-error-message
+                       (or (plist-get status :error)
+                           '(e-work-cancelled "cancelled"))))
+           (let* ((groups
+                   (e-org-canvas--sessions-by-file
+                    (e-org-canvas--queried-sessions
+                     (plist-get status :result))
+                    :project-root root)))
+             (if (null groups)
+                 (message "No Org Canvas sessions in project")
+               (let* ((files (mapcar #'car groups))
+                      (uri (completing-read
+                            "Org Canvas file: " files nil t))
+                      (sessions (cdr (assoc uri groups)))
+                      (session-id
+                       (e-org-canvas--read-session
+                        sessions "Org Canvas session: ")))
+                 (e-org-canvas--resume-session-summary
+                  harness
+                  (seq-find
+                   (lambda (session)
+                     (equal (plist-get session :id) session-id))
+                   sessions)))))))))
+    work))
 
 ;;;###autoload
 (defun e-org-canvas-shell ()

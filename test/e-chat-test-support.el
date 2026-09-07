@@ -80,7 +80,15 @@ tests, matching how the buffer behaves when shown to a user."
 
 (defun e-chat-test--create-session (store &rest arguments)
   "Create one board-native test session in STORE from ARGUMENTS."
-  (let* ((session (apply #'e-session-create store arguments))
+  (let* ((created (apply #'e-session-create store arguments))
+         ;; Persistent v6 creation returns request-scoped work.  This helper is
+         ;; an explicit test boundary, so observe that work before seeding the
+         ;; related Board fixture; production callers remain enqueue-return.
+         (session
+          (if (e-work-handle-p created)
+              (e-work-with-batch-await
+                (e-work-await-batch created :timeout 5.0))
+            created))
          (session-id (plist-get session :id))
          (principal (format "chat:%s" session-id))
          (board-id (format "test-board:%s" session-id)))

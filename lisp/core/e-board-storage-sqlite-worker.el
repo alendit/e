@@ -25,6 +25,12 @@
 
 (defvar e-board-storage-sqlite-worker--database nil)
 
+(defconst e-board-storage-sqlite-worker-controller-record-limit 128
+  "Maximum recent Board records returned to one live controller request.")
+
+(defconst e-board-storage-sqlite-worker-controller-set-limit 512
+  "Maximum current participant or pickup rows in one controller request.")
+
 (defun e-board-storage-sqlite-worker--column (row index)
   "Return INDEX from SQLite ROW."
   (if (vectorp row) (aref row index) (nth index row)))
@@ -504,7 +510,7 @@
           :subscription-id subscription-id :position position)))
 
 (defun e-board-storage-sqlite-worker--board-pickup-session-admit (body)
-  "Atomically accept a claimed pickup and append its session admission record."
+  "Atomically accept a claimed pickup and record its session association."
   (let* ((board-row (e-board-storage-sqlite-worker--board-check body))
          (board-id (plist-get body :board-id))
          (generation (e-board-storage-sqlite-worker--column board-row 1))
@@ -525,7 +531,10 @@
                      "SELECT MAX(position) FROM session_records WHERE session_id=?"
                      (vector session-id)))
               0))
-         (session-position (1+ session-revision))
+         ;; This is the session boundary observed by the Board association,
+         ;; not a new session-journal position.  Session messages use their
+         ;; own application FIFO and update journal plus query row atomically.
+         (session-position session-revision)
          (record (plist-get body :record))
          (record-payload (e-board-storage-sqlite-worker--sql-value record))
          (lane (plist-get body :lane)))
@@ -538,10 +547,6 @@
               (list "Session record exceeds private limit"
                     (string-bytes record-payload)
                     e-board-storage-sqlite-worker-session-record-byte-limit)))
-    (sqlite-execute
-     e-board-storage-sqlite-worker--database
-     "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
-     (vector session-id session-position record-payload))
     (sqlite-execute
      e-board-storage-sqlite-worker--database
      "INSERT INTO board_session_admissions(delivery_key,session_id,session_position,lane,payload) VALUES(?,?,?,?,?)"
@@ -595,6 +600,144 @@
   "Execute one typed Board read BODY on DATABASE."
   (let ((e-board-storage-sqlite-worker--database database))
     (pcase (plist-get body :op)
+    ('board-controller-state
+     (let* ((board-id (plist-get body :board-id))
+            (root-row
+             (car (sqlite-select
+                   database
+                   "SELECT board_id,trusted_principal,generation,revision,next_position,root_payload FROM boards WHERE board_id=?"
+                   (vector board-id))))
+            (_ (unless root-row
+                 (signal 'e-runtime-store-worker-error
+                         (list "Missing durable Board" board-id))))
+            (generation (e-board-storage-sqlite-worker--column root-row 2))
+            (record-limit
+             (min e-board-storage-sqlite-worker-controller-record-limit
+                  (max 1 (or (plist-get body :record-limit) 64))))
+            (set-limit e-board-storage-sqlite-worker-controller-set-limit)
+            (participants
+             (mapcar
+              (lambda (row)
+                (e-board-storage-sqlite-worker--value
+                 (e-board-storage-sqlite-worker--column row 0)))
+              (sqlite-select
+               database
+               "SELECT payload FROM board_participants WHERE board_id=? AND generation=? ORDER BY participant_id LIMIT ?"
+               (vector board-id generation set-limit))))
+            (pickups
+             (mapcar
+              (lambda (row)
+                (let ((payload
+                       (e-board-storage-sqlite-worker--value
+                        (e-board-storage-sqlite-worker--column row 0))))
+                  (setq payload
+                        (plist-put payload :state
+                                   (intern
+                                    (e-board-storage-sqlite-worker--column
+                                     row 1))))
+                  (setq payload
+                        (plist-put payload :revision
+                                   (e-board-storage-sqlite-worker--column row 2)))
+                  (plist-put payload :attempt
+                             (e-board-storage-sqlite-worker--column row 3))))
+              (sqlite-select
+               database
+               (concat
+                "SELECT payload,state,revision,attempt FROM board_pickups "
+                "WHERE board_id=? AND generation=? "
+                "AND state IN ('pending','ready','claimed','accepted','cancelling') "
+                "ORDER BY participant_id,fifo_position LIMIT ?")
+               (vector board-id generation set-limit))))
+            (record-rows
+             (sqlite-select
+              database
+              (concat
+               "SELECT position,payload,source_kind,source_key,source_hash FROM ("
+               "SELECT position,payload,source_kind,source_key,source_hash "
+               "FROM board_records WHERE board_id=? AND generation=? "
+               "ORDER BY position DESC LIMIT ?) ORDER BY position")
+              (vector board-id generation record-limit)))
+            (records
+             (mapcar
+              (lambda (row)
+                (list
+                 :position (e-board-storage-sqlite-worker--column row 0)
+                 :record
+                 (e-board-storage-sqlite-worker--value
+                  (e-board-storage-sqlite-worker--column row 1))
+                 :source
+                 (and (e-board-storage-sqlite-worker--column row 2)
+                      (list
+                       :kind
+                       (intern (e-board-storage-sqlite-worker--column row 2))
+                       :key
+                       (e-board-storage-sqlite-worker--value
+                        (e-board-storage-sqlite-worker--column row 3))
+                       :hash (e-board-storage-sqlite-worker--column row 4)))))
+              record-rows))
+            (working-records
+             (mapcar
+              (lambda (row)
+                (list
+                 :position (e-board-storage-sqlite-worker--column row 0)
+                 :record
+                 (e-board-storage-sqlite-worker--value
+                  (e-board-storage-sqlite-worker--column row 1))
+                 :source
+                 (and (e-board-storage-sqlite-worker--column row 2)
+                      (list
+                       :kind
+                       (intern (e-board-storage-sqlite-worker--column row 2))
+                       :key
+                       (e-board-storage-sqlite-worker--value
+                        (e-board-storage-sqlite-worker--column row 3))
+                       :hash (e-board-storage-sqlite-worker--column row 4)))))
+              (sqlite-select
+               database
+               (concat
+                "SELECT DISTINCT r.position,r.payload,r.source_kind,r.source_key,r.source_hash "
+                "FROM board_records r JOIN board_pickups p "
+                "ON p.board_id=r.board_id AND p.generation=r.generation "
+                "AND p.message_id=r.record_id WHERE r.board_id=? "
+                "AND r.generation=? AND p.state IN "
+                "('pending','ready','claimed','accepted','cancelling') "
+                "ORDER BY r.position LIMIT ?")
+               (vector board-id generation set-limit))))
+            (routing
+             (mapcar
+              (lambda (row)
+                (list :message-id
+                      (e-board-storage-sqlite-worker--column row 0)
+                      :outcome
+                      (e-board-storage-sqlite-worker--value
+                       (e-board-storage-sqlite-worker--column row 1))
+                      :revision
+                      (e-board-storage-sqlite-worker--column row 2)))
+              (sqlite-select
+               database
+               (concat
+                "SELECT message_id,payload,revision FROM board_routing "
+                "WHERE board_id=? AND generation=? AND message_id IN ("
+                "SELECT message_id FROM board_pickups WHERE board_id=? "
+                "AND generation=? AND state IN "
+                "('pending','ready','claimed','accepted','cancelling')) "
+                "ORDER BY message_id LIMIT ?")
+               (vector board-id generation board-id generation set-limit)))))
+       (list
+        :board
+        (list :board-id (e-board-storage-sqlite-worker--column root-row 0)
+              :trusted-principal
+              (e-board-storage-sqlite-worker--value
+               (e-board-storage-sqlite-worker--column root-row 1))
+              :generation generation
+              :revision (e-board-storage-sqlite-worker--column root-row 3)
+              :next-position (e-board-storage-sqlite-worker--column root-row 4)
+              :root
+              (e-board-storage-sqlite-worker--value
+               (e-board-storage-sqlite-worker--column root-row 5)))
+        :participants participants :pickups pickups :records records
+        :working-records working-records
+        :routing routing)))
     ('board-get
      (when-let* ((row (car (sqlite-select
                             e-board-storage-sqlite-worker--database

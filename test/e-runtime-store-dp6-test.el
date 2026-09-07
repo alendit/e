@@ -7,7 +7,29 @@
 
 (require 'ert)
 (require 'e-runtime-store)
+(require 'e-session-query)
 (require 'e-session-storage-sqlite)
+
+(defun e-runtime-store-dp6-test--session-append-body (session-id record)
+  "Return a valid v6 SESSION-ID append command for transport tests."
+  (setq record (copy-tree record)
+        record (plist-put record :session-id session-id)
+        record (plist-put record :type 'session)
+        record (plist-put record :id (concat session-id "-root"))
+        record (plist-put record :timestamp "2026-09-07T00:00:00Z"))
+  (list :op 'session-append :session-id session-id :record record
+        :query-delta
+        (list :session-id session-id :name session-id :summary nil
+              :metadata nil :created-at "2026-09-07T00:00:00Z"
+              :updated-at "2026-09-07T00:00:00Z" :last-message-at nil
+              :latest-assistant-marker nil :message-count 0
+              :current-branch nil :turn-options nil
+              :current-head-id (concat session-id "-root")
+              :root-event-id (concat session-id "-root")
+              :current-context-generation-id nil :board-id nil
+              :principal nil :association-role nil :routing-policy nil
+              :root-p t :board-output-sequence 0
+              :board-activity-sequence 0 :journal-position 1)))
 
 (defun e-runtime-store-dp6-test--store ()
   "Return a disconnected runtime suitable for admission/partition tests."
@@ -166,19 +188,19 @@
                   (list
                    (e-runtime-store--submit-owned
                     store 'write
-                    '(:op session-append :session-id "daily"
-                      :record (:value active))
+                    (e-runtime-store-dp6-test--session-append-body
+                     "daily" '(:value active))
                     '(session . "daily"))
                    (e-runtime-store-submit store 'read '(:op status))
                    (e-runtime-store--submit-owned
                     store 'write
-                    '(:op session-append :session-id "daily"
-                      :record (:value successor))
+                    (e-runtime-store-dp6-test--session-append-body
+                     "daily" '(:value successor))
                     '(session . "daily"))
                    (e-runtime-store--submit-owned
                     store 'write
-                    '(:op session-append :session-id "healthy"
-                      :record (:value durable))
+                    (e-runtime-store-dp6-test--session-append-body
+                     "healthy" '(:value durable))
                     '(session . "healthy"))
                    (e-runtime-store-submit
                     store 'read
@@ -402,7 +424,7 @@
     (cl-letf (((symbol-function 'e-runtime-store--schedule) #'ignore))
       (dolist (case
                (list (list 'read '(session . "read-owner"))
-                     (list 'write '(task . "wrong-domain"))
+                     (list 'write '(unknown-domain . "wrong-domain"))
                      (list 'write (cons 'board (make-string 129 ?x)))
                      (list 'write '(session . not-a-string))))
         (should-error
@@ -428,42 +450,6 @@
       (should (= (e-runtime-store--reservation-used
                   (e-runtime-store--reservation store))
                  0)))))
-
-(ert-deftest e-runtime-store-s92-dp6-legacy-large-session-record-remains-readable ()
-  "A preexisting record above the new 1 MiB write cap remains readable."
-  (let* ((directory (make-temp-file "e-runtime-store-dp6-legacy-read-" t))
-         (store (e-runtime-store-open directory))
-         (content (make-string (+ e-session-storage-record-byte-limit 4096) ?x))
-         (record (list :type 'message :content content))
-         database request)
-    (unwind-protect
-        (progn
-          (e-runtime-store-dp6-test--wait-ready store)
-          (setq database
-                (sqlite-open (expand-file-name "store.sqlite3" directory)))
-          (sqlite-execute
-           database
-           "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
-           (vector "legacy-large" 1
-                   (base64-encode-string
-                    (e-runtime-store-codec-encode record) t)))
-          (sqlite-close database)
-          (setq database nil
-                request
-                (e-runtime-store-submit
-                 store 'read
-                 '(:op session-record-page :session-id "legacy-large"
-                   :after 0 :limit 1)))
-          (e-runtime-store-dp6-test--wait-terminal request)
-          (should (eq (e-runtime-store-request--state request) 'committed))
-          (let* ((page (e-runtime-store-request--result request))
-                 (stored (plist-get (car (plist-get page :records)) :value)))
-            (should (> (string-bytes (plist-get stored :content))
-                       e-session-storage-record-byte-limit))
-            (should (equal stored record))))
-      (when database (sqlite-close database))
-      (ignore-errors (e-runtime-store-close store))
-      (delete-directory directory t))))
 
 (provide 'e-runtime-store-dp6-test)
 

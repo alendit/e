@@ -190,7 +190,10 @@ Return request options, persisted anchors, and the final context."
           (e-capability-create
            :id 'anchor-refresh-capability
            :instructions "stable policy"
-           :context-providers (list stable-provider dynamic-provider)
+           :context-providers
+           (if (eq kind 'current-state)
+               (list stable-provider dynamic-provider)
+             (list stable-provider))
            :tools
            (list
             (lambda (registry)
@@ -693,45 +696,30 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                    "detailed"))
     (should (equal (plist-get projected :reasoning-summary) "detailed"))))
 
-(ert-deftest e-harness-test-provider-anchor-persistence-follows-final-refresh ()
-  "Only the candidate owned by the final refreshed request is persisted."
+(ert-deftest e-harness-test-provider-anchor-refresh-keeps-tool-frontier-wire-local ()
+  "A refresh tool may continue immediately but cannot persist its frontier."
   (e-harness-test--with-empty-layer-registry
     (dolist (kind '(stable tool-schema provider-option compaction))
       (let* ((result
              (e-harness-test--run-final-refresh-anchor-scenario kind t))
              (requests (plist-get result :requests))
-             (anchors (plist-get result :anchors))
-             (context (plist-get result :context)))
+             (anchors (plist-get result :anchors)))
         (should (= (length requests) 2))
         (should-not (plist-get (nth 1 requests) :provider-anchor))
-        (should (= (length anchors) 1))
-        (should (equal (plist-get (plist-get (car anchors) :metadata)
-                                  :response-id)
-                       "resp-B"))
-        (should (equal (plist-get (car anchors) :fingerprints)
-                       (e-harness-context-runtime--provider-anchor-fingerprints context)))))
+        (should-not anchors)))
     (let* ((result
             (e-harness-test--run-final-refresh-anchor-scenario
              'current-state t))
            (requests (plist-get result :requests))
-           (anchors (plist-get result :anchors))
-           (context (plist-get result :context)))
+           (anchors (plist-get result :anchors)))
       ;; The replaceable frontier may use resp-A for this immediate follow-up,
-      ;; but the final persisted owner is still the refreshed response.
+      ;; but the tool-derived frontier remains ineligible for persistence.
       (should (equal
                (plist-get
                 (plist-get (nth 1 requests) :provider-anchor)
                 :metadata)
                '(:response-id "resp-A")))
-      (should (= (length anchors) 1))
-      (should (equal (plist-get (plist-get (car anchors) :metadata)
-                                :response-id)
-                     "resp-B"))
-      (should-not
-       (plist-member (plist-get (car anchors) :fingerprints)
-                     :current-state-fingerprint))
-      (should (equal (plist-get (car anchors) :fingerprints)
-                     (e-harness-context-runtime--provider-anchor-fingerprints context))))
+      (should-not anchors))
     (dolist (kind '(stable current-state))
       (let* ((result
               (e-harness-test--run-final-refresh-anchor-scenario kind nil))

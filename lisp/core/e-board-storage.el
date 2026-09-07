@@ -24,7 +24,7 @@
                (:constructor e-board-storage--create)
                (:conc-name e-board-storage--))
   runtime call-operation asynchronous pending-count first-error
-  next-revision next-position settlement-function)
+  next-revision next-position next-generation settlement-function)
 
 (defun e-board-storage-signature-hash (value)
   "Return the stable hash used for one canonical Board source VALUE."

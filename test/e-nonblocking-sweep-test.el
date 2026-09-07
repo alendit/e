@@ -47,7 +47,6 @@
     ("lisp/core/e-work.el" "accept-process-output" 2)
     ("lisp/dev/e-dev-perf.el" "accept-process-output" 3)
     ("lisp/dev/e-dev-perf.el" "call-process" 1)
-    ("lisp/dev/e-dev-perf.el" "e-session-load-session" 1)
     ("lisp/layers/base/e-base-tools-bash.el" "accept-process-output" 1)
     ("lisp/layers/base/e-base-tools-file.el" "process-file" 1)
     ("lisp/layers/e-resource-toc.el" "process-file" 1)
@@ -72,6 +71,18 @@
     "e-harness-wait")
   "Removed generic blocking API names that production code must not call.")
 
+(defconst e-nonblocking-sweep-test--durable-mirror-symbols
+  '("e-session-load-session"
+    "e-session-load-session-start"
+    "e-session-persistent-index-store-create"
+    "e-session-aggregate-peek-session")
+  "Retired durable-mirror operations confined to offline session internals.")
+
+(defconst e-nonblocking-sweep-test--durable-mirror-files
+  '("lisp/core/e-session-aggregate.el"
+    "lisp/core/e-session.el")
+  "Files allowed to define or use retired offline session operations.")
+
 (defconst e-nonblocking-sweep-test--expected-legacy-sync-calls
   nil
   "Removed generic sync names must not appear in lisp sources.")
@@ -82,6 +93,24 @@
     ("lisp/core/e-backend.el" ":start-function" 1)
     ("lisp/core/e-harness-turn.el" ":start-function" 1))
   "Audited callback start slots kept only at backend/lifecycle boundaries.")
+
+(defconst e-nonblocking-sweep-test--sync-storage-boundary-files
+  '("lisp/core/e-board-storage-sqlite.el"
+    "lisp/core/e-cron-storage-sqlite.el"
+    "lisp/core/e-goodnite-storage-sqlite.el"
+    "lisp/core/e-raw-results-storage-sqlite.el"
+    "lisp/core/e-runtime-store.el"
+    "lisp/core/e-session-storage-sqlite.el"
+    "lisp/core/e-session.el"
+    "lisp/core/e-task-storage-sqlite.el"
+    "lisp/core/e-voice-storage-sqlite.el"
+    "lisp/defaults/e-runtime-migration.el"
+    "lisp/layers/harness/e-session-tmp-sqlite.el")
+  "Files allowed to contain a direct blocking SQLite/session boundary.
+
+These are physical adapters, the generic transport, named offline/operator
+code, or development profiling.  An application service, shell, capability,
+timer owner, or presentation module appearing here is a regression.")
 
 (defun e-nonblocking-sweep-test--root ()
   "Return the repository root for this test run."
@@ -172,6 +201,67 @@
             (string< (format "%s:%s" (car a) (cadr a))
                      (format "%s:%s" (car b) (cadr b)))))))
 
+(defun e-nonblocking-sweep-test--scan-sync-storage-boundaries ()
+  "Return files containing a direct blocking SQLite/session call."
+  (let* ((root (e-nonblocking-sweep-test--root))
+         (lisp-root (expand-file-name "lisp" root))
+         (regexp
+          "(\\s-*\\(e-runtime-store-call\\|e-runtime-store-await\\|e-session-storage-flush-write-queue\\|e-session-load-session\\)\\_>")
+         files)
+    (dolist (file (directory-files-recursively lisp-root "\\.el\\'"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (when (re-search-forward regexp nil t)
+          (push (file-relative-name file root) files))))
+    (sort files #'string<)))
+
+(defun e-nonblocking-sweep-test--scan-durable-mirror-reachability ()
+  "Return production files that call a retired durable-mirror operation."
+  (let* ((root (e-nonblocking-sweep-test--root))
+         (lisp-root (expand-file-name "lisp" root))
+         (regexp
+          (format "(\\s-*\\(%s\\)\\_>"
+                  (regexp-opt
+                   e-nonblocking-sweep-test--durable-mirror-symbols)))
+         files)
+    (dolist (file (directory-files-recursively lisp-root "\\.el\\'"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (when (re-search-forward regexp nil t)
+          (push (file-relative-name file root) files))))
+    (sort files #'string<)))
+
+(defun e-nonblocking-sweep-test--context-lifetime-opt-outs ()
+  "Return tests that locally disable the default context-lifetime projection."
+  (let* ((root (e-nonblocking-sweep-test--root))
+         (regexp
+          (concat
+           "\\(?:"
+           ;; Lexical or dynamic binding: (FLAG nil).
+           "(\\s-*e-context-lifetime-shadow-projection-enabled\\s-+nil\\_>"
+           "\\|"
+           ;; Direct assignment: (setq[-default] FLAG nil).
+           "(\\s-*setq\\(?:-default\\)?\\s-+"
+           "e-context-lifetime-shadow-projection-enabled\\s-+nil\\_>"
+           "\\|"
+           ;; Generic/custom assignment: (set 'FLAG nil) and
+           ;; (customize-set-variable 'FLAG nil).
+           "(\\s-*\\(?:set\\|customize-set-variable\\)\\s-+"
+           "'e-context-lifetime-shadow-projection-enabled\\s-+nil\\_>"
+           "\\)"))
+         files)
+    (dolist (relative '("test" "e2e"))
+      (dolist (file (directory-files-recursively
+                     (expand-file-name relative root) "\\.el\\'"))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (when (re-search-forward regexp nil t)
+            (push (file-relative-name file root) files)))))
+    (sort files #'string<)))
+
 (ert-deftest e-nonblocking-sweep-test-reviewed-blocking-sites ()
   "Every remaining blocking primitive in lisp/ is part of the reviewed inventory."
   (should (equal (e-nonblocking-sweep-test--scan)
@@ -186,6 +276,22 @@
   "Legacy callback start slots stay out of tool/action registrations."
   (should (equal (e-nonblocking-sweep-test--scan-start-function-slots)
                  e-nonblocking-sweep-test--expected-start-function-slots)))
+
+(ert-deftest e-nonblocking-sweep-test-sqlite-waits-stay-at-explicit-boundaries ()
+  "Interactive application and presentation code has no direct SQLite wait."
+  (should
+   (equal (e-nonblocking-sweep-test--scan-sync-storage-boundaries)
+          e-nonblocking-sweep-test--sync-storage-boundary-files)))
+
+(ert-deftest e-nonblocking-sweep-test-context-lifetime-default-has-no-test-opt-outs ()
+  "Every repository test exercises the enabled context-lifetime default."
+  (should-not (e-nonblocking-sweep-test--context-lifetime-opt-outs)))
+
+(ert-deftest e-nonblocking-sweep-test-durable-mirror-apis-stay-off-runtime-paths ()
+  "Ordinary production modules cannot reach retired session reconstruction."
+  (should
+   (equal (e-nonblocking-sweep-test--scan-durable-mirror-reachability)
+          e-nonblocking-sweep-test--durable-mirror-files)))
 
 (provide 'e-nonblocking-sweep-test)
 

@@ -198,35 +198,29 @@ pausing a running task lands it `paused' rather than leaving it running."
     (should (e-capabilities-action-spec capability :resume-all))))
 
 
-(ert-deftest e-task-queue-actions-test-ensure-loaded-does-not-reload-live-queue ()
-  "Ensuring an already-loaded queue is an idempotent no-op."
+(ert-deftest e-task-queue-actions-test-ensure-initialized-is-idempotent ()
+  "Ensuring initialized process-local state is an idempotent no-op."
   (let ((e-task-queue-actions-default-queue
          (e-task-queue-actions-test--queue)))
     (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) t)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-task-queue-load)
+        (cl-letf (((symbol-function 'e-task-queue-initialize)
                    (lambda (&rest _args)
-                     (ert-fail "An already-loaded queue must not reload"))))
-          (should (eq (e-task-queue-actions-ensure-loaded)
+                     (ert-fail "An initialized queue must not initialize again"))))
+          (should (eq (e-task-queue-actions-ensure-initialized)
                       e-task-queue-actions-default-queue)))
       (setf (e-task-queue-loaded-p e-task-queue-actions-default-queue) nil))))
 
-(ert-deftest e-task-queue-actions-test-ensure-loaded-surfaces-load-failure ()
-  "A failed rehydration remains visible and does not poison loaded state."
+(ert-deftest e-task-queue-actions-test-ensure-initialized-issues-no-storage-work ()
+  "Process-local initialization neither queries nor mutates durable state."
   (let ((e-task-queue-actions-default-queue
-         (e-task-queue-actions-test--queue))
-        (attempts 0))
-    (cl-letf (((symbol-function 'e-task-queue-load)
-               (lambda (_queue)
-                 (setq attempts (1+ attempts))
-                 (error "malformed task queue persistence"))))
-      (should-error (e-task-queue-actions-ensure-loaded)
-                    :type 'error)
-      (should-not
-       (e-task-queue-loaded-p e-task-queue-actions-default-queue))
-      (should-error (e-task-queue-actions-ensure-loaded)
-                    :type 'error)
-      (should (= attempts 2)))))
+         (e-task-queue-actions-test--queue)))
+    (cl-letf (((symbol-function 'e-task-storage-submit)
+               (lambda (&rest _args)
+                 (ert-fail "Initialization must issue no SQLite operation"))))
+      (should (eq (e-task-queue-actions-ensure-initialized)
+                  e-task-queue-actions-default-queue))
+      (should (e-task-queue-loaded-p e-task-queue-actions-default-queue)))))
 
 (provide 'e-task-queue-actions-test)
 

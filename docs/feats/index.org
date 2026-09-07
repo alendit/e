@@ -32,10 +32,12 @@ dispatch-to-settlement, and end-to-end timing through the existing nonblocking
 status surface; it performs no SQLite read to observe SQLite work.  A subsequent
 live startup counterexample invalidated the full-composition prewarm claim:
 session construction still synchronously hydrated the complete catalog and
-enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =In-progress= to make startup
-transport-only, replace catalog/checkpoint blobs and process-wide mirrors with
-bounded SQLite queries and active working sets, bound Board/task restore, and
-remove remaining interactive storage awaits.  DP1 is Accepted after the
+enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =In-progress=.  Its current uncommitted
+implementation makes startup transport-only; replaces catalog/checkpoint blobs,
+process-wide mirrors, and active aggregates with bounded detached SQLite
+queries; gives Board a bounded live controller; makes task scheduling
+query-and-claim; and removes ordinary interactive storage waits across the
+persisted owners.  DP1 is Accepted after the
 independent correction review of =aa893823= closed with no P0--P2 findings and
 the prior findings resolved.  Its transport-only startup and pure composition
 are covered by focused ERT: =e-defaults= 37/37, =e-runtime-sqlite-p3=
@@ -44,9 +46,34 @@ are covered by focused ERT: =e-defaults= 37/37, =e-runtime-sqlite-p3=
 startup-prewarm gate passes 1/1 with 0 unexpected; ERT timing is 0.046125
 seconds (0.047432 seconds test-runner total), with approximately 17 seconds
 wall time including daemon and source loading.  The macOS private
-=CFFIXED_USER_HOME= runner isolation is part of that pass.  DP2--DP5 remain
-=not-started= pending parent admission, the overall behavioral goal remains
-=Failing=, and Feature 92 remains =In-review=.
+=CFFIXED_USER_HOME= runner isolation is part of that pass.  DP2--DP5 are
+implemented in the current dirty tree.  The package-relevant suite passes
+383/412 with 29 explicit retired-architecture skips and zero unexpected.  The
+startup, Daily query-window, public Org Canvas delayed
+release/failure/sibling, public new-chat interactive-composer, and stopped-v5
+upgrade followed by fresh public-chat graphical selectors each pass 1/1.  The
+new-chat selector was added after the earlier
+service-level gate missed a synchronous aggregate lookup and a
+snapshot/subscription gap.  The v5 gate was added after the canonical schema
+refusal was misclassified as owner damage and the synthetic migration fixture
+failed to represent historical journal shapes.  The canonical user store has
+now been explicitly upgraded to schema 6 with an independently verified schema
+5 backup.  The overall
+behavioral goal is Passing on repository-side evidence, while Feature 92 stays
+=In-review= and Addendum 2 stays ledger =In-progress= because this package is
+intentionally uncommitted and has not entered a new review cycle.
+
+The final Addendum 2 cleanup removes the remaining production chat
+unloaded-index/checkpoint-loader lifecycle and aggregate-peek preview fallback.
+Its replacement post-cutover E2E migrates 64 sessions, queries bounded detached
+state across open/reopen, and proves that the Emacs aggregate table stays empty.
+The public graphical delayed Daily/Org Canvas gate passes 1/1 after the cleanup,
+and all six loopback-dependent tests pass when run with local fixture sockets
+enabled.  The context-lifetime shadow projection now defaults to enabled, and a
+source regression test rejects any ERT/E2E opt-out.
+The complete exact-source suite passes 2,901/2,901 with zero unexpected results
+when its six loopback fixture tests are permitted; 2,835 execute and 66 explicitly
+superseded/legacy cases skip.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

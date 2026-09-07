@@ -1,14 +1,14 @@
-;;; e-board-sqlite.el --- Durable Board composition and restore -*- lexical-binding: t; -*-
+;;; e-board-sqlite.el --- SQLite-backed live Board controllers -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 
-;; Composes the process-local Board/registry policy from the consumer-shaped
-;; SQLite storage port.  It restores only durable identities and facts; live
-;; clients, subscriptions, callbacks, endpoints, tokens, and timers are rebuilt
-;; by their normal owners.
+;; Composes bounded process-local Board coordination from detached SQLite
+;; current-state queries.  SQLite remains authoritative for durable history;
+;; a controller retains only current participants, unresolved work, the active
+;; routing rows needed by that work, and one small recent presentation window.
 
 ;;; Code:
 
@@ -17,59 +17,33 @@
 (require 'e-board-registry)
 (require 'e-board-storage-sqlite)
 
+(defconst e-board-sqlite-default-controller-record-limit 64
+  "Maximum recent Board records retained by an ordinary live controller.")
+
 (cl-defun e-board-sqlite-create-registry-board
     (runtime &key id author principal id-function)
   "Create a durable registry Board on shared RUNTIME."
   (e-board-registry-create
    :id id :author author :principal principal :id-function id-function
-   :storage (e-board-storage-sqlite-create runtime)))
+   :storage (e-board-storage-sqlite-create-async runtime)))
 
-(defun e-board-sqlite--restore-records (board storage generation)
-  "Restore BOARD records from STORAGE GENERATION in bounded pages."
-  (let ((after 0) page)
-    (while
-        (progn
-          (setq page (e-board-storage-record-page
-                      storage (e-board-id board) generation after 256 nil))
-          (dolist (item (plist-get page :records))
-            (let ((record (plist-get item :record)))
-              (if (plist-get record :record-type)
-                  (e-board-import-processing-record board record)
-                (let ((message
-                       (e-board-import-message
-                        board record (plist-get item :position))))
-                  (e-board-restore-source
-                   board message (plist-get item :source))))))
-          (setq after (plist-get page :next))))))
+(defun e-board-sqlite--controller-records (state)
+  "Return STATE's deduplicated bounded records in durable position order."
+  (let ((by-position (make-hash-table :test 'eql)) records)
+    (dolist (item (append (plist-get state :records)
+                          (plist-get state :working-records)))
+      (puthash (plist-get item :position) item by-position))
+    (maphash (lambda (_position item) (push item records)) by-position)
+    (sort records (lambda (left right)
+                    (< (plist-get left :position)
+                       (plist-get right :position))))))
 
-(defun e-board-sqlite--reconcile-pickups (board storage generation)
-  "Return restorable unresolved pickups, tombstoning ambiguous effects."
-  (let ((initial (e-board-storage-unresolved-pickups
-                  storage (e-board-id board) generation nil 4096))
-        uncertain)
-    (dolist (pickup initial)
-      (when (memq (plist-get pickup :state) '(claimed accepted cancelling))
-        (let ((result
-               (e-board-storage-transition-pickup
-                storage (e-board-id board) generation
-                (plist-get pickup :delivery-id) 'uncertain
-                (list :reason 'restart-effect-ambiguous))))
-          (setf (e-board-revision board) (plist-get result :revision))
-          ;; Uncertainty is terminal but remains visible.  Re-read the active
-          ;; set below because this transition may promote a FIFO successor.
-          (push (plist-get result :pickup) uncertain))))
-    (append
-     (nreverse uncertain)
-     (e-board-storage-unresolved-pickups
-      storage (e-board-id board) generation nil 4096))))
-
-(cl-defun e-board-sqlite-restore-registry-board
-    (runtime board-id &key author id-function)
-  "Restore durable BOARD-ID and its unresolved pickups from shared RUNTIME."
-  (let* ((storage (e-board-storage-sqlite-create runtime))
-         (root (or (e-board-storage-board storage board-id)
-                   (signal 'e-board-storage-error
-                           (list "Missing durable Board" board-id))))
+(cl-defun e-board-sqlite-controller-from-state
+    (runtime state &key author id-function)
+  "Build one bounded live Board controller from detached query STATE."
+  (let* ((root (plist-get state :board))
+         (board-id (plist-get root :board-id))
+         (storage (e-board-storage-sqlite-create-async runtime))
          (generation (plist-get root :generation))
          (registry-board
           (e-board-registry-create
@@ -78,20 +52,13 @@
            :id-function id-function :storage storage :restoring t
            :generation generation :revision (plist-get root :revision)))
          (board (e-board-registry-board-source-board registry-board)))
+    (setf (e-board-storage--next-revision storage) (plist-get root :revision)
+          (e-board-storage--next-position storage) (plist-get root :next-position)
+          (e-board-storage--next-generation storage) generation)
     (let ((e-board--storage-replay-p t))
-      (dolist (participant
-               (e-board-storage-participants storage board-id generation 4096))
-        (if (plist-get participant :publication-pending)
-            ;; A process loss before the enclosing session admission committed
-            ;; leaves only this owner-specific provisional identity.  Remove
-            ;; it so exact retry can recreate the participant from session
-            ;; association intent; durable pickups would reject this cleanup.
-            (let ((result
-                   (e-board-storage-delete-participant
-                    storage board-id generation
-                    (plist-get participant :id))))
-              (setf (e-board-revision board) (plist-get result :revision)))
-          (let ((restored
+      (dolist (participant (plist-get state :participants))
+        (unless (plist-get participant :publication-pending)
+          (let ((current
                  (e-board-registry-add-participant
                   registry-board :id (plist-get participant :id)
                   :author (plist-get participant :author)
@@ -99,27 +66,55 @@
                   :controller (plist-get participant :controller)
                   :subscription-id (plist-get participant :subscription-id)
                   :state 'dormant :publish-event nil)))
-            ;; No process-local participant-added event is replayed, but the
-            ;; durable identity was already published before this restart.
-            (setf (e-board-registry-participant-publication-pending restored)
+            (setf (e-board-registry-participant-publication-pending current)
                   nil))))
-      (e-board-sqlite--restore-records board storage generation))
-    (let ((pickups
-           (e-board-sqlite--reconcile-pickups board storage generation)))
-      (dolist (message (e-board-messages board))
-        (when (eq (e-board-message-kind message) 'input)
-          (when-let* ((routing
-                       (e-board-storage-routing
-                        storage board-id generation
-                        (e-board-message-id message))))
-            (e-board-restore-routing
-             board (e-board-message-id message) (plist-get routing :outcome)
-             (cl-remove-if-not
-              (lambda (pickup)
-                (equal (plist-get pickup :message-id)
-                       (e-board-message-id message)))
-              pickups))))))
+      (dolist (item (e-board-sqlite--controller-records state))
+        (let ((record (plist-get item :record)))
+          (if (plist-get record :record-type)
+              (e-board-import-processing-record board record)
+            (let ((message
+                   (e-board-import-message
+                    board record (plist-get item :position))))
+              (e-board-restore-source board message (plist-get item :source)))))))
+    (dolist (routing (plist-get state :routing))
+      (e-board-restore-routing
+       board (plist-get routing :message-id) (plist-get routing :outcome)
+       (cl-remove-if-not
+        (lambda (pickup)
+          (equal (plist-get pickup :message-id)
+                 (plist-get routing :message-id)))
+        (plist-get state :pickups))))
     registry-board))
+
+(cl-defun e-board-sqlite-open-controller-start
+    (runtime board-id &key author id-function record-limit)
+  "Return work that queries and builds BOARD-ID's bounded live controller."
+  (let ((query
+         (e-board-storage-sqlite-controller-state-start
+          runtime board-id
+          (or record-limit e-board-sqlite-default-controller-record-limit)))
+        (result
+         (e-work-prepare
+          (e-work-spec-create
+           :id "board-controller-open" :execution 'cooperative
+           :interactive-policy 'async :owner 'e-board-sqlite
+           :runner (lambda (_handle _arguments _context) :deferred))
+          nil :context (list :domain-ref board-id
+                             :work-kind 'board-controller-open))))
+    (e-work-on-settle
+     query
+     (lambda (settled)
+       (let ((status (e-work-status settled)))
+         (if (eq (plist-get status :state) 'finished)
+             (condition-case error
+                 (e-work-finish
+                  result
+                  (e-board-sqlite-controller-from-state
+                   runtime (plist-get status :result)
+                   :author author :id-function id-function))
+               (error (e-work-fail result error)))
+           (e-work-fail result (plist-get status :error))))))
+    result))
 
 (provide 'e-board-sqlite)
 

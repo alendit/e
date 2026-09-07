@@ -195,14 +195,14 @@ window callbacks loadable before the composition root is evaluated."
   "Return semantic cache key for this surface's context estimate."
   (when (and e-chat-harness e-chat-session-id)
     (ignore-errors
-      (let* ((state (e-chat-service-state e-chat-harness e-chat-session-id))
+      (let* ((store (e-chat-service-session-store e-chat-harness))
+             (state (e-chat-service-state e-chat-harness e-chat-session-id))
              (options (e-harness-display-options e-chat-harness
                                                  e-chat-session-id))
              (usage-event
-              (ignore-errors
+              (unless (e-session-async-enabled-p store)
                 (e-session-latest-token-usage-event
-                 (e-chat-service-session-store e-chat-harness)
-                 e-chat-session-id))))
+                 store e-chat-session-id))))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)
               :latest-token-usage-id (plist-get usage-event :id)

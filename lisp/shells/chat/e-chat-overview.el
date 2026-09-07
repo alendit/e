@@ -55,10 +55,32 @@
   "Harness event subscription for this overview buffer.")
 (defvar-local e-chat-overview--subscriptions nil
   "Harness event subscriptions for multi-instance overview buffers.")
+(defvar-local e-chat-overview--page-work nil
+  "Request-scoped work currently populating this overview buffer.")
+(defvar-local e-chat-overview--page-generation 0
+  "Presentation generation fencing stale overview page settlements.")
+(defvar-local e-chat-overview--displayed-candidates nil
+  "Detached candidates represented by the currently displayed bounded page.")
+(defvar-local e-chat-overview--page-loaded-p nil
+  "Non-nil after this overview has rendered a settled bounded page.")
 (defvar e-chat-harness nil)
 (defvar e-chat-session-id nil)
 (defvar e-chat-harness-instance-id nil)
 (defvar e-chat-default-harness-id)
+
+(cl-defstruct (e-chat-overview-page-operation
+               (:constructor e-chat-overview--page-operation-create))
+  work groups children results pending error settled)
+
+(cl-defstruct (e-chat-overview-page-group
+               (:constructor e-chat-overview--page-group-create))
+  store harness descriptors page)
+
+(defconst e-chat-overview--page-operation-spec
+  (e-work-spec-create
+   :id "chat-overview-session-page" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-overview
+   :runner (lambda (_work _operation _context) :deferred)))
 
 (defun e-chat-overview--make-mode-map (&optional map open-command)
   "Return MAP configured for `e-chat-overview-mode'.
@@ -167,7 +189,9 @@ depends on the facade."
              (> left-seq right-seq)))))
 
 (defun e-chat-overview--session-candidates ()
-  "Return session candidates displayed by the overview."
+  "Return ephemeral session candidates displayed by the overview.
+
+Persistent SQLite consumers use `e-chat-overview-session-candidates-start'."
   (let ((instances (e-chat-overview--chat-instances))
         (default-instance-id
          (when-let ((default-instance
@@ -213,6 +237,169 @@ depends on the facade."
                       (seq-filter #'e-chat-overview--board-session-p
                                   (e-chat-service-root-session-list harness))))))
     candidates))
+
+(defun e-chat-overview--page-descriptors (&optional harness)
+  "Return bounded harness descriptors for one overview page request."
+  (if harness
+      (list (list :harness harness))
+    (let ((instances (e-chat-overview--chat-instances)))
+      (if instances
+          (mapcar
+           (lambda (instance)
+             (list :instance instance
+                   :instance-id (e-harness-instance-id instance)
+                   :harness (e-chat-overview--harness-for-instance instance)))
+           instances)
+        (list (list :harness (e-chat-overview--default-harness)))))))
+
+(defun e-chat-overview--page-groups (&optional harness)
+  "Group one page request by authoritative session store."
+  (let (groups)
+    (dolist (descriptor (e-chat-overview--page-descriptors harness))
+      (let* ((owner (plist-get descriptor :harness))
+             (store (e-chat-service-session-store owner))
+             (group
+              (seq-find
+               (lambda (candidate)
+                 (eq store (e-chat-overview-page-group-store candidate)))
+               groups)))
+        (if group
+            (setf (e-chat-overview-page-group-descriptors group)
+                  (append (e-chat-overview-page-group-descriptors group)
+                          (list descriptor)))
+          (setq group
+                (e-chat-overview--page-group-create
+                 :store store :harness owner
+                 :descriptors (list descriptor)))
+          (setq groups (append groups (list group))))))
+    groups))
+
+(defun e-chat-overview--page-default-instance-id ()
+  "Return the configured default chat instance identity, or nil."
+  (when-let* ((instance
+               (or (e-chat-overview--default-chat-instance)
+                   (e-harness-instance-default :kind 'chat))))
+    (e-harness-instance-id instance)))
+
+(defun e-chat-overview--page-row-descriptor (group session default-instance-id)
+  "Return GROUP descriptor owning detached SESSION summary."
+  (let* ((descriptors (e-chat-overview-page-group-descriptors group))
+         (owner (e-chat-overview--session-owner-instance-id
+                 (e-chat-overview-page-group-harness group) session)))
+    (cond
+     (owner
+      (seq-find
+       (lambda (descriptor)
+         (equal owner (plist-get descriptor :instance-id)))
+       descriptors))
+     ((= (length descriptors) 1) (car descriptors))
+     (t
+      (seq-find
+       (lambda (descriptor)
+         (equal default-instance-id (plist-get descriptor :instance-id)))
+       descriptors)))))
+
+(defun e-chat-overview--page-operation-candidates (operation)
+  "Return sorted detached candidates assembled for OPERATION."
+  (let ((default-instance-id (e-chat-overview--page-default-instance-id))
+        candidates)
+    (dolist (group (e-chat-overview-page-operation-groups operation))
+      (dolist (session (plist-get
+                        (e-chat-overview-page-group-page group) :rows))
+        (when (e-chat-overview--board-session-p session)
+          (when-let* ((descriptor
+                       (e-chat-overview--page-row-descriptor
+                        group session default-instance-id)))
+            (push (list :instance (plist-get descriptor :instance)
+                        :instance-id (plist-get descriptor :instance-id)
+                        :harness (plist-get descriptor :harness)
+                        :session session
+                        :session-id (plist-get session :id))
+                  candidates)))))
+    (sort candidates
+          (lambda (left right)
+            (e-chat-overview--session-candidate-newer-p
+             (plist-get left :session)
+             (plist-get right :session))))))
+
+(defun e-chat-overview--settle-page-operation (operation)
+  "Settle OPERATION after all bounded SQLite page children finish."
+  (unless (e-chat-overview-page-operation-settled operation)
+    (setf (e-chat-overview-page-operation-settled operation) t)
+    (if-let* ((error (e-chat-overview-page-operation-error operation)))
+        (e-work-fail (e-chat-overview-page-operation-work operation) error)
+      (e-work-finish
+       (e-chat-overview-page-operation-work operation)
+       (e-chat-overview--page-operation-candidates operation)))))
+
+(defun e-chat-overview--page-child-settled (operation group child)
+  "Record GROUP's settled CHILD for request-local OPERATION."
+  (unless (e-chat-overview-page-operation-settled operation)
+    (let ((status (e-work-status child)))
+      (pcase (plist-get status :state)
+        ('finished
+         (condition-case error
+             (setf (e-chat-overview-page-group-page group)
+                   (e-chat-service-root-session-page-value child))
+           (error
+            (setf (e-chat-overview-page-operation-error operation) error))))
+        ('failed
+         (setf (e-chat-overview-page-operation-error operation)
+               (plist-get status :error)))
+        ('cancelled
+         (setf (e-chat-overview-page-operation-error operation)
+               '(e-work-cancelled "Session page request cancelled"))))
+      (setf (e-chat-overview-page-operation-pending operation)
+            (1- (e-chat-overview-page-operation-pending operation)))
+      (when (or (e-chat-overview-page-operation-error operation)
+                (zerop (e-chat-overview-page-operation-pending operation)))
+        (when (e-chat-overview-page-operation-error operation)
+          (dolist (pending (e-chat-overview-page-operation-children operation))
+            (unless (memq (plist-get (e-work-status pending) :state)
+                          '(finished failed cancelled))
+              (e-work-cancel pending))))
+        (e-chat-overview--settle-page-operation operation)))))
+
+(defun e-chat-overview-session-candidates-start (&optional harness)
+  "Return immediately with work reading one displayed session-summary page.
+
+HARNESS restricts the page to one harness.  With nil HARNESS, configured chat
+instances sharing a store share one SQLite page request; the detached rows are
+assigned to their presentation owner after settlement."
+  (let* ((groups (e-chat-overview--page-groups harness))
+         (operation
+          (e-chat-overview--page-operation-create
+           :groups groups :results (make-hash-table :test 'eq)
+           :pending (length groups)))
+         (work
+          (e-work-prepare
+           e-chat-overview--page-operation-spec operation
+           :context (list :domain-ref 'chat-overview
+                          :work-kind 'session-summary-page))))
+    (setf (e-chat-overview-page-operation-work operation) work)
+    (e-work-start-prepared work :arguments operation)
+    (if (null groups)
+        (e-chat-overview--settle-page-operation operation)
+      (dolist (group groups)
+        (let* ((settled-group group)
+               (child
+               (e-chat-service-root-session-page-start
+                (e-chat-overview-page-group-harness group))))
+          (setf (e-chat-overview-page-operation-children operation)
+                (append (e-chat-overview-page-operation-children operation)
+                        (list child)))
+          (e-work-on-settle
+           child
+           (lambda (settled)
+             (e-chat-overview--page-child-settled
+              operation settled-group settled))))))
+    (setf (e-work-handle-cancel-function work)
+          (lambda (_handle)
+            (dolist (child (e-chat-overview-page-operation-children operation))
+              (unless (memq (plist-get (e-work-status child) :state)
+                            '(finished failed cancelled))
+                (e-work-cancel child)))))
+    work))
 
 (defun e-chat-overview--invalidate-unread-cache ()
   "Mark the workspace unread projection stale."
@@ -695,14 +882,11 @@ adds its display name to the row."
 
 (defun e-chat-overview--active-session-preview-messages (harness session)
   "Return messages to render for active-session preview of SESSION."
-  (or (plist-get session :messages)
-      (let* ((store (e-chat-service-session-store harness))
-             (stored-session
-              (ignore-errors
-                (e-session-aggregate-peek-session store (plist-get session :id)))))
-        (unless (and (e-session-persistent-p store)
-                     (not (plist-get stored-session :loaded)))
-          (copy-sequence (plist-get stored-session :messages))))))
+  (ignore harness)
+  ;; Persistent candidates are detached query rows and may carry only their
+  ;; bounded summary.  Preview must never reach behind that consumer-shaped
+  ;; result to inspect or reconstruct a session aggregate.
+  (copy-sequence (plist-get session :messages)))
 
 (defun e-chat-overview--tail-messages (messages limit)
   "Return at most LIMIT trailing MESSAGES for an overview preview.
@@ -961,34 +1145,73 @@ surface; the overview owner never opens a chat buffer itself."
   (interactive)
   (e-chat-overview--row-target-at-point))
 
-(defun e-chat-overview--render (&optional harness)
-  "Render HARNESS sessions into the current overview buffer."
-  (let* ((instances (and (not harness)
-                         (e-chat-overview--chat-instances)))
-         (show-instance (> (length instances) 1))
-         (sessions (if instances
-                       (e-chat-overview--session-candidates)
-                     (let ((target (or harness
-                                       e-chat-overview--harness
-                                       (e-chat-overview--default-harness))))
-                       (setq harness target)
-                       (seq-filter #'e-chat-overview--board-session-p
-                                   (e-chat-service-root-session-list target)))))
-         (inhibit-read-only t))
-    (setq-local e-chat-overview--harness harness)
+(defun e-chat-overview--render-candidates (candidates harness)
+  "Render detached CANDIDATES for HARNESS into the current buffer."
+  (let ((show-instance
+         (> (length (delq nil
+                          (delete-dups
+                           (mapcar (lambda (candidate)
+                                     (plist-get candidate :instance-id))
+                                   candidates))))
+            1))
+        (inhibit-read-only t))
+    (setq-local e-chat-overview--harness harness
+                e-chat-overview--displayed-candidates
+                (copy-tree candidates t)
+                e-chat-overview--page-loaded-p t)
     (erase-buffer)
-    (if sessions
-        (if instances
-            (dolist (candidate sessions)
-              (e-chat-overview--insert-session-row
-               (plist-get candidate :harness)
-               (plist-get candidate :session)
-               (plist-get candidate :instance)
-               show-instance))
-          (dolist (session sessions)
-            (e-chat-overview--insert-session-row harness session)))
+    (if candidates
+        (dolist (candidate candidates)
+          (e-chat-overview--insert-session-row
+           (plist-get candidate :harness)
+           (plist-get candidate :session)
+           (plist-get candidate :instance)
+           show-instance))
       (insert "No e chat sessions\n"))
     (goto-char (point-min))))
+
+(defun e-chat-overview--render (&optional harness)
+  "Request and asynchronously render one bounded HARNESS session page."
+  (when (and e-chat-overview--page-work
+             (not (memq (plist-get (e-work-status e-chat-overview--page-work)
+                                   :state)
+                        '(finished failed cancelled))))
+    (e-work-cancel e-chat-overview--page-work))
+  (setq-local e-chat-overview--page-generation
+              (1+ e-chat-overview--page-generation))
+  (let* ((buffer (current-buffer))
+         (generation e-chat-overview--page-generation)
+         (target (or harness e-chat-overview--harness))
+         (work (e-chat-overview-session-candidates-start target))
+         (inhibit-read-only t))
+    (setq-local e-chat-overview--harness target
+                e-chat-overview--page-work work
+                e-chat-overview--displayed-candidates nil
+                e-chat-overview--page-loaded-p nil)
+    (erase-buffer)
+    (insert "Loading e chat sessions…\n")
+    (goto-char (point-min))
+    (e-work-on-settle
+     work
+     (lambda (settled)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (when (and (= generation e-chat-overview--page-generation)
+                      (eq settled e-chat-overview--page-work))
+             (setq-local e-chat-overview--page-work nil)
+             (let ((status (e-work-status settled)))
+               (if (eq (plist-get status :state) 'finished)
+                   (e-chat-overview--render-candidates
+                    (plist-get status :result) target)
+                 (let ((inhibit-read-only t))
+                   (erase-buffer)
+                   (insert
+                    (format "Unable to query e chat sessions: %s\n\nPress g to retry.\n"
+                            (e-work-error-message
+                             (or (plist-get status :error)
+                                 '(e-work-cancelled "cancelled")))))
+                   (goto-char (point-min))))))))))
+    work))
 
 (defun e-chat-overview--mark-session-read
     (harness session-or-id &optional instance-id)
@@ -1010,11 +1233,24 @@ surface; the overview owner never opens a chat buffer itself."
          instance-id)
         (e-chat-overview--invalidate-unread-cache)))))
 
-(defun e-chat-overview--session-for-id (harness session-id)
-  "Return HARNESS session metadata for SESSION-ID."
-  (condition-case nil
-      (e-chat-service-session harness session-id)
-    (e-session-missing nil)))
+(defun e-chat-overview--session-for-id (harness session-id &optional instance-id)
+  "Return displayed detached metadata for HARNESS SESSION-ID.
+
+For an ephemeral harness without a displayed page, use its direct session
+service.  Persistent SQLite lookup is always supplied by the displayed page."
+  (or
+   (plist-get
+    (seq-find
+     (lambda (candidate)
+       (and (eq harness (plist-get candidate :harness))
+            (equal session-id (plist-get candidate :session-id))
+            (equal instance-id (plist-get candidate :instance-id))))
+     e-chat-overview--displayed-candidates)
+    :session)
+   (unless (e-session-async-enabled-p (e-chat-service-session-store harness))
+     (condition-case nil
+         (e-chat-service-session harness session-id)
+       (e-session-missing nil)))))
 
 (defun e-chat-overview--harness-for-instance-id (instance-id)
   "Return live harness for INSTANCE-ID, or the overview/default harness."
@@ -1031,7 +1267,8 @@ surface; the overview owner never opens a chat buffer itself."
                          (user-error "No e chat session at point")))
          (instance-id (e-chat-overview--instance-id-at-point))
          (harness (e-chat-overview--harness-for-instance-id instance-id))
-         (session (or (e-chat-overview--session-for-id harness session-id)
+         (session (or (e-chat-overview--session-for-id
+                       harness session-id instance-id)
                       (user-error "No e chat session at point"))))
     (list :harness harness
           :session session
@@ -1128,6 +1365,12 @@ buffer or calls back into the facade."
   "Clear obsolete overview live-feed state.
 The overview is explicitly manual-refresh-only after the board cutover; it does
 not open an unbounded process-wide presentation subscription."
+  (when (and e-chat-overview--page-work
+             (not (memq (plist-get (e-work-status e-chat-overview--page-work)
+                                   :state)
+                        '(finished failed cancelled))))
+    (e-work-cancel e-chat-overview--page-work))
+  (setq e-chat-overview--page-work nil)
   (setq e-chat-overview--subscription nil)
   (setq e-chat-overview--subscriptions nil))
 
@@ -1202,8 +1445,14 @@ not open an unbounded process-wide presentation subscription."
 ;;; Public overview contract
 
 (defun e-chat-overview-session-candidates ()
-  "Return the bounded session candidates displayed by the overview."
-  (e-chat-overview--session-candidates))
+  "Return the current displayed page or ephemeral session candidates.
+
+This accessor never queries SQLite.  Persistent commands that need a fresh
+page use `e-chat-overview-session-candidates-start'."
+  (if (and (derived-mode-p 'e-chat-overview-mode)
+           e-chat-overview--page-loaded-p)
+      (copy-tree e-chat-overview--displayed-candidates t)
+    (e-chat-overview--session-candidates)))
 
 (defun e-chat-overview-board-session-p (session)
   "Return non-nil when SESSION carries board-native identity."

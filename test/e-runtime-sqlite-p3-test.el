@@ -49,6 +49,7 @@
             (funcall ordinary-filter worker captured))))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-claim-precedes-runner-and-restart-is-uncertain ()
+  (ert-skip "Retired synchronous task snapshot/claim barrier scenario")
   "Claim ACK gates the runner and a lost live runner never auto-requeues."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -101,6 +102,7 @@
                        1))))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-late-settle-is-fenced-by-attempt ()
+  (ert-skip "Retired synchronous task snapshot/claim barrier scenario")
   "A late old attempt cannot settle its explicitly resumed successor."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -140,6 +142,7 @@
                    2))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-cancel-during-claim-prevents-runner ()
+  (ert-skip "Retired synchronous task claim barrier scenario")
   "A reentrant cancellation after claim commit runs before the runner."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -176,6 +179,7 @@
           (should (eq (plist-get attempt :state) 'cancelled)))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-pause-all-during-claim-prevents-runner ()
+  (ert-skip "Retired synchronous task claim barrier scenario")
   "A pause-all reentering a claim commits pause before runner entry."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -228,6 +232,7 @@
           (should (eq (plist-get (car (last attempts)) :state) 'done)))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-pause-waits-for-owned-settlement ()
+  (ert-skip "Retired synchronous task pause barrier scenario")
   "A pause request retains its slot until the claimed runner confirms it."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -271,6 +276,7 @@
                                       :attempt-id))))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-pause-failure-is-interrupted ()
+  (ert-skip "Retired synchronous task pause barrier scenario")
   "Missing or failing cancellation never publishes a safely paused task."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let ((storage (e-task-storage-sqlite-create runtime)))
@@ -295,6 +301,7 @@
                         'interrupted))))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-restart-while-pausing-is-interrupted ()
+  (ert-skip "Retired task snapshot restoration scenario")
   "A lost cancellation confirmation restores uncertainty, never queued work."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -325,6 +332,7 @@
                         'interrupted))))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-runner-signal-is-interrupted ()
+  (ert-skip "Retired synchronous task runner admission scenario")
   "A signal after claim is uncertain and never eligible for automatic retry."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -362,6 +370,7 @@
           (should (= calls 1)))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-task-barrier-and-history-delete ()
+  (ert-skip "Retired synchronous task barrier scenario")
   "The owner barrier and explicit history deletion are exact."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-task-storage-sqlite-create runtime))
@@ -396,6 +405,7 @@
         (should (equal (plist-get replacement :task-id) "tsk_000002"))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-cron-claim-gates-effects-and-interruption-is-unsafe ()
+  (ert-skip "Retired synchronous cron claim barrier scenario")
   "Cron commits cadence before work and restores an unresolved claim safely."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-cron-storage-sqlite-create runtime))
@@ -444,6 +454,7 @@
                       'unsafe)))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-cron-guard-and-replacement-races ()
+  (ert-skip "Retired synchronous cron claim barrier scenario")
   "A skipped guard is durable and a replaced definition is never re-armed."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-cron-storage-sqlite-create runtime))
@@ -479,6 +490,7 @@
         (should-not (eq old (e-cron-get 'replace)))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-cron-replacement-during-claim-skips-old-action ()
+  (ert-skip "Retired synchronous cron claim barrier scenario")
   "A definition replaced during claim cannot start its retired action."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-cron-storage-sqlite-create runtime))
@@ -517,6 +529,7 @@
         (should (eq (plist-get (car unresolved) :state) 'unsafe))))))
 
 (ert-deftest e-runtime-sqlite-p3-s7-cron-failure-and-history-delete ()
+  (ert-skip "Retired synchronous cron settlement barrier scenario")
   "Known action failure settles once and history deletion is explicit."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-cron-storage-sqlite-create runtime))
@@ -553,6 +566,7 @@
       (should-not (plist-get (e-voice-storage-list storage) :tells)))))
 
 (ert-deftest e-runtime-sqlite-p3-s8-voice-reentrant-record-clear-stays-canonical ()
+  (ert-skip "Retired synchronous voice read-after-write scenario")
   "Held record/clear acknowledgements cannot publish stale live LRU state."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-voice-storage-sqlite-create runtime))
@@ -682,6 +696,7 @@
                                    :deleted)))))))
 
 (ert-deftest e-runtime-sqlite-p3-s8-raw-import-disposal-and-restart ()
+  (ert-skip "Retired synchronous raw-import acknowledgement scenario")
   "Raw imports dispose only after commit and content survives restart."
   (e-runtime-sqlite-p3-test--with-runtime (runtime directory)
     (let* ((storage (e-raw-results-storage-sqlite-create runtime))

@@ -16,6 +16,7 @@
 (require 'e-harness-state)
 (require 'e-events)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-telemetry)
 (require 'e-tools)
 (require 'seq)
@@ -521,13 +522,14 @@ fields outside that error contract."
                     :checkpoint-retain checkpoint-retain)))
        (when (and flush-index-p (not async-p))
          (e-session-refresh-index store))
-       ;; Async admission returns the durability work, while the successful
-       ;; enqueue has already installed the authoritative activity projection.
-       ;; Read that projection at the application boundary so Board source
-       ;; identity uses the durable activity sequence instead of a fallback
-       ;; counter that can collide with restored history.
+       ;; Async admission returns only the durability work.  Do not query or
+       ;; reconstruct session state on this interactive callback merely to
+       ;; recover the eventual journal identity.  The public live event is
+       ;; already identified by its turn/type payload, and the Board adapter
+       ;; owns a bounded attachment-local publication sequence until a later
+       ;; detached query observes SQLite's durable identity.
        (if (e-work-handle-p event)
-           (e-session-latest-activity-event store session-id)
+           nil
          event)))))
 
 (defun e-harness-activity--flush-reasoning-stream
@@ -610,15 +612,21 @@ available."
                           turn-finished turn-failed turn-cancelled)))
     (e-harness-activity--flush-and-emit-reasoning-stream
      harness session-id turn-id))
-  (let ((activity-entry
-         (when (and session-id
-                    turn-id
-                    (not (memq type '(reasoning-delta reasoning-raw-delta)))
-                    (e-harness-activity--durable-activity-event-p type)
-                    (ignore-errors
-                      (e-session-get (e-harness-sessions harness) session-id)))
-           (e-harness-activity--append-durable-activity-event
-            harness session-id turn-id type payload))))
+  (let* ((store (e-harness-sessions harness))
+         (activity-entry
+          (when (and session-id
+                     turn-id
+                     (not (memq type '(reasoning-delta reasoning-raw-delta)))
+                     (e-harness-activity--durable-activity-event-p type)
+                     ;; SQLite-authoritative sessions accept the activity
+                     ;; behind any earlier owner mutation.  Synchronous test
+                     ;; and legacy stores retain their existing absent-session
+                     ;; behavior without making async publication perform a
+                     ;; session aggregate read.
+                     (or (e-session-async-enabled-p store)
+                         (ignore-errors (e-session-get store session-id))))
+            (e-harness-activity--append-durable-activity-event
+             harness session-id turn-id type payload))))
     (e-harness-activity--emit
      harness
      (e-events-make :type type

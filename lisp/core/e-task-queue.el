@@ -86,10 +86,6 @@ tests); handlers must not mutate the queue.")
 Each function receives QUEUE and the normalized terminal task record.  Queue
 retry remains queue policy: this hook runs only after retries are exhausted.")
 
-(defvar e-task-queue-rehydrate-functions nil
-  "Abnormal hook run for a durable record before a restored queue dispatches.
-Each function receives QUEUE, the live RECORD, and its persisted status.")
-
 (defvar e-task-queue--unsettled-write-count 0)
 (defvar e-task-queue--failed-write-count 0)
 (defvar e-task-queue--unsettled-generation 0)
@@ -134,7 +130,7 @@ Each function receives QUEUE, the live RECORD, and its persisted status.")
     valid))
 
 (cl-defstruct (e-task-queue (:constructor e-task-queue--create))
-  "An in-memory task queue with a bounded dispatcher.
+  "A live task scheduler with a bounded dispatcher.
 RECORDS maps task ids to mutable task plists.  ORDER lists task ids in enqueue
 order (oldest first).  MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, and RUNNER
 override the module defaults when non-nil.  EXPOSE-AWAIT-REFERENCES-P marks the
@@ -142,7 +138,7 @@ one public queue whose task ids the global =task:= resolver can resolve.
 DISPATCHING guards dispatch re-entrancy so a synchronous runner settle does
 not recurse.  PAUSED-P is the queue-level gate that stops the dispatcher from
 starting new work.  STORAGE is the only durable authority; LOADED-P records
-successful rehydration of that queue instance."
+that scheduler startup was requested without implying durable replay."
   (records (make-hash-table :test 'equal))
   (order nil)
   (sequence 0)
@@ -160,6 +156,8 @@ successful rehydration of that queue instance."
   id
   storage
   storage-root-opened-p
+  claim-pending-p
+  persistence-suspect
   (revision 0)
   loaded-p)
 
@@ -193,11 +191,11 @@ durable port; omitting both creates an explicitly in-memory queue."
    :expose-await-references-p expose-await-references-p))
 
 (defun e-task-queue--ensure-storage-root (queue)
-  "Open QUEUE's durable root at its first explicit storage operation.
+  "Synchronously open QUEUE's durable root for an operator operation.
 
-The idempotent worker operation is kept behind the task owner boundary.  It
-hydrates only queue metadata needed for task identity and pause policy; task
-records remain absent until the explicit `e-task-queue-load' operation."
+This named blocking compatibility helper is used only by explicit history
+deletion.  Ordinary scheduling uses atomic asynchronous claims and never calls
+it."
   (when (and (e-task-queue-storage-backed-p queue)
              (not (e-task-queue-storage-root-opened-p queue)))
     (let ((root (e-task-storage-open-queue
@@ -316,18 +314,37 @@ truncated prompt prefix in `:prompt-summary'."
 
 (defun e-task-queue--commit-record
     (queue current expected-status staged)
-  "Commit STAGED transition and publish it into CURRENT."
-  (e-task-queue--ensure-storage-root queue)
+  "Publish STAGED into CURRENT and enqueue its durable transition.
+Persistent callers never wait for SQLite.  CURRENT is retained only while the
+mutation is in flight or the task is executing."
   (if (not (e-task-queue-storage-backed-p queue))
       (e-task-queue--publish-durable-record current staged)
-    (let* ((result
-            (e-task-storage-transition
-             (e-task-queue-storage queue) (e-task-queue-id queue)
-             (plist-get current :task-id) expected-status
-             (e-task-queue--durable-record staged)))
-           (durable (plist-get result :record)))
-      (setf (e-task-queue-revision queue) (plist-get result :revision))
-      (e-task-queue--publish-durable-record current durable))))
+    (let* ((task-id (plist-get current :task-id))
+           (durable (e-task-queue--durable-record staged))
+           (terminal-p (memq (plist-get durable :status)
+                             '(done failed cancelled interrupted unrouted))))
+      (e-task-queue--publish-durable-record current durable)
+      (plist-put current :persistence-pending t)
+      (e-task-storage-submit
+       (e-task-queue-storage queue) 'write 'transition
+       (list (e-task-queue-id queue) task-id expected-status durable)
+       (lambda (result error)
+         (plist-put current :persistence-pending nil)
+         (if error
+             (progn
+               (plist-put current :persistence-suspect t)
+               (unless (e-task-queue-persistence-suspect queue)
+                 (setf (e-task-queue-persistence-suspect queue)
+                       (copy-tree error t))))
+           (setf (e-task-queue-revision queue)
+                 (or (plist-get result :revision)
+                     (e-task-queue-revision queue)))
+           (when terminal-p
+             (remhash task-id (e-task-queue-records queue))
+             (setf (e-task-queue-order queue)
+                   (delete task-id (e-task-queue-order queue)))))
+         (e-task-queue--notify queue)))
+      current)))
 
 ;; --- public reads -----------------------------------------------------------
 
@@ -609,67 +626,80 @@ retry.  Re-dispatches QUEUE after a real transition."
           (plist-put record :handle handle))))))
 
 (defun e-task-queue--start (queue task-id)
-  "Transition TASK-ID in QUEUE to running and invoke the runner.
+  "Start process-local TASK-ID and invoke the runner.
 Resolves the task's harness instance at this moment.  A task whose instance id
-is missing or unresolvable settles `failed' without stalling the dispatcher."
+is missing or unresolvable settles `failed' without stalling the dispatcher.
+SQLite-backed queues use `e-task-queue--request-runnable-claim' instead."
   (let* ((record (gethash task-id (e-task-queue-records queue)))
          (instance-id (or (plist-get record :harness-instance-id)
                           (e-task-queue--default-instance-id queue))))
-    ;; A nil instance id is a dispatch-time choice.  Once the task starts,
-    ;; retain the resolved target so its completed session can be identified
-    ;; after a restart even if the queue default later changes.
     (when (e-task-queue-storage-backed-p queue)
-      ;; CLAIMING and the two CLAIM-*-REQUESTED values are process-local owner
-      ;; fences.  A timer may request cancellation or pause while the
-      ;; cooperative worker wait is running; it must not submit a stale queued
-      ;; transition or let the claimed external runner start.
-      (plist-put record :claiming t)
-      (unwind-protect
-          (let* ((started-at (e-task-queue--timestamp))
-                 (attempt-number
-                  (1+ (or (plist-get record :attempt-number) 0)))
-                 (attempt-id
-                  (format "%s:a:%d" task-id attempt-number))
-                 (result
-                  (e-task-storage-claim
-                   (e-task-queue-storage queue) (e-task-queue-id queue)
-                   task-id attempt-id started-at instance-id)))
-            (setf (e-task-queue-revision queue) (plist-get result :revision))
-            (e-task-queue--publish-durable-record
-             record (plist-get result :record)))
-        (plist-put record :claiming nil)))
-    (unless (e-task-queue-storage-backed-p queue)
-      (when instance-id
-        (plist-put record :harness-instance-id instance-id))
-      (plist-put record :status 'running)
-      (plist-put record :started-at (e-task-queue--timestamp)))
+      (signal 'e-task-queue-error
+              (list "SQLite task starts require an atomic asynchronous claim"
+                    task-id)))
     (when instance-id
       (plist-put record :harness-instance-id instance-id))
+    (plist-put record :status 'running)
+    (plist-put record :started-at (e-task-queue--timestamp))
+    (e-task-queue--notify queue)
+    (e-task-queue--invoke-claimed-runner queue task-id record instance-id)))
+
+(defun e-task-queue--claimed-record (queue durable)
+  "Install DURABLE as one executing live record in QUEUE."
+  (let* ((task-id (plist-get durable :task-id))
+         (record (or (gethash task-id (e-task-queue-records queue))
+                     (copy-tree durable t))))
+    (e-task-queue--publish-durable-record record durable)
+    (plist-put record :persistence-pending nil)
+    (unless (plist-get record :work-handle)
+      (plist-put record :work-handle
+                 (e-task-queue--work-handle-for-status record)))
+    (puthash task-id record (e-task-queue-records queue))
+    (cl-pushnew task-id (e-task-queue-order queue) :test #'equal)
+    record))
+
+(defun e-task-queue--claim-settled (queue result error)
+  "Continue QUEUE after one request-local runnable claim settles."
+  (setf (e-task-queue-claim-pending-p queue) nil)
+  (let ((claimed-p nil))
     (cond
-     ((and (e-task-queue-storage-backed-p queue)
-           (plist-get record :claim-cancel-requested))
-      ;; Cancellation dominates a concurrent pause request.
-      (plist-put record :claim-cancel-requested nil)
-      (plist-put record :claim-pause-requested nil)
-      ;; Publish the claim only to the task owner, then immediately commit the
-      ;; already-requested cancellation before any runner entry.
-      (e-task-queue-cancel queue task-id))
-     ((and (e-task-queue-storage-backed-p queue)
-           (plist-get record :claim-pause-requested))
-      (plist-put record :claim-pause-requested nil)
-      ;; No runner has been invoked, so this is a known paused task rather than
-      ;; an interrupted external effect and needs no cancellation handle.
-      (let ((staged (copy-tree record)))
-        (plist-put staged :status 'paused)
-        (plist-put staged :started-at nil)
-        (plist-put staged :finished-at nil)
-        (e-task-queue--commit-record queue record 'running staged))
-      (plist-put record :handle nil)
-      (e-task-queue--notify queue))
-     (t
+   (error
+    (unless (e-task-queue-persistence-suspect queue)
+      (setf (e-task-queue-persistence-suspect queue) (copy-tree error t))))
+   ((plist-get result :claimed-p)
+    (setq claimed-p t)
+    (setf (e-task-queue-revision queue)
+          (or (plist-get result :revision) (e-task-queue-revision queue)))
+    (let* ((record
+            (e-task-queue--claimed-record queue (plist-get result :record)))
+           (task-id (plist-get record :task-id))
+           (instance-id (plist-get record :harness-instance-id)))
       (e-task-queue--notify queue)
       (e-task-queue--invoke-claimed-runner
-       queue task-id record instance-id)))))
+       queue task-id record instance-id)))
+   ((plist-get result :paused-p)
+    (setf (e-task-queue-paused-p queue) t)))
+    ;; A miss ends this scheduler tick.  A claim may have left additional
+    ;; capacity, so continue only after actual progress and never spin on an
+    ;; empty durable queue.
+    (when (and claimed-p (not error))
+      (e-task-queue--dispatch queue))))
+
+(defun e-task-queue--request-runnable-claim (queue)
+  "Enqueue one atomic SQLite runnable claim for QUEUE."
+  (unless (e-task-queue-claim-pending-p queue)
+    (setf (e-task-queue-claim-pending-p queue) t)
+    (condition-case err
+        (e-task-storage-submit
+         (e-task-queue-storage queue) 'write 'claim-runnable
+         (list (e-task-queue-id queue) (e-task-queue--timestamp)
+               (e-task-queue--default-instance-id queue))
+         (lambda (result error)
+           (e-task-queue--claim-settled queue result error)))
+      (error
+       (setf (e-task-queue-claim-pending-p queue) nil)
+       (unless (e-task-queue-persistence-suspect queue)
+         (setf (e-task-queue-persistence-suspect queue) (copy-tree err t)))))))
 
 (defun e-task-queue--dispatch (queue)
   "Start queued tasks in QUEUE up to the parallelism cap.
@@ -678,14 +708,18 @@ re-entrancy so a synchronous runner settle does not recurse; the loop picks up
 any task the settle frees."
   (unless (or (e-task-queue-dispatching queue)
               (e-task-queue-paused-p queue))
-    (setf (e-task-queue-dispatching queue) t)
-    (unwind-protect
-        (let (next)
-          (while (and (< (e-task-queue--running-count queue)
-                         (e-task-queue--max-parallel queue))
-                      (setq next (e-task-queue--oldest-queued queue)))
-            (e-task-queue--start queue next)))
-      (setf (e-task-queue-dispatching queue) nil))))
+    (if (e-task-queue-storage-backed-p queue)
+        (when (< (e-task-queue--running-count queue)
+                 (e-task-queue--max-parallel queue))
+          (e-task-queue--request-runnable-claim queue))
+      (setf (e-task-queue-dispatching queue) t)
+      (unwind-protect
+          (let (next)
+            (while (and (< (e-task-queue--running-count queue)
+                           (e-task-queue--max-parallel queue))
+                        (setq next (e-task-queue--oldest-queued queue)))
+              (e-task-queue--start queue next)))
+        (setf (e-task-queue-dispatching queue) nil)))))
 
 ;; --- public mutations -------------------------------------------------------
 
@@ -711,8 +745,9 @@ may already be running when this returns."
                    (e-task-queue-producer-binding queue))))
     (signal 'e-board-runtime-producer-disabled
             (list 'task-queue 'missing-live-binding)))
-  (e-task-queue--ensure-storage-root queue)
-  (let* ((task-id (e-task-queue--next-id queue))
+  (let* ((task-id (if (e-task-queue-storage-backed-p queue)
+                      (make-temp-name "tsk_")
+                    (e-task-queue--next-id queue)))
          (record (list :task-id task-id
                        :status 'queued
                        :prompt prompt
@@ -735,23 +770,52 @@ may already be running when this returns."
                        :revision 0
                        :handle nil
                        :work-handle nil)))
-    (when (e-task-queue-storage-backed-p queue)
-      (let ((result
-             (e-task-storage-enqueue
-              (e-task-queue-storage queue) (e-task-queue-id queue)
-              (e-task-queue-sequence queue)
-              (e-task-queue--durable-record record))))
-        (setf (e-task-queue-revision queue) (plist-get result :revision))
-        (setq record (e-task-queue--publish-durable-record
-                      record (plist-get result :record)))))
-    (plist-put record :work-handle
-               (e-task-queue--work-handle-for-status record))
+    (if (e-task-queue-storage-backed-p queue)
+        ;; A durable queued task is SQLite state, not executing Emacs work.
+        ;; Keep this optimistic record only until enqueue settlement; the
+        ;; atomic claim path creates the first live work handle.
+        (plist-put record :persistence-pending t)
+      (plist-put record :work-handle
+                 (e-task-queue--work-handle-for-status record)))
     (puthash task-id record (e-task-queue-records queue))
     (setf (e-task-queue-order queue)
           (append (e-task-queue-order queue) (list task-id)))
     (e-task-queue--notify queue)
-    (e-task-queue--dispatch queue)
-    (e-task-queue--normalize queue (e-task-queue--record queue task-id))))
+    (let ((public (e-task-queue--normalize queue record)))
+      (if (not (e-task-queue-storage-backed-p queue))
+          (e-task-queue--dispatch queue)
+        (condition-case err
+            (e-task-storage-submit
+             (e-task-queue-storage queue) 'write 'enqueue
+             (list (e-task-queue-id queue)
+                   (e-task-queue--durable-record record))
+             (lambda (result error)
+               (plist-put record :persistence-pending nil)
+               (if error
+                   (unless (e-task-queue-persistence-suspect queue)
+                     (setf (e-task-queue-persistence-suspect queue)
+                           (copy-tree error t)))
+                 (setf (e-task-queue-revision queue)
+                       (or (plist-get result :revision)
+                           (e-task-queue-revision queue))))
+               ;; Queued durability belongs only to SQLite.  The scheduler
+               ;; reintroduces this task into Emacs iff an atomic claim makes
+               ;; it executing work.
+               (remhash task-id (e-task-queue-records queue))
+               (setf (e-task-queue-order queue)
+                     (delete task-id (e-task-queue-order queue)))
+               (unless error (e-task-queue--dispatch queue))
+               (e-task-queue--notify queue)))
+          (error
+           (plist-put record :persistence-pending nil)
+           (setf (e-task-queue-persistence-suspect queue) (copy-tree err t))
+           (remhash task-id (e-task-queue-records queue))
+           (setf (e-task-queue-order queue)
+                 (delete task-id (e-task-queue-order queue))))))
+      (if (e-task-queue-storage-backed-p queue)
+          public
+        (e-task-queue--normalize
+         queue (e-task-queue--record queue task-id))))))
 
 (defun e-task-queue-cancel (queue task-id)
   "Cancel TASK-ID in QUEUE and return its normalized record.
@@ -861,11 +925,17 @@ under the normal cap.  A non-paused task is returned unchanged."
   "Set QUEUE's pause gate and pause every non-terminal task.
 While the gate is set the dispatcher starts no new work.  Returns QUEUE."
   (when (e-task-queue-storage-backed-p queue)
-    (e-task-queue--ensure-storage-root queue)
-    (let ((result
-           (e-task-storage-set-paused
-            (e-task-queue-storage queue) (e-task-queue-id queue) t)))
-      (setf (e-task-queue-revision queue) (plist-get result :revision))))
+    (e-task-storage-submit
+     (e-task-queue-storage queue) 'write 'set-paused
+     (list (e-task-queue-id queue) t)
+     (lambda (result error)
+       (if error
+           (unless (e-task-queue-persistence-suspect queue)
+             (setf (e-task-queue-persistence-suspect queue)
+                   (copy-tree error t)))
+         (setf (e-task-queue-revision queue)
+               (or (plist-get result :revision)
+                   (e-task-queue-revision queue)))))))
   (setf (e-task-queue-paused-p queue) t)
   (dolist (task-id (copy-sequence (e-task-queue-order queue)))
     (let ((record (gethash task-id (e-task-queue-records queue))))
@@ -878,11 +948,17 @@ While the gate is set the dispatcher starts no new work.  Returns QUEUE."
   "Clear QUEUE's pause gate, resume every paused task, and re-dispatch.
 Returns QUEUE."
   (when (e-task-queue-storage-backed-p queue)
-    (e-task-queue--ensure-storage-root queue)
-    (let ((result
-           (e-task-storage-set-paused
-            (e-task-queue-storage queue) (e-task-queue-id queue) nil)))
-      (setf (e-task-queue-revision queue) (plist-get result :revision))))
+    (e-task-storage-submit
+     (e-task-queue-storage queue) 'write 'set-paused
+     (list (e-task-queue-id queue) nil)
+     (lambda (result error)
+       (if error
+           (unless (e-task-queue-persistence-suspect queue)
+             (setf (e-task-queue-persistence-suspect queue)
+                   (copy-tree error t)))
+         (setf (e-task-queue-revision queue)
+               (or (plist-get result :revision)
+                   (e-task-queue-revision queue)))))))
   (setf (e-task-queue-paused-p queue) nil)
   (dolist (task-id (copy-sequence (e-task-queue-order queue)))
     (let ((record (gethash task-id (e-task-queue-records queue))))
@@ -949,62 +1025,32 @@ ON-ERROR with the writer error.  Return QUEUE immediately."
   (unless (e-task-queue-storage-backed-p queue)
     (signal 'e-task-queue-error (list "In-memory task queue is not durable")))
   (condition-case err
-      (progn
-        (e-task-queue--ensure-storage-root queue)
-        ;; A read submitted after all preceding synchronous owner commits is
-        ;; the task owner's narrow ordered durability barrier.
-        (e-task-storage-snapshot
-         (e-task-queue-storage queue) (e-task-queue-id queue) 1)
-        (when on-done (funcall on-done queue)))
+      (e-task-storage-submit
+       (e-task-queue-storage queue) 'read 'status
+       (list (e-task-queue-id queue))
+       (lambda (_result error)
+         (if error
+             (when on-error (funcall on-error error))
+           (when on-done (funcall on-done queue)))))
     (error (when on-error (funcall on-error err))))
   queue)
 
-(defun e-task-queue-load (queue)
-  "Restore QUEUE through its typed storage port and re-dispatch.
-An explicitly in-memory queue is simply marked loaded.  Durable `running' or
-`pausing' records restore as interrupted and never auto-retry."
-  (if (e-task-queue-storage-backed-p queue)
-      (progn
-        (e-task-queue--ensure-storage-root queue)
-        (let ((snapshot
-               (e-task-storage-snapshot
-                (e-task-queue-storage queue) (e-task-queue-id queue)
-                e-task-queue-max-records)))
-          (clrhash (e-task-queue-records queue))
-          (setf (e-task-queue-order queue) nil
-                (e-task-queue-sequence queue) (or (plist-get snapshot :sequence) 0)
-                (e-task-queue-revision queue) (plist-get snapshot :revision)
-                (e-task-queue-paused-p queue) (and (plist-get snapshot :paused-p) t))
-          (dolist (durable (plist-get snapshot :records))
-            (let ((record (copy-tree durable)))
-              (when (memq (plist-get record :status) '(running pausing))
-                (let ((staged (copy-tree record)))
-                  (plist-put staged :status 'interrupted)
-                  (plist-put staged :finished-at (e-task-queue--timestamp))
-                  (plist-put staged :error
-                             "Task runner state was lost; external effect is uncertain")
-                  (let ((result
-                         (e-task-storage-transition
-                          (e-task-queue-storage queue) (e-task-queue-id queue)
-                          (plist-get record :task-id) (plist-get record :status)
-                          (e-task-queue--durable-record staged))))
-                    (setf (e-task-queue-revision queue)
-                          (plist-get result :revision))
-                    (setq record (plist-get result :record)))))
-              (setq record (plist-put record :handle nil)
-                    record (plist-put record :pausing nil)
-                    record (plist-put record :work-handle
-                                      (e-task-queue--work-handle-for-status record)))
-              (puthash (plist-get record :task-id) record
-                       (e-task-queue-records queue))
-              (setf (e-task-queue-order queue)
-                    (append (e-task-queue-order queue)
-                            (list (plist-get record :task-id))))))
-          (setf (e-task-queue-loaded-p queue) t)
-          (e-task-queue--notify queue)
-          (e-task-queue--dispatch queue)
-          queue))
-    (setf (e-task-queue-loaded-p queue) t))
+(defun e-task-queue-initialize (queue)
+  "Initialize QUEUE's process-local scheduler state without issuing SQL.
+Call `e-task-queue-start' from the explicit scheduler boundary to query and
+atomically claim runnable work."
+  (setf (e-task-queue-loaded-p queue) t)
+  queue)
+
+(define-obsolete-function-alias 'e-task-queue-load
+  #'e-task-queue-initialize "2026-09-06")
+
+(defun e-task-queue-start (queue)
+  "Start QUEUE's live scheduler without restoring durable history.
+Persistent queues submit one atomic runnable claim; in-memory queues dispatch
+their process-local records."
+  (setf (e-task-queue-loaded-p queue) t)
+  (e-task-queue--dispatch queue)
   queue)
 
 (defun e-task-queue-delete-history (queue)

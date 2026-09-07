@@ -9,6 +9,10 @@
 (require 'seq)
 (require 'e-runtime-store)
 (require 'e-runtime-store-worker)
+(require 'e-runtime-store-session-worker)
+(require 'e-session-query)
+(require 'e-task-queue)
+(require 'e-task-storage-sqlite)
 
 (cl-defmacro e-runtime-store-test--with-store ((store directory) &rest body)
   "Run BODY with STORE owning a disposable DIRECTORY."
@@ -99,6 +103,13 @@
     e-runtime-store--finalize-close)
   "Private timer callbacks that must never survive a focused fixture.")
 
+(defun e-runtime-store-test--wait-until (predicate)
+  "Drive the isolated event loop until PREDICATE succeeds."
+  (let ((deadline (+ (float-time) 5.0)))
+    (while (and (not (funcall predicate)) (< (float-time) deadline))
+      (sit-for 0.01))
+    (should (funcall predicate))))
+
 (defun e-runtime-store-test--runtime-timers ()
   "Return live runtime-store timers even when an owner cleared its field."
   (seq-filter
@@ -132,6 +143,65 @@
               ((eq (e-runtime-store-request--kind request) 'open)))
     ;; A fixture fault must reach its `unwind-protect' teardown promptly.
     (e-runtime-store-await store request 5.0)))
+
+(defun e-runtime-store-test--query-state (session-id journal-position)
+  "Return a minimal complete v6 query row for SESSION-ID at POSITION."
+  (list :session-id session-id :name session-id :summary nil :metadata nil
+        :created-at "2026-09-07T00:00:00Z"
+        :updated-at "2026-09-07T00:00:00Z"
+        :last-message-at nil :latest-assistant-marker nil :message-count 0
+        :current-branch nil :turn-options nil
+        :current-head-id (concat session-id "-root")
+        :root-event-id (concat session-id "-root")
+        :current-context-generation-id nil :board-id nil :principal nil
+        :association-role nil :routing-policy nil :root-p t
+        :board-output-sequence 0 :board-activity-sequence 0
+        :journal-position journal-position))
+
+(defun e-runtime-store-test--session-append-body
+    (session-id record &optional journal-position)
+  "Return a valid v6 SESSION-ID append command for transport tests."
+  (let* ((position (or journal-position 1))
+         (record (copy-tree record)))
+    (setq record (plist-put record :session-id session-id)
+          record (plist-put record :type
+                            (if (= position 1) 'session 'activity-event))
+          record (plist-put record :id
+                            (if (= position 1)
+                                (concat session-id "-root")
+                              (format "%s-event-%d" session-id position)))
+          record (plist-put record :timestamp "2026-09-07T00:00:00Z"))
+    (list :op 'session-append
+          :session-id session-id
+          :record record
+          :query-delta
+          (e-runtime-store-test--query-state session-id position))))
+
+(defun e-runtime-store-test--session-append-batch-body
+    (session-id records &optional journal-position)
+  "Return a valid v6 SESSION-ID batch append command for transport tests."
+  (let* ((final-position (or journal-position (length records)))
+         (first-position (1+ (- final-position (length records))))
+         (position (1- first-position))
+         (records
+          (mapcar
+           (lambda (record)
+             (setq position (1+ position))
+             (plist-get
+              (e-runtime-store-test--session-append-body
+               session-id record position)
+              :record))
+           (append records nil))))
+    (list :op 'session-append-batch
+          :session-id session-id
+          :records (vconcat records)
+          :query-delta
+          (e-runtime-store-test--query-state session-id final-position))))
+
+(defun e-runtime-store-test--resource-put-body (lineage-id path content)
+  "Return a current durable write command independent of session aggregates."
+  (list :op 'resource-put :lineage-id lineage-id :session-id lineage-id
+        :path path :content content))
 
 (defun e-runtime-store-test--parent (boot &optional pid process-start)
   "Return a focused worker parent identity with BOOT and optional overrides."
@@ -262,18 +332,29 @@
 (ert-deftest e-runtime-store-s2-serializes-ordinary-owner-writes ()
   "The single worker assigns monotonic positions without a command ledger."
   (e-runtime-store-test--with-store (store directory)
-    (should (= (plist-get
-                (e-runtime-store-call
-                 store 'write '(:op session-append :session-id "s"
-                                :record (:value one)))
-                :revision)
-               1))
-    (should (= (plist-get
-                (e-runtime-store-call
-                 store 'write '(:op session-append :session-id "s"
-                                :record (:value two)))
-                :revision)
-               2))
+    (let* ((root (list :type "session" :session-id "s" :id "root"
+                       :timestamp "2026-09-06T00:00:00Z" :value 'one
+                       :journal-position 1))
+           (root-state (e-session-query-delta-from-record nil root))
+           (message (list :type "message" :session-id "s" :id "message"
+                          :parent-id "root" :timestamp "2026-09-06T00:00:01Z"
+                          :message '(:role user :content "two") :value 'two
+                          :journal-position 2))
+           (message-state
+            (e-session-query-delta-from-record root-state message)))
+      (should (= (plist-get
+                  (e-runtime-store-call
+                   store 'write (list :op 'session-append :session-id "s"
+                                      :record root :query-delta root-state))
+                  :position)
+                 1))
+      (should (= (plist-get
+                  (e-runtime-store-call
+                   store 'write
+                   (list :op 'session-append :session-id "s"
+                         :record message :query-delta message-state))
+                  :position)
+                 2)))
     (let ((page (e-runtime-store-call
                  store 'read '(:op session-record-page :session-id "s"))))
       (should (equal (mapcar (lambda (entry)
@@ -337,7 +418,7 @@
                  (push sql selects)
                  (list (list "ok")))))
       (let ((status (e-runtime-store-worker--read '(:op status))))
-        (should (= (plist-get status :schema-version) 5))
+        (should (= (plist-get status :schema-version) 6))
         (should-not (plist-member status :quick-check))
         (should-not selects))
       (let ((integrity
@@ -357,10 +438,10 @@
   "Status separates FIFO wait, dispatch-to-settlement, and total latency."
   (let* ((active (e-runtime-store-request--create
                   :id "latency:w:1" :kind 'write
-                  :body '(:op session-append) :state 'submitted
+                  :body '(:op resource-put) :state 'submitted
                   :admitted-at 1.0 :submitted-at 3.0 :first-submitted-at 3.0))
          (queued (e-runtime-store-request--create
-                  :id "latency:r:2" :kind 'read :body '(:op catalog-get)
+                  :id "latency:r:2" :kind 'read :body '(:op resource-get)
                   :state 'queued :admitted-at 4.0))
          (store (e-runtime-store--create
                  :runtime-id "latency" :active-request active
@@ -374,11 +455,11 @@
              (active-status (plist-get latencies :active))
              (queued-status (plist-get latencies :oldest-queued)))
         (should (eq (plist-get latencies :unit) 'milliseconds))
-        (should (equal (plist-get active-status :operation) 'session-append))
+        (should (equal (plist-get active-status :operation) 'resource-put))
         (should (eq (plist-get active-status :phase) 'submitted))
         (should (= (plist-get active-status :phase-age-ms) 5000.0))
         (should (= (plist-get active-status :total-age-ms) 7000.0))
-        (should (equal (plist-get queued-status :operation) 'catalog-get))
+        (should (equal (plist-get queued-status :operation) 'resource-get))
         (should (= (plist-get queued-status :phase-age-ms) 4000.0)))
       (e-runtime-store--settle
        store active '(:id "latency:w:1" :ok t :result (:revision 1)))
@@ -388,7 +469,7 @@
       (let* ((latencies (plist-get (e-runtime-store-status store) :latencies))
              (sample (car (plist-get latencies :recent))))
         (should (= (plist-get latencies :recent-count) 1))
-        (should (equal (plist-get sample :operation) 'session-append))
+        (should (equal (plist-get sample :operation) 'resource-put))
         (should (eq (plist-get sample :outcome) 'committed))
         (should (= (plist-get sample :queue-ms) 2000.0))
         (should (= (plist-get sample :dispatch-to-settlement-ms) 5000.0))
@@ -433,16 +514,18 @@
   (e-runtime-store-test--with-store (store directory)
     (let ((runtime-id (e-runtime-store--runtime-id store)))
       (e-runtime-store-call
-       store 'write '(:op session-append :session-id "s" :record (:value one)))
+       store 'write
+       (e-runtime-store-test--session-append-body "s" '(:value one)))
     (delete-process (e-runtime-store--process store))
     (while (e-runtime-store--live-p store)
       (accept-process-output nil 0.01))
       (should-not (plist-get (e-runtime-store-status store) :unavailable))
       (should (= (plist-get
                   (e-runtime-store-call
-                   store 'write '(:op session-append :session-id "s"
-                                  :record (:value two)))
-                  :revision)
+                   store 'write
+                   (e-runtime-store-test--session-append-body
+                    "s" '(:value two) 2))
+                  :high-water)
                  2))
       (let ((page (e-runtime-store-call
                    store 'read '(:op session-record-page :session-id "s"))))
@@ -469,8 +552,8 @@
            (setq request
                 (e-runtime-store-submit
                  store 'write
-                 '(:op session-append :session-id "write-exit"
-                   :record (:value once))))
+                 (e-runtime-store-test--session-append-body
+                  "write-exit" '(:value once))))
           (e-runtime-store-test--wait-terminal request)
           (should (eq (e-runtime-store-request--state request) 'committed))
           (should-not (plist-get (e-runtime-store-status store) :unavailable))
@@ -487,8 +570,9 @@
   "Worker exit before a read response retries after one replacement."
   (e-runtime-store-test--with-store (store directory)
     (e-runtime-store-call
-     store 'write '(:op session-append :session-id "read-loss"
-                    :record (:value present)))
+     store 'write
+     (e-runtime-store-test--session-append-body
+      "read-loss" '(:value present)))
     (let* ((process (e-runtime-store--process store))
            (captured "")
            request)
@@ -511,8 +595,8 @@
   (let* ((directory (make-temp-file "e-runtime-store-timeout-" t))
          (store (e-runtime-store-open directory))
          (process (e-runtime-store--process store))
-         (body '(:op session-append :session-id "timeout"
-                     :record (:value maybe-committed)))
+         (body (e-runtime-store-test--session-append-body
+                "timeout" '(:value maybe-committed)))
          request)
     (unwind-protect
         (progn
@@ -534,7 +618,7 @@
           (e-runtime-store-test--fire-current-scheduler store)
           (e-runtime-store-test--wait-terminal request)
           (let ((result (e-runtime-store-request--result request)))
-            (should (= (plist-get result :revision) 1))
+            (should (= (plist-get result :high-water) 1))
             (should (eq (e-runtime-store-request--state request) 'committed))
             (should-not (process-live-p process))
             (should-not (plist-get (e-runtime-store-status store) :unavailable)))
@@ -548,10 +632,11 @@
                                    :value)
                         'maybe-committed)))
           (should (= (plist-get
-                      (e-runtime-store-call store 'write
-                                            '(:op session-append :session-id "timeout"
-                                                  :record (:value after-recovery)))
-                      :revision)
+                      (e-runtime-store-call
+                       store 'write
+                       (e-runtime-store-test--session-append-body
+                        "timeout" '(:value after-recovery) 2))
+                      :high-water)
                      2)))
       (ignore-errors (e-runtime-store-close store))
       (delete-directory directory t))))
@@ -574,8 +659,8 @@
             (setq request
                   (e-runtime-store-submit
                    store 'write
-                   '(:op session-append :session-id "live-replay"
-                     :record (:value committed-once))))
+                   (e-runtime-store-test--session-append-body
+                    "live-replay" '(:value committed-once))))
             (let ((deadline (+ (float-time) 5.0)))
               (while (and (process-live-p process) (< (float-time) deadline))
                 (sleep-for 0.01)))
@@ -601,7 +686,9 @@
             ;; to drive recovery.
             (e-runtime-store--worker-exited store)
             (e-runtime-store-test--wait-terminal-without-await request)
-            (should (= (plist-get (e-runtime-store-request--result request) :revision) 1))
+            (should (= (plist-get (e-runtime-store-request--result request)
+                                  :high-water)
+                       1))
             (should (= (length (plist-get
                                 (e-runtime-store-call
                                  store 'read
@@ -613,9 +700,9 @@
             (should (= (plist-get
                         (e-runtime-store-call
                          store 'write
-                         '(:op session-append :session-id "live-replay"
-                           :record (:value after-replay)))
-                        :revision)
+                         (e-runtime-store-test--session-append-body
+                          "live-replay" '(:value after-replay) 2))
+                        :high-water)
                        2))
             (let ((db (sqlite-open database-file)))
               (unwind-protect
@@ -637,14 +724,14 @@
         (let ((request
                (e-runtime-store-submit
                 store 'write
-                (list :op 'session-append :session-id point
-                      :record (list :value point)))))
+                (e-runtime-store-test--session-append-body
+                 point (list :value point)))))
           ;; No awaiter drives this recovery: normal scheduler timers and
           ;; filters must replay the exact immutable write by themselves.
           (e-runtime-store-test--wait-terminal-without-await request)
           (should (eq (e-runtime-store-request--state request) 'committed))
           (let ((result (e-runtime-store-request--result request)))
-          (should (= (plist-get result :revision) 1))
+          (should (= (plist-get result :high-water) 1))
           (let ((page (e-runtime-store-call
                        store 'read (list :op 'session-record-page :session-id point))))
             (should (= (length (plist-get page :records)) 1)))
@@ -659,19 +746,19 @@
         (let ((result
                (e-runtime-store-call
                 store 'write
-                (list :op 'session-append-batch :session-id "c04-recovery"
-                      :records (vector (list :content payload)
-                                       (list :content payload))))))
-          (should (= (plist-get result :revision) 2))
+                (e-runtime-store-test--session-append-batch-body
+                 "c04-recovery"
+                 (list (list :content payload) (list :content payload))))))
+          (should (= (plist-get result :high-water) 2))
           ;; Do not materialize the large read page in the measurement
           ;; process: the production proof here is retained-frame recovery,
           ;; followed by an ordinary, independent durable write.
           (should (= (plist-get
                       (e-runtime-store-call
                        store 'write
-                       '(:op session-append :session-id "c04-health"
-                         :record (:value after-recovery)))
-                      :revision)
+                       (e-runtime-store-test--session-append-body
+                        "c04-health" '(:value after-recovery)))
+                      :high-water)
                      1))
           (should-not (plist-get (e-runtime-store-status store) :unavailable)))))))
 
@@ -681,13 +768,15 @@
          (cons "E_RUNTIME_STORE_TEST_FAULT=before-commit" process-environment)))
     (e-runtime-store-test--with-store (store _directory)
       (let ((active (e-runtime-store--submit-owned
-                     store 'write '(:op session-append :session-id "exhaust"
-                                         :record (:value once))
+                     store 'write
+                     (e-runtime-store-test--session-append-body
+                      "exhaust" '(:value once))
                      '(session . "exhaust")))
             queued first)
         (setq queued (e-runtime-store--submit-owned
-                      store 'write '(:op session-append :session-id "exhaust"
-                                          :record (:value queued))
+                      store 'write
+                      (e-runtime-store-test--session-append-body
+                       "exhaust" '(:value queued))
                       '(session . "exhaust")))
         (e-runtime-store-test--wait-terminal-without-await active)
         (setq first (e-runtime-store-request--error active))
@@ -743,11 +832,13 @@
           (setq active
                 (e-runtime-store-submit
                  store 'write
-                 '(:op session-append :session-id "replacement-open"
-                   :record (:value once))))
+                 (e-runtime-store-test--session-append-body
+                  "replacement-open" '(:value once))))
           (setq queued
                 (e-runtime-store-submit
-                 store 'write '(:op catalog-put :value ((:id "queued")))))
+                 store 'write
+                 (e-runtime-store-test--resource-put-body
+                  "replacement-open" "queued" "queued")))
           (e-runtime-store-test--fire-current-scheduler store)
           (let ((process-environment
                  (cons "E_RUNTIME_STORE_TEST_FAULT=after-open-response-formation"
@@ -770,10 +861,10 @@
 (ert-deftest e-runtime-store-s92-replacement-open-contention-keeps-first-cause ()
   "Replacement ownership failure settles owned work once with the initial cause."
   (let* ((active (e-runtime-store-request--create
-                  :id "replace:active" :kind 'write :body '(:op session-append)
+                  :id "replace:active" :kind 'write :body '(:op resource-put)
                   :frame "exact" :state 'submitted))
          (queued (e-runtime-store-request--create
-                  :id "replace:queued" :kind 'write :body '(:op catalog-put)
+                  :id "replace:queued" :kind 'write :body '(:op resource-put)
                   :state 'queued))
          (pending (make-hash-table :test 'equal))
          (store (e-runtime-store--create
@@ -1406,9 +1497,10 @@
             (should (= (plist-get
                         (e-runtime-store-call
                          store 'write
-                         '(:op session-append :session-id "close-exhausted"
-                           :record (:value uncertain-before-close)))
-                        :revision)
+                         (e-runtime-store-test--session-append-body
+                          "close-exhausted"
+                          '(:value uncertain-before-close)))
+                        :high-water)
                        1))
             ;; The first close worker rolls its retirement transaction back;
             ;; replacement setup then fails, spending the only retry.
@@ -1449,13 +1541,17 @@
     (unwind-protect
         (progn
           (e-runtime-store-worker--open directory "receipt-runtime")
-          (let ((first '(:id "receipt:1" :kind write :write-prefix 1 :ack-prefix 0
-                               :body (:op session-append :session-id "receipt"
-                                      :record (:value first))))
-                (second '(:id "receipt:2" :kind write :write-prefix 2 :ack-prefix 1
-                                :body (:op session-append :session-id "receipt"
-                                       :record (:value second)))))
-            (should (= (plist-get (e-runtime-store-worker--write first) :revision) 1))
+          (let ((first (list :id "receipt:1" :kind 'write :write-prefix 1
+                             :ack-prefix 0 :body
+                             (e-runtime-store-test--session-append-body
+                              "receipt" '(:value first))))
+                (second (list :id "receipt:2" :kind 'write :write-prefix 2
+                              :ack-prefix 1 :body
+                              (e-runtime-store-test--session-append-body
+                               "receipt" '(:value second) 2))))
+            (should (= (plist-get (e-runtime-store-worker--write first)
+                                  :high-water)
+                       1))
             ;; The unacknowledged first receipt is the only replay authority.
             (should (= (e-runtime-store-worker--column
                         (car (sqlite-select e-runtime-store-worker--database
@@ -1463,20 +1559,22 @@
                        1))
             (should-error
              (e-runtime-store-worker--write
-              '(:id "receipt:1" :kind write :write-prefix 1 :ack-prefix 0
-                    :body (:op session-append :session-id "receipt"
-                           :record (:value collision))))
+              (list :id "receipt:1" :kind 'write :write-prefix 1 :ack-prefix 0
+                    :body (e-runtime-store-test--session-append-body
+                           "receipt" '(:value collision))))
              :type 'e-runtime-store-worker-error)
             ;; The receipt key is the id, but every replay-semantic frame
             ;; field participates in the fingerprint.
             (should-error
              (e-runtime-store-worker--write
-              '(:id "receipt:1" :kind write :write-prefix 1 :ack-prefix 1
-                    :body (:op session-append :session-id "receipt"
-                           :record (:value first))))
+              (list :id "receipt:1" :kind 'write :write-prefix 1 :ack-prefix 1
+                    :body (e-runtime-store-test--session-append-body
+                           "receipt" '(:value first))))
              :type 'e-runtime-store-worker-error)
             ;; The observed-prefix watermark retires only the earlier receipt.
-            (should (= (plist-get (e-runtime-store-worker--write second) :revision) 2))
+            (should (= (plist-get (e-runtime-store-worker--write second)
+                                  :high-water)
+                       2))
             (should (= (e-runtime-store-worker--column
                         (car (sqlite-select e-runtime-store-worker--database
                                             "SELECT COUNT(*) FROM runtime_store_receipts WHERE request_id='receipt:1'")) 0)
@@ -1495,15 +1593,15 @@
     (unwind-protect
         (let ((e-runtime-store-codec-protocol-canonical-byte-limit limit))
           (let* ((exact-request
-                  '(:id "exact:1" :kind write :write-prefix 1 :ack-prefix 0
-                    :body (:op session-append :session-id "result-exact"
-                           :record (:value commits-once))))
+                  (list :id "exact:1" :kind 'write :write-prefix 1 :ack-prefix 0
+                        :body (e-runtime-store-test--session-append-body
+                               "result-exact" '(:value commits-once))))
                  ;; Keep the ID byte length equal, so adding one ASCII result
                  ;; byte crosses precisely the same success-response boundary.
                  (one-over-request
-                  '(:id "overx:1" :kind write :write-prefix 1 :ack-prefix 0
-                    :body (:op session-append :session-id "result-over"
-                           :record (:value must-roll-back)))))
+                  (list :id "overx:1" :kind 'write :write-prefix 1 :ack-prefix 0
+                        :body (e-runtime-store-test--session-append-body
+                               "result-over" '(:value must-roll-back)))))
             ;; Measure the complete response that the original and replacement
             ;; worker must actually pack, never a bare SQLite receipt payload.
             (setq exact "")
@@ -1604,9 +1702,9 @@
           ;; A live unretired predecessor cannot be overwritten or orphaned.
           (e-runtime-store-worker--open directory "live-predecessor" live)
           (e-runtime-store-worker--write
-           '(:id "live:1" :kind write :write-prefix 1 :ack-prefix 0
-             :body (:op session-append :session-id "live"
-                    :record (:value retained))))
+           (list :id "live:1" :kind 'write :write-prefix 1 :ack-prefix 0
+                 :body (e-runtime-store-test--session-append-body
+                        "live" '(:value retained))))
           (e-runtime-store-worker--close)
           (should-error
            (e-runtime-store-worker--open directory "must-refuse" other-emacs)
@@ -1648,9 +1746,9 @@
           ;; reclaimed before the singleton ceases to name that predecessor.
           (e-runtime-store-worker--open directory "dead-predecessor" dead)
           (e-runtime-store-worker--write
-           '(:id "dead:1" :kind write :write-prefix 1 :ack-prefix 0
-             :body (:op session-append :session-id "dead"
-                    :record (:value uncertain))))
+           (list :id "dead:1" :kind 'write :write-prefix 1 :ack-prefix 0
+                 :body (e-runtime-store-test--session-append-body
+                        "dead" '(:value uncertain))))
           (e-runtime-store-worker--close)
           (e-runtime-store-worker--open directory "dead-replacement" dead-replacement)
           (should (= (e-runtime-store-worker--column
@@ -1667,10 +1765,9 @@
                   (should (> (plist-get
                               (e-runtime-store-call
                                store 'write
-                               (list :op 'session-append
-                                     :session-id "clean"
-                                     :record (list :value index)))
-                              :revision)
+                              (e-runtime-store-test--session-append-body
+                                "clean" (list :value index) (1+ index)))
+                              :high-water)
                              0))
                 (e-runtime-store-close store)))
             (let ((db (sqlite-open (expand-file-name "store.sqlite3" directory))))
@@ -1702,11 +1799,13 @@
       (setq active
             (e-runtime-store-submit
              store 'write
-             '(:op session-append :session-id "queued-timeout"
-               :record (:value active))))
+             (e-runtime-store-test--session-append-body
+              "queued-timeout" '(:value active))))
       (setq queued
             (e-runtime-store-submit
-             store 'write '(:op catalog-put :value ((:id "must-not-land")))))
+             store 'write
+             (e-runtime-store-test--resource-put-body
+              "queued-timeout" "must-not-land" "queued")))
       (e-runtime-store-test--fire-current-scheduler store)
       ;; Queue expiry is a scheduler transition, not an await timeout.  Keep
       ;; the active write inside its fresh submitted phase while advancing only
@@ -1728,7 +1827,9 @@
       (e-runtime-store-test--wait-terminal active)
       (should (eq (e-runtime-store-request--state active) 'committed))
       (should-not
-       (e-runtime-store-call store 'read '(:op catalog-get)))
+       (e-runtime-store-call
+        store 'read
+        '(:op resource-get :lineage-id "queued-timeout" :path "must-not-land")))
       (should (e-runtime-store-live-p store)))))
 
 (ert-deftest e-runtime-store-s2-close-settles-owned-requests-once ()
@@ -1750,10 +1851,12 @@
                 (list
                  (e-runtime-store-submit
                   store 'write
-                  '(:op session-append :session-id "close" :record (:value one)))
+                  (e-runtime-store-test--session-append-body
+                   "close" '(:value one)))
                  (e-runtime-store-submit
                   store 'write
-                  '(:op session-append :session-id "close" :record (:value two)))
+                  (e-runtime-store-test--session-append-body
+                   "close" '(:value two)))
                  (e-runtime-store-submit
                   store 'read '(:op session-record-page :session-id "close"))))
           (e-runtime-store-test--fire-current-scheduler store)
@@ -1804,8 +1907,8 @@
           (let ((request
                  (e-runtime-store-submit
                   store 'write
-                  '(:op session-append :session-id "startup"
-                    :record (:value never)))))
+                  (e-runtime-store-test--session-append-body
+                   "startup" '(:value never)))))
             (e-runtime-store--scheduler-fired
              store (e-runtime-store--scheduler-generation store))
             (should (eq (e-runtime-store-request--state request) 'failed))
@@ -1868,8 +1971,8 @@
       (setq request
             (e-runtime-store-submit
              store 'write
-             '(:op session-append :session-id "phase"
-               :record (:value retained))))
+             (e-runtime-store-test--session-append-body
+              "phase" '(:value retained))))
       ;; Submit only reserves and queues.  Each following state transition is
       ;; a scheduler or worker event, never an awaiter-side promotion.
       (e-runtime-store--scheduler-fired
@@ -1909,10 +2012,10 @@
   "A queued waiter starts one recovery at active deadline before its own age."
   (let* ((clock 61.0)
          (active (e-runtime-store-request--create
-                  :id "active:1" :kind 'write :body '(:op session-append)
+                  :id "active:1" :kind 'write :body '(:op resource-put)
                   :state 'submitted :submitted-at 0.0))
          (queued (e-runtime-store-request--create
-                  :id "queued:2" :kind 'write :body '(:op catalog-put)
+                  :id "queued:2" :kind 'write :body '(:op resource-put)
                   :state 'queued :admitted-at 10.0))
          (pending (make-hash-table :test 'equal))
          (store (e-runtime-store--create
@@ -1952,9 +2055,9 @@
       (should (= (plist-get
                   (e-runtime-store-call
                    store 'write
-                   '(:op session-append :session-id "after-local-error"
-                     :record (:value committed)))
-                  :revision)
+                   (e-runtime-store-test--session-append-body
+                    "after-local-error" '(:value committed)))
+                  :high-water)
                  1)))))
 
 (ert-deftest e-runtime-store-s92-protocol-failure-preserves-cause-and-recovers ()
@@ -1973,8 +2076,8 @@
               (setq request
                     (e-runtime-store-submit
                      store 'write
-                     '(:op session-append :session-id "protocol"
-                       :record (:value ambiguous))))
+                     (e-runtime-store-test--session-append-body
+                      "protocol" '(:value ambiguous))))
               (e-runtime-store-test--fire-current-scheduler store))
             (should sent)
             (should (eq (e-runtime-store-request--state request) 'submitted))
@@ -1989,7 +2092,9 @@
                     (list :id (e-runtime-store-request--id request) :ok t))
                    ('unknown-response-id
                     '(:id "wrong-response-id" :ok t :result (:ignored t))))))))
-            (should (= (plist-get (e-runtime-store-await store request) :revision) 1))
+            (should (= (plist-get (e-runtime-store-await store request)
+                                  :high-water)
+                       1))
             (should (eq (e-runtime-store-request--state request) 'committed))
             (should-not (plist-get (e-runtime-store-status store) :unavailable))
             (should (= (length (plist-get
@@ -2000,9 +2105,9 @@
             (should (= (plist-get
                         (e-runtime-store-call
                          store 'write
-                         '(:op session-append :session-id "protocol"
-                           :record (:value recovered)))
-                        :revision)
+                         (e-runtime-store-test--session-append-body
+                          "protocol" '(:value recovered) 2))
+                        :high-water)
                        2)))
         (ignore-errors (e-runtime-store-close store))
         (delete-directory directory t)))))
@@ -2049,9 +2154,9 @@
         (progn
           (e-runtime-store-worker--open directory "mode-test")
           (let ((request
-                 '(:kind write :body
-                         (:op session-append :session-id "mode-failure"
-                          :record (:value never)))))
+                 (list :kind 'write :body
+                       (e-runtime-store-test--session-append-body
+                        "mode-failure" '(:value never)))))
             (cl-letf (((symbol-function
                         'e-runtime-store-worker--permissions)
                        (lambda ()
@@ -2074,8 +2179,9 @@
       (setf (e-runtime-store--active-request store) blocker)
       (setq queued
             (e-runtime-store-submit
-             store 'write '(:op session-append :session-id "cancelled"
-                            :record (:never t))))
+             store 'write
+             (e-runtime-store-test--session-append-body
+              "cancelled" '(:never t))))
       (should (eq (e-runtime-store-cancel store queued) 'dropped))
       (should (eq (e-runtime-store-request--state queued) 'cancelled))
       (setf (e-runtime-store--active-request store) nil)
@@ -2087,7 +2193,8 @@
   "Database, WAL, and live ownership files are private."
   (e-runtime-store-test--with-store (store directory)
     (e-runtime-store-call
-     store 'write '(:op session-append :session-id "s" :record (:x t)))
+     store 'write
+     (e-runtime-store-test--session-append-body "s" '(:x t)))
     (dolist (file (list (expand-file-name "store.sqlite3" directory)
                         (expand-file-name "store.sqlite3-wal" directory)
                         (expand-file-name "store.sqlite3.owner" directory)))
@@ -2096,31 +2203,34 @@
     (should (= (logand (file-modes directory) #o777) #o700))))
 
 (ert-deftest e-runtime-store-s2-bounded-large-response-frames-remain-exact ()
-  "A large legal row flushes as one response without more stdin."
+  "A large legal session page flushes as one response without more stdin."
   (let ((e-runtime-store-request-timeout 15.0))
     (e-runtime-store-test--with-store (store directory)
       (let* ((large (make-string (* 512 1024) ?x))
-             (records (vector (list :id 0 :content large)
-                              '(:id 1 :content "tail"))))
+             (records (vector (list :content large)
+                              '(:content "tail"))))
         (e-runtime-store-call
          store 'write
-         (list :op 'session-append-batch :session-id "frames"
-               :records records))
-        (let ((after 0) (count 0) last page)
-          (while
-              (progn
-                (setq page
-                      (e-runtime-store-call
-                       store 'read
-                       (list :op 'session-record-page :session-id "frames"
-                             :after after :limit 256)))
-                (dolist (entry (plist-get page :records))
-                  (cl-incf count)
-                  (setq last entry))
-                (setq after (plist-get page :next))))
-          (should (= count 2))
-          (should (equal (plist-get (plist-get last :value) :content)
-                         "tail")))))))
+         (e-runtime-store-test--session-append-batch-body
+          "frames" records))
+        (let ((page
+               (e-runtime-store-call
+                store 'read
+                '(:op session-record-page :session-id "frames"
+                  :after 0 :limit 2))))
+          (should (= (length (plist-get page :records)) 2))
+          (let ((content
+                 (plist-get (plist-get (car (plist-get page :records))
+                                       :value)
+                            :content)))
+            (should (= (string-bytes content) (string-bytes large)))
+            (should (equal (secure-hash 'sha256 content)
+                           (secure-hash 'sha256 large))))
+          (should (equal
+                   (plist-get (plist-get (cadr (plist-get page :records))
+                                         :value)
+                              :content)
+                   "tail")))))))
 
 (defun e-runtime-store-test--response-line (response)
   "Return unbounded fixture wire text for exact boundary tests.
@@ -2461,75 +2571,36 @@ tests can present a raw frame that production would refuse to create."
            :type 'e-runtime-store-codec-too-large)
           (should (= (buffer-size) 0)))))))
 
-(ert-deftest e-runtime-store-s92-c04-worker-checkpoint-catalog-and-identity-bounds ()
-  "Worker backstops projection limits and pages identities at real boundaries."
+(ert-deftest e-runtime-store-s92-c04-worker-resource-and-identity-bounds ()
+  "Worker backstops resource limits and pages identities at real boundaries."
   (let ((directory (make-temp-file "e-runtime-store-c04-worker-" t)))
     (unwind-protect
         (progn
           (e-runtime-store-worker--open directory "c04-worker")
-          (let* ((checkpoint '(:version 1 :payload "x"))
-                 (checkpoint-limit
-                  (string-bytes (e-runtime-store-codec-encode checkpoint)))
-                 (catalog '((:id "catalog" :title "x")))
-                 (catalog-limit
-                  (string-bytes (e-runtime-store-codec-encode catalog))))
-            (should (= (string-bytes
-                        (e-runtime-store-codec-encode
-                         '(:version 1 :payload "xx")))
-                       (1+ checkpoint-limit)))
-            (should (= (string-bytes
-                        (e-runtime-store-codec-encode
-                         '((:id "catalog" :title "xx"))))
-                       (1+ catalog-limit)))
-            (let ((e-runtime-store-worker-checkpoint-canonical-byte-limit
-                   checkpoint-limit))
-              (e-runtime-store-worker--checkpoint-put
-               (list :session-id "checkpoint" :value checkpoint))
-              (should-error
-               (e-runtime-store-worker--checkpoint-put
-                (list :session-id "checkpoint"
-                      :value '(:version 1 :payload "xx")))
-               :type 'e-runtime-store-codec-too-large))
-            (let ((e-runtime-store-codec-catalog-canonical-byte-limit
-                   catalog-limit))
-              (e-runtime-store-worker--catalog-put (list :value catalog))
-              (should-error
-               (e-runtime-store-worker--catalog-put
-                (list :value '((:id "catalog" :title "xx"))))
-               :type 'e-runtime-store-codec-too-large))
-            ;; The current observed 1,089,332-byte SQLite TEXT catalog is
-            ;; 816,999 canonical bytes (an exact no-padding base64 multiple).
-            ;; It remains below the 1 MiB derived-projection ceiling.
-            (let* ((observed-sqlite-text-bytes 1089332)
-                   (observed-canonical-bytes 816999)
-                   (template '((:id "catalog" :payload "")))
-                   (overhead
-                    (string-bytes (e-runtime-store-codec-encode template)))
-                   (observed-catalog
-                    (list (list :id "catalog" :payload
-                                (make-string
-                                 (- observed-canonical-bytes overhead) ?x))))
-                   (canonical
-                    (e-runtime-store-codec-encode observed-catalog)))
-              (should (= (string-bytes canonical) observed-canonical-bytes))
-              (should (= (string-bytes (base64-encode-string canonical t))
-                         observed-sqlite-text-bytes))
-              (should (<= (string-bytes canonical)
-                          e-runtime-store-codec-catalog-canonical-byte-limit))
-              (should (plist-get
-                       (e-runtime-store-worker--catalog-put
-                        (list :value observed-catalog))
-                       :revision))))
-          (let ((payload (e-runtime-store-worker--sql-value '(:type "session"))))
-            (dolist (session-id '("a" "b" "c"))
-              (sqlite-execute
-               e-runtime-store-worker--database
-               "INSERT INTO session_records(session_id,position,payload) VALUES(?,?,?)"
-               (vector session-id 1 payload))))
-          (let ((e-runtime-store-worker-session-id-page-row-limit 2)
-                (e-runtime-store-worker-session-id-page-byte-limit 2))
+          ;; Catalog/checkpoint replicas are retired in v6.  Bound an actual
+          ;; authoritative resource value instead of preserving those APIs in
+          ;; the transport suite.
+          (let ((e-runtime-store-worker-resource-byte-limit 1))
+            (should (= (plist-get
+                        (e-runtime-store-worker--resource-put
+                         '(:lineage-id "bounds" :session-id "bounds"
+                           :path "exact" :content "x"))
+                        :bytes)
+                       1))
+            (should-error
+             (e-runtime-store-worker--resource-put
+              '(:lineage-id "bounds" :session-id "bounds"
+                :path "over" :content "xx"))
+             :type 'e-runtime-store-resource-too-large))
+          (dolist (session-id '("a" "b" "c"))
+            (e-runtime-store-session-worker--write-delta
+             e-runtime-store-worker--database session-id
+             (e-runtime-store-test--query-state session-id 1)))
+          (let ((e-runtime-store-session-worker-page-row-limit 2)
+                (e-runtime-store-session-worker-id-page-byte-limit 2))
             (let ((first-page
-                   (e-runtime-store-worker--session-id-page
+                   (e-runtime-store-session-worker--id-page
+                    e-runtime-store-worker--database
                     '(:cursor nil :limit 2))))
               ;; Three short identities exercise the exact two-row page plus
               ;; one lookahead; the third never leaks into the first result.
@@ -2538,14 +2609,16 @@ tests can present a raw frame that production would refuse to create."
               (should (equal (plist-get first-page :next) "b"))
               (should (equal
                        (plist-get
-                        (e-runtime-store-worker--session-id-page
+                        (e-runtime-store-session-worker--id-page
+                         e-runtime-store-worker--database
                          '(:cursor "b" :limit 2))
                         :ids)
                        '("c"))))
-          (let ((e-runtime-store-worker-session-id-page-row-limit 3)
-                (e-runtime-store-worker-session-id-page-byte-limit 2))
+          (let ((e-runtime-store-session-worker-page-row-limit 3)
+                (e-runtime-store-session-worker-id-page-byte-limit 2))
             (let ((byte-page
-                   (e-runtime-store-worker--session-id-page
+                   (e-runtime-store-session-worker--id-page
+                    e-runtime-store-worker--database
                     '(:cursor nil :limit 3))))
               ;; The exact two-byte page admits A and B; C is the one-byte
               ;; overflow and must be deferred to the cursor successor.
@@ -2554,7 +2627,8 @@ tests can present a raw frame that production would refuse to create."
               (should (equal (plist-get byte-page :next) "b"))
               (should (equal
                        (plist-get
-                        (e-runtime-store-worker--session-id-page
+                        (e-runtime-store-session-worker--id-page
+                         e-runtime-store-worker--database
                          '(:cursor "b" :limit 3))
                         :ids)
                        '("c"))))))
@@ -2575,8 +2649,8 @@ tests can present a raw frame that production would refuse to create."
                  'cold-worker))
               ((symbol-function 'e-runtime-store--ensure-worker-open)
                (lambda (_runtime) (cl-incf opens))))
-          (let* ((body '(:op session-append :session-id "cold"
-                         :record (:value immutable)))
+          (let* ((body (e-runtime-store-test--session-append-body
+                        "cold" '(:value immutable)))
              (request
              (e-runtime-store-submit
               store 'write body)))
@@ -2869,10 +2943,11 @@ tests can present a raw frame that production would refuse to create."
     (unwind-protect
         (progn
           ;; Keep cold open in flight so the domain request remains queued.
-          (let ((request (e-runtime-store-submit store 'write
-                                                 '(:op session-append
-                                                   :session-id "close"
-                                                   :record (:value queued)))))
+          (let ((request
+                 (e-runtime-store-submit
+                  store 'write
+                  (e-runtime-store-test--session-append-body
+                   "close" '(:value queued)))))
             (should (= (e-runtime-store--request-count store) 1))
             (e-runtime-store-close store)
             (should (eq (e-runtime-store-request--state request) 'failed))
@@ -3021,6 +3096,110 @@ tests can present a raw frame that production would refuse to create."
               (should-not (e-runtime-store--unavailable store)))
           (e-runtime-store-test--cancel-store-timers store)
           (e-runtime-store-test--assert-no-store-timers store))))))
+
+(ert-deftest e-runtime-store-schema-upgrade-is-global-not-owner-suspect ()
+  "A too-old schema stops transport without blaming queued write owners."
+  (let* ((write (e-runtime-store-request--create
+                 :id "upgrade:write" :kind 'write :body '(:op board-create)
+                 :operation 'board-create :state 'queued :admitted-at 0.0
+                 :owner-key '(board . "board-upgrade")))
+         (read (e-runtime-store-request--create
+                :id "upgrade:read" :kind 'read :body '(:op status)
+                :operation 'status :state 'queued :admitted-at 0.0))
+         (open (e-runtime-store-request--create
+                :id "upgrade:open" :kind 'open :state 'submitted
+                :submitted-at 0.0))
+         (store (e-runtime-store--create
+                 :runtime-id "upgrade" :active-request open
+                 :starting-request write :client-queue (list write read)
+                 :process 'test-process
+                 :pending (make-hash-table :test 'equal)
+                 :suspect-owners (make-hash-table :test 'equal))))
+    (puthash (e-runtime-store-request--id open) open
+             (e-runtime-store--pending store))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-runtime-store--schedule) #'ignore))
+          (e-runtime-store--settle
+           store open
+           '(:id "upgrade:open" :ok nil
+             :error-symbol e-runtime-store-schema-too-old
+             :error-data (:actual 5 :required 6
+                          :operation e-runtime-store-offline-upgrade)))
+          (should (e-runtime-store--unavailable store))
+          (should (eq (car (e-runtime-store--unavailable-cause store))
+                      'e-runtime-store-schema-too-old))
+          (should (eq (car (e-runtime-store-request--error write))
+                      'e-runtime-store-schema-too-old))
+          (should (eq (car (e-runtime-store-request--error read))
+                      'e-runtime-store-schema-too-old))
+          (should (= (hash-table-count
+                      (e-runtime-store--suspect-owners store))
+                     0))
+          (should-not (e-runtime-store--client-queue store)))
+      (e-runtime-store-test--cancel-store-timers store))))
+
+(ert-deftest e-runtime-store-task-runnable-claim-is-atomic-and-bounded ()
+  "Two claims select one queued task once without reading terminal history."
+  (e-runtime-store-test--with-store (store directory)
+    (ignore directory)
+    (e-runtime-store-call
+     store 'write
+     (list :op 'task-enqueue :queue-id "atomic"
+           :record '(:task-id "task-a" :status queued :prompt "work"
+                     :attempt-number 0)))
+    (let* ((first
+            (e-runtime-store-call
+             store 'write
+             '(:op task-runnable-claim :queue-id "atomic"
+               :started-at "2026-09-06T00:00:00+0000"
+               :harness-instance-id "test")))
+           (second
+            (e-runtime-store-call
+             store 'write
+             '(:op task-runnable-claim :queue-id "atomic"
+               :started-at "2026-09-06T00:00:01+0000"
+               :harness-instance-id "test"))))
+      (should (plist-get first :claimed-p))
+      (should (equal (plist-get first :task-id) "task-a"))
+      (should-not (plist-get second :claimed-p))
+      (should (equal (plist-get (plist-get first :record) :status)
+                     'running)))))
+
+(ert-deftest e-runtime-store-task-queue-retains-only-live-work ()
+  "Persistent task history stays in SQLite after one live task settles."
+  (e-runtime-store-test--with-store (store directory)
+    (ignore directory)
+    (let* ((settler nil)
+           (storage (e-task-storage-sqlite-create store))
+           (queue
+            (e-task-queue-create
+             :id "live-only" :storage storage
+             :default-harness-instance-id "test"
+             :runner
+             (lambda (_task _harness on-settle)
+               (setq settler on-settle)
+               (list :cancel #'ignore))))
+           optimistic task-id)
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_instance-id) :test-harness)))
+        (setq optimistic (e-task-queue-enqueue queue :prompt "bounded work")
+              task-id (plist-get optimistic :task-id))
+        (should (plist-get (gethash task-id (e-task-queue-records queue))
+                           :persistence-pending))
+        (e-runtime-store-test--wait-until (lambda () settler))
+        (should (= (hash-table-count (e-task-queue-records queue)) 1))
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                    'running))
+        (funcall settler :status 'done :outputs '("done"))
+        (e-runtime-store-test--wait-until
+         (lambda () (= (hash-table-count (e-task-queue-records queue)) 0)))
+        (let ((page
+               (e-runtime-store-call
+                store 'read
+                '(:op task-snapshot :queue-id "live-only" :limit 8))))
+          (should (= (length (plist-get page :records)) 1))
+          (should (equal (plist-get (car (plist-get page :records)) :status)
+                         'done)))))))
 
 (ert-deftest e-runtime-store-zz-c06-selector-leaves-no-runtime-timer-callbacks ()
   "The focused owner selector leaves no timer after cleared fixture fields."

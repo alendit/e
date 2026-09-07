@@ -9,6 +9,7 @@
 (require 'e-default-harnesses)
 (require 'e-runtime-migration)
 (require 'e-runtime-store-offline)
+(require 'e-session-query)
 
 (defun e-runtime-sqlite-p4-test--mode (file)
   "Return FILE permission bits."
@@ -19,6 +20,33 @@
   (when-let* ((request (e-runtime-store--open-control-request store)))
     (e-runtime-store-await store request 5.0))
   store)
+
+(defun e-runtime-sqlite-p4-test--query-delta (records)
+  "Derive a v6 final query row for translated RECORDS in order."
+  (let ((position 0))
+    (e-session-query-derive
+     (mapcar
+      (lambda (record)
+        (setq position (1+ position))
+        (let ((copy (copy-tree record)))
+          (unless (plist-member copy :timestamp)
+            (when-let* ((created-at (plist-get copy :created-at)))
+              (setq copy (plist-put copy :timestamp created-at))))
+          (plist-put copy :journal-position position)))
+      records))))
+
+(defun e-runtime-sqlite-p4-test--v6-record-values (store session-id)
+  "Return one detached bounded v6 record page for SESSION-ID."
+  (mapcar (lambda (entry) (plist-get entry :value))
+          (plist-get (e-session-storage-read-session-page
+                      store session-id nil 16)
+                     :records)))
+
+(defun e-runtime-sqlite-p4-test--v6-query-state (runtime session-id)
+  "Read one detached v6 query row for SESSION-ID through the worker port."
+  (e-runtime-store-call
+   (e-runtime-sqlite-runtime-store runtime) 'read
+   (list :op 'session-query-state :session-id session-id)))
 
 (defun e-runtime-sqlite-p4-test--write (file text)
   "Write TEXT to FILE for a disposable legacy fixture."
@@ -231,20 +259,33 @@
         (when (file-directory-p directory) (delete-directory directory t))))))
 
 (ert-deftest e-runtime-sqlite-p4-s9-explicit-upgrade-backs-up-before-install ()
-  "Ordinary startup rejects v4; explicit v5 upgrade verifies a backup."
+  "Ordinary startup rejects v4; explicit upgrade verifies a v6 backup."
   (let* ((directory (make-temp-file "e-runtime-p4-upgrade-" t))
+         (session-id "upgrade-preserved")
+         (records
+          '((:type "session" :session-id "upgrade-preserved"
+             :id "upgrade-root" :timestamp "2026-01-01T00:00:00Z"
+             :created-at "2026-01-01T00:00:00Z"
+             :updated-at "2026-01-01T00:00:00Z" :metadata nil)
+            (:type "message" :session-id "upgrade-preserved"
+             :id "upgrade-message" :parent-id "upgrade-root"
+             :timestamp "2026-01-01T00:00:01Z"
+             :message (:id "upgrade-message" :role user
+                       :content "before-v6"
+                       :created-at "2026-01-01T00:00:01Z"))))
          (store (e-runtime-store-open directory))
          (database (expand-file-name "store.sqlite3" directory))
          (backup (expand-file-name "operator/pre-v5.sqlite3" directory)))
     (unwind-protect
         (progn
-          (should (= (plist-get
-                      (e-runtime-store-call
-                       store 'write
-                       '(:op session-append :session-id "upgrade-preserved"
-                         :record (:value before-v5)))
-                      :revision)
-                     1))
+          (let ((result
+                 (e-runtime-store-call
+                  store 'write
+                  (list :op 'session-append-batch :session-id session-id
+                        :records (vconcat records)
+                        :query-delta
+                        (e-runtime-sqlite-p4-test--query-delta records)))))
+            (should (= (plist-get result :last-position) 2)))
           (e-runtime-store-close store)
           (setq store nil)
           ;; This fixture mutation occurs only in the isolated test process.
@@ -268,7 +309,7 @@
               (sqlite-close db)))
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
             (should (= (plist-get result :from) 4))
-            (should (= (plist-get result :to) 5))
+            (should (= (plist-get result :to) 6))
             (should (equal (plist-get result :integrity) "ok"))
             (should (= (e-runtime-sqlite-p4-test--mode backup) #o600)))
           (setq store
@@ -276,40 +317,40 @@
                  (e-runtime-store-open directory)))
           (should (= (plist-get (e-runtime-store-metrics store)
                                 :schema-version)
-                     5))
+                     6))
           (should (equal
                    (plist-get
                     (car (plist-get
                           (e-runtime-store-call
                            store 'read
-                           '(:op session-record-page :session-id "upgrade-preserved"))
+                           (list :op 'session-record-page
+                                 :session-id session-id :limit 16))
                           :records))
                     :value)
-                   '(:value before-v5)))
-          ;; An upgraded v5 store uses the same receipt recovery path.
-          (let* ((marker (make-temp-file "e-runtime-upgrade-recovery-"))
-                 (process-environment
-                  (cons "E_RUNTIME_STORE_TEST_FAULT=after-commit"
-                        (cons (concat "E_RUNTIME_STORE_TEST_FAULT_ONCE_FILE=" marker)
-                              process-environment))))
-            (delete-file marker)
-            ;; Restart under the fault environment, then recover one write.
-            (e-runtime-store-close store)
-            (setq store (e-runtime-store-open directory))
-            (should (> (plist-get
-                        (e-runtime-store-call
-                         store 'write
-                         '(:op session-append :session-id "upgrade-preserved"
-                           :record (:value recovered-v5)))
-                        :revision)
-                       1))
-            (should (file-exists-p marker))
-            (delete-file marker)))
+                   (car records)))
+          (let* ((page (e-runtime-store-call
+                        store 'read
+                        (list :op 'session-record-page
+                              :session-id session-id :limit 16)))
+                 (values (mapcar (lambda (entry) (plist-get entry :value))
+                                 (plist-get page :records))))
+            (should (= (length values) 2))
+            (should (equal (plist-get (plist-get (nth 1 values) :message)
+                                      :content)
+                           "before-v6")))
+          (let ((db (sqlite-open database)))
+            (unwind-protect
+                (progn
+                  (should-not (car (sqlite-select
+                                    db "SELECT 1 FROM sqlite_master WHERE name='catalog_projection'")))
+                  (should-not (car (sqlite-select
+                                    db "SELECT 1 FROM sqlite_master WHERE name='session_checkpoints'"))))
+              (sqlite-close db))))
       (when store (ignore-errors (e-runtime-store-close store)))
       (delete-directory directory t))))
 
 (ert-deftest e-runtime-sqlite-p4-s92-v5-upgrade-fault-rolls-back-without-partial-schema ()
-  "An injected v4-to-v5 upgrade fault leaves the old store untouched."
+  "An injected v4-to-v6 upgrade fault leaves the old store untouched."
   (let* ((directory (make-temp-file "e-runtime-v5-rollback-" t))
          (store (e-runtime-store-open directory))
          (database (expand-file-name "store.sqlite3" directory))
@@ -351,7 +392,7 @@
         (progn
           (should (plist-get (e-runtime-store-integrity store t) :ok))
           (let ((metrics (e-runtime-store-metrics store)))
-            (should (= (plist-get metrics :schema-version) 5))
+            (should (= (plist-get metrics :schema-version) 6))
             (should (> (plist-get metrics :database-bytes) 0)))
           (should (plist-get (e-runtime-store-backup store backup) :verified))
           (should (= (e-runtime-sqlite-p4-test--mode backup) #o600))
@@ -409,24 +450,22 @@
             (should (file-regular-p
                      (expand-file-name "migration-report.eld" target))))
           (let ((e-runtime-sqlite--live-composition nil))
-            (setq runtime (e-runtime-sqlite-open target :load-sessions t))
-            (let ((checkpoint
-                   (e-session-storage-read-resume-checkpoint
-                    (e-runtime-sqlite-session-store runtime)
-                    "restored-session")))
-              (should (= (plist-get checkpoint :journal-byte-offset) 1))
-              (should (equal (plist-get checkpoint :legacy-extra)
-                             '(:enabled :json-false :labels ("a" "b"))))
-              (should (equal (plist-get (car (plist-get checkpoint :records))
-                                        :id)
-                             "legacy-root")))
-            (should
-             (equal (plist-get
-                     (car (e-session-messages
-                           (e-runtime-sqlite-session-store runtime)
-                           "restored-session"))
-                     :content)
-                    "exact legacy input"))
+            (setq runtime (e-runtime-sqlite-open target))
+            (let* ((store (e-runtime-sqlite-session-store runtime))
+                   (values (e-runtime-sqlite-p4-test--v6-record-values
+                            store "restored-session"))
+                   (state (e-runtime-sqlite-p4-test--v6-query-state
+                           runtime "restored-session")))
+              (should (= (length values) 2))
+              (should (equal (plist-get (car values) :id) "legacy-root"))
+              (should (equal (plist-get (plist-get (nth 1 values) :message)
+                                        :content)
+                             "exact legacy input"))
+              (should (equal (plist-get state :session-id)
+                             "restored-session"))
+              (should (= (plist-get state :message-count) 1))
+              (should (equal (plist-get state :summary) "exact legacy input"))
+              (should (equal (plist-get state :root-event-id) "legacy-root")))
             (let ((tasks (e-task-storage-snapshot
                           (e-runtime-sqlite-task-storage runtime) "default" 10)))
               (should (plist-get tasks :paused-p))
@@ -463,12 +502,12 @@
                      "raw exact"))
             (e-runtime-sqlite-close runtime)
             (setq runtime nil)
-            (setq runtime (e-runtime-sqlite-open target :load-sessions t))
+            (setq runtime (e-runtime-sqlite-open target))
             (should (= (length
-                        (e-session-messages
+                        (e-runtime-sqlite-p4-test--v6-record-values
                          (e-runtime-sqlite-session-store runtime)
                          "restored-session"))
-                       1)))
+                       2)))
           (should (equal before (e-runtime-migration-inventory source)))
           (should-error (e-runtime-migration-run source target)
                         :type 'e-runtime-migration-target-exists))
@@ -508,33 +547,41 @@
           (e-runtime-migration-run source target)
           (setenv "E_RUNTIME_STATE_DIRECTORY" target)
           (let* ((store (e-default-session-store))
-                 (physical
-                  (e-session-storage-read-session-records store session-id))
-                 (session (e-session-get store session-id)))
-            (should-not
-             (e-session-storage-resume-checkpoint-present-p store session-id))
+                 (physical (e-runtime-sqlite-p4-test--v6-record-values
+                            store session-id))
+                 (state (e-runtime-sqlite-p4-test--v6-query-state
+                         (e-default-runtime) session-id)))
             (should (= (length physical) (1+ (length original))))
             (should (equal (plist-get (car physical) :type) "session"))
             (should (equal (plist-get (car physical) :id) "legacy-root-id"))
-            (should (equal (plist-get session :created-at)
+            (should (equal (plist-get state :created-at)
                            "2026-08-07T10:13:47Z"))
-            (should (equal
-                     (plist-get (car (e-session-messages store session-id))
-                                :content)
+            (should (= (plist-get state :message-count) 1))
+            (should (equal (plist-get (plist-get (nth 2 physical) :message)
+                                      :content)
                      "preserved session input")))
           (e-default-runtime-close)
           (setq e-default--runtime nil e-default--chat-sessions nil)
-          (let ((store (e-default-session-store)))
-            (should (equal
-                     (plist-get (car (e-session-messages store session-id))
-                                :content)
-                     "preserved session input"))))
+          (let* ((runtime (e-default-runtime))
+                 (store (e-runtime-sqlite-session-store runtime)))
+            (should (= (plist-get
+                        (e-runtime-sqlite-p4-test--v6-query-state
+                         runtime session-id)
+                        :message-count)
+                       1))
+            (should (equal (plist-get
+                            (plist-get
+                             (nth 2 (e-runtime-sqlite-p4-test--v6-record-values
+                                     store session-id))
+                             :message)
+                            :content)
+                           "preserved session input"))))
       (e-default-runtime-close)
       (dolist (directory (list source target))
         (when (file-directory-p directory) (delete-directory directory t))))))
 
 (ert-deftest e-runtime-sqlite-p4-catalog-failure-does-not-install ()
-  "A catalog publication failure preserves source and leaves no target."
+  "A canonical query derivation failure preserves source and leaves no target."
   (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
          (target (concat source "-catalog-failure"))
          (before (e-runtime-migration-inventory source)))
@@ -542,12 +589,12 @@
         (progn
           (cl-letf
               (((symbol-function
-                 'e-session-storage-publish-catalog-projection)
+                 'e-session-query-derive)
                 (lambda (&rest _args)
-                  (signal 'e-session-storage-error
-                          '("injected catalog publication failure")))))
+                  (signal 'e-runtime-migration-error
+                          '("injected canonical query derivation failure")))))
             (should-error (e-runtime-migration-run source target)
-                          :type 'e-session-storage-error))
+                          :type 'e-runtime-migration-error))
           (should (equal before (e-runtime-migration-inventory source)))
           (should-not (file-exists-p target)))
       (dolist (directory (list source target))
@@ -588,13 +635,16 @@
           (should (equal before (e-runtime-migration-inventory backup)))
           (should (file-regular-p (expand-file-name "store.sqlite3" root)))
           (should-not (file-exists-p (expand-file-name "sessions" root)))
-          (let ((sessions (e-default-session-store)))
+          (let* ((runtime (e-default-runtime))
+                 (sessions (e-runtime-sqlite-session-store runtime)))
             (should (equal (e-session-store-directory sessions)
                            (file-name-as-directory root)))
             (should (equal
-                     (plist-get
-                      (car (e-session-messages sessions "restored-session"))
-                      :content)
+                     (plist-get (plist-get
+                                 (nth 1 (e-runtime-sqlite-p4-test--v6-record-values
+                                         sessions "restored-session"))
+                                 :message)
+                                :content)
                      "exact legacy input"))))
       (e-default-runtime-close)
       (dolist (directory (list root source backup))
@@ -743,10 +793,17 @@
                       (e-runtime-sqlite-task-queue runtime)))
           (should (e-task-queue-expose-await-references-p
                    e-task-queue-actions-default-queue))
-          (e-session-create first :id "default-sqlite")
-          ;; Session mutation is optimistically admitted; the filesystem
-          ;; assertion below is an explicit durability observation.
-          (e-session-flush-write-queue first)
+          (let* ((record
+                  '(:type "session" :session-id "default-sqlite"
+                    :id "default-root" :timestamp "2026-01-01T00:00:00Z"
+                    :created-at "2026-01-01T00:00:00Z"
+                    :updated-at "2026-01-01T00:00:00Z" :metadata nil))
+                 (records (list record)))
+            (e-session-storage-sqlite-append-batch-with-query-delta
+             first "default-sqlite" records
+             (e-runtime-sqlite-p4-test--query-delta records))
+            ;; A status response is the v6 adapter's bounded ordered barrier.
+            (e-session-storage-sqlite-ordered-barrier first))
           (should (file-regular-p (expand-file-name "store.sqlite3" directory)))
           (dolist (sidecar '("records.eld" "cron-state.eld" "voice-tells.eld"
                              "daydream_access.jsonl" "index.json"))

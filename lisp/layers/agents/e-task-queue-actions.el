@@ -62,20 +62,17 @@
     (signal 'wrong-type-argument (list 'e-task-queue-p queue)))
   (setq e-task-queue-actions-default-queue queue))
 
-(defun e-task-queue-actions-ensure-loaded ()
-  "Rehydrate the default durable queue once.
-Idempotent: the queue instance owns its successful-load state.  Every path that
-first touches the shared default queue -- the layer factory and the list buffer
-alike -- calls this, so rehydration and re-dispatch of persisted queued work
-never depend on a harness happening to build the task-queue layer first.
-Malformed or unreadable persistence remains visible to the caller and leaves
-the queue eligible for a later retry."
+(defun e-task-queue-actions-ensure-initialized ()
+  "Return the configured queue after SQL-free process-local initialization."
   (unless (e-task-queue-p e-task-queue-actions-default-queue)
     (signal 'e-task-queue-error
             (list "Default SQLite task queue is not configured")))
   (unless (e-task-queue-loaded-p e-task-queue-actions-default-queue)
-    (e-task-queue-load e-task-queue-actions-default-queue))
+    (e-task-queue-initialize e-task-queue-actions-default-queue))
   e-task-queue-actions-default-queue)
+
+(define-obsolete-function-alias 'e-task-queue-actions-ensure-loaded
+  #'e-task-queue-actions-ensure-initialized "2026-09-06")
 
 (defun e-task-queue-actions--task-id (arguments)
   "Return the required task id from ARGUMENTS."
@@ -263,9 +260,9 @@ QUEUE defaults to `e-task-queue-actions-default-queue'."
 
 (defun e-task-queue-layer-create ()
   "Create the Task Queue layer.
-Rehydrate the default durable queue from disk the first time the layer is
-built, so queued and paused work survives an Emacs restart."
-  (e-task-queue-actions-ensure-loaded)
+Layer construction initializes only process-local coordination.  The explicit
+scheduler start owns the first runnable query-and-claim."
+  (e-task-queue-actions-ensure-initialized)
   (e-task-queue-actions-register-waitable-resolver)
   (e-layer-create
    :id 'task-queue

@@ -144,7 +144,7 @@
              (mapcar (lambda (event) (plist-get event :event-type))
                      (e-harness-session-activity-events harness "session-1"))
              '(turn-started provider-request-started provider-request-finished
-               hook-audit turn-finished)))))
+               context-frame-consumed hook-audit turn-finished)))))
 
 (ert-deftest e-harness-test-subscribe-can-filter-events-by-session ()
   "Session-scoped subscribers only receive events for their session."
@@ -923,7 +923,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                 (should (equal (mapcar (lambda (message)
                                          (plist-get message :role))
                                        messages)
-                               '(user tool-call tool)))
+                               '(user tool-call system tool)))
                 (funcall on-item
                          '(:type assistant-message
                            :content "done"))

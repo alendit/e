@@ -3,6 +3,26 @@
 
 * Status
 
+The current uncommitted Addendum 2 implementation replaces the remaining
+file-store-shaped runtime behavior with an RDBMS-first path.  SQLite owns
+durable identity, current state, ordering, history, associations, routing, task
+state, and indexes.  Startup performs transport open only; public Daily and
+persisted navigation request bounded detached rows/pages; provider context
+requests one selected path; Board uses one bounded current/set controller
+query; and task scheduling atomically claims runnable rows.  No ordinary v6
+path constructs a catalog, unloaded stub, checkpoint, whole-session/Board
+restoration, task snapshot, candidate store, generation loader, or active
+durable replica.
+
+The public Org Canvas delayed-open/read/write/release/failure scenario now
+passes on the exact current tree.  It observes immediate buffer return,
+composer input plus three independent heartbeats while SQLite is held, one
+ordered visible classification result after release, owner-local suspect state
+after worker failure, and unrelated session persistence plus independent
+readback.  The running Emacs and canonical database remain untouched.  The
+historical evidence below explains the successive counterexamples; the final
+section records the current correction.
+
 The accepted-session projection correction is implemented in =9857214a= and
 passes the exact public two-turn Org Canvas graphical gate twice.  Provider
 request two contains prompt one, its data-dependent response, and prompt two
@@ -742,3 +762,213 @@ scenario remains green at 1/1 while asserting that the daemon prewarmed the
 default runtime before the first Daily/harness lookup.  Combined full-suite
 evidence passes all 2,847 tests; six local-server cases required socket
 permission unavailable inside the restricted sandbox.
+
+* RDBMS-first Addendum 2 correction (current uncommitted tree)
+
+The startup prewarm was not itself the final defect.  Although worker open was
+asynchronous, default composition still reconstructed durable session state in
+Emacs through catalog enumeration, stubs, checkpoints, and whole-session or
+Board restoration.  That work both copied SQLite data and put slow storage
+dependencies back onto interactive stacks.  Addendum 2 removes the
+reconstruction boundary instead of moving it to another timer.
+
+The current implementation provides these consumer-shaped paths:
+
+- session metadata, Board association, recent visible messages, selected
+  provider context, and root-session navigation are bounded detached
+  asynchronous queries;
+- a provider-context request registers a bounded request-local query cut so a
+  mutation admitted after SELECT submission is included exactly once even when
+  its write acknowledgement arrives before the query result is consumed;
+- a root-session page overlays only the bounded mutations already in flight at
+  request admission, preventing a queued Board association from disappearing
+  from immediate navigation without retaining a catalog or session mirror;
+- session journal writes carry a domain-derived current-row delta and SQLite
+  commits the journal, current query state, receipt, and deletion control in one
+  transaction;
+- Board construction requests one exact/set controller value with a bounded
+  visible window and no history replay or per-message routing query;
+- task startup performs no SQL, and explicit scheduler start queries and
+  atomically claims runnable work without loading terminal history;
+- cron, voice, Goodnite, raw-result, and session-tmp interactive facades return
+  work immediately; direct raw-result content is practically capped at 16 MiB
+  before a file import or worker submission; and
+- the source reachability test rejects new ordinary interactive calls to the
+  known synchronous runtime/session operations.  Named offline, operator,
+  physical-adapter, and test observers remain synchronous by design.
+
+Exact evidence on 2026-09-06:
+
+- the package-relevant suite passed 383/412 with zero unexpected and 29
+  explicit skips for superseded catalog/checkpoint/full-restoration behavior;
+- graphical =startup-prewarm= passed 1/1 in 0.084449 seconds;
+- graphical =daily-query-window= passed 1/1 in 0.907957 seconds; and
+- graphical =org-canvas-turn-survives-delayed-persistence= passed 1/1 in
+  2.538178 seconds (2.539685 seconds runner total) on the final tree.
+
+A full =eldev -dtT test= census before the final bounded-reset cleanup ran 2,898
+tests: 2,792 expected, 40 unexpected, and 66 skipped.  The final reset delta
+then passed its 18 focused session-async tests and the public graphical gate.
+The unexpected cases are recorded as follow-up evidence rather
+than treated as permission to restore the rejected architecture: they comprise
+superseded raw-v6 append/catalog/checkpoint/full-restoration expectations and
+independent MCP/OpenAI local-socket or startup-fixture isolation failures.  The
+operator explicitly scoped acceptance to the exercised RDBMS-first and public
+graphical path, so unrelated fixture cleanup and DP6C-style quarantine are not
+part of this correction.
+
+The implementation is intentionally uncommitted.  Repository-side validation
+used disposable directories and isolated graphical daemons only.  A full Emacs
+restart, not =e-dev-reload=, is required to try these core runtime/session
+changes in the live editor.
+
+* Public new-chat counterexample and E2E correction (2026-09-07)
+
+A subsequent live =e-chat-new= disproved the three-selector acceptance claim.
+The transcript's detached recent-message request failed visibly, and the first
+composer submission signalled:
+
+#+begin_example
+Durable session aggregates are unavailable in async SQLite; use a bounded query
+#+end_example
+
+The direct cause was not SQLite latency.  The interactive stack selected
+submit versus steer by calling =e-chat-service-board-session-p=, which called
+=e-session-get=.  The existing graphical scenario called
+=e-chat-submit-session= directly and therefore never executed that public
+intent-selection stack.  The same correction also exposed a second independent
+test gap: a new live Board did not subscribe until after its detached SQLite
+view settled, so a prompt published during the delayed read could be present in
+SQLite yet absent from the rendered transcript.
+
+The corrected path makes active-turn selection a process-local live-controller
+query.  The remaining Board-session predicate refuses aggregate reads for a
+SQLite store.  New persistent chat attachment installs its future-event
+subscription before submitting the bounded detached view; the single worker
+FIFO orders earlier events into the query result and later events into the
+subscription.  No durable mirror or reconciliation pass is added.
+
+The replacement graphical gate enters through =e-chat-new=, types into the
+real composer, and invokes =e-chat-submit= interactively.  A dynamic guard
+fails the entire scenario on any =e-session-get= or =e-runtime-store-await=
+reachability.  It also asserts that neither =Loading recent messages= nor
+=Unable to load recent messages= remains after release, that the prompt is
+visible exactly once, that an unsent draft survives, that three independent
+heartbeats run, and that owner-local failure does not prevent an unrelated
+session from persisting and reading back.
+
+Exact isolated evidence on 2026-09-07:
+
+- =public-new-chat-survives-delayed-worker=: 1/1, zero unexpected, 0.978926
+  seconds on the exact final tree, with a separate passing run's ordered
+  screenshot/state artifacts captured outside the repository;
+- =startup-prewarm=: 1/1, zero unexpected, 0.103772 seconds;
+- =daily-query-window=: 1/1, zero unexpected, 0.907203 seconds; and
+- =org-canvas-turn-survives-delayed-persistence=: 1/1, zero unexpected,
+  2.492298 seconds.
+
+The focused chat/query set passes 105 tests with zero unexpected and 14
+explicit retired-architecture skips; the nonblocking source sweep passes 4/4.
+A complete repository census before the last test-only observer correction ran
+2,899 tests with 2,797 expected, 36 unexpected, and 66 skipped.  Three of those
+failures were raw-result tests still calling the deliberately rejected
+synchronous read facade immediately after an asynchronous write; those tests
+now observe through an explicit FIFO-ordered test storage boundary and pass
+11/11.  The remaining 33 census items are 27 superseded
+catalog/checkpoint/full-restoration or raw-no-delta expectations and six
+restricted-sandbox local-socket cases.  The full suite is therefore not
+described as green.
+
+This changes the test policy: an E2E named for a public surface must enter
+through that public command and must exercise its interactive submission path.
+Service-level helpers remain useful focused evidence, but cannot satisfy the
+public acceptance row.
+
+* Canonical schema-5 incident, migration, and missing restart journey (2026-09-07)
+
+The next live failure was a separate deployment boundary, not another SQLite
+latency hang.  The running code required schema 6 while the canonical store was
+still schema 5.  Worker startup correctly refused the store, but the application
+misclassified the refusal as a damaged Daily/session: the chat showed a generic
+recent-message failure and the optimistic create path marked that owner
+persistence-suspect.  Lower-level migration tests and post-upgrade graphical
+tests had never been connected into one v5-refusal -> operator-upgrade -> fresh
+public-chat journey.
+
+The correction makes =e-runtime-store-schema-too-old= a global, actionable
+transport prerequisite.  It stops that transport instance and fails queued
+requests without creating an owner-suspect entry.  Chat creation and detached
+view failure surfaces preserve the nested cause and tell the operator to quit
+Emacs, run =scripts/e-runtime-upgrade=, and restart.  Ordinary read and write
+failures retain their existing request-local and owner-local partitions.
+
+The first real migration attempts also disproved the fixture's v5 model.  The
+canonical journal contained large durable message/provider values, an obsolete
+=probe= record family, a repeated root, and a rootless Board-message journal;
+retired catalog/checkpoint projections also disagreed with the journal.  The
+offline upgrader now treats the journal as sole authority, limits only the
+lossy query summary, preserves unknown historical rows and high-water marks,
+uses old-reader replacement semantics for repeated roots, and preserves
+rootless rows without inventing a current row.  Preflight precedes backup
+creation so invalid journal data fails before another multi-gigabyte copy.
+
+With Emacs explicitly stopped, the canonical migration then completed:
+
+- schema 5 -> 6;
+- 596,312 journal rows and 1,277 derived current-session rows;
+- full integrity =ok=;
+- verified schema-5 backup at
+  =~/.config/emacs/.local/cache/e/backups/store-pre-upgrade-20260907T102721.sqlite3=.
+
+Independent immutable readback found the canonical store at schema 6 with the
+same journal count, 1,277 query rows, and all three retired relations absent.
+The backup independently remained schema 5 with 596,312 journal rows and
+integrity =ok=.
+
+The new graphical =public-v5-upgrade= test performs the previously missing
+journey against a nonempty disposable v5 store.  It observes global
+upgrade-required refusal with zero suspect owners, runs the real offline
+upgrade, creates a fresh runtime, opens through =e-chat-new= without any
+synchronous aggregate/runtime wait, types in the composer, and reads migrated
+state.  It passes 1/1 in 0.570680 seconds with rendered screenshot/state
+evidence captured outside the repository.  The same revision also passes
+=startup-prewarm= 1/1, =public-new-chat= 1/1, =daily-query-window= 1/1, and the
+full Org Canvas delayed persistence/release/owner-failure/healthy-sibling gate
+1/1.  Focused schema presentation tests pass 2/2, query/offline migration tests
+pass 28/28, and the global schema-partition transport test passes 1/1.
+
+* Retired-loader cleanup and final public regression (2026-09-07)
+
+The final full-suite audit exposed four false-positive tests that still
+depended on the pre-v6 unloaded-index/checkpoint replay path.  Production chat
+had already moved existing SQLite sessions to detached bounded queries, so
+keeping those tests would have required resurrecting the exact API that caused
+the live =Durable session aggregates are unavailable in async SQLite= failure.
+The obsolete chat load lifecycle and aggregate-peek preview fallback have now
+been removed.  The tests were deleted or rewritten to provide the bounded
+detached result owned by their consumer.
+
+The post-cutover E2E now proves the intended architecture directly: 64 migrated
+sessions are visible through a bounded SQLite query and a representative
+message through a one-row visible window, while the Emacs session aggregate
+hash remains empty across open and reopen.  The production shell/default/layer
+tree contains no caller of =e-session-load-session=,
+=e-session-load-session-start=, =e-session-persistent-index-store-create=, or
+=e-session-aggregate-peek-session=.
+
+The public graphical Daily/Org Canvas acceptance selector passes 1/1 in
+3.642585 seconds after this cleanup.  It enters through the public UI and covers
+the held SQLite worker, live composer, three independent heartbeats, ordered
+single rendering after release, owner-local failure, and unrelated-session
+persist/readback.  The running user Emacs and canonical database were not used.
+
+The generational context-lifetime projection is also enabled by default now.
+Every test and E2E executes with it enabled, and a static regression test rejects
+any local =nil= opt-out so a future suite cannot silently return to the legacy
+projection.
+
+The final repository-wide exact-source run with loopback fixture permission
+passes 2,901/2,901 with zero unexpected results: 2,835 passed and 66 explicitly
+superseded/legacy cases skipped.  This is the first green complete census for
+the RDBMS-first package; it does not count sandbox-denied local sockets as code
+failures.

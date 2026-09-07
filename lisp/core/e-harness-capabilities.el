@@ -451,15 +451,23 @@ available through e:// resources instead of repeating it in every request.")
         arguments))
      :deferred)))
 
-(defun e-harness-capabilities--resource-operation-async-p (operation)
-  "Return non-nil when OPERATION should expose an async tool start."
-  (memq (e-operation-id-of operation) '(glob search table-of-content)))
+(defun e-harness-capabilities--resource-operation-async-p (resources operation)
+  "Return non-nil when OPERATION should expose an async tool start.
+
+Glob, search, and table-of-content are intrinsically detachable.  Any other
+operation becomes detachable when an installed method supplies explicit Work,
+allowing database-backed schemes to avoid synchronous I/O without forcing
+cheap resource schemes to implement an artificial asynchronous adapter."
+  (or (memq (e-operation-id-of operation) '(glob search table-of-content))
+      (seq-some #'e-harness-capabilities--resource-method-work
+                (e-resources-methods-for-operation resources operation))))
 
 (defun e-harness-capabilities--register-resource-operation-tool (registry resources operation)
   "Register OPERATION in REGISTRY as a model-facing tool backed by RESOURCES."
   (let ((dispatch (e-operation-dispatch operation)))
     (when (functionp dispatch)
-      (let* ((async-p (e-harness-capabilities--resource-operation-async-p operation))
+      (let* ((async-p (e-harness-capabilities--resource-operation-async-p
+                       resources operation))
              (tool-name (e-operation-tool-name operation))
              (cheap-runner
               (lambda (arguments)
@@ -597,14 +605,18 @@ harness default project root."
 Session metadata wins over the harness default project root.  Consumers that
 own a narrower fallback, such as a layer construction root, should apply it
 after this accessor returns nil."
-  (or
-   (when session-id
-     (when-let ((session (ignore-errors
-                           (e-session-get (e-harness-sessions harness)
-                                          session-id))))
-       (e-harness-normalize-project-root
-        (plist-get (plist-get session :metadata) :project-root))))
-   (e-harness-default-project-root harness)))
+  (let ((store (e-harness-sessions harness)))
+    (or
+     (when session-id
+       (when-let ((session
+                   (or (e-harness-executing-session-state harness session-id)
+                       ;; A query-backed session is never reconstructed merely
+                       ;; to resolve capability scope at a lifecycle edge.
+                       (unless (e-session-async-enabled-p store)
+                         (ignore-errors (e-session-get store session-id))))))
+         (e-harness-normalize-project-root
+          (plist-get (plist-get session :metadata) :project-root))))
+     (e-harness-default-project-root harness))))
 
 (defcustom e-default-projects nil
   "Projects loaded by `e' startup and available as workspace roots.

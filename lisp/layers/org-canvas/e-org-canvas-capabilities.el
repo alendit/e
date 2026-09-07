@@ -20,6 +20,7 @@
 (require 'e-hooks)
 (require 'e-layers)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-workspaces)
 (require 'org)
 (require 'org-element)
@@ -69,27 +70,42 @@ Before finalizing an edit, check newly written Org prose for accidental wrapped 
       (plist-get metadata :org-canvas)))
 
 (defun e-org-canvas-session-metadata (harness session-id)
-  "Return Org Canvas stable reference for HARNESS SESSION-ID, or nil."
-  (e-org-canvas--metadata-ref
-   (plist-get (e-session-get (e-harness-sessions harness) session-id)
-              :metadata)))
+  "Return live Org Canvas reference for HARNESS SESSION-ID, or nil.
+Persistent metadata that has no executing or presentation owner remains in
+SQLite and is obtained by the consumer's bounded asynchronous query."
+  (let* ((store (e-harness-sessions harness))
+         (session
+          (or (e-harness-executing-session-state harness session-id)
+              (unless (e-session-async-enabled-p store)
+                (e-session-get store session-id)))))
+    (e-org-canvas--metadata-ref (plist-get session :metadata))))
 
 (defun e-org-canvas-session-p (harness session-id)
   "Return non-nil when HARNESS SESSION-ID is an Org Canvas session."
-  (and (e-org-canvas-session-metadata harness session-id) t))
+  (and (or (e-org-canvas-session-metadata harness session-id)
+           (e-org-canvas--last-prompt-metadata harness session-id)
+           (e-org-canvas--live-session-buffer harness session-id))
+       t))
+
+(defun e-org-canvas--live-session-buffer (harness session-id)
+  "Return the already-live Canvas buffer bound to HARNESS SESSION-ID.
+
+This is presentation state owned by Emacs.  It deliberately does not consult
+or reconstruct durable session state."
+  (e-workspace-find-buffer
+   (lambda (buffer)
+     (with-current-buffer buffer
+       (and (bound-and-true-p e-org-canvas-mode)
+            (eq e-org-canvas-harness harness)
+            (equal e-org-canvas-session-id session-id))))
+   :prefer-visible t))
 
 (defun e-org-canvas-session-buffer-from-metadata
     (harness session-id metadata)
   "Return HARNESS SESSION-ID's Org Canvas buffer described by METADATA.
 This lookup does not hydrate SESSION-ID and is therefore safe for catalog
 metadata belonging to an unloaded session."
-  (or (e-workspace-find-buffer
-       (lambda (buffer)
-         (with-current-buffer buffer
-           (and (bound-and-true-p e-org-canvas-mode)
-                (eq e-org-canvas-harness harness)
-                (equal e-org-canvas-session-id session-id))))
-       :prefer-visible t)
+  (or (e-org-canvas--live-session-buffer harness session-id)
       (when-let* ((buffer-name (plist-get metadata :buffer-name))
                   (buffer (get-buffer buffer-name)))
         (and (e-org-canvas--buffer-matches-uri-p
@@ -104,16 +120,17 @@ metadata belonging to an unloaded session."
 
 (defun e-org-canvas-session-buffer (harness session-id)
   "Return the live Org Canvas buffer for HARNESS SESSION-ID, if available."
-  (when-let ((metadata (e-org-canvas-session-metadata harness session-id)))
-    (or (e-org-canvas-session-buffer-from-metadata
-         harness session-id metadata)
-        (when-let ((attachment
-                    (seq-find
-                     (lambda (candidate)
-                       (equal (plist-get candidate :uri)
-                              (plist-get metadata :uri)))
-                     (e-chat-session-attachments harness session-id))))
-          (e-chat-session-attachment-live-buffer attachment)))))
+  (or (e-org-canvas--live-session-buffer harness session-id)
+      (when-let ((metadata (e-org-canvas-session-metadata harness session-id)))
+        (or (e-org-canvas-session-buffer-from-metadata
+             harness session-id metadata)
+            (when-let ((attachment
+                        (seq-find
+                         (lambda (candidate)
+                           (equal (plist-get candidate :uri)
+                                  (plist-get metadata :uri)))
+                         (e-chat-session-attachments harness session-id))))
+              (e-chat-session-attachment-live-buffer attachment))))))
 
 (defun e-org-canvas--inside-heading-p ()
   "Return non-nil when point is in an Org heading or subtree."
@@ -227,14 +244,33 @@ metadata belonging to an unloaded session."
 (defun e-org-canvas--last-prompt-metadata (harness session-id)
   "Return metadata from the last Org Canvas user prompt for SESSION-ID."
   (when (and harness session-id)
-    (let ((message
+    (let* ((store (e-harness-sessions harness))
+           (executing (e-harness-executing-session-state harness session-id))
+           (messages
+            (or (plist-get executing :messages)
+                (unless (e-session-async-enabled-p store)
+                  (e-harness-messages harness session-id))))
+           (message
            (cl-find-if
             (lambda (candidate)
               (and (eq (plist-get candidate :role) 'user)
                    (plist-get (plist-get candidate :metadata)
                               :org-canvas-scope)))
-            (reverse (e-harness-messages harness session-id)))))
+            (reverse messages))))
       (plist-get message :metadata))))
+
+(defun e-org-canvas--context-metadata
+    (harness session-id prompt-metadata buffer)
+  "Return request-scoped Canvas metadata for the current consumer.
+
+Durable metadata comes from the detached query path when present.  A newly
+opened Canvas can instead use its already-live presentation binding and prompt
+metadata while the corresponding SQLite write remains in flight."
+  (or (e-org-canvas-session-metadata harness session-id)
+      (and (buffer-live-p buffer)
+           (e-org-canvas--metadata-for-buffer buffer))
+      (when-let ((uri (plist-get prompt-metadata :org-canvas-uri)))
+        (list :uri uri :buffer-name nil))))
 
 (defun e-org-canvas--context-provider-messages
     (metadata scope focus visibility)
@@ -271,10 +307,11 @@ metadata belonging to an unloaded session."
     (&key harness session-id _turn-id _context-purpose)
   "Return Org Canvas context for HARNESS SESSION-ID when gated metadata exists."
   (when (and harness session-id (e-org-canvas-session-p harness session-id))
-    (let* ((metadata (e-org-canvas-session-metadata harness session-id))
-           (buffer (e-org-canvas-session-buffer harness session-id))
-           (prompt-metadata (e-org-canvas--last-prompt-metadata
+    (let* ((prompt-metadata (e-org-canvas--last-prompt-metadata
                              harness session-id))
+           (buffer (e-org-canvas-session-buffer harness session-id))
+           (metadata (e-org-canvas--context-metadata
+                      harness session-id prompt-metadata buffer))
            (scope (or (plist-get prompt-metadata :org-canvas-scope)
                       (plist-get (plist-get prompt-metadata :org-canvas-focus)
                                  :scope)
@@ -293,9 +330,11 @@ metadata belonging to an unloaded session."
     (&key harness session-id _turn-id _context-purpose)
   "Return cached Org Canvas context for optional status/snapshot callers."
   (when (and harness session-id (e-org-canvas-session-p harness session-id))
-    (let* ((metadata (e-org-canvas-session-metadata harness session-id))
-           (prompt-metadata (e-org-canvas--last-prompt-metadata
+    (let* ((prompt-metadata (e-org-canvas--last-prompt-metadata
                              harness session-id))
+           (buffer (e-org-canvas-session-buffer harness session-id))
+           (metadata (e-org-canvas--context-metadata
+                      harness session-id prompt-metadata buffer))
            (focus (plist-get prompt-metadata :org-canvas-focus))
            (scope (or (plist-get prompt-metadata :org-canvas-scope)
                       (plist-get focus :scope)

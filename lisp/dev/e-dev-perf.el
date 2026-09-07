@@ -22,6 +22,7 @@
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-tools)
 (require 'e-work)
 (require 'e-ui-work)
@@ -712,6 +713,7 @@ artifacts under `e-dev-perf-run-directory'."
          (store (e-session-persistent-store-create directory)))
     (unwind-protect
         (funcall thunk store directory)
+      (ignore-errors (e-session-storage-close store))
       (ignore-errors (delete-directory directory t)))))
 
 (defun e-dev-perf--scenario-session-append-run (_state)
@@ -741,26 +743,30 @@ artifacts under `e-dev-perf-run-directory'."
                 '(session.append-message session.append-activity))))
        (plist-put metrics :session.index-write.count index-writes)))))
 
-(defun e-dev-perf--scenario-session-replay-run (_state)
-  "Run session replay/list scenario."
+(defun e-dev-perf--scenario-session-visible-query-run (_state)
+  "Run one bounded visible-message query after queued session writes."
   (e-dev-perf--with-temp-session-store
-   (lambda (store directory)
-     (e-session-create store :id "session-replay")
+   (lambda (store _directory)
+     (e-work-with-batch-await
+       (e-work-await-batch
+        (e-session-create store :id "session-query") :timeout 5))
      (dotimes (index 12)
        (e-session-append-message
-        store "session-replay"
+        store "session-query"
         (list :role (if (cl-evenp index) 'user 'assistant)
               :content (format "replay message %d" index)
               :turn-id (format "turn-%d" (/ index 2)))))
-     (let* ((replay-store (e-session-persistent-index-store-create directory))
-            (metrics
-             (e-dev-perf--profile-spans
-              (lambda ()
-                (e-session-load-session replay-store "session-replay")
-                (e-session-list replay-store))
-              '(session.load session.list))))
-       (plist-put metrics :entries-replayed.count
-                  (length (e-session-messages replay-store "session-replay")))))))
+     ;; The read follows the writes in the runtime FIFO, so awaiting this one
+     ;; explicit dev operation proves the committed result without opening a
+     ;; second store or reconstructing a session aggregate.
+     (let ((page
+            (e-work-with-batch-await
+              (e-work-await-batch
+               (e-session-async-visible-message-page
+                store "session-query" 12)
+               :timeout 5))))
+       (list :messages-returned.count
+             (length (plist-get page :messages)))))))
 
 (defun e-dev-perf--scenario-session-metadata-state-run (_state)
   "Run typed session metadata state write scenario."
@@ -1201,10 +1207,10 @@ artifacts under `e-dev-perf-run-directory'."
       :tags '(session)))
     (e-dev-perf-register-scenario
      (e-dev-perf-scenario-create
-      :id "session.replay-list"
-      :title "Session replay and overview listing"
+      :id "session.visible-query"
+      :title "Bounded visible session query"
       :owner 'e-session
-      :run #'e-dev-perf--scenario-session-replay-run
+      :run #'e-dev-perf--scenario-session-visible-query-run
       :samples 5
       :warmups 1
       :tags '(session)))

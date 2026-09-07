@@ -73,8 +73,13 @@ reconciliation.  The [[file:addendum2.org][SQLite-owned query state addendum]]
 is the current authority for startup, session/catalog/checkpoint, Board restore,
 task restore, and remaining interactive-read architecture.  It removes
 whole-store Emacs mirrors and opaque catalog/checkpoint runtime projections
-instead of attempting to prewarm them in the background.  Feature 92 remains
-=In-review= and the addendum is =Planned=.
+instead of attempting to prewarm them in the background.  Its RDBMS-first path
+is implemented in the current uncommitted tree: startup is transport-only;
+Daily, provider context, persisted navigation, and Board access use bounded
+detached queries; task scheduling uses query-and-claim; and the all-domain
+nonblocking sweep plus the public graphical delay/release/failure gate pass.
+Feature 92 remains =In-review= and Addendum 2 remains ledger =In-progress=
+because the operator deferred commit and a new independent review cycle.
 
 * Behavioral goal
 

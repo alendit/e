@@ -246,11 +246,10 @@ Emacs state, where the whole mode map works verbatim (RET, g, c, o, ...)."
 (cl-defun e-task-queue-list-buffer (&key queue)
   "Open the task queue list buffer for QUEUE and return it.
 QUEUE defaults to `e-task-queue-actions-default-queue'.  When showing that
-shared default queue, rehydrate it from disk first so opening the buffer after
-a restart lists persisted tasks and re-dispatches queued work, instead of
-depending on a harness having built the task-queue layer."
+shared default queue, initialize only its process-local shell coordination;
+opening the list never reconstructs or dispatches durable SQLite rows."
   (interactive)
-  (let ((queue (or queue (e-task-queue-actions-ensure-loaded)))
+  (let ((queue (or queue (e-task-queue-actions-ensure-initialized)))
         (buffer (get-buffer-create e-task-queue-shell-buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'e-task-queue-shell-mode)

@@ -253,7 +253,13 @@
                            :tool-name "external")))
           (should (string-match-p (regexp-quote uri)
                                   (plist-get truncated :content)))
-          (should (equal (e-raw-results-read uri)
+          ;; The hook is intentionally enqueue-and-return.  Observe it only
+          ;; through this explicit test storage boundary; the queued read is
+          ;; ordered after the write by the runtime FIFO.
+          (should (equal (plist-get
+                          (e-raw-results-storage-read
+                           e-raw-results-storage uri)
+                          :content)
                          "abcdefghijklmnopqrstuvwxyz")))
       (delete-directory directory t)))))
 
@@ -283,7 +289,11 @@
                  (metadata (plist-get truncated :metadata))
                  (uri (plist-get metadata :tmp-uri)))
             (should (string-prefix-p "raw-result://" uri))
-            (should (equal (e-raw-results-read uri) content))
+            (should (equal (plist-get
+                            (e-raw-results-storage-read
+                             e-raw-results-storage uri)
+                            :content)
+                           content))
             (should-not (file-exists-p source))
             (should-not (string-match-p (regexp-quote source)
                                         (plist-get truncated :content)))))
@@ -319,7 +329,11 @@
             (should (string-prefix-p "raw-result://" uri))
             (should (string-match-p (regexp-quote uri)
                                     (plist-get truncated :content)))
-            (should (equal (e-raw-results-read uri) content))))
+            (should (equal (plist-get
+                            (e-raw-results-storage-read
+                             e-raw-results-storage uri)
+                            :content)
+                           content))))
       (when (file-exists-p source) (delete-file source))
       (delete-directory directory t)))))
 

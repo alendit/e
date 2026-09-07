@@ -265,7 +265,7 @@ OPTIONS are kind-owned creation options and DISPLAY controls presentation."
          (e-chat-open
           :harness harness
           :session-id session-id
-          :on-session-load-error
+          :on-session-read-error
           (lambda (condition)
             (e-canvas--schedule-session-recovery
              kind harness buffer session-id condition options display)))))
@@ -288,7 +288,8 @@ OPTIONS belong to KIND, and DISPLAY controls presentation."
           (e-chat-open :harness harness :session-id session-id :new-session t))
          (attachment
           (funcall (e-canvas-kind-attachment-function kind) buffer)))
-    (e-chat-session-attach-context harness session-id attachment :canvas t)
+    (e-chat-session-attach-context
+     harness session-id attachment :canvas t :current-attachments nil)
     (funcall (e-canvas-kind-initialize-session-function kind)
              harness session-id buffer options)
     (funcall (e-canvas-kind-bind-session-function kind)
@@ -352,15 +353,41 @@ owned by KIND, and DISPLAY requests that KIND present the opened session."
          (reference
           (unless force-new
             (if session-id-supplied-p
-                session-id
+              session-id
               (funcall (e-canvas-kind-session-reference-function kind)
                        harness buffer))))
-         (session (e-canvas--catalog-session harness reference))
+         (persistent-query-p
+          (and reference
+               (e-session-storage-sqlite-p
+                (e-harness-sessions harness))))
+         ;; A live chat buffer is presentation state with an immediate use:
+         ;; preserve its subscriber/composer/controller lifetime.  It is not
+         ;; a durable session replica and requires no SQLite lookup.
+         (live-chat
+          (and reference
+               (e-chat--find-session-buffer reference harness)))
+         ;; Catalog projections belong to the legacy synchronous store.  A
+         ;; v6 reference is validated by the bounded chat-view query started
+         ;; below; enumerating an in-memory catalog here would both block and
+         ;; reconstruct the file-store architecture SQLite replaced.
+         (session (unless (or live-chat persistent-query-p)
+                    (e-canvas--catalog-session harness reference)))
          (matching
           (and session
                (funcall (e-canvas-kind-session-matches-function kind)
                         session buffer))))
     (cond
+     (live-chat
+      (funcall (e-canvas-kind-bind-session-function kind)
+               harness reference buffer options)
+      (funcall (e-canvas-kind-present-session-function kind)
+               buffer live-chat display))
+     ((and reference persistent-query-p)
+      ;; Open first; the chat surface requests exact metadata, association,
+      ;; and visible messages asynchronously and reports an invalid reference
+      ;; through its existing recovery callback.
+      (e-canvas--bind-and-open-session
+       kind harness reference buffer options display))
      (matching
       (e-canvas--bind-and-open-session
        kind harness reference buffer options display))
@@ -387,10 +414,9 @@ chat buffer in a side pane."
   "Return completion label for SESSION metadata."
   (e-chat-session-choice-label session))
 
-(defun e-canvas--read-session (harness prompt)
-  "Read a HARNESS session id or a new-session choice with PROMPT."
-  (let* ((sessions (e-chat-service-root-session-list harness))
-         (labels (mapcar #'e-canvas--session-choice-label sessions))
+(defun e-canvas--read-session (sessions prompt)
+  "Read a session id or a new-session choice from detached SESSIONS."
+  (let* ((labels (mapcar #'e-canvas--session-choice-label sessions))
          (new-label "[New e session]")
          (choices (cons new-label labels))
          (selected (completing-read prompt choices nil t))
@@ -400,17 +426,38 @@ chat buffer in a side pane."
      (index (plist-get (nth index sessions) :id))
      (t (user-error "No e session selected")))))
 
-(defun e-canvas--target-session (harness)
-  "Return the most relevant HARNESS session id for an attachment command."
+(defun e-canvas--target-session (harness candidates)
+  "Return the most relevant HARNESS session id from detached CANDIDATES."
   (cond
    ((and (derived-mode-p 'e-chat-mode) e-chat-session-id)
     e-chat-session-id)
-   ((e-chat-service-root-session-list harness)
-    (or (e-canvas--read-session harness
-                                "Attach canvas context to e session: ")
+   (candidates
+    (or (e-canvas--read-session
+         (mapcar (lambda (candidate) (plist-get candidate :session)) candidates)
+         "Attach canvas context to e session: ")
         (plist-get (e-chat-create-session :harness harness) :id)))
    (t
     (plist-get (e-chat-create-session :harness harness) :id))))
+
+(defun e-canvas--attach-after-query (harness attachment canvas)
+  "Attach ATTACHMENT after a bounded session query for HARNESS settles."
+  (if (and (derived-mode-p 'e-chat-mode) e-chat-session-id)
+      (e-canvas--attach harness e-chat-session-id attachment canvas)
+    (let ((page-work (e-chat-session-candidates-start harness)))
+      (e-work-on-settle
+       page-work
+       (lambda (settled)
+         (let ((status (e-work-status settled)))
+           (if (not (eq (plist-get status :state) 'finished))
+               (message "Unable to query e sessions: %s"
+                        (e-work-error-message
+                         (or (plist-get status :error)
+                             '(e-work-cancelled "cancelled"))))
+             (e-canvas--attach
+              harness
+              (e-canvas--target-session harness (plist-get status :result))
+              attachment canvas)))))
+      page-work)))
 
 (defun e-canvas--attach (harness session-id attachment &optional canvas)
   "Attach ATTACHMENT to HARNESS SESSION-ID and optionally mark it CANVAS."
@@ -477,26 +524,18 @@ attachment."
 With prefix argument CANVAS, replace the target session's primary canvas."
   (interactive "P")
   (let* ((source (current-buffer))
-         (harness (e-canvas--default-harness))
-         (session-id (e-canvas--target-session harness)))
-    (e-canvas--attach
-     harness
-     session-id
-     (e-canvas--buffer-attachment source)
-     canvas)))
+         (harness (e-canvas--default-harness)))
+    (e-canvas--attach-after-query
+     harness (e-canvas--buffer-attachment source) canvas)))
 
 ;;;###autoload
 (defun e-canvas-attach-file (file &optional canvas)
   "Attach FILE to an e session as live context.
 With prefix argument CANVAS, replace the target session's primary canvas."
   (interactive "fAttach file to e session: \nP")
-  (let* ((harness (e-canvas--default-harness))
-         (session-id (e-canvas--target-session harness)))
-    (e-canvas--attach
-     harness
-     session-id
-     (e-canvas--file-attachment file)
-     canvas)))
+  (let ((harness (e-canvas--default-harness)))
+    (e-canvas--attach-after-query
+     harness (e-canvas--file-attachment file) canvas)))
 
 ;;;###autoload
 (defun e-canvas-shell ()

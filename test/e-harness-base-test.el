@@ -514,10 +514,17 @@
             (should (string-match-p
                      "call-before-compaction"
                      (e-harness-base-test--receipt-content projection)))
-            (should-not (string-match-p "old context"
-                                        (prin1-to-string
-                                         (e-session-messages
-                                          reopened-store session-id))))))
+            ;; Compaction does not delete durable history.  The model-facing
+            ;; projection, rather than the aggregate audit API, owns the
+            ;; accepted context boundary.
+            (should-not
+             (string-match-p
+              "old context"
+              (prin1-to-string
+               (plist-get
+                (e-session-context-lifetime-projection
+                 reopened-store session-id)
+                :durable-tail))))))
       (delete-directory directory t))))
 
 (ert-deftest e-harness-base-test-receipt-provider-skips-snapshots-and-stable-prefix ()

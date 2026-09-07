@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-session-query)
 (require 'e-session-storage-sqlite)
 
 (define-error 'e-session-persistence-unavailable
@@ -293,8 +294,25 @@ pending and suspect policy belongs to the application service."
       (e-session-storage-prepare-mutation-batch store session-id records)
     (mapcar #'copy-tree records)))
 
+(defun e-session-storage--blocking-query-delta (store session-id records)
+  "Derive RECORDS' final query row at an explicit synchronous boundary.
+
+This compatibility seam is restricted to already-blocking offline, operator,
+and test callers.  Interactive v6 code derives commands through
+`e-session-async' and never reaches this function."
+  (let ((state
+         (e-session-storage-sqlite-query-state-blocking store session-id))
+        (position 0))
+    (setq position (or (plist-get state :journal-position) 0))
+    (dolist (record records)
+      (setq position (1+ position))
+      (let ((positioned (copy-tree record t)))
+        (plist-put positioned :journal-position position)
+        (setq state (e-session-query-state-apply-record state positioned))))
+    state))
+
 (defun e-session-storage-commit-mutation (store session-id record)
-  "Commit semantic RECORD for SESSION-ID before caller publication."
+  "Commit semantic RECORD at an explicit synchronous compatibility boundary."
   (e-session-storage--profile-call
    'session.append-record
    (list :session-id session-id
@@ -302,13 +320,30 @@ pending and suspect policy belongs to the application service."
    (lambda ()
      (when (e-session-storage-persistent-p store)
        (e-session-storage--mark-checkpoint-dirty store session-id)
-       (e-session-storage-sqlite-append store session-id record)))))
+       (e-session-storage-sqlite-append
+        store session-id record
+        (e-session-storage--blocking-query-delta
+         store session-id (list record)))))))
 
 (defun e-session-storage-commit-mutation-batch (store session-id records)
-  "Commit preflighted RECORDS atomically for SESSION-ID."
+  "Commit RECORDS atomically at a synchronous compatibility boundary."
   (e-session-storage--require-sqlite store "Session mutation batch")
   (e-session-storage--mark-checkpoint-dirty store session-id)
-  (e-session-storage-sqlite-append-batch store session-id records))
+  (e-session-storage-sqlite-append-batch-with-query-delta
+   store session-id records
+   (e-session-storage--blocking-query-delta store session-id records)))
+
+(defun e-session-storage-commit-mutation-batch-with-query-delta
+    (store session-id records query-delta)
+  "Commit RECORDS and complete domain-owned QUERY-DELTA atomically.
+
+This narrow migration/application seam keeps record interpretation in the
+session domain while allowing the SQLite adapter to validate and persist the
+final current row together with the canonical journal batch."
+  (e-session-storage--require-sqlite store "Session mutation batch")
+  (e-session-storage--mark-checkpoint-dirty store session-id)
+  (e-session-storage-sqlite-append-batch-with-query-delta
+   store session-id records query-delta))
 
 (defun e-session-storage-publish-admission
     (store session-id records &optional write-index)

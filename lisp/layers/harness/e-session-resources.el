@@ -22,6 +22,8 @@
 (require 'e-resource-query)
 (require 'e-resources)
 (require 'e-session)
+(require 'e-session-async)
+(require 'e-work)
 
 (define-error 'e-session-resources-invalid-uri
   "session:// resource URI is invalid")
@@ -33,6 +35,9 @@
   "session:// session does not exist")
 (define-error 'e-session-resources-unsupported-projection
   "session:// session projection is not supported")
+(define-error 'e-session-resources-async-required
+  "Persistent session resources require asynchronous resource work"
+  'e-session-resources-unsupported-projection)
 
 (cl-defstruct (e-session-resource-engine
                (:constructor e-session-resource-engine-create))
@@ -145,8 +150,20 @@ session id as their second argument."
     (e-session-resources--require-harness harness)
     (e-harness-sessions harness)))
 
+(defun e-session-resources--persistent-e-engine-p (engine)
+  "Return non-nil when built-in ENGINE uses the asynchronous SQLite path."
+  (and (eq (plist-get (e-session-resource-engine-adapter engine) :kind) 'e)
+       (e-session-async-enabled-p (e-session-resources--e-store engine))))
+
+(defun e-session-resources--require-synchronous-engine (engine)
+  "Reject synchronous access to persistent built-in ENGINE before storage I/O."
+  (when (e-session-resources--persistent-e-engine-p engine)
+    (signal 'e-session-resources-async-required
+            (list "Use the session resource method's asynchronous work path"))))
+
 (defun e-session-resources--e-session (engine session-id)
   "Return built-in e SESSION-ID for ENGINE."
+  (e-session-resources--require-synchronous-engine engine)
   (condition-case nil
       (e-session-get (e-session-resources--e-store engine) session-id)
     (e-session-missing
@@ -155,6 +172,7 @@ session id as their second argument."
 
 (defun e-session-resources--e-session-list (engine)
   "List built-in e sessions for ENGINE."
+  (e-session-resources--require-synchronous-engine engine)
   (e-session-list (e-session-resources--e-store engine)))
 
 (defun e-session-resources--engine-list-sessions (engine)
@@ -785,6 +803,300 @@ projections."
       (list :matches (vconcat (seq-take ranked actual-limit))
             :truncated (> (length ranked) actual-limit)))))
 
+(defun e-session-resources--query-row-entry (engine row)
+  "Return a public session resource entry for detached query ROW."
+  (e-session-resources--session-entry
+   engine
+   (list :id (plist-get row :session-id)
+         :name (plist-get row :name)
+         :title (or (plist-get row :name) (plist-get row :summary))
+         :created-at (plist-get row :created-at)
+         :updated-at (plist-get row :updated-at)
+         :last-message-at (plist-get row :last-message-at)
+         :metadata (plist-get row :metadata))))
+
+(defun e-session-resources--render-query-summary (engine state)
+  "Render detached SQLite query STATE for built-in ENGINE."
+  (unless state
+    (signal 'e-session-resources-unknown-session
+            (list "Unknown persistent session")))
+  (let ((session-id (plist-get state :session-id))
+        (engine-id (e-session-resource-engine-id engine)))
+    (with-temp-buffer
+      (insert (format "# Session %s\n\nMetadata:\n" session-id))
+      (e-session-resources--insert-field "engine-id" engine-id)
+      (e-session-resources--insert-field
+       "title" (or (plist-get state :name) (plist-get state :summary)))
+      (e-session-resources--insert-field "name" (plist-get state :name))
+      (e-session-resources--insert-field "created-at" (plist-get state :created-at))
+      (e-session-resources--insert-field "updated-at" (plist-get state :updated-at))
+      (e-session-resources--insert-field
+       "last-message-at" (plist-get state :last-message-at))
+      (e-session-resources--insert-field
+       "message-count" (plist-get state :message-count))
+      (e-session-resources--insert-field
+       "project-root" (plist-get (plist-get state :metadata) :project-root))
+      (e-session-resources--insert-field
+       "harness-instance-id"
+       (plist-get (plist-get state :metadata) :harness-instance-id))
+      (insert "\nReadable subresources:\n")
+      (dolist (projection e-session-resources--projection-order)
+        (insert (format "- %s\n"
+                        (e-session-resources--projection-uri
+                         engine-id session-id projection))))
+      (buffer-string))))
+
+(defun e-session-resources--record-page-entries (page projection)
+  "Return semantic entries from detached record PAGE for PROJECTION."
+  (delq
+   nil
+   (mapcar
+    (lambda (row)
+      (let ((record (plist-get row :value)))
+        (pcase projection
+          ("messages" (plist-get record :message))
+          ("process-reports" (plist-get record :report))
+          (_ record))))
+    (plist-get page :records))))
+
+(defun e-session-resources--render-query-page (session-id projection page)
+  "Render SESSION-ID PROJECTION from detached record PAGE."
+  (let ((entries (e-session-resources--record-page-entries page projection)))
+    (if (string= projection "messages")
+        (with-temp-buffer
+          (insert (format "# Session %s messages\n\n" session-id))
+          (if entries
+              (let ((index 1))
+                (dolist (message entries)
+                  (insert (format "* Message %d\n" index))
+                  (e-session-resources--insert-field "id" (plist-get message :id))
+                  (e-session-resources--insert-field
+                   "parent-id" (plist-get message :parent-id))
+                  (e-session-resources--insert-field
+                   "turn-id" (plist-get message :turn-id))
+                  (e-session-resources--insert-field "role" (plist-get message :role))
+                  (e-session-resources--insert-field
+                   "created-at" (plist-get message :created-at))
+                  (insert "\n" (e-session-resources--message-content message) "\n\n")
+                  (setq index (1+ index))))
+            (insert "No messages.\n"))
+          (when (plist-get page :next)
+            (insert (format "\nPage continues after journal position %s.\n"
+                            (plist-get page :next))))
+          (buffer-string))
+      (let ((content
+             (e-session-resources--render-entry-list
+              (format "Session %s %s" session-id projection) entries)))
+        (if (plist-get page :next)
+            (concat content
+                    (format "\nPage continues after journal position %s.\n"
+                            (plist-get page :next)))
+          content)))))
+
+(defun e-session-resources--projection-record-type (projection)
+  "Return the relational record type used by PROJECTION."
+  (pcase projection
+    ("messages" "message")
+    ("activity" "activity-event")
+    ("events" "session-event")
+    ("compactions" "compaction")
+    ("provider-anchors" "provider-anchor")
+    ("process-reports" "process-report")
+    (_ nil)))
+
+(defun e-session-resources--async-read (engine session-id projection range)
+  "Return CHILD/TRANSFORM for persistent ENGINE leaf read."
+  (unless (member projection e-session-resources--projection-order)
+    (signal 'e-session-resources-unsupported-projection
+            (list (format "Unsupported session projection: %s" projection))))
+  (let ((store (e-session-resources--e-store engine)))
+    (if (string= projection "summary")
+        (cons
+         (e-session-async-query-state store session-id)
+         (lambda (state)
+           (e-session-resources--apply-line-range
+            (e-session-resources--render-query-summary engine state) range)))
+      (let ((record-type (e-session-resources--projection-record-type projection)))
+        (cons
+         (e-session-async-record-page
+          store session-id :limit e-session-resources-default-limit
+          :record-type record-type)
+         (lambda (page)
+           (e-session-resources--apply-line-range
+            (e-session-resources--render-query-page
+             session-id projection page)
+            range)))))))
+
+(defun e-session-resources--async-glob-sessions
+    (engine pattern limit case-sensitive sort-by sort-order created-after
+            created-before updated-after updated-before)
+  "Return CHILD/TRANSFORM for one persistent ENGINE session glob."
+  (let* ((actual-limit (e-session-resources--limit limit))
+         (child (e-session-async-query-page
+                 (e-session-resources--e-store engine)
+                 :limit (min 256 (1+ actual-limit)))))
+    (cons
+     child
+     (lambda (page)
+       (let* ((entries
+               (seq-filter
+                (lambda (entry)
+                  (e-session-resources--glob-match-p
+                   (or pattern "*") (if (null case-sensitive) t case-sensitive)
+                   (plist-get (plist-get entry :metadata) :id)
+                   (plist-get entry :name)
+                   (plist-get (plist-get entry :metadata) :title)))
+                (mapcar (lambda (row)
+                          (e-session-resources--query-row-entry engine row))
+                        (plist-get page :rows))))
+              (queried
+               (e-session-resources--apply-session-query
+                entries sort-by sort-order created-after created-before
+                updated-after updated-before))
+              (selected (seq-take queried actual-limit)))
+         (list :resources (vconcat selected)
+               :truncated (or (plist-get page :next)
+                              (> (length queried) actual-limit))))))))
+
+(defun e-session-resources--async-glob-projections
+    (engine session-id pattern limit case-sensitive sort-by sort-order
+            created-after created-before updated-after updated-before)
+  "Return CHILD/TRANSFORM for persistent ENGINE projection discovery."
+  (cons
+   (e-session-async-query-state (e-session-resources--e-store engine) session-id)
+   (lambda (state)
+     (unless state
+       (signal 'e-session-resources-unknown-session
+               (list (format "Unknown session id: %s" session-id))))
+     (let* ((actual-limit (e-session-resources--limit limit))
+            (entries
+             (seq-filter
+              (lambda (entry)
+                (e-session-resources--glob-match-p
+                 (or pattern "*") (if (null case-sensitive) t case-sensitive)
+                 (plist-get entry :name)))
+              (mapcar (lambda (projection)
+                        (e-session-resources--projection-entry
+                         engine session-id projection))
+                      e-session-resources--projection-order)))
+            (queried
+             (e-session-resources--apply-simple-query
+              entries sort-by sort-order created-after created-before
+              updated-after updated-before)))
+       (list :resources (vconcat (seq-take queried actual-limit))
+             :truncated (> (length queried) actual-limit))))))
+
+(defun e-session-resources--async-search-exact
+    (engine session-id projection query options)
+  "Return CHILD/TRANSFORM for one bounded persistent session search."
+  (let ((actual-projection (or projection "messages")))
+    (unless (member actual-projection e-session-resources--projection-order)
+      (signal 'e-session-resources-unsupported-projection
+              (list (format "Unsupported session projection: %s"
+                            actual-projection))))
+    (let ((read (e-session-resources--async-read
+                 engine session-id actual-projection nil)))
+      (cons
+       (car read)
+       (lambda (page-result)
+         (let* ((content (funcall (cdr read) page-result))
+                (uri (e-session-resources--projection-uri
+                      (e-session-resource-engine-id engine)
+                      session-id actual-projection))
+                (matches
+                 (e-session-resources--search-record
+                  uri content query options
+                  (format "%s/%s" session-id actual-projection)))
+                (limit (e-resource-pattern-search-limit
+                        (plist-get options :limit)))
+                (ranked (e-resource-pattern-rank-search-matches
+                         matches (1+ limit))))
+           (list :matches (vconcat (seq-take ranked limit))
+                 :truncated (> (length ranked) limit))))))))
+
+(defun e-session-resources--async-dispatch (harness parsed-uri operation args)
+  "Return CHILD/TRANSFORM for persistent built-in resource work, or nil."
+  (let ((segments (e-session-resources--segments parsed-uri)))
+    (pcase (list (e-operation-id-of operation) segments)
+      (`(read (,engine-id "sessions" ,session-id ,projection))
+       (let ((engine (e-session-resources--find-engine harness engine-id)))
+         (when (e-session-resources--persistent-e-engine-p engine)
+           (e-session-resources--async-read
+            engine session-id projection (car args)))))
+      (`(glob (,engine-id "sessions"))
+       (let ((engine (e-session-resources--find-engine harness engine-id)))
+         (when (e-session-resources--persistent-e-engine-p engine)
+           (apply #'e-session-resources--async-glob-sessions engine args))))
+      (`(glob (,engine-id "sessions" ,session-id))
+       (let ((engine (e-session-resources--find-engine harness engine-id)))
+         (when (e-session-resources--persistent-e-engine-p engine)
+           (apply #'e-session-resources--async-glob-projections
+                  engine session-id args))))
+      (`(search (,engine-id "sessions" ,session-id))
+       (let ((engine (e-session-resources--find-engine harness engine-id)))
+         (when (e-session-resources--persistent-e-engine-p engine)
+           (e-session-resources--async-search-exact
+            engine session-id nil (car args) (cadr args)))))
+      (`(search (,engine-id "sessions" ,session-id ,projection))
+       (let ((engine (e-session-resources--find-engine harness engine-id)))
+         (when (e-session-resources--persistent-e-engine-p engine)
+           (e-session-resources--async-search-exact
+            engine session-id projection (car args) (cadr args)))))
+      (`(search (,engine-id "sessions"))
+       (let ((engine (e-session-resources--find-engine harness engine-id)))
+         (when (e-session-resources--persistent-e-engine-p engine)
+           (signal 'e-session-resources-unsupported-projection
+                   (list "Persistent session search requires an exact session URI")))))
+      (_ nil))))
+
+(defun e-session-resources--settle-work (parent child transform)
+  "Settle PARENT from CHILD after applying detached TRANSFORM."
+  (setf (e-work-handle-cancel-function parent)
+        (lambda (_handle) (e-work-cancel child) t))
+  (e-work-on-settle
+   child
+   (lambda (settled)
+     (pcase (plist-get (e-work-status settled) :state)
+       ('finished
+        (condition-case err
+            (e-work-finish
+             parent
+             (funcall transform
+                      (plist-get (e-work-status settled) :result)))
+          (error (e-work-fail parent err))))
+       ('failed
+        (e-work-fail parent (plist-get (e-work-status settled) :error)))
+       ('cancelled (e-work-cancel parent))))))
+
+(defun e-session-resources--work-spec (harness operation)
+  "Return asynchronous session resource work for HARNESS and OPERATION."
+  (e-work-spec-create
+   :id (format "session-resource.%s" (e-operation-id-of operation))
+   :description "Run one bounded session resource query."
+   :execution 'cooperative :interactive-policy 'async
+   :owner 'session-resources
+   :runner
+   (lambda (handle arguments _context)
+     (condition-case err
+         (let* ((parsed-uri (plist-get arguments :uri))
+                (operation-arguments
+                 (plist-get arguments :operation-arguments))
+                (async
+                 (e-session-resources--async-dispatch
+                  harness parsed-uri operation operation-arguments)))
+           (if async
+               (e-session-resources--settle-work
+                handle (car async) (cdr async))
+             (e-work-finish
+              handle
+              (apply #'e-resources-call
+                     (e-harness-resources harness nil nil)
+                     operation
+                     (plist-get parsed-uri :uri)
+                     operation-arguments))))
+       (error (e-work-fail handle err)))
+     :deferred)))
+
 (cl-defun e-session-resources-register-resource-methods
     (registry &key harness &allow-other-keys)
   "Register session:// resource methods in REGISTRY."
@@ -801,6 +1113,7 @@ projections."
                            "Directory roots are glob-only and this scheme is read-only.")
              :uri-patterns '("session://<engine-id>/sessions/<session-id>/<projection>")
              :range-modes '("line")
+             :work (e-session-resources--work-spec harness e-operation-read)
              :handler (lambda (uri range)
                         (e-session-resources--read harness uri range)))
             (e-resource-method-create
@@ -815,6 +1128,7 @@ projections."
              :uri-patterns '("session://"
                              "session://<engine-id>/sessions/"
                              "session://<engine-id>/sessions/<session-id>/")
+             :work (e-session-resources--work-spec harness e-operation-glob)
              :handler (lambda (uri pattern limit case-sensitive sort-by sort-order
                                created-after created-before updated-after updated-before)
                         (e-session-resources--glob
@@ -834,6 +1148,7 @@ projections."
                              "session://<engine-id>/sessions/"
                              "session://<engine-id>/sessions/<session-id>/"
                              "session://<engine-id>/sessions/<session-id>/<projection>")
+             :work (e-session-resources--work-spec harness e-operation-search)
              :handler (lambda (uri query options)
                         (e-session-resources--search
                          harness uri query options)))))

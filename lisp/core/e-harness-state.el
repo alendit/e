@@ -224,6 +224,13 @@ change."
 (gv-define-simple-setter e-harness-provider-compaction-candidates
                          e-harness-state--set-provider-compaction-candidates)
 
+(defun e-harness-executing-session-state (harness session-id)
+  "Return detached state retained only by SESSION-ID's executing turn.
+
+This value is request-scoped coordination, not a durable session mirror."
+  (when-let* ((entry (gethash session-id (e-harness-active-turns harness))))
+    (plist-get entry :session-query-state)))
+
 (provide 'e-harness-state)
 
 ;;; e-harness-state.el ends here
