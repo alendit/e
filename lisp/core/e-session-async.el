@@ -479,16 +479,22 @@ work; it is never installed into a session aggregate or catalog."
                   (append (plist-get copy :message-path-indexes)
                           (list next-path-index))))
       ('session-info
-       (pcase (plist-get arguments :field)
-         ('metadata
-          (plist-put copy :metadata
-                     (copy-tree (plist-get arguments :value) t)))
-         ('turn-options
-          (plist-put copy :turn-options
-                     (copy-tree (plist-get arguments :value) t)))
-         ('current-branch
-         (plist-put copy :current-branch
-                     (copy-tree (plist-get arguments :value) t)))))
+       (let ((field (plist-get arguments :field)))
+         (pcase field
+           ('metadata
+            (plist-put copy :metadata
+                       (copy-tree (plist-get arguments :value) t)))
+           ((or 'config 'context-reference 'context-references
+                'capability-state)
+            (plist-put copy :metadata
+                       (e-session-query-metadata-apply-record
+                        (plist-get copy :metadata) arguments)))
+           ('turn-options
+            (plist-put copy :turn-options
+                       (copy-tree (plist-get arguments :value) t)))
+           ('current-branch
+            (plist-put copy :current-branch
+                       (copy-tree (plist-get arguments :value) t))))))
       ('context-generation
        (let* ((generation (plist-get arguments :generation))
               (record

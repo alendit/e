@@ -1343,6 +1343,18 @@ When a turn produced multiple assistant messages, return the last one."
                              (equal (plist-get message :turn-id) turn-id)))
                       (e-session-messages store session-id))))))))
 
+(defun e-harness-turn--turn-session-metadata (harness session-id)
+  "Return detached metadata for SESSION-ID's executing turn in HARNESS.
+For an asynchronous session store, metadata comes only from the bounded query
+state retained by the active turn.  In-memory stores may read their local
+session value directly."
+  (let* ((store (e-harness-sessions harness))
+         (session
+          (or (e-harness-executing-session-state harness session-id)
+              (unless (e-session-async-enabled-p store)
+                (e-session-get store session-id)))))
+    (copy-tree (plist-get session :metadata) t)))
+
 (defun e-harness-turn--run-turn-finished-hooks
     (harness session-id turn-id result &optional model-context)
   "Run `:turn-finished' hooks for HARNESS SESSION-ID TURN-ID over RESULT."
@@ -1354,6 +1366,8 @@ When a turn produced multiple assistant messages, return the last one."
          :session-id session-id
          :turn-id turn-id
          :model-context model-context
+         :session-metadata
+         (e-harness-turn--turn-session-metadata harness session-id)
          :assistant-message
          (e-harness-turn--turn-assistant-message harness session-id turn-id))))
 
@@ -1614,6 +1628,24 @@ cancellation.  SESSION-ID identifies the session."
                    (e-harness-turn--drain-pending-steering-input harness entry)
                    (e-harness-turn--schedule-queue-drain
                     harness session-id entry)))))
+            (finish-settlement-error
+             (err)
+             ;; The provider has already completed, so a terminal lifecycle
+             ;; failure is not retryable provider work.  Settle it once and
+             ;; publish the same visible failure edge as any other failed turn.
+             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+               (let ((message (e-harness-turn--backend-error-message err))
+                     (details '(:stage turn-finished-hooks)))
+                 (plist-put entry :status 'error)
+                 (plist-put entry :condition err)
+                 (plist-put entry :error message)
+                 (plist-put entry :error-details details)
+                 (e-work-fail turn-work err)
+                 (e-harness-turn--emit-turn-failed
+                  harness session-id turn-id message details)
+                 (e-harness-turn--drain-pending-steering-input harness entry)
+                 (e-harness-turn--schedule-queue-drain
+                  harness session-id entry))))
             (finish-done
              (result)
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
@@ -1624,29 +1656,31 @@ cancellation.  SESSION-ID identifies the session."
                 (plist-get entry :context)
                 (nreverse (plist-get entry :provider-anchor-candidates))
                 (plist-get entry :provider-anchor-final-request-ordinal))
-	               (let ((hooked-result
-	                      (e-harness-turn--run-turn-finished-hooks
-	                       harness session-id turn-id result
-                               (plist-get entry :context))))
-	                 (plist-put entry :result hooked-result)
-	                 (plist-put entry :status 'done)
-	                 ;; `e-loop' reports its own loop-level completion before
-	                 ;; this callback.  Do not expose that provisional edge as
-	                 ;; the harness/session terminal event: capability hooks
-	                 ;; still own settlement work at this point.  The public
-	                 ;; terminal edge is emitted here, after every hook has
-	                 ;; observed the final assistant message and recorded any
-	                 ;; durable audit metadata.
-	                 (e-harness-activity-emit-turn-event
-	                  harness session-id turn-id 'turn-finished
-	                  (list :reason (plist-get hooked-result :reason)))
-	                 (e-work-finish turn-work hooked-result)
-	                 (e-harness-turn--drain-pending-steering-input harness entry)
-	                 (e-harness-turn--schedule-queue-drain
-	                  harness session-id entry))))
-	            (start-provider
-	             (context)
-	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+               (condition-case err
+                   (let ((hooked-result
+                          (e-harness-turn--run-turn-finished-hooks
+                           harness session-id turn-id result
+                           (plist-get entry :context))))
+                     (plist-put entry :result hooked-result)
+                     (plist-put entry :status 'done)
+                     ;; `e-loop' reports its own loop-level completion before
+                     ;; this callback.  Do not expose that provisional edge as
+                     ;; the harness/session terminal event: capability hooks
+                     ;; still own settlement work at this point.  The public
+                     ;; terminal edge is emitted here, after every hook has
+                     ;; observed the final assistant message and recorded any
+                     ;; durable audit metadata.
+                     (e-harness-activity-emit-turn-event
+                      harness session-id turn-id 'turn-finished
+                      (list :reason (plist-get hooked-result :reason)))
+                     (e-work-finish turn-work hooked-result)
+                     (e-harness-turn--drain-pending-steering-input harness entry)
+                     (e-harness-turn--schedule-queue-drain
+                      harness session-id entry))
+                 (error (finish-settlement-error err)))))
+            (start-provider
+             (context)
+             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
                (plist-put entry :context context)
                (e-harness-turn-state-set-context-frame
                 entry (plist-get context :lifetime-frame))

@@ -968,3 +968,50 @@ seconds.  The complete repository suite passes 2,902 tests with 2,836 expected,
 This correction preserves the existing architecture self-check: the harness
 owns live terminal publication, SQLite owns durable history, and the only added
 process-local state is the already-created request result.
+
+* Terminal consumers receive detached session metadata (2026-09-07)
+
+The next live Daily turn completed normally, but Grimoire's post-turn commit
+hook failed with the async-store aggregate rejection.  The hook still called
+=e-chat-service-session= after provider settlement solely to rediscover the
+Canvas reference associated with the turn.  Grimoire caught and displayed the
+error, so the answer reached =done=, but the Daily file was not committed.
+
+The harness now includes a detached copy of the executing turn's bounded
+session metadata in the =:turn-finished= hook context.  Async stores source it
+only from the turn's request-scoped query state; in-memory stores may continue
+to use their local value.  Grimoire's hook consumes that context value directly
+and no longer depends on the synchronous chat-session accessor.
+
+Strengthening the public graphical test exposed a second defect before this
+could pass.  A new Daily's acknowledged =context-reference= write retired from
+the optimistic set without advancing the retained request base, because the
+in-flight projection handled whole metadata replacement but omitted the
+individual metadata mutation variants.  The session-query domain now exposes
+one pure metadata-record mapping used by both SQLite current-row derivation and
+bounded in-flight composition.  The terminal context therefore contains the
+exact =:org-canvas-ref= even when SQLite acknowledgements interleave with later
+pending writes; it is not a reconstructed session replica.
+
+An uncaught terminal-hook error now also settles the turn as one visible
+=turn-failed= event instead of leaving provider-completed work active.  A hook
+that deliberately handles its own operational failure, as the Grimoire commit
+hook does, remains free to preserve the completed turn while showing its own
+diagnostic.
+
+Evidence on the corrected tree:
+
+- the focused session-query and harness suite passes 163/163 with zero
+  unexpected results;
+- Grimoire's real commit-hook suite passes 16/16 and makes any session aggregate
+  lookup fatal;
+- the public graphical delayed Org Canvas scenario passes 1/1 in 4.624164
+  seconds and asserts the real terminal hook receives the exact Daily URI; and
+- the complete repository suite passes 2,905 tests with 2,839 expected,
+  66 explicit superseded/legacy skips, and zero unexpected in 192.724156
+  seconds.
+
+The fix adds no durable copy, acknowledgement wait, or history read.  The
+harness owns terminal lifecycle data, the query domain owns metadata mutation
+semantics, SQLite remains authoritative, and Grimoire owns the post-turn commit
+policy.

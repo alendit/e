@@ -586,6 +586,7 @@ aggregate or mirror."
          unrelated-target unrelated-input unrelated-chat unrelated-id heartbeat-timer
          first-response second-response
          (heartbeat 0)
+         terminal-hook-metadata
          (e-org-canvas-input-auto-close-delay nil)
          synchronous-operation synchronous-backtrace synchronous-read-backtrace
          original-session-get original-ensure-loaded
@@ -632,6 +633,8 @@ aggregate or mirror."
               :description "Record one terminal audit without a history read."
               :handler
               (lambda (value context)
+                (setq terminal-hook-metadata
+                      (copy-tree (plist-get context :session-metadata) t))
                 (e-harness-record-hook-audit
                  (plist-get context :harness)
                  (plist-get context :session-id)
@@ -917,6 +920,17 @@ aggregate or mirror."
                       (equal (e-chat-surface-status) "done"))
                     (= (length terminal-events) 1))))
            2.0 "first Org Canvas turn reaches public terminal state")
+          (let ((expected-canvas-uri
+                 (concat "file://"
+                         (expand-file-name (buffer-file-name target)))))
+            (unless
+                (equal
+                 (plist-get
+                  (plist-get terminal-hook-metadata :org-canvas-ref) :uri)
+                 expected-canvas-uri)
+              (ert-fail
+               (format "Terminal hook metadata lacks Canvas URI: metadata=%S expected=%S"
+                       terminal-hook-metadata expected-canvas-uri))))
           ;; Each Org Canvas prompt is a public one-shot composer.  Reopen the
           ;; Daily prompt for the already-bound session instead of mutating the
           ;; submitted result pane back into a composer.

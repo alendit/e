@@ -538,6 +538,18 @@ session's parent-chain head, matching aggregate replay semantics."
               (list "Session metadata exceeds query bounds" record)))
     result))
 
+(defun e-session-query-metadata-apply-record (metadata record)
+  "Return METADATA after applying one session-info RECORD.
+This pure domain mapping is shared by complete current-row derivation and by
+bounded in-flight context composition."
+  (let ((field (plist-get record :field)))
+    (unless (memq field '(metadata config context-reference
+                          context-references capability-state))
+      (signal 'e-session-query-record-error
+              (list "Record is not a metadata session-info mutation" record)))
+    (e-session-query--metadata-merge
+     metadata field (plist-get record :value) record)))
+
 (defun e-session-query--new-state (record)
   "Build the initial query row from a canonical session RECORD."
   (let* ((metadata (e-session-query--copy-value
@@ -751,9 +763,8 @@ when the application command emits no durable record."
                    ((or 'metadata 'config 'context-reference
                         'context-references 'capability-state)
                     (plist-put next :metadata
-                               (e-session-query--metadata-merge
-                                (plist-get next :metadata) field
-                                (plist-get record :value) record)))
+                               (e-session-query-metadata-apply-record
+                                (plist-get next :metadata) record)))
                    (_ (signal 'e-session-query-record-error
                               (list "Unsupported session-info field" field))))
                (dolist (key '(:name :metadata :turn-options))

@@ -193,6 +193,54 @@
                     (e-session-async--state-context-query-cuts state))
                    0))))))
 
+(ert-deftest e-session-async-query-test-inflight-base-keeps-settled-metadata ()
+  "A retained new-session base advances through acknowledged metadata writes."
+  (let* ((store (e-session-store-create))
+         (state (e-session-async--state store))
+         (metadata-command
+          (e-session-aggregate-command-prepare
+           'session-info "daily"
+           '(:field context-reference :key :org-canvas-ref
+             :value (:uri "file:///tmp/daily.org"))))
+         (message-command
+          (e-session-aggregate-command-prepare
+           'append-message "daily"
+           '(:message (:role user :content "prompt"))))
+         (metadata-operation
+          (e-session-async--operation-create
+           :state state :session-id "daily" :command metadata-command))
+         (message-operation
+          (e-session-async--operation-create
+           :state state :session-id "daily" :command message-command)))
+    (unwind-protect
+        (progn
+          (e-session-async-prime-new-context-path
+           store '(:session-id "daily" :metadata (:project-root "/tmp/")
+                   :messages nil))
+          (e-session-async--start-work "daily" metadata-operation)
+          (e-session-async--start-work "daily" message-operation)
+          (e-session-async--add-pending metadata-operation)
+          (e-session-async--add-pending message-operation)
+          ;; The metadata write acknowledges while the prompt remains
+          ;; unsettled, exactly as in a new public Canvas turn.
+          (e-session-async--relational-write-settled
+           metadata-operation '(:accepted t) nil)
+          (let* ((base-work
+                  (e-session-async-context-path-base store "daily"))
+                 (effective
+                  (e-session-async-context-path-overlay-pending
+                   store "daily"
+                   (plist-get (e-work-status base-work) :result))))
+            (should
+             (equal
+              (plist-get (plist-get effective :metadata) :org-canvas-ref)
+              '(:uri "file:///tmp/daily.org")))
+            (should (equal (plist-get (plist-get effective :metadata)
+                                      :project-root)
+                           "/tmp/"))
+            (should (= (length (plist-get effective :messages)) 1))))
+      (e-session-async-reset store))))
+
 (ert-deftest e-session-async-query-test-cancellation-uses-opaque-port ()
   "Cancelling a read delegates to the storage port and settles the work."
   (e-session-async-query-test--with-held-reads (calls)

@@ -56,6 +56,86 @@
     (should (equal (plist-get (plist-get seen :assistant-message) :content)
                    assistant-text))))
 
+(ert-deftest e-harness-test-async-turn-finished-hook-receives-detached-metadata ()
+  "An async terminal hook consumes bounded turn state, never a session mirror."
+  (let* ((directory (make-temp-file "e-harness-terminal-metadata-" t))
+         (metadata '(:org-canvas-ref
+                     (:uri "file:///tmp/daily.org" :mode org)))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (seen nil)
+         (capability
+          (e-capability-create
+           :id 'test-terminal-metadata
+           :hooks
+           (list
+            (e-hook-create
+             :id "50-capture-terminal-metadata"
+             :point :turn-finished
+             :handler
+             (lambda (value context)
+               (setq seen (copy-tree
+                           (plist-get context :session-metadata) t))
+               value)))))
+         (harness
+          (e-harness-create
+           :backend
+           (e-backend-fake-create
+            :items '((:type assistant-message :content "answer")
+                     (:type done :reason stop)))
+           :sessions store)))
+    (unwind-protect
+        (progn
+          (e-harness-activate-capability harness capability)
+          (e-harness-create-session harness :id "session-1" :metadata metadata)
+          (cl-letf (((symbol-function 'e-session-get)
+                     (lambda (&rest arguments)
+                       (ert-fail
+                        (format "terminal hook read session aggregate: %S"
+                                arguments)))))
+            (e-harness-test-prompt-batch harness "session-1" "question"))
+          (should (equal seen metadata)))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (delete-directory directory t))))
+
+(ert-deftest e-harness-test-turn-finished-hook-error-settles-visible-failure ()
+  "An unexpected terminal hook error cannot strand a completed provider turn."
+  (let* ((capability
+          (e-capability-create
+           :id 'test-terminal-error
+           :hooks
+           (list
+            (e-hook-create
+             :id "50-fail-terminal-hook"
+             :point :turn-finished
+             :handler
+             (lambda (_value _context)
+               (error "terminal hook failed"))))))
+         (harness
+          (e-harness-create
+           :backend
+           (e-backend-fake-create
+            :items '((:type assistant-message :content "answer")
+                     (:type done :reason stop)))))
+         events)
+    (e-harness-activate-capability harness capability)
+    (e-harness-activity-subscribe
+     harness (lambda (event) (push (copy-tree event t) events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-test-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
+      (should (eq (plist-get settled :status) 'error))
+      (should (string-match-p "terminal hook failed"
+                              (plist-get settled :error)))
+      (should (equal (plist-get settled :error-details)
+                     '(:stage turn-finished-hooks))))
+    (should-not (plist-get (e-harness-state harness "session-1")
+                           :active-turn))
+    (should (= (cl-count 'turn-failed events
+                         :key (lambda (event) (plist-get event :type)))
+               1))
+    (should-not (cl-find 'turn-finished events
+                         :key (lambda (event) (plist-get event :type))))))
+
 (ert-deftest e-harness-test-async-message-append-publishes-semantic-message ()
   "An accepted async append never exposes its work handle as a message."
   (let* ((harness (e-harness-create))

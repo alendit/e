@@ -99,6 +99,18 @@ event after the real =run_elisp= continuation.  Focused harness/hook tests pass
 complete suite passes 2,902/2,902 with 2,836 expected, 66 explicit legacy skips,
 and zero unexpected.
 
+The following live turn reached =done= but exposed a separate Grimoire
+post-turn commit hook that still rediscovered its Canvas through the obsolete
+session aggregate accessor.  Terminal hooks now receive detached bounded
+session metadata from the executing turn, and Grimoire commits from that value.
+The strengthened graphical gate initially caught a real projection defect: an
+acknowledged =context-reference= could disappear from the new-session request
+base.  Current-row and in-flight metadata composition now share one domain
+mapping, and the gate asserts the exact Daily URI delivered to the real hook.
+Focused e tests pass 163/163, Grimoire commit-hook tests pass 16/16, the public
+selector passes 1/1 in 4.624164 seconds, and the complete e suite passes 2,905
+tests with 2,839 expected, 66 explicit legacy skips, and zero unexpected.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |

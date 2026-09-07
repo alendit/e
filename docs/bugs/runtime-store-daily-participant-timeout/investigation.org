@@ -1054,3 +1054,33 @@ Evidence on the corrected tree:
 The live editor and canonical database were inspected read-only and were not
 modified.  Because the fix changes core harness code, a full Emacs restart is
 required to use it.
+
+* Grimoire commit hook retained an aggregate read (2026-09-07)
+
+The next live counterexample was not a delayed turn: the assistant response and
+public turn both reached =done=.  Grimoire then reported that its post-turn
+commit hook had attempted the obsolete durable-session aggregate read.  The
+hook caught the exception and surfaced it in the echo area, but consequently
+skipped the Git commit for that Daily update.
+
+The caller needed only the =:org-canvas-ref= already associated with the
+executing turn.  The harness now passes a detached copy of bounded turn metadata
+to =:turn-finished= hooks, and Grimoire consumes it without querying SQLite or
+waiting for persistence.  Unexpected hook exceptions that are not handled by a
+consumer now produce one visible =turn-failed= settlement instead of stranding
+completed work.
+
+The first strengthened graphical run failed for the correct reason: although
+the hook context existed, its metadata contained only =:project-root=.  The
+new-session in-flight projection dropped acknowledged =context-reference=
+mutations from its request base.  Current-row derivation and in-flight
+composition now share the same domain-owned metadata-record mapper, preserving
+the Daily URI across acknowledgement interleavings without creating a session
+mirror.
+
+The resulting evidence is 163/163 focused e tests, 16/16 real Grimoire
+commit-hook tests, the public delayed Org Canvas selector 1/1 in 4.624164
+seconds with an exact terminal Daily-URI assertion, and the full repository
+suite 2,905 tests with 2,839 expected, 66 explicit legacy skips, and zero
+unexpected in 192.724156 seconds.  All fixtures were disposable; the running
+editor, canonical database, and user's Daily working tree were not changed.
