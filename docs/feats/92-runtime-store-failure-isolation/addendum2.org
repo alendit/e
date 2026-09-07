@@ -934,3 +934,37 @@ Evidence on the corrected tree:
 All evidence uses disposable stores and isolated Emacs daemons.  The running
 editor and canonical database are not development fixtures; these core changes
 require a full Emacs restart to take effect.
+
+* Terminal publication must not rediscover its admitted audit (2026-09-07)
+
+The live terminal-hook counterexample establishes one more application-service
+rule: a persistence operation that creates a live fact must return that
+request-local fact to its caller.  The caller must not query the durable
+aggregate merely to rediscover the value it just admitted.
+
+Before this correction, =e-harness-record-hook-audit= enqueued and published a
+=hook-audit= event, then synchronously reconstructed the session activity list
+to return its last element.  Async SQLite correctly rejected that aggregate
+read.  The hook error then prevented the separate =turn-finished= publication,
+leaving a fully committed assistant response displayed as permanently running.
+
+=e-harness-activity-emit-turn-event= now returns the exact event it publishes,
+and =e-harness-record-hook-audit= returns that event without storage access.
+SQLite remains authoritative for durable audit history; the returned value is
+only the bounded result of the current application-service request.
+
+The public acceptance gate now includes a configured terminal audit hook and
+does not accept rendered text alone.  After the real provider -> =run_elisp= ->
+provider continuation, it requires no active Board turn, transcript status
+=done=, and exactly one terminal assistant output event.  This closes the test
+gap without adding a mirror, queue, acknowledgement wait, or reconciliation
+path.
+
+Focused harness/hook tests pass 67/67, including an asynchronous SQLite test
+that makes aggregate access fatal.  The complete public Org Canvas delayed
+admission/release/failure/healthy-sibling selector passes 1/1 in 4.508822
+seconds.  The complete repository suite passes 2,902 tests with 2,836 expected,
+66 explicit superseded/legacy skips, and zero unexpected in 193.776841 seconds.
+This correction preserves the existing architecture self-check: the harness
+owns live terminal publication, SQLite owns durable history, and the only added
+process-local state is the already-created request result.

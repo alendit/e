@@ -615,6 +615,32 @@ aggregate or mirror."
           ;; Only the network adapter is replaced by the controllable stream.
           (e-default-chat-sync-harness-layers
            harness nil canvas-directory)
+          ;; The live regression occurred in a configured turn-finished hook:
+          ;; its hook-audit append succeeded, then the return path reread the
+          ;; complete durable activity aggregate and prevented turn-finished
+          ;; publication.  Keep this explicit even when the disposable default
+          ;; layer set does not activate the user's Bayesian capability.
+          (e-harness-activate-capability
+           harness
+           (e-capability-create
+            :id 'e2e-terminal-audit
+            :hooks
+            (list
+             (e-hook-create
+              :id "99-e2e-terminal-audit"
+              :point :turn-finished
+              :description "Record one terminal audit without a history read."
+              :handler
+              (lambda (value context)
+                (e-harness-record-hook-audit
+                 (plist-get context :harness)
+                 (plist-get context :session-id)
+                 (plist-get context :turn-id)
+                 :owner 'e2e-terminal-audit
+                 :hook-id "99-e2e-terminal-audit"
+                 :outcome 'checked
+                 :summary "Terminal audit recorded")
+                value)))))
           (setq original-session-get (symbol-function 'e-session-get))
           (setq original-ensure-loaded
                 (symbol-function 'e-session--ensure-loaded))
@@ -874,6 +900,23 @@ aggregate or mirror."
              (with-current-buffer input
                (string-match-p (regexp-quote first-response) (buffer-string))))
            2.0 "first data-dependent Org Canvas response")
+          (e-graphical-test-wait-until
+           (lambda ()
+             (let ((terminal-events
+                    (seq-filter
+                     (lambda (event)
+                       (let ((message
+                              (plist-get (plist-get event :payload) :message)))
+                         (and (eq (plist-get event :type) 'message-added)
+                              (equal (plist-get event :session-id) session-id)
+                              (eq (plist-get message :role) 'assistant)
+                              (plist-get message :terminal-output))))
+                     service-events)))
+               (and (not (e-chat-service-active-turn-p harness session-id))
+                    (with-current-buffer backing-chat
+                      (equal (e-chat-surface-status) "done"))
+                    (= (length terminal-events) 1))))
+           2.0 "first Org Canvas turn reaches public terminal state")
           ;; Each Org Canvas prompt is a public one-shot composer.  Reopen the
           ;; Daily prompt for the already-bound session instead of mutating the
           ;; submitted result pane back into a composer.

@@ -89,6 +89,16 @@ the public delayed Org Canvas tool/release/failure/sibling selector 1/1 in
 5.252609 seconds.  The complete repository suite passes all 2,901 tests with
 2,835 expected results, zero unexpected, and 66 explicit legacy skips.
 
+A further live turn exposed a terminal-hook aggregate reread after the final
+assistant row had already committed.  The hook audit now returns the live event
+it just publishes instead of reconstructing durable activity history.  The
+public Org Canvas gate activates that terminal hook and requires no active
+Board turn, presentation status =done=, and exactly one terminal assistant
+event after the real =run_elisp= continuation.  Focused harness/hook tests pass
+67/67 and the corrected graphical selector passes 1/1 in 4.508822 seconds.  The
+complete suite passes 2,902/2,902 with 2,836 expected, 66 explicit legacy skips,
+and zero unexpected.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |

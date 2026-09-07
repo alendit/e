@@ -626,16 +626,20 @@ available."
                      (or (e-session-async-enabled-p store)
                          (ignore-errors (e-session-get store session-id))))
             (e-harness-activity--append-durable-activity-event
-             harness session-id turn-id type payload))))
-    (e-harness-activity--emit
-     harness
-     (e-events-make :type type
-                    :session-id session-id
-                    :turn-id turn-id
-                    :payload payload
-                    :activity-entry-id (plist-get activity-entry :id)
-                    :board-activity-sequence
-                    (plist-get activity-entry :board-activity-sequence)))))
+             harness session-id turn-id type payload)))
+         (event
+          (e-events-make :type type
+                         :session-id session-id
+                         :turn-id turn-id
+                         :payload payload
+                         :activity-entry-id (plist-get activity-entry :id)
+                         :board-activity-sequence
+                         (plist-get activity-entry :board-activity-sequence))))
+    (e-harness-activity--emit harness event)
+    ;; The request-local event is the publication result.  Async persistence
+    ;; may not have a journal identity yet, and callers must not reread the
+    ;; session aggregate merely to manufacture one.
+    event))
 
 (provide 'e-harness-activity)
 

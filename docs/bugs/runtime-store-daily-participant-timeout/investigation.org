@@ -1009,3 +1009,48 @@ with the real tool continuation.  The complete suite passes 2,901 tests with
 2,835 expected results, zero unexpected, and 66 explicit superseded/legacy
 skips in 195.929524 seconds.  The isolated test environment did not touch the
 running Emacs or canonical database.
+
+* Terminal hook audit suppressed successful settlement (2026-09-07)
+
+A subsequent live turn disproved the terminal-state portion of that evidence.
+The provider and tool lifecycle had completed, and SQLite contained the final
+assistant row, =context-frame-consumed=, and =hook-audit=.  It did not contain
+=turn-finished=.  The public transcript therefore showed the completed answer
+but remained in =reasoning= indefinitely.
+
+The failure was in =e-harness-record-hook-audit=.  After
+=e-harness-activity-emit-turn-event= had successfully enqueued and published
+the audit, the function synchronously called
+=e-harness-session-activity-events= and selected the last record only to return
+the event it had just created.  That full aggregate read is unavailable for an
+asynchronous SQLite session.  Its error escaped the =:turn-finished= hook and
+prevented the harness from publishing the terminal event.
+
+The correction makes the activity publisher return its request-local live
+event and makes the hook-audit operation return that value directly.  It does
+not query SQLite, reconstruct an aggregate, or wait for the audit commit.  The
+event remains durable through the already-enqueued append, while the live turn
+can continue to terminal publication immediately.
+
+The earlier graphical gate missed this because its disposable default layer
+graph did not activate a terminal hook that records an audit, and the test
+stopped after rendering the assistant output.  The corrected public Org Canvas
+scenario explicitly activates that hook and requires all three public terminal
+witnesses: no active Board turn, transcript status =done=, and exactly one
+terminal assistant =message-added= event.  It still exercises a real
+=run_elisp= continuation, delayed SQLite admission, three independent
+heartbeats, owner-local failure, and healthy-sibling persistence/readback.
+
+Evidence on the corrected tree:
+
+- the focused harness/hook suites pass 67/67 with zero unexpected, including
+  an asynchronous SQLite regression that fails on any aggregate reread;
+- the public graphical delayed Org Canvas scenario passes 1/1 with zero
+  unexpected in 4.508822 seconds; and
+- the complete repository suite passes 2,902 tests with 2,836 expected,
+  66 explicit superseded/legacy skips, and zero unexpected in 193.776841
+  seconds.
+
+The live editor and canonical database were inspected read-only and were not
+modified.  Because the fix changes core harness code, a full Emacs restart is
+required to use it.

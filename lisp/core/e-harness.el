@@ -290,8 +290,11 @@ all ordinary replies."
                        :summary summary
                        :pending-summary pending-summary
                        :details details)))
-    (e-harness-activity-emit-turn-event harness session-id turn-id 'hook-audit payload)
-    (car (last (e-harness-session-activity-events harness session-id)))))
+    ;; Publication already owns the complete live event.  Returning it keeps
+    ;; turn-finished hooks nonblocking and avoids reconstructing durable
+    ;; activity history just to rediscover the record admitted above.
+    (e-harness-activity-emit-turn-event
+     harness session-id turn-id 'hook-audit payload)))
 
 (defun e-harness-turn-hook-audits (harness session-id turn-id &optional owner)
   "Return durable hook-audit records for TURN-ID, optionally filtered by OWNER."

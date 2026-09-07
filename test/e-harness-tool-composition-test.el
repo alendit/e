@@ -63,6 +63,36 @@
       (ignore-errors (e-session-sqlite-store-close store))
       (delete-directory directory t))))
 
+(ert-deftest e-harness-test-async-hook-audit-returns-published-event-without-history-read ()
+  "An async hook audit returns its live event without rereading the aggregate."
+  (let* ((directory (make-temp-file "e-harness-hook-audit-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         events)
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (e-harness-activity-subscribe
+           harness (lambda (event) (push event events))
+           :session-id "session-1")
+          (cl-letf (((symbol-function 'e-harness-session-activity-events)
+                     (lambda (&rest _)
+                       (ert-fail "async hook audit reread the session aggregate"))))
+            (let ((event
+                   (e-harness-record-hook-audit
+                    harness "session-1" "turn-1"
+                    :owner 'test-terminal-order
+                    :hook-id "50-record-terminal-order"
+                    :outcome 'checked
+                    :summary "Checked before settlement")))
+              (should (eq (plist-get event :type) 'hook-audit))
+              (should (equal (plist-get event :session-id) "session-1"))
+              (should (eq event (car events))))))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (delete-directory directory t))))
+
 (ert-deftest e-harness-test-abort-cancels-active-provider-request ()
   "Aborting an active async provider call cancels its request handle."
   (let* ((cancelled nil)
