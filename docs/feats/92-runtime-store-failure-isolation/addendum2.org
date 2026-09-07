@@ -1015,3 +1015,35 @@ The fix adds no durable copy, acknowledgement wait, or history read.  The
 harness owns terminal lifecycle data, the query domain owns metadata mutation
 semantics, SQLite remains authoritative, and Grimoire owns the post-turn commit
 policy.
+
+* Message content follows consumer-shaped bounds (2026-09-07)
+
+A live follow-up prompt failed before provider dispatch with =Session query
+string exceeds scalar bound= after an ordinary tool result exceeded 4 KiB.
+The durable message was valid.  The worker's visible-window and selected-path
+queries had already charged the decoded message against their aggregate byte
+budgets, but then passed it through the current-row scalar copier.  That second
+operation incorrectly applied the 4 KiB identity/metadata limit to message
+content.
+
+The worker now detaches message bodies and selected context records without
+applying the query-row scalar ABI.  It still enforces the existing
+consumer-shaped limits before copying: 1 MiB for a visible message page and
+8 MiB for one provider context path.  Current-row scalars, metadata, routing
+policy, and turn options retain their narrower validation.  This is a boundary
+correction, not an increase to another arbitrary per-message limit.
+
+A worker regression first reproduced the failure with one 9 KiB tool-result
+message and now proves that both the visible-window and selected-context
+queries return it exactly.  The public graphical Daily scenario now produces
+the same 9 KiB =run_elisp= result, verifies that the immediate continuation
+receives it, verifies that lifetime curation removes it, and then opens and
+submits a second Daily prompt successfully from SQLite.  The selector passes
+1/1 in 4.280739 seconds.  The related worker/query/harness/context suites pass
+133/133 with zero unexpected results.  The complete repository suite passes
+2,906 tests with 2,840 expected, 66 explicit superseded/legacy skips, and zero
+unexpected in 193.909785 seconds.
+
+SQLite remains the durable authority, the worker owns query byte budgets, and
+Emacs retains only the detached content selected for the current request.  No
+session aggregate, retry loop, acknowledgement wait, or new cache was added.

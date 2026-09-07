@@ -111,6 +111,17 @@ Focused e tests pass 163/163, Grimoire commit-hook tests pass 16/16, the public
 selector passes 1/1 in 4.624164 seconds, and the complete e suite passes 2,905
 tests with 2,839 expected, 66 explicit legacy skips, and zero unexpected.
 
+A later follow-up prompt exposed a misapplied 4 KiB query-row scalar bound on
+ordinary tool-result content.  Visible-message and selected-context queries now
+apply their existing consumer byte budgets—1 MiB and 8 MiB respectively—when
+detaching message bodies, while current-row metadata and identity scalars keep
+their narrow validation.  A 9 KiB worker regression passes on both read paths;
+the public graphical Daily gate carries the same result through the real tool
+continuation, curates it, and starts the next prompt successfully.  Focused
+tests pass 133/133, the graphical selector passes 1/1 in 4.280739 seconds, and
+the complete suite passes 2,906 tests with 2,840 expected, 66 explicit legacy
+skips, and zero unexpected.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |

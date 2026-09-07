@@ -403,6 +403,49 @@
         (should (= (length messages) 2))
         (should-not (plist-member page :records))))))
 
+(ert-deftest e-runtime-store-session-worker-content-uses-consumer-byte-bounds ()
+  "Message content is bounded by its query, not the scalar-row ABI."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let* ((session-id "large-content")
+           (root-id "large-content-root")
+           (message-id "large-content-message")
+           (content (concat (make-string 9000 ?x) "-tool-result"))
+           (state (e-runtime-store-session-worker-test--state session-id)))
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id session-id
+             :record (list :type "session" :session-id session-id
+                           :id root-id :timestamp "2026-09-06T00:00:00Z")
+             :query-delta state))
+      (setq state (copy-tree state))
+      (plist-put state :journal-position 2)
+      (plist-put state :updated-at "2026-09-06T00:00:01Z")
+      (plist-put state :last-message-at "2026-09-06T00:00:01Z")
+      (plist-put state :message-count 1)
+      (plist-put state :current-head-id message-id)
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id session-id
+             :record (list :type "message" :session-id session-id
+                           :id message-id :parent-id root-id
+                           :timestamp "2026-09-06T00:00:01Z"
+                           :message (list :id message-id :role 'tool-result
+                                          :content content))
+             :query-delta state))
+      (let* ((visible
+              (e-runtime-store-call
+               runtime 'read
+               (list :op 'session-visible-message-page
+                     :session-id session-id :limit 1)))
+             (context
+              (e-runtime-store-call
+               runtime 'read
+               (list :op 'session-context-path :session-id session-id))))
+        (should (equal (plist-get (car (plist-get visible :messages)) :content)
+                       content))
+        (should (equal (plist-get (car (plist-get context :messages)) :content)
+                       content))))))
+
 (ert-deftest e-runtime-store-session-worker-page-rejects-unusable-sort-timestamp ()
   "A corrupted current row cannot produce a cursor with a nil sort field."
   (e-runtime-store-session-worker-test--with-runtime (runtime directory)

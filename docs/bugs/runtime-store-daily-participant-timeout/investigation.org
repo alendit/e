@@ -1084,3 +1084,28 @@ seconds with an exact terminal Daily-URI assertion, and the full repository
 suite 2,905 tests with 2,839 expected, 66 explicit legacy skips, and zero
 unexpected in 192.724156 seconds.  All fixtures were disposable; the running
 editor, canonical database, and user's Daily working tree were not changed.
+
+* Current-row scalar limit rejected ordinary tool content (2026-09-07)
+
+The next live failure was a request-local read failure, not SQLite corruption
+or delayed admission.  A prior tool-result message contained more than 4 KiB
+in one string.  The selected-context query correctly charged that message
+against its 8 MiB request budget, then incorrectly reused the current-row
+scalar copier, which rejected the message at 4 KiB before the provider could
+start the follow-up turn.  The visible-message query had the same defect.
+
+Message content is not a query-row scalar.  Both worker queries now detach
+already-decoded content after enforcing their own aggregate byte budgets:
+1 MiB for the visible window and 8 MiB for provider context.  The 4 KiB limit
+continues to protect identities, summary columns, metadata scalars, and query
+filters.
+
+A disposable worker test reproduces and fixes both read paths with a 9 KiB
+tool result.  The public graphical Daily test now exercises the real
+provider/tool/continuation lifecycle with that result, confirms its subsequent
+curation, and successfully starts a second prompt from SQLite.  The focused
+suite passes 133/133, and the graphical selector passes 1/1 in 4.280739
+seconds.  The complete repository suite passes 2,906 tests with 2,840 expected,
+66 explicit legacy skips, and zero unexpected in 193.909785 seconds.  The
+bounded live probe confirmed the reported session was settled as =error=; no
+live state or canonical database was modified.

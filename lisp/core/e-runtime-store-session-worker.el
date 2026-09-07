@@ -65,6 +65,13 @@
   "Return INDEX from SQLite ROW across supported Emacs return shapes."
   (if (vectorp row) (aref row index) (nth index row)))
 
+(defun e-runtime-store-session-worker--detach-query-content (value)
+  "Return a detached copy of decoded consumer content VALUE.
+Callers charge VALUE against their consumer-shaped byte budget before calling
+this function.  Query-row scalar limits do not apply to message bodies or
+selected context records."
+  (copy-tree value t))
+
 (defun e-runtime-store-session-worker--proper-plist-p (value)
   "Return non-nil when VALUE is a proper keyword plist with unique keys."
   (and (proper-list-p value)
@@ -1009,7 +1016,8 @@ returned in presentation order (oldest to newest within the window)."
             (e-runtime-store-session-worker--error
              "Session visible message exceeds page byte bound" message-bytes))
           (setq bytes (+ bytes message-bytes))
-          (push (e-session-query--copy-value message) messages))))
+          (push (e-runtime-store-session-worker--detach-query-content message)
+                messages))))
     (list :session-id session-id
           ;; SQL visits newest first; PUSH restores presentation order, so do
           ;; not reverse this list a second time.
@@ -1164,7 +1172,9 @@ unselected branch rows and unrelated journal families are never returned."
                  session-id
                  e-runtime-store-session-worker-context-path-byte-limit))
               (setq bytes (+ bytes message-bytes))
-              (push (e-session-query--copy-value message) messages)
+              (push (e-runtime-store-session-worker--detach-query-content
+                     message)
+                    messages)
               (push path-index message-path-indexes)))
           (when (and inside
                      (member record-type
@@ -1184,7 +1194,9 @@ unselected branch rows and unrelated journal families are never returned."
               (push
                (append
                 (list :path-index path-index :record-type record-type
-                      :record (e-session-query--copy-value record))
+                      :record
+                      (e-runtime-store-session-worker--detach-query-content
+                       record))
                 (when (equal record-type "context-generation")
                   (let* ((context-record (plist-get record :context-record))
                          (covered

@@ -588,6 +588,10 @@ aggregate or mirror."
          (heartbeat 0)
          terminal-hook-metadata
          (e-org-canvas-input-auto-close-delay nil)
+         ;; The regression needs an ordinary tool result larger than the
+         ;; query-row scalar ABI.  The tool's own output policy is independent
+         ;; of the session context query's aggregate byte budget.
+         (e-emacs-tools-run-elisp-string-max-bytes 12000)
          synchronous-operation synchronous-backtrace synchronous-read-backtrace
          original-session-get original-ensure-loaded
          service-events service-subscription)
@@ -862,7 +866,7 @@ aggregate or mirror."
                        :id "daily-run-elisp"
                        :name "run_elisp"
                        :arguments (:stated_purpose "Verify a harmless value."
-                                   :code "(+ 20 22)"))
+                                   :code "(concat (make-string 9000 ?x) \"-daily-large-tool-result\")"))
              0.02)
             (e-graphical-test-stream-finish stream 0.03 'tool-use)
             (e-graphical-test-wait-until
@@ -882,7 +886,7 @@ aggregate or mirror."
                    (cadr (e-graphical-test-stream-requests stream))
                    :messages))))
             (should (string-match-p "daily-run-elisp" wire))
-            (should (string-match-p "42" wire)))
+            (should (string-match-p "daily-large-tool-result" wire)))
           (e-graphical-test-stream-emit
            stream (list :type 'assistant-message :content first-response)
            0.01)
