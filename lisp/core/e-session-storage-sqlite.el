@@ -69,6 +69,12 @@
        (signal 'e-session-storage-error
                (list "Invalid session query delta" (car err))))))
   (pcase (plist-get body :op)
+    ('session-command
+     ;; The semantic command has already passed the domain's practical
+     ;; preflight.  Bound the complete physical request before admission; the
+     ;; worker will derive its record and query row inside SQLite's transaction.
+     (e-runtime-store-codec-measure-bounded
+      body e-session-storage-batch-byte-limit))
     ((or 'session-append 'session-append-with-tool-transition)
      (e-runtime-store-codec-measure-bounded
       (plist-get body :record) e-session-storage-record-byte-limit))

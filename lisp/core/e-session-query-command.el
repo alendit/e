@@ -22,6 +22,77 @@
   "Invalid relational session command"
   'e-session-error)
 
+(defconst e-session-query-command--wire-keys
+  '(:tag :session-id :arguments :request-id :delta-id :timestamp)
+  "Exact fields carried by one sealed relational command.")
+
+(defun e-session-query-command-to-wire (command)
+  "Return a detached protocol value for sealed COMMAND."
+  (unless (e-session-aggregate-command-p command)
+    (signal 'wrong-type-argument
+            (list 'e-session-aggregate-command-p command)))
+  (let* ((tag (e-session-aggregate-command-tag command))
+         (arguments
+          (copy-tree (e-session-aggregate-command-arguments command) t)))
+    ;; Runtime structs are useful request-local values but are not protocol
+    ;; data.  Normalize the one command field whose public facade accepts a
+    ;; struct before handing the sealed command to the storage adapter.
+    (when (and (eq tag 'context-generation)
+               (e-context-lifetime-generation-p
+                (plist-get arguments :generation)))
+      (setq arguments
+            (plist-put arguments :generation
+                       (e-context-lifetime-generation-record
+                        (plist-get arguments :generation)))))
+    (list :tag tag
+          :session-id
+          (copy-sequence (e-session-aggregate-command-session-id command))
+          :arguments arguments
+          :request-id
+          (copy-sequence (e-session-aggregate-command-request-id command))
+          :delta-id
+          (copy-sequence (e-session-aggregate-command-delta-id command))
+          :timestamp
+          (copy-sequence (e-session-aggregate-command-timestamp command)))))
+
+(defun e-session-query-command-from-wire (value)
+  "Validate VALUE and return its sealed relational command."
+  (unless (and (proper-list-p value)
+               (= (length value) (* 2 (length e-session-query-command--wire-keys)))
+               (let ((tail value) keys valid)
+                 (setq valid t)
+                 (while (and valid tail)
+                   (let ((key (pop tail)))
+                     (pop tail)
+                     (if (or (not (memq key e-session-query-command--wire-keys))
+                             (memq key keys))
+                         (setq valid nil)
+                       (push key keys))))
+                 (and valid
+                      (= (length keys)
+                         (length e-session-query-command--wire-keys)))))
+    (signal 'e-session-query-command-error
+            (list "Malformed relational session command" value)))
+  (let ((tag (plist-get value :tag))
+        (session-id (plist-get value :session-id))
+        (arguments (plist-get value :arguments))
+        (request-id (plist-get value :request-id))
+        (delta-id (plist-get value :delta-id))
+        (timestamp (plist-get value :timestamp)))
+    (e-session-aggregate-command-practical-preflight arguments)
+    (e-session-aggregate-command-validate tag session-id arguments)
+    (unless (and (stringp request-id) (not (string-empty-p request-id))
+                 (stringp delta-id) (not (string-empty-p delta-id))
+                 (stringp timestamp) (not (string-empty-p timestamp)))
+      (signal 'e-session-query-command-error
+              (list "Malformed relational command identity" value)))
+    (e-session-aggregate-command--create
+     :tag tag :session-id (copy-sequence session-id)
+     :arguments (e-session-aggregate-command-freeze arguments)
+     :request-id (copy-sequence request-id)
+     :delta-id (copy-sequence delta-id)
+     :timestamp (copy-sequence timestamp))))
+
 (defun e-session-query-command--entry
     (state type fields command-id timestamp &optional explicit-id)
   "Return a detached TYPE entry derived from STATE and bounded FIELDS."

@@ -1163,8 +1163,16 @@ schedules it behind the owning session's active commit barrier."
                                  (tool-token (list :tool-call tool-call))
                                  (tool-call-message
                                   (list :role 'tool-call
+                                        ;; This provider response owns the
+                                        ;; durable identity at admission.  A
+                                        ;; completion callback must not query
+                                        ;; session history merely to recover
+                                        ;; an ID that the live turn can carry.
+                                        :id (e-session-generate-ulid)
                                         :content tool-call
                                         :metadata nil)))
+                            (setq response-entry-id
+                                  (plist-get tool-call-message :id))
                             (setq active-tool (list :token tool-token))
                             (setq turn-messages
                                   (append turn-messages

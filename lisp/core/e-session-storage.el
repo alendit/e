@@ -134,8 +134,8 @@ caller receives the targeted error instead of an opaque keyword failure."
 (defun e-session-storage-submit (store kind body on-settle &optional escrow)
   "Submit current SQLite KIND BODY and report `(RESULT ERROR)' asynchronously.
 
-This narrow physical operation is for the session application's FIFO
-coordinator.  It does not expose DP5A request details to session callers."
+This narrow physical operation does not expose runtime request details to
+session callers."
   (e-session-storage--require-sqlite store "Asynchronous session operation")
   (e-session-storage-sqlite-submit store kind body on-settle escrow))
 

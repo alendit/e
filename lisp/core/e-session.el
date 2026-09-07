@@ -789,15 +789,19 @@ only durable identity boundary."
        store session-id 'append-message (list :message message)
        :write-index t
        :before-submit
-       (lambda (delta)
-         (let* ((record (plist-get delta :record))
-                (frozen-message (plist-get record :message)))
+       (lambda (command)
+         (let* ((arguments
+                 (e-session-aggregate-command-arguments command))
+                (frozen-message (plist-get arguments :message)))
            (when (eq (plist-get frozen-message :role) 'tool-call)
              (let ((call (plist-get frozen-message :content)))
                (when-let* ((call-id (plist-get call :id)))
                  (list :call-id call-id :state 'admitted
                        :payload (list :tool-name (plist-get call :name)
-                                      :entry-id (plist-get record :id)))))))))
+                                      :entry-id
+                                      (or (plist-get frozen-message :id)
+                                          (e-session-aggregate-command-delta-id
+                                           command))))))))))
     (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation
      store session-id
@@ -838,11 +842,12 @@ only durable identity boundary."
              :write-index write-index :checkpoint-retain checkpoint-retain)
        :write-index write-index
        :before-submit
-       (lambda (delta)
-         (let* ((record (plist-get delta :record))
-                (event-type (plist-get record :event-type))
-                (turn-id (plist-get record :turn-id))
-                (frozen-payload (plist-get record :payload)))
+       (lambda (command)
+         (let* ((arguments
+                 (e-session-aggregate-command-arguments command))
+                (event-type (plist-get arguments :event-type))
+                (turn-id (plist-get arguments :turn-id))
+                (frozen-payload (plist-get arguments :payload)))
            (when (memq event-type '(tool-started tool-finished))
              (let* ((tool-call (plist-get frozen-payload :tool-call))
                     (call-id (or (plist-get tool-call :id)
@@ -852,7 +857,9 @@ only durable identity boundary."
                        :state (if (eq event-type 'tool-started)
                                   'claimed 'resulted)
                        :payload (list :turn-id turn-id
-                                      :event-id (plist-get record :id)
+                                      :event-id
+                                      (e-session-aggregate-command-delta-id
+                                       command)
                                       :tool-name (plist-get tool-call :name)))))))))
     (e-session--ensure-loaded store session-id)
     (e-session--commit-entry-mutation

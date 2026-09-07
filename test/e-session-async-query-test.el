@@ -98,31 +98,30 @@
            (create
             (e-session-aggregate-command-prepare
              'create "daily" '(:metadata (:name "Daily"))))
-           (created-state
-            (plist-get (e-session-query-command-interpret nil create)
-                       :query-delta))
            (association
             (e-session-aggregate-command-prepare
              'board-state "daily"
              '(:principal "chat:daily" :board-id "board:daily")))
-           (associated-state
-            (plist-get
-             (e-session-query-command-interpret created-state association)
-             :query-delta))
-           (operation
+           (create-operation
             (e-session-async--operation-create
-             :state state :session-id "daily" :command association
-             :query-delta associated-state))
-           (_mutation-work
-            (e-session-async--start-work "daily" operation)))
+             :state state :session-id "daily" :command create))
+           (association-operation
+            (e-session-async--operation-create
+             :state state :session-id "daily" :command association))
+           (_create-work
+            (e-session-async--start-work "daily" create-operation))
+           (_association-work
+            (e-session-async--start-work "daily" association-operation)))
       (unwind-protect
           (progn
-            (e-session-async--add-pending operation)
+            (e-session-async--add-pending create-operation)
+            (e-session-async--add-pending association-operation)
             (let ((page-work
                    (e-session-async-query-page
                     store :limit 8 :root-p t :board-id "board:daily")))
-              ;; SQLite answered from the pre-association snapshot.  The
-              ;; request-local result overlays only the already-admitted row.
+              ;; SQLite answered before either transaction.  The request-local
+              ;; result overlays only the two already-admitted optimistic
+              ;; commands; it does not retain their derived row globally.
               (funcall
                (plist-get (car calls) :on-settle)
                '(:rows nil :next nil :limit 8

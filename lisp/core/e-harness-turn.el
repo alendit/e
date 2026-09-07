@@ -1796,11 +1796,11 @@ cancellation.  SESSION-ID identifies the session."
                                 (e-harness-context-lifetime-tool-observation-frame
                                  harness session-id turn-id entry payload)))
                       (e-harness-turn-state-set-context-frame entry frame)
-                      (e-harness-turn-state-set-lifetime-generation
-                       entry
-                       (and (e-context-lifetime-frame-p frame)
-                            (e-session-context-lifetime-current-generation
-                             (e-harness-sessions harness) session-id)))
+                      ;; The executing turn already owns the request-local
+                      ;; generation used to construct FRAME.  Keep it there;
+                      ;; consulting the durable session facade after a tool
+                      ;; result would attempt aggregate reconstruction for an
+                      ;; async SQLite session.
                       frame)))
                 :on-tool-observation-presentation
                 (lambda (payload)

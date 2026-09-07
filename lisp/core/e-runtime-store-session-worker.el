@@ -7,13 +7,9 @@
 
 ;; This module is the worker-side physical boundary for session history and
 ;; current query state.  The generic runtime worker owns process framing,
-;; lifecycle, and receipt transactions; this module only maps a validated
-;; session record plus a domain-owned query delta to SQLite statements.
-;;
-;; In particular, this file deliberately does not derive query semantics from
-;; a record.  `e-session-query' produces the complete row or control delta on
-;; the application side.  The worker validates that closed shape, maps it to
-;; named columns, and returns bounded detached values.
+;; lifecycle, and receipt transactions.  A sealed semantic command is derived
+;; against the authoritative current row inside that transaction, then the
+;; journal record and relational query row are updated atomically.
 
 ;;; Code:
 
@@ -23,6 +19,7 @@
 (require 'e-context-lifetime)
 (require 'e-runtime-store-codec)
 (require 'e-session-query)
+(require 'e-session-query-command)
 (require 'e-session-storage-limits)
 
 (unless (get 'e-runtime-store-worker-error 'error-conditions)
@@ -364,10 +361,9 @@ nor resume checkpoints."
            "DROP INDEX IF EXISTS session_records_position"))
       (sqlite-execute database statement)))
 
-  ;; Feature 92's v6 work is still uncommitted, but development stores may
-  ;; already carry the earlier v6 table.  Extend that authoritative row in
-  ;; place; never rebuild a catalog or replay sessions merely to add a nullable
-  ;; current fact.
+  ;; Stores created by an earlier v6 build may lack this later column.  Extend
+  ;; that authoritative row in place; never rebuild a catalog or replay
+  ;; sessions merely to add a nullable current fact.
   (unless (seq-some
            (lambda (row)
              (equal (e-runtime-store-session-worker--column row 1)
@@ -562,10 +558,43 @@ that position before its row is written."
                       (vector session-id)))
     (list :session-id session-id :deleted t)))
 
+(defun e-runtime-store-session-worker--command (database body)
+  "Interpret and commit BODY's sealed session command transactionally."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (command (e-session-query-command-from-wire
+                   (plist-get body :command)))
+         (command-session-id
+          (e-session-aggregate-command-session-id command))
+         (state (e-runtime-store-session-worker--query-state
+                 database (list :session-id session-id)))
+         (delta nil))
+    (unless (equal session-id command-session-id)
+      (e-runtime-store-session-worker--error
+       "Session command identity mismatch" session-id command-session-id))
+    ;; This read and the writes below run in one SQLite transaction.  Callers
+    ;; need no Emacs-side read/derive FIFO.  Submission order is not a semantic
+    ;; guarantee; acknowledged commits and explicit multi-change transactions
+    ;; are the ordering boundaries.
+    (setq delta (e-session-query-command-interpret state command))
+    (if (eq (e-session-aggregate-command-tag command) 'delete)
+        (e-runtime-store-session-worker--delete
+         database
+         (list :session-id session-id
+               :query-delta (plist-get delta :query-delta)))
+      (e-runtime-store-session-worker--append
+       database
+       (list :session-id session-id
+             :record (plist-get delta :record)
+             :query-delta (plist-get delta :query-delta))))
+    (copy-tree (plist-get delta :result) t)))
+
 (defun e-runtime-store-session-worker-write (database body)
   "Execute a typed session write BODY on transaction-scoped DATABASE."
   (let ((e-runtime-store-session-worker--database database))
     (pcase (plist-get body :op)
+      ('session-command
+       (e-runtime-store-session-worker--command database body))
       ('session-append (e-runtime-store-session-worker--append database body))
       ('session-append-with-tool-transition
        (e-runtime-store-session-worker--append database body))

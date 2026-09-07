@@ -3,7 +3,7 @@
 
 * Status
 
-The current uncommitted Addendum 2 implementation replaces the remaining
+The Addendum 2 implementation replaces the remaining
 file-store-shaped runtime behavior with an RDBMS-first path.  SQLite owns
 durable identity, current state, ordering, history, associations, routing, task
 state, and indexes.  Startup performs transport open only; public Daily and
@@ -75,9 +75,9 @@ acceptance gate is now the public graphical Daily worker-delay/failure scenario.
 DP5A makes runtime-store cold submit, timeout, and recovery settlement
 autonomous; =e-runtime-store-await= observes rather than drives it.  The opt-in
 DP5B per-session coordinator is accepted historical implementation but is not
-the current direction.  The current minimum correction uses one runtime client
-FIFO, owner-local suspect metadata, and enqueue-return session/Board/chat
-composition for public new-Daily open.  Post-hoc quarantine, all-domain
+the current direction.  The current minimum correction uses bounded transport
+admission without semantic ordering, owner-local suspect metadata, and
+enqueue-return session/Board/chat composition for public new-Daily open.  Post-hoc quarantine, all-domain
 hot-path migration, generalized lifecycle work, and async participant creation
 remain roadmap items.
 
@@ -763,7 +763,7 @@ default runtime before the first Daily/harness lookup.  Combined full-suite
 evidence passes all 2,847 tests; six local-server cases required socket
 permission unavailable inside the restricted sandbox.
 
-* RDBMS-first Addendum 2 correction (current uncommitted tree)
+* RDBMS-first Addendum 2 correction
 
 The startup prewarm was not itself the final defect.  Although worker open was
 asynchronous, default composition still reconstructed durable session state in
@@ -817,10 +817,9 @@ operator explicitly scoped acceptance to the exercised RDBMS-first and public
 graphical path, so unrelated fixture cleanup and DP6C-style quarantine are not
 part of this correction.
 
-The implementation is intentionally uncommitted.  Repository-side validation
-used disposable directories and isolated graphical daemons only.  A full Emacs
-restart, not =e-dev-reload=, is required to try these core runtime/session
-changes in the live editor.
+Repository-side validation used disposable directories and isolated graphical
+daemons only.  A full Emacs restart, not =e-dev-reload=, is required to try
+these core runtime/session changes in the live editor.
 
 * Public new-chat counterexample and E2E correction (2026-09-07)
 
@@ -844,9 +843,9 @@ SQLite yet absent from the rendered transcript.
 The corrected path makes active-turn selection a process-local live-controller
 query.  The remaining Board-session predicate refuses aggregate reads for a
 SQLite store.  New persistent chat attachment installs its future-event
-subscription before submitting the bounded detached view; the single worker
-FIFO orders earlier events into the query result and later events into the
-subscription.  No durable mirror or reconciliation pass is added.
+subscription before submitting the bounded detached view; stable event identity
+and exactly-once rendering close the snapshot/stream race.  No durable mirror,
+transport-order dependency, or reconciliation pass is added.
 
 The replacement graphical gate enters through =e-chat-new=, types into the
 real composer, and invokes =e-chat-submit= interactively.  A dynamic guard
@@ -873,7 +872,7 @@ A complete repository census before the last test-only observer correction ran
 2,899 tests with 2,797 expected, 36 unexpected, and 66 skipped.  Three of those
 failures were raw-result tests still calling the deliberately rejected
 synchronous read facade immediately after an asynchronous write; those tests
-now observe through an explicit FIFO-ordered test storage boundary and pass
+now observe through an explicit blocking test storage boundary and pass
 11/11.  The remaining 33 census items are 27 superseded
 catalog/checkpoint/full-restoration or raw-no-delta expectations and six
 restricted-sandbox local-socket cases.  The full suite is therefore not
@@ -972,3 +971,41 @@ passes 2,901/2,901 with zero unexpected results: 2,835 passed and 66 explicitly
 superseded/legacy cases skipped.  This is the first green complete census for
 the RDBMS-first package; it does not count sandbox-denied local sockets as code
 failures.
+
+* Real tool continuation escaped the public gate (2026-09-07)
+
+The live failure after a successful =run_elisp= call was another test-shape
+defect, not SQLite latency.  The public Org Canvas scenario drove assistant-only
+provider responses.  It never entered the provider -> tool call -> tool result
+-> provider continuation path that failed in the editor.
+
+Source tracing found two synchronous aggregate dependencies on that path:
+
+1. the post-tool lifetime callback queried the session's durable current
+   generation even though the active turn already owned that generation; and
+2. continuation preflight searched =e-session-current-path= to rediscover the
+   tool-call entry ID because the streaming loop had discarded the ID returned
+   by its optimistic append.
+
+The correction carries both values in request-local turn state.  Tool-call
+messages receive a durable entry ID before append, and continuation preflight
+uses that ID directly.  The graphical test now emits a real model-facing
+=run_elisp= call and verifies the tool result in the follow-up provider request.
+Dynamic guards still fail on any aggregate load or synchronous runtime wait.
+
+The write path was also relying on an owner FIFO because Emacs read the current
+SQLite row and derived the next row before submission.  That is the wrong
+authority.  Sealed session commands now submit independently and are interpreted
+against the authoritative current row inside the worker's SQLite transaction.
+Submission order is not a semantic guarantee.  Only acknowledgement of A before
+submitting B, or a single explicit multi-change transaction, establishes the
+required ordering.  The retained bounded optimistic set exists only for live
+rendering and owner-local failure attribution.
+
+Repository evidence after this correction is 31/31 focused session/query/worker tests,
+258/264 broader relevant tests with zero unexpected and six legacy skips, and
+1/1 in 5.252609 seconds for the public graphical delayed Org Canvas scenario
+with the real tool continuation.  The complete suite passes 2,901 tests with
+2,835 expected results, zero unexpected, and 66 explicit superseded/legacy
+skips in 195.929524 seconds.  The isolated test environment did not touch the
+running Emacs or canonical database.

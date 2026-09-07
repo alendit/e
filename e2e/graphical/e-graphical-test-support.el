@@ -114,8 +114,8 @@
         (format "provider-%s-after" (or (plist-get item :type) "item")))))
    delay))
 
-(defun e-graphical-test-stream-finish (stream &optional delay)
-  "Finish STREAM successfully after DELAY seconds."
+(defun e-graphical-test-stream-finish (stream &optional delay reason)
+  "Finish STREAM successfully after DELAY seconds with terminal REASON."
   (unless (e-graphical-test-stream-active-p stream)
     (error "Graphical test backend has no active request"))
   (when (e-graphical-test-screenshot-enabled-p)
@@ -125,13 +125,17 @@
    (lambda ()
      (let ((on-item (e-graphical-test-stream-on-item stream))
            (on-done (e-graphical-test-stream-on-done stream)))
-       (funcall on-item '(:type done :reason stop))
-       (when on-done
-         (funcall on-done '(:status done)))
+       ;; Terminal handling may synchronously start a follow-up provider
+       ;; request (notably after tool use).  Retire this request first so the
+       ;; follow-up can install callbacks without looking concurrent, and do
+       ;; not clear those new callbacks after the old request finishes.
        (setf (e-graphical-test-stream-on-item stream) nil
              (e-graphical-test-stream-on-done stream) nil
              (e-graphical-test-stream-on-error stream) nil
              (e-graphical-test-stream-request stream) nil)
+       (funcall on-item (list :type 'done :reason (or reason 'stop)))
+       (when on-done
+         (funcall on-done '(:status done)))
        (when (e-graphical-test-screenshot-enabled-p)
          (e-graphical-test-capture-state "provider-finish-after"))))
    delay))

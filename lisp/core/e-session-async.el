@@ -5,10 +5,10 @@
 
 ;;; Commentary:
 
-;; The session application service admits each bounded mutation directly to
-;; the runtime store's one FIFO and returns request-scoped `e-work' values for
-;; bounded reads.  SQLite remains authoritative for durable current state and
-;; history.  Emacs retains only unsettled optimistic intents and, while
+;; The session application service admits each bounded mutation independently
+;; to the runtime store and returns request-scoped `e-work' values for bounded
+;; reads.  SQLite remains authoritative for durable current state, transaction
+;; order, and history.  Emacs retains only unsettled optimistic intents and, while
 ;; those intents exist, the detached selected-path base needed to construct
 ;; provider context without waiting for COMMIT.  Settlement retires that
 ;; in-flight state; it never installs a durable mirror or republishes a delta.
@@ -39,18 +39,16 @@
   ;; provider context can overlay those bounded intents without waiting for
   ;; COMMIT.  This is in-flight coordination, not a durable session mirror.
   (inflight-context-bases (make-hash-table :test 'equal))
-  ;; A context-path SELECT is ordered before mutations admitted after its
-  ;; submission, but its finished work may be consumed after those mutations
-  ;; have already acknowledged and left `pending'.  Retain only the operations
-  ;; crossing each live query cut so the detached result can apply them once.
+  ;; A context-path SELECT can finish after mutations admitted while it is in
+  ;; flight.  Retain only the operations crossing each live query cut so the
+  ;; detached result can apply them once, regardless of transaction order.
   ;; Entries are removed when the result is consumed or the read fails.
   (context-query-cuts (make-hash-table :test 'eq))
   (suspects (make-hash-table :test 'equal)))
 
 (cl-defstruct (e-session-async--operation
                (:constructor e-session-async--operation-create))
-  state session-id result work storage-operation settled
-  command before-submit query-work query-delta)
+  state session-id work storage-operation settled command before-submit)
 
 (cl-defstruct (e-session-async--read-operation
                (:constructor e-session-async--read-operation-create))
@@ -372,11 +370,10 @@ visible to SQLite and therefore are not applied twice."
         (dolist (operation (cdr owner))
           (when (e-session-async--operation-visible-to-page-p operation)
             (setq current
-                  (or (e-session-async--operation-query-delta operation)
-                      (plist-get
-                       (e-session-query-command-interpret
-                        current (e-session-async--operation-command operation))
-                       :query-delta))
+                  (plist-get
+                   (e-session-query-command-interpret
+                    current (e-session-async--operation-command operation))
+                   :query-delta)
                   changed t)))
         (when changed
           (if (plist-get current :deleted)
@@ -626,8 +623,8 @@ submit it before admitting a mutation and compose the result afterward."
                (e-session-async--context-query-cut-remove state cut-id))))
     (cl-remf result :context-query-cut-id)
     ;; Every crossing operation was admitted after the SELECT entered the
-    ;; global FIFO, so none can be present in PATH.  Apply it whether or not its
-    ;; acknowledgement has already retired it from the pending owner queue.
+    ;; request cut, so none can be assumed present in PATH.  Apply it whether or
+    ;; not its acknowledgement has already retired it from the pending set.
     (dolist (operation crossing)
       (setq result
             (e-session-async--context-path-apply-command
@@ -871,7 +868,7 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
          (current (gethash session-id pending)))
     (when (>= (length current) e-session-async-owner-pending-limit)
       (signal 'e-session-async-capacity-exhausted
-              (list "Session mutation intent queue is full"
+              (list "Session in-flight mutation capacity is exhausted"
                     :session-id session-id
                     :limit e-session-async-owner-pending-limit)))
     (puthash session-id
@@ -897,20 +894,6 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
           (puthash session-id remaining pending)
         (remhash session-id pending)))))
 
-(defun e-session-async--owner-head-p (operation)
-  "Return non-nil when OPERATION is first in its session intent FIFO."
-  (let* ((state (e-session-async--operation-state operation))
-         (session-id (e-session-async--operation-session-id operation)))
-    (eq operation
-        (car (gethash session-id
-                      (e-session-async--state-pending state))))))
-
-(defun e-session-async--start-next-owner-operation (state session-id)
-  "Start SESSION-ID's next queued relational operation, if any."
-  (when-let* ((next (car (gethash session-id
-                                  (e-session-async--state-pending state)))))
-    (e-session-async--start-relational-operation next)))
-
 (defun e-session-async--fail-work-isolated (work cause)
   "Fail WORK with CAUSE without allowing arbitrary observers to gate cleanup."
   (condition-case nil
@@ -919,46 +902,41 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
   work)
 
 (defun e-session-async--relational-fail-request (operation error)
-  "Fail relational OPERATION for request-local ERROR and advance its FIFO."
+  "Fail relational OPERATION for a request-local admission ERROR."
   (unless (e-session-async--operation-settled operation)
     (setf (e-session-async--operation-settled operation) t
-          (e-session-async--operation-query-work operation) nil
-          (e-session-async--operation-storage-operation operation) nil
-          (e-session-async--operation-query-delta operation) nil)
+          (e-session-async--operation-storage-operation operation) nil)
     (let* ((state (e-session-async--operation-state operation))
            (session-id (e-session-async--operation-session-id operation))
            (work (e-session-async--operation-work operation)))
       (e-session-async--remove-pending operation)
-      (e-session-async--start-next-owner-operation state session-id)
       (e-session-async--fail-work-isolated
        work (e-session-async--read-error error)))))
 
 (defun e-session-async--relational-fail-owner (operation error)
-  "Mark OPERATION's owner suspect after write ERROR and fail its queued work."
+  "Mark OPERATION's owner suspect and fail its unsettled optimistic work."
   (unless (e-session-async--operation-settled operation)
     (let* ((state (e-session-async--operation-state operation))
            (store (e-session-async--state-store state))
            (session-id (e-session-async--operation-session-id operation))
            (cause (e-session-async--note-suspect store session-id error))
-           (queued (copy-sequence
-                    (gethash session-id
-                             (e-session-async--state-pending state)))))
-      ;; Detach the complete owner queue before notifying any public work.
+           (unsettled (copy-sequence
+                       (gethash session-id
+                                (e-session-async--state-pending state)))))
+      ;; Detach the complete owner set before notifying any public work.
       ;; Other owners remain independently runnable in the shared transport.
       (remhash session-id (e-session-async--state-pending state))
       (remhash session-id
                (e-session-async--state-inflight-context-bases state))
-      (dolist (current queued)
+      (dolist (current unsettled)
         (unless (e-session-async--operation-settled current)
           (setf (e-session-async--operation-settled current) t
-                (e-session-async--operation-query-work current) nil
-                (e-session-async--operation-storage-operation current) nil
-                (e-session-async--operation-query-delta current) nil)
+                (e-session-async--operation-storage-operation current) nil)
           (e-session-async--fail-work-isolated
            (e-session-async--operation-work current) (copy-tree cause)))))))
 
-(defun e-session-async--relational-write-settled (operation _result error)
-  "Settle one relational write OPERATION and advance its owner FIFO."
+(defun e-session-async--relational-write-settled (operation result error)
+  "Settle one independently admitted relational write OPERATION."
   (if error
       (e-session-async--relational-fail-owner operation error)
     (unless (e-session-async--operation-settled operation)
@@ -967,11 +945,8 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
       (let* ((state (e-session-async--operation-state operation))
              (session-id (e-session-async--operation-session-id operation))
              (work (e-session-async--operation-work operation))
-             (result (e-session-async--operation-result operation))
              (bases (e-session-async--state-inflight-context-bases state))
              (base (gethash session-id bases)))
-        (setf (e-session-async--operation-result operation) nil
-              (e-session-async--operation-query-delta operation) nil)
         ;; Advance a retained in-flight base by the acknowledged command
         ;; before removing it from the overlay set.  When the final mutation
         ;; settles, discard the base entirely.
@@ -984,46 +959,30 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
         (unless (e-session-async-pending-p
                  (e-session-async--state-store state) session-id)
           (remhash session-id bases))
-        ;; Preserve owner ordering before arbitrary completion observers run.
-        (e-session-async--start-next-owner-operation state session-id)
         (e-work-finish work (copy-tree result t))))))
 
-(defun e-session-async--submit-derived-command (operation state)
-  "Derive and submit OPERATION against detached current query STATE."
+(defun e-session-async--submit-command-operation (operation)
+  "Submit OPERATION for transaction-local interpretation by SQLite."
   (unless (e-session-async--operation-settled operation)
     (condition-case error
         (let* ((command (e-session-async--operation-command operation))
-               (tag (e-session-aggregate-command-tag command))
-               (delta (e-session-query-command-interpret state command))
-               (record (plist-get delta :record))
-               (query-delta (plist-get delta :query-delta))
                (continuity
                 (when-let* ((before-submit
                              (e-session-async--operation-before-submit
                               operation)))
-                  (funcall before-submit delta)))
-               (body
-                (if (eq tag 'delete)
-                    (list :op 'session-delete
-                          :session-id
-                          (e-session-async--operation-session-id operation)
-                          :query-delta query-delta)
-                  (append
-                   (list :op (if continuity
-                                 'session-append-with-tool-transition
-                               'session-append)
-                         :session-id
-                         (e-session-async--operation-session-id operation)
-                         :record record :query-delta query-delta)
-                   (when continuity (list :continuity continuity))))))
+                  (funcall before-submit command)))
+               (body (append
+                      (list :op 'session-command
+                            :session-id
+                            (e-session-async--operation-session-id operation)
+                            :command
+                            (e-session-query-command-to-wire command))
+                      (when continuity (list :continuity continuity)))))
           (e-session-storage-validate-operation-body
            (e-session-async--state-store
             (e-session-async--operation-state operation))
            body)
-          (setf (e-session-async--operation-result operation)
-                (plist-get delta :result)
-                (e-session-async--operation-query-delta operation)
-                (copy-tree query-delta t))
+          (setf (e-session-async--operation-before-submit operation) nil)
           (let ((submitted
                  (e-session-storage-submit-owned
                   (e-session-async--state-store
@@ -1040,53 +999,13 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
               (setf (e-session-async--operation-storage-operation operation)
                     submitted))))
       ((error quit)
-       ;; Derivation and admission failures occur before a write crosses
+       ;; Validation and admission failures occur before a write crosses
        ;; SQLite, so they remain request-local.
        (e-session-async--relational-fail-request operation error)))))
 
-(defun e-session-async--relational-state-settled (operation query-work)
-  "Continue relational OPERATION after exact current-state QUERY-WORK."
-  (unless (e-session-async--operation-settled operation)
-    (setf (e-session-async--operation-query-work operation) nil)
-    (let ((status (e-work-status query-work)))
-      (pcase (plist-get status :state)
-        ('finished
-         (let ((state (plist-get status :result)))
-           (if state
-               (e-session-async--submit-derived-command operation state)
-             (e-session-async--relational-fail-request
-              operation
-              (list 'e-session-missing
-                    (e-session-async--operation-session-id operation))))))
-        ((or 'failed 'cancelled)
-         (e-session-async--relational-fail-request
-          operation
-          (or (plist-get status :error)
-              '(e-session-storage-error "Session state query cancelled"))))))))
-
-(defun e-session-async--start-relational-operation (operation)
-  "Start OPERATION's exact-state query without blocking its caller."
-  (unless (or (e-session-async--operation-settled operation)
-              (e-session-async--operation-query-work operation)
-              (e-session-async--operation-storage-operation operation))
-    (if (eq (e-session-aggregate-command-tag
-             (e-session-async--operation-command operation))
-            'create)
-        (e-session-async--submit-derived-command operation nil)
-      (let ((query
-             (e-session-async-query-state
-              (e-session-async--state-store
-               (e-session-async--operation-state operation))
-              (e-session-async--operation-session-id operation))))
-        (setf (e-session-async--operation-query-work operation) query)
-        (e-work-on-settle
-         query
-         (lambda (settled)
-           (e-session-async--relational-state-settled operation settled)))))))
-
 (cl-defun e-session-async--submit-relational-command
     (store session-id tag arguments &key before-submit)
-  "Queue one bounded relational TAG intent and return its work immediately."
+  "Admit one bounded relational TAG independently and return its work."
   (condition-case error
       (let* ((command (e-session-aggregate-command-prepare
                        tag session-id arguments))
@@ -1102,8 +1021,7 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
             (condition-case admission-error
                 (progn
                   (e-session-async--add-pending operation)
-                  (when (e-session-async--owner-head-p operation)
-                    (e-session-async--start-relational-operation operation))
+                  (e-session-async--submit-command-operation operation)
                   work)
               ((error quit)
                (e-session-async--fail-work-isolated work admission-error))))))
@@ -1121,11 +1039,13 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
 
 (cl-defun e-session-async-submit-command
     (store session-id tag arguments &key before-submit write-index)
-  "Admit one SQLite-authoritative TAG to STORE's owner FIFO.
+  "Admit one SQLite-authoritative TAG without an application FIFO.
 
 No durable session aggregate is read, installed, or retained.  WRITE-INDEX is
 accepted for facade compatibility; relational query rows are updated in the
-same SQLite transaction as the journal record."
+same SQLite transaction as the journal record.  Concurrent submissions make no
+ordering promise; an acknowledgement followed by a later submission establishes
+happens-before, and an explicitly dependent group belongs in one transaction."
   (ignore write-index)
   (if (eq tag 'board-message)
       ;; Current Board publication uses the Board storage service; retaining
@@ -1158,8 +1078,6 @@ same SQLite transaction as the journal record."
         (unless (e-session-async--operation-settled operation)
           (setf (e-session-async--operation-settled operation) t
                 (e-session-async--operation-storage-operation operation) nil
-                (e-session-async--operation-query-delta operation) nil
-                (e-session-async--operation-result operation) nil
                 (e-session-async--operation-state operation) nil)
           (e-session-async--fail-work-isolated
            (e-session-async--operation-work operation)

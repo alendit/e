@@ -202,8 +202,8 @@
       (e-session-async-test--close store)
       (delete-directory directory t))))
 
-(ert-deftest e-session-async-rdbms-admission-and-owner-fifo-return-immediately ()
-  "A held create queues a dependent write without querying or blocking."
+(ert-deftest e-session-async-rdbms-admits-independent-commands-without-prefetch ()
+  "Concurrent commands submit directly without an application read/FIFO."
   (let* ((directory (make-temp-file "e-session-held-" t))
          (store (e-session-sqlite-store-create directory :asynchronous t))
          writes reads)
@@ -231,18 +231,27 @@
             (setq append
                   (e-session-append-message
                    store "held" '(:role user :content "queued")))
-            (should (= (length writes) 1))
+            (should (= (length writes) 2))
             (should-not reads)
             (should (= (e-session-async-pending-count store "held") 2))
             (let* ((create-write (car writes))
-                   (create-state
-                    (plist-get (plist-get create-write :body) :query-delta)))
-              (funcall (plist-get create-write :on-settle) '(:committed t) nil)
-              (should (= (length reads) 1))
-              (funcall (plist-get (car reads) :on-settle) create-state nil)
-              (should (= (length writes) 2))
-              (funcall (plist-get (cadr writes) :on-settle)
-                       '(:committed t) nil))
+                   (append-write (cadr writes))
+                   (create-command
+                    (e-session-query-command-from-wire
+                     (plist-get (plist-get create-write :body) :command)))
+                   (append-command
+                    (e-session-query-command-from-wire
+                     (plist-get (plist-get append-write :body) :command))))
+              (should (eq (plist-get (plist-get create-write :body) :op)
+                          'session-command))
+              (should (eq (e-session-aggregate-command-tag create-command)
+                          'create))
+              (should (eq (e-session-aggregate-command-tag append-command)
+                          'append-message))
+              (funcall (plist-get create-write :on-settle)
+                       '(:id "held" :metadata nil) nil)
+              (funcall (plist-get append-write :on-settle)
+                       '(:id "message" :role user :content "queued") nil))
             (should (eq (plist-get (e-work-status create) :state) 'finished))
             (should (eq (plist-get (e-work-status append) :state) 'finished))
             (should (= (hash-table-count

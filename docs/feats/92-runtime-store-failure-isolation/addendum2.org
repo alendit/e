@@ -4,9 +4,9 @@
 
 * Status
 
-Implemented in the current uncommitted tree.  The document remains
-=In-progress= in the dev-work ledger because the operator explicitly deferred
-commit and further independent review; this is not a Feature 92 =Done= claim.
+Implemented in the current delivery package.  The document remains
+=In-progress= in the dev-work ledger pending focused review; this is not a
+Feature 92 =Done= claim.
 
 This addendum rebaselines the remaining Feature 92 work around an RDBMS-first
 runtime boundary.  SQLite is the durable authority for identity, current state,
@@ -16,12 +16,17 @@ has an explicit live owner.
 
 The parent [[file:plan.org][Feature 92 plan]] and the
 [[file:addendum.org][accepted-session projection addendum]] remain authoritative
-for enqueue-and-return mutation, ordered semantic publication, and owner-local
-failure isolation.  This addendum supersedes their assumptions that ordinary
-startup or interactive access may construct a durable mirror, enumerate every
-session, or use an opaque catalog/checkpoint value as the normal query model.
+for enqueue-and-return mutation and owner-local failure isolation.  This
+addendum supersedes both their durable-state reconstruction assumptions and any
+claim that ordinary mutation submission order is a semantic history guarantee.
+Ordinary mutations are independent transactions; only an acknowledged commit
+before a later submission, or one explicit multi-change transaction,
+establishes application-visible happens-before.  This addendum also supersedes
+assumptions that ordinary startup or interactive access may construct a durable
+mirror, enumerate every session, or use an opaque catalog/checkpoint value as
+the normal query model.
 
-=F92A2-DP1= remains Accepted.  The current uncommitted implementation completes
+=F92A2-DP1= remains Accepted.  The implementation completes
 the scoped =F92A2-DP2=--=F92A2-DP5= runtime path: public Daily and persisted
 session navigation use detached bounded queries; selected provider context is
 assembled from one request-scoped path result plus bounded crossing optimistic
@@ -32,9 +37,9 @@ aggregate, catalog/stub mirror, checkpoint publication, or durable-state cache
 is part of the ordinary v6 path.
 
 The full repository run is retained as a regression census, not as a license to
-reintroduce superseded replica behavior or expand this package into unrelated
-test-fixture repair.  The package-relevant suites and five public graphical
-selectors are green on the exact dirty revision recorded below.
+reintroduce superseded replica behavior.  The package-relevant suites, public
+graphical gate, and complete repository suite are green on the delivered
+revision recorded below.
 
 ** Warning vocabulary
 
@@ -77,11 +82,10 @@ These terms have separate owners and must not be collapsed into a generic
   requested-session validation/quarantine contract remains roadmap work and is
   not implemented through a reconstructed loader in this package.
 - Behavioral status :: Implemented and passing on the primary public graphical gate.  The
-  exact uncommitted revision proves immediate Daily open, live composer and
+  delivered revision proves immediate Daily open, live composer and
   timer progress during held persistence, ordered release, owner-local failure,
-  and a healthy sibling readback.  The ledger remains In-progress only because
-  this delivery is intentionally uncommitted and has not entered a new review
-  cycle; passing this gate is not a Feature 92 Done claim.
+  and a healthy sibling readback.  The ledger remains In-progress pending
+  focused review; passing this gate is not a Feature 92 Done claim.
 
 * Implementation ledger
 
@@ -229,11 +233,31 @@ synchronous stack call.  Named batch, operator, offline-migration, and
 focused-test APIs are the only blocking boundaries, and their names and callers
 must make that authority explicit.
 
+** Mutation ordering is transactional, not an application FIFO
+
+The store does not promise that two independently submitted mutations commit in
+submission order.  SQLite chooses the transaction order.  If a caller observes
+the commit acknowledgement for A and only then submits B, B is after A.  If a
+caller needs several changes to be indivisible or internally ordered without an
+interactive wait, it submits one domain operation that the worker executes in a
+single SQLite transaction.  Otherwise the mutations are concurrent and their
+commit order is deliberately unspecified.
+
+Emacs may retain a bounded set of unacknowledged optimistic intents so a live
+surface can render immediately and attribute a later failure to its owner.  That
+set is not an execution queue and confers no durable ordering.  The transport
+may buffer bounded frames because one external process has finite capacity, but
+that is private resource ownership rather than a session consistency contract.
+Backpressure may reject admission at the bound; it must not turn an interactive
+call into a wait.
+
 ** Session deltas and offline upgrade
 
-The session domain owns exhaustive record-to-query-state derivation.  The
-SQLite adapter validates and maps the bounded delta; the worker atomically
-commits journal record, query row changes, deletion control, and receipt.
+The session domain owns exhaustive sealed-command interpretation.  The worker
+reads the authoritative current row and interprets that command inside the same
+SQLite transaction that commits the journal record, query row changes, deletion
+control, and receipt.  Emacs does not perform a current-row read merely to
+derive the next write.
 Receipt replay returns its small recorded result and does not apply a delta a
 second time.  No catalog/checkpoint publication is part of ordinary v6 runtime
 operation.
@@ -279,10 +303,10 @@ these are repository-controlled contracts.
 | F92A2-C02 | Ordinary composition constructs only bounded ports/presentation wiring and performs zero domain SQL, durable-row materialization, collection enumeration, or readiness wait before owner use. | Default composition and domain adapter constructors. | F92A2-DP1 | Startup traffic and constructor instrumentation. | Not applicable. | Constructor and readiness latency are observational. | Accepted | Passing |
 | F92A2-C03 | Exact session metadata, exact Board association, visible recent-message data, and selected provider context return detached bounded values through immediately returned =e-work= values. No result populates a process-wide durable mirror; historical paging is added only with a real consumer. | Session application service and SQLite query adapter; Daily/context consumers. | F92A2-DP2 | Existing-Daily query identity/count/row bounds and no-aggregate tests. | Not applicable. | Query latency and result bytes are observational. | Accepted | Passing in focused and graphical evidence. |
 | F92A2-C04 | Daily open returns its buffer immediately. Emacs retains only presentation, visible-window, callback/subscriber, timer, executing-turn, and bounded optimistic state. SQLite remains the authority; there is no whole/active session replay, candidate store, generation loader, active durable replica, or release cache. | Session application service and Daily/presentation surfaces. | F92A2-DP2 | Existing-Daily delayed exact/association/recent queries, selected context-path query, and no-mirror allocation evidence. | Not applicable. | Query and render latency are observational. | Accepted | Passing in the public graphical gate. |
-| F92A2-C05 | Canonical journal records are paired with domain-derived bounded query deltas. SQLite validates and atomically commits journal, current-query state, deletion control, and receipt; replay does not double-apply. | Session domain, SQLite adapter, and worker. | F92A2-DP2 | Record-family derivation, transaction/rollback, replay/delete, reopen, and obsolete-relation tests. | Not applicable. | Derivation and transaction latency are observational. | Accepted | Passing in the relational command and worker suites. |
+| F92A2-C05 | A sealed session command is interpreted against the authoritative current row inside one SQLite transaction that atomically commits journal, current-query state, deletion control, and receipt. Independent submissions have no semantic order; acknowledgement-before-later-submission and explicit multi-change transactions are the ordering boundaries. | Session domain, SQLite adapter, and worker. | F92A2-DP2 | Command wire validation, no-prefetch admission, transaction/rollback, replay/delete, reopen, and obsolete-relation tests. | Not applicable. | Derivation and transaction latency are observational. | Accepted | Passing in the relational command and worker suites. |
 | F92A2-C06 | Board constructs and initializes a lightweight controller from exact current rows, set-based participants/pickups/routing, and a bounded visible working window. No Board history replay or routing N+1 occurs. | Board application service and Board SQLite adapter. | F92A2-DP3 | Board scale, query-count, visible-window, and subscriber-teardown tests. | Not applicable. | Query/controller latency is observational. | Accepted | Passing in the Daily query-window graphical scenario. |
 | F92A2-C07 | Task startup queries and atomically claims runnable work as detached input and retains only executing task state/live handles. Terminal history remains in SQLite; no task snapshot is rebuilt in Emacs. | Task scheduler and task SQLite adapter. | F92A2-DP4 | Task scale, claim, and detached-runnable-bound tests. | Not applicable. | Claim and retained scheduler-state size are observational. | Accepted | Passing in focused task tests. |
-| F92A2-C08 | Interactive storage enqueues bounded work and returns without =e-runtime-store-call=, =e-runtime-store-await=, =accept-process-output=, flush, open/commit/retry/recovery/close wait, or synchronous settlement. Only named batch/operator/offline/test APIs may block. | Each domain application service over the runtime transport. | F92A2-DP5 | Static reachability and delayed-open/read/write graphical portfolio. | Not applicable. | FIFO and settlement latency are observational. | Accepted | Passing for startup, Daily, Board, task, session, cron, voice, Goodnite, raw-result, and session-tmp paths. |
+| F92A2-C08 | Interactive storage admits bounded work and returns without =e-runtime-store-call=, =e-runtime-store-await=, =accept-process-output=, flush, open/commit/retry/recovery/close wait, or synchronous settlement. A bounded transport buffer is capacity management, not semantic ordering. Only named batch/operator/offline/test APIs may block. | Each domain application service over the runtime transport. | F92A2-DP5 | Static reachability and delayed-open/read/write graphical portfolio. | Not applicable. | Admission and settlement latency are observational. | Accepted | Passing for startup, Daily, Board, task, session, cron, voice, Goodnite, raw-result, and session-tmp paths. |
 | F92A2-C09 | Stopped-store v5-to-v6 upgrade uses verified backup/rollback, derives solely from canonical journals, ignores retired projections, preserves identity/position/payload digest, validates rows/associations, atomically installs v6, and removes obsolete relations. Non-derivable canonical state names the affected session. | Offline migration adapter and session derivation domain. | F92A2-DP2 | Disposable v5/v6 projection-independence, parity, fault, rollback, reopen, and obsolete-relation tests. | Not applicable. | Upgrade time and database size are observational. | Accepted | Passing in the disposable offline migration suite. |
 | F92A2-C10 | Existing and new public Daily surfaces return buffers immediately and remain editable during held worker open/read/write. The gate observes at least three independent heartbeats and one composer edit. Read failures are request-local and write failures use owner-local suspect fencing. After one session fails, another session still enqueues, persists, queries, and renders. | Session/Board services and Org Canvas presentation. | F92A2-DP5 | Existing/new Daily, request-local read failure, and write-failure with healthy-sibling graphical scenarios. | Not applicable. | Heartbeat period and wall-clock latency are private test defaults. | Accepted | Passing in the public delay/release/write-failure scenario. |
 
@@ -335,8 +359,8 @@ worker remains unaware of those domain meanings.
 | Transport prewarm | =e-runtime-store.el= owns the process worker and private open. | Retained with proof; no domain semantics. |
 | Session startup reconstruction | Explicit offline/test replay remains in =e-session-sqlite.el=; async v6 aggregate facades fail before I/O. | Keep only named offline/test replay; exact metadata/association/recent/context queries own ordinary access. |
 | Session catalog/stub projection | Legacy helpers remain for offline/source compatibility but v6 dispatch has no catalog/checkpoint operations. | Keep unreachable from ordinary async v6 and remove as legacy tests are retired. |
-| Session command publication | =e-session-async.el= derives against detached current rows and writes journal plus query delta atomically. | Retain owner-local FIFO and suspicion; never install an aggregate or publish checkpoint/catalog state. |
-| v6 session SQL | =e-runtime-store-session-worker.el= maps row/page/record operations. | Retain; test exact identity, cursor, transaction, replay, and bounded response contracts. |
+| Session command publication | =e-session-async.el= admits sealed commands independently and retains only bounded unsettled optimistic intents. | Retain owner-local suspicion; do not use the optimistic set or transport buffer as a history-ordering mechanism. |
+| v6 session SQL | =e-runtime-store-session-worker.el= interprets a sealed command against the current row and maps row/page/record operations inside SQLite transactions. | Retain; test exact identity, no-prefetch admission, cursor, transaction, replay, and bounded response contracts. |
 | Offline compatibility | =e-runtime-migration.el= and offline worker handle the canonical v5 journal, backup, and rollback; retired catalog/checkpoint projections are ignored. | Retain operator-only; no runtime v5 fallback. |
 | Board controller initialization | Existing-session binding composes one bounded controller from an exact/set query. | Retain the bounded working window and set-based routing; delete obsolete full-restoration tests. |
 | Task scheduler state | Queue load is SQL-free; explicit start submits an atomic runnable claim. | Retain executing state/live handles only; add terminal inspection only with a real consumer. |
@@ -355,12 +379,12 @@ graphical evidence is recorded in the implementation ledger above.
 
 ** F92A2-DP2: SQLite session queries, deltas, and offline upgrade (Implemented)
 
-DP2 establishes =F92A2-C03=--=F92A2-C05= and =F92A2-C09=.  Its fixed internal
+DP2 establishes =F92A2-C03=--=F92A2-C05= and =F92A2-C09=.  Its implementation
 order is:
 
-1. derive bounded query state in the session domain;
-2. expose exact/page reads and transactional v6 row/record operations in the
-   worker and storage adapter;
+1. define bounded sealed commands and their pure domain interpretation;
+2. expose exact/page reads and interpret each command against the authoritative
+   current row inside the worker transaction;
 3. verify the stopped-store v5-to-v6 upgrade from canonical journals with
    backup, witnesses, parity, rollback, and reopen; and
 4. cut the public session, Daily, and provider-context consumers over to those
@@ -506,10 +530,10 @@ absent.
 | Cooperative whole-session replay tests | Delete/replace | The target has no active replay, candidate store, generation loader, or release cache. |
 | Board complete-history replay tests | Replace | Test current-row/set controller initialization and the bounded visible working window. |
 | Task snapshot restore tests | Replace | Test query-and-claim runnable state; defer terminal inspection until it has a consumer. |
-| Runtime FIFO, receipt, latency, and owner-local failure tests | Retain/strengthen | Their transport and failure partitions remain valid under query-delta writes. |
+| Runtime transport-buffer, receipt, latency, and owner-local failure tests | Retain/strengthen | Their capacity and failure partitions remain valid, but transport order is not a session semantic guarantee. |
 | Cron/voice/Goodnite/raw-result/session-tmp tests | Retain and adapt | Their application facades enqueue and return; only explicit batch/test storage adapters observe synchronously. |
 
-Exact uncommitted-revision evidence on 2026-09-06:
+Earlier exact-revision evidence on 2026-09-06:
 
 - the package-relevant relational/runtime/application set passed 383/412 with
   zero unexpected results and 29 explicit skips for superseded
@@ -544,8 +568,9 @@ draft and at least three heartbeats live while SQLite is held, rejects any
 interactive aggregate read or runtime await dynamically, rejects the visible
 load-error state, and proves one ordered prompt plus owner-local failure and
 unrelated-session recovery.  The new-chat attachment now establishes its
-future-event subscription before submitting the detached SQLite view; FIFO
-ordering supplies the snapshot/stream cut without a second state authority.
+future-event subscription before submitting the detached SQLite view.  Stable
+event identity and exactly-once rendering close the snapshot/stream race
+without treating transport order as a second state authority.
 On the same corrected tree, =startup-prewarm= passes 1/1 in 0.103772 seconds,
 =daily-query-window= passes 1/1 in 0.907203 seconds, and
 =org-canvas-turn-survives-delayed-persistence= passes 1/1 in 2.492298 seconds.
@@ -553,7 +578,7 @@ The focused chat/query set passes 105 tests with 91 expected, zero unexpected,
 and 14 explicit retired-architecture skips.  The nonblocking reachability
 sweep passes 4/4.  The raw-result truncation suite passes 11/11 after its tests
 were migrated from the intentionally rejected synchronous public read facade
-to an explicit FIFO-ordered test observer.
+to an explicit blocking test observer.
 
 A complete 2026-09-07 repository census before that final test-observer
 correction ran 2,899 tests with 2,797 expected, 36 unexpected, and 66 skipped.
@@ -774,7 +799,7 @@ ordinary interactive durable mirror or blocking composition path.
    request-local query cuts/results, and visible windows only for their live
    request/presentation/execution lifetimes.
 9. *Performance*: startup issues zero domain SQL; interactive paths never wait;
-   pages, context paths, Board windows, FIFO admission, and raw-result content
+   pages, context paths, Board windows, bounded admission, and raw-result content
    have practical bounds.  Durable history growth does not grow retained Emacs
    state outside an explicitly requested viewport.
 10. *Substitutability*: the async ports promise immediately returned =e-work=
@@ -790,7 +815,7 @@ ordinary interactive durable mirror or blocking composition path.
     async v6 caller reaches it.
 13. *Errors*: failed reads settle only their request; failed optimistic writes
     preserve the first bounded diagnostic and fence only their owner; unrelated
-    FIFO work continues through lazy replacement.  Unexpected errors surface at
+    admitted work continues through lazy replacement.  Unexpected errors surface at
     the worker/application boundary instead of being swallowed.
 14. *Tests*: pure query derivation, SQLite transaction/rollback, bounded query,
     Board/task behavior, nonblocking reachability, and raw-result limit tests
@@ -816,7 +841,7 @@ request-local result by presentation generation, and reports failure through
 =on-session-read-error=.  The old unloaded-index probe, session-load request and
 generation variables, checkpoint replay callback, and aggregate-peek preview
 fallback are gone.  The development performance scenario likewise measures a
-bounded visible-message query after FIFO-ordered writes instead of opening a
+bounded visible-message query after explicitly acknowledged writes instead of opening a
 second store and replaying/listing aggregates.  Remaining replay/catalog
 helpers in =e-session.el= are offline/test compatibility boundaries; no shell,
 layer, or default runtime module calls them.
@@ -850,3 +875,62 @@ The repository-wide exact-source suite, run with permission for its
 loopback-only fixtures, passes 2,901/2,901 with zero unexpected results (2,835
 pass and 66 explicit legacy/superseded skips) in 174.442538 seconds.  This run
 includes the durable-mirror reachability and context-default assertions.
+
+* Tool-continuation counterexample and transactional command correction (2026-09-07)
+
+A real second prompt containing a =run_elisp= tool call disproved the preceding
+public-gate claim.  The previous graphical stream emitted assistant text only;
+it never exercised provider -> model-facing tool -> provider continuation.  Two
+aggregate reads therefore survived on that exact path.  The post-tool lifetime
+callback queried the durable current generation, and the continuation preflight
+searched the durable selected path to recover the tool-call entry identity.
+Both reached the async-v6 aggregate rejection after the tool had already run.
+
+The request now owns both facts it creates.  A streamed tool-call message gets
+its durable entry identity before optimistic append, and the active turn carries
+its already-selected context generation through the tool observation.  Neither
+callback queries or reconstructs a session aggregate.  The graphical stream
+fixture now emits a real =run_elisp= call, terminates the first provider request
+with =tool-use=, verifies the tool-call identity and result in the second wire
+request, and only then returns assistant text.  It also retires the completed
+provider request before terminal callbacks so a synchronously started follow-up
+cannot be erased by the fixture itself.
+
+The same counterexample exposed a deeper write-path mistake: the session
+application service was reading the current query row, deriving a record and
+next row in Emacs, and serializing each owner through an application FIFO.  That
+made transport order part of session semantics.  It is removed.  Emacs now
+submits each sealed command independently.  The session worker reads the
+authoritative current row, interprets the command, and commits the journal row,
+current row, and optional tool transition in one SQLite transaction.  The
+process-local owner collection contains only bounded unacknowledged optimistic
+intents for rendering and failure attribution; it is not an execution queue.
+
+The ordering contract is intentionally small:
+
+- independently submitted mutations have no promised order;
+- if A is acknowledged before B is submitted, B is after A; and
+- changes that must be indivisible or internally ordered without waiting are
+  represented by one domain operation and one SQLite transaction.
+
+The external worker transport still has a bounded private frame buffer because
+the subprocess has finite capacity.  That buffer provides resource ownership
+and admission backpressure only.  It is not a linear-history API and callers
+must not infer semantic order from it.
+
+Evidence on the corrected tree:
+
+- session async/query/worker focused tests pass 31/31 with zero unexpected and prove
+  that independent commands submit immediately with no current-row prefetch;
+- loop, harness, session, query-command, and runtime-store tests pass 258/264
+  with zero unexpected and six explicit legacy skips; and
+- the public graphical Org Canvas delayed-persistence scenario passes 1/1 in
+  5.252609 seconds with a real =run_elisp= continuation, live
+  composer/heartbeats, release, exactly-once visible results, owner-local
+  failure, and healthy-sibling readback.
+- the complete repository suite passes 2,901 tests with 2,835 expected, zero
+  unexpected, and 66 explicit superseded/legacy skips in 195.929524 seconds.
+
+All evidence uses disposable stores and isolated Emacs daemons.  The running
+editor and canonical database are not development fixtures; these core changes
+require a full Emacs restart to take effect.

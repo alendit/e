@@ -19,7 +19,7 @@ Feature 92 remains =In-review=: DP5A independently accepted its event-driven
 runtime-store substrate, and independent review accepted the bounded opt-in
 DP5B session-command foundation plus its non-fork durable-mutation expansion.
 The 2026-09-05 pragmatic rebaseline supersedes the unfinished fork/lifecycle and
-exact-accounting gates: current work is one enqueue-and-return worker FIFO,
+exact-accounting gates: current work is enqueue-and-return mutation,
 owner-local persistence-suspect warnings, public Daily/Board/chat composition,
 per-session validation/quarantine, and a classified all-interactive-path audit.
 The accepted-session projection addendum is =Done= in implementation
@@ -27,12 +27,12 @@ The accepted-session projection addendum is =Done= in implementation
 Canvas gate twice, 2,844/2,844 repository tests, and independent implementation
 review.  This closes the reproduced acknowledgement-gated provider-context gap
 without adding a second history authority.  Its minimal runtime-latency
-extension reports bounded process-local active, queued, FIFO-wait,
+extension reports bounded process-local active, transport-buffer wait,
 dispatch-to-settlement, and end-to-end timing through the existing nonblocking
 status surface; it performs no SQLite read to observe SQLite work.  A subsequent
 live startup counterexample invalidated the full-composition prewarm claim:
 session construction still synchronously hydrated the complete catalog and
-enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =In-progress=.  Its current uncommitted
+enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =In-progress=.  Its
 implementation makes startup transport-only; replaces catalog/checkpoint blobs,
 process-wide mirrors, and active aggregates with bounded detached SQLite
 queries; gives Board a bounded live controller; makes task scheduling
@@ -47,7 +47,7 @@ startup-prewarm gate passes 1/1 with 0 unexpected; ERT timing is 0.046125
 seconds (0.047432 seconds test-runner total), with approximately 17 seconds
 wall time including daemon and source loading.  The macOS private
 =CFFIXED_USER_HOME= runner isolation is part of that pass.  DP2--DP5 are
-implemented in the current dirty tree.  The package-relevant suite passes
+implemented in the current delivery package.  The package-relevant suite passes
 383/412 with 29 explicit retired-architecture skips and zero unexpected.  The
 startup, Daily query-window, public Org Canvas delayed
 release/failure/sibling, public new-chat interactive-composer, and stopped-v5
@@ -60,8 +60,7 @@ failed to represent historical journal shapes.  The canonical user store has
 now been explicitly upgraded to schema 6 with an independently verified schema
 5 backup.  The overall
 behavioral goal is Passing on repository-side evidence, while Feature 92 stays
-=In-review= and Addendum 2 stays ledger =In-progress= because this package is
-intentionally uncommitted and has not entered a new review cycle.
+=In-review= and Addendum 2 stays ledger =In-progress= pending focused review.
 
 The final Addendum 2 cleanup removes the remaining production chat
 unloaded-index/checkpoint-loader lifecycle and aggregate-peek preview fallback.
@@ -74,6 +73,21 @@ source regression test rejects any ERT/E2E opt-out.
 The complete exact-source suite passes 2,901/2,901 with zero unexpected results
 when its six loopback fixture tests are permitted; 2,835 execute and 66 explicitly
 superseded/legacy cases skip.
+
+A later live tool continuation invalidated the assistant-only graphical proof.
+The corrected gate now emits a real =run_elisp= call and verifies its result in
+the follow-up provider request.  Request-local turn state owns the tool-call
+entry ID and context generation, so that path no longer reaches a durable
+aggregate.  The session write service also no longer reads current state and
+serializes owners in Emacs: it admits sealed commands independently, and the
+worker interprets each command against SQLite state in the committing
+transaction.  Submission order has no semantic guarantee; acknowledgement
+before a later submission, or one explicit multi-change transaction, is the
+ordering boundary.  The correction passes 31/31 focused session/query/worker tests,
+258/264 broader relevant tests with zero unexpected and six legacy skips, and
+the public delayed Org Canvas tool/release/failure/sibling selector 1/1 in
+5.252609 seconds.  The complete repository suite passes all 2,901 tests with
+2,835 expected results, zero unexpected, and 66 explicit legacy skips.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

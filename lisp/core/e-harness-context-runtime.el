@@ -861,28 +861,6 @@ installed in the session store."
     (plist-put context :lifetime-projection semantic-projection)
     context))
 
-(defun e-harness-context-runtime--lifetime-response-entry-id
-    (harness session-id turn-id &optional response-entry-id)
-  "Return the durable response entry identity for TURN-ID.
-
-RESPONSE-ENTRY-ID is allocated before a non-tool completion preflight and is
-the identity the later assistant append must preserve.  Otherwise resolve the
-already-appended assistant or tool-call entry.  There is no provider-request
-identity fallback: a non-tool completion must carry its durable entry ID."
-  (or response-entry-id
-      (plist-get
-       (car (last
-             (seq-filter
-              (lambda (entry)
-                (and (eq (plist-get entry :type) 'message)
-                     (equal (plist-get entry :turn-id) turn-id)
-                     (memq (plist-get entry :role)
-                           '(assistant tool-call))))
-              (e-session-current-path (e-harness-sessions harness)
-                                      session-id))))
-       :id)
-      nil))
-
 (defun e-harness-context-lifetime-preflight-response
     (harness session-id turn-id active-entry payload)
   "Return a pure curation completion value for PAYLOAD.
@@ -913,10 +891,11 @@ Resolve the provider-request frame before any assistant message is appended.
             (if reserved-response-p
                 (or (plist-get payload :response-entry-id)
                     (e-session-generate-ulid))
-              (e-harness-context-runtime--lifetime-response-entry-id
-               harness session-id turn-id
-               (and (not (plist-get payload :tool-called))
-                    (plist-get payload :response-entry-id))))))
+              ;; The live turn allocates this identity before admitting an
+              ;; assistant or tool-call message.  Completion carries it
+              ;; directly; recovering it from a session aggregate would turn
+              ;; this callback into a durable history read.
+              (plist-get payload :response-entry-id))))
       (unless (or (null effects) (= (length effects) 1))
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation :effect-count (length effects))))

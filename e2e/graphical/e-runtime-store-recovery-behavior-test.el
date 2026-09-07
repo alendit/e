@@ -396,7 +396,7 @@ aggregate or mirror."
       (when database (sqlite-close database)))))
 
 (defun e-runtime-store-recovery-graphical--runtime-operations (runtime)
-  "Return active and queued operation names for RUNTIME in FIFO order."
+  "Return active and transport-buffered operation names for RUNTIME."
   (mapcar
    #'e-runtime-store-request--operation
    (append (and (e-runtime-store--active-request runtime)
@@ -734,7 +734,7 @@ aggregate or mirror."
                  'finished))
            3.0 "Org Canvas session readiness")
           ;; Hold the public Board record so its same-Board classification timer
-          ;; must enqueue routing behind a live SQLite request without freezing
+          ;; must admit routing while a SQLite request is live without freezing
           ;; the Board.  Transcript delay is armed after the provider starts,
           ;; matching the real causal order: the input transcript settles before
           ;; Board publication, while the response and next turn may overlap.
@@ -760,7 +760,7 @@ aggregate or mirror."
            (lambda ()
              (e-runtime-store-recovery-graphical--runtime-operation-p
               runtime 'board-routing-put))
-           3.0 "same-Board classification queued behind held Board record")
+           3.0 "same-Board classification admitted during held Board record")
           (should-not
            (e-board-mutation-frozen-p
             (e-board-registry-board-source-board
@@ -812,7 +812,7 @@ aggregate or mirror."
                           (match-string 1 wire)
                           (match-string 2 wire))))
           (e-runtime-store-recovery-graphical--arm-stall
-           stall-directory 'session-append)
+           stall-directory 'session-command)
           (cl-letf (((symbol-function 'e-runtime-store-await)
                      (lambda (_store request &optional _timeout)
                        (unless synchronous-operation
@@ -823,19 +823,46 @@ aggregate or mirror."
             (e-graphical-test-stream-emit
              stream '(:type reasoning-delta :content "reading the Daily facts")
              0.01)
+            ;; Exercise the real provider -> model-facing tool -> provider
+            ;; continuation lifecycle.  The production failure reported by a
+            ;; Daily user occurred here, after the tool result was appended:
+            ;; the lifetime callback attempted a synchronous session aggregate
+            ;; read even though the initial context was detached from SQLite.
             (e-graphical-test-stream-emit
-             stream (list :type 'assistant-message :content first-response)
+             stream '(:type tool-call
+                       :id "daily-run-elisp"
+                       :name "run_elisp"
+                       :arguments (:stated_purpose "Verify a harmless value."
+                                   :code "(+ 20 22)"))
              0.02)
-            (e-graphical-test-stream-finish stream 0.03)
+            (e-graphical-test-stream-finish stream 0.03 'tool-use)
             (e-graphical-test-wait-until
              (lambda ()
                (or synchronous-operation
                    (e-graphical-test-stream-failure stream)
-                   (not (e-graphical-test-stream-active-p stream))))
-             2.0 "Org Canvas provider callback after delayed admission"))
+                   (and (= (length (e-graphical-test-stream-requests stream)) 2)
+                        (e-graphical-test-stream-active-p stream))))
+             2.0 "Org Canvas provider tool continuation after delayed admission"))
           (when synchronous-operation
             (ert-fail (format "Org Canvas callback awaited %S"
                               synchronous-operation)))
+          (should-not (e-graphical-test-stream-failure stream))
+          (let ((wire
+                 (prin1-to-string
+                  (plist-get
+                   (cadr (e-graphical-test-stream-requests stream))
+                   :messages))))
+            (should (string-match-p "daily-run-elisp" wire))
+            (should (string-match-p "42" wire)))
+          (e-graphical-test-stream-emit
+           stream (list :type 'assistant-message :content first-response)
+           0.01)
+          (e-graphical-test-stream-finish stream 0.02)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (or (e-graphical-test-stream-failure stream)
+                 (not (e-graphical-test-stream-active-p stream))))
+           2.0 "Org Canvas post-tool provider completion")
           (should-not (e-graphical-test-stream-failure stream))
           (with-current-buffer input
             (when (string-match-p "Turn failed" (buffer-string))
@@ -890,8 +917,8 @@ aggregate or mirror."
            1.0 "second Org Canvas provider request while SQLite delayed")
           (let* ((requests (e-graphical-test-stream-requests stream))
                  (wire (prin1-to-string
-                        (plist-get (cadr requests) :messages))))
-            (should (= (length requests) 2))
+                        (plist-get (nth 2 requests) :messages))))
+            (should (= (length requests) 3))
             (should (string-match-p (regexp-quote first-response) wire))
             (should (string-match-p
                      "which project needs a human review" wire))
@@ -916,7 +943,7 @@ aggregate or mirror."
           (should (> heartbeat 3))
           (should (e-session-async-pending-p sessions session-id))
           (e-runtime-store-recovery-graphical--release-stall
-           stall-directory 'session-append)
+           stall-directory 'session-command)
           (e-graphical-test-wait-until
            (lambda ()
              (e-runtime-store-recovery-graphical--pump-runtime runtime)
@@ -1130,7 +1157,7 @@ aggregate or mirror."
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'board-routing-put)
         (e-runtime-store-recovery-graphical--release-stall
-         stall-directory 'session-append)
+         stall-directory 'session-command)
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'session-append-batch))
       (dolist (buffer (list input backing-chat target

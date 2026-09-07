@@ -418,6 +418,17 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
   (e-runtime-store-session-worker-write
    e-runtime-store-worker--database body))
 
+(defun e-runtime-store-worker--session-command (body)
+  "Commit BODY's sealed session command and optional tool transition."
+  (let ((result
+         (e-runtime-store-session-worker-write
+          e-runtime-store-worker--database body))
+        (continuity (plist-get body :continuity)))
+    (when continuity
+      (e-runtime-store-worker--tool-transition
+       (append (list :session-id (plist-get body :session-id)) continuity)))
+    result))
+
 (defun e-runtime-store-worker--tool-transition (body)
   "Commit one typed tool follow-up transition from BODY."
   (let* ((session-id (plist-get body :session-id))
@@ -495,6 +506,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
 (defun e-runtime-store-worker--write-dispatch (body)
   "Execute typed write BODY inside the current transaction."
   (pcase (plist-get body :op)
+    ('session-command (e-runtime-store-worker--session-command body))
     ('session-append (e-runtime-store-worker--session-append body))
     ('session-append-with-tool-transition
      (e-runtime-store-worker--session-append-with-tool-transition body))
