@@ -120,10 +120,14 @@ close wrapper to submit another request to a non-unavailable store."
            (e-runtime-store--client-queue runtime))))
 
 (defun e-runtime-store-recovery-graphical--pump-runtime (runtime)
-  "Dispatch one bounded worker-output turn for RUNTIME inside server ERT."
+  "Dispatch one bounded worker-output turn for RUNTIME inside server ERT.
+Include its subordinate read connection because server-hosted ERT suppresses
+otherwise reentrant process-filter delivery for both transports."
   (when-let* ((process (e-runtime-store--process runtime))
               ((process-live-p process)))
-    (accept-process-output process 0.01)))
+    (accept-process-output process 0.01))
+  (when-let* ((reader (e-runtime-store--read-client runtime)))
+    (e-runtime-store-recovery-graphical--pump-runtime reader)))
 
 (defun e-runtime-store-recovery-graphical--await-with-pump
     (runtime request &optional _timeout)
@@ -176,8 +180,12 @@ aggregate or mirror."
         (progn
           ;; A status read is only a bounded schema/open acknowledgement; it
           ;; ensures no worker still owns the file when fixture SQL begins.
-          (e-runtime-store-call bootstrap 'read '(:op status))
-          (e-runtime-store-close bootstrap)
+          ;; Server-hosted graphical ERT suppresses reentrant filters, so this
+          ;; offline fixture boundary must pump both writer and read transports.
+          (cl-letf (((symbol-function 'e-runtime-store-await)
+                     #'e-runtime-store-recovery-graphical--await-with-pump))
+            (e-runtime-store-call bootstrap 'read '(:op status))
+            (e-runtime-store-close bootstrap))
           (setq bootstrap nil)
           (setq database (sqlite-open database-file))
           (sqlite-execute database "BEGIN IMMEDIATE")
@@ -397,12 +405,15 @@ aggregate or mirror."
       (when database (sqlite-close database)))))
 
 (defun e-runtime-store-recovery-graphical--runtime-operations (runtime)
-  "Return active and transport-buffered operation names for RUNTIME."
-  (mapcar
-   #'e-runtime-store-request--operation
-   (append (and (e-runtime-store--active-request runtime)
-                (list (e-runtime-store--active-request runtime)))
-           (e-runtime-store--client-queue runtime))))
+  "Return active and transport-buffered operations for RUNTIME and its reader."
+  (append
+   (mapcar
+    #'e-runtime-store-request--operation
+    (append (and (e-runtime-store--active-request runtime)
+                 (list (e-runtime-store--active-request runtime)))
+            (e-runtime-store--client-queue runtime)))
+   (when-let* ((reader (e-runtime-store--read-client runtime)))
+     (e-runtime-store-recovery-graphical--runtime-operations reader))))
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-startup-prewarm-is-transport-only ()
   "Graphical startup survives held open and reports an unupgraded v5 store."
@@ -584,9 +595,10 @@ aggregate or mirror."
                 process-environment))
          sessions reader runtime stream harness target input backing-chat session-id
          failure-target failure-input failure-chat failure-id
-         unrelated-target unrelated-input unrelated-chat unrelated-id heartbeat-timer
+         unrelated-target unrelated-input unrelated-chat unrelated-id
+         heartbeat-timers (heartbeats [0 0 0])
+         participant-id participant-work root-board-id
          first-response second-response
-         (heartbeat 0)
          terminal-hook-metadata
          curation-package-bytes large-result-source-label
          (e-org-canvas-input-auto-close-delay nil)
@@ -685,8 +697,15 @@ aggregate or mirror."
           (set-window-buffer (selected-window) target)
           (e-runtime-store-recovery-graphical--arm-stall
            stall-directory 'board-create)
-          (setq heartbeat-timer
-                (run-at-time 0.01 0.01 (lambda () (cl-incf heartbeat))))
+          (setq heartbeat-timers
+                (mapcar
+                 (lambda (index)
+                   (run-at-time
+                    (+ 0.01 (* index 0.005)) 0.01
+                    (lambda ()
+                      (aset heartbeats index
+                            (1+ (aref heartbeats index))))))
+                 '(0 1 2)))
           ;; This is the command Grimoire Daily invokes on a fresh Org buffer.
           ;; No test-only session or Canvas binding exists before this call.
           (setq input
@@ -724,6 +743,10 @@ aggregate or mirror."
                  (buffer-list)))
           (should (stringp session-id))
           (should (buffer-live-p backing-chat))
+          (setq root-board-id
+                (e-board-registry-board-id
+                 (e-chat-service-binding-board
+                  (e-chat-service-binding harness session-id))))
           (should (equal (buffer-local-value 'e-org-canvas-session-id target)
                          session-id))
           (should (eq (window-buffer (selected-window)) input))
@@ -737,6 +760,31 @@ aggregate or mirror."
              (e-runtime-store-recovery-graphical--stall-ready-p
               stall-directory 'board-create))
            2.0 "Org Canvas new-session admission")
+          ;; Grimoire Daily creates its private update participant at this exact
+          ;; point: the root controller is live, while SQLite admission is still
+          ;; held.  The public async API must install only a lightweight binding
+          ;; and return without consulting or awaiting a durable aggregate.
+          (setq participant-id "daily-update-participant"
+                participant-work
+                (with-timeout
+                    (1.0 (error "Private Daily participant admission blocked"))
+                  (e-chat-service-create-participant-start
+                   (e-chat-service-binding-board
+                    (e-chat-service-binding harness session-id))
+                   harness :id participant-id
+                   :pickup-selector '(:tags (grimoire-update))
+                   :observer-selector :self
+                   :default-tags '(grimoire-update) :default-to :self)))
+          (should (e-work-handle-p participant-work))
+          (should (e-chat-service-binding harness participant-id))
+          (should
+           (equal
+            (e-board-registry-board-id
+             (e-chat-service-binding-board
+              (e-chat-service-binding harness participant-id)))
+            root-board-id))
+          (should (memq (plist-get (e-work-status participant-work) :state)
+                        '(created started running)))
           (should
            (e-runtime-store-recovery-graphical--runtime-operation-p
             runtime 'board-participant-put))
@@ -748,7 +796,7 @@ aggregate or mirror."
             (e-graphical-test-type-text
              (concat "Remember this Daily decision: project Juniper uses alert "
                      "amber. Confirm both.")))
-          (should (> heartbeat 3))
+          (should (seq-every-p (lambda (count) (> count 0)) heartbeats))
           (should-not
            (e-board-mutation-frozen-p
             (e-board-registry-board-source-board
@@ -763,12 +811,15 @@ aggregate or mirror."
           (e-graphical-test-wait-until
            (lambda ()
              (e-runtime-store-recovery-graphical--pump-runtime runtime)
-             (eq (plist-get
-                  (e-work-status
-                   (e-chat-service-binding-readiness-work
-                    (e-chat-service-binding harness session-id)))
-                  :state)
-                 'finished))
+             (and
+              (eq (plist-get
+                   (e-work-status
+                    (e-chat-service-binding-readiness-work
+                     (e-chat-service-binding harness session-id)))
+                   :state)
+                  'finished)
+              (eq (plist-get (e-work-status participant-work) :state)
+                  'finished)))
            3.0 "Org Canvas session readiness")
           ;; Hold the public Board record so its same-Board classification timer
           ;; must admit routing while a SQLite request is live without freezing
@@ -1108,7 +1159,7 @@ aggregate or mirror."
                  (not (e-graphical-test-stream-active-p stream))))
            2.0 "second data-dependent provider completion")
           (should-not (e-graphical-test-stream-failure stream))
-          (should (> heartbeat 3))
+          (should (seq-every-p (lambda (count) (> count 3)) heartbeats))
           (should (e-session-async-pending-p sessions session-id))
           (e-runtime-store-recovery-graphical--release-stall
            stall-directory 'session-command)
@@ -1141,6 +1192,22 @@ aggregate or mirror."
               (lambda (message)
                 (equal (plist-get message :content) second-response))
               (plist-get visible :messages))))
+          (let ((association
+                 (cl-letf
+                     (((symbol-function 'e-runtime-store-await)
+                       #'e-runtime-store-recovery-graphical--await-with-pump))
+                   (e-runtime-store-call
+                    runtime 'read
+                    (list :op 'session-board-association
+                          :session-id participant-id)))))
+            (should (equal (plist-get association :board-id) root-board-id))
+            (should (equal (plist-get association :association-role)
+                           "participant"))
+            (should
+             (equal
+              (plist-get (plist-get association :routing-policy)
+                         :default-tags)
+              '(grimoire-update))))
 
           ;; Fail a second real Org Canvas Daily during its session admission.
           ;; Only that session/Board owner becomes suspect; the first Daily and
@@ -1308,7 +1375,8 @@ aggregate or mirror."
             (should (equal (plist-get query-state :session-id) unrelated-id))
             (should
              (plist-get (plist-get query-state :metadata) :org-canvas-ref))))
-      (when (timerp heartbeat-timer) (cancel-timer heartbeat-timer))
+      (dolist (timer heartbeat-timers)
+        (when (timerp timer) (cancel-timer timer)))
       (when (e-graphical-test-stream-p stream)
         (e-graphical-test-stream-cancel stream))
       (when service-subscription
@@ -1859,7 +1927,9 @@ aggregate or mirror."
           (setq runtime (e-runtime-store-open directory))
           ;; The bounded status observation settles the transport open before
           ;; the session adapter starts its three held query reads.
-          (e-runtime-store-call runtime 'read '(:op status))
+          (cl-letf (((symbol-function 'e-runtime-store-await)
+                     #'e-runtime-store-recovery-graphical--await-with-pump))
+            (e-runtime-store-call runtime 'read '(:op status)))
           (setq sessions
                 (e-session-sqlite-store-create
                  directory :runtime-store runtime))
@@ -1996,7 +2066,10 @@ aggregate or mirror."
                        (eq (plist-get sample :operation)
                            'board-controller-state))
                      (plist-get
-                      (plist-get (e-runtime-store-status runtime) :latencies)
+                      (plist-get
+                       (plist-get (e-runtime-store-status runtime)
+                                  :read-transport)
+                       :latencies)
                       :recent))))
               (should binding)
               (should (<= (e-board-message-count source)

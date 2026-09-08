@@ -5,9 +5,10 @@
 
 ;;; Commentary:
 
-;; Owns one batch-Emacs worker, typed request framing, bounded scheduling,
-;; failure propagation, liveness, and runtime ownership.  This module knows
-;; no session, Board, resource, or tool policy and never opens SQLite itself.
+;; Owns a lifecycle writer and its subordinate read-only batch-Emacs transport,
+;; typed request framing, bounded scheduling, failure propagation, liveness,
+;; and runtime ownership.  This module knows no session, Board, resource, or
+;; tool policy and never opens SQLite itself.
 
 ;;; Code:
 
@@ -118,7 +119,8 @@ request/token budget so a full cold queue can still become ready.")
                (:constructor e-runtime-store--create)
                (:predicate e-runtime-store-p)
                (:conc-name e-runtime-store--))
-  directory database-file runtime-id process opened-process stderr-buffer input-fragment
+  directory database-file runtime-id access-mode parent-store read-client
+  process opened-process stderr-buffer input-fragment
   (sequence 0) pending client-queue active-request
   starting-request last-error unavailable-cause startup-status unavailable closed
   suspect-owners
@@ -139,6 +141,7 @@ request/token budget so a full cold queue can still become ready.")
   settled-at timeout-interval
   write-prefix owner-key
   operation frame-bytes retained-bytes notification observer observer-detached
+  owner-store
   frame-escrow)
 
 (defun e-runtime-store--worker-file ()
@@ -211,6 +214,7 @@ limit is mechanically derived from the canonical limit."
   (list :id (e-runtime-store-request--id request)
         :kind 'open :directory (e-runtime-store--directory store)
         :runtime-id (e-runtime-store--runtime-id store)
+        :access-mode (e-runtime-store--access-mode store)
         :parent-identity (e-runtime-store--parent-identity)))
 
 (defun e-runtime-store--prepare-open-control (store)
@@ -227,6 +231,7 @@ nor a notification token."
                :id (e-runtime-store--next-id store "open") :kind 'open
                :body nil :state 'submitted :submitted-at now
                :first-submitted-at now
+               :owner-store store
                :timeout-interval e-runtime-store-request-timeout))
              (value (e-runtime-store--open-control-frame store request))
              (bytes (e-runtime-store-codec-measure-bounded
@@ -718,7 +723,19 @@ continues to own its own admission reservation."
    ((eq (e-runtime-store-request--kind request) 'open)
     (when (eq (e-runtime-store-request--state request) 'committed)
       (setf (e-runtime-store--opened-process store)
-            (e-runtime-store--process store)))
+            (e-runtime-store--process store))
+      ;; Prewarm the subordinate read transport after (and only after) the
+      ;; writer has created and verified the schema.  This opens no domain
+      ;; state, but keeps the first interactive query from paying process
+      ;; startup latency or joining the writer's lane.
+      (when (and (eq (e-runtime-store--access-mode store) 'read-write)
+                 (null (e-runtime-store--parent-store store)))
+        (condition-case err
+            (e-runtime-store--read-client-for store)
+          (error
+           ;; Reader setup is request-local capacity.  The writer remains the
+           ;; healthy durable authority and a later read retries lazily.
+           (setf (e-runtime-store--last-error store) err)))))
     ;; A selected queue entry may have cancelled or expired while open was in
     ;; flight.  Never let that stale identity explain a later startup result.
     (unless (or (null (e-runtime-store--starting-request store))
@@ -1446,6 +1463,7 @@ choose immediate local finalization without letting the close escape the cap."
                       :id (format "%s:close:%d" (e-runtime-store--runtime-id store)
                                   (1+ (e-runtime-store--sequence store)))
                       :kind 'close :body nil :state 'queued
+                      :owner-store store
                       :admitted-at (float-time)
                       :timeout-interval e-runtime-store-request-timeout)))
         ;; This is a client request, not scheduler scaffolding.  Preflight
@@ -1633,6 +1651,19 @@ bounded `(DOMAIN . OWNER-ID)' pair supplied by a session/Board adapter.  It is
 retained only on the private request and never enters BODY or the worker frame."
   (unless (memq kind '(read write))
     (signal 'wrong-type-argument (list '(member read write) kind)))
+  (when (e-runtime-store--closed store)
+    (signal 'e-runtime-store-unavailable (list "Store is closed")))
+  (when (e-runtime-store--unavailable store)
+    (e-runtime-store--signal-unavailable store))
+  ;; Once the writer has opened the canonical database, independent reads use
+  ;; a subordinate read-only connection.  SQLite WAL, rather than the writer
+  ;; transport's private FIFO, then decides concurrency.  Cold reads remain on
+  ;; the writer until schema creation or verification has completed.
+  (when (and (eq kind 'read)
+             (eq (e-runtime-store--access-mode store) 'read-write)
+             (eq (e-runtime-store--opened-process store)
+                 (e-runtime-store--process store)))
+    (setq store (e-runtime-store--read-client-for store)))
   (unless (or (null owner-key)
               (and (eq kind 'write)
                    (consp owner-key)
@@ -1646,10 +1677,6 @@ retained only on the private request and never enters BODY or the worker frame."
   ;; request, byte, or notification ownership.  A copy failure is therefore an
   ;; atomic admission rejection rather than a leaked preflight reservation.
   (setq owner-key (e-runtime-store--copy-owner-key owner-key))
-  (when (e-runtime-store--closed store)
-    (signal 'e-runtime-store-unavailable (list "Store is closed")))
-  (when (e-runtime-store--unavailable store)
-    (e-runtime-store--signal-unavailable store))
   (when (and owner-key
              (hash-table-p (e-runtime-store--suspect-owners store))
              (gethash owner-key (e-runtime-store--suspect-owners store)))
@@ -1665,6 +1692,7 @@ retained only on the private request and never enters BODY or the worker frame."
           :id (e-runtime-store--next-id store
                                          (if (eq kind 'write) "w" "r"))
           :kind kind :body body :state 'queued :admitted-at (float-time)
+          :owner-store store
           :timeout-interval e-runtime-store-request-timeout
           :write-prefix (and (eq kind 'write)
                              (cl-incf (e-runtime-store--write-prefix-sequence store))))))
@@ -1699,6 +1727,7 @@ from the stable public `e-runtime-store-submit' ABI."
   "Cancel REQUEST before submission.
 Return `dropped' for queued work, `detached' for submitted reads, and
 `in-flight' for submitted writes."
+  (setq store (or (e-runtime-store-request--owner-store request) store))
   (pcase (e-runtime-store-request--state request)
     ('queued
      (e-runtime-store--remove-queued-request store request)
@@ -1848,25 +1877,57 @@ opens, dispatches, expires, recovers, cancels, or settles transport work."
                "SIBLING_BACKUP, then restart Emacs")
        directory directory)))))
 
-(cl-defun e-runtime-store-open (directory &key runtime-id reservation)
+(defun e-runtime-store--read-client-for (store)
+  "Return STORE's subordinate read client, replacing a failed client locally."
+  (let ((reader (e-runtime-store--read-client store)))
+    (when (and reader
+               (or (e-runtime-store--closed reader)
+                   (e-runtime-store--unavailable reader)))
+      (ignore-errors (e-runtime-store-shutdown reader))
+      (setq reader nil)
+      (setf (e-runtime-store--read-client store) nil))
+    (or reader
+        (let ((created
+               (e-runtime-store-open
+                (e-runtime-store--directory store)
+                :runtime-id (format "%s-read" (e-runtime-store--runtime-id store))
+                :reservation (e-runtime-store--reservation store)
+                :access-mode 'read-only
+                :parent-store store)))
+          (setf (e-runtime-store--read-client store) created)
+          created))))
+
+(cl-defun e-runtime-store-open
+    (directory &key runtime-id reservation (access-mode 'read-write) parent-store)
   "Create STORE and begin its asynchronous cold-open phase.
 
 This returns before the worker's open acknowledgement.  Submission never
 waits for or advances that phase; an entirely cold test/store can equivalently
 be constructed with the private constructor used by scheduler tests."
+  (unless (memq access-mode '(read-write read-only))
+    (signal 'wrong-type-argument
+            (list '(member read-write read-only) access-mode)))
   (let* ((directory (file-name-as-directory (expand-file-name directory)))
          (database-file (expand-file-name "store.sqlite3" directory))
          (store (e-runtime-store--create
                  :directory directory
                  :database-file database-file
+                 :access-mode access-mode
+                 :parent-store parent-store
                  :runtime-id (or runtime-id
                                  (format "%x-%x-%x" (emacs-pid)
                                          (truncate (* 1000000 (float-time)))
                                          (random most-positive-fixnum)))
                  :pending (make-hash-table :test 'equal)
                  :reservation (or reservation e-runtime-store--default-reservation))))
-    (e-runtime-store--reject-legacy-only-directory directory database-file)
-    (make-directory directory t)
+    (when (eq access-mode 'read-write)
+      (e-runtime-store--reject-legacy-only-directory directory database-file)
+      (make-directory directory t))
+    (when (and (eq access-mode 'read-only)
+               (not (file-exists-p database-file)))
+      (signal 'e-runtime-store-unavailable
+              (list "Read client requires an initialized SQLite store"
+                    :database-file database-file)))
     (condition-case err
         (progn
           ;; Open preflight is deliberately before process creation: a bad
@@ -1905,6 +1966,11 @@ be constructed with the private constructor used by scheduler tests."
 
 (defun e-runtime-store-close (store)
   "Compatibility observer for STORE's private asynchronous close request."
+  (when-let* ((reader (e-runtime-store--read-client store)))
+    ;; A read-only connection owns no durable retirement state.  Tear it down
+    ;; locally before the writer's explicit retirement boundary.
+    (e-runtime-store-shutdown reader)
+    (setf (e-runtime-store--read-client store) nil))
   (unless (e-runtime-store--closed store)
     (let ((busy (e-runtime-store--active-request store))
           (request (and (not (e-runtime-store--unavailable store))
@@ -1940,6 +2006,9 @@ acknowledged by SQLite remains durable; queued or in-flight work is failed
 locally because Emacs is exiting and cannot observe later completion.  Use
 `e-runtime-store-close' only at explicit graceful operator or test boundaries
 that require worker retirement acknowledgement."
+  (when-let* ((reader (e-runtime-store--read-client store)))
+    (e-runtime-store-shutdown reader)
+    (setf (e-runtime-store--read-client store) nil))
   (unless (e-runtime-store--closed store)
     (e-runtime-store--finalize-close store))
   t)
@@ -1954,6 +2023,7 @@ samples separating queue, dispatch-to-settlement, and total milliseconds."
         (now (float-time)))
     (list :database-file (e-runtime-store--database-file store)
           :runtime-id (e-runtime-store--runtime-id store)
+          :access-mode (e-runtime-store--access-mode store)
           :worker-live (and (e-runtime-store--live-p store) t)
           :worker-pid (and (e-runtime-store--live-p store)
                            (process-id (e-runtime-store--process store)))
@@ -1981,7 +2051,10 @@ samples separating queue, dispatch-to-settlement, and total milliseconds."
                           (e-runtime-store--suspect-owners store))
                  (nreverse owners)))
           :last-error (e-runtime-store--last-error store)
-          :startup (e-runtime-store--startup-status store))))
+          :startup (e-runtime-store--startup-status store)
+          :read-transport
+          (when-let* ((reader (e-runtime-store--read-client store)))
+            (e-runtime-store-status reader)))))
 
 (provide 'e-runtime-store)
 

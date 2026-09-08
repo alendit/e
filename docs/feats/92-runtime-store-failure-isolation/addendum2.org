@@ -251,6 +251,19 @@ that is private resource ownership rather than a session consistency contract.
 Backpressure may reject admission at the bound; it must not turn an interactive
 call into a wait.
 
+The initial implementation incorrectly mapped that private buffer onto one
+physical worker lane for both reads and writes.  The public delayed-Daily gate
+then reproduced the consequence: a held =board-record-put= prevented an
+independent provider-context read from even reaching SQLite.  Ordinary runtime
+composition therefore owns a subordinate read-only SQLite connection in
+addition to its lifecycle-owning writer connection.  WAL provides the database
+snapshot and concurrency semantics.  The read connection is prewarmed only
+after the writer has created and verified the schema; its open performs no
+domain query, it owns no database-lifecycle claim, and it is torn down with its
+writer.  A read transport failure is replaceable locally and cannot fence
+writer admission.  Runtime status reports the two transports and their bounded
+latency samples separately so FIFO wait cannot hide behind a combined number.
+
 ** Session deltas and offline upgrade
 
 The session domain owns exhaustive sealed-command interpretation.  The worker
@@ -692,8 +705,8 @@ canonical store.
 
 - replacing SQLite or the external worker;
 - moving SQL into the main Emacs process;
-- adding a second worker, generic cache, ORM, repository, event bus, or CQRS
-  framework;
+- a generic cache, ORM, repository, event bus, CQRS framework, or a speculative
+  connection pool beyond the one reproduced read/write isolation boundary;
 - keeping catalog/checkpoint blobs under another name;
 - whole or active session replay, private candidate stores, generation loaders,
   active durable replicas, or release caches;
@@ -1093,3 +1106,49 @@ Evidence on the corrected tree:
 This record was rejected before persistence, so no database migration or
 repair is required.  The correction changes core context-lifetime code and
 requires a full Emacs restart before a live editor uses it.
+
+* Grimoire callers use asynchronous participant admission (2026-09-08)
+
+The remaining Grimoire Daily entry points still depended on synchronous
+session construction and aggregate lookup.  On a fresh Emacs start that made
+the private Daily update participant fail with the intentional async-store
+aggregate rejection, leaving the interactive Board without the runtime
+participant its timer expected.
+
+The chat application service now owns one consumer-shaped asynchronous
+participant-start operation.  It immediately installs the live Board binding,
+enqueues session creation and association, and settles an =e-work= handle when
+admission succeeds or fails.  Grimoire's Daily and topic controllers use that
+operation and continue their work from its settlement; they no longer inspect
+the session aggregate, session catalog, or runtime store directly.  The
+Grimoire capability layer also stopped enumerating durable sessions merely to
+decorate presentation results.
+
+The delayed-write acceptance run exposed a separate transport coupling: an
+independent bounded read still waited behind a held write because both used one
+worker connection.  The runtime now owns a lifecycle writer plus one
+subordinate read-only SQLite connection.  WAL remains the ordering and
+visibility authority.  Reads do not join the writer's application queue, and
+the two transports expose separate bounded latency status.  The reader opens
+only after the writer has established schema 6, performs no domain SQL during
+startup, and can be replaced without fencing writer admission.
+
+Evidence on the corrected source:
+
+- the focused e runtime/session/chat/subagent suite passes 207 tests with 193
+  expected, 14 explicit legacy/UI skips, and zero unexpected;
+- Grimoire's topic-session, Daily-run, and commit suites pass 11/11, 46/46, and
+  16/16 respectively, and a production-source scan finds no remaining calls to
+  the retired synchronous session/aggregate/store APIs;
+- the graphical startup-prewarm selector passes 1/1 in 0.146194 seconds and
+  observes no domain SQL;
+- the graphical bounded existing-Daily query selector passes 1/1 in 0.938224
+  seconds while retaining none of 1,277 unrelated sessions; and
+- the public Org Canvas delayed-write/release/failure/healthy-sibling selector
+  passes 1/1 in 5.240772 seconds, including the private Daily participant,
+  three independent heartbeats, live composer input, one ordered visible
+  result, owner-local failure, and sibling persistence/readback.
+
+This slice introduces no durable Emacs replica.  SQLite owns durable facts;
+the chat service owns participant admission; a Board binding owns only live
+coordination; and Grimoire owns Daily scheduling and presentation policy.

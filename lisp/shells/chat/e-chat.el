@@ -1823,14 +1823,17 @@ When SESSION-ID is nil, create a private execution session for the participant."
                                 (list :default-to default-to))))
                 (apply #'e-chat-service-open-board
                        board harness session-id routing-arguments))
-            (let ((session
-                   (e-chat-service-create-participant
-                    board harness :metadata metadata
-                    :participant-id participant-id
-                    :pickup-selector pickup-selector
-                    :observer-selector observer-selector
-                    :default-tags default-tags :default-to default-to)))
-              (e-chat-service-ensure-binding harness (plist-get session :id)))))
+            (let ((new-session-id (e-session-generate-id)))
+              (e-chat-service-create-participant-start
+               board harness :id new-session-id :metadata metadata
+               :participant-id participant-id
+               :pickup-selector pickup-selector
+               :observer-selector observer-selector
+               :default-tags default-tags :default-to default-to)
+              (or (e-chat-service-binding harness new-session-id)
+                  (signal 'e-session-error
+                          (list "Participant binding admission failed"
+                                new-session-id))))))
          (buffer
           (e-chat-open-session
            harness (e-chat-service-binding-session-id binding)

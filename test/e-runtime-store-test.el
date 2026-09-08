@@ -370,6 +370,61 @@
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('writer_commands','owner_revisions')"))
         (sqlite-close database)))))
 
+(ert-deftest e-runtime-store-s92-held-write-does-not-block-independent-read ()
+  "A submitted writer cannot monopolize the prewarmed read-only transport."
+  (let* ((directory (make-temp-file "e-runtime-store-read-lane-" t))
+         (stall-directory (make-temp-file "e-runtime-store-read-stall-" t))
+         (process-environment
+          (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" stall-directory)
+                process-environment))
+         store held read)
+    (unwind-protect
+        (progn
+          (setq store (e-runtime-store-open directory))
+          (e-runtime-store-test--wait-ready store)
+          (e-runtime-store-call
+           store 'write
+           (e-runtime-store-test--session-append-body "s" '(:value one)))
+          (write-region "hold" nil
+                        (expand-file-name "session-append.hold" stall-directory)
+                        nil 'silent)
+          (setq held
+                (e-runtime-store-submit
+                 store 'write
+                 (e-runtime-store-test--session-append-body
+                  "s" '(:value two) 2)))
+          (let ((deadline (+ (float-time) 2.0))
+                (ready (expand-file-name "session-append.ready"
+                                         stall-directory)))
+            (while (and (not (file-exists-p ready))
+                        (< (float-time) deadline))
+              (sit-for 0.01))
+            (should (file-exists-p ready)))
+          (setq read
+                (e-runtime-store-submit
+                 store 'read
+                 '(:op session-record-page :session-id "s" :after 0 :limit 8)))
+          (should (eq (e-runtime-store-request--owner-store read)
+                      (e-runtime-store--read-client store)))
+          (let ((page (e-runtime-store-await store read 1.0)))
+            (should (= (length (plist-get page :records)) 1)))
+          (should (eq (e-runtime-store-request--state held) 'submitted))
+          (write-region "release" nil
+                        (expand-file-name "session-append.release" stall-directory)
+                        nil 'silent)
+          (e-runtime-store-await store held 2.0)
+          (should
+           (= (length
+               (plist-get
+                (e-runtime-store-call
+                 store 'read
+                 '(:op session-record-page :session-id "s" :after 0 :limit 8))
+                :records))
+              2)))
+      (when store (ignore-errors (e-runtime-store-close store)))
+      (delete-directory directory t)
+      (delete-directory stall-directory t))))
+
 (ert-deftest e-runtime-store-s2-drops-redundant-session-position-index ()
   "The session primary key is the only index on its identical column pair."
   (let ((directory (make-temp-file "e-runtime-store-index-test-" t))

@@ -58,6 +58,7 @@
 (defvar e-runtime-store-worker--database-file nil)
 (defvar e-runtime-store-worker--runtime-id nil)
 (defvar e-runtime-store-worker--ownership nil)
+(defvar e-runtime-store-worker--access-mode 'read-write)
 
 (defun e-runtime-store-worker--test-fault (point &optional request)
   "Terminate at private test POINT when the one-shot worker seam requests it.
@@ -270,6 +271,38 @@ normal worker and the stopped-store upgrader."
        (vector e-runtime-store-worker-schema-version "new-current-schema"
                (secure-hash 'sha256 "feature92-schema-v6") (float-time))))))
 
+(defun e-runtime-store-worker--verify-schema-read-only ()
+  "Verify that the read-only connection targets the current schema."
+  (unless (car (sqlite-select
+                e-runtime-store-worker--database
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_meta'"))
+    (signal 'e-runtime-store-schema-too-old
+            (list :actual 'legacy-or-unversioned
+                  :required e-runtime-store-worker-schema-version
+                  :operation 'e-runtime-migration-run)))
+  (let* ((row (car (sqlite-select
+                    e-runtime-store-worker--database
+                    "SELECT value FROM store_meta WHERE key='schema_version'")))
+         (version (and row
+                       (string-to-number
+                        (e-runtime-store-worker--column row 0)))))
+    (cond
+     ((null version)
+      (signal 'e-runtime-store-schema-too-old
+              (list :actual 'unversioned
+                    :required e-runtime-store-worker-schema-version
+                    :operation 'e-runtime-store-offline-upgrade)))
+     ((< version e-runtime-store-worker-schema-version)
+      (signal 'e-runtime-store-schema-too-old
+              (list :actual version
+                    :required e-runtime-store-worker-schema-version
+                    :operation 'e-runtime-store-offline-upgrade)))
+     ((> version e-runtime-store-worker-schema-version)
+      (signal 'e-runtime-store-schema-too-new
+              (list :actual version
+                    :supported e-runtime-store-worker-schema-version)))))
+  t)
+
 (defun e-runtime-store-worker--default-parent-identity ()
   "Return a bounded identity for direct worker-owner calls.
 The scheduler always supplies its own identity.  This fallback keeps focused
@@ -363,42 +396,56 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
        (ignore-errors (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
        (signal (car err) (cdr err))))))
 
-(defun e-runtime-store-worker--open (directory runtime-id &optional parent-identity)
+(defun e-runtime-store-worker--open
+    (directory runtime-id &optional parent-identity access-mode)
   "Open DIRECTORY for RUNTIME-ID under scheduler PARENT-IDENTITY."
   (unless (sqlite-available-p)
     (signal 'e-runtime-store-worker-error (list "SQLite is unavailable")))
+  (setq access-mode (or access-mode 'read-write))
+  (unless (memq access-mode '(read-write read-only))
+    (signal 'wrong-type-argument
+            (list '(member read-write read-only) access-mode)))
   (setq directory (file-name-as-directory (expand-file-name directory))
         e-runtime-store-worker--runtime-id runtime-id
+        e-runtime-store-worker--access-mode access-mode
         e-runtime-store-worker--database-file
         (expand-file-name "store.sqlite3" directory))
-  (make-directory directory t)
-  (set-file-modes directory #o700)
-  ;; The file lock is the authority.  Do not inspect SQLite or its old owner
-  ;; metadata until this process holds the shared ordinary/offline claim.
-  (setq e-runtime-store-worker--ownership
-        (e-runtime-store-ownership-acquire
-         e-runtime-store-worker--database-file runtime-id 'ordinary))
+  (when (eq access-mode 'read-write)
+    (make-directory directory t)
+    (set-file-modes directory #o700)
+    ;; The writer owns runtime lifecycle.  Its read-only sibling is subordinate
+    ;; to the same parent and never competes for this exclusive claim.
+    (setq e-runtime-store-worker--ownership
+          (e-runtime-store-ownership-acquire
+           e-runtime-store-worker--database-file runtime-id 'ordinary)))
   (let ((opened nil))
     (unwind-protect
         (let ((new-store-p
                (not (file-exists-p e-runtime-store-worker--database-file))))
+          (when (and (eq access-mode 'read-only) new-store-p)
+            (signal 'e-runtime-store-worker-error
+                    (list "Read-only worker requires an existing database")))
           (setq e-runtime-store-worker--database
-                (sqlite-open e-runtime-store-worker--database-file))
+                (sqlite-open e-runtime-store-worker--database-file
+                             (eq access-mode 'read-only)))
           (sqlite-execute e-runtime-store-worker--database "PRAGMA foreign_keys=ON")
-          (sqlite-select e-runtime-store-worker--database "PRAGMA journal_mode=WAL")
-          (sqlite-execute e-runtime-store-worker--database "PRAGMA synchronous=NORMAL")
+          (when (eq access-mode 'read-write)
+            (sqlite-select e-runtime-store-worker--database "PRAGMA journal_mode=WAL")
+            (sqlite-execute e-runtime-store-worker--database "PRAGMA synchronous=NORMAL"))
           (sqlite-execute e-runtime-store-worker--database "PRAGMA busy_timeout=2500")
-          (e-runtime-store-worker--schema new-store-p)
-          (e-runtime-store-worker--install-runtime-state
-           runtime-id
-           (e-runtime-store-worker--parent-identity
-            (or parent-identity
-                (e-runtime-store-worker--default-parent-identity))))
-          (e-runtime-store-worker--permissions)
+          (if (eq access-mode 'read-only)
+              (e-runtime-store-worker--verify-schema-read-only)
+            (e-runtime-store-worker--schema new-store-p)
+            (e-runtime-store-worker--install-runtime-state
+             runtime-id
+             (e-runtime-store-worker--parent-identity
+              (or parent-identity
+                  (e-runtime-store-worker--default-parent-identity))))
+            (e-runtime-store-worker--permissions))
           (setq opened t)
           (list :schema-version e-runtime-store-worker-schema-version
                 :database-file e-runtime-store-worker--database-file
-                :runtime-id runtime-id :pid (emacs-pid)
+                :runtime-id runtime-id :pid (emacs-pid) :access-mode access-mode
                 :journal-mode "wal" :synchronous "normal"))
       (unless opened
         (e-runtime-store-worker--close)))))
@@ -835,9 +882,16 @@ acknowledgement prefix."
   (pcase (plist-get request :kind)
     ('open (e-runtime-store-worker--open
             (plist-get request :directory) (plist-get request :runtime-id)
-            (plist-get request :parent-identity)))
-    ('close (e-runtime-store-worker--retire request))
-    ('write (e-runtime-store-worker--write request))
+            (plist-get request :parent-identity)
+            (plist-get request :access-mode)))
+    ('close (if (eq e-runtime-store-worker--access-mode 'read-only)
+                (list :runtime-id e-runtime-store-worker--runtime-id
+                      :retired t :read-only t)
+              (e-runtime-store-worker--retire request)))
+    ('write (if (eq e-runtime-store-worker--access-mode 'read-only)
+                (signal 'e-runtime-store-worker-error
+                        (list "Read-only worker rejected a mutation"))
+              (e-runtime-store-worker--write request)))
     ('read (e-runtime-store-worker--read (plist-get request :body)))
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown request kind" (plist-get request :kind))))))

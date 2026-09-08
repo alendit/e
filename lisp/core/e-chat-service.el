@@ -241,6 +241,12 @@
   work store session-id board-storage binding session-result session-committed
   error)
 
+(cl-defstruct (e-chat-service-participant-operation
+               (:constructor e-chat-service--participant-operation-create))
+  "One async admission of a private session into an already-live Board."
+  work board harness store session-id metadata participant-id pickup-selector
+  observer-selector default-tags default-to binding session-result settled)
+
 (cl-defstruct (e-chat-service-bind-operation
                (:constructor e-chat-service--bind-operation-create))
   "One request-local composition of association query and Board controller."
@@ -253,6 +259,15 @@
    :runner
    (lambda (_work operation _context)
      (e-chat-service--start-create-operation operation)
+     :deferred)))
+
+(defconst e-chat-service--participant-operation-spec
+  (e-work-spec-create
+   :id "chat-participant-create" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (_work operation _context)
+     (e-chat-service--start-participant-operation operation)
      :deferred)))
 
 (cl-defstruct (e-chat-service-projection
@@ -2024,6 +2039,165 @@ LIMIT defaults to the registry's fixed page bound."
   (if limit
       (e-board-registry-list-page :after after :limit limit)
     (e-board-registry-list-page :after after)))
+
+(defun e-chat-service--finish-participant-operation
+    (operation result error)
+  "Settle participant OPERATION exactly once with RESULT or ERROR."
+  (unless (e-chat-service-participant-operation-settled operation)
+    (setf (e-chat-service-participant-operation-settled operation) t)
+    (let ((work (e-chat-service-participant-operation-work operation))
+          (binding (e-chat-service-participant-operation-binding operation)))
+      (if error
+          (progn
+            (when binding
+              (setf (e-chat-service-binding-first-persistence-error binding)
+                    (copy-tree error t)))
+            (e-work-fail work error))
+        (when binding
+          (e-chat-service--publish-ready-binding binding))
+        (e-work-finish work (copy-tree result t))))))
+
+(defun e-chat-service--start-participant-operation (operation)
+  "Install OPERATION's live participant and enqueue its session admission."
+  (condition-case error
+      (let* ((board
+              (e-board-registry-get
+               (e-chat-service-participant-operation-board operation)))
+             (harness
+              (e-chat-service-participant-operation-harness operation))
+             (store (e-chat-service-participant-operation-store operation))
+             (session-id
+              (e-chat-service-participant-operation-session-id operation))
+             (participant-id
+              (or (e-chat-service-participant-operation-participant-id operation)
+                  (e-board-registry-allocate-participant-id board)))
+             (principal (e-board-registry-board-principal board))
+             (pickup-selector
+              (or (e-chat-service-participant-operation-pickup-selector operation)
+                  '(:tags (main))))
+             (observer-selector
+              (or (e-chat-service-participant-operation-observer-selector operation)
+                  '(:tags (main))))
+             (default-tags
+              (or (e-chat-service-participant-operation-default-tags operation)
+                  '(main)))
+             (routing-policy
+              (e-chat-service--routing-policy
+               participant-id pickup-selector observer-selector default-tags
+               (e-chat-service-participant-operation-default-to operation)))
+             (_
+              (e-board-runtime-admission-available-p
+               board harness session-id participant-id
+               :principal principal :require-session nil))
+             (session
+              (e-session-board-admission-records
+               :id session-id
+               :metadata
+               (e-chat-service-participant-operation-metadata operation)
+               :principal principal
+               :board-id (e-board-registry-board-id board)
+               :association-role e-chat-service--board-role-participant
+               :routing-policy routing-policy))
+             (records (plist-get session :admission-records))
+             (query-delta
+              (e-session-query-derive
+               (e-chat-service--annotate-admission-records records)))
+             (binding
+              (e-chat-service--install-participant-binding
+               board harness session-id
+               :participant-id participant-id
+               :pickup-selector (plist-get routing-policy :pickup-selector)
+               :observer-selector (plist-get routing-policy :observer-selector)
+               :default-tags (plist-get routing-policy :default-tags)
+               :default-to (plist-get routing-policy :default-to)
+               :pending-session t :defer-participant-publication t)))
+        (setf (e-chat-service-participant-operation-binding operation) binding
+              (e-chat-service-participant-operation-session-result operation)
+              (copy-tree session t)
+              (e-chat-service-binding-readiness-work binding)
+              (e-chat-service-participant-operation-work operation))
+        (e-session-async-prime-new-context-path store query-delta)
+        (e-session-storage-submit-owned
+         store session-id
+         (list :op 'session-append-batch :session-id session-id
+               :records (vconcat records) :query-delta query-delta)
+         (lambda (_result write-error)
+           (if write-error
+               (e-chat-service--finish-participant-operation
+                operation nil
+                (e-session-note-persistence-failure
+                 store session-id write-error))
+             (condition-case publish-error
+                 (progn
+                   ;; The session declaration is committed before the
+                   ;; participant becomes routable.  Board publication itself
+                   ;; remains enqueue-and-return; its Board owner reports any
+                   ;; later failure without blocking this session admission.
+                   (e-board-registry-publish-participant-admission
+                    board
+                    (e-board-runtime-attachment-participant
+                     (e-chat-service-binding-attachment binding)))
+                   (e-chat-service--finish-participant-operation
+                    operation session nil))
+               (error
+                (e-chat-service--finish-participant-operation
+                 operation nil publish-error)))))))
+    (error
+     (when-let* ((binding
+                  (e-chat-service-participant-operation-binding operation)))
+       (ignore-errors (e-chat-service--discard-binding binding)))
+     (e-chat-service--finish-participant-operation operation nil error))))
+
+(cl-defun e-chat-service-create-participant-start
+    (board harness &key metadata id participant-id pickup-selector
+           observer-selector (default-tags '(main)) default-to)
+  "Start private participant admission and immediately return stable work.
+
+The live binding is installed optimistically during runner entry.  SQLite
+identity and association rows are admitted by one transaction; no caller on
+this path reads or reconstructs a durable session aggregate."
+  (let* ((store (e-harness-sessions harness))
+         (session-id (or id (e-session-generate-id))))
+    (if (not (e-session-storage-sqlite-p store))
+        (e-work-start
+         (e-work-spec-create
+          :id "chat-participant-create-ephemeral" :execution 'cheap
+          :interactive-policy 'async :owner 'e-chat-service
+          :runner
+          (lambda (_arguments _context)
+            (e-chat-service-create-participant
+             board harness :metadata metadata :id session-id
+             :participant-id participant-id
+             :pickup-selector pickup-selector
+             :observer-selector observer-selector
+             :default-tags default-tags :default-to default-to)))
+         nil :context (list :domain-ref session-id
+                            :work-kind 'chat-participant-create))
+      (let* ((operation
+              (e-chat-service--participant-operation-create
+               :board board :harness harness :store store
+               :session-id session-id
+               :metadata (e-harness--normalize-session-metadata metadata)
+               :participant-id participant-id
+               :pickup-selector
+               (if (consp pickup-selector)
+                   (copy-tree pickup-selector t)
+                 pickup-selector)
+               :observer-selector
+               (if (consp observer-selector)
+                   (copy-tree observer-selector t)
+                 observer-selector)
+               :default-tags (copy-tree default-tags t)
+               :default-to
+               (if (consp default-to) (copy-tree default-to t) default-to)))
+             (work
+              (e-work-prepare
+               e-chat-service--participant-operation-spec operation
+               :context (list :domain-ref session-id
+                              :work-kind 'chat-participant-create))))
+        (setf (e-chat-service-participant-operation-work operation) work)
+        (e-work-start-prepared work :arguments operation)
+        work))))
 
 (cl-defun e-chat-service-create-participant
     (board harness &key metadata id participant-id pickup-selector

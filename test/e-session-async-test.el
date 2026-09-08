@@ -76,6 +76,59 @@
       (e-session-async-test--close store)
       (delete-directory directory t))))
 
+(ert-deftest e-session-async-rdbms-participant-admission-never-loads-aggregate ()
+  "A private Board participant uses optimistic binding plus detached rows."
+  (let* ((directory (make-temp-file "e-session-participant-rdbms-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-chat-service-create-session-start
+            :harness harness :id "participant-root"))
+          (let* ((root-binding
+                  (e-chat-service-binding harness "participant-root"))
+                 (board (e-chat-service-binding-board root-binding))
+                 participant-work)
+            (cl-letf (((symbol-function 'e-session-get)
+                       (lambda (&rest _)
+                         (ert-fail "Participant admission loaded an aggregate")))
+                      ((symbol-function 'e-runtime-store-call)
+                       (lambda (&rest _)
+                         (ert-fail "Participant admission called SQLite synchronously")))
+                      ((symbol-function 'e-runtime-store-await)
+                       (lambda (&rest _)
+                         (ert-fail "Participant admission awaited SQLite"))))
+              (setq participant-work
+                    (e-chat-service-create-participant-start
+                     board harness :id "participant-child"
+                     :pickup-selector '(:tags (grimoire-update))
+                     :observer-selector :self
+                     :default-tags '(grimoire-update) :default-to :self)))
+            (should (e-work-handle-p participant-work))
+            (should-not (plist-get (e-work-status participant-work) :error))
+            (should (e-chat-service-binding harness "participant-child"))
+            (should (= (hash-table-count (e-session-store-sessions store)) 0))
+            (e-session-async-test--wait-finished participant-work)
+            (let ((association
+                   (e-session-async-test--wait-finished
+                    (e-session-async-board-association
+                     store "participant-child"))))
+              (should (equal (plist-get association :board-id)
+                             (e-board-registry-board-id board)))
+              (should (equal (plist-get association :association-role)
+                             "participant"))
+              (should (equal
+                       (plist-get
+                        (plist-get association :routing-policy)
+                        :default-tags)
+                       '(grimoire-update))))
+            (should (= (hash-table-count (e-session-store-sessions store)) 0))))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
 (ert-deftest e-session-async-rdbms-root-navigation-is-one-detached-page ()
   "Persisted navigation reads summaries without installing a catalog."
   (let* ((directory (make-temp-file "e-session-navigation-rdbms-" t))

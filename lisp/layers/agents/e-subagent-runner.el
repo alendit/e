@@ -32,17 +32,21 @@
 (define-error 'e-subagent-unknown-type
   "No spawnable subagent type is registered for id" 'e-subagent-error)
 
-(defun e-subagent--lineage-id (parent-harness parent-session-id)
-  "Return the tmp lineage id for PARENT-HARNESS PARENT-SESSION-ID.
-Reuses the parent's own lineage id when it already has one, so a grandchild
-shares the whole lineage root; otherwise the parent's own session id seeds a new
-lineage."
-  (or (when (and parent-harness parent-session-id)
-        (ignore-errors
-          (when-let ((session (e-chat-service-session
-                               parent-harness parent-session-id)))
-            (plist-get (plist-get session :metadata) :tmp-lineage-id))))
-      parent-session-id))
+(defun e-subagent--lineage-id (registry parent-session-id)
+  "Return the live tmp-lineage root for PARENT-SESSION-ID in REGISTRY.
+
+Lineage is execution coordination, not a reason to synchronously reconstruct
+the parent's durable session.  Follow only the bounded live subagent registry;
+an ordinary root session seeds its own lineage id."
+  (let ((current parent-session-id)
+        (remaining 64)
+        parent)
+    (while (and (> remaining 0)
+                (setq parent
+                      (e-subagent-registry-find-by-session registry current)))
+      (setq current (plist-get parent :parent-session-id)
+            remaining (1- remaining)))
+    current))
 
 (defun e-subagent--type-instance (type)
   "Return the spawnable harness instance for TYPE, or signal."
@@ -58,6 +62,12 @@ Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
 (defvar e-subagent--producer-bindings (make-hash-table :test 'equal)
   "Live board producer bindings keyed by parent harness/session identity.")
 
+(defun e-subagent--live-chat-binding (harness session-id)
+  "Return SESSION-ID's process-local chat binding or signal clearly."
+  (or (e-chat-service-binding harness session-id)
+      (signal 'e-subagent-error
+              (list "Parent Board binding is not ready" session-id))))
+
 (defconst e-subagent-max-intervention-reason-length 240
   "Maximum width of the audit reason retained for one intervention.")
 
@@ -72,7 +82,8 @@ Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
     (if (e-board-runtime-producer-binding-live-p current)
         current
       (let* ((chat-binding
-              (e-chat-service-ensure-binding parent-harness parent-session-id))
+              (e-subagent--live-chat-binding
+               parent-harness parent-session-id))
              (board (e-chat-service-binding-board chat-binding))
              (producer-id
               (format "subagent:%s:%s"
@@ -396,21 +407,21 @@ returns a handle plist carrying `:cancel'."
          (instance (e-subagent--type-instance type))
          (child-harness (e-subagent--child-harness instance))
          (parent-binding
-          (e-chat-service-ensure-binding parent-harness parent-session-id))
+          (e-subagent--live-chat-binding parent-harness parent-session-id))
          (parent-board (e-chat-service-binding-board parent-binding))
-         (lineage-id (e-subagent--lineage-id parent-harness parent-session-id))
+         (lineage-id (e-subagent--lineage-id registry parent-session-id))
          (assignment (and run-id (list :run-id run-id :task-key task-key :attempt attempt)))
          (_ (when (or run-id task-key attempt)
               (unless (and (stringp run-id) (stringp task-key) (integerp attempt) (>= attempt 0))
                 (signal 'wrong-type-argument (list 'e-board-orchestration-assignment assignment)))))
          (metadata (e-subagent--child-metadata
                     instance parent-harness parent-session-id lineage-id label assignment))
-         (child-session
-          (e-chat-service-create-participant
-           parent-board child-harness :metadata metadata
+         (child-session-id (e-session-generate-id))
+         (_child-admission
+          (e-chat-service-create-participant-start
+           parent-board child-harness :id child-session-id :metadata metadata
            :pickup-selector '(:tags (subagent))
            :observer-selector :self :default-tags '(subagent) :default-to :self))
-         (child-session-id (plist-get child-session :id))
          (schedule (or schedule 'direct))
          (producer-binding
           (e-subagent--producer-binding parent-harness parent-session-id))

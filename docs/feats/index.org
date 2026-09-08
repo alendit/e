@@ -122,6 +122,18 @@ tests pass 133/133, the graphical selector passes 1/1 in 4.280739 seconds, and
 the complete suite passes 2,906 tests with 2,840 expected, 66 explicit legacy
 skips, and zero unexpected.
 
+The Grimoire caller audit now removes its remaining synchronous session
+construction, aggregate lookup, and catalog enumeration.  Daily/topic code
+starts private participants through the chat application's asynchronous
+participant-admission operation and continues only from its work settlement.
+The public delayed-write gate also reproduced read/write transport coupling,
+so bounded reads now use a subordinate read-only SQLite connection instead of
+waiting behind the writer.  SQLite WAL remains authoritative; no Emacs durable
+replica or application ordering queue was added.  Focused e tests pass 207 with
+zero unexpected, Grimoire's affected suites pass 73/73, startup and bounded
+existing-Daily graphical selectors pass 1/1 each, and the public Org Canvas
+delay/release/failure/sibling selector passes 1/1 in 5.240772 seconds.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |
