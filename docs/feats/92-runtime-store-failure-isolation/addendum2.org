@@ -1107,22 +1107,29 @@ This record was rejected before persistence, so no database migration or
 repair is required.  The correction changes core context-lifetime code and
 requires a full Emacs restart before a live editor uses it.
 
-* Grimoire callers use asynchronous participant admission (2026-09-08)
+* Grimoire callers use one canonical Daily owner (2026-09-08)
 
-The remaining Grimoire Daily entry points still depended on synchronous
-session construction and aggregate lookup.  On a fresh Emacs start that made
-the private Daily update participant fail with the intentional async-store
-aggregate rejection, leaving the interactive Board without the runtime
-participant its timer expected.
+The first caller migration removed synchronous aggregate access but preserved
+a wrong product assumption: it created a private Daily update participant next
+to the interactive session.  That made background work difficult to observe
+from the visible chat and contradicted the Board design.  Asynchronous
+participant admission was technically non-blocking, but it was not the right
+Daily identity model.
 
-The chat application service now owns one consumer-shaped asynchronous
-participant-start operation.  It immediately installs the live Board binding,
-enqueues session creation and association, and settles an =e-work= handle when
-admission succeeds or fails.  Grimoire's Daily and topic controllers use that
-operation and continue their work from its settlement; they no longer inspect
-the session aggregate, session catalog, or runtime store directly.  The
-Grimoire capability layer also stopped enumerating durable sessions merely to
-decorate presentation results.
+Package =F89-GRIMOIRE-SINGLE-OWNER= supersedes that part of the earlier slice.
+A Daily has one session property, =E_SESSION=, whose session owns the one Board.
+Foreground update and headless tick both resolve that owner through the chat
+application service.  The run manifest completion destination, subagent parent,
+recovery input, Org Canvas attachment, projection lookup, and finalizer all use
+the same owner id.  Headless means no presentation change; it does not mean a
+second session.
+
+The =E_UPDATE_SESSION= reader, writer, constant, creation helper, routing tags,
+and private participant path are removed.  Existing Org properties are inert:
+the runtime never consults them, although the pristine-scaffold recognizer
+accepts the old line so an interrupted historical note is not misclassified as
+user content.  Historical SQLite session rows remain ordinary durable history;
+this correction neither reconstructs nor deletes them.
 
 The delayed-write acceptance run exposed a separate transport coupling: an
 independent bounded read still waited behind a held write because both used one
@@ -1137,18 +1144,22 @@ Evidence on the corrected source:
 
 - the focused e runtime/session/chat/subagent suite passes 207 tests with 193
   expected, 14 explicit legacy/UI skips, and zero unexpected;
-- Grimoire's topic-session, Daily-run, and commit suites pass 11/11, 46/46, and
-  16/16 respectively, and a production-source scan finds no remaining calls to
-  the retired synchronous session/aggregate/store APIs;
+- Grimoire's topic-session and Daily-run suites pass 11/11 and 46/46, including
+  exact same-owner and one-binding assertions;
+- the Grimoire-owned public graphical test calls =grimoire-daily-update= and
+  =grimoire-daily-tick= against one note, makes participant admission fatal,
+  and passes 1/1 while proving one owner id, one live binding, one Board, and no
+  focus change during the headless tick;
 - the graphical startup-prewarm selector passes 1/1 in 0.146194 seconds and
   observes no domain SQL;
 - the graphical bounded existing-Daily query selector passes 1/1 in 0.938224
   seconds while retaining none of 1,277 unrelated sessions; and
 - the public Org Canvas delayed-write/release/failure/healthy-sibling selector
-  passes 1/1 in 5.240772 seconds, including the private Daily participant,
-  three independent heartbeats, live composer input, one ordered visible
-  result, owner-local failure, and sibling persistence/readback.
+  passes 1/1 after replacing its false private-participant assumption with a
+  second headless input queued on the same owner, while retaining three
+  independent heartbeats, live composer input, one ordered visible result,
+  owner-local failure, and sibling persistence/readback.
 
 This slice introduces no durable Emacs replica.  SQLite owns durable facts;
-the chat service owns participant admission; a Board binding owns only live
+the chat service owns owner admission; a Board binding owns only live
 coordination; and Grimoire owns Daily scheduling and presentation policy.

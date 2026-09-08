@@ -597,7 +597,6 @@ aggregate or mirror."
          failure-target failure-input failure-chat failure-id
          unrelated-target unrelated-input unrelated-chat unrelated-id
          heartbeat-timers (heartbeats [0 0 0])
-         participant-id participant-work root-board-id
          first-response second-response
          terminal-hook-metadata
          curation-package-bytes large-result-source-label
@@ -743,10 +742,6 @@ aggregate or mirror."
                  (buffer-list)))
           (should (stringp session-id))
           (should (buffer-live-p backing-chat))
-          (setq root-board-id
-                (e-board-registry-board-id
-                 (e-chat-service-binding-board
-                  (e-chat-service-binding harness session-id))))
           (should (equal (buffer-local-value 'e-org-canvas-session-id target)
                          session-id))
           (should (eq (window-buffer (selected-window)) input))
@@ -760,31 +755,12 @@ aggregate or mirror."
              (e-runtime-store-recovery-graphical--stall-ready-p
               stall-directory 'board-create))
            2.0 "Org Canvas new-session admission")
-          ;; Grimoire Daily creates its private update participant at this exact
-          ;; point: the root controller is live, while SQLite admission is still
-          ;; held.  The public async API must install only a lightweight binding
-          ;; and return without consulting or awaiting a durable aggregate.
-          (setq participant-id "daily-update-participant"
-                participant-work
-                (with-timeout
-                    (1.0 (error "Private Daily participant admission blocked"))
-                  (e-chat-service-create-participant-start
-                   (e-chat-service-binding-board
-                    (e-chat-service-binding harness session-id))
-                   harness :id participant-id
-                   :pickup-selector '(:tags (grimoire-update))
-                   :observer-selector :self
-                   :default-tags '(grimoire-update) :default-to :self)))
-          (should (e-work-handle-p participant-work))
-          (should (e-chat-service-binding harness participant-id))
-          (should
-           (equal
-            (e-board-registry-board-id
-             (e-chat-service-binding-board
-              (e-chat-service-binding harness participant-id)))
-            root-board-id))
-          (should (memq (plist-get (e-work-status participant-work) :state)
-                        '(created started running)))
+          ;; Foreground and headless Daily work are presentation modes on the
+          ;; same canonical owner.  Admission must not manufacture a second
+          ;; session merely because persistence is delayed.
+          (should (= (hash-table-count
+                      (e-chat-service--harness-bindings harness))
+                     1))
           (should
            (e-runtime-store-recovery-graphical--runtime-operation-p
             runtime 'board-participant-put))
@@ -811,15 +787,12 @@ aggregate or mirror."
           (e-graphical-test-wait-until
            (lambda ()
              (e-runtime-store-recovery-graphical--pump-runtime runtime)
-             (and
-              (eq (plist-get
-                   (e-work-status
-                    (e-chat-service-binding-readiness-work
-                     (e-chat-service-binding harness session-id)))
-                   :state)
-                  'finished)
-              (eq (plist-get (e-work-status participant-work) :state)
-                  'finished)))
+             (eq (plist-get
+                  (e-work-status
+                   (e-chat-service-binding-readiness-work
+                    (e-chat-service-binding harness session-id)))
+                  :state)
+                 'finished))
            3.0 "Org Canvas session readiness")
           ;; Hold the public Board record so its same-Board classification timer
           ;; must admit routing while a SQLite request is live without freezing
@@ -1070,44 +1043,25 @@ aggregate or mirror."
               (ert-fail
                (format "Terminal hook metadata lacks Canvas URI: metadata=%S expected=%S"
                        terminal-hook-metadata expected-canvas-uri))))
-          ;; Each Org Canvas prompt is a public one-shot composer.  Reopen the
-          ;; Daily prompt for the already-bound session instead of mutating the
-          ;; submitted result pane back into a composer.
-          (setq input
-                (with-timeout
-                    (1.0 (error "Public second Org Canvas prompt blocked"))
-                  (cl-letf (((symbol-function 'e-org-canvas--default-harness)
-                             (lambda () harness))
-                            ((symbol-function 'e-runtime-store-await)
-                             (lambda (_store request &optional _timeout)
-                               (setq synchronous-operation
-                                     (e-runtime-store-request--operation
-                                      request))
-                               (error "Second Org Canvas prompt awaited %S"
-                                      synchronous-operation))))
-                    (with-current-buffer target
-                      (e-org-canvas-prompt-document)))))
-          (should (eq (window-buffer (selected-window)) input))
-          (with-current-buffer input
-            (goto-char (point-max))
-            ;; Keyboard entry was already exercised above while the worker was
-            ;; held.  Populate this second one-shot composer directly: nested
-            ;; `execute-kbd-macro' calls after asynchronous provider callbacks
-            ;; can enter Emacs's recursive keyboard reader when graphical ERT
-            ;; itself is running inside a server process filter.  Direct input
-            ;; here keeps this assertion about optimistic context, not the test
-            ;; runner's recursive command-loop behavior.
-            (insert (concat "Using the alert from our previous turn, which project "
-                            "needs a human review?"))
+          ;; The next run is queued headlessly on the same owner session.  This
+          ;; is the architectural distinction Grimoire needs: no window change
+          ;; and no shadow coordinator, while output remains visible here.
+          (with-timeout
+              (1.0 (error "Headless Daily owner queue blocked"))
             (cl-letf (((symbol-function 'e-runtime-store-await)
                        (lambda (_store request &optional _timeout)
                          (setq synchronous-operation
                                (e-runtime-store-request--operation request))
-                         (error "Second Org Canvas turn awaited %S"
+                         (error "Headless Daily owner queue awaited %S"
                                 synchronous-operation))))
-              (with-timeout
-                  (1.0 (error "Public second Org Canvas submit blocked"))
-                (e-org-canvas-input-submit))))
+              (e-chat-service-queue-session
+               harness session-id
+               (concat "Using the alert from our previous turn, which project "
+                       "needs a human review?")
+               :source-input-key '("daily-headless" "same-owner" 0))))
+          (should (= (hash-table-count
+                      (e-chat-service--harness-bindings harness))
+                     1))
           (condition-case _second-request-timeout
               (e-graphical-test-wait-until
                (lambda ()
@@ -1192,23 +1146,6 @@ aggregate or mirror."
               (lambda (message)
                 (equal (plist-get message :content) second-response))
               (plist-get visible :messages))))
-          (let ((association
-                 (cl-letf
-                     (((symbol-function 'e-runtime-store-await)
-                       #'e-runtime-store-recovery-graphical--await-with-pump))
-                   (e-runtime-store-call
-                    runtime 'read
-                    (list :op 'session-board-association
-                          :session-id participant-id)))))
-            (should (equal (plist-get association :board-id) root-board-id))
-            (should (equal (plist-get association :association-role)
-                           "participant"))
-            (should
-             (equal
-              (plist-get (plist-get association :routing-policy)
-                         :default-tags)
-              '(grimoire-update))))
-
           ;; Fail a second real Org Canvas Daily during its session admission.
           ;; Only that session/Board owner becomes suspect; the first Daily and
           ;; a third unrelated Daily remain available.

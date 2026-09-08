@@ -3,7 +3,7 @@
 
 * Status
 
-Planned.
+In-progress.
 
 * Goal
 
@@ -245,6 +245,15 @@ An in-memory store remains valid for focused tests and ephemeral harnesses.
 - Remove =E_UPDATE_SESSION= writes, reads, creation helpers, and background routing.
 - Treat old metadata as ignored legacy data.
 - Gate: daily and cron tests prove that interactive and headless runs create no second coordinator session or board.
+
+Implemented on 2026-09-08 as package =F89-GRIMOIRE-SINGLE-OWNER=.
+Grimoire now resolves only =E_SESSION=, uses that owner for manifests,
+subagent parentage, recovery inputs, finalization, foreground update, and
+headless tick, and contains no update-session API.  Existing property text is
+accepted only by the pristine-scaffold compatibility recognizer and is never
+read for routing.  A Grimoire-owned graphical test invokes both public entry
+points, makes participant admission fatal, and proves one unchanged live
+binding, owner id, Board, and window-safe headless dispatch.
 
 ** Slice 7: restart and system proof
 

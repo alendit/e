@@ -123,9 +123,10 @@ the complete suite passes 2,906 tests with 2,840 expected, 66 explicit legacy
 skips, and zero unexpected.
 
 The Grimoire caller audit now removes its remaining synchronous session
-construction, aggregate lookup, and catalog enumeration.  Daily/topic code
-starts private participants through the chat application's asynchronous
-participant-admission operation and continues only from its work settlement.
+construction, aggregate lookup, and catalog enumeration.  A subsequent
+ownership correction removes the private Daily participant entirely:
+foreground update and headless tick resolve the same =E_SESSION= owner and
+Board, while old =E_UPDATE_SESSION= text is inert compatibility data only.
 The public delayed-write gate also reproduced read/write transport coupling,
 so bounded reads now use a subordinate read-only SQLite connection instead of
 waiting behind the writer.  SQLite WAL remains authoritative; no Emacs durable
@@ -224,7 +225,7 @@ delay/release/failure/sibling selector passes 1/1 in 5.240772 seconds.
 | 86 | In-review   | 86-current-emacs-config-e2e/                | Current Emacs Configuration E2E Mode                 |
 | 87 | Done        | 87-sqlite-session-board-persistence/         | SQLite Session and Board Persistence                 |
 | 88 | In-review   | 88-generational-context-ephemeral-frames/    | Generational Context with Ephemeral Frames — Addenda 3/4/5/6/7/8/9 |
-| 89 | Planned     | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
+| 89 | In-progress | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
 | 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
