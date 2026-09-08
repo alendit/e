@@ -368,7 +368,13 @@ safe to store in a board envelope and contains no runtime state."
                                    :error (when-let ((error (plist-get payload :error)))
                                             (truncate-string-to-width
                                              (format "%s" error)
-                                             e-board-orchestration-error-limit nil nil "..."))))))
+                                             e-board-orchestration-error-limit nil nil "..."))
+                                   :participant-session-id
+                                   (when-let* ((session-id
+                                                (plist-get payload
+                                                           :participant-session-id)))
+                                     (e-board-orchestration--string
+                                      session-id :participant-session-id))))))
              (when (eq type 'conflict)
                (setq body
                      (append body

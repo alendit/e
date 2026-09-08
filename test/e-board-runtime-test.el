@@ -2074,6 +2074,34 @@
           (should (equal (e-board-message-source-activity-key activity)
                          '("participant" 1 34))))))))
 
+(ert-deftest e-board-runtime-test-restored-publisher-has-fresh-source-incarnation ()
+  "A restarted endpoint cannot reuse the vanished publisher's source keys."
+  (e-board-runtime-test--with-empty-state
+    (let* ((board (e-board-registry-create :id "board" :principal "owner"))
+           (harness (e-harness-create))
+           (participant
+            (e-board-registry-add-participant
+             board :id "participant" :principal "owner")))
+      (e-board-registry-set-participant-state board participant 'dormant)
+      (let* ((attachment
+              (e-board-runtime-attach-associated
+               board harness "durable-session" "participant"
+               :principal "owner" :activity-sequence 0 :output-sequence 0))
+             (incarnation
+              (e-board-runtime-attachment-source-incarnation attachment))
+             (event
+              (e-events-make
+               :type 'provider-request-started :session-id "durable-session"
+               :turn-id "turn" :payload nil :board-activity-sequence 1)))
+        (should (stringp incarnation))
+        (e-harness-activity-emit harness event)
+        (let ((activity
+               (car (last (e-board-messages
+                           (e-board-registry-board-source-board board))))))
+          (should
+           (equal (e-board-message-source-activity-key activity)
+                  (list "participant" (list 1 incarnation) 2))))))))
+
 (ert-deftest e-board-runtime-test-context-curation-publishes-safe-stubs-once ()
   "Committed curation becomes one deduplicated content-free Board activity."
   (e-board-runtime-test--with-empty-state

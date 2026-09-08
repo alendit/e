@@ -16,6 +16,7 @@
 (require 'tabulated-list)
 (require 'e-board-orchestration-actions)
 (require 'e-keymap-hints)
+(require 'e-subagent-registry)
 (require 'e-workspaces)
 
 (defconst e-board-runs-shell-buffer-name "*e-board-runs*"
@@ -24,8 +25,14 @@
 (defconst e-board-runs-shell-detail-buffer-name "*e-board-run*"
   "Name of the bounded durable board run detail buffer.")
 
+(defconst e-board-runs-shell-raw-buffer-name "*e-board-run-raw*"
+  "Name of the explicitly requested bounded raw run buffer.")
+
 (defvar-local e-board-runs-shell--board nil
   "Core board whose durable runs this buffer displays.")
+
+(defvar-local e-board-runs-shell--registry nil
+  "Optional live subagent registry used to label admission state.")
 
 (defun e-board-runs-shell--state-label (projection)
   "Return the short lifecycle label for run PROJECTION."
@@ -51,11 +58,19 @@
      ((eq (plist-get deadline :kind) 'none) "none")
      (t "active"))))
 
-(defun e-board-runs-shell--entry (projection)
+(defun e-board-runs-shell--owner-session-id (projection)
+  "Return PROJECTION's exact continuation owner session id, or nil."
+  (plist-get (or (plist-get (plist-get projection :manifest) :continuation)
+                 (plist-get projection :continuation))
+             :session-id))
+
+(defun e-board-runs-shell--entry (board projection)
   "Return a `tabulated-list' entry for durable run PROJECTION."
   (let ((conflicts (plist-get projection :conflicts)))
     (list (plist-get projection :run-id)
           (vector (plist-get projection :run-id)
+                  (e-board-id board)
+                  (or (e-board-runs-shell--owner-session-id projection) "-")
                   (format "%s" (e-board-runs-shell--state-label projection))
                   (e-board-runs-shell--task-label projection)
                   (e-board-runs-shell--deadline-label projection)
@@ -68,6 +83,7 @@
 
 (defconst e-board-runs-shell--hint-bindings
   '(("RET" . "details")
+    ("r" . "raw activity")
     ("g" . "refresh"))
   "Ordered key hints shown in the durable run list footer.")
 
@@ -75,7 +91,9 @@
   "Rebuild the durable run list from its bounded board projections."
   (when (derived-mode-p 'e-board-runs-shell-mode)
     (setq tabulated-list-entries
-          (mapcar #'e-board-runs-shell--entry
+          (mapcar (lambda (projection)
+                    (e-board-runs-shell--entry
+                     e-board-runs-shell--board projection))
                   (e-board-orchestration-actions-list-runs e-board-runs-shell--board)))
     (tabulated-list-print t)
     (save-excursion
@@ -98,10 +116,115 @@
                  (eq e-board-runs-shell--board board))
         (e-board-runs-shell--refresh)))))
 
+(defun e-board-runs-shell--refresh-registry-buffers (registry)
+  "Refresh run buffers whose live admission labels use REGISTRY."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'e-board-runs-shell-mode)
+                 (eq e-board-runs-shell--registry registry))
+        (e-board-runs-shell--refresh)))))
+
 (defun e-board-runs-shell--run-id-at-point ()
   "Return the durable run id on the current row, or signal."
   (or (tabulated-list-get-id)
       (user-error "No durable run on this line")))
+
+(defun e-board-runs-shell--registered-assignments (registry)
+  "Return REGISTRY's one bounded process-local registered child list."
+  (and registry (e-subagent-registry-list registry)))
+
+(defun e-board-runs-shell--live-assignment
+    (registry registered run-id task-key attempt)
+  "Return the exact live assignment from REGISTRY or REGISTERED."
+  (and registry
+       (or (e-subagent-registry-find-pending-assignment
+            registry run-id task-key attempt)
+           (seq-find
+            (lambda (record)
+              (and (equal (plist-get record :run-id) run-id)
+                   (equal (plist-get record :task-key) task-key)
+                   (equal (plist-get record :attempt) attempt)
+                   (memq (plist-get record :status)
+                         '(queued running blocked))))
+            registered))))
+
+(defun e-board-runs-shell--task-disposition (task live)
+  "Return TASK's decision-relevant disposition, considering LIVE state."
+  (let ((state (plist-get task :state))
+        (attempt (plist-get task :accepted-attempt)))
+    (cond
+     ((memq state '(done failed cancelled)) 'terminal)
+     ((> attempt 0) 'retrying)
+     (live (plist-get live :status))
+     ((eq state 'running) 'orphaned)
+     (t 'pending))))
+
+(defun e-board-runs-shell--task-admission (task live)
+  "Return TASK's truthful admission state using exact LIVE assignment."
+  (let ((state (plist-get task :state)))
+    (cond
+     ((memq state '(done failed cancelled)) 'terminal)
+     (live (plist-get live :status))
+     ((eq state 'running) 'orphaned)
+     (t 'pending))))
+
+(defun e-board-runs-shell--task-participant-id (task live)
+  "Return TASK's exact live or reported participant session id."
+  (or (plist-get live :session-id)
+      (plist-get (plist-get task :accepted-report) :participant-session-id)
+      "-"))
+
+(defun e-board-runs-shell--format-summary (board projection &optional registry)
+  "Return a bounded signal-focused summary for BOARD PROJECTION.
+REGISTRY contributes only live pending/running assignment labels; SQLite-backed
+PROJECTION remains authoritative for durable run and terminal state."
+  (let* ((run-id (plist-get projection :run-id))
+         (manifest (plist-get projection :manifest))
+         (daily-p (plist-get (plist-get manifest :descriptor) :date))
+         (registered (e-board-runs-shell--registered-assignments registry))
+         (lines
+          (list (format "%s: %s" (if daily-p "Daily run id" "Run id") run-id)
+                (format "Board id: %s" (e-board-id board))
+                (format "Owner session id: %s"
+                        (or (e-board-runs-shell--owner-session-id projection) "-"))
+                (format "Run state: %s"
+                        (e-board-runs-shell--state-label projection)))))
+    (dolist (task (plist-get projection :tasks))
+      (let* ((task-key (plist-get task :task-key))
+             (attempt (plist-get task :accepted-attempt))
+             (live (e-board-runs-shell--live-assignment
+                    registry registered run-id task-key attempt))
+             (report (plist-get task :accepted-report))
+             (failure (and (memq (plist-get task :state) '(failed cancelled))
+                           (or (plist-get report :error)
+                               (plist-get report :summary)))))
+        (setq lines
+              (append
+               lines
+               (list ""
+                     (format "Task: %s" task-key)
+                     (format "Attempt: %d" attempt)
+                     (format "Participant session id: %s"
+                             (e-board-runs-shell--task-participant-id task live))
+                     (format "Admission: %s"
+                             (e-board-runs-shell--task-admission task live))
+                     (format "Disposition: %s"
+                             (e-board-runs-shell--task-disposition task live)))
+               (when failure
+                 (list (format "First failure: %s" failure)))))))
+    (concat (string-join lines "\n") "\n")))
+
+(defun e-board-runs-shell--show-buffer (name content workspace)
+  "Show CONTENT in special buffer NAME within WORKSPACE."
+  (let ((buffer (get-buffer-create name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert content)
+        (special-mode))
+      (e-buffer-set-workspace buffer workspace))
+    (e-workspace-pop-to-buffer buffer)
+    buffer))
 
 (defun e-board-runs-shell-show-details ()
   "Show the bounded durable projection for the run at point."
@@ -110,18 +233,27 @@
          (projection (e-board-orchestration-actions-run-projection
                       e-board-runs-shell--board run-id))
          (workspace (e-buffer-ensure-workspace (current-buffer)))
-         (buffer (get-buffer-create e-board-runs-shell-detail-buffer-name)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (pp-to-string projection))
-        (special-mode))
-      (e-buffer-set-workspace buffer workspace))
-    (e-workspace-pop-to-buffer buffer)))
+         (summary (e-board-runs-shell--format-summary
+                   e-board-runs-shell--board projection
+                   e-board-runs-shell--registry)))
+    (e-board-runs-shell--show-buffer
+     e-board-runs-shell-detail-buffer-name summary workspace)))
+
+(defun e-board-runs-shell-show-raw-activity ()
+  "Explicitly show the selected run's bounded raw durable projection."
+  (interactive)
+  (let* ((run-id (e-board-runs-shell--run-id-at-point))
+         (projection (e-board-orchestration-actions-run-projection
+                      e-board-runs-shell--board run-id))
+         (workspace (e-buffer-ensure-workspace (current-buffer))))
+    (e-board-runs-shell--show-buffer
+     e-board-runs-shell-raw-buffer-name
+     (pp-to-string projection) workspace)))
 
 (defvar e-board-runs-shell-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'e-board-runs-shell-show-details)
+    (define-key map (kbd "r") #'e-board-runs-shell-show-raw-activity)
     (define-key map (kbd "g") #'e-board-runs-shell-refresh)
     map)
   "Keymap for `e-board-runs-shell-mode'.")
@@ -129,7 +261,9 @@
 (define-derived-mode e-board-runs-shell-mode tabulated-list-mode "e-Board-Runs"
   "Major mode listing bounded durable run projections."
   (setq tabulated-list-format
-        [("Run" 26 t)
+        [("Run id" 26 t)
+         ("Board id" 24 t)
+         ("Owner session id" 24 t)
          ("Status" 16 t)
          ("Tasks" 10 t)
          ("Deadline" 12 t)
@@ -139,7 +273,7 @@
   (tabulated-list-init-header))
 
 ;;;###autoload
-(cl-defun e-board-runs-list-buffer (&key board)
+(cl-defun e-board-runs-list-buffer (&key board registry)
   "Open BOARD's durable run list and return its buffer."
   (interactive)
   (let ((board (e-board-orchestration-actions--source-board board))
@@ -147,10 +281,13 @@
     (with-current-buffer buffer
       (unless (derived-mode-p 'e-board-runs-shell-mode)
         (e-board-runs-shell-mode))
-      (setq e-board-runs-shell--board board)
+      (setq e-board-runs-shell--board board
+            e-board-runs-shell--registry registry)
       (e-board-runs-shell--refresh))
     (add-hook 'e-board-orchestration-actions-projection-change-functions
               #'e-board-runs-shell--refresh-buffers)
+    (add-hook 'e-subagent-registry-change-functions
+              #'e-board-runs-shell--refresh-registry-buffers)
     (when (called-interactively-p 'interactive)
       (e-workspace-pop-to-buffer buffer))
     buffer))

@@ -109,6 +109,25 @@
       (should (eq (plist-get (car observed) :terminal-status) 'done))
       (should (= (length (plist-get (car observed) :accepted-reports)) 1)))))
 
+(ert-deftest e-board-orchestration-actions-test-terminal-retains-participant-identity ()
+  "A durable terminal report keeps the exact participant session label."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (board (e-board-create :id "run-actions-participant")))
+    (e-board-orchestration-actions-test--publish
+     board
+     (e-board-orchestration-actions-test--manifest
+      '((:task-key "task" :required t :accepted-attempt 0))))
+    (e-board-orchestration-actions-publish-terminal
+     board '(:run-id "run-1" :task-key "task" :attempt 0) 'failed
+     :summary "stopped" :outputs [] :error "worker died"
+     :author '(:session-id "participant-1"))
+    (let* ((projection
+            (e-board-orchestration-actions-run-projection board "run-1"))
+           (report (plist-get (car (plist-get projection :tasks))
+                              :accepted-report)))
+      (should (equal (plist-get report :participant-session-id)
+                     "participant-1")))))
+
 (ert-deftest e-board-orchestration-actions-test-select-next-attempt-is-idempotent ()
   "Retry selection advances exactly once and reuses one durable fact identity."
   (let ((e-board--registry (make-hash-table :test 'equal))

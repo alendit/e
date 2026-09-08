@@ -248,6 +248,7 @@ the board transcript.  Terminal events use their dedicated publisher below.")
                (:constructor e-board-runtime-attachment--create)
                (:conc-name e-board-runtime-attachment-))
   board participant harness session-id delivery-function subscription activity-sequence
+  source-incarnation
   output-sequence last-output-turn-id last-output-sequence generation
   turn-activity turn-tags turn-delivery-ids turn-port instance-id instance-catalog-generation
   harness-id harness-object-generation endpoint-token state reconciliation
@@ -1603,6 +1604,18 @@ work activity remains a diagnostic snapshot of its arbitrary payload."
         value)
     (truncate-string-to-width (e-prin1-safe payload) 512 nil nil "...")))
 
+(defun e-board-runtime--attachment-source-generation (attachment)
+  "Return ATTACHMENT's Board publication generation.
+
+Ordinary in-process attachments retain their numeric lifecycle generation.
+A durable participant reattached after a process boundary additionally carries
+a fresh incarnation, because its new publisher must not collide with progress
+rows emitted by the vanished publisher."
+  (if-let* ((incarnation
+             (e-board-runtime-attachment-source-incarnation attachment)))
+      (list (e-board-runtime-attachment-generation attachment) incarnation)
+    (e-board-runtime-attachment-generation attachment)))
+
 (defun e-board-runtime--publish-activity-mailbox (mailbox)
   "Publish one materialized work-activity MAILBOX when its owner is current."
   (let* ((attachment (plist-get mailbox :attachment))
@@ -1692,7 +1705,11 @@ will consume the mailbox under its own bounded drain."
                      :turn-id (plist-get (e-work-handle-context handle) :turn-id)
                      :activity-kind 'work-progress
                      :payload payload
-                     :source-key (list participant-id generation sequence))
+                     :source-key
+                     (list participant-id
+                           (e-board-runtime--attachment-source-generation
+                            attachment)
+                           sequence))
                e-board-runtime--work-activity-mailboxes)
       (e-board-runtime--enqueue-activity-flush mailbox-id attachment))))
 
@@ -2150,7 +2167,7 @@ has no callback and is observed only."
                    (e-board-runtime-attachment-turn-delivery-ids attachment)))
          :source-output-key
          (list participant-id
-               (e-board-runtime-attachment-generation attachment)
+               (e-board-runtime--attachment-source-generation attachment)
                sequence))))))
 
 (defun e-board-runtime--enqueue-ready-participant-pickup (attachment)
@@ -2195,7 +2212,7 @@ row, so its numeric key reserves an adjacent slot for the terminal summary."
             (cl-incf
              (e-board-runtime-attachment-activity-sequence attachment)))))
     (list participant-id
-          (e-board-runtime-attachment-generation attachment)
+          (e-board-runtime--attachment-source-generation attachment)
           sequence)))
 
 (defun e-board-runtime--publish-terminal-activity (attachment event)
@@ -2954,6 +2971,12 @@ only the endpoint and participant needed while that mutation settles."
                  :harness-id harness-id
                  :harness-object-generation harness-object-generation
                  :endpoint-token endpoint-token
+                 ;; Durable participant identity survives a process restart,
+                 ;; but its live publisher does not.  Give a restored endpoint
+                 ;; a fresh incarnation so new work progress cannot reuse the
+                 ;; prior process's Board source identities.
+                 :source-incarnation
+                 (and restored-participant-p (e-session-generate-ulid))
                  :output-sequence output-sequence
                  :activity-sequence activity-sequence
                  :require-session-state require-live-session-p))
@@ -3024,6 +3047,7 @@ This operation never invokes an instance factory or loads dormant history."
           :board board :participant participant :harness harness :session-id session-id
           :activity-sequence
           (or (plist-get metadata :activity-sequence) 0)
+          :source-incarnation (plist-get metadata :source-incarnation)
           :output-sequence
           (or (plist-get metadata :output-sequence)
               (when (plist-get metadata :require-session-state)

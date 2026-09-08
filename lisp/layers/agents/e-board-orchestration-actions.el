@@ -51,7 +51,9 @@ The stable assignment key makes callback retries no-ops at the board boundary."
          :idempotency-key (e-board-orchestration-actions-terminal-key assignment)
          :payload (append (copy-tree assignment)
                           (list :status status :summary (or summary "")
-                                :outputs (or outputs []) :error error)))
+                                :outputs (or outputs []) :error error
+                                :participant-session-id
+                                (plist-get author :session-id))))
    :author author))
 
 (cl-defun e-board-orchestration-actions-report-from-context
