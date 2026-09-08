@@ -109,3 +109,28 @@ tests, 4/4 focused subagent lifecycle tests, and 48/48 Grimoire Daily tests.
 The full subagent-runner file still has the same four missing-layer fixture
 failures reproduced from the pre-change baseline; they are not caused by this
 slice.
+
+** DP2: convergent recovery and canonical continuation
+
+The immutable manifest remains the source of the initial attempt identity.
+One generic =attempt-selection= Board fact can select the next contiguous
+attempt without rewriting the manifest.
+Grimoire owns the concrete bound: attempt zero may advance once to attempt one.
+An exact process-local pending/running assignment suppresses recovery; a
+durable running attempt without one advances, and an unassigned selected
+attempt at the limit becomes one idempotent terminal failure.
+This also covers a crash after selection commits but before the runner publishes
+=running=.
+
+The canonical =E_SESSION= binding is now designated as the Board continuation
+owner before the initial association install can reconcile a terminal legacy
+manifest.
+An already in-flight bind is upgraded rather than allowing the obsolete
+manifest session to win a race.
+Successful owner resolution removes inert =E_UPDATE_SESSION= metadata.
+
+Repository evidence for this slice is 62 e orchestration/chat tests with 60
+passing and two existing skips, 52/52 Grimoire Daily tests, and 11/11 Grimoire
+session tests.
+A concrete post-implementation review found and then cleared both the
+in-flight bind race and the selection-before-start crash cut.

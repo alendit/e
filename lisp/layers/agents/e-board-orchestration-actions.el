@@ -101,6 +101,36 @@ Return nil for ordinary children without a durable assignment."
          :idempotency-key (e-board-orchestration-actions--attempt-key assignment status)
          :payload (append (copy-tree assignment) (list :status status)))))
 
+(defun e-board-orchestration-actions-select-next-attempt
+    (board run-id task-key accepted-attempt)
+  "Durably select and return the successor to ACCEPTED-ATTEMPT.
+The current projection must still select the exact named attempt.  Repeating
+the same selection is an idempotent success; skipping an attempt is rejected."
+  (let* ((board (e-board-orchestration-actions--source-board board))
+         (projection (e-board-orchestration-run-projection board run-id))
+         (task (cl-find task-key (plist-get projection :tasks)
+                        :key (lambda (item) (plist-get item :task-key))
+                        :test #'equal))
+         (current (and task (plist-get task :accepted-attempt)))
+         (next (1+ accepted-attempt)))
+    (cond
+     ((and task (= current next)) next)
+     ((not (and task (= current accepted-attempt)
+                (not (memq (plist-get task :state)
+                           '(done failed cancelled)))))
+      (signal 'e-board-orchestration-error
+              (list "Task attempt is not retry-selectable"
+                    run-id task-key accepted-attempt current)))
+     (t
+      (e-board-orchestration-publish-fact
+       board
+       (list :version e-board-orchestration-fact-version
+             :type 'attempt-selection
+             :idempotency-key
+             (format "attempt-selection:%s:%s:%d" run-id task-key next)
+             :payload (list :run-id run-id :task-key task-key :attempt next)))
+      next))))
+
 (defun e-board-orchestration-actions--queue-terminal (queue record)
   "Turn a terminal QUEUE RECORD into its assigned durable terminal report."
   (ignore queue)

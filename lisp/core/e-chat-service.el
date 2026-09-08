@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'e-capabilities)
 (require 'e-board-registry)
 (require 'e-board-runtime)
@@ -234,7 +235,7 @@
   input-sequence default-tags default-to idle-close-timer
   message-projection activity-projection lifecycle-generation
   observer-drain-timer lifecycle-state readiness-work first-persistence-error
-  pending-delivery-head pending-delivery-tail)
+  pending-delivery-head pending-delivery-tail continuation-owner-p)
 
 (cl-defstruct (e-chat-service-create-operation
                (:constructor e-chat-service--create-operation-create))
@@ -250,7 +251,7 @@
 (cl-defstruct (e-chat-service-bind-operation
                (:constructor e-chat-service--bind-operation-create))
   "One request-local composition of association query and Board controller."
-  work harness session-id association child settled)
+  work harness session-id association continuation-owner-p child settled)
 
 (defconst e-chat-service--create-operation-spec
   (e-work-spec-create
@@ -309,12 +310,15 @@
                                 :status status)
                           (when error (list :error error))))))
 
-(defun e-chat-service-reconcile-board-continuation (board harness)
+(defun e-chat-service-reconcile-board-continuation
+    (board harness &optional continuation-session-id)
   "Publish each terminal continuation on BOARD exactly once.
 The input key lives in the durable manifest and is reused after a crash between
 input publication and the acknowledgement fact.  HARNESS is the application
 service used for the queued continuation; it may be nil for a caller that
-only observes durable claim decisions."
+only observes durable claim decisions.  CONTINUATION-SESSION-ID, when supplied
+by the application owning this Board, replaces retired manifest routing while
+preserving the manifest's prompt and publication identity."
   (let* ((board (e-board-registry-board-source-board board))
          (board-id (e-board-id board)))
     (unless (gethash board-id e-chat-service--continuation-reconciling)
@@ -332,7 +336,8 @@ only observes durable claim decisions."
                        board run-id key 'pending)
                       (e-chat-service-queue-session
                        harness
-                       (plist-get continuation :session-id)
+                       (or continuation-session-id
+                           (plist-get continuation :session-id))
                        (plist-get continuation :prompt)
                        :metadata (list :board-run-id run-id
                                        :board-continuation-key key)
@@ -1466,7 +1471,7 @@ semantic interpretation responsibility."
            (default-tags '(main)) default-to
            defer-participant-publication associated-participant
            pending-session output-sequence activity-sequence
-           participant-role (persist-participant t))
+           participant-role (persist-participant t) continuation-owner-p)
   "Install one HARNESS SESSION-ID participant/client binding on BOARD."
   (or (e-chat-service-binding harness session-id)
       (progn
@@ -1541,6 +1546,7 @@ semantic interpretation responsibility."
                        :default-to default-to
                        :message-projection (e-chat-service--make-projection)
                        :activity-projection (e-chat-service--make-projection)
+                       :continuation-owner-p continuation-owner-p
                        :lifecycle-generation 0
                        :observer-drain-timer nil
                        :lifecycle-state 'active))
@@ -1556,7 +1562,8 @@ semantic interpretation responsibility."
                 ;; retained history is never rescanned to fill a fixed-capacity
                 ;; projection.
                 (e-chat-service--seed-binding-projection binding)
-                (e-chat-service-reconcile-board-continuation board harness)
+                (e-chat-service-reconcile-board-continuation
+                 board harness (and continuation-owner-p session-id))
                 ;; These callbacks are installed only after all admission
                 ;; steps above succeed, keeping attachment failure cleanup
                 ;; independent of board notification publication.
@@ -1572,13 +1579,19 @@ semantic interpretation responsibility."
                             (e-chat-service--schedule-subscription-drain
                              subscription))
                           (e-chat-service--schedule-observer-drain current))
-                        (when-let* ((owner
-                                    (car (gethash
-                                          (e-board-id source)
-                                          e-chat-service--board-bindings))))
+                        (when-let* ((bindings
+                                    (gethash (e-board-id source)
+                                             e-chat-service--board-bindings))
+                                    (owner
+                                     (or (seq-find
+                                          #'e-chat-service-binding-continuation-owner-p
+                                          bindings)
+                                         (car bindings))))
                           (e-chat-service-reconcile-board-continuation
                            (e-chat-service-binding-board owner)
-                           (e-chat-service-binding-harness owner)))))
+                           (e-chat-service-binding-harness owner)
+                           (and (e-chat-service-binding-continuation-owner-p owner)
+                                (e-chat-service-binding-session-id owner))))))
                 binding)
             (error
              ;; No binding is returned until all process-local maps are in a
@@ -1650,6 +1663,8 @@ semantic interpretation responsibility."
               :default-tags (plist-get policy :default-tags)
               :default-to (plist-get policy :default-to)
               :associated-participant t
+              :continuation-owner-p
+              (e-chat-service-bind-operation-continuation-owner-p operation)
               :output-sequence (plist-get association :board-output-sequence)
               :activity-sequence (plist-get association :board-activity-sequence))
              nil))
@@ -1710,25 +1725,39 @@ semantic interpretation responsibility."
    :id "chat-board-bind" :execution 'cooperative :interactive-policy 'async
    :owner 'e-chat-service :runner #'e-chat-service--run-bind-operation))
 
-(defun e-chat-service-binding-start (harness session-id &optional association)
+(defun e-chat-service-binding-start
+    (harness session-id &optional association continuation-owner-p)
   "Return immediately with work opening SESSION-ID's bounded live binding.
 
 ASSOCIATION, when supplied, is the detached exact row already requested by a
-Daily surface.  Concurrent callers share only this in-flight work; its query
-result is not retained after the live controller has been built."
+Daily surface.  CONTINUATION-OWNER-P designates this exact binding as the live
+application owner for Board continuation delivery.  Concurrent callers share
+only this in-flight work; its query result is not retained after the live
+controller has been built."
   (if-let* ((binding (e-chat-service-binding harness session-id)))
-      (e-work-start
-       (e-work-spec-create
-        :id "chat-board-bound" :execution 'cheap :interactive-policy 'async
-        :owner 'e-chat-service
-        :runner (lambda (bound-binding _context) bound-binding))
-       binding)
+      (progn
+        (when continuation-owner-p
+          (setf (e-chat-service-binding-continuation-owner-p binding) t)
+          (e-chat-service-reconcile-board-continuation
+           (e-chat-service-binding-board binding) harness session-id))
+        (e-work-start
+         (e-work-spec-create
+          :id "chat-board-bound" :execution 'cheap :interactive-policy 'async
+          :owner 'e-chat-service
+          :runner (lambda (bound-binding _context) bound-binding))
+         binding))
     (let* ((table (e-chat-service--harness-binding-works harness))
            (current (gethash session-id table)))
+      (when (and current continuation-owner-p)
+        (when-let* ((operation (e-work-handle-arguments current)))
+          (when (e-chat-service-bind-operation-p operation)
+            (setf (e-chat-service-bind-operation-continuation-owner-p operation)
+                  t))))
       (or current
           (let* ((operation
                   (e-chat-service--bind-operation-create
                    :harness harness :session-id session-id
+                   :continuation-owner-p continuation-owner-p
                    :association (and association (copy-tree association t))))
                  (work
                   (e-work-prepare

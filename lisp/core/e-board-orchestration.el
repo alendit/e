@@ -40,7 +40,8 @@
   "Maximum number of declared outputs in one terminal report.")
 
 (defconst e-board-orchestration--fact-types
-  '(manifest task-attempt terminal-report conflict continuation-claim)
+  '(manifest attempt-selection task-attempt terminal-report conflict
+    continuation-claim)
   "Fact types understood by the orchestration reducer.")
 
 (defvar e-board-orchestration--restoration-states (make-hash-table :test 'equal)
@@ -342,7 +343,7 @@ safe to store in a board envelope and contains no runtime state."
                                 (truncate-string-to-width
                                  (format "%s" error)
                                  e-board-orchestration-error-limit nil nil "..."))))))
-        ((or 'task-attempt 'terminal-report 'conflict)
+        ((or 'attempt-selection 'task-attempt 'terminal-report 'conflict)
          (let* ((task-key (e-board-orchestration--string
                            (plist-get payload :task-key) :task-key))
                 (attempt (e-board-orchestration--attempt
@@ -440,11 +441,33 @@ safe to store in a board envelope and contains no runtime state."
                              'pending)
                   :accepted-report (copy-tree report)))))
 
+(defun e-board-orchestration--select-task-attempts (tasks selections)
+  "Apply contiguous durable SELECTIONS to immutable manifest TASKS.
+A missing successor leaves the task at its last accepted attempt, so malformed
+or out-of-order facts cannot skip retry identities during replay."
+  (mapcar
+   (lambda (task)
+     (let* ((copy (copy-tree task))
+            (task-key (plist-get copy :task-key))
+            (accepted (plist-get copy :accepted-attempt))
+            (selected
+             (mapcar (lambda (selection) (plist-get selection :attempt))
+                     (cl-remove-if-not
+                      (lambda (selection)
+                        (equal task-key (plist-get selection :task-key)))
+                      selections))))
+       (while (member (1+ accepted) selected)
+         (setq accepted (1+ accepted)))
+       (plist-put copy :accepted-attempt accepted)
+       copy))
+   tasks))
+
 (defun e-board-orchestration-reduce (facts &optional now)
   "Reduce valid durable FACTS into one idempotent run projection.
 FACTS may be normalized facts or board messages.  This pure reducer never
 performs a clock-driven cancellation; a passed deadline is only evidence."
-  (let ((manifests nil) (attempts nil) (reports nil) (conflicts nil) (claims nil)
+  (let ((manifests nil) (selections nil) (attempts nil) (reports nil)
+        (conflicts nil) (claims nil)
         (seen (make-hash-table :test 'equal)))
     (dolist (item facts)
       (let ((fact (if (e-board-message-p item)
@@ -456,6 +479,8 @@ performs a clock-driven cancellation; a passed deadline is only evidence."
               (puthash key t seen)
               (pcase (plist-get fact :type)
                 ('manifest (push fact manifests))
+                ('attempt-selection
+                 (push (plist-get fact :payload) selections))
                 ('task-attempt (push (plist-get fact :payload) attempts))
                 ('terminal-report (push (plist-get fact :payload) reports))
                 ('conflict (push (plist-get fact :payload) conflicts))
@@ -465,22 +490,37 @@ performs a clock-driven cancellation; a passed deadline is only evidence."
            (run-id (and manifest (plist-get manifest :run-id))))
       (unless manifest (e-board-orchestration--invalid :manifest 'missing))
       (setq attempts (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) attempts)
+            selections (cl-remove-if-not
+                        (lambda (item) (equal (plist-get item :run-id) run-id))
+                        selections)
             reports (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) reports)
             conflicts (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) conflicts)
             claims (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) claims))
       ;; Different reports for the same accepted task attempt are a visible conflict.
-      (dolist (task (plist-get manifest :tasks))
-        (let* ((key (plist-get task :task-key))
-               (attempt (plist-get task :accepted-attempt))
-               (matches (cl-remove-if-not (lambda (report)
-                                            (and (equal key (plist-get report :task-key))
-                                                 (= attempt (plist-get report :attempt)))) reports)))
-          (when (> (length (delete-dups (mapcar (lambda (report) (prin1-to-string report)) matches))) 1)
-            (push (list :run-id run-id :task-key key :attempt attempt
-                        :reason "conflicting terminal reports") conflicts))))
-      (let* ((tasks (mapcar (lambda (task)
-                              (e-board-orchestration--task-projection task attempts reports))
-                            (plist-get manifest :tasks)))
+      (let ((selected-tasks
+             (e-board-orchestration--select-task-attempts
+              (plist-get manifest :tasks) selections)))
+        (dolist (task selected-tasks)
+          (let* ((key (plist-get task :task-key))
+                 (attempt (plist-get task :accepted-attempt))
+                 (matches
+                  (cl-remove-if-not
+                   (lambda (report)
+                     (and (equal key (plist-get report :task-key))
+                          (= attempt (plist-get report :attempt))))
+                   reports)))
+            (when (> (length
+                      (delete-dups
+                       (mapcar (lambda (report) (prin1-to-string report))
+                               matches)))
+                     1)
+              (push (list :run-id run-id :task-key key :attempt attempt
+                          :reason "conflicting terminal reports")
+                    conflicts))))
+        (let* ((tasks (mapcar (lambda (task)
+                                (e-board-orchestration--task-projection
+                                 task attempts reports))
+                              selected-tasks))
              (required (cl-remove-if-not (lambda (task) (plist-get task :required)) tasks))
              (all-terminal (cl-every (lambda (task)
                                        (memq (plist-get task :state) '(done failed cancelled)))
@@ -515,8 +555,9 @@ performs a clock-driven cancellation; a passed deadline is only evidence."
                                              (terminal-status 'pending)
                                              (t 'waiting))
                                 :claims (copy-tree matching)))))
-              :continuation-claims (copy-tree claims)
-              :terminal-status terminal-status)))))
+                :attempt-selections (copy-tree selections)
+                :continuation-claims (copy-tree claims)
+                :terminal-status terminal-status))))))
 
 (defun e-board-orchestration--run-facts (board run-id)
   "Return BOARD facts that belong to RUN-ID.

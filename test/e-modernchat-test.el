@@ -2076,6 +2076,62 @@ messages so the transcript reads as one clean answer."
                              :state)
                   'published)))))
 
+(ert-deftest e-chat-service-test-continuation-target-override-routes-canonical-owner ()
+  "A live application binding can retire a legacy manifest continuation target."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (e-board-registry--boards (make-hash-table :test 'equal))
+        (e-board-registry--id-sequence 0)
+        (e-chat-service--continuation-reconciling (make-hash-table :test 'equal)))
+    (let* ((runtime-board
+            (e-board-registry-create :id "continuation-owner" :principal "test"))
+           (board (e-board-registry-board-source-board runtime-board))
+           queued-session)
+      (e-board-orchestration-publish-fact
+       board
+       '(:version 1 :type manifest :idempotency-key "manifest"
+         :payload (:run-id "run-1"
+                   :tasks ((:task-key "task" :required t :accepted-attempt 0))
+                   :continuation (:session-id "retired-update" :prompt "reconcile"
+                                  :publication-key "publication-1"))))
+      (e-board-orchestration-publish-fact
+       board
+       '(:version 1 :type terminal-report :idempotency-key "report"
+         :payload (:run-id "run-1" :task-key "task" :attempt 0 :status done
+                   :summary "done" :outputs [])))
+      (cl-letf (((symbol-function 'e-chat-service-queue-session)
+                 (lambda (_harness session-id _prompt &rest _arguments)
+                   (setq queued-session session-id)
+                   "continuation-message")))
+        (e-chat-service-reconcile-board-continuation
+         runtime-board 'test "canonical-owner"))
+      (should (equal queued-session "canonical-owner"))
+      (should (eq (plist-get
+                   (plist-get
+                    (e-board-orchestration-run-projection board "run-1")
+                    :continuation)
+                   :state)
+                  'published)))))
+
+(ert-deftest e-chat-service-test-inflight-bind-upgrades-continuation-owner ()
+  "A later application-owner request upgrades the shared in-flight bind."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (operation
+          (e-chat-service--bind-operation-create
+           :harness harness :session-id "canonical-owner"))
+         (work
+          (e-work-prepare e-chat-service--bind-operation-spec operation))
+         (table (e-chat-service--harness-binding-works harness)))
+    (setf (e-chat-service-bind-operation-work operation) work
+          (e-work-handle-arguments work) operation)
+    (puthash "canonical-owner" work table)
+    (should
+     (eq (e-chat-service-binding-start
+          harness "canonical-owner" nil t)
+         work))
+    (should
+     (e-chat-service-bind-operation-continuation-owner-p operation))))
+
 
 (ert-deftest e-chat-service-test-continuation-invokes-project-local-action ()
   "A queued board continuation resolves an action from its session project root."

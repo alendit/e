@@ -177,6 +177,29 @@
     (should (eq (plist-get (car (plist-get projection :tasks)) :state) 'pending))
     (should-not (plist-get projection :terminal-status))))
 
+(ert-deftest e-board-orchestration-test-retry-selection-advances-exact-attempt ()
+  "A durable retry selection supersedes only the named task attempt."
+  (let* ((facts
+          (list
+           (e-board-orchestration-test--manifest
+            (list '(:task-key "task" :required t :accepted-attempt 0)))
+           (e-board-orchestration-test--fact
+            'task-attempt "task-running-0"
+            '(:run-id "run-1" :task-key "task" :attempt 0 :status running))
+           (e-board-orchestration-test--fact
+            'attempt-selection "task-selected-1"
+            '(:run-id "run-1" :task-key "task" :attempt 1))
+           (e-board-orchestration-test--fact
+            'terminal-report "task-done-0"
+            '(:run-id "run-1" :task-key "task" :attempt 0 :status done
+              :summary "stale" :outputs []))))
+         (projection (e-board-orchestration-reduce facts))
+         (task (car (plist-get projection :tasks))))
+    (should (= (plist-get task :accepted-attempt) 1))
+    (should (eq (plist-get task :state) 'pending))
+    (should-not (plist-get task :accepted-report))
+    (should-not (plist-get projection :terminal-status))))
+
 (ert-deftest e-board-orchestration-test-conflicting-report-is-visible ()
   "Conflicting accepted reports block a successful terminal projection."
   (let* ((facts (list (e-board-orchestration-test--manifest

@@ -109,6 +109,30 @@
       (should (eq (plist-get (car observed) :terminal-status) 'done))
       (should (= (length (plist-get (car observed) :accepted-reports)) 1)))))
 
+(ert-deftest e-board-orchestration-actions-test-select-next-attempt-is-idempotent ()
+  "Retry selection advances exactly once and reuses one durable fact identity."
+  (let ((e-board--registry (make-hash-table :test 'equal))
+        (board (e-board-create :id "run-actions-retry")))
+    (e-board-orchestration-actions-test--publish
+     board
+     (e-board-orchestration-actions-test--manifest
+      '((:task-key "task" :required t :accepted-attempt 0))))
+    (let ((first
+           (e-board-orchestration-actions-select-next-attempt
+            board "run-1" "task" 0))
+          (again
+           (e-board-orchestration-actions-select-next-attempt
+            board "run-1" "task" 0)))
+      (should (= first 1))
+      (should (= again 1))
+      (should (= (plist-get
+                  (car (plist-get
+                        (e-board-orchestration-run-projection board "run-1")
+                        :tasks))
+                  :accepted-attempt)
+                 1))
+      (should (= (length (e-board-messages board)) 2)))))
+
 (provide 'e-board-orchestration-actions-test)
 
 ;;; e-board-orchestration-actions-test.el ends here
