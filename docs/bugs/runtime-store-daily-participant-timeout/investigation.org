@@ -1109,3 +1109,45 @@ seconds.  The complete repository suite passes 2,906 tests with 2,840 expected,
 66 explicit legacy skips, and zero unexpected in 193.909785 seconds.  The
 bounded live probe confirmed the reported session was settled as =error=; no
 live state or canonical database was modified.
+
+* Curation preflight rejected a valid content-bearing disposition (2026-09-08)
+
+The next reported Daily failure was =Invalid context lifetime record:
+curation-disposition, :bytes, 8314=.  The bounded =chat= probe confirmed that
+session =20260908T073511-a654a8a4be02= had settled as =error=.  The probe was
+read-only; no live editor state or database state was changed.
+
+The failure occurred after the previous message-query correction.  SQLite had
+not rejected the content.  Instead,
+=e-context-lifetime-prepare-curation-disposition= measured the provider's
+complete content-bearing promotion package against its inherited 8,192-byte
+limit.  Content, curation identities, provenance, and record structure produced
+the observed 8,314-byte record, so pure preflight failed the turn before async
+persistence submission.
+
+The public test had claimed to confirm subsequent curation but did not emit a
+=context-curate= provider action.  It stopped after proving that the 9 KiB tool
+result reached the immediate continuation, then returned assistant text.  The
+missing curation action is why the production failure remained invisible
+to the gate.
+
+The context-lifetime owner now applies a 1 MiB canonical bound to the prepared
+durable curation record/package.  This is a content-bearing durable-record
+limit, not a scalar-query limit.  The 16-source semantic bound and the existing
+session command, physical record, and batch admission limits remain in force.
+Exact-bound and one-over tests derive the limit directly rather than performing
+a limit-sized search.
+
+The strengthened public graphical scenario now performs the full sequence:
+9 KiB =run_elisp= result, OpenAI-decoded =context-curate= with a summary whose
+prepared package exceeds 8,192 bytes, provider acknowledgement continuation,
+final assistant response, second Daily prompt that sees the curated summary,
+SQLite release, terminal publication, isolated worker failure, and
+healthy-sibling persistence/readback.  It passes 1/1 in 8.744559 seconds.
+Focused context/harness tests pass 44/44.  The complete repository suite passes
+2,906 tests with 2,840 expected, 66 explicit legacy/superseded skips, and zero
+unexpected in 193.416323 seconds.
+
+The failed curation never reached SQLite, so the canonical database does not
+need migration or repair.  A full Emacs restart is required because the fix is
+in core context-lifetime code.

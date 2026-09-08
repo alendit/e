@@ -1047,3 +1047,49 @@ unexpected in 193.909785 seconds.
 SQLite remains the durable authority, the worker owns query byte budgets, and
 Emacs retains only the detached content selected for the current request.  No
 session aggregate, retry loop, acknowledgement wait, or new cache was added.
+
+* Content-bearing curation uses a durable-record bound (2026-09-08)
+
+A live Daily turn then failed with =Invalid context lifetime record:
+curation-disposition, :bytes, 8314=.  This was not a SQLite failure.  Context
+lifetime rejected the provider's content-bearing durable curation record before
+it could be submitted.
+
+The 8,192-byte whole-record ceiling came from the original Feature 88 effect
+contract.  Because the limit covered content plus curation identity,
+provenance, and record structure, ordinary provider-produced content could
+cross the ceiling.  The limit therefore treated a durable content record like
+narrow control metadata and made a valid provider decision fail the turn.
+
+For ordinary v6 runtime, this addendum supersedes that Feature 88 ceiling.  A
+prepared curation record or promotion/erasure package may contain at most
+1 MiB of canonical UTF-8 data.  The 16-source bound remains unchanged.  The
+session application service and SQLite adapter still enforce their practical
+complete-command, record, and batch limits, so this change does not make
+curation unbounded or introduce another retained copy.  The curation revision
+identity already includes the effective record limit and therefore fences
+cached provider material when the limit changes.
+
+The public graphical acceptance gate now includes the transition it previously
+omitted.  After producing a 9 KiB =run_elisp= result, the controllable provider
+emits the real OpenAI-decoded =context-curate= action with a content-bearing
+summary of that source and its acknowledgement target.  The captured prepared
+package is larger than 8,192 bytes but within the 1 MiB bound.  The provider
+receives the immediate acknowledgement continuation and only then emits the
+final assistant answer.  The same test
+continues through the second Daily prompt, delayed SQLite release, terminal
+publication, owner-local worker failure, and healthy-sibling readback.
+
+Evidence on the corrected tree:
+
+- context-lifetime and harness-composition tests pass 44/44, including exact
+  1 MiB and one-over rejection boundaries;
+- the public delayed Org Canvas selector passes 1/1 in 8.744559 seconds with
+  the large-result curation and acknowledgement continuation; and
+- the complete repository suite passes 2,906 tests with 2,840 expected,
+  66 explicit legacy/superseded skips, and zero unexpected in 193.416323
+  seconds.
+
+This record was rejected before persistence, so no database migration or
+repair is required.  The correction changes core context-lifetime code and
+requires a full Emacs restart before a live editor uses it.

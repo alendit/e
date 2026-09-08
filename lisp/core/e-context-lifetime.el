@@ -86,8 +86,13 @@ The bound applies across exact retention, summary sources, and explicit
 erasure.  Ordinary omitted sources are not part of the submitted disposition
 and therefore do not consume this ceiling.")
 
-(defconst e-context-lifetime-curation-max-record-bytes 8192
-  "Maximum canonical UTF-8 bytes in one prepared curation record.")
+(defconst e-context-lifetime-curation-max-record-bytes (* 1024 1024)
+  "Maximum canonical UTF-8 bytes in one prepared curation record.
+
+This is a durable-content bound, not a scalar metadata bound.  It leaves the
+ordinary session command and storage adapters responsible for bounding their
+complete envelopes while allowing a content-bearing curation item to retain
+normal model or tool output plus its record metadata.")
 
 (defconst e-context-lifetime-curation-erasure-record-version 1
   "Version of the pure, content-free context-erasure record.")

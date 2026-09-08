@@ -751,7 +751,10 @@
                   (cl-incf request-count)
                   (let ((arguments
                          (if (eq (car case) 'oversized-record)
-                             (let ((text (make-string 9000 ?x)))
+                             (let ((text
+                                    (make-string
+                                     (1+ e-context-lifetime-curation-max-record-bytes)
+                                     ?x)))
                                ;; Keep the size assertion in the test while
                                ;; leaving canonical record construction to the
                                ;; context-lifetime owner.

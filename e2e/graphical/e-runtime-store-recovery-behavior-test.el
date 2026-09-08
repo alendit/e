@@ -28,6 +28,7 @@
 (require 'e-chat-service)
 (require 'e-default-harnesses)
 (require 'e-harness)
+(require 'e-openai-decoder)
 (require 'e-org-canvas)
 (require 'e-session)
 (require 'e-runtime-store-codec)
@@ -587,11 +588,14 @@ aggregate or mirror."
          first-response second-response
          (heartbeat 0)
          terminal-hook-metadata
+         curation-package-bytes large-result-source-label
          (e-org-canvas-input-auto-close-delay nil)
          ;; The regression needs an ordinary tool result larger than the
          ;; query-row scalar ABI.  The tool's own output policy is independent
          ;; of the session context query's aggregate byte budget.
          (e-emacs-tools-run-elisp-string-max-bytes 12000)
+         (large-curation-summary
+          (concat (make-string 9000 ?s) "-daily-large-curation-summary"))
          synchronous-operation synchronous-backtrace synchronous-read-backtrace
          original-session-get original-ensure-loaded
          service-events service-subscription)
@@ -886,7 +890,87 @@ aggregate or mirror."
                    (cadr (e-graphical-test-stream-requests stream))
                    :messages))))
             (should (string-match-p "daily-run-elisp" wire))
-            (should (string-match-p "daily-large-tool-result" wire)))
+            (let ((result-position
+                   (string-match "daily-large-tool-result" wire))
+                  (search-position 0))
+              (should result-position)
+              ;; Tool-observation markers are inserted immediately before
+              ;; their matching results.  Select the last marker preceding
+              ;; this result instead of assuming it is the frame's first
+              ;; source; the complete default harness contributes earlier
+              ;; current-state and dynamic-context sources.
+              (while (and
+                      (string-match
+                       "\\[ephemeral context source \\([0-9]+\\),"
+                       wire search-position)
+                      (< (match-beginning 0) result-position))
+                (setq large-result-source-label
+                      (string-to-number (match-string 1 wire))
+                      search-position (match-end 0)))
+              (should (integerp large-result-source-label))))
+          ;; Follow the large tool result through the reserved provider
+          ;; curation action used by production models.  The previous gate
+          ;; stopped one request too early, so it proved that the result could
+          ;; reach the provider while missing the content-bearing durable
+          ;; curation record that failed real Daily turns.
+          (let ((prepare
+                 (symbol-function
+                  'e-context-lifetime-prepare-curation-disposition)))
+            (cl-letf
+                (((symbol-function
+                   'e-context-lifetime-prepare-curation-disposition)
+                  (lambda (&rest arguments)
+                    (let ((prepared (apply prepare arguments)))
+                      (setq curation-package-bytes
+                            (e-context-lifetime--bytes
+                             (plist-get prepared :package)))
+                      prepared))))
+              (e-graphical-test-stream-emit
+               stream
+               (e-openai-decoder--context-curation-effect
+                (list :keep nil
+                      :summaries
+                      (list (list :sources (list large-result-source-label)
+                                  :text large-curation-summary))
+                      :erase nil)
+                "daily-large-result-curation")
+               0.01)
+              (e-graphical-test-stream-finish stream 0.02)
+              (condition-case _curation-timeout
+                  (e-graphical-test-wait-until
+                   (lambda ()
+                     (or (e-graphical-test-stream-failure stream)
+                         (and
+                          (= (length
+                              (e-graphical-test-stream-requests stream))
+                             3)
+                          (e-graphical-test-stream-active-p stream))))
+                   2.0 "Org Canvas large-result curation continuation")
+                (ert-test-failed
+                 (let ((entry (gethash session-id
+                                       (e-harness-active-turns harness))))
+                   (ert-fail
+                    (format
+                     (concat "Large-result curation did not continue: "
+                             "stream=%S requests=%d turn=%S transcript=%S")
+                     (e-graphical-test-stream-failure stream)
+                     (length (e-graphical-test-stream-requests stream))
+                     (and entry
+                          (list :status (plist-get entry :status)
+                                :condition (plist-get entry :condition)
+                                :error (plist-get entry :error)))
+                     (with-current-buffer input (buffer-string)))))))))
+          (should (> curation-package-bytes 8192))
+          (should (<= curation-package-bytes
+                      e-context-lifetime-curation-max-record-bytes))
+          (should-not (e-graphical-test-stream-failure stream))
+          (should
+           (string-match-p
+            "daily-large-curation-summary"
+            (prin1-to-string
+             (plist-get
+              (nth 2 (e-graphical-test-stream-requests stream))
+              :messages))))
           (e-graphical-test-stream-emit
            stream (list :type 'assistant-message :content first-response)
            0.01)
@@ -973,14 +1057,37 @@ aggregate or mirror."
               (with-timeout
                   (1.0 (error "Public second Org Canvas submit blocked"))
                 (e-org-canvas-input-submit))))
-          (e-graphical-test-wait-until
-           (lambda () (e-graphical-test-stream-active-p stream))
-           1.0 "second Org Canvas provider request while SQLite delayed")
+          (condition-case _second-request-timeout
+              (e-graphical-test-wait-until
+               (lambda ()
+                 (or (e-graphical-test-stream-failure stream)
+                     (e-graphical-test-stream-active-p stream)))
+               3.0 "second Org Canvas provider request while SQLite delayed")
+            (ert-test-failed
+             (let ((entry (gethash session-id
+                                   (e-harness-active-turns harness))))
+               (ert-fail
+                (format
+                 (concat "Second Org Canvas request did not start: "
+                         "stream=%S turn=%S pending=%d transcript=%S")
+                 (e-graphical-test-stream-failure stream)
+                 (and entry
+                      (list :status (plist-get entry :status)
+                            :condition (plist-get entry :condition)
+                            :error (plist-get entry :error)
+                            :timer (and (timerp (plist-get entry :timer)) t)
+                            :context-work
+                            (and-let* ((work (plist-get entry :context-work)))
+                              (e-work-status work))))
+                 (e-session-async-pending-count sessions session-id)
+                 (with-current-buffer input (buffer-string)))))))
+          (should-not (e-graphical-test-stream-failure stream))
           (let* ((requests (e-graphical-test-stream-requests stream))
                  (wire (prin1-to-string
-                        (plist-get (nth 2 requests) :messages))))
-            (should (= (length requests) 3))
+                        (plist-get (nth 3 requests) :messages))))
+            (should (= (length requests) 4))
             (should (string-match-p (regexp-quote first-response) wire))
+            (should (string-match-p "daily-large-curation-summary" wire))
             (should (string-match-p
                      "which project needs a human review" wire))
             (should

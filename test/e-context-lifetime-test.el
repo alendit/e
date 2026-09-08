@@ -683,7 +683,7 @@ the record-focused assertions concise without restoring the retired wrapper."
        :type 'e-context-lifetime-invalid-record))))
 
 (ert-deftest e-context-lifetime-test-curation-source-and-byte-bounds ()
-  "Curation accepts exact 16/8192 limits and rejects one-over values."
+  "Curation accepts its exact source/byte limits and rejects one-over values."
   (let ((sixteen (e-context-lifetime-test--multi-source-frame 16))
         (seventeen (e-context-lifetime-test--multi-source-frame 17)))
     (should (= (length (plist-get
@@ -702,20 +702,17 @@ the record-focused assertions concise without restoring the retired wrapper."
      :type 'e-context-lifetime-invalid-record))
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
          (sources (e-context-lifetime-frame-curation-sources frame 1.0))
+         (one-byte-summary
+          (list :sources '(1) :text "x"))
+         (one-byte-record
+          (e-context-lifetime--curation-record
+           frame (list :keep nil :summaries (list one-byte-summary))
+           "response-bytes" sources))
+         (one-byte-package
+          (list :promotion one-byte-record :erasure nil))
          (length-at-limit
-          (cl-loop for length from 1 to 10000
-                   for normalized =
-                   (list :keep nil
-                         :summaries
-                         (list (list :sources '(1)
-                                     :text (make-string length ?x))))
-                   for record =
-                   (e-context-lifetime--curation-record
-                    frame normalized "response-bytes" sources)
-                   for candidate = (list :promotion record :erasure nil)
-                   when (= (e-context-lifetime--bytes candidate) 8192)
-                   return length)))
-    (should length-at-limit)
+          (+ 1 (- e-context-lifetime-curation-max-record-bytes
+                  (e-context-lifetime--bytes one-byte-package)))))
     (let ((effect (list :keep nil :summaries
                         (list (list :sources '(1)
                                     :text (make-string length-at-limit ?x)))))
@@ -729,7 +726,7 @@ the record-focused assertions concise without restoring the retired wrapper."
                    (e-context-lifetime-prepare-curation-disposition
                     frame effect "response-bytes" 1.0)
                    :package))
-                 8192))
+                 e-context-lifetime-curation-max-record-bytes))
       (should-error
        (e-context-lifetime-test--prepared-curation-record
         frame too-large "response-bytes" 1.0)
@@ -879,19 +876,19 @@ the record-focused assertions concise without restoring the retired wrapper."
   "Disposition preparation rejects consumed frames and one-over records."
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
          (sources (e-context-lifetime-frame-curation-sources frame 1.0))
+         (one-byte-summary
+          (list :sources '(1) :text "x"))
+         (one-byte-record
+          (e-context-lifetime--curation-record
+           frame (list :keep nil :summaries (list one-byte-summary))
+           "response-disposition-bytes" sources))
+         (one-byte-package
+          (list :promotion one-byte-record :erasure nil))
+         ;; ASCII summary text contributes exactly one canonical byte per
+         ;; character, so derive the boundary without a limit-sized search.
          (length-at-limit
-          (cl-loop for length from 1 to 10000
-                   for summary =
-                   (list :sources '(1)
-                         :text (make-string length ?x))
-                   for record =
-                   (e-context-lifetime--curation-record
-                    frame (list :keep nil :summaries (list summary))
-                    "response-disposition-bytes" sources)
-                   for candidate = (list :promotion record :erasure nil)
-                   when (= (e-context-lifetime--bytes candidate) 8192)
-                   return length)))
-    (should length-at-limit)
+          (+ 1 (- e-context-lifetime-curation-max-record-bytes
+                  (e-context-lifetime--bytes one-byte-package)))))
     (let* ((at-limit
             (list :keep nil
                   :summaries
@@ -906,7 +903,7 @@ the record-focused assertions concise without restoring the retired wrapper."
              (e-context-lifetime-prepare-curation-disposition
               frame at-limit "response-disposition-bytes" 1.0)))
         (should (= (e-context-lifetime--bytes (plist-get prepared :package))
-                   8192))
+                   e-context-lifetime-curation-max-record-bytes))
         (should (= (plist-get prepared :retained-source-count) 1)))
       (should-error
        (e-context-lifetime-prepare-curation-disposition
@@ -1214,7 +1211,10 @@ the record-focused assertions concise without restoring the retired wrapper."
                    "context-curation-presentation-v3"))
     (should (= (plist-get first :estimate-bytes-per-token) 2.0))
     (should (= (plist-get first :max-sources) 16))
-    (should (= (plist-get first :max-record-bytes) 8192))))
+    (should (= (plist-get first :max-record-bytes)
+               e-context-lifetime-curation-max-record-bytes))
+    (should (= e-context-lifetime-curation-max-record-bytes
+               (* 1024 1024)))))
 
 (ert-deftest e-context-lifetime-test-curation-v3-codec-projects-literal-messages ()
   "The v3 codec preserves ordered exact/summary content and provenance."
