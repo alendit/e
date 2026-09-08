@@ -1,0 +1,209 @@
+#+title: Daily Board Admission Truth and Recovery
+#+startup: overview
+
+* Status
+
+Ready.
+
+* Product authority
+
+This plan implements the operator-approved remediation of the concrete
+Grimoire Daily failure recorded in
+=docs/bugs/grimoire-daily-stalled-board-admission/=.
+It refines Features 89 and 92 without reopening their broader roadmaps.
+
+* Vocabulary and identity
+
+The authoritative definitions of =session=, =board=, =participant=, and
+=pickup= are in =docs/references/runtime_concepts.org=.
+
+This plan additionally distinguishes three consumer-facing identifiers:
+
+- =Daily run id= identifies one immutable orchestration manifest.
+- =Board id= identifies the durable routing and fact stream used by that run.
+- =owner session id= identifies the one canonical chat session that owns and
+  continues the Daily.
+
+These values may be displayed together but must never be labelled
+interchangeably.
+
+* Problem
+
+The current Daily path can durably publish =running= before a child session has
+committed admission.
+The child runner ignores the returned admission work, while restart recovery
+trusts the false running projection even when no live child exists.
+The result is an indefinitely active Board with no executing work, no terminal
+failure, and no convergence.
+
+The affected run also retains a legacy update participant and continuation,
+which contradict the single-owner Daily design.
+
+* State ownership
+
+SQLite remains authoritative for durable sessions, Board identity, participant
+associations, pickups, orchestration facts, task state, and ordering.
+Emacs retains only live bindings, subscribers, callbacks, timers, executing
+work handles, and bounded optimistic admission state.
+
+The subagent runner owns child execution admission.
+It composes the session/participant durability work with registry publication,
+task-state publication, and runner start.
+Grimoire owns Daily manifest policy, retry policy, reconciliation, and the
+mapping from one Daily note to its canonical owner.
+Presentation code owns bounded, signal-focused inspection and visible failure
+status.
+
+* Contract matrix
+
+| ID | Contract | Observable acceptance |
+|----+----------+-----------------------|
+| F93-C01 | Child session root/current rows, participant association, and pickup acceptance commit in one SQLite transaction; runnable publication follows that boundary. | No partial durable child/participant/claimed-pickup state, child registry entry, =running= fact, or provider turn is visible before the transaction succeeds. |
+| F93-C02 | Lifecycle state is truthful. | Admission wait is =pending=; =running= means a live runner has started; every failure becomes retryable or terminal exactly once. |
+| F93-C03 | Restart recovery converges. | A durable nonterminal attempt without a current live assignment is retried within a bound or visibly failed; reopen never waits for a vanished child. |
+| F93-C04 | One canonical Daily owner continues the run. | New and legacy notes route reconciliation through =E_SESSION=; =E_UPDATE_SESSION= is inert and removed during successful recovery/repair. |
+| F93-C05 | The public graphical Daily path covers delay, restart, success, and isolation. | Daily opens immediately; composer input and three heartbeats work during held SQLite admission; release starts each child once; restart recovery converges; one owner-local failure does not stop another session. |
+| F93-C06 | The affected 2026-09-08 run is repaired through an explicit offline operation. | The canonical store and Daily note retain the Board and owner, contain no reachable update-session continuation, and can resume or end with a visible terminal result. |
+| F93-C07 | Participant roles and lifetimes reflect ownership. | Exactly one owner is declared; gatherers are participants; failed provisional bindings do not survive; terminal children can detach without deleting durable history. |
+| F93-C08 | Admission/recovery failure is visible and actionable. | The Daily and Board inspection show the first bounded cause, affected task, attempt, and retry/terminal disposition. |
+| F93-C09 | Identifier presentation is unambiguous. | Run, Board, owner session, participant, and attempt labels use their exact names and values. |
+| F93-C10 | Board inspection defaults to decision-relevant state. | The default view summarizes manifest/task/admission/terminal state; bounded raw activity remains explicitly available. |
+
+* Public behavioral scenario
+
+Given an existing Daily with one canonical owner and selected gatherer tasks,
+opening the public Daily returns its buffer before SQLite worker readiness.
+While child admission is deliberately held, the composer accepts input and
+three independent heartbeat timers fire.
+The UI reports the tasks as pending admission and does not claim they run.
+
+When SQLite is released, each session/participant admission commits once, each
+runner starts once, ordered reports appear once, and reconciliation returns to
+the canonical owner.
+If Emacs is restarted after a durable running fact but without a live child,
+reopening recognizes the orphan and performs bounded recovery.
+If one admission or write fails, only that task/session/Board becomes suspect;
+another session can admit, persist, query, and render.
+
+* Delivery packages
+
+** DP1: Atomic child admission and truthful lifecycle
+
+Add one consumer-shaped asynchronous storage operation that commits the child
+session root/current rows, participant association, and selected pickup
+acceptance in one SQLite transaction.
+Move child registration and runner start behind that successful admission.
+Expose one consumer-shaped work result that callers can observe without
+blocking.
+Publish =running= only from the successful start boundary and publish one
+bounded failure when admission or runner start fails.
+Correct participant role serialization and remove failed provisional runtime
+bindings.
+
+This package owns F93-C01, F93-C02, and F93-C07.
+If work stopped here, new dispatches could no longer create false-running
+children or leaked participants.
+
+** DP2: Convergent Daily recovery and canonical continuation
+
+Replace “durable running may still report” with an explicit comparison to the
+current live assignment registry.
+Treat nonterminal work without a live assignment as orphaned and apply one
+bounded retry policy with idempotent attempt identities.
+Route manifest continuation and recovery turns through the canonical owner
+from =E_SESSION=.
+Read legacy =E_UPDATE_SESSION= only to diagnose and retire it; never use it as a
+coordinator.
+
+This package owns F93-C03 and F93-C04.
+If work stopped here, unfinished Dailies would converge after restart through
+one owner.
+
+** DP3: Public graphical proof and Board presentation
+
+Add the exact graphical delayed-admission/release/restart/failure scenario.
+Expose pending, orphaned, retrying, terminal, and first-failure state in the
+Daily/Board surface.
+Label run, Board, owner session, participant, task, and attempt separately.
+Make the default activity view a bounded task/admission summary while keeping
+raw activity behind an explicit inspection command.
+
+This package owns F93-C05, F93-C08, F93-C09, and F93-C10.
+If work stopped here, the exercised public path would be observable and
+protected against the exact regression.
+
+** DP4: Offline repair of the affected Daily
+
+Provide and run a narrow offline repair for
+=daily:2026-09-08:20260908T113936561564000= only after DP1-DP3 pass.
+Create a recoverable backup, verify Emacs is stopped, preserve all message and
+Board history, rewrite only semantically false current facts/associations, and
+remove obsolete Org metadata.
+Read back the canonical database and Daily note with bounded queries.
+
+This package owns F93-C06.
+If work stopped here, the reported user data would be usable under the fixed
+runtime rather than merely leaving a code fix for future runs.
+
+* Compatibility and removals
+
+There is no compatibility requirement for a separate Daily update session.
+Remove reachable update-session constructors, continuation routing, and
+ordinary-runtime uses of =E_UPDATE_SESSION=.
+Do not preserve synchronous child-admission APIs merely for old callers;
+migrate Grimoire and other current callers to the asynchronous composition.
+
+Remove or reject any path that infers live execution from durable =running=
+alone.
+Do not add a process-wide work mirror, session catalog, replay-based Board,
+global FIFO, worker-readiness wait, or synchronous recovery barrier.
+
+* Practical bounds
+
+- Admission diagnostics retain the first bounded cause per affected owner.
+- Recovery retries are finite and idempotent per task attempt.
+- Board inspection queries one bounded task/admission page and never replays
+  full history.
+- The repair targets exact verified identifiers and refuses any store whose
+  observed identities do not match its preconditions.
+
+* Verification
+
+Focused tests must prove:
+
+1. every failure cut inside session/participant/pickup admission leaves none of
+   those facts partially visible;
+2. delayed session admission exposes pending but neither running nor a started
+   runner;
+3. admission success publishes participant/running and starts once;
+4. admission or start failure cleans the provisional binding and settles once;
+5. restart recovery retries an orphaned nonterminal attempt and does not retry
+   a genuinely live assignment;
+6. legacy continuation is rebound to the canonical owner;
+7. participant roles contain one owner and participant gatherers;
+8. presentation uses exact identifiers and first-failure state;
+9. the repair refuses mismatched input and preserves history.
+
+The public graphical test is the primary acceptance gate and must exercise the
+scenario in F93-C05 through public Daily/chat entrypoints.
+Repository tests may use private temporary stores only.
+The running Emacs and canonical database remain unchanged until the offline
+repair package is explicitly reached.
+
+* Completion criterion
+
+This feature is complete only when every F93-C01 through F93-C10 row is
+implemented and evidenced, focused suites pass in both repositories, the
+public graphical scenario passes end to end, the affected canonical Daily is
+repaired and read back with Emacs stopped, obsolete reachable update-session
+behavior is absent, review has no unresolved correctness findings, and all
+coherent slices are committed with unrelated work left untouched.
+
+* Non-goals
+
+- a generic distributed executor or multi-process lease protocol;
+- full Board/history replay or durable-state mirrors in Emacs;
+- global serialization beyond SQLite transaction semantics;
+- interactive integrity scans, synchronous open/flush/close, or worker waits;
+- broad cleanup unrelated to the affected admission, recovery, ownership, and
+  presentation paths.

@@ -1,0 +1,37 @@
+#+title: Grimoire Daily Stalls with False Running Board Work
+#+startup: overview
+
+* Report
+
+The Grimoire Daily run for 2026-09-08 displayed an apparently active Board but
+never produced source artifacts or a reconciliation result.
+After a fresh Emacs start the Daily remained stuck, while Board inspection
+reported six gatherers as running even though no child session had completed
+admission and no corresponding work handle existed.
+
+The affected identities are:
+
+- Daily run: =daily:2026-09-08:20260908T113936561564000=
+- Board: =brd_01M206199PW5J80TGFJMK0R123=
+- canonical owner session: =20260908T093652-933e6e99784a=
+- obsolete update participant session: =20260908T113936-d74a9503a5ee=
+
+* User-visible failures
+
+- The Daily is neither completed nor visibly failed.
+- Board activity describes work as running after its process-local workers have
+  disappeared.
+- Reopening the Daily does not retry the missing work.
+- A separate legacy update participant is present even though the Daily design
+  requires one canonical owner session on one Board.
+- Raw Board activity is noisy enough that the decisive admission failure is not
+  obvious.
+
+* Expected behavior
+
+Child session creation, Board participation, and pickup acceptance cross one
+SQLite transaction; runnable work publication follows that commit boundary.
+Before that boundary a task is pending, not running.
+After restart, nonterminal work without current executing evidence converges to
+a bounded retry or a visible terminal failure.
+The Daily continues and reconciles through its canonical owner session.

@@ -1,0 +1,56 @@
+#+title: Plan Review: Daily Board Admission Truth and Recovery
+#+startup: overview
+
+* Review boundary
+
+Selected level: implementation-plan.
+Product authority: the operator's remediation request and the ten prioritized
+issues recorded in the incident investigation.
+Owning contract: =plan.org= F93-C01 through F93-C10.
+Glossary: =docs/references/runtime_concepts.org= for session, Board,
+participant, and pickup; the plan locally defines Daily run identity.
+Behavioral status at review: failing on the direct public Daily path.
+
+* Plan identity
+
+The admitted plan is =plan.org= Git object
+=fffa135eb3df678d9f95a30f2cd3d429daf7132a=.
+This identity must be refreshed if contract-owning plan content changes.
+
+* Requirement matrix review
+
+| Cell | Owning contract | Structural owner | Direct scenario | Error/lifetime coverage | Result |
+|------+-----------------+------------------+-----------------+-------------------------+--------|
+| F93-C01 | Atomic child admission | subagent runner + SQLite admission operation | held commit then release | transaction cut points and cleanup | cleared |
+| F93-C02 | Truthful lifecycle | subagent runner + Daily orchestration | pending then running/terminal | start failure and settle once | cleared |
+| F93-C03 | Restart convergence | Daily orchestration recovery | orphan after restart | bounded retry/terminal failure | cleared |
+| F93-C04 | Canonical continuation | Grimoire Daily application service | legacy note reopen | obsolete metadata retirement | cleared |
+| F93-C05 | Public graphical proof | Daily/chat shell composition | delayed open/read/write/restart/failure | independent owner isolation | cleared |
+| F93-C06 | Exact offline repair | operator repair boundary | affected run readback | identity mismatch refusal + backup | cleared |
+| F93-C07 | Roles and lifetime | Board participant admission | one owner plus gatherers | provisional detach | cleared |
+| F93-C08 | Visible failure | Daily/Board presentation | failed admission | bounded first cause | cleared |
+| F93-C09 | Identity labels | Board inspection presentation | inspect affected run | no ambiguous aliases | cleared |
+| F93-C10 | Signal-focused inspection | bounded Board queries + shell | summary then raw detail | page bounds | cleared |
+
+* Architecture review
+
+The plan places session/participant durability with the session application
+service, child execution admission with the subagent runner, Daily retry and
+continuation policy with Grimoire, and rendering with presentation shells.
+Dependencies remain directed from Grimoire policy and shells toward existing
+domain-owned e contracts.
+No durable replica, global ordering service, or synchronous persistence
+boundary is introduced.
+
+The four delivery packages are useful stopping points and explicitly remove
+the false-running and update-session legacy paths.
+Uncertain retry counts and presentation details remain local policy choices;
+stable lifecycle meanings and SQLite authority are direct contracts.
+
+* Result
+
+=implementation-plan-fixed-point=
+
+All required specification cells are covered by one owning contract, a
+structural owner, a direct public scenario, and failure/lifetime evidence.
+No unresolved plan finding remains.

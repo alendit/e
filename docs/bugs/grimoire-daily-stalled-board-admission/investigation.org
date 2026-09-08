@@ -1,0 +1,86 @@
+#+title: Investigation: Grimoire Daily Stalled Board Admission
+#+startup: overview
+
+* Scope
+
+This investigation follows the exact 2026-09-08 Daily run from its Org
+properties through SQLite Board/session facts and the current admission and
+recovery callers in =e= and Grimoire.
+
+* Runtime and durable evidence
+
+The user's graphical Daily and Board views showed an unfinished run after a
+fresh Emacs start.
+A bounded read-only inspection of the canonical SQLite store established:
+
+- the Board record stream and both involved session journals are structurally
+  contiguous;
+- the canonical owner has 90 messages and 366 journal records;
+- the obsolete update participant has no messages and only its admission
+  journal;
+- six gatherer pickups have repeated =ready -> claimed= transitions and are now
+  =ready=, with =session-admission-pending= recorded as their reason;
+- the orchestration projection nevertheless describes all six attempts as
+  =running=;
+- no child admissions, terminal reports, or Daily raw artifacts exist for
+  those six attempts;
+- the durable continuation points to the obsolete update participant instead
+  of the canonical owner;
+- all eight participant payloads claim the =owner= role although only the
+  canonical Daily session owns the Board.
+
+This is a coherent but semantically false projection, not evidence of SQLite
+corruption.
+
+* Source trace
+
+=e-subagent-spawn= calls =e-chat-service-create-participant-start= but ignores
+the returned admission work.
+It then registers and starts the child independently of the durability result.
+
+=e-chat-service-create-participant-start= installs an optimistic binding and
+submits the session root and Board association asynchronously.
+Only its callback publishes the participant and settles admission work.
+The API therefore already exposes the correct asynchronous boundary, but the
+subagent caller does not compose with it.
+
+Grimoire's =grimoire-daily-run--dispatch-missing= publishes an orchestration
+attempt as =running= before calling =e-subagent-spawn=.
+If session admission is delayed or fails, durable task state has already
+advanced beyond reality.
+
+On reopen, =grimoire-daily-run--dispatch-missing= unconditionally skips any
+projected =running= attempt because it assumes the missing process-local child
+may still report.
+That assumption cannot survive an Emacs restart, and it prevents convergence.
+
+* Root cause
+
+The application divides one semantic admission into unrelated publications:
+task running state, child registry registration, session durability, Board
+participant publication, and runner start.
+No single owner advances those facts in the order required by their meaning.
+Restart recovery then treats one prematurely published fact as proof that live
+execution still exists.
+
+* Corrective direction
+
+The subagent runner must own one asynchronous admission operation whose SQLite
+transaction commits the child session, participant association, and claimed
+pickup together.
+Its work settles only after that commit.
+Only then may it register the runnable child, publish =running=, and start the
+provider turn.
+Failures before that boundary remain pending/retryable or become one visible
+terminal dispatch failure; they never appear as running.
+
+Grimoire recovery must compare durable nonterminal task state with the current
+process-local assignment registry.
+A durable running attempt with no live assignment after restart is orphaned,
+not active, and must enter bounded recovery.
+
+The affected Daily requires an explicit offline repair after the corrected
+runtime and regression tests pass.
+The repair must retain the Board and canonical owner, retire the obsolete
+participant metadata, reset orphaned gatherers through the ordinary recovery
+contract, and verify the canonical database afterward.
