@@ -1465,7 +1465,8 @@ semantic interpretation responsibility."
            (observer-selector '(:tags (main)))
            (default-tags '(main)) default-to
            defer-participant-publication associated-participant
-           pending-session output-sequence activity-sequence)
+           pending-session output-sequence activity-sequence
+           participant-role (persist-participant t))
   "Install one HARNESS SESSION-ID participant/client binding on BOARD."
   (or (e-chat-service-binding harness session-id)
       (progn
@@ -1504,7 +1505,9 @@ semantic interpretation responsibility."
                            (e-chat-service--deliver-or-defer-pending-session
                             binding current pickup message))
                          :defer-participant-publication
-                         defer-participant-publication))
+                         defer-participant-publication
+                         :role participant-role
+                         :persist-participant persist-participant))
                        (t
                         (e-board-runtime-attach
                          board harness session-id :participant-id participant-id
@@ -2051,8 +2054,16 @@ LIMIT defaults to the registry's fixed page bound."
           (progn
             (when binding
               (setf (e-chat-service-binding-first-persistence-error binding)
-                    (copy-tree error t)))
-            (e-work-fail work error))
+                    (copy-tree error t)
+                    (e-chat-service-participant-operation-binding operation)
+                    nil))
+            ;; Settlement is the invariant even if an unexpected local
+            ;; inverse signals.  Preserve and publish the first admission
+            ;; error, then let a cleanup defect remain visible to its caller.
+            (unwind-protect
+                (when binding
+                  (e-chat-service--discard-binding binding))
+              (e-work-fail work error)))
         (when binding
           (e-chat-service--publish-ready-binding binding))
         (e-work-finish work (copy-tree result t))))))
@@ -2110,18 +2121,24 @@ LIMIT defaults to the registry's fixed page bound."
                :observer-selector (plist-get routing-policy :observer-selector)
                :default-tags (plist-get routing-policy :default-tags)
                :default-to (plist-get routing-policy :default-to)
-               :pending-session t :defer-participant-publication t)))
+               :pending-session t :defer-participant-publication t
+               :participant-role 'participant
+               :persist-participant nil)))
         (setf (e-chat-service-participant-operation-binding operation) binding
               (e-chat-service-participant-operation-session-result operation)
               (copy-tree session t)
               (e-chat-service-binding-readiness-work binding)
               (e-chat-service-participant-operation-work operation))
         (e-session-async-prime-new-context-path store query-delta)
-        (e-session-storage-submit-owned
-         store session-id
-         (list :op 'session-append-batch :session-id session-id
-               :records (vconcat records) :query-delta query-delta)
-         (lambda (_result write-error)
+        (e-session-storage-submit-board-participant-admission
+         store session-id records query-delta
+         (e-board-registry-board-id board)
+         (e-board-generation
+          (e-board-registry-board-source-board board))
+         (e-board-registry-participant-envelope
+          (e-board-runtime-attachment-participant
+           (e-chat-service-binding-attachment binding)))
+         (lambda (commit-result write-error)
            (if write-error
                (e-chat-service--finish-participant-operation
                 operation nil
@@ -2129,23 +2146,20 @@ LIMIT defaults to the registry's fixed page bound."
                  store session-id write-error))
              (condition-case publish-error
                  (progn
-                   ;; The session declaration is committed before the
-                   ;; participant becomes routable.  Board publication itself
-                   ;; remains enqueue-and-return; its Board owner reports any
-                   ;; later failure without blocking this session admission.
+                   (e-board-observe-committed-revision
+                    (e-board-registry-board-source-board board)
+                    (plist-get commit-result :board-revision))
                    (e-board-registry-publish-participant-admission
                     board
                     (e-board-runtime-attachment-participant
-                     (e-chat-service-binding-attachment binding)))
+                     (e-chat-service-binding-attachment binding))
+                    t)
                    (e-chat-service--finish-participant-operation
                     operation session nil))
                (error
                 (e-chat-service--finish-participant-operation
                  operation nil publish-error)))))))
     (error
-     (when-let* ((binding
-                  (e-chat-service-participant-operation-binding operation)))
-       (ignore-errors (e-chat-service--discard-binding binding)))
      (e-chat-service--finish-participant-operation operation nil error))))
 
 (cl-defun e-chat-service-create-participant-start

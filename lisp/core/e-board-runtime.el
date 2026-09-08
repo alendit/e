@@ -2874,7 +2874,8 @@ high-watermarks returned by the exact association query."
 (cl-defun e-board-runtime-attach-pending-session
     (board-or-id harness session-id
                  &key participant-id author principal controller
-                 delivery-function defer-participant-publication)
+                 delivery-function defer-participant-publication
+                 role (persist-participant t))
   "Attach bounded live coordination for a newly enqueued SESSION-ID.
 
 The session declaration is an in-flight optimistic mutation owned by the
@@ -2886,6 +2887,7 @@ only the endpoint and participant needed while that mutation settles."
    :participant-id participant-id :author author :principal principal
    :controller controller :delivery-function delivery-function
    :defer-participant-publication defer-participant-publication
+   :role role :persist-participant persist-participant
    :require-live-session-p nil :output-sequence 0 :activity-sequence 0))
 
 (cl-defun e-board-runtime--attach-resolved
@@ -2894,6 +2896,7 @@ only the endpoint and participant needed while that mutation settles."
                  instance-id instance-catalog-generation harness-id
                  harness-object-generation endpoint-token
                  defer-participant-publication restored-participant-p
+                 role (persist-participant t)
                  (require-live-session-p t)
                  output-sequence activity-sequence)
   "Attach one already-resolved endpoint with optional qualified metadata."
@@ -2937,6 +2940,7 @@ only the endpoint and participant needed while that mutation settles."
                   (e-board-registry-add-participant
                    board :id participant-id :author author :principal principal
                    :controller controller
+                   :role role :persist persist-participant
                    :publish-event (not defer-participant-publication))
                   participant-created-p t))
           (let ((key (e-board-runtime--attachment-key board participant)))

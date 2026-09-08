@@ -84,3 +84,28 @@ runtime and regression tests pass.
 The repair must retain the Board and canonical owner, retire the obsolete
 participant metadata, reset orphaned gatherers through the ordinary recovery
 contract, and verify the canonical database afterward.
+
+* Remediation progress
+
+** DP1: atomic admission and truthful lifecycle
+
+The child runner now reserves only bounded process-local pending admission
+state before durability.
+One SQLite operation commits the child session root/current rows and Board
+participant association, plus a real claimed pickup when a pickup-driven
+caller supplies one.
+Direct Daily dispatch supplies no synthetic pickup.
+
+Only a successful admission acknowledgment registers the child and starts its
+runner.
+Admission failure removes the provisional binding; a failure after committed
+admission records one running transition and one terminal failure while
+retaining the durable child for explicit resume.
+Participant serialization now records gatherers as participants rather than
+additional Board owners.
+
+Repository evidence for this slice is 63/63 focused storage/session/Board
+tests, 4/4 focused subagent lifecycle tests, and 48/48 Grimoire Daily tests.
+The full subagent-runner file still has the same four missing-layer fixture
+failures reproduced from the pre-change baseline; they are not caused by this
+slice.

@@ -94,6 +94,15 @@
     (e-subagent--seed-child child-harness child-session-id seed-messages)
     (list :cancel #'ignore)))
 
+(defun e-subagent-runner-test--deferred-work (id)
+  "Return a started cooperative work handle named ID that tests settle later."
+  (e-work-start
+   (e-work-spec-create
+    :id id :execution 'cooperative :interactive-policy 'async
+    :owner 'e-subagent-runner-test
+    :runner (lambda (_handle _arguments _context) :deferred))
+   nil))
+
 (defun e-subagent-runner-test--spawn
     (registry parent-harness parent-session-id &rest arguments)
   "Spawn test work from one explicit parent turn."
@@ -105,6 +114,224 @@
   "Resume test work from one explicit parent turn."
   (e-subagent-resume registry subagent-id prompt runner
                      :source-turn-id "parent-resume-turn"))
+
+(ert-deftest e-subagent-runner-test-register-rejects-unreserved-explicit-id ()
+  "An explicit child id cannot bypass admission with a nil work handle."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let ((binding (e-subagent--producer-binding parent "parent-1")))
+        (should-error
+         (e-subagent-registry-register
+          registry :subagent-id "sub_fake" :work-handle nil
+          :type :reviewer :role 'reviewer :session-id "child-1"
+          :parent-session-id "parent-1" :schedule 'direct
+          :producer-binding binding)
+         :type 'e-board-runtime-error)
+        (should-not (gethash "sub_fake"
+                             (e-subagent-registry-records registry)))
+        (should-not (e-subagent-registry-list registry "parent-1"))))))
+
+(ert-deftest e-subagent-runner-test-delayed-admission-stays-pending-and-unpublished ()
+  "A child is neither registered nor started before durable admission settles."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (admission (e-subagent-runner-test--deferred-work "held-admission"))
+           (runner-calls 0)
+           (running-calls 0))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (cl-letf (((symbol-function 'e-chat-service-create-participant-start)
+                 (lambda (&rest _arguments) admission))
+                ((symbol-function 'e-subagent--inherit-prompt-cache-policy)
+                 #'ignore))
+        (let* ((pending
+                (e-subagent-runner-test--spawn
+                 registry parent "parent-1" :type :reviewer :prompt "go"
+                 :run-id "run-1" :task-key "review" :attempt 0
+                 :on-running (lambda (_record) (cl-incf running-calls))
+                 :runner (lambda (&rest _arguments)
+                           (cl-incf runner-calls)
+                           (list :cancel #'ignore))))
+               (subagent-id (plist-get pending :subagent-id))
+               (await-ref (plist-get pending :await-ref))
+               (pending-record
+                (e-subagent-registry-pending-admission
+                 registry subagent-id)))
+          (should (eq (plist-get pending :status) 'pending))
+          (should (eq (plist-get pending-record :status) 'pending))
+          (should (eq (plist-get pending-record :type) :reviewer))
+          (should (equal (plist-get pending-record :session-id)
+                         (plist-get pending :session-id)))
+          (should (equal (plist-get pending-record :parent-session-id)
+                         "parent-1"))
+          (should (equal (plist-get pending-record :run-id) "run-1"))
+          (should (equal (plist-get pending-record :task-key) "review"))
+          (should (= (plist-get pending-record :attempt) 0))
+          (should
+           (equal
+            (plist-get
+             (e-subagent-registry-find-pending-assignment
+              registry "run-1" "review" 0)
+             :subagent-id)
+            subagent-id))
+          (should-not (e-subagent-registry-list registry "parent-1"))
+          (should (equal await-ref (format "subagent:%s" subagent-id)))
+          (should (e-work-handle-p
+                   (e-subagent-registry-work-handle registry subagent-id)))
+          (should (= runner-calls 0))
+          (should (= running-calls 0))
+          (e-board-runtime-drain-producers)
+          (should-not
+           (cl-find-if
+            (lambda (message)
+              (member (e-board-message-tags message)
+                      '((subagent change queued) (subagent change running))))
+            (e-board-messages
+             (e-board-registry-board-source-board
+              (e-chat-service-binding-board
+               (e-chat-service-binding parent "parent-1"))))))
+          (e-work-finish admission '(:id "child"))
+          (should-not
+           (e-subagent-registry-pending-admission registry subagent-id))
+          (should (= runner-calls 1))
+          (should (= running-calls 1))
+          (should (eq (e-subagent-registry-status registry subagent-id)
+                      'running)))))))
+
+(ert-deftest e-subagent-runner-test-runner-start-failure-settles-once ()
+  "A post-commit runner-start error publishes one running then one failure."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (admission
+            (e-subagent-runner-test--deferred-work
+             "held-post-commit-start"))
+           (original-create
+            (symbol-function 'e-chat-service-create-participant-start))
+           (running-calls 0)
+           (early-failure-calls 0))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (let* ((pending
+              (cl-letf
+                  (((symbol-function 'e-chat-service-create-participant-start)
+                    (lambda (&rest arguments)
+                      ;; Execute the real admission through its commit before
+                      ;; holding delivery of the successful acknowledgement.
+                      (let ((committed (apply original-create arguments)))
+                        (should
+                         (eq (plist-get (e-work-status committed) :state)
+                             'finished))
+                        admission))))
+                (e-subagent-runner-test--spawn
+                 registry parent "parent-1" :type :reviewer :prompt "go"
+                 :run-id "run-1" :task-key "review" :attempt 0
+                 :on-running (lambda (_record) (cl-incf running-calls))
+                 :on-failure
+                 (lambda (_error _pending) (cl-incf early-failure-calls))
+                 :runner (lambda (&rest _arguments)
+                           (error "runner start exploded")))))
+             (subagent-id (plist-get pending :subagent-id))
+             (session-id (plist-get pending :session-id))
+             (handle (e-subagent-registry-work-handle registry subagent-id))
+             (board (e-board-registry-board-source-board
+                     (e-chat-service-binding-board
+                      (e-chat-service-binding parent "parent-1")))))
+        (should (eq (plist-get pending :status) 'pending))
+        (should (= running-calls 0))
+        (e-work-finish admission '(:id "child"))
+        (let ((record (e-subagent-registry-get registry subagent-id))
+              (child (e-subagent-registry-child-harness
+                      registry subagent-id)))
+          (should (= running-calls 1))
+          (should (= early-failure-calls 0))
+          (should (eq (plist-get record :status) 'failed))
+          (should (eq (plist-get (e-work-status handle) :state) 'failed))
+          ;; Admission committed before start, so this is resumable durable
+          ;; history, not a provisional binding to discard.
+          (should (e-chat-service-binding child session-id))
+          (e-board-runtime-drain-producers)
+          (let* ((messages (e-board-messages board))
+                 (running
+                  (cl-count-if
+                   (lambda (message)
+                     (equal (e-board-message-tags message)
+                            '(subagent change running)))
+                   messages))
+                 (terminal
+                  (cl-remove-if-not
+                   (lambda (message)
+                     (let ((fact
+                            (e-board-orchestration-fact-from-message message)))
+                       (eq (plist-get fact :type) 'terminal-report)))
+                   messages)))
+            (should (= running 1))
+            (should (= (length terminal) 1))
+            (let ((payload
+                   (plist-get
+                    (e-board-orchestration-fact-from-message (car terminal))
+                    :payload)))
+              (should (equal (plist-get payload :run-id) "run-1"))
+              (should (equal (plist-get payload :task-key) "review"))
+              (should (= (plist-get payload :attempt) 0))
+              (should (eq (plist-get payload :status) 'failed))
+              (should
+               (string-match-p "runner start exploded"
+                               (plist-get payload :error))))
+            (e-subagent--settle registry subagent-id 'failed :error "late")
+            (should
+             (string-match-p
+              "runner start exploded"
+              (plist-get (e-subagent-registry-get registry subagent-id) :error)))
+            (should
+             (= (cl-count-if
+                 (lambda (message)
+                   (let ((fact
+                          (e-board-orchestration-fact-from-message message)))
+                     (eq (plist-get fact :type) 'terminal-report)))
+                 (e-board-messages board))
+                1))))))))
+
+(ert-deftest e-subagent-runner-test-admission-failure-never-registers-or-starts ()
+  "A rejected durable admission fails once without a child registry ghost."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (admission (e-subagent-runner-test--deferred-work "failed-admission"))
+           (runner-calls 0)
+           (failure-calls 0))
+      (e-harness-test-create-board-session parent :id "parent-1")
+      (cl-letf (((symbol-function 'e-chat-service-create-participant-start)
+                 (lambda (&rest _arguments) admission)))
+        (let* ((pending
+                (e-subagent-runner-test--spawn
+                 registry parent "parent-1" :type :reviewer :prompt "go"
+                 :on-failure
+                 (lambda (_error _pending) (cl-incf failure-calls))
+                 :runner (lambda (&rest _arguments)
+                           (cl-incf runner-calls)
+                           (list :cancel #'ignore))))
+               (await-ref (plist-get pending :await-ref))
+               (handle
+                (e-subagent-registry-work-handle
+                 registry (substring await-ref (length "subagent:")))))
+          (e-work-fail admission '(e-session-storage-error "denied"))
+          (should (= runner-calls 0))
+          (should (= failure-calls 1))
+          (should-not (e-subagent-registry-list registry "parent-1"))
+          (should (eq (plist-get (e-work-status handle) :state) 'failed))
+          (should (equal (plist-get (e-work-status handle) :error)
+                         '(e-session-storage-error "denied")))
+          ;; A stale late callback cannot create a child or settle twice.
+          (e-work-finish admission '(:id "late-child"))
+          (should (= runner-calls 0))
+          (should (= failure-calls 1))
+          (should-not (e-subagent-registry-list registry "parent-1")))))))
 
 (ert-deftest e-subagent-runner-test-spawn-records-lineage-and-seeds ()
   "Spawn creates a child under the parent lineage and seeds explicit context."

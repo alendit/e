@@ -154,6 +154,15 @@ pending and suspect policy belongs to the application service."
   (e-session-storage-sqlite-submit-owned
    store 'write body (cons 'session session-id) on-settle escrow))
 
+(defun e-session-storage-submit-board-participant-admission
+    (store session-id records query-delta board-id generation participant
+           on-settle &optional pickup)
+  "Submit one atomic child session and Board participant admission."
+  (e-session-storage--require-sqlite store "Board participant admission")
+  (e-session-storage-sqlite-submit-board-participant-admission
+   store session-id records query-delta board-id generation participant
+   on-settle pickup))
+
 (defun e-session-storage-cancel-operation (store operation)
   "Cancel queued opaque session OPERATION through STORE's adapter."
   (e-session-storage--require-sqlite store "Session operation cancellation")

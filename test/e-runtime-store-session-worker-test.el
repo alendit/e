@@ -60,6 +60,153 @@
                                         "2026-09-06T00:00:00Z"))
            :query-delta state))))
 
+(defun e-runtime-store-session-worker-test--child-admission-body
+    (session-id &optional pickup)
+  "Return one composite child admission body for SESSION-ID and PICKUP."
+  (let ((state (e-runtime-store-session-worker-test--state session-id)))
+    (setq state (plist-put state :board-id "admission-board"))
+    (setq state (plist-put state :principal "owner"))
+    (setq state (plist-put state :association-role "participant"))
+    (setq state
+          (plist-put state :routing-policy
+                     '(:participant-id "child-participant"
+                       :pickup-selector (:tags (subagent))
+                       :observer-selector :self
+                       :default-tags (subagent)
+                       :default-to :self)))
+    (append
+     (list :op 'session-board-participant-admit
+           :session-id session-id
+           :records
+           (vector (list :type "session" :session-id session-id
+                         :id (concat session-id "-root")
+                         :timestamp "2026-09-08T00:00:00Z"))
+           :query-delta state
+           :board-id "admission-board" :generation 1
+           :participant
+           '(:id "child-participant" :author "e-chat"
+             :principal "owner" :controller "owner" :role participant
+             :state active :subscription-id "child-address"
+             :publication-pending nil))
+     (when pickup (list :pickup pickup)))))
+
+(ert-deftest e-runtime-store-session-worker-child-admission-is-one-transaction ()
+  "Session, participant, and selected pickup either all commit or none do."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (e-runtime-store-call
+     runtime 'write
+     '(:op board-create :board-id "admission-board"
+       :trusted-principal "owner" :root (:kind test)))
+    ;; A session/query mismatch fails at the first component.  No participant
+    ;; can escape a transaction that never admitted the child identity.
+    (let ((invalid-session
+           (e-runtime-store-session-worker-test--child-admission-body
+            "child-invalid-session")))
+      (setf (plist-get (plist-get invalid-session :query-delta) :session-id)
+            "different-session")
+      (should-error
+       (e-runtime-store-call runtime 'write invalid-session)))
+    (should-not
+     (plist-get
+      (e-runtime-store-call
+       runtime 'read
+       '(:op session-header :session-id "child-invalid-session"))
+      :present))
+    (should-not
+     (e-runtime-store-call
+      runtime 'read
+      '(:op board-participant-list :board-id "admission-board"
+        :generation 1)))
+    (e-runtime-store-call
+     runtime 'write
+     '(:op board-routing-put :board-id "admission-board" :generation 1
+       :message-id "message-1" :outcome (:state routed)
+       :pickups [(:delivery-id "delivery-1"
+                  :participant-id "child-participant"
+                  :message-id "message-1" :content "work")]))
+    (e-runtime-store-call
+     runtime 'write
+     '(:op board-pickup-transition :board-id "admission-board"
+       :generation 1 :delivery-id "delivery-1" :transition claim))
+    ;; The selected pickup is real and claimed.  An invalid lane fails at the
+    ;; last component, proving SQLite rolls the earlier session and participant
+    ;; writes back without changing the selected claim.
+    (should-error
+     (e-runtime-store-call
+      runtime 'write
+      (e-runtime-store-session-worker-test--child-admission-body
+       "child-failed"
+       '(:delivery-id "delivery-1"
+         :record (:type board-input-admission :id "admission-1")
+         :lane "invalid"))))
+    (should-not
+     (e-runtime-store-call
+      runtime 'read '(:op session-query-state :session-id "child-failed")))
+    (should-not
+     (e-runtime-store-call
+      runtime 'read
+      '(:op board-participant-list :board-id "admission-board"
+        :generation 1)))
+    (should
+     (eq (plist-get
+          (car (e-runtime-store-call
+                runtime 'read
+                '(:op board-pickup-list :board-id "admission-board"
+                  :generation 1)))
+          :state)
+         'claimed))
+    (let ((result
+           (e-runtime-store-call
+            runtime 'write
+            (e-runtime-store-session-worker-test--child-admission-body
+             "child-success"
+             '(:delivery-id "delivery-1"
+               :record (:type board-input-admission :id "admission-1")
+               :lane idle)))))
+      (should (= (plist-get result :board-revision) 5))
+      (should (plist-get result :pickup)))
+    (should
+     (equal
+      (plist-get
+       (e-runtime-store-call
+        runtime 'read
+        '(:op session-board-association :session-id "child-success"))
+       :association-role)
+      "participant"))
+    (let ((participants
+           (e-runtime-store-call
+            runtime 'read
+            '(:op board-participant-list :board-id "admission-board"
+              :generation 1)))
+          (pickups
+           (e-runtime-store-call
+            runtime 'read
+            '(:op board-pickup-list :board-id "admission-board"
+              :generation 1))))
+      (should (= (length participants) 1))
+      (should (eq (plist-get (car participants) :role) 'participant))
+      (should (eq (plist-get (car pickups) :state) 'accepted)))
+    ;; The participant insert is the middle cut.  A duplicate association
+    ;; rejects after the new session rows were written, and those rows must be
+    ;; absent after the enclosing transaction rolls back.
+    (should-error
+     (e-runtime-store-call
+      runtime 'write
+      (e-runtime-store-session-worker-test--child-admission-body
+       "child-participant-conflict")))
+    (should-not
+     (plist-get
+      (e-runtime-store-call
+       runtime 'read
+       '(:op session-header :session-id "child-participant-conflict"))
+      :present))
+    (should (= (length
+                (e-runtime-store-call
+                 runtime 'read
+                 '(:op board-participant-list :board-id "admission-board"
+                   :generation 1)))
+               1))))
+
 (ert-deftest e-runtime-store-session-worker-v6-schema-is-relational-and-narrow ()
   "Fresh v6 storage has query/history relations but no opaque projections."
   (e-runtime-store-session-worker-test--with-runtime (runtime directory)

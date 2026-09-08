@@ -148,7 +148,7 @@ owner-shaped operation rather than importing that implementation detail."
                 (:constructor e-board-registry-participant--create)
                 (:conc-name e-board-registry-participant-))
   id board-id author principal controller role access-grants private-grants
-  source-participant publication-pending)
+  source-participant publication-pending durable)
 
 (defconst e-board-registry-participant-private-rights
   '(inspect-transcript control-session)
@@ -837,10 +837,13 @@ attached client from muting, resuming, or closing another client's cursor."
 
 (cl-defun e-board-registry-add-participant
     (board-or-id &key id author principal controller (state 'active)
-                 subscription-id (publish-event t))
+                 subscription-id (publish-event t) role (persist t))
   "Add a board-local participant to active BOARD-OR-ID.
 The participant's built-in exact address subscription is created by the source
-board, with its identity supplied by this registry's id generator."
+board, with its identity supplied by this registry's id generator.  ROLE may
+name an explicit durable association role.  When PERSIST is nil, install only
+the bounded optimistic runtime participant; its owning admission transaction
+must persist the association before publication."
   (let* ((board (e-board-registry--require-active board-or-id))
          (id-function (e-board-registry-board-id-function board))
          (id (or id (e-board-registry--next-id id-function 'participant)))
@@ -848,18 +851,24 @@ board, with its identity supplied by this registry's id generator."
           (or subscription-id
               (e-board-registry--next-id id-function 'subscription)))
          (participants (e-board-registry-board-participants board))
-         (role (and principal (e-board-registry-principal-role board principal))))
-    (when (and principal (not role))
+         (principal-role
+          (and principal (e-board-registry-principal-role board principal)))
+         (role (or role principal-role)))
+    (when (and principal (not principal-role))
       (signal 'e-board-registry-authorization-denied
               (list (e-board-registry-board-id board) principal 'participant)))
+    (when (and role (not (memq role '(owner member participant))))
+      (signal 'e-board-registry-error
+              (list "Invalid Board participant role" role)))
     (when (gethash id participants)
       (signal 'e-board-registry-id-conflict (list id)))
-    (e-board-persist-participant
-     (e-board-registry-board-source-board board)
-     (list :id id :author author :principal principal
-           :controller (or controller principal) :role role :state state
-           :subscription-id subscription-id
-           :publication-pending (not publish-event)))
+    (when persist
+      (e-board-persist-participant
+       (e-board-registry-board-source-board board)
+       (list :id id :author author :principal principal
+             :controller (or controller principal) :role role :state state
+             :subscription-id subscription-id
+             :publication-pending (not publish-event))))
     (let* ((source-participant
             (e-board-add-participant
              (e-board-registry-board-source-board board)
@@ -882,7 +891,8 @@ board, with its identity supplied by this registry's id generator."
                           grants))
                grants)
              :source-participant source-participant
-             :publication-pending (not publish-event))))
+             :publication-pending (not publish-event)
+             :durable persist)))
       (puthash id participant participants)
       (let ((cell (list id)))
         (if-let* ((tail (e-board-registry-board-participant-ids-tail board)))
@@ -891,13 +901,31 @@ board, with its identity supplied by this registry's id generator."
         (setf (e-board-registry-board-participant-ids-tail board) cell))
       participant)))
 
+(defun e-board-registry-participant-envelope (participant)
+  "Return PARTICIPANT's detached durable association payload."
+  (unless (e-board-registry-participant-p participant)
+    (signal 'wrong-type-argument
+            (list 'e-board-registry-participant-p participant)))
+  (let ((source (e-board-registry-participant-source-participant participant)))
+    (list :id (e-board-registry-participant-id participant)
+          :author (e-board-registry-participant-author participant)
+          :principal (e-board-registry-participant-principal participant)
+          :controller (e-board-registry-participant-controller participant)
+          :role (e-board-registry-participant-role participant)
+          :state (e-board-participant-state source)
+          :subscription-id
+          (e-board-participant-create-pickup-subscription-id source)
+          :publication-pending nil)))
+
 (defun e-board-registry-publish-participant-admission
-    (board-or-id participant)
+    (board-or-id participant &optional durability-committed)
   "Publish the deferred participant-added event for PARTICIPANT.
 The registry participant and its source-board pickup route already exist, but
 their durable board event remains unpublished until the owning admission
-transaction has committed its session declaration.  This operation is
-idempotent for an already-published participant and rejects foreign records."
+transaction has committed its session declaration.  DURABILITY-COMMITTED says
+that transaction also persisted the participant association, so publication
+must not issue another write.  This operation is idempotent for an
+already-published participant and rejects foreign records."
   (let* ((board (e-board-registry--require-active board-or-id))
          (current (e-board-registry--participant board participant))
          (source-board (e-board-registry-board-source-board board))
@@ -908,8 +936,9 @@ idempotent for an already-published participant and rejects foreign records."
                                    (e-board-participant-id source-participant))
         (signal 'e-board-registry-participant-missing
                 (list (e-board-registry-participant-id current))))
-      (e-board-publish-persisted-participant
-       source-board (e-board-participant-id source-participant))
+      (unless durability-committed
+        (e-board-publish-persisted-participant
+         source-board (e-board-participant-id source-participant)))
       (e-board-admission-append-event
        source-board 'participant-added
        (list :participant-id
@@ -917,7 +946,8 @@ idempotent for an already-published participant and rejects foreign records."
              :subscription-id
              (e-board-participant-create-pickup-subscription-id
               source-participant)))
-      (setf (e-board-registry-participant-publication-pending current) nil))
+      (setf (e-board-registry-participant-publication-pending current) nil
+            (e-board-registry-participant-durable current) t))
     current))
 
 (defun e-board-registry-abort-participant-admission (board-or-id participant)
@@ -934,10 +964,8 @@ before the participant has been exposed to board traffic."
          (source-board (e-board-registry-board-source-board board)))
     (when (and current (or (eq current participant)
                            (not (e-board-registry-participant-p participant))))
-      ;; The participant identity committed before any later session/runtime
-      ;; admission work.  Remove that unpublished durable projection first so
-      ;; an ordinary failed admission cannot wedge exact retry or reappear.
-      (e-board-abort-persisted-participant source-board participant-id)
+      (when (e-board-registry-participant-durable current)
+        (e-board-abort-persisted-participant source-board participant-id))
       (remhash participant-id (e-board-registry-board-participants board))
       (setf (e-board-registry-board-participant-ids board)
             (delete participant-id

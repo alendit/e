@@ -460,6 +460,47 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
   (e-runtime-store-session-worker-write
    e-runtime-store-worker--database body))
 
+(defun e-runtime-store-worker--session-board-participant-admit (body)
+  "Atomically admit BODY's session, Board participant, and optional pickup."
+  (let* ((session-result
+          (e-runtime-store-session-worker-write
+           e-runtime-store-worker--database
+           (list :op 'session-append-batch
+                 :session-id (plist-get body :session-id)
+                 :records (plist-get body :records)
+                 :query-delta (plist-get body :query-delta))))
+         (participant (plist-get body :participant))
+         (_
+          (unless (eq (plist-get participant :role) 'participant)
+            (signal 'e-runtime-store-board-conflict
+                    (list "Child admission requires participant role"
+                          (plist-get participant :role)))))
+         (participant-result
+          (e-board-storage-sqlite-worker-write
+           e-runtime-store-worker--database
+           (list :op 'board-participant-put
+                 :board-id (plist-get body :board-id)
+                 :generation (plist-get body :generation)
+                 :participant participant)))
+         (pickup (plist-get body :pickup))
+         (pickup-result
+          (when pickup
+            (e-board-storage-sqlite-worker-write
+             e-runtime-store-worker--database
+             (list :op 'board-pickup-session-admit
+                   :board-id (plist-get body :board-id)
+                   :generation (plist-get body :generation)
+                   :delivery-id (plist-get pickup :delivery-id)
+                   :session-id (plist-get body :session-id)
+                   :record (plist-get pickup :record)
+                   :lane (plist-get pickup :lane))))))
+    (list :session session-result
+          :participant participant-result
+          :pickup pickup-result
+          :board-revision
+          (or (plist-get pickup-result :board-revision)
+              (plist-get participant-result :revision)))))
+
 (defun e-runtime-store-worker--session-delete (body)
   "Delete one session through the session worker module."
   (e-runtime-store-session-worker-write
@@ -558,6 +599,8 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
     ('session-append-with-tool-transition
      (e-runtime-store-worker--session-append-with-tool-transition body))
     ('session-append-batch (e-runtime-store-worker--session-append-batch body))
+    ('session-board-participant-admit
+     (e-runtime-store-worker--session-board-participant-admit body))
     ('session-delete (e-runtime-store-worker--session-delete body))
     ('tool-transition (e-runtime-store-worker--tool-transition body))
     ('resource-put (e-runtime-store-worker--resource-put body))

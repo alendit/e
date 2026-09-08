@@ -10,8 +10,11 @@
 ;; In-memory normalized registry for spawned subagents.  A record ties a child
 ;; session to its parent through lineage fields, tracks a compact result, and
 ;; carries an opaque cancel function so the parent can interrupt a running
-;; child.  The registry is the single source of truth for subagent status; both
-;; the direct-turn and queue schedules funnel their settle callbacks here.
+;; child.  A bounded pending-admission record prevents duplicate dispatch while
+;; durable child admission is in flight, without publishing that child as
+;; queued or running.  Once admitted, the registry is the process-local source
+;; of truth for subagent status; both direct-turn and queue schedules funnel
+;; their settle callbacks here.
 
 ;;; Code:
 
@@ -29,6 +32,7 @@ List buffers hook onto this to track live subagent status.")
 (cl-defstruct (e-subagent-registry
                (:constructor e-subagent-registry-create))
   (records (make-hash-table :test 'equal))
+  (pending-admissions (make-hash-table :test 'equal))
   (order nil)
   (sequence 0))
 
@@ -56,6 +60,38 @@ List buffers hook onto this to track live subagent status.")
   (setf (e-subagent-registry-sequence registry)
         (1+ (e-subagent-registry-sequence registry)))
   (format "sub_%06d" (e-subagent-registry-sequence registry)))
+
+(cl-defun e-subagent-registry-reserve-admission
+    (registry &key work-handle type role session-id parent-session-id label
+              schedule run-id task-key attempt)
+  "Reserve one pending child admission in REGISTRY and return its id.
+The bounded record is process-local coordination only.  It is queryable for
+exact assignment de-duplication, but is not included in the registered child
+list and publishes no Board lifecycle facts."
+  (let* ((subagent-id (e-subagent-registry--next-id registry))
+         (record (list :subagent-id subagent-id
+                       :type type
+                       :role role
+                       :status 'pending
+                       :session-id session-id
+                       :parent-session-id parent-session-id
+                       :label label
+                       :schedule schedule
+                       :run-id run-id
+                       :task-key task-key
+                       :attempt attempt
+                       :work-handle work-handle
+                       :created-at (float-time))))
+    (puthash subagent-id record
+             (e-subagent-registry-pending-admissions registry))
+    subagent-id))
+
+(defun e-subagent-registry-forget-admission (registry subagent-id)
+  "Forget SUBAGENT-ID's pending admission record and return it."
+  (let ((record (gethash subagent-id
+                         (e-subagent-registry-pending-admissions registry))))
+    (remhash subagent-id (e-subagent-registry-pending-admissions registry))
+    record))
 
 (defun e-subagent-registry--record (registry subagent-id)
   "Return the mutable internal record SUBAGENT-ID from REGISTRY, or signal."
@@ -88,7 +124,8 @@ List buffers hook onto this to track live subagent status.")
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
-              child-harness parent-harness producer-binding run-id task-key attempt)
+              child-harness parent-harness producer-binding run-id task-key attempt
+              subagent-id work-handle)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
 progresses.  CHILD-HARNESS is the live harness running the child, stored
@@ -96,7 +133,16 @@ internally so steer/read reach the child session on its own harness."
   (unless (e-board-runtime-producer-binding-live-p producer-binding)
     (signal 'e-board-runtime-producer-disabled
             (list 'subagent-registry 'missing-live-binding)))
-  (let* ((subagent-id (e-subagent-registry--next-id registry))
+  (when subagent-id
+    (let ((reservation
+           (gethash subagent-id
+                    (e-subagent-registry-pending-admissions registry))))
+      (unless (and reservation
+                   (eq work-handle (plist-get reservation :work-handle)))
+        (signal 'e-board-runtime-error
+                (list "Subagent admission reservation changed" subagent-id)))))
+  (let* ((subagent-id (or subagent-id
+                          (e-subagent-registry--next-id registry)))
          (record (list :subagent-id subagent-id
                        :type type
                        :role role
@@ -112,7 +158,7 @@ internally so steer/read reach the child session on its own harness."
                        :task-key task-key
                        :attempt attempt
                        :durable-terminal-published nil
-                       :work-handle nil
+                       :work-handle work-handle
                        :result-summary nil
                        :outputs nil
                        :reported nil
@@ -127,6 +173,9 @@ internally so steer/read reach the child session on its own harness."
                        :progress nil
                        :last-intervention nil
                        :finished-at nil)))
+    (when subagent-id
+      (remhash subagent-id
+               (e-subagent-registry-pending-admissions registry)))
     (puthash subagent-id record (e-subagent-registry-records registry))
     (setf (e-subagent-registry-order registry)
           (append (e-subagent-registry-order registry) (list subagent-id)))
@@ -197,9 +246,35 @@ in the child session."
   "Return the live `e-work' handle stored for SUBAGENT-ID, or nil.
 Returns nil for an unknown id rather than signalling, so a waitable resolver
 can treat a stale reference as unresolvable."
-  (when-let ((record (gethash subagent-id
-                              (e-subagent-registry-records registry))))
-    (plist-get record :work-handle)))
+  (if-let* ((record (gethash subagent-id
+                             (e-subagent-registry-records registry))))
+      (plist-get record :work-handle)
+    (plist-get
+     (gethash subagent-id
+              (e-subagent-registry-pending-admissions registry))
+     :work-handle)))
+
+(defun e-subagent-registry-pending-admission (registry subagent-id)
+  "Return normalized pending admission SUBAGENT-ID, or nil.
+Pending admissions remain separate from `e-subagent-registry-list' because
+they have no committed child registration or published lifecycle fact."
+  (when-let* ((record
+               (gethash subagent-id
+                        (e-subagent-registry-pending-admissions registry))))
+    (e-subagent-registry-normalize record)))
+
+(defun e-subagent-registry-find-pending-assignment
+    (registry run-id task-key attempt)
+  "Return the pending admission for exact RUN-ID TASK-KEY ATTEMPT, or nil."
+  (catch 'found
+    (maphash
+     (lambda (_subagent-id record)
+       (when (and (equal (plist-get record :run-id) run-id)
+                  (equal (plist-get record :task-key) task-key)
+                  (equal (plist-get record :attempt) attempt))
+         (throw 'found (e-subagent-registry-normalize record))))
+     (e-subagent-registry-pending-admissions registry))
+    nil))
 
 (defun e-subagent-registry-reported-p (registry subagent-id)
   "Return non-nil when SUBAGENT-ID has a child-reported structured result."

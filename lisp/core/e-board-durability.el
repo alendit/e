@@ -53,6 +53,21 @@ not allow a caller mutation to bypass the barrier."
   "Return non-nil when BOARD has a durable storage port."
   (and (e-board-p board) (e-board-storage-p (e-board-storage board))))
 
+(defun e-board-observe-committed-revision (board revision)
+  "Advance BOARD and its adapter through externally committed REVISION.
+This is the process-local acknowledgement seam for a transaction composed by
+an application service rather than submitted through the Board storage port."
+  (unless (e-board-p board)
+    (signal 'wrong-type-argument (list 'e-board-p board)))
+  (unless (and (integerp revision) (>= revision 0))
+    (signal 'wrong-type-argument (list 'natnump revision)))
+  (when (e-board-storage-backed-p board)
+    (e-board-storage-observe-committed-revision
+     (e-board-storage board) revision))
+  (setf (e-board-revision board)
+        (max revision (or (e-board-revision board) 0)))
+  board)
+
 (defun e-board--call-with-storage-barrier (board operation)
   "Call OPERATION while BOARD rejects reentrant semantic mutation."
   (if (or (not (e-board-storage-backed-p board))

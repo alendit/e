@@ -229,4 +229,4 @@ delay/release/failure/sibling selector passes 1/1 in 5.240772 seconds.
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
 | 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
-| 93 | Ready       | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery                |
+| 93 | In-progress | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery                |

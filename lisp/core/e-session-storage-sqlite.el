@@ -78,7 +78,7 @@
     ((or 'session-append 'session-append-with-tool-transition)
      (e-runtime-store-codec-measure-bounded
       (plist-get body :record) e-session-storage-record-byte-limit))
-    ('session-append-batch
+    ((or 'session-append-batch 'session-board-participant-admit)
      (let ((records (plist-get body :records)))
        (unless (or (listp records) (vectorp records))
          (signal 'wrong-type-argument (list '(or list vector) records)))
@@ -91,8 +91,25 @@
                 record e-session-storage-record-byte-limit))
              (append records nil))
        (e-runtime-store-codec-measure-bounded
-        body e-session-storage-batch-byte-limit))))
+       body e-session-storage-batch-byte-limit))))
   body)
+
+(defun e-session-storage-sqlite-submit-board-participant-admission
+    (store session-id records query-delta board-id generation participant
+           on-settle &optional pickup)
+  "Submit one atomic session, Board participant, and optional PICKUP admission."
+  (e-session-storage-sqlite-submit-owned
+   store 'write
+   (append
+    (list :op 'session-board-participant-admit
+          :session-id session-id
+          :records (vconcat records)
+          :query-delta query-delta
+          :board-id board-id
+          :generation generation
+          :participant (copy-tree participant t))
+    (when pickup (list :pickup (copy-tree pickup t))))
+   (cons 'session session-id) on-settle))
 
 (defun e-session-storage-sqlite-validate-operation-body (store body)
   "Validate STORE's session mutation BODY without submitting it."

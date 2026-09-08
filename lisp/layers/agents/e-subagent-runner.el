@@ -274,6 +274,14 @@ The handle exists so a subagent is awaitable as an `e-work' handle."
    :owner 'subagents
    :runner (lambda (_handle _arguments _context) :deferred)))
 
+(defun e-subagent--pending-result (subagent-id session-id work-handle)
+  "Return the bounded public pending result for SUBAGENT-ID admission."
+  (list :subagent-id subagent-id
+        :await-ref (format "subagent:%s" subagent-id)
+        :status 'pending
+        :session-id session-id
+        :work-id (e-work-handle-id work-handle)))
+
 (defun e-subagent--settle-work-handle (handle status args)
   "Settle work HANDLE from a subagent STATUS and settle ARGS.
 The handle mirrors the record's terminal state so `await' can observe it; its
@@ -335,60 +343,77 @@ never resurrected."
 
 (defun e-subagent--drive-turn
     (registry subagent-id parent-harness parent-session-id source-turn-id
-              child-harness session-id prompt seed-messages runner)
+              child-harness session-id prompt seed-messages runner
+              &optional work-handle on-running)
   "Start one child turn for SUBAGENT-ID and wire its settle + work handle.
-Mint a fresh cooperative `e-work' handle, mirror the record's terminal state
-onto it, and settle the record from RUNNER's callback.  Store the handle and
-any `:cancel' function on the record.  Return RUNNER's handle plist.  Shared by
+Reuse WORK-HANDLE when admission prepared it, otherwise mint a fresh
+cooperative handle.  Mirror the record's terminal state onto the handle and
+settle the record from RUNNER's callback.  Store the handle and any `:cancel'
+function on the record.  ON-RUNNING runs after admission and registration,
+immediately before invoking RUNNER.  Return RUNNER's handle plist.  Shared by
 `e-subagent-spawn' (first turn) and `e-subagent-resume' (a later turn on an
 existing child session)."
   (let* ((runner (or runner #'e-subagent-direct-runner))
          ;; Prepare before enrollment: board ownership must be established
          ;; before runner entry, just as it is for model-facing tool work.
          (work-handle
-          (e-work-prepare
-           (e-subagent--work-spec) nil
-           :context (list :session-id parent-session-id
-                          :turn-id source-turn-id
-                          :work-kind 'subagent
-                          :domain-ref (format "subagent:%s" subagent-id)))))
+          (or work-handle
+              (e-work-prepare
+               (e-subagent--work-spec) nil
+               :context (list :session-id parent-session-id
+                              :turn-id source-turn-id
+                              :work-kind 'subagent
+                              :domain-ref (format "subagent:%s" subagent-id))))))
     (when-let ((enroll (e-harness-work-enrollment-function parent-harness)))
       (funcall enroll work-handle nil))
     (e-work-start-prepared work-handle)
     (e-subagent-registry-update registry subagent-id :work-handle work-handle)
+    ;; Invoking the runner is the first point at which a provider turn may
+    ;; start.  Admission has already committed and the record is registered;
+    ;; publish the truthful running state immediately before that call.
+    (e-subagent-registry-update registry subagent-id :status 'running)
+    (when on-running
+      (funcall on-running (e-subagent-registry-get registry subagent-id)))
     (e-subagent--record-progress registry subagent-id work-handle 'turn-started)
-    (let ((handle
-           (if (eq runner #'e-subagent-direct-runner)
-               (funcall runner
-                        child-harness session-id prompt seed-messages
-                        (lambda (status &rest args)
-                          (e-subagent--settle-work-handle work-handle status args)
-                          (apply #'e-subagent--settle
-                                 registry subagent-id status args))
-                        (lambda (event)
-                          (e-subagent--record-progress
-                           registry subagent-id work-handle event)))
-             (funcall runner
-                      child-harness session-id prompt seed-messages
-                      (lambda (status &rest args)
-                        (e-subagent--record-progress
-                         registry subagent-id work-handle
-                         (pcase status
-                           ('done 'turn-finished)
-                           ('failed 'turn-failed)
-                           ('cancelled 'turn-cancelled)))
-                        (e-subagent--settle-work-handle work-handle status args)
-                        (apply #'e-subagent--settle
-                               registry subagent-id status args))))))
-      (when (and (listp handle) (functionp (plist-get handle :cancel)))
-        (e-subagent-registry-update registry subagent-id
-                                    :cancel (plist-get handle :cancel)))
-      handle)))
+    (condition-case error
+        (let ((handle
+               (if (eq runner #'e-subagent-direct-runner)
+                   (funcall runner
+                            child-harness session-id prompt seed-messages
+                            (lambda (status &rest args)
+                              (e-subagent--settle-work-handle work-handle status args)
+                              (apply #'e-subagent--settle
+                                     registry subagent-id status args))
+                            (lambda (event)
+                              (e-subagent--record-progress
+                               registry subagent-id work-handle event)))
+                 (funcall runner
+                          child-harness session-id prompt seed-messages
+                          (lambda (status &rest args)
+                            (e-subagent--record-progress
+                             registry subagent-id work-handle
+                             (pcase status
+                               ('done 'turn-finished)
+                               ('failed 'turn-failed)
+                               ('cancelled 'turn-cancelled)))
+                            (e-subagent--settle-work-handle work-handle status args)
+                            (apply #'e-subagent--settle
+                                   registry subagent-id status args))))))
+          (when (and (listp handle) (functionp (plist-get handle :cancel)))
+            (e-subagent-registry-update registry subagent-id
+                                        :cancel (plist-get handle :cancel)))
+          handle)
+      (error
+       (e-subagent--settle-work-handle work-handle 'failed
+                                       (list :error (e-work-error-message error)))
+       (e-subagent--settle registry subagent-id 'failed
+                           :error (e-work-error-message error))
+       nil))))
 
 (cl-defun e-subagent-spawn
     (registry parent-harness parent-session-id
               &key source-turn-id type prompt seed-messages label schedule runner
-              run-id task-key attempt)
+              run-id task-key attempt on-running on-failure)
   "Spawn a subagent of TYPE under a parent lineage and return its record.
 REGISTRY tracks the child.  PARENT-HARNESS and PARENT-SESSION-ID identify the
 spawning session, whose lineage the child inherits so they share one tmp root.
@@ -398,7 +423,11 @@ durable orchestration assignment.  SEED-MESSAGES are optional explicit context
 messages.  LABEL is a human-scannable stub.  SCHEDULE is `direct' (default) or
 `queue'.  RUNNER overrides the default direct-turn runner for tests; it is
 called as (CHILD-HARNESS CHILD-SESSION-ID PROMPT SEED-MESSAGES ON-SETTLE) and
-returns a handle plist carrying `:cancel'."
+returns a handle plist carrying `:cancel'.  Before durable admission settles,
+return a bounded pending result and retain one bounded admission-coordination
+record in REGISTRY.  ON-RUNNING observes the first post-admission runner
+boundary; ON-FAILURE observes a failure before a registered child can publish
+its own terminal assignment without blocking spawn."
   (unless (stringp source-turn-id)
     (signal 'wrong-type-argument (list 'stringp :source-turn-id)))
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
@@ -416,39 +445,103 @@ returns a handle plist carrying `:cancel'."
                 (signal 'wrong-type-argument (list 'e-board-orchestration-assignment assignment)))))
          (metadata (e-subagent--child-metadata
                     instance parent-harness parent-session-id lineage-id label assignment))
-         (child-session-id (e-session-generate-id))
-         (_child-admission
-          (e-chat-service-create-participant-start
-           parent-board child-harness :id child-session-id :metadata metadata
-           :pickup-selector '(:tags (subagent))
-           :observer-selector :self :default-tags '(subagent) :default-to :self))
          (schedule (or schedule 'direct))
          (producer-binding
           (e-subagent--producer-binding parent-harness parent-session-id))
-         (record (e-subagent-registry-register
-                  registry
-                  :type type
-                  :role (e-harness-instance-kind instance)
-                  :session-id child-session-id
-                  :parent-session-id parent-session-id
-                  :label label
-                  :schedule schedule
-                  :child-harness child-harness
-                  :parent-harness parent-harness
-                  :producer-binding producer-binding
-                  :run-id run-id :task-key task-key :attempt attempt))
-         (subagent-id (plist-get record :subagent-id)))
-    (e-subagent--inherit-prompt-cache-policy
-     parent-harness parent-session-id child-harness child-session-id)
-    (e-subagent--drive-turn
-     registry subagent-id parent-harness parent-session-id source-turn-id
-     child-harness child-session-id prompt seed-messages runner)
-    ;; A synchronous runner may already have settled the record; only a
-    ;; still-live record advances to running.
-    (when (memq (e-subagent-registry-status registry subagent-id)
-                '(queued))
-      (e-subagent-registry-update registry subagent-id :status 'running))
-    (e-subagent-registry-get registry subagent-id)))
+         (child-session-id (e-session-generate-id))
+         (work-handle
+          (e-work-prepare
+           (e-subagent--work-spec) nil
+           :context (list :session-id parent-session-id
+                          :turn-id source-turn-id
+                          :work-kind 'subagent
+                          :domain-ref child-session-id)))
+         (subagent-id
+          (e-subagent-registry-reserve-admission
+           registry :work-handle work-handle
+           :type type :role (e-harness-instance-kind instance)
+           :session-id child-session-id
+           :parent-session-id parent-session-id
+           :label label :schedule schedule
+           :run-id run-id :task-key task-key :attempt attempt))
+         (pending
+          (e-subagent--pending-result
+           subagent-id child-session-id work-handle))
+         admission-work admitted-result)
+    (condition-case error
+        (setq admission-work
+              (e-chat-service-create-participant-start
+               parent-board child-harness :id child-session-id :metadata metadata
+               :pickup-selector '(:tags (subagent))
+               :observer-selector :self :default-tags '(subagent)
+               :default-to :self))
+      (error
+       (e-subagent-registry-forget-admission registry subagent-id)
+       (e-work-fail work-handle error)
+       (when on-failure
+         (funcall on-failure error pending))
+       (setq pending (plist-put pending :status 'failed))
+       (setq pending (plist-put pending :error error))))
+    (when admission-work
+      (e-work-on-settle
+       admission-work
+       (lambda (settled-admission)
+         (let ((status (e-work-status settled-admission)))
+           (pcase (plist-get status :state)
+             ('finished
+              (condition-case error
+                  (progn
+                    (e-subagent-registry-register
+                     registry
+                     :subagent-id subagent-id :work-handle work-handle
+                     :type type :role (e-harness-instance-kind instance)
+                     :session-id child-session-id
+                     :parent-session-id parent-session-id
+                     :label label :schedule schedule
+                     :child-harness child-harness
+                     :parent-harness parent-harness
+                     :producer-binding producer-binding
+                     :run-id run-id :task-key task-key :attempt attempt)
+                    (e-subagent--inherit-prompt-cache-policy
+                     parent-harness parent-session-id
+                     child-harness child-session-id)
+                    (e-subagent--drive-turn
+                     registry subagent-id parent-harness parent-session-id
+                     source-turn-id child-harness child-session-id prompt
+                     seed-messages runner work-handle on-running)
+                    (setq admitted-result
+                          (e-subagent-registry-get registry subagent-id)))
+                (error
+                 (if (gethash subagent-id
+                              (e-subagent-registry-records registry))
+                     (progn
+                       (e-subagent--settle-work-handle
+                        work-handle 'failed
+                        (list :error (e-work-error-message error)))
+                       (e-subagent--settle
+                        registry subagent-id 'failed
+                        :error (e-work-error-message error)))
+                   (e-subagent-registry-forget-admission
+                    registry subagent-id)
+                   (e-work-fail work-handle error)
+                   (when on-failure
+                     (funcall on-failure error pending))))))
+             ('failed
+              (e-subagent-registry-forget-admission registry subagent-id)
+              (let ((admission-error (plist-get status :error)))
+                (e-work-fail work-handle admission-error)
+                (when on-failure
+                  (funcall on-failure admission-error pending))))
+             ('cancelled
+              (e-subagent-registry-forget-admission registry subagent-id)
+              (e-work-cancel work-handle)))))))
+    (or admitted-result
+        (let ((work-status (e-work-status work-handle)))
+          (if (eq (plist-get work-status :state) 'failed)
+              (append pending
+                      (list :status 'failed
+                            :error (plist-get work-status :error)))
+            pending)))))
 
 (cl-defun e-subagent-resume
     (registry subagent-id &optional prompt runner &key source-turn-id)

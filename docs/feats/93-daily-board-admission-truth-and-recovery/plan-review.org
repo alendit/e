@@ -14,8 +14,16 @@ Behavioral status at review: failing on the direct public Daily path.
 * Plan identity
 
 The admitted plan is =plan.org= Git object
-=fffa135eb3df678d9f95a30f2cd3d429daf7132a=.
+=b2c7ea5a3835249b25cea7e4180de5cb56da75c4=.
 This identity must be refreshed if contract-owning plan content changes.
+
+The DP1 implementation audit clarified one caller distinction without changing
+the product contract: direct Daily dispatch has no claimed pickup to admit,
+while a pickup-driven caller supplies its real claimed pickup to the same
+session/participant transaction.
+The amended wording was re-reviewed against F93-C01, the public Daily scenario,
+and the SQLite-authoritative state model; no new requirement or unresolved
+finding resulted.
 
 * Requirement matrix review
 

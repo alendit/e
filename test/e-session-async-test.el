@@ -124,8 +124,80 @@
                        (plist-get
                         (plist-get association :routing-policy)
                         :default-tags)
-                       '(grimoire-update))))
+                       '(grimoire-update)))
+              (let* ((participant-id
+                      (plist-get (plist-get association :routing-policy)
+                                 :participant-id))
+                     (participants
+                      (e-runtime-store-call
+                       (e-session-storage-runtime-store store) 'read
+                       (list :op 'board-participant-list
+                             :board-id (e-board-registry-board-id board)
+                             :generation
+                             (e-board-generation
+                              (e-board-registry-board-source-board board))))))
+                (should
+                 (eq (plist-get
+                      (cl-find participant-id participants
+                               :key (lambda (row) (plist-get row :id))
+                               :test #'equal)
+                      :role)
+                     'participant)))
+              ;; The cross-domain commit must advance the Board adapter's
+              ;; optimistic revision cursor as well as the live Board.  The
+              ;; next ordinary Board write must not report a stale revision.
+              (let* ((source (e-board-registry-board-source-board board))
+                     (before (e-board-revision source))
+                     (result
+                      (e-board-storage-publish-record
+                       (e-board-storage source)
+                       (e-board-id source) (e-board-generation source)
+                       '(:type admission-followup) nil)))
+                (should (= (plist-get result :revision) (1+ before)))))
             (should (= (hash-table-count (e-session-store-sessions store)) 0))))
+      (e-session-async-test--close store)
+      (delete-directory directory t))))
+
+(ert-deftest e-session-async-rdbms-participant-failure-discards-provisional-binding ()
+  "A failed atomic admission leaves no live child participant or binding."
+  (let* ((directory (make-temp-file "e-session-participant-fail-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (unwind-protect
+        (progn
+          (e-session-async-test--wait-finished
+           (e-chat-service-create-session-start
+            :harness harness :id "participant-failure-root"))
+          (let* ((root-binding
+                  (e-chat-service-binding harness "participant-failure-root"))
+                 (board (e-chat-service-binding-board root-binding))
+                 (before
+                  (hash-table-count
+                   (e-board-registry-board-participants board)))
+                 work)
+            (cl-letf
+                (((symbol-function
+                   'e-session-storage-submit-board-participant-admission)
+                  (lambda (_store _session-id _records _query-delta
+                                  _board-id _generation _participant on-settle
+                                  &optional _pickup)
+                    (funcall on-settle nil
+                             '(e-session-storage-error "admission denied")))))
+              (setq work
+                    (e-chat-service-create-participant-start
+                     board harness :id "participant-failure-child"
+                     :pickup-selector '(:tags (subagent))
+                     :observer-selector :self
+                     :default-tags '(subagent) :default-to :self)))
+            (should (eq (plist-get (e-work-status work) :state) 'failed))
+            (should-not
+             (e-chat-service-binding harness "participant-failure-child"))
+            (should
+             (= (hash-table-count
+                 (e-board-registry-board-participants board))
+                before))))
       (e-session-async-test--close store)
       (delete-directory directory t))))
 

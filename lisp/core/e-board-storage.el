@@ -39,6 +39,18 @@
   (and (e-board-storage-p storage)
        (e-board-storage--asynchronous storage)))
 
+(defun e-board-storage-observe-committed-revision (storage revision)
+  "Advance STORAGE's local revision cursor through committed REVISION.
+Cross-domain transactions use this after their SQLite acknowledgement so the
+next optimistic Board write cannot report a revision older than durable state."
+  (unless (e-board-storage-p storage)
+    (signal 'wrong-type-argument (list 'e-board-storage-p storage)))
+  (unless (and (integerp revision) (>= revision 0))
+    (signal 'wrong-type-argument (list 'natnump revision)))
+  (setf (e-board-storage--next-revision storage)
+        (max revision (or (e-board-storage--next-revision storage) 0)))
+  storage)
+
 (defun e-board-storage-set-settlement-function (storage function)
   "Set STORAGE's bounded asynchronous settlement observer to FUNCTION."
   (unless (or (null function) (functionp function))

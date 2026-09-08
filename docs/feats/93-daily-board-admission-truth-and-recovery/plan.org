@@ -3,7 +3,7 @@
 
 * Status
 
-Ready.
+In-progress.
 
 * Product authority
 
@@ -58,7 +58,7 @@ status.
 
 | ID | Contract | Observable acceptance |
 |----+----------+-----------------------|
-| F93-C01 | Child session root/current rows, participant association, and pickup acceptance commit in one SQLite transaction; runnable publication follows that boundary. | No partial durable child/participant/claimed-pickup state, child registry entry, =running= fact, or provider turn is visible before the transaction succeeds. |
+| F93-C01 | Child session root/current rows and participant association always commit in one SQLite transaction; when a pickup-driven caller supplies a real selected claimed pickup, its acceptance joins that transaction. Runnable publication follows the commit boundary. | No partial durable child/participant/supplied-pickup state, child registry entry, =running= fact, or provider turn is visible before the transaction succeeds. |
 | F93-C02 | Lifecycle state is truthful. | Admission wait is =pending=; =running= means a live runner has started; every failure becomes retryable or terminal exactly once. |
 | F93-C03 | Restart recovery converges. | A durable nonterminal attempt without a current live assignment is retried within a bound or visibly failed; reopen never waits for a vanished child. |
 | F93-C04 | One canonical Daily owner continues the run. | New and legacy notes route reconciliation through =E_SESSION=; =E_UPDATE_SESSION= is inert and removed during successful recovery/repair. |
@@ -89,9 +89,11 @@ another session can admit, persist, query, and render.
 
 ** DP1: Atomic child admission and truthful lifecycle
 
-Add one consumer-shaped asynchronous storage operation that commits the child
-session root/current rows, participant association, and selected pickup
-acceptance in one SQLite transaction.
+Add one consumer-shaped asynchronous storage operation that always commits the
+child session root/current rows and participant association in one SQLite
+transaction.  When a pickup-driven caller supplies a real selected claimed
+pickup, accept it in that same transaction; direct Daily dispatch does not
+fabricate a pickup.
 Move child registration and runner start behind that successful admission.
 Expose one consumer-shaped work result that callers can observe without
 blocking.
