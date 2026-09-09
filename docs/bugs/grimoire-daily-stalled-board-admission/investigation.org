@@ -134,3 +134,61 @@ passing and two existing skips, 52/52 Grimoire Daily tests, and 11/11 Grimoire
 session tests.
 A concrete post-implementation review found and then cleared both the
 in-flight bind race and the selection-before-start crash cut.
+
+** DP3: visible Board state and public graphical proof
+
+Terminal task reports now retain their participant session identity, and Board
+inspection labels the Daily run, Board, owner session, participant, task, and
+attempt independently.  Its default view is a bounded signal summary with raw
+projection paging behind an explicit command.  Pending admission, running,
+orphaned, retrying, terminal, and first-failure state are visible.
+
+Restart testing exposed a further concrete defect after the initial recovery
+fix: restored Board publishers reused a source key because the process-local
+generation counter restarted at one.  A restored live Board controller now has
+a fresh source incarnation, nested into the source key, so a new process cannot
+collide with already durable publications.  This adds only O(1) process-local
+coordination state and does not reconstruct Board history.
+
+The final public graphical suite passes 3/3.  It drives the actual Daily/chat
+entry points, holds real SQLite admission, verifies composer input and three
+independent heartbeats, releases the worker, observes one ordered result,
+submits and renders a real turn in an independent Daily, reads that turn back
+through the detached query API, and visibly completes orphan recovery after a
+restart.  The inspected screenshots show =independent reply persisted= and
+=Daily recovery completed= in their presentation buffers.
+
+** DP4: exact offline repair and readback
+
+Grimoire owns a standalone operator boundary,
+=scripts/grimoire-daily-repair=.  It refuses mismatched schema, Board, run,
+owner, retired session, or Org metadata; =--check= is read-only; =--apply=
+backs up both the database with =VACUUM INTO= and the Daily note, changes the
+verified current rows in one transaction, and independently verifies history,
+foreign keys, and database integrity.  Reapplying is idempotent.
+
+With the user's Emacs exited, the repair was applied to the exact reported run.
+The backup is
+=/Users/dvorona/.config/emacs/.local/cache/e/repairs/f93-20260908T211500Z/=.
+The final canonical check reports schema 6, Board revision 313, seven
+participants, six dormant gatherers, zero unresolved gatherer pickups, no
+retired-session association, and no obsolete Org property.  The Board retains
+its canonical owner and all 90 owner messages; the repair preserves the Board
+record stream and both session journals byte-for-byte, cancels the six stale
+pickups with audit events, and removes only the obsolete Daily property.
+
+Independent canonical-versus-backup SQL found zero Board-record differences,
+zero owner-journal differences, zero retired-session-journal differences, an
+empty =foreign_key_check=, and =integrity_check= =ok=.  The retired session's
+current Board/principal/role/routing association is absent, so no ordinary
+runtime path can continue through it.
+
+* Final cause and resolution
+
+SQLite was not corrupt.  The incident combined a caller that discarded an
+asynchronous admission result, premature =running= publication, restart logic
+that equated a durable projection with a live process, a legacy second Daily
+owner, and insufficient graphical coverage.  The final implementation makes
+admission atomic and observable, starts work only after acknowledgement,
+recovers orphaned attempts through the canonical owner, isolates failures,
+removes reachable update-session routing, and covers the actual public path.

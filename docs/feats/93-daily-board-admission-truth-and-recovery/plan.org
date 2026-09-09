@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 * Product authority
 
@@ -191,6 +191,27 @@ scenario in F93-C05 through public Daily/chat entrypoints.
 Repository tests may use private temporary stores only.
 The running Emacs and canonical database remain unchanged until the offline
 repair package is explicitly reached.
+
+* Delivery evidence
+
+DP1 through DP4 are committed in both repositories.  The final exact-source
+focused gates pass 210/212 in =e= with two explicit legacy skips and 66/66 in
+Grimoire.  The public graphical suite passes 3/3: the public entry points share
+one owner; a real SQLite admission delay preserves composer input and three
+heartbeats before ordered release while an independent Daily persists, queries,
+and renders; and restart recovery visibly converges.
+
+The explicit offline repair backed up the canonical store and Daily note before
+changing them.  Its final check reports schema 6, Board revision 313, seven
+participants, six dormant gatherers, zero unresolved gatherer pickups, no
+retired-session association, and no =E_UPDATE_SESSION= property.  Independent
+readback found no Board-record or session-journal differences from the backup,
+an empty foreign-key check, and =PRAGMA integrity_check= =ok=.
+
+The ordinary Grimoire runtime contains no update-session constructor or routing
+path.  Its only production references are the bounded compatibility cleanup
+that deletes inert legacy metadata and documentation that names the retired
+property; the immutable historical manifest is not rewritten.
 
 * Completion criterion
 

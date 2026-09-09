@@ -1,0 +1,226 @@
+#+title: Review: Daily Board Admission Truth and Recovery
+#+author: e implementation
+#+date: 2026-09-09
+#+startup: overview
+
+* Status
+
+Done.
+
+* Scope reviewed
+
+This review covers F93-C01 through F93-C10, the four delivery packages in
+=plan.org=, their exact committed diffs in =e= and Grimoire, the affected
+2026-09-08 canonical data repair, focused ERT, and the isolated public graphical
+Daily scenarios.  Review was restricted to correctness regressions in these
+exercised paths after implementation, as required by the product authority.
+
+* Review loop
+
+** Resolved high: running was published before admission
+
+*** Problem
+
+The runner ignored the session/participant admission work while Grimoire
+published =running= before a durable child or live runner existed.
+
+*** Change
+
+One consumer-shaped operation commits session, participant, and any real
+claimed pickup atomically.  Only its acknowledgement permits registry
+publication, =running= publication, and runner start.  Failure removes the
+provisional binding and settles visibly once.
+
+*** Evidence
+
+Focused transaction-cut and runner lifecycle tests prove no partial visibility,
+pending-before-acknowledgement, start-once, cleanup, and terminal settlement.
+
+** Resolved high: restart recovery could not converge
+
+*** Problem
+
+Recovery treated a durable =running= fact as a live process and skipped it
+forever.  A second cut between selecting the retry attempt and starting it could
+also remain nonterminal without execution.
+
+*** Change
+
+Recovery compares exact task/attempt identity with the live assignment registry.
+An unmatched nonterminal attempt is orphaned and advances once to the bounded
+retry; an unmatched retry is failed idempotently.  Selection without start
+enters the same finite rule.
+
+*** Evidence
+
+Grimoire tests cover orphan retry, live-assignment suppression, selection-before-
+start, exhaustion, repeat idempotence, and no redispatch of terminal work.
+
+** Resolved high: continuation could race onto the retired owner
+
+*** Problem
+
+The obsolete manifest participant could win association reconciliation before
+the canonical =E_SESSION= owner was designated, preserving a separate update
+session after restart.
+
+*** Change
+
+Canonical owner designation precedes association reconciliation and upgrades
+an already in-flight bind.  All foreground update and headless tick paths reuse
+that owner.  Ordinary runtime only deletes inert =E_UPDATE_SESSION= metadata;
+it never routes through it.
+
+*** Evidence
+
+Focused session tests cover canonical owner reuse, in-flight upgrade, legacy
+metadata retirement, new Daily ownership, and unresumable explicit sessions.
+
+** Resolved high: restored publishers reused durable source keys
+
+*** Problem
+
+After restart, a process-local generation counter reset to one and could reuse a
+source key already present in the durable Board stream, preventing recovery
+publication.
+
+*** Change
+
+Each restored Board controller receives a fresh source incarnation, included in
+its publisher source key.  The value is live coordination only and does not
+hydrate or mirror durable Board state.
+
+*** Evidence
+
+=e-board-runtime-test-restored-publisher-has-fresh-source-incarnation= and the
+real restart graphical scenario both pass.
+
+** Resolved medium: prior graphical proof did not exercise the public failure
+and sibling path
+
+*** Problem
+
+Earlier service-level and synthetic assertions could pass while real Daily
+composer, persistence, restart, or visible error behavior was broken.
+
+*** Change
+
+The graphical gate opens public Daily/chat surfaces, delays real SQLite
+admission, types during the hold, counts three heartbeats, releases work,
+injects owner-local failure, submits a real turn in another Daily, queries it
+back through the detached API, and performs a restart recovery.
+
+*** Evidence
+
+The final graphical suite passes 3/3 in 12.665798 seconds.  Visual inspection of
+the captured frames confirms =independent reply persisted= and =Daily recovery
+completed=, not merely internal state assertions.
+
+** Resolved high: canonical data encoded false current facts
+
+*** Problem
+
+The affected Board had six false-running gatherers, six unresolved pickups,
+eight claimed owners, and a reachable obsolete update-session association.
+
+*** Change
+
+The exact, preconditioned offline repair retained immutable Board/session
+history, demoted gatherers to dormant participants, cancelled stale pickups with
+audit events, detached the retired current association, and removed the one
+obsolete Org property after creating a database and note backup.
+
+*** Evidence
+
+The repair tests pass 3/3.  Final check reports schema 6, Board revision 313,
+seven participants, six gatherers, zero unresolved gatherer pickups, and no
+retired association or property.  Independent comparison reports zero immutable
+record differences, no foreign-key violations, and =integrity_check= =ok=.
+
+* Verification
+
+- =e= focused aggregate: 212 tests, 210 expected, zero unexpected, two explicit
+  legacy skips.
+- Grimoire Daily/session/repair aggregate: 66/66 expected, zero unexpected.
+- Public graphical Daily aggregate: 3/3 expected, zero unexpected in 12.665798
+  seconds.
+- Canonical repair checker: schema 6, Board revision 313, seven participants,
+  six gatherers, zero unresolved pickups, retired association/property absent.
+- Whitespace and reachable-legacy audits: clean after the documentation commit.
+
+* UX and performance playthrough
+
+The public graphical test demonstrates immediate buffer availability and live
+composer input while SQLite admission is held.  Three independent timers fire
+during the hold.  Release produces each ordered result once.  Failure remains
+local and visible, while the independent Daily submits, commits, queries, and
+renders a complete turn.  Restart recovery shows a direct terminal completion
+message.  No user-running Emacs was reloaded or restarted during development;
+the graphical harness used private stores and frames.
+
+* Plan coverage
+
+| Contract | Evidence |
+|----------+----------|
+| F93-C01, F93-C02, F93-C07 | atomic admission, acknowledgement-gated start, truthful lifecycle, participant-role tests |
+| F93-C03, F93-C04 | bounded orphan recovery, canonical-owner continuation, legacy retirement tests |
+| F93-C05 | three public graphical delayed/release/failure/restart scenarios |
+| F93-C06 | preconditioned backup, repair, canonical check, and independent SQL readback |
+| F93-C08, F93-C09, F93-C10 | first-failure status, exact identity labels, bounded summary and explicit raw view |
+
+* Design self-check
+
+1. If work stopped here, the project is better: false-running publication,
+   nonconvergent recovery, ambiguous inspection, and the affected false current
+   data are all removed.
+2. The change moves toward SQLite-authoritative asynchronous state with one
+   canonical Daily owner and truthful event lifecycle.
+3. Admission, identity, and lifecycle meanings are stable contracts.  Retry
+   count and presentation policy remain local and reversible in Grimoire and
+   the shell; the one-off repair is isolated offline tooling.
+4. The subagent runner owns execution admission, Grimoire owns Daily policy,
+   Board presentation owns inspection, and the Grimoire repair tool owns the
+   exact operator mutation.  Each has one primary reason to change.
+5. Coupling is reduced by removing the second owner.  Admission and query
+   interfaces are narrow and consumer-shaped; the optional live registry is
+   used only to distinguish a live assignment from a durable fact.
+6. Dependencies remain directed from Grimoire application policy and shells to
+   stable =e= domain contracts.  UI code does not own SQL or worker policy.
+7. SQLite and filesystem effects live in worker/operator adapters; rendering
+   and orchestration policy stay outside them.
+8. SQLite owns durable facts.  Emacs adds only bounded pending assignments,
+   live registry entries, and an O(1) publisher incarnation for their process
+   lifetime.  Detached query pages live only for their consumer request.
+9. Interactive work adds no waits or history replay.  Queries remain bounded,
+   source incarnation is O(1), and the graphical hold proves responsiveness.
+10. Atomic admission and detached queries are real substitutable contracts; no
+    unsupported compatibility implementation or weakened precondition was
+    introduced.
+11. Immutable historical manifests remain intact, but separate update-session
+    routing has no compatibility requirement and was removed.  Only inert
+    metadata cleanup remains.
+12. Removed legacy behavior includes premature running publication, durable-
+    means-live recovery, update-session continuation, and false current
+    participant/pickup associations.
+13. Expected admission/recovery errors settle at the affected task/owner and
+    retain the first bounded visible cause.  Unexpected errors surface; the
+    repair refuses mismatches and rolls back transactionally.
+14. Transaction, reducer, recovery, presentation, and repair tests prove core
+    behavior independently.  The public graphical suite then proves the full
+    integration through user entry points.
+
+* Final review
+
+The concrete post-implementation review findings above are resolved.  The
+final source and canonical readback satisfy F93-C01 through F93-C10.  No
+unresolved correctness finding remains.
+
+* Live reload
+
+Core runtime and session behavior changed, so using it in a running Emacs
+requires a full restart; =e-dev-reload= is not sufficient.  The user's Emacs
+was intentionally left stopped after the authorized repair.
+
+* Unresolved
+
+None.
