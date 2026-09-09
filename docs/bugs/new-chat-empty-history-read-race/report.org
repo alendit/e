@@ -1,0 +1,22 @@
+#+title: New Chat Reports a Recent-Message Read Failure
+#+startup: overview
+
+* Report
+
+On 2026-09-09, a newly created graphical chat opened with both of these lines
+before its first user message:
+
+#+begin_example
+· Loading recent messages...
+· Unable to load recent messages; retry the session view.
+#+end_example
+
+The new chat then accepted =Hi= and completed the turn normally.
+
+* Expected behavior
+
+A newly admitted session has an exact empty visible-message window.  Opening
+it must render that known-empty state immediately, without querying SQLite for
+a row whose create transaction is still pending.  The recent-message loading
+and retry states apply only to an existing session opened from durable
+identity.

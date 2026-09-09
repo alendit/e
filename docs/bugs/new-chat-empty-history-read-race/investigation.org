@@ -1,0 +1,122 @@
+#+title: New Chat Empty-History Read Race Investigation
+#+startup: overview
+
+* Status
+
+Fixed in the repository.  New persistent chat creation now carries its
+bounded admission metadata into the presentation attachment and renders an
+empty visible window directly.  Existing-session open still uses the detached
+metadata, Board-association, and recent-message queries.
+
+* Cause
+
+=e-chat-open= started asynchronous session creation and immediately attached
+the new persistent buffer through the same path used for an existing session.
+That attachment launched =e-session-async-chat-view=, whose independent
+read-only SQLite connection requested session metadata, Board association, and
+the visible message page.  The read could run before the enqueued create
+transaction committed.  The absence of a durable row at that instant was
+therefore misclassified as a failed existing-session view and rendered as a
+retryable recent-message error.
+
+No message history was missing.  The later successful turn and create
+settlement were consistent with the race: the presentation read failed before
+the writer committed, then ordinary Board events continued through the live
+subscription.
+
+* Correction
+
+New-session intent is now explicit at the presentation boundary.  The newly
+admitted session owns one bounded optimistic fact that SQLite cannot yet
+return: its initial visible message window is exactly empty.  The chat renders
+that value without issuing a durable read and continues to expose the
+asynchronous create work as =persistence pending= or owner-local
+=persistence suspect=.  It does not retain a durable session aggregate.
+
+Existing and resumed sessions are unchanged: they request detached bounded
+rows/pages from SQLite and surface genuine read failures.
+
+* Why the previous graphical test missed it
+
+The delayed-worker test checked only that the loading/failure text was absent
+after creation readiness.  It did not forbid a new chat from issuing the three
+existing-session reads in the first place.  Scheduling could therefore let
+the writer commit before the read and make the test pass while the production
+ordering failed.
+
+The gate now checks immediately after public new-chat return that no query work
+exists, neither banner was rendered, and none of the metadata, association, or
+visible-page operations was submitted.  It repeats those assertions after the
+held writer is released.  A focused presentation test independently forces the
+create work to remain unsettled and fails if the detached chat-view operation
+is called.
+
+* Live inspection
+
+=scripts/e-live-probe chat= could not connect to the running Emacs server from
+the repository validation environment and returned =Operation not permitted=.
+No second probe, raw =emacsclient= evaluation, reload, or live-state mutation
+was attempted.  The screenshot plus the source/test trace were sufficient to
+identify the deterministic ordering defect.
+
+* Validation
+
+- Focused persistent-query presentation tests: 4/4 passed, including a held
+  create work item that rejects any attempted new-session chat-view query.
+- Broader chat/composer/surface regression set: 157/157 executed with 142
+  passes, 15 pre-existing conditional skips, and no unexpected result.
+- Feature 92 public delayed-worker new-chat graphical scenario: 1/1 passed.
+  The gate checks immediate return, the exact empty transcript, absence of all
+  three existing-session read operations, editable composer and heartbeat
+  progress while the writer is held, ordered release, and isolated failure.
+- Grimoire public Daily graphical suite: 3/3 passed.  Its real SQLite
+  failure/isolation scenario asserts that the independent new Daily has no
+  query work and neither recent-message banner; a captured run also showed the
+  committed prompt and reply without either banner.
+- =e-chat.el= byte compilation and both repository diff checks passed.  Only
+  pre-existing Emacs 31 obsolescence/free-variable warnings were emitted.
+
+The validation used disposable runtime directories and isolated graphical
+Emacs instances.  The user's running Emacs and canonical database were left
+unchanged.
+
+* Architecture self-check
+
+1. If this package stopped here, is the project better off?  Yes: new chats no
+   longer display a false durable-read failure, and both public graphical gates
+   reject the causal operation rather than relying on scheduling.
+2. What final direction does it move toward?  SQLite remains authoritative for
+   settled durable state while Emacs keeps only bounded in-flight optimistic
+   state with a live presentation purpose.
+3. Which decisions may change?  Initial presentation styling may change
+   locally.  New-versus-existing identity and the empty initial window are
+   stable domain facts; no speculative extension point was added.
+4. What component owns the behavior?  Chat application open owns creation
+   intent; chat presentation owns rendering the bounded initial window.
+5. Does coupling increase?  Only one optional, consumer-shaped value crosses
+   the existing attachment boundary.  Durable query and presentation remain
+   separate.
+6. Did a dependency point the wrong way?  No.  Presentation consumes creation
+   metadata and never calls into a concrete SQLite transport.
+7. Can a side effect move outward?  The durable write already lives in the
+   session application service.  This change removes an unnecessary read side
+   effect from presentation.
+8. What state was added?  No retained state.  Creation metadata exists only on
+   the opening call stack and is rendered into the buffer; the empty message
+   sequence is not cached.
+9. What is the performance impact?  New persistent open performs three fewer
+   SQLite reads and no longer competes with its pending create transaction.
+10. Are the interfaces semantically real and substitutable?  Yes.  The optional
+    value means exactly “newly admitted persistent session with an empty
+    visible window”; callers that omit it retain existing-session behavior.
+11. What compatibility applies?  Existing and ephemeral attachment behavior is
+    preserved.  No legacy fallback was added.
+12. What legacy code can be removed now?  The new-session wait for detached
+    chat-view completion and its graphical-test expectation were removed.
+13. Where are errors handled?  Create failure still settles the existing work
+    and surfaces owner-local persistence suspicion; genuine existing-session
+    read failures still surface through the retryable view error.
+14. What tests prove the core independently?  The focused test holds creation
+    unsettled and rejects any chat-view call.  The e and Grimoire graphical
+    scenarios independently exercise public new-chat/Daily creation against a
+    deliberately delayed real SQLite worker.

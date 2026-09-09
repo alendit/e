@@ -1196,6 +1196,22 @@ context insertions from the chat buffer the user is looking at."
              (e-chat-transcript-system-glyph))
      'e-chat-activity-face)))
 
+(defun e-chat--render-detached-query-window (metadata messages)
+  "Render detached METADATA and bounded MESSAGES in the current chat.
+METADATA and MESSAGES are either one settled query result or the bounded
+optimistic values of a newly admitted session.  Neither is retained as a
+durable session mirror."
+  (e-chat--rename-buffer-for-query-state metadata)
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (e-chat-transcript-insert-protected
+     (concat e-chat--title "\n"
+             (or (plist-get metadata :name)
+                 (e-chat--short-session-id e-chat-session-id))
+             "\n\n")
+     'e-chat-title-face)
+    (e-chat-transcript-render-visible-message-window messages)))
+
 (defun e-chat-prepare-transient-surface ()
   "Prepare a standalone composed surface for an embedding shell.
 Reset owner projections without touching durable session state.  Embedding
@@ -1498,11 +1514,13 @@ condition after the chat buffer renders it.  User-facing commands should call
           (and chat-session-id
                (e-session-storage-sqlite-p
                 (e-chat-service-session-store chat-harness))))
+         (session-metadata
+          (and creating-p (e-chat--session-metadata chat-instance-id)))
          (creation-work
           (when creating-p
             (e-chat-service-create-session-start
              :harness chat-harness :id chat-session-id
-             :metadata (e-chat--session-metadata chat-instance-id))))
+             :metadata session-metadata)))
          (buffer (or (e-chat--find-session-buffer
                       chat-session-id chat-harness chat-instance-id)
                      (get-buffer-create
@@ -1515,7 +1533,7 @@ condition after the chat buffer renders it.  User-facing commands should call
              buffer chat-harness chat-session-id chat-instance-id)
       (e-chat-attach-buffer
        buffer chat-harness chat-session-id chat-instance-id
-       on-session-read-error persistent-query-p))
+       on-session-read-error persistent-query-p session-metadata))
     (e-chat--prune-duplicate-session-buffers
      buffer chat-session-id chat-harness chat-instance-id)
     (when creation-work
@@ -1880,18 +1898,8 @@ identity, and renders the detached visible message window once."
                         ;; presentation identity, never the aggregate.
                         (setq e-chat-board-id
                               (plist-get association :board-id))
-                        (e-chat--rename-buffer-for-query-state metadata)
-                        (let ((inhibit-read-only t))
-                          (erase-buffer)
-                          (e-chat-transcript-insert-protected
-                           (concat e-chat--title "\n"
-                                   (or (plist-get metadata :name)
-                                       (e-chat--short-session-id
-                                        session-id))
-                                   "\n\n")
-                           'e-chat-title-face)
-                          (e-chat-transcript-render-visible-message-window
-                           (plist-get result :messages)))
+                        (e-chat--render-detached-query-window
+                         metadata (plist-get result :messages))
                         (let ((binding-work
                                (e-chat-service-binding-start
                                 harness session-id association)))
@@ -1968,10 +1976,13 @@ identity, and renders the detached visible message window once."
 
 (defun e-chat-attach-buffer
     (buffer harness session-id &optional instance-id on-session-read-error
-            persistent-query-p)
+            persistent-query-p new-session-metadata)
   "Attach BUFFER to HARNESS and SESSION-ID.
 INSTANCE-ID identifies the configured harness instance.
-ON-SESSION-READ-ERROR receives any asynchronous bounded-read failure."
+ON-SESSION-READ-ERROR receives any asynchronous bounded-read failure.
+NEW-SESSION-METADATA, when non-nil, is the bounded optimistic presentation
+state for a newly admitted persistent session whose exact message set is
+empty."
   (let (binding
         view)
     (unless persistent-query-p
@@ -2069,6 +2080,13 @@ ON-SESSION-READ-ERROR receives any asynchronous bounded-read failure."
         ;; the live consumer.
         (setq view (e-chat--subscribe-view harness buffer session-id)))
       (cond
+       ((and persistent-query-p new-session-metadata)
+        ;; Creation owns an exact empty message set until its first mutation.
+        ;; Render that bounded optimistic state directly: querying the
+        ;; independent read connection here can legitimately race before the
+        ;; enqueued session-create transaction commits.
+        (e-chat--clear-query-view)
+        (e-chat--render-detached-query-window new-session-metadata nil))
        (persistent-query-p
         (let ((inhibit-read-only t))
           (e-chat--clear-query-view))

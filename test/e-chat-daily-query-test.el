@@ -20,6 +20,44 @@
    :interactive-policy 'async :owner 'e-chat-daily-query-test
    :runner (lambda (_handle _arguments _context) :deferred)))
 
+(ert-deftest e-chat-daily-query-test-new-persistent-open-renders-known-empty-view ()
+  "A newly admitted SQLite session does not race its own create transaction."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (creation-work (e-work-start e-chat-daily-query-test--spec nil))
+         (view-call-count 0)
+         buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
+                   (lambda (_store) t))
+                  ((symbol-function 'e-chat-service-create-session-start)
+                   (lambda (&rest _arguments) creation-work))
+                  ((symbol-function 'e-session-async-chat-view)
+                   (lambda (&rest _arguments)
+                     (cl-incf view-call-count)
+                     (error "New session queried before create commit"))))
+          (setq buffer
+                (e-chat-open :harness harness
+                             :session-id "daily-new"
+                             :new-session t))
+          (with-current-buffer buffer
+            (should (buffer-live-p buffer))
+            (should-not e-chat--session-query-work)
+            (should (eq e-chat--session-readiness-work creation-work))
+            (should (string-match-p "daily-new" (buffer-string)))
+            (should-not (string-match-p "Loading recent messages"
+                                        (buffer-string)))
+            (should-not (string-match-p "Unable to load recent messages"
+                                        (buffer-string))))
+          (should (= view-call-count 0))
+          (e-work-finish creation-work '(:id "daily-new"))
+          (with-current-buffer buffer
+            (should (equal (e-chat-surface-status buffer) "idle"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-daily-query-test-existing-persistent-open-is-immediate ()
   "Existing SQLite attach starts detached reads without domain composition."
   (let* ((store (e-session-store-create))

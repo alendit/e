@@ -1357,7 +1357,7 @@ aggregate or mirror."
                 process-environment))
          sessions reader runtime stream harness transcript failure-transcript
          unrelated-transcript heartbeat-timer (heartbeat 0) (phase 'setup)
-         synchronous-operation)
+         synchronous-operation detached-view-call)
     (unwind-protect
         (ert-info ((format "DP6B phase: %s" phase))
           (let (synchronous-session-get)
@@ -1387,7 +1387,9 @@ aggregate or mirror."
           (setq phase 'open-new-chat)
           (e-runtime-store-recovery-graphical--arm-stall
            stall-directory 'board-create)
-          (let ((started (float-time)))
+          (let ((started (float-time))
+                (original-chat-view
+                 (symbol-function 'e-session-async-chat-view)))
             (setq heartbeat-timer
                   (run-at-time 0.01 0.01 (lambda () (cl-incf heartbeat))))
             (setq transcript
@@ -1399,7 +1401,11 @@ aggregate or mirror."
                             ((symbol-function 'e-chat--select-chat-instance)
                              (lambda (&optional _prompt) nil))
                             ((symbol-function 'e-chat--default-harness)
-                             (lambda () harness)))
+                             (lambda () harness))
+                            ((symbol-function 'e-session-async-chat-view)
+                             (lambda (&rest arguments)
+                               (setq detached-view-call arguments)
+                               (apply original-chat-view arguments))))
                     ;; Exercise the user-facing command, including new-session
                     ;; creation and the composer surface it returns.
                     (e-chat-new)))
@@ -1409,6 +1415,16 @@ aggregate or mirror."
             (should (string-match-p
                      "pending"
                      (or (e-chat-surface-status transcript) "")))
+            (with-current-buffer transcript
+              ;; Creation already establishes the exact empty visible window.
+              ;; Starting a detached read here would race the independent read
+              ;; connection against the queued session-create transaction.
+              (should-not e-chat--session-query-work)
+              (should-not (string-match-p "Loading recent messages"
+                                          (buffer-string)))
+              (should-not (string-match-p "Unable to load recent messages"
+                                          (buffer-string))))
+            (should-not detached-view-call)
             ;; `e-chat-open' deliberately returns an undisplayed buffer.  Put
             ;; that returned public surface on the isolated frame before the
             ;; graphical composer assertion below.
@@ -1537,17 +1553,13 @@ aggregate or mirror."
                 (ert-fail (format "New-chat release awaited %S"
                                   synchronous-operation)))
               (setq phase 'new-chat-ready)
-              (e-graphical-test-wait-until
-               (lambda ()
-                 (e-runtime-store-recovery-graphical--pump-runtime runtime)
-                 (null (buffer-local-value 'e-chat--session-query-work
-                                           transcript)))
-               2.0 "new-chat detached session view")
               (with-current-buffer transcript
+                (should-not e-chat--session-query-work)
                 (should-not (string-match-p "Unable to load recent messages"
                                             (buffer-string)))
                 (should-not (string-match-p "Loading recent messages"
                                             (buffer-string))))
+              (should-not detached-view-call)
               (should (eq (e-board-message-routing-state
                            (e-board-message board message-id))
                           'routed))
