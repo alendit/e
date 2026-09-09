@@ -1,0 +1,62 @@
+#+title: Investigation: Project-Local Test Compilation Breaks Emacs Startup
+#+startup: overview
+
+* Evidence
+
+The user's startup screenshot shows Doom invoking byte compilation for
+=/Users/dvorona/projects/org/grimoire/.e/layers/topic/test/graphical-daily-test.el=
+and failing to resolve =e-board-e2e-support=.
+
+Source inspection found two defects:
+
+1. =e-project-local--elisp-files= recursively returned every =.el= file below
+   an allowlisted layer, including its =test/= subtree.  With automatic local
+   recompilation enabled, startup therefore compiled verification programs as
+   runtime extensions.
+2. The Grimoire graphical fixture added its E2E-only load roots in an ordinary
+   top-level form.  The graphical runner executed that form before the
+   =require= calls, but the byte compiler resolves =require= at compile time,
+   before that ordinary form runs.
+
+This explains why the isolated graphical acceptance suite passed while normal
+Doom startup failed.  The harness and startup exercised different compilation
+contexts; the earlier gate did not include an explicit compile check for the
+external fixture or a test that project priming excludes verification trees.
+
+No live probe was sent because Emacs had not completed startup.  Diagnosis used
+the reported graphical state and repository source only.
+
+* Correction
+
+=e-project-local--elisp-files= now excludes an extension's direct =test/=
+subtree from runtime byte compilation.  Its regression fixture puts an
+impossible =require= in that subtree and proves project compilation succeeds,
+compiles the runtime layer, and creates no test =.elc=.
+
+The Grimoire graphical fixture remains fully byte-compilable.  Its test/E2E load
+roots are now installed with =eval-and-compile= using
+=byte-compile-current-file= when appropriate.  A Grimoire regression explicitly
+byte-compiles the real fixture to a temporary output file and requires success.
+There is no =no-byte-compile= marker or compatibility exception.
+
+The startup audit also found six stale ignored =e= bytecode artifacts for the
+Feature 93 runtime-store, chat, Board recovery, and Board presentation modules.
+They were refreshed with Eldev outside the running Emacs, together with
+=e-project-local.elc=, so the next restart cannot prefer pre-fix bytecode over
+the committed sources.  A read-only batch simulation loaded the compiled
+=e-project-local= implementation, enumerated 18 Grimoire runtime files, and
+enumerated zero files below =test/=.
+
+* Verification
+
+- =eldev -dtT test -f test/e-project-local-test.el=: 48/48 expected.
+- Grimoire focused fixture compilation: 1/1 expected.
+- Complete Grimoire Daily/session/repair aggregate: 67/67 expected.
+- Public graphical Daily aggregate: 3/3 expected in 12.473506 seconds.
+- Stale =e= bytecode scan after the refresh: zero files.
+
+* Runtime impact
+
+Project startup performs less work: test sources are no longer enumerated for
+compilation.  Explicit ERT and graphical runners continue to load the same test
+files directly.  No persistent runtime state or SQLite data changes.

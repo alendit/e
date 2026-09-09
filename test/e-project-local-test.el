@@ -1248,18 +1248,27 @@ layer's skills on every call, so an unchanged root must reuse the snapshot."
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-byte-compile-project-local-files ()
-  "The byte-compile command compiles allowlisted project-local Elisp."
+  "The byte-compile command compiles runtime Elisp but excludes tests."
   (let* ((project (make-temp-file "e-project-local-byte-compile-" t))
          (layer-file (expand-file-name ".e/layers/topic/layer.el" project))
+         (test-file
+          (expand-file-name ".e/layers/topic/test/graphical-test.el" project))
          (e-project-local-allowed-roots (list project))
          (byte-compile-warnings nil))
     (unwind-protect
         (progn
           (e-project-local-test--make-layer project 'topic)
+          (make-directory (file-name-directory test-file) t)
+          (write-region
+           ";;; graphical-test.el -*- lexical-binding: t; -*-\n(require 'feature-that-must-not-load)\n"
+           nil test-file nil 'silent)
           (should-not (file-exists-p (byte-compile-dest-file layer-file)))
-          (should (member (byte-compile-dest-file layer-file)
-                          (e-project-local-byte-compile-project project)))
-          (should (file-exists-p (byte-compile-dest-file layer-file))))
+          (should-not (file-exists-p (byte-compile-dest-file test-file)))
+          (let ((compiled (e-project-local-byte-compile-project project)))
+            (should (member (byte-compile-dest-file layer-file) compiled))
+            (should-not (member (byte-compile-dest-file test-file) compiled)))
+          (should (file-exists-p (byte-compile-dest-file layer-file)))
+          (should-not (file-exists-p (byte-compile-dest-file test-file))))
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-prime-project-auto-recompile-is-opt-in ()

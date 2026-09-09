@@ -424,12 +424,18 @@ order.  Returns nil when no `layer.el' exists."
            (e-project-local--capability-directories directory))))
 
 (defun e-project-local--elisp-files (directory)
-  "Return project-local Elisp files under allowlisted extensions for DIRECTORY."
+  "Return runtime Elisp files under allowlisted extensions for DIRECTORY.
+
+Files below an extension's `test/' directory are verification artifacts, not
+runtime extension source.  Project priming must never byte-compile them."
   (let (files)
     (dolist (extension-directory
              (e-project-local--trusted-extension-directories directory))
       (dolist (file (directory-files-recursively extension-directory "\\.el\\'"))
-        (push file files)))
+        (unless (string-prefix-p
+                 "test/"
+                 (file-relative-name file extension-directory))
+          (push file files))))
     (sort (delete-dups files) #'string<)))
 
 (defun e-project-local--byte-compile-needed-p (file)

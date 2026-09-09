@@ -1,0 +1,22 @@
+#+title: Project-Local Test Compilation Breaks Emacs Startup
+#+startup: overview
+
+* Report
+
+After the Feature 93 graphical Daily test was added under Grimoire's
+=.e/layers/topic/test/= directory, Doom startup attempted to byte-compile that
+test as project-local runtime source and failed with:
+
+#+begin_example
+Cannot open load file: No such file or directory, e-board-e2e-support
+#+end_example
+
+The failure interrupted normal Emacs startup and left the warnings buffer
+selected.
+
+* Expected behavior
+
+Project-local startup priming compiles only runtime extension source, never
+verification files below an extension's =test/= directory.  Graphical fixtures
+remain valid, independently byte-compilable test programs when invoked by the
+test harness.

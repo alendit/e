@@ -137,11 +137,36 @@ seven participants, six gatherers, zero unresolved gatherer pickups, and no
 retired association or property.  Independent comparison reports zero immutable
 record differences, no foreign-key violations, and =integrity_check= =ok=.
 
+** Resolved high: graphical fixture broke normal startup compilation
+
+*** Problem
+
+After the completion commit, a real Doom restart revealed that project-local
+priming recursively compiled Grimoire's =test/= subtree.  The graphical fixture
+resolved its E2E helpers only at load time, so startup byte compilation failed
+on =e-board-e2e-support=.  The isolated graphical runner had already supplied
+that path and therefore missed the packaging-context defect.
+
+*** Change
+
+Project-local runtime compilation now excludes extension =test/= trees.  The
+fixture is not exempted from compilation: it installs its E2E load roots at both
+compile and load time and remains explicitly byte-compilable.
+
+*** Evidence
+
+The =e= regression places an impossible dependency in a project-local test and
+proves startup compilation never touches it.  The Grimoire regression compiles
+the actual graphical fixture successfully to a temporary destination.  See
+=docs/bugs/project-local-test-compilation-startup/=.  The focused project-local
+suite passes 48/48, Grimoire passes 67/67, the public graphical suite passes
+3/3, and the compiled-path simulation sees no test files.
+
 * Verification
 
 - =e= focused aggregate: 212 tests, 210 expected, zero unexpected, two explicit
   legacy skips.
-- Grimoire Daily/session/repair aggregate: 66/66 expected, zero unexpected.
+- Grimoire Daily/session/repair aggregate: 67/67 expected, zero unexpected.
 - Public graphical Daily aggregate: 3/3 expected, zero unexpected in 12.665798
   seconds.
 - Canonical repair checker: schema 6, Board revision 313, seven participants,

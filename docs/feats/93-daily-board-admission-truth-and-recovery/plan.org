@@ -195,7 +195,7 @@ repair package is explicitly reached.
 * Delivery evidence
 
 DP1 through DP4 are committed in both repositories.  The final exact-source
-focused gates pass 210/212 in =e= with two explicit legacy skips and 66/66 in
+focused gates pass 210/212 in =e= with two explicit legacy skips and 67/67 in
 Grimoire.  The public graphical suite passes 3/3: the public entry points share
 one owner; a real SQLite admission delay preserves composer input and three
 heartbeats before ordered release while an independent Daily persists, queries,

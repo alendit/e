@@ -140,13 +140,21 @@ started runner, restart recovery treats nonterminal attempts without live
 assignments as orphans, and all Daily continuation uses the one canonical
 =E_SESSION= owner.  Board inspection exposes bounded, correctly labelled task
 and failure signals.  The final focused gates pass 210/212 in =e= with two
-explicit legacy skips and 66/66 in Grimoire; the full public graphical suite
+explicit legacy skips and 67/67 in Grimoire; the full public graphical suite
 passes 3/3, including real SQLite delay, composer and heartbeat responsiveness,
 independent-session persistence/readback, and visible restart convergence.  A
 preconditioned offline repair backed up and repaired the exact 2026-09-08
 canonical run; schema, associations, immutable history, foreign keys, and full
 database integrity read back clean, and no reachable update-session behavior
 remains.
+
+A post-completion real Doom restart exposed a packaging regression that the
+isolated graphical runner could not see: project-local startup compilation
+recursed into Grimoire's =test/= tree, while the graphical fixture installed its
+E2E-only load roots only at execution time.  Runtime compilation now excludes
+extension test trees, and the fixture remains independently byte-compilable by
+installing those roots at compile time.  Both boundaries have direct regression
+tests; no =no-byte-compile= exception was introduced.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
