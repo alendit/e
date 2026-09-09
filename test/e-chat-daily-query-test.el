@@ -20,8 +20,8 @@
    :interactive-policy 'async :owner 'e-chat-daily-query-test
    :runner (lambda (_handle _arguments _context) :deferred)))
 
-(ert-deftest e-chat-daily-query-test-new-persistent-open-renders-known-empty-view ()
-  "A newly admitted SQLite session does not race its own create transaction."
+(ert-deftest e-chat-daily-query-test-new-persistent-open-stays-pending-until-input ()
+  "A new SQLite session opens without querying before atomic first input."
   (let* ((store (e-session-store-create))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
@@ -52,9 +52,8 @@
             (should-not (string-match-p "Unable to load recent messages"
                                         (buffer-string))))
           (should (= view-call-count 0))
-          (e-work-finish creation-work '(:id "daily-new"))
-          (with-current-buffer buffer
-            (should (equal (e-chat-surface-status buffer) "idle"))))
+          (should (eq (plist-get (e-work-status creation-work) :state)
+                      'started)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -67,7 +66,7 @@
          view-work
          buffer
          (forbidden '(e-session-local-state e-session-local-messages e-session-load-session
-                      e-session-load-session-start e-chat-service-ensure-binding
+                      e-session-load-session-start e-chat-service-ensure-ephemeral-binding
                       e-chat--ensure-session
                       e-harness-session-title))
          original-functions

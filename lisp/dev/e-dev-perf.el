@@ -35,9 +35,9 @@
 (declare-function e-chat-overview-prepare-unread-cache "e-chat-overview")
 (declare-function e-chat-surface-set-redraw-visible "e-chat-surface")
 (declare-function e-chat-service-binding-board "e-chat-service")
-(declare-function e-chat-service-create-session "e-chat-service")
+(declare-function e-chat-service-create-ephemeral-session "e-chat-service")
 (declare-function e-chat-service-messages "e-chat-service")
-(declare-function e-chat-service-drain-binding "e-chat-service")
+(declare-function e-chat-service-drain-ephemeral-binding "e-chat-service")
 (declare-function e-chat-service-drain-subscription "e-chat-service")
 (declare-function e-chat-service-subscribe "e-chat-service")
 (declare-function e-chat-service-unsubscribe "e-chat-service")
@@ -837,7 +837,7 @@ artifacts under `e-dev-perf-run-directory'."
                    :items (list (list :type 'assistant-message
                                       :content "ok"))))
          (harness (e-harness-create :backend backend :sessions store)))
-    (e-chat-service-create-session :harness harness :id "turn-start")
+    (e-chat-service-create-ephemeral-session :harness harness :id "turn-start")
     (e-dev-perf--profile-spans
      (lambda ()
        (e-chat-service-submit-session harness "turn-start" "hello")
@@ -856,7 +856,7 @@ artifacts under `e-dev-perf-run-directory'."
                    :backend (e-backend-fake-create :items nil)
                    :sessions store)))
     (require 'e-chat-service)
-    (e-chat-service-create-session :harness harness :id "chat-perf")
+    (e-chat-service-create-ephemeral-session :harness harness :id "chat-perf")
     (let ((buffer (e-chat-open :harness harness
                                :session-id "chat-perf"
                                :new-session nil)))
@@ -885,7 +885,7 @@ artifacts under `e-dev-perf-run-directory'."
   (require 'e-chat-service)
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
          (session-id (format "perf-board-%s" (gensym)))
-         (session (e-chat-service-create-session
+         (session (e-chat-service-create-ephemeral-session
                    :harness harness :id session-id))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (board (e-board-registry-board-source-board
@@ -897,7 +897,7 @@ artifacts under `e-dev-perf-run-directory'."
        :source-output-key (list 'perf session-id index)))
     ;; Keep setup cost out of the measured continuation.  This models a live
     ;; binding whose bounded presentation projection has already caught up.
-    (while (e-chat-service-drain-binding binding))
+    (while (e-chat-service-drain-ephemeral-binding binding))
     (list :harness harness :session-id session-id :binding binding :board board)))
 
 (defun e-dev-perf--chat-board-continuation-setup (scenario)

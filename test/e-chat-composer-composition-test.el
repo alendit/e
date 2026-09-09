@@ -14,6 +14,15 @@
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
 
+(defun e-chat-test--pending-admission ()
+  "Return one started request-scoped admission work for caller tests."
+  (e-work-start
+   (e-work-spec-create
+    :id "chat-test-admission" :execution 'cooperative
+    :interactive-policy 'async :owner 'test
+    :runner (lambda (&rest _arguments) :deferred))
+   nil))
+
 (ert-deftest e-chat-test-composer-window-cycle-skips-transcript ()
   "C-x o treats a composed transcript and composer as one chat surface."
   (let* ((buffer (e-chat-test--buffer nil "chat-composer-window-cycle"))
@@ -267,6 +276,60 @@ must drop any revealed hidden blocks."
             (e-harness-test-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-admission-failure-and-cancel-are-visible ()
+  "Chat admission settlement is visible without inventing a live turn id."
+  (let ((buffer (generate-new-buffer " *e-chat admission*"))
+        events statuses)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--render-event)
+                   (lambda (event) (push (copy-tree event t) events)))
+                  ((symbol-function 'e-chat-surface-set-status)
+                   (lambda (status &optional _sticky)
+                     (push status statuses))))
+          (let ((failed (e-chat-test--pending-admission))
+                (cancelled (e-chat-test--pending-admission)))
+            (e-chat--watch-admission buffer failed 'submit)
+            (e-chat--watch-admission buffer cancelled 'queue)
+            (e-work-fail failed '(e-board-storage-error "admission failed"))
+            (e-work-cancel cancelled)
+            (should (= (cl-count 'turn-failed events
+                                 :key (lambda (event)
+                                        (plist-get event :type)))
+                       1))
+            (should (= (cl-count 'turn-cancelled events
+                                 :key (lambda (event)
+                                        (plist-get event :type)))
+                       1))
+            (should-not
+             (seq-find (lambda (event) (plist-get event :turn-id)) events))
+            (should (member "submit admission failed" statuses))
+            (should (member "queue admission cancelled" statuses))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-sql-write-failure-marks-only-its-session-suspect ()
+  "A failed SQLite mutation fences its owner; a failed read stays local."
+  (let* ((directory (make-temp-file "e-chat-sql-failure-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (harness (e-harness-create :sessions store))
+         (binding
+          (e-chat-service--binding-create
+           :harness harness :session-id "failed-owner"
+           :subscribers nil :lifecycle-state 'active)))
+    (unwind-protect
+        (progn
+          (e-chat-service--sql-note-failure
+           binding '(e-session-storage-error "read failed"))
+          (should-not (e-session-persistence-suspect store "failed-owner"))
+          (should-not (e-chat-service-binding-first-persistence-error binding))
+          (e-chat-service--sql-note-failure
+           binding '(e-session-storage-error "write failed") t)
+          (should (e-session-persistence-suspect store "failed-owner"))
+          (should (e-chat-service-binding-first-persistence-error binding))
+          (should-not (e-session-persistence-suspect store "healthy-owner")))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-active-prefix-submit-queues-running-turn ()
   "Prefix submit during a running turn queues the composer text."
   (let* ((backend (e-backend-create
@@ -308,7 +371,8 @@ must drop any revealed hidden blocks."
                                  &key references metadata)
                           (setq queued
                                 (list session-id prompt references metadata))
-                          "queue-id"))))
+                          (e-chat-service--finished-admission-work
+                           session-id "queue-id")))))
               (e-chat-submit '(4)))
             (should (equal (car queued) e-chat-session-id))
             (should (string-match-p
@@ -871,7 +935,8 @@ must drop any revealed hidden blocks."
             (cl-letf (((symbol-function 'e-chat-service-steer-session)
                        (lambda (_harness session-id prompt &key metadata)
                          (setq steered (list session-id prompt metadata))
-                         :accepted)))
+                         (e-chat-service--finished-admission-work
+                          session-id :accepted))))
               (e-chat-submit))
             (should (equal (car steered) e-chat-session-id))
             (should (string-match-p

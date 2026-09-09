@@ -432,9 +432,7 @@ This pure projection never consults or installs a session aggregate."
        nil)
     (let* ((store (e-harness-sessions harness))
            (entry (gethash session-id (e-harness-active-turns harness)))
-           (query
-            (or (plist-get entry :context-path-work)
-                (e-session-async-context-path-base store session-id)))
+           (query (e-session-async-context-path store session-id))
            (result
             (e-work-prepare
              (e-work-spec-create
@@ -451,9 +449,7 @@ This pure projection never consults or installs a session aggregate."
            (if (not (eq (plist-get status :state) 'finished))
                (e-work-fail result (plist-get status :error))
              (condition-case error
-                 (let* ((path
-                         (e-session-async-context-path-overlay-pending
-                          store session-id (plist-get status :result)))
+                 (let* ((path (copy-tree (plist-get status :result) t))
                         (entry (gethash session-id
                                         (e-harness-active-turns harness))))
                    (unless (and entry (equal (plist-get entry :id) turn-id))
@@ -470,7 +466,6 @@ This pure projection never consults or installs a session aggregate."
                           (copy-tree (plist-get path :tool-receipts) t)
                           :tool-receipt-total-count
                           (or (plist-get path :tool-receipt-total-count) 0)))
-                   (plist-put entry :context-path-work nil)
                    (e-work-finish
                     result
                     (e-harness-context-runtime--detached-context

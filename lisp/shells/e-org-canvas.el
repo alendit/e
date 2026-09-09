@@ -99,6 +99,9 @@
 (defvar-local e-org-canvas--status-subscription nil
   "Harness event subscription refreshing this buffer's context status.")
 
+(defvar-local e-org-canvas--status-subscription-generation 0
+  "Generation fencing an asynchronous Org Canvas status subscription.")
+
 (defvar-local e-org-canvas--status-estimate-cache nil
   "Caller-owned (TOKENS . TIME) cache cell for context-token estimates.
 Passed to `e-context-status-text' to reuse approximate estimates between
@@ -134,6 +137,9 @@ Org Canvas status refreshes for the current buffer.")
 (defvar-local e-org-canvas-input--subscription nil
   "Harness event subscription owned by the current input pane.")
 
+(defvar-local e-org-canvas-input--subscription-generation 0
+  "Generation fencing an asynchronous input-pane subscription.")
+
 (defvar-local e-org-canvas-input--active-turn-id nil
   "Turn id currently tracked by the current input pane.")
 
@@ -154,6 +160,9 @@ Org Canvas status refreshes for the current buffer.")
 
 (defvar-local e-org-canvas-input--done-rendered-p nil
   "Non-nil once an input pane has rendered terminal done status.")
+
+(defvar-local e-org-canvas-input--turn-finished-p nil
+  "Non-nil once the live harness turn finished for this input pane.")
 
 (defvar-local e-org-canvas-input--source-selection-buffer nil
   "Org buffer whose source selection should be cleared after this input completes.")
@@ -309,31 +318,47 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
   (when (and harness session-id)
     (with-current-buffer buffer
       (e-org-canvas--unsubscribe-status)
-      (setq-local
-       e-org-canvas--status-subscription
-       (e-chat-service-subscribe
-        harness session-id
-        (lambda (event)
-          (when (and (buffer-live-p buffer)
-                     (e-org-canvas--status-relevant-event-p event))
-            (e-ui-work-schedule
-             (e-ui-work-spec-create
-              :id "org_canvas_board_status"
-              :description "Refresh board-observed Org Canvas status."
-              :owner 'org-canvas-board-status
-              :target-buffer buffer
-              :key session-id
-              :generation (float-time)
-              :focus-policy 'preserve
-              :reentrancy-policy 'defer
-              :coalesce t
-              :apply
-              (lambda (_job _handle)
-                (when (eq e-org-canvas-harness harness)
-                  (e-org-canvas--refresh-status))))))))))))
+      (let ((generation e-org-canvas--status-subscription-generation)
+            (work (e-chat-service-binding-start harness session-id)))
+        (e-work-on-settle
+         work
+         (lambda (settled)
+           (when (and (buffer-live-p buffer)
+                      (eq (plist-get (e-work-status settled) :state)
+                          'finished))
+             (with-current-buffer buffer
+               (when (and e-org-canvas-mode
+                          (= generation
+                             e-org-canvas--status-subscription-generation)
+                          (eq e-org-canvas-harness harness)
+                          (equal e-org-canvas-session-id session-id))
+                 (setq-local
+                  e-org-canvas--status-subscription
+                  (e-chat-service-subscribe
+                   harness session-id
+                   (lambda (event)
+                     (when (and (buffer-live-p buffer)
+                                (e-org-canvas--status-relevant-event-p event))
+                       (e-ui-work-schedule
+                        (e-ui-work-spec-create
+                         :id "org_canvas_board_status"
+                         :description
+                         "Refresh board-observed Org Canvas status."
+                         :owner 'org-canvas-board-status
+                         :target-buffer buffer
+                         :key session-id
+                         :generation (float-time)
+                         :focus-policy 'preserve
+                         :reentrancy-policy 'defer
+                         :coalesce t
+                         :apply
+                         (lambda (_job _handle)
+                           (when (eq e-org-canvas-harness harness)
+                             (e-org-canvas--refresh-status))))))))))))))))))
 
 (defun e-org-canvas--unsubscribe-status ()
   "Remove this buffer's Org Canvas context indicator subscription."
+  (cl-incf e-org-canvas--status-subscription-generation)
   (when (and e-org-canvas-harness e-org-canvas--status-subscription)
     (e-chat-service-unsubscribe e-org-canvas--status-subscription))
   (e-ui-work-cancel-matching
@@ -960,6 +985,7 @@ HARNESS and SESSION-ID are kept for call-site compatibility."
 
 (defun e-org-canvas--input-cleanup ()
   "Release resources owned by the current Org Canvas input pane."
+  (cl-incf e-org-canvas-input--subscription-generation)
   (e-ui-work-cancel-matching (current-buffer) 'org-canvas-input-render)
   (when e-org-canvas-input--close-timer
     (cancel-timer e-org-canvas-input--close-timer)
@@ -1134,6 +1160,12 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
        `(e-chat-turn-id ,turn-id)))
     (setq-local e-org-canvas-input--done-rendered-p t)))
 
+(defun e-org-canvas--input-sqlite-p ()
+  "Return non-nil when the current input pane uses SQLite persistence."
+  (and e-org-canvas-input--harness
+       (e-session-storage-sqlite-p
+        (e-harness-sessions e-org-canvas-input--harness))))
+
 (defun e-org-canvas--input-render-event (buffer event)
   "Render harness EVENT into submitted Org Canvas input BUFFER."
   (let ((type (plist-get event :type))
@@ -1155,18 +1187,31 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
              (cl-remf render-message :terminal-output)
              (e-chat-render-event render-event))
            (e-org-canvas-input-result-mode 1)
-           (e-org-canvas--input-select-result-buffer buffer))))
+           (e-org-canvas--input-select-result-buffer buffer)
+           (when e-org-canvas-input--turn-finished-p
+             (e-org-canvas--input-cleanup)
+             (e-org-canvas--input-clear-source-selection)
+             (e-org-canvas--input-schedule-auto-close buffer)))))
       ('turn-finished
-       (e-org-canvas--input-cleanup)
-       (e-org-canvas--input-clear-source-selection)
-       (if e-org-canvas-input--final-message-rendered-p
-           (progn
-             (e-org-canvas--input-clear-progress turn-id)
-             (e-org-canvas--input-select-result-buffer buffer)
-             (e-org-canvas--input-schedule-auto-close buffer))
+       (setq-local e-org-canvas-input--turn-finished-p t)
+       (cond
+        (e-org-canvas-input--final-message-rendered-p
+         (e-org-canvas--input-cleanup)
+         (e-org-canvas--input-clear-source-selection)
+         (e-org-canvas--input-clear-progress turn-id)
+         (e-org-canvas--input-select-result-buffer buffer)
+         (e-org-canvas--input-schedule-auto-close buffer))
+        ;; The live harness completes before its output append ACK.  Keep the
+        ;; SQL change subscription until the canonical terminal row arrives;
+        ;; callback timing must not turn completion into a dropped result.
+        ((e-org-canvas--input-sqlite-p)
+         (e-org-canvas--input-enter-result-state))
+        (t
+         (e-org-canvas--input-cleanup)
+         (e-org-canvas--input-clear-source-selection)
          (e-org-canvas--input-show-done turn-id)
          (e-org-canvas--input-focus-target)
-         (e-org-canvas--input-schedule-auto-close buffer)))
+         (e-org-canvas--input-schedule-auto-close buffer))))
       ('backend-empty-output
        (e-org-canvas--input-cleanup)
        (e-org-canvas--input-clear-source-selection)
@@ -1194,6 +1239,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let* ((turn-id (plist-get event :turn-id))
+             (canonical-p (and (plist-get event :canonical-row-p) t))
              (sequence (cl-incf e-org-canvas-input--ui-render-sequence)))
         (e-ui-work-schedule
          (e-ui-work-spec-create
@@ -1210,11 +1256,13 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
           (lambda (_job)
             (or (not (buffer-live-p buffer))
                 (with-current-buffer buffer
-                  (not (equal e-org-canvas-input--active-turn-id
-                              turn-id)))))
+                  (and (not canonical-p)
+                       (not (equal e-org-canvas-input--active-turn-id
+                                   turn-id))))))
           :apply
           (lambda (_job _handle)
-            (when (equal e-org-canvas-input--active-turn-id turn-id)
+            (when (or canonical-p
+                      (equal e-org-canvas-input--active-turn-id turn-id))
               (e-org-canvas--input-render-event buffer event)))))))))
 
 (defun e-org-canvas--input-handle-event (buffer event)
@@ -1223,24 +1271,76 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
     (with-current-buffer buffer
       (if e-org-canvas-input--submitting
           (push event e-org-canvas-input--deferred-events)
-        (let ((turn-id (plist-get event :turn-id)))
-          (when (and turn-id
-                     (or (null e-org-canvas-input--active-turn-id)
-                         (equal e-org-canvas-input--active-turn-id turn-id)))
-            (unless e-org-canvas-input--active-turn-id
+        (let ((turn-id (plist-get event :turn-id))
+              (canonical-p (and (plist-get event :canonical-row-p) t)))
+          (cond
+           ;; SQLite owns canonical durable identity.  A committed Board row
+           ;; is display input, never evidence for (or against) the currently
+           ;; executing harness turn.  In particular, the input message id and
+           ;; the harness turn id are intentionally different identities.
+           (canonical-p
+            (e-org-canvas--input-schedule-render-event buffer event))
+           ((and turn-id
+                 (or (null e-org-canvas-input--active-turn-id)
+                     (equal e-org-canvas-input--active-turn-id turn-id)))
+            ;; Durable admission work is not a turn identity.  Adopt the live
+            ;; harness id only from the first live harness event.
+            (when (null e-org-canvas-input--active-turn-id)
               (setq-local e-org-canvas-input--active-turn-id turn-id))
-            (e-org-canvas--input-schedule-render-event buffer event)))))))
+            (e-org-canvas--input-schedule-render-event buffer event))
+           ((and (null turn-id)
+                 (memq (plist-get event :type)
+                       '(turn-failed turn-cancelled)))
+            (e-org-canvas--input-render-event buffer event))))))))
+
+(defun e-org-canvas--input-watch-admission (buffer work)
+  "Surface failed or cancelled admission WORK in BUFFER."
+  (unless (e-work-handle-p work)
+    (signal 'wrong-type-argument (list 'e-work-handle-p work)))
+  (e-work-on-settle
+   work
+   (lambda (settled)
+     (let* ((status (e-work-status settled))
+            (state (plist-get status :state)))
+       (when (memq state '(failed cancelled))
+         (e-org-canvas--input-handle-event
+          buffer
+          (list :type (if (eq state 'cancelled)
+                          'turn-cancelled
+                        'turn-failed)
+                :turn-id nil
+                :payload
+                (list :admission t
+                      :error
+                      (if (eq state 'cancelled)
+                          "SQLite admission cancelled"
+                        (e-work-error-message
+                         (plist-get status :error)))))))))))
 
 (defun e-org-canvas--input-subscribe (buffer harness session-id)
   "Subscribe BUFFER to HARNESS events for SESSION-ID."
   (when (and harness session-id)
     (with-current-buffer buffer
-      (setq-local
-       e-org-canvas-input--subscription
-       (e-chat-service-subscribe
-        harness session-id
-        (lambda (event)
-          (e-org-canvas--input-handle-event buffer event)))))))
+      (let ((generation
+             (cl-incf e-org-canvas-input--subscription-generation))
+            (work (e-chat-service-binding-start harness session-id)))
+        (e-work-on-settle
+         work
+         (lambda (settled)
+           (when (and (buffer-live-p buffer)
+                      (eq (plist-get (e-work-status settled) :state)
+                          'finished))
+             (with-current-buffer buffer
+               (when (and (= generation
+                             e-org-canvas-input--subscription-generation)
+                          (eq e-org-canvas-input--harness harness)
+                          (equal e-org-canvas-input--session-id session-id))
+                 (setq-local
+                  e-org-canvas-input--subscription
+                  (e-chat-service-subscribe
+                   harness session-id
+                   (lambda (event)
+                     (e-org-canvas--input-handle-event buffer event)))))))))))))
 
 (defun e-org-canvas--input-reset-chat-state ()
   "Reset chat-local presentation state for a transient Org Canvas input pane."
@@ -1346,6 +1446,7 @@ TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
         (setq-local e-org-canvas-input--deferred-events nil)
         (setq-local e-org-canvas-input--final-message-rendered-p nil)
         (setq-local e-org-canvas-input--done-rendered-p nil)
+        (setq-local e-org-canvas-input--turn-finished-p nil)
         (setq-local e-org-canvas-input--ui-render-sequence 0)
         (setq-local e-org-canvas-input--source-selection-buffer
                     (and (buffer-live-p target-buffer)
@@ -1377,16 +1478,16 @@ TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
     (when (string-empty-p prompt)
       (user-error "Prompt must not be empty"))
     (let ((buffer (current-buffer))
-          turn-id)
+          admission-work)
       (setq-local e-org-canvas-input--submitting t)
       (setq-local e-org-canvas-input--deferred-events nil)
       (unwind-protect
-          (setq turn-id
+          (setq admission-work
                 (e-org-canvas-submit-prompt harness session-id prompt scope
                                             :references references
                                             :target-buffer target))
         (setq-local e-org-canvas-input--submitting nil))
-      (setq-local e-org-canvas-input--active-turn-id turn-id)
+      (e-org-canvas--input-watch-admission buffer admission-work)
       (e-org-canvas--input-enter-result-state)
       (e-org-canvas--input-replay-deferred-events buffer)
       (unless e-org-canvas-input--final-message-rendered-p

@@ -22,6 +22,7 @@
 (require 'e-shells)
 (require 'e-startup)
 (require 'e-ui-work)
+(require 'e-work)
 (require 'seq)
 (require 'subr-x)
 
@@ -273,29 +274,55 @@ OPTIONS are kind-owned creation options and DISPLAY controls presentation."
              buffer chat-buffer display)
     chat-buffer))
 
+(defun e-canvas--initialize-admitted-session
+    (kind harness session-id buffer options attachment)
+  "Persist KIND's dependent Canvas facts after SESSION-ID admission.
+ATTACHMENT is detached before the asynchronous boundary.  The session root,
+Board association, owner participant, and first input are admitted by the
+chat application transaction; these later mutations begin only after its
+explicit commit acknowledgement."
+  (e-chat-session-attach-context
+   harness session-id attachment :canvas t :current-attachments nil)
+  (when (buffer-live-p buffer)
+    (funcall (e-canvas-kind-initialize-session-function kind)
+             harness session-id buffer options)))
+
+(defun e-canvas--initialize-after-admission
+    (kind harness session-id buffer options attachment admission-work)
+  "Start dependent Canvas mutations after ADMISSION-WORK commits."
+  (unless (e-work-handle-p admission-work)
+    (signal 'wrong-type-argument
+            (list 'e-work-handle-p admission-work)))
+  (e-work-on-settle
+   admission-work
+   (lambda (settled)
+     (when (eq (plist-get (e-work-status settled) :state) 'finished)
+       (e-canvas--initialize-admitted-session
+        kind harness session-id buffer options attachment)))))
+
 (defun e-canvas--create-and-open-session
     (kind harness buffer options display)
   "Create and open KIND's Canvas session in HARNESS for BUFFER.
 OPTIONS belong to KIND, and DISPLAY controls presentation."
   (let* ((session-id (e-session-generate-id))
          ;; Canvas creation is an interactive application-service operation.
-         ;; Start the board-backed session and attach its chat surface without
-         ;; waiting for SQLite admission.  The cooperative create runner has
-         ;; already published the process-local session and binding before
-         ;; `e-chat-open' returns, so the Canvas metadata mutations below join
-         ;; the same owner FIFO behind that admission.
+         ;; Start the chat surface without waiting for SQLite admission.  The
+         ;; attachment and metadata commands depend on the new durable root,
+         ;; so they begin only from its explicit commit acknowledgement below.
          (chat-buffer
           (e-chat-open :harness harness :session-id session-id :new-session t))
          (attachment
-          (funcall (e-canvas-kind-attachment-function kind) buffer)))
-    (e-chat-session-attach-context
-     harness session-id attachment :canvas t :current-attachments nil)
-    (funcall (e-canvas-kind-initialize-session-function kind)
-             harness session-id buffer options)
+          (funcall (e-canvas-kind-attachment-function kind) buffer))
+         (admission-work
+          (and (buffer-live-p chat-buffer)
+               (buffer-local-value 'e-chat--session-readiness-work
+                                   chat-buffer))))
     (funcall (e-canvas-kind-bind-session-function kind)
              harness session-id buffer options)
     (funcall (e-canvas-kind-present-session-function kind)
              buffer chat-buffer display)
+    (e-canvas--initialize-after-admission
+     kind harness session-id buffer options attachment admission-work)
     chat-buffer))
 
 (defun e-canvas--recover-unavailable-session
@@ -427,17 +454,36 @@ chat buffer in a side pane."
      (t (user-error "No e session selected")))))
 
 (defun e-canvas--target-session (harness candidates)
-  "Return the most relevant HARNESS session id from detached CANDIDATES."
+  "Return the most relevant detached HARNESS session target.
+
+A new target preallocates its identity and opens its composer immediately.
+Its durable creation remains pending until the user's first input is admitted
+atomically; callers must not issue a dependent session mutation before then."
   (cond
    ((and (derived-mode-p 'e-chat-mode) e-chat-session-id)
-    e-chat-session-id)
+    (list :session-id e-chat-session-id))
    (candidates
-    (or (e-canvas--read-session
-         (mapcar (lambda (candidate) (plist-get candidate :session)) candidates)
-         "Attach canvas context to e session: ")
-        (plist-get (e-chat-create-session :harness harness) :id)))
+    (if-let ((session-id
+              (e-canvas--read-session
+               (mapcar (lambda (candidate) (plist-get candidate :session))
+                       candidates)
+               "Attach canvas context to e session: ")))
+        (list :session-id session-id)
+      (let* ((session-id (e-session-generate-id))
+             (buffer (e-chat-open :harness harness :session-id session-id
+                                  :new-session t)))
+        (e-chat-surface-pop-to-buffer buffer)
+        (list :session-id session-id :new-session t :buffer buffer
+              :creation-work
+              (buffer-local-value 'e-chat--session-readiness-work buffer)))))
    (t
-    (plist-get (e-chat-create-session :harness harness) :id))))
+    (let* ((session-id (e-session-generate-id))
+           (buffer (e-chat-open :harness harness :session-id session-id
+                                :new-session t)))
+      (e-chat-surface-pop-to-buffer buffer)
+      (list :session-id session-id :new-session t :buffer buffer
+            :creation-work
+            (buffer-local-value 'e-chat--session-readiness-work buffer))))))
 
 (defun e-canvas--attach-after-query (harness attachment canvas)
   "Attach ATTACHMENT after a bounded session query for HARNESS settles."
@@ -453,10 +499,19 @@ chat buffer in a side pane."
                         (e-work-error-message
                          (or (plist-get status :error)
                              '(e-work-cancelled "cancelled"))))
-             (e-canvas--attach
-              harness
-              (e-canvas--target-session harness (plist-get status :result))
-              attachment canvas)))))
+             (let* ((target
+                     (e-canvas--target-session
+                      harness (plist-get status :result)))
+                    (session-id (plist-get target :session-id)))
+               (if-let ((creation-work (plist-get target :creation-work)))
+                   (e-work-on-settle
+                    creation-work
+                    (lambda (created)
+                      (when (eq (plist-get (e-work-status created) :state)
+                                'finished)
+                        (e-canvas--attach
+                         harness session-id attachment canvas))))
+                 (e-canvas--attach harness session-id attachment canvas)))))))
       page-work)))
 
 (defun e-canvas--attach (harness session-id attachment &optional canvas)

@@ -16,6 +16,7 @@
 (require 'e-board-orchestration)
 (require 'e-chat-service)
 (require 'e-task-queue)
+(require 'e-work)
 
 (defun e-board-orchestration-actions-assignment-from-metadata (metadata)
   "Return the durable orchestration assignment in detached METADATA, or nil."
@@ -31,6 +32,23 @@
       board
     (e-board-registry-board-source-board board)))
 
+(defun e-board-orchestration-actions--sqlite-target-p (target)
+  "Return non-nil when TARGET is an ordinary SQL chat binding."
+  (and (e-chat-service-binding-p target)
+       (e-board-sqlite-service-p
+        (e-chat-service-binding-sqlite-service target))))
+
+(defun e-board-orchestration-actions--target (harness session-id)
+  "Return SESSION-ID's live SQL binding or explicit ephemeral Board."
+  (let ((binding (e-chat-service-binding harness session-id)))
+    (unless binding
+      (signal 'e-board-orchestration-error
+              (list "Board binding is not ready" session-id)))
+    (if (e-board-orchestration-actions--sqlite-target-p binding)
+        binding
+      (e-board-orchestration-actions--source-board
+       (e-chat-service-binding-board binding)))))
+
 (defun e-board-orchestration-actions-terminal-key (assignment)
   "Return the stable terminal-report idempotency key for ASSIGNMENT."
   (format "terminal:%s:%s:%d"
@@ -39,20 +57,26 @@
           (plist-get assignment :attempt)))
 
 (cl-defun e-board-orchestration-actions-publish-terminal
-    (board assignment status &key summary outputs error author)
-  "Publish ASSIGNMENT's bounded terminal STATUS report to BOARD.
+    (target assignment status &key summary outputs error author)
+  "Publish ASSIGNMENT's bounded terminal STATUS report to TARGET.
 The stable assignment key makes callback retries no-ops at the board boundary."
-  (e-board-orchestration-publish-fact
-   (e-board-orchestration-actions--source-board board)
-   (list :version e-board-orchestration-fact-version
-         :type 'terminal-report
-         :idempotency-key (e-board-orchestration-actions-terminal-key assignment)
-         :payload (append (copy-tree assignment)
-                          (list :status status :summary (or summary "")
-                                :outputs (or outputs []) :error error
-                                :participant-session-id
-                                (plist-get author :session-id))))
-   :author author))
+  (let ((fact
+         (list :version e-board-orchestration-fact-version
+               :type 'terminal-report
+               :idempotency-key
+               (e-board-orchestration-actions-terminal-key assignment)
+               :payload (append (copy-tree assignment)
+                                (list :status status :summary (or summary "")
+                                      :outputs (or outputs []) :error error
+                                      :participant-session-id
+                                      (plist-get author :session-id))))))
+    (if (e-board-orchestration-actions--sqlite-target-p target)
+        (e-board-sqlite-service-orchestration-fact-start
+         (e-chat-service-binding-sqlite-service target)
+         (e-chat-service-binding-board-id target) fact :author author)
+      (e-board-orchestration-publish-fact
+       (e-board-orchestration-actions--source-board target) fact
+       :author author))))
 
 (cl-defun e-board-orchestration-actions-report-from-context
     (context &key summary outputs)
@@ -65,11 +89,10 @@ Return nil for ordinary children without a durable assignment."
                (e-board-orchestration-actions-assignment-from-metadata
                 (plist-get context :session-metadata)))))
     (when assignment
-      (let ((board (e-chat-service-binding-board
-                    (e-chat-service-ensure-binding harness session-id))))
-        (e-board-orchestration-actions-publish-terminal
-         board assignment 'done :summary summary :outputs outputs
-         :author (list :session-id session-id))))))
+      (e-board-orchestration-actions-publish-terminal
+       (e-board-orchestration-actions--target harness session-id)
+       assignment 'done :summary summary :outputs outputs
+       :author (list :session-id session-id)))))
 
 (defvar e-board-orchestration-actions--queue-boards (make-hash-table :test 'equal)
   "Live core boards keyed by queue task id for durable bridge callbacks.")
@@ -222,21 +245,104 @@ notification path observes board facts and never reads child sessions.")
        (when (plist-get reports :truncated) (list :accepted-reports-truncated t))
        (when (plist-get conflicts :truncated) (list :conflicts-truncated t))))))
 
-(defun e-board-orchestration-actions-run-projection (board run-id &optional now)
-  "Return BOARD's bounded durable observation projection for RUN-ID."
-  (e-board-orchestration-actions--bounded-projection
-   (e-board-orchestration-run-projection
-    (e-board-orchestration-actions--source-board board) run-id now)))
+(defconst e-board-orchestration-actions--mapped-work-spec
+  (e-work-spec-create
+   :id "board-orchestration-query" :execution 'cooperative
+   :interactive-policy 'async :owner 'subagents
+   :runner
+   (lambda (parent arguments _context)
+     (let ((child (plist-get arguments :child))
+           (mapper (plist-get arguments :mapper)))
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle) (e-work-cancel child)))
+       (e-work-on-settle
+        child
+        (lambda (settled)
+          (pcase (plist-get (e-work-status settled) :state)
+            ('finished
+             (condition-case err
+                 (e-work-finish parent
+                                (funcall mapper
+                                         (e-work-handle-result settled)))
+               (error (e-work-fail parent err))))
+            ('failed (e-work-fail parent (e-work-handle-error settled)))
+            ('cancelled (e-work-cancel parent)))))
+       :deferred)))
+  "Work contract for detached SQL query result mapping.")
 
-(defun e-board-orchestration-actions-list-runs (board &optional now)
-  "Return bounded durable run projections visible on BOARD."
-  (let* ((board (e-board-orchestration-actions--source-board board))
-         (run-ids (e-board-orchestration-actions--take
-                   (e-board-orchestration-run-ids board)
-                   e-board-orchestration-actions-run-limit)))
-    (mapcar (lambda (run-id)
-              (e-board-orchestration-actions-run-projection board run-id now))
-            run-ids)))
+(defun e-board-orchestration-actions--map-work (child mapper)
+  "Return request-scoped work mapping CHILD through MAPPER."
+  (e-work-start e-board-orchestration-actions--mapped-work-spec
+                (list :child child :mapper mapper)))
+
+(defun e-board-orchestration-actions--records (page)
+  "Return detached Board records from SQL PAGE."
+  (mapcar (lambda (row) (copy-tree (plist-get row :record) t))
+          (plist-get page :records)))
+
+(defun e-board-orchestration-actions--sql-run-projection (page now)
+  "Reduce one detached SQL orchestration PAGE at NOW."
+  (when (plist-get page :truncated)
+    (signal 'e-board-orchestration-error
+            (list "Run fact page exceeds bounded query" (plist-get page :run-id))))
+  (let ((records (e-board-orchestration-actions--records page)))
+    (if records
+        (e-board-orchestration-actions--bounded-projection
+         (e-board-orchestration-reduce records now))
+      (list :run-id (plist-get page :run-id) :state 'missing))))
+
+(defun e-board-orchestration-actions-run-projection (target run-id &optional now)
+  "Return TARGET's bounded RUN-ID projection or SQL query work."
+  (if (e-board-orchestration-actions--sqlite-target-p target)
+      (let ((work
+             (e-board-sqlite-service-orchestration-run-start
+              (e-chat-service-binding-sqlite-service target)
+              (e-chat-service-binding-board-id target) run-id)))
+        (e-board-orchestration-actions--map-work
+         work
+         (lambda (page)
+           (e-board-orchestration-actions--sql-run-projection page now))))
+    (e-board-orchestration-actions--bounded-projection
+     (e-board-orchestration-run-projection
+      (e-board-orchestration-actions--source-board target) run-id now))))
+
+(defun e-board-orchestration-actions--sql-run-list (page now)
+  "Reduce SQL PAGE into a bounded newest-first run list at NOW."
+  (when (plist-get page :truncated)
+    (signal 'e-board-orchestration-error
+            (list "Run list exceeds bounded query")))
+  (let ((groups (make-hash-table :test 'equal)) order)
+    (dolist (record (e-board-orchestration-actions--records page))
+      (when-let* ((fact (e-board-orchestration-fact-from-record record))
+                  (run-id (plist-get (plist-get fact :payload) :run-id)))
+        (puthash run-id (append (gethash run-id groups) (list record)) groups)
+        (when (eq (plist-get fact :type) 'manifest)
+          (push run-id order))))
+    (mapcar
+     (lambda (run-id)
+       (e-board-orchestration-actions--bounded-projection
+        (e-board-orchestration-reduce (gethash run-id groups) now)))
+     order)))
+
+(defun e-board-orchestration-actions-list-runs (target &optional now)
+  "Return TARGET's bounded run list or SQL query work."
+  (if (e-board-orchestration-actions--sqlite-target-p target)
+      (let ((work
+             (e-board-sqlite-service-orchestration-runs-start
+              (e-chat-service-binding-sqlite-service target)
+              (e-chat-service-binding-board-id target)
+              e-board-orchestration-actions-run-limit)))
+        (e-board-orchestration-actions--map-work
+         work
+         (lambda (page)
+           (e-board-orchestration-actions--sql-run-list page now))))
+    (let* ((board (e-board-orchestration-actions--source-board target))
+           (run-ids (e-board-orchestration-actions--take
+                     (e-board-orchestration-run-ids board)
+                     e-board-orchestration-actions-run-limit)))
+      (mapcar (lambda (run-id)
+                (e-board-orchestration-actions-run-projection board run-id now))
+              run-ids))))
 
 (defun e-board-orchestration-actions--notify-projection (original board fact &rest arguments)
   "Publish a bounded projection update when ORIGINAL posts durable FACT."
@@ -260,15 +366,13 @@ notification path observes board facts and never reads child sessions.")
   (advice-add 'e-board-orchestration-publish-fact :around
               #'e-board-orchestration-actions--notify-projection))
 
-(defun e-board-orchestration-actions--context-board (context)
-  "Return CONTEXT's core board, creating its binding when needed."
+(defun e-board-orchestration-actions--context-target (context)
+  "Return CONTEXT's already-live SQL binding or ephemeral Board."
   (let ((harness (plist-get context :harness))
         (session-id (plist-get context :session-id)))
     (unless (and harness session-id)
       (signal 'wrong-type-argument (list 'e-board-context context)))
-    (e-board-orchestration-actions--source-board
-     (e-chat-service-binding-board
-      (e-chat-service-ensure-binding harness session-id)))))
+    (e-board-orchestration-actions--target harness session-id)))
 
 (defun e-board-orchestration-actions--run-id (arguments)
   "Return the required run id from action ARGUMENTS."
@@ -280,13 +384,13 @@ notification path observes board facts and never reads child sessions.")
 (defun e-board-orchestration-actions--status (context arguments)
   "Return CONTEXT board's bounded projection for the requested run."
   (e-board-orchestration-actions-run-projection
-   (e-board-orchestration-actions--context-board context)
+   (e-board-orchestration-actions--context-target context)
    (e-board-orchestration-actions--run-id arguments)))
 
 (defun e-board-orchestration-actions--list (context _arguments)
   "Return bounded durable run projections for CONTEXT's board."
   (e-board-orchestration-actions-list-runs
-   (e-board-orchestration-actions--context-board context)))
+   (e-board-orchestration-actions--context-target context)))
 
 (defconst e-board-orchestration-actions--run-id-parameters
   '(:type "object"
@@ -296,12 +400,29 @@ notification path observes board facts and never reads child sessions.")
   "Action parameters for one durable run lookup.")
 
 (defun e-board-orchestration-actions--action (handler parameters)
-  "Return one cheap durable run observation action for HANDLER."
-  (e-action-cheap-create
-   :owner 'subagents
+  "Return one async-capable durable run observation action for HANDLER."
+  (e-action-create
    :parameters parameters
-   :runner (lambda (arguments context)
-             (funcall handler context arguments))))
+   :work
+   (e-work-spec-create
+    :id "board-orchestration-action" :execution 'cooperative
+    :interactive-policy 'async :owner 'subagents
+    :runner
+    (lambda (parent arguments context)
+      (let ((result (funcall handler context arguments)))
+        (if (not (e-work-handle-p result))
+            result
+          (setf (e-work-handle-cancel-function parent)
+                (lambda (_handle) (e-work-cancel result)))
+          (e-work-on-settle
+           result
+           (lambda (settled)
+             (pcase (plist-get (e-work-status settled) :state)
+               ('finished
+                (e-work-finish parent (e-work-handle-result settled)))
+               ('failed (e-work-fail parent (e-work-handle-error settled)))
+               ('cancelled (e-work-cancel parent)))))
+          :deferred))))))
 
 (defun e-board-orchestration-actions-parent-alist ()
   "Return parent actions that expose durable board run observations."

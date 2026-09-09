@@ -78,7 +78,7 @@
       '((:task-key "task" :required t :accepted-attempt 0))))
     (e-harness-activate-capability harness capability)
     (e-harness-create-session harness :id "parent")
-    (cl-letf (((symbol-function 'e-board-orchestration-actions--context-board)
+    (cl-letf (((symbol-function 'e-board-orchestration-actions--context-target)
                (lambda (_context) board)))
       (let ((context (list :harness harness :session-id "parent")))
         (should (equal (plist-get (e-actions-call 'runs :run-status

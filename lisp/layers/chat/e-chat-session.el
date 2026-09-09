@@ -27,7 +27,7 @@
   "Submit PROMPT to SESSION-ID through its board binding.
 DELAY is accepted for source compatibility; board publication is immediate.
 REFERENCES are ordered source references from the composer.
-METADATA is caller-provided turn metadata."
+METADATA is caller-provided turn metadata.  Return admission work."
   (ignore delay)
   (e-chat-service-submit-session
    harness session-id prompt :references references
@@ -37,14 +37,14 @@ METADATA is caller-provided turn metadata."
     (harness session-id prompt &key references metadata)
   "Queue PROMPT as a board-routed follow-up for SESSION-ID.
 REFERENCES are ordered source references from the composer.
-METADATA is caller-provided turn metadata."
+METADATA is caller-provided turn metadata.  Return admission work."
   (e-chat-service-queue-session
    harness session-id prompt :references references :metadata metadata))
 
 (cl-defun e-chat-session-steer
     (harness session-id prompt &key metadata)
   "Steer SESSION-ID's active turn through its board binding with PROMPT.
-METADATA is caller-provided turn activity metadata."
+METADATA is caller-provided turn activity metadata.  Return admission work."
   (e-chat-service-steer-session harness session-id prompt :metadata metadata))
 
 (defun e-chat-session-ensure-project-root (harness session-id project-root)
@@ -73,9 +73,9 @@ the durable aggregate merely to preserve this legacy convenience operation."
   "Abort SESSION-ID's board-attached active chat turn."
   (e-chat-service-abort-session harness session-id))
 
-(defun e-chat-session-reset (harness session-id)
-  "Reset SESSION-ID's transcript and board presentation projection."
-  (e-chat-service-reset-session harness session-id))
+(defun e-chat-session-reset-ephemeral (harness session-id)
+  "Reset an explicitly ephemeral SESSION-ID and its Board projection."
+  (e-chat-service-reset-ephemeral-session harness session-id))
 
 (cl-defun e-chat-session-compact-start
     (harness session-id &key instructions keep-recent-tokens
@@ -533,9 +533,9 @@ request-time source descriptor."
                       (e-chat-session--action-session-id context))))
                   :reset
                   (e-chat-session--action
-                   #'e-chat-session-reset
+                   #'e-chat-session-reset-ephemeral
                    (lambda (context _arguments)
-                     (e-chat-session-reset
+                     (e-chat-session-reset-ephemeral
                       (e-chat-session--action-harness context)
                       (e-chat-session--action-session-id context))))
                   :compact

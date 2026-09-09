@@ -183,6 +183,59 @@
                     '(finished failed cancelled))
         (e-work-cancel work)))))
 
+(ert-deftest e-harness-test-sqlite-turn-waits-for-input-commit-before-context ()
+  "A SQLite turn cannot query context or start its provider before input commits."
+  (let* ((harness
+          (e-harness-create
+           :backend
+           (e-backend-fake-create
+            :items '((:type assistant-message :content "answer")
+                     (:type done :reason stop)))))
+         (session-id "session-input-commit")
+         (admission
+          (e-work-prepare
+           (e-work-spec-create
+            :id "test-input-admission" :execution 'cooperative
+            :interactive-policy 'async :owner 'test
+            :runner (lambda (&rest _arguments) :deferred))
+           nil))
+         (original-append (symbol-function 'e-session-append-message))
+         (context-start-count 0))
+    (e-harness-create-session harness :id session-id)
+    (e-work-start-prepared admission :arguments nil)
+    (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
+               (lambda (_store) t))
+              ((symbol-function 'e-session-append-message)
+               (lambda (store candidate-session-id message)
+                 (if (eq (plist-get message :role) 'user)
+                     admission
+                   (funcall original-append
+                            store candidate-session-id message))))
+              ((symbol-function 'e-harness-turn-context-start)
+               (lambda (candidate-harness candidate-session-id turn-id)
+                 (cl-incf context-start-count)
+                 (let ((work
+                        (e-work-prepare
+                         (e-work-spec-create
+                          :id "test-context-read" :execution 'cooperative
+                          :interactive-policy 'async :owner 'test
+                          :runner (lambda (&rest _arguments) :deferred))
+                         nil)))
+                   (e-work-start-prepared work :arguments nil)
+                   (e-work-finish
+                    work
+                    (e-harness-turn-context
+                     candidate-harness candidate-session-id turn-id))
+                   work))))
+      (e-harness-test-prompt-async harness session-id "question")
+      (should (= context-start-count 0))
+      (should (eq (plist-get (e-work-status admission) :state) 'started))
+      (e-work-finish admission '(:status posted :position 1))
+      (should (= context-start-count 1))
+      (should (eq (plist-get (e-harness-wait-batch harness session-id 1.0)
+                             :status)
+                  'done)))))
+
 (ert-deftest e-harness-test-turn-finished-is-published-after-hook-audit ()
   "The public terminal event follows all turn-finished hook side effects."
   (let* ((events nil)

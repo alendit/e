@@ -25,11 +25,15 @@
 
 (defvar e-board-storage-sqlite-worker--database nil)
 
-(defconst e-board-storage-sqlite-worker-controller-record-limit 128
-  "Maximum recent Board records returned to one live controller request.")
+(defconst e-board-storage-sqlite-worker-bounded-set-limit 512
+  "Maximum participant or pickup rows returned to one bounded request.")
 
-(defconst e-board-storage-sqlite-worker-controller-set-limit 512
-  "Maximum current participant or pickup rows in one controller request.")
+(defconst e-board-storage-sqlite-worker-routing-set-limit 4096
+  "Maximum unaddressed routing candidates accepted by one append.
+
+Addressed delivery performs an exact participant lookup and is not subject to
+this bound.  Unaddressed fan-out fails explicitly beyond the practical bound;
+it must never silently omit a participant because an internal page ended.")
 
 (defun e-board-storage-sqlite-worker--column (row index)
   "Return INDEX from SQLite ROW."
@@ -178,13 +182,15 @@
      "INSERT INTO board_records(board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,payload) VALUES(?,?,?,?,?,?,?,?,?)"
      (vector board-id generation position record-kind record-id source-kind
              source-key source-hash payload))
-    (dolist (tag (plist-get record :selector-tags))
+    (dolist (tag (or (plist-get record :selector-tags)
+                     (plist-get record :tags)))
       (sqlite-execute
        e-board-storage-sqlite-worker--database
        "INSERT INTO board_record_tags(board_id,generation,position,tag) VALUES(?,?,?,?)"
        (vector board-id generation position
                (e-board-storage-sqlite-worker--sql-value tag))))
-    (let ((attributes (plist-get record :selector-attributes)))
+    (let ((attributes (or (plist-get record :selector-attributes)
+                          (plist-get record :attributes))))
       (while attributes
         (sqlite-execute
          e-board-storage-sqlite-worker--database
@@ -200,6 +206,366 @@
      (vector revision position board-id))
       (list :board-id board-id :generation generation :revision revision
             :position position :status 'posted :record record))))
+
+(defun e-board-storage-sqlite-worker--selector-matches-p
+    (selector kind tags attributes to author subject-participant-id)
+  "Return non-nil when detached SELECTOR matches one candidate record."
+  (let ((all (or (plist-get selector :tags-all)
+                 (plist-get selector :tags)))
+        (any (plist-get selector :tags-any)))
+    (and (or (not (plist-member selector :kind))
+             (equal (plist-get selector :kind) kind))
+         (or (not (plist-member selector :to))
+             (equal (plist-get selector :to) to))
+         (or (not (plist-member selector :author))
+             (equal (plist-get selector :author) author))
+         (or (not (plist-member selector :subject-participant-id))
+             (equal (plist-get selector :subject-participant-id)
+                    subject-participant-id))
+         (cl-every (lambda (tag) (member tag tags)) all)
+         (or (null any) (cl-some (lambda (tag) (member tag tags)) any))
+         (cl-every
+          (lambda (clause)
+            (equal (plist-get attributes (car clause)) (cdr clause)))
+          (plist-get selector :attributes)))))
+
+(defun e-board-storage-sqlite-worker--routing-policies
+    (board-id generation &optional addressed-participant-id)
+  "Return exact durable routing policies for BOARD-ID GENERATION.
+
+When ADDRESSED-PARTICIPANT-ID is non-nil, query that participant exactly and
+scan association policies in bounded internal pages until its policy is found.
+Unaddressed fan-out pages both relations and signals at the practical routing
+bound instead of silently truncating the eligible set."
+  (let ((participants (make-hash-table :test 'equal)) policies
+        (participant-cursor "") (association-cursor "")
+        (participant-count 0) participant-rows association-rows)
+    (if addressed-participant-id
+        (setq participant-rows
+              (sqlite-select
+               e-board-storage-sqlite-worker--database
+               "SELECT participant_id,payload FROM board_participants WHERE board_id=? AND generation=? AND participant_id=?"
+               (vector board-id generation addressed-participant-id)))
+      (let ((more t))
+        (while more
+          (setq participant-rows
+                (sqlite-select
+                 e-board-storage-sqlite-worker--database
+                 "SELECT participant_id,payload FROM board_participants WHERE board_id=? AND generation=? AND participant_id>? ORDER BY participant_id LIMIT ?"
+                 (vector board-id generation participant-cursor
+                         e-board-storage-sqlite-worker-bounded-set-limit)))
+          (dolist (row participant-rows)
+            (setq participant-cursor
+                  (e-board-storage-sqlite-worker--column row 0))
+            (cl-incf participant-count)
+            (when (> participant-count
+                     e-board-storage-sqlite-worker-routing-set-limit)
+              (signal 'e-runtime-store-board-conflict
+                      (list "Board routing candidate limit exceeded"
+                            board-id generation
+                            e-board-storage-sqlite-worker-routing-set-limit)))
+            (let ((payload
+                   (e-board-storage-sqlite-worker--value
+                    (e-board-storage-sqlite-worker--column row 1))))
+              (when (memq (plist-get payload :state) '(active dormant stale))
+                (puthash participant-cursor payload participants))))
+          (setq more
+                (= (length participant-rows)
+                   e-board-storage-sqlite-worker-bounded-set-limit)))))
+    (when addressed-participant-id
+      (dolist (row participant-rows)
+        (let ((payload
+               (e-board-storage-sqlite-worker--value
+                (e-board-storage-sqlite-worker--column row 1))))
+          (when (memq (plist-get payload :state) '(active dormant stale))
+            (puthash (e-board-storage-sqlite-worker--column row 0)
+                     payload participants)))))
+    ;; Association query rows are the durable home of each participant's
+    ;; selectors.  Page the set within the worker transaction; never install
+    ;; it in the parent process or issue one query per participant.
+    (let ((more t))
+      (while more
+        (setq association-rows
+              (sqlite-select
+               e-board-storage-sqlite-worker--database
+               "SELECT session_id,routing_policy FROM session_query_state WHERE board_id=? AND routing_policy IS NOT NULL AND session_id>? ORDER BY session_id LIMIT ?"
+               (vector board-id association-cursor
+                       e-board-storage-sqlite-worker-bounded-set-limit)))
+        (dolist (row association-rows)
+          (setq association-cursor
+                (e-board-storage-sqlite-worker--column row 0))
+          (let* ((policy
+                  (e-board-storage-sqlite-worker--value
+                   (e-board-storage-sqlite-worker--column row 1)))
+                 (participant-id (plist-get policy :participant-id)))
+            (when (gethash participant-id participants)
+              (push (list :session-id association-cursor
+                          :participant-id participant-id
+                          :participant (gethash participant-id participants)
+                          :policy policy)
+                    policies))))
+        (setq more
+              (and (= (length association-rows)
+                      e-board-storage-sqlite-worker-bounded-set-limit)
+                   (or (null addressed-participant-id)
+                       (null policies))))))
+    (nreverse policies)))
+
+(defun e-board-storage-sqlite-worker--canonical-message-id
+    (board-id generation kind source-key)
+  "Return the SQLite-operation-owned stable KIND identity for SOURCE-KEY."
+  (concat
+   "msg_"
+   (substring
+    (secure-hash
+     'sha256
+     (e-runtime-store-codec-encode
+      (list :board-id board-id :generation generation
+            :kind kind :source-key source-key)))
+    0 40)))
+
+(defun e-board-storage-sqlite-worker--canonical-append-route-result
+    (board-id generation message-id status)
+  "Read MESSAGE-ID's canonical append/routing result with STATUS."
+  (let* ((record-row
+          (car (sqlite-select
+                e-board-storage-sqlite-worker--database
+                "SELECT position,payload FROM board_records WHERE board_id=? AND generation=? AND record_id=?"
+                (vector board-id generation message-id))))
+         (routing-row
+          (car (sqlite-select
+                e-board-storage-sqlite-worker--database
+                "SELECT payload,revision FROM board_routing WHERE board_id=? AND generation=? AND message_id=?"
+                (vector board-id generation message-id))))
+         (pickups
+          (mapcar
+           (lambda (row)
+             (e-board-storage-sqlite-worker--value
+              (e-board-storage-sqlite-worker--column row 0)))
+           (sqlite-select
+            e-board-storage-sqlite-worker--database
+            "SELECT payload FROM board_pickups WHERE board_id=? AND generation=? AND message_id=? ORDER BY participant_id,fifo_position"
+            (vector board-id generation message-id))))
+         (board-row (e-board-storage-sqlite-worker--board-row board-id)))
+    (unless (and record-row routing-row)
+      (signal 'e-runtime-store-board-conflict
+              (list "Incomplete canonical Board append" board-id message-id)))
+    (list :board-id board-id :generation generation
+          :revision (e-board-storage-sqlite-worker--column board-row 2)
+          :position (e-board-storage-sqlite-worker--column record-row 0)
+          :status status
+          :message
+          (e-board-storage-sqlite-worker--value
+           (e-board-storage-sqlite-worker--column record-row 1))
+          :routing
+          (e-board-storage-sqlite-worker--value
+           (e-board-storage-sqlite-worker--column routing-row 0))
+          :pickups pickups)))
+
+(defun e-board-storage-sqlite-worker--append-route-association (body result)
+  "Attach BODY's request-local association facts to canonical RESULT."
+  (if (not (plist-get body :session-id))
+      result
+    (append
+     result
+     (list :session-id (plist-get body :session-id)
+           :association
+           (list :board-id (plist-get body :board-id)
+                 :principal (plist-get body :principal)
+                 :routing-policy
+                 (copy-tree (plist-get body :routing-policy) t))))))
+
+(defun e-board-storage-sqlite-worker--resolve-board-input (body)
+  "Return BODY plus exact Board association when it supplies only a session."
+  (if (plist-get body :board-id)
+      body
+    (let* ((session-id (plist-get body :session-id))
+           (row
+            (and session-id
+                 (car
+                  (sqlite-select
+                   e-board-storage-sqlite-worker--database
+                   "SELECT board_id,routing_policy,principal FROM session_query_state WHERE session_id=?"
+                   (vector session-id)))))
+           (board-id (and row
+                          (e-board-storage-sqlite-worker--column row 0))))
+      (unless board-id
+        (signal 'e-runtime-store-board-conflict
+                (list "Session has no Board association" session-id)))
+      (let ((resolved (copy-sequence body)))
+        (setq resolved (plist-put resolved :board-id board-id))
+        (setq resolved
+              (plist-put resolved :routing-policy
+                         (e-board-storage-sqlite-worker--value
+                          (e-board-storage-sqlite-worker--column row 1))))
+        (plist-put resolved :principal
+                   (e-board-storage-sqlite-worker--column row 2))))))
+
+(defun e-board-storage-sqlite-worker--board-append-route (body)
+  "Atomically append and route one canonical Board input from BODY."
+  (setq body (e-board-storage-sqlite-worker--resolve-board-input body))
+  (let* ((row (e-board-storage-sqlite-worker--board-check body))
+         (board-id (plist-get body :board-id))
+         (generation (e-board-storage-sqlite-worker--column row 1))
+         (source-key (plist-get body :source-input-key))
+         (source-hash (plist-get body :source-hash))
+         (source-key-sql
+          (e-board-storage-sqlite-worker--sql-value source-key))
+         (existing
+          (car (sqlite-select
+                e-board-storage-sqlite-worker--database
+                "SELECT record_id,source_hash FROM board_records WHERE board_id=? AND generation=? AND source_kind='input' AND source_key=?"
+                (vector board-id generation source-key-sql)))))
+    (unless source-key
+      (signal 'e-runtime-store-board-conflict
+              (list "Board append requires a stable source identity" board-id)))
+    (if existing
+        (progn
+          (unless (equal source-hash
+                         (e-board-storage-sqlite-worker--column existing 1))
+            (signal 'e-runtime-store-board-conflict
+                    (list "Board source key conflicts" board-id source-key)))
+          (e-board-storage-sqlite-worker--append-route-association
+           body
+           (e-board-storage-sqlite-worker--canonical-append-route-result
+            board-id generation
+            (e-board-storage-sqlite-worker--column existing 0) 'duplicate)))
+      (let* ((position (1+ (e-board-storage-sqlite-worker--column row 3)))
+             (message-id
+              (e-board-storage-sqlite-worker--canonical-message-id
+               board-id generation 'input source-key))
+             (tags (copy-tree (plist-get body :tags)))
+             (attributes (copy-tree (plist-get body :attributes)))
+             (to (plist-get body :to))
+             (author (plist-get body :author))
+             (mode (or (plist-get body :mode) 'inject))
+             (content (plist-get body :content))
+             (reference (copy-tree (plist-get body :reference)))
+             (message
+              (list :id message-id :board-id board-id :seq position
+                    :record-kind 'input :kind 'input :author author
+                    :requester-actor (copy-tree (plist-get body :requester-actor))
+                    :tags tags :selector-tags tags
+                    :attributes attributes :selector-attributes attributes
+                    :to to :mode mode :content content :reference reference
+                    :source-input-key (copy-tree source-key)
+                    :created-at (or (plist-get body :created-at) (float-time))
+                    :routing-state 'routed :durable-position position))
+             (policies
+              (e-board-storage-sqlite-worker--routing-policies
+               board-id generation to))
+             participants pickups)
+        (dolist (entry policies)
+          (let* ((participant-id (plist-get entry :participant-id))
+                 (policy (plist-get entry :policy))
+                 (selector (plist-get policy :pickup-selector)))
+            (when (if to
+                      (equal participant-id to)
+                    (e-board-storage-sqlite-worker--selector-matches-p
+                     selector 'input tags attributes to author nil))
+              (push participant-id participants)
+              (push
+               (list :delivery-id (list board-id message-id participant-id)
+                     :board-id board-id :participant-id participant-id
+                     :message-id message-id
+                     :subscription-ids
+                     (list (plist-get (plist-get entry :participant)
+                                      :subscription-id))
+                     :event-seq-range (list position position)
+                     :mode mode :requester-actor
+                     (copy-tree (plist-get body :requester-actor))
+                     :addressed-p (and to t)
+                     :cause-metadata
+                     (list :source-input-key (copy-tree source-key)
+                           :routing-tags tags :input-attributes attributes)
+                     :content content :reference reference)
+               pickups))))
+        (setq participants (nreverse participants)
+              pickups (nreverse pickups))
+        (let* ((state (if participants 'routed 'unrouted))
+               (reason (and (null participants)
+                            (if to 'target-unavailable
+                              'no-matching-subscription)))
+               (outcome
+                (list :state state :reason reason
+                      :participant-ids participants
+                      :pickup-ids
+                      (mapcar (lambda (pickup)
+                                (copy-tree (plist-get pickup :delivery-id)))
+                              pickups))))
+          (e-board-storage-sqlite-worker--board-record-put
+           (list :op 'board-record-put :board-id board-id
+                 :generation generation :record message
+                 :source (list :kind 'input :key source-key
+                               :hash source-hash)))
+          (e-board-storage-sqlite-worker--board-routing-put
+           (list :op 'board-routing-put :board-id board-id
+                 :generation generation :message-id message-id
+                 :outcome outcome :pickups (vconcat pickups)))
+          (e-board-storage-sqlite-worker--append-route-association
+           body
+           (e-board-storage-sqlite-worker--canonical-append-route-result
+            board-id generation message-id 'posted)))))))
+
+(defun e-board-storage-sqlite-worker--board-record-append (body)
+  "Append one non-routed canonical Board record from BODY."
+  (let* ((row (e-board-storage-sqlite-worker--board-check body))
+         (board-id (plist-get body :board-id))
+         (generation (e-board-storage-sqlite-worker--column row 1))
+         (kind (plist-get body :record-kind))
+         (source-kind (plist-get body :source-kind))
+         (source-key (plist-get body :source-key))
+         (source-hash (plist-get body :source-hash))
+         (existing
+          (car
+           (sqlite-select
+            e-board-storage-sqlite-worker--database
+            "SELECT record_id,source_hash FROM board_records WHERE board_id=? AND generation=? AND source_kind=? AND source_key=?"
+            (vector board-id generation (symbol-name source-kind)
+                    (e-board-storage-sqlite-worker--sql-value source-key))))))
+    (unless (and (memq kind '(output activity fact)) source-kind source-key)
+      (signal 'e-runtime-store-board-conflict
+              (list "Board record append requires stable kind/source" body)))
+    (if existing
+        (progn
+          (unless (equal source-hash
+                         (e-board-storage-sqlite-worker--column existing 1))
+            (signal 'e-runtime-store-board-conflict
+                    (list "Board record source conflicts" board-id source-key)))
+          (let* ((message-id
+                  (e-board-storage-sqlite-worker--column existing 0))
+                 (record-row
+                  (car
+                   (sqlite-select
+                    e-board-storage-sqlite-worker--database
+                    "SELECT position,payload FROM board_records WHERE board_id=? AND generation=? AND record_id=?"
+                    (vector board-id generation message-id)))))
+            (list :board-id board-id :generation generation :status 'duplicate
+                  :position
+                  (e-board-storage-sqlite-worker--column record-row 0)
+                  :message
+                  (e-board-storage-sqlite-worker--value
+                   (e-board-storage-sqlite-worker--column record-row 1)))))
+      (let* ((position (1+ (e-board-storage-sqlite-worker--column row 3)))
+             (message-id
+              (e-board-storage-sqlite-worker--canonical-message-id
+               board-id generation kind source-key))
+             (record
+              (append
+               (list :id message-id :board-id board-id :seq position
+                     :record-kind kind :kind kind
+                     :created-at (or (plist-get body :created-at) (float-time))
+                     :durable-position position)
+               (copy-tree (plist-get body :record-fields) t))))
+        (let ((stored
+               (e-board-storage-sqlite-worker--board-record-put
+                (list :op 'board-record-put :board-id board-id
+                      :generation generation :record record
+                      :source (list :kind source-kind :key source-key
+                                    :hash source-hash)))))
+          (list :board-id board-id :generation generation :status 'posted
+                :revision (plist-get stored :revision)
+                :position (plist-get stored :position) :message record))))))
 
 (defun e-board-storage-sqlite-worker--pickup-key (delivery-id)
   "Return the exact durable key for DELIVERY-ID."
@@ -579,6 +945,10 @@
       ('board-create (e-board-storage-sqlite-worker--board-create body))
       ('board-clear (e-board-storage-sqlite-worker--board-clear body))
       ('board-record-put (e-board-storage-sqlite-worker--board-record-put body))
+      ('board-append-route
+       (e-board-storage-sqlite-worker--board-append-route body))
+      ('board-record-append
+       (e-board-storage-sqlite-worker--board-record-append body))
       ('board-routing-put (e-board-storage-sqlite-worker--board-routing-put body))
       ('board-pickup-transition
        (e-board-storage-sqlite-worker--board-pickup-transition body))
@@ -600,144 +970,6 @@
   "Execute one typed Board read BODY on DATABASE."
   (let ((e-board-storage-sqlite-worker--database database))
     (pcase (plist-get body :op)
-    ('board-controller-state
-     (let* ((board-id (plist-get body :board-id))
-            (root-row
-             (car (sqlite-select
-                   database
-                   "SELECT board_id,trusted_principal,generation,revision,next_position,root_payload FROM boards WHERE board_id=?"
-                   (vector board-id))))
-            (_ (unless root-row
-                 (signal 'e-runtime-store-worker-error
-                         (list "Missing durable Board" board-id))))
-            (generation (e-board-storage-sqlite-worker--column root-row 2))
-            (record-limit
-             (min e-board-storage-sqlite-worker-controller-record-limit
-                  (max 1 (or (plist-get body :record-limit) 64))))
-            (set-limit e-board-storage-sqlite-worker-controller-set-limit)
-            (participants
-             (mapcar
-              (lambda (row)
-                (e-board-storage-sqlite-worker--value
-                 (e-board-storage-sqlite-worker--column row 0)))
-              (sqlite-select
-               database
-               "SELECT payload FROM board_participants WHERE board_id=? AND generation=? ORDER BY participant_id LIMIT ?"
-               (vector board-id generation set-limit))))
-            (pickups
-             (mapcar
-              (lambda (row)
-                (let ((payload
-                       (e-board-storage-sqlite-worker--value
-                        (e-board-storage-sqlite-worker--column row 0))))
-                  (setq payload
-                        (plist-put payload :state
-                                   (intern
-                                    (e-board-storage-sqlite-worker--column
-                                     row 1))))
-                  (setq payload
-                        (plist-put payload :revision
-                                   (e-board-storage-sqlite-worker--column row 2)))
-                  (plist-put payload :attempt
-                             (e-board-storage-sqlite-worker--column row 3))))
-              (sqlite-select
-               database
-               (concat
-                "SELECT payload,state,revision,attempt FROM board_pickups "
-                "WHERE board_id=? AND generation=? "
-                "AND state IN ('pending','ready','claimed','accepted','cancelling') "
-                "ORDER BY participant_id,fifo_position LIMIT ?")
-               (vector board-id generation set-limit))))
-            (record-rows
-             (sqlite-select
-              database
-              (concat
-               "SELECT position,payload,source_kind,source_key,source_hash FROM ("
-               "SELECT position,payload,source_kind,source_key,source_hash "
-               "FROM board_records WHERE board_id=? AND generation=? "
-               "ORDER BY position DESC LIMIT ?) ORDER BY position")
-              (vector board-id generation record-limit)))
-            (records
-             (mapcar
-              (lambda (row)
-                (list
-                 :position (e-board-storage-sqlite-worker--column row 0)
-                 :record
-                 (e-board-storage-sqlite-worker--value
-                  (e-board-storage-sqlite-worker--column row 1))
-                 :source
-                 (and (e-board-storage-sqlite-worker--column row 2)
-                      (list
-                       :kind
-                       (intern (e-board-storage-sqlite-worker--column row 2))
-                       :key
-                       (e-board-storage-sqlite-worker--value
-                        (e-board-storage-sqlite-worker--column row 3))
-                       :hash (e-board-storage-sqlite-worker--column row 4)))))
-              record-rows))
-            (working-records
-             (mapcar
-              (lambda (row)
-                (list
-                 :position (e-board-storage-sqlite-worker--column row 0)
-                 :record
-                 (e-board-storage-sqlite-worker--value
-                  (e-board-storage-sqlite-worker--column row 1))
-                 :source
-                 (and (e-board-storage-sqlite-worker--column row 2)
-                      (list
-                       :kind
-                       (intern (e-board-storage-sqlite-worker--column row 2))
-                       :key
-                       (e-board-storage-sqlite-worker--value
-                        (e-board-storage-sqlite-worker--column row 3))
-                       :hash (e-board-storage-sqlite-worker--column row 4)))))
-              (sqlite-select
-               database
-               (concat
-                "SELECT DISTINCT r.position,r.payload,r.source_kind,r.source_key,r.source_hash "
-                "FROM board_records r JOIN board_pickups p "
-                "ON p.board_id=r.board_id AND p.generation=r.generation "
-                "AND p.message_id=r.record_id WHERE r.board_id=? "
-                "AND r.generation=? AND p.state IN "
-                "('pending','ready','claimed','accepted','cancelling') "
-                "ORDER BY r.position LIMIT ?")
-               (vector board-id generation set-limit))))
-            (routing
-             (mapcar
-              (lambda (row)
-                (list :message-id
-                      (e-board-storage-sqlite-worker--column row 0)
-                      :outcome
-                      (e-board-storage-sqlite-worker--value
-                       (e-board-storage-sqlite-worker--column row 1))
-                      :revision
-                      (e-board-storage-sqlite-worker--column row 2)))
-              (sqlite-select
-               database
-               (concat
-                "SELECT message_id,payload,revision FROM board_routing "
-                "WHERE board_id=? AND generation=? AND message_id IN ("
-                "SELECT message_id FROM board_pickups WHERE board_id=? "
-                "AND generation=? AND state IN "
-                "('pending','ready','claimed','accepted','cancelling')) "
-                "ORDER BY message_id LIMIT ?")
-               (vector board-id generation board-id generation set-limit)))))
-       (list
-        :board
-        (list :board-id (e-board-storage-sqlite-worker--column root-row 0)
-              :trusted-principal
-              (e-board-storage-sqlite-worker--value
-               (e-board-storage-sqlite-worker--column root-row 1))
-              :generation generation
-              :revision (e-board-storage-sqlite-worker--column root-row 3)
-              :next-position (e-board-storage-sqlite-worker--column root-row 4)
-              :root
-              (e-board-storage-sqlite-worker--value
-               (e-board-storage-sqlite-worker--column root-row 5)))
-        :participants participants :pickups pickups :records records
-        :working-records working-records
-        :routing routing)))
     ('board-get
      (when-let* ((row (car (sqlite-select
                             e-board-storage-sqlite-worker--database
@@ -778,8 +1010,25 @@
         :next (and more (e-board-storage-sqlite-worker--column (car (last selected)) 0)))))
     ('board-record-page
      (let* ((board-id (plist-get body :board-id))
-            (generation (plist-get body :generation))
+            (board-row
+             (e-board-storage-sqlite-worker--board-row board-id))
+            (generation (or (plist-get body :generation)
+                            (e-board-storage-sqlite-worker--column
+                             board-row 1)))
             (after (or (plist-get body :after) 0))
+            (through
+             (or
+              (plist-get body :through)
+              (if (= generation
+                     (e-board-storage-sqlite-worker--column board-row 1))
+                  (e-board-storage-sqlite-worker--column board-row 3)
+                (e-board-storage-sqlite-worker--column
+                 (car
+                  (sqlite-select
+                   e-board-storage-sqlite-worker--database
+                   "SELECT COALESCE(MAX(position),0) FROM board_records WHERE board_id=? AND generation=?"
+                   (vector board-id generation)))
+                 0))))
             (limit (min 1024 (max 1 (or (plist-get body :limit) 256))))
             (selector (plist-get body :selector))
             (kinds (plist-get selector :kinds))
@@ -790,6 +1039,11 @@
             (clauses
              (list "r.position>?" "r.generation=?" "r.board_id=?"))
             (parameters (list board-id generation after)))
+       (unless (integerp through)
+         (signal 'e-runtime-store-board-conflict
+                 (list "Unknown Board page boundary" board-id generation)))
+       (push "r.position<=?" clauses)
+       (setq parameters (append parameters (list through)))
        (when kinds
          (push (format "r.record_kind IN (%s)"
                        (mapconcat (lambda (_kind) "?") kinds ","))
@@ -843,10 +1097,134 @@
                             :hash (e-board-storage-sqlite-worker--column row 5))))
                 selected))))
          (setq selected (nreverse selected))
-         (list :records selected :bytes bytes
+         (list :records selected :bytes bytes :through through
+               :cursor (or (and selected
+                                (plist-get (car (last selected)) :position))
+                           after)
                :next (and selected
                           (or truncated (= (length rows) limit))
                           (plist-get (car (last selected)) :position))))))
+    ('board-visible-window
+     (let* ((board-id (plist-get body :board-id))
+            (row (e-board-storage-sqlite-worker--board-row board-id))
+            (generation (or (plist-get body :generation)
+                            (e-board-storage-sqlite-worker--column row 1)))
+            (through (e-board-storage-sqlite-worker--column row 3))
+            (limit (min 1024 (max 1 (or (plist-get body :limit) 64))))
+            (rows
+             (sqlite-select
+              e-board-storage-sqlite-worker--database
+              "SELECT position,payload,LENGTH(payload),source_kind,source_key,source_hash FROM board_records WHERE board_id=? AND generation=? AND position<=? AND record_kind IN ('input','output') ORDER BY position DESC LIMIT ?"
+              (vector board-id generation through limit)))
+            (bytes 0) selected truncated)
+       ;; Prefer the newest complete presentation rows when the byte bound is
+       ;; tighter than the count bound, then restore canonical ascending order.
+       (catch 'full
+         (dolist (current rows)
+           (let ((row-bytes
+                  (e-board-storage-sqlite-worker--column current 2)))
+             (when (and selected
+                        (> (+ bytes row-bytes)
+                           e-board-storage-sqlite-worker-page-byte-limit))
+               (setq truncated t)
+               (throw 'full nil))
+             (cl-incf bytes row-bytes)
+             (push
+              (list :position
+                    (e-board-storage-sqlite-worker--column current 0)
+                    :record
+                    (e-board-storage-sqlite-worker--value
+                     (e-board-storage-sqlite-worker--column current 1))
+                    :source
+                    (and (e-board-storage-sqlite-worker--column current 3)
+                         (list
+                          :kind
+                          (intern (e-board-storage-sqlite-worker--column
+                                   current 3))
+                          :key
+                          (e-board-storage-sqlite-worker--value
+                           (e-board-storage-sqlite-worker--column current 4))
+                          :hash
+                          (e-board-storage-sqlite-worker--column current 5))))
+              selected))))
+       (list :records selected :bytes bytes :generation generation
+             :through through :cursor through
+             :truncated (and truncated t))))
+    ('board-orchestration-run
+     (let* ((board-id (plist-get body :board-id))
+            (run-id (plist-get body :run-id))
+            (limit (min 1024 (max 1 (or (plist-get body :limit) 256))))
+            (rows
+             (sqlite-select
+              e-board-storage-sqlite-worker--database
+              (concat
+               "SELECT r.position,r.payload FROM board_records r "
+               "JOIN board_record_attributes a ON a.board_id=r.board_id "
+               "AND a.generation=r.generation AND a.position=r.position "
+               "WHERE r.board_id=? AND r.generation=(SELECT generation FROM boards WHERE board_id=?) "
+               "AND r.record_kind='fact' AND a.attribute_key=? AND a.attribute_value=? "
+               "ORDER BY r.position LIMIT ?")
+              (vector board-id board-id
+                      (e-board-storage-sqlite-worker--sql-value
+                       :orchestration-run-id)
+                      (e-board-storage-sqlite-worker--sql-value run-id)
+                      (1+ limit))))
+            (truncated (> (length rows) limit)))
+       (list :run-id run-id
+             :records
+             (mapcar
+              (lambda (row)
+                (list :position
+                      (e-board-storage-sqlite-worker--column row 0)
+                      :record
+                      (e-board-storage-sqlite-worker--value
+                       (e-board-storage-sqlite-worker--column row 1))))
+              (if truncated (cl-subseq rows 0 limit) rows))
+             :truncated truncated)))
+    ('board-orchestration-runs
+     (let* ((board-id (plist-get body :board-id))
+            (run-limit (min 32 (max 1 (or (plist-get body :limit) 32))))
+            (row-limit 4096)
+            (rows
+             (sqlite-select
+              e-board-storage-sqlite-worker--database
+              (concat
+               "SELECT r.position,r.payload FROM board_records r "
+               "WHERE r.board_id=? AND r.generation=(SELECT generation FROM boards WHERE board_id=?) "
+               "AND r.record_kind='fact' AND EXISTS "
+               "(SELECT 1 FROM board_record_tags t WHERE t.board_id=r.board_id "
+               "AND t.generation=r.generation AND t.position=r.position AND t.tag=?) "
+               "ORDER BY r.position DESC LIMIT ?")
+              (vector board-id board-id
+                      (e-board-storage-sqlite-worker--sql-value 'orchestration)
+                      row-limit)))
+            (selected-run-ids (make-hash-table :test 'equal))
+            selected (run-count 0))
+       ;; Scan newest-first until the requested number of manifest boundaries
+       ;; is complete, then restore canonical order for the pure reducer.
+       (catch 'complete
+         (dolist (row rows)
+           (let* ((record
+                   (e-board-storage-sqlite-worker--value
+                    (e-board-storage-sqlite-worker--column row 1)))
+                  (attributes (plist-get record :attributes))
+                  (run-id (plist-get attributes :orchestration-run-id))
+                  (type (plist-get attributes :orchestration-type)))
+             (when (or (gethash run-id selected-run-ids)
+                       (< run-count run-limit))
+               (puthash run-id t selected-run-ids)
+               (push (list :position
+                           (e-board-storage-sqlite-worker--column row 0)
+                           :record record)
+                     selected))
+             (when (equal type "manifest")
+               (cl-incf run-count)
+               (when (>= run-count run-limit)
+                 (throw 'complete nil))))))
+       (list :records selected
+             :run-count run-count
+             :truncated (and (= (length rows) row-limit)
+                             (< run-count run-limit)))))
     ('board-routing-get
      (when-let* ((row (car (sqlite-select
                             e-board-storage-sqlite-worker--database

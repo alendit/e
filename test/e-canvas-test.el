@@ -43,6 +43,62 @@
         (when (derived-mode-p 'e-chat-mode)
           (kill-buffer buffer))))))
 
+(ert-deftest e-canvas-test-new-persistent-session-defers-dependent-mutations-until-admission ()
+  "Canvas attachment and metadata wait for the new-session commit acknowledgement."
+  (let* ((creation
+          (e-work-start
+           (e-work-spec-create
+            :id "canvas-test-pending-create" :execution 'cooperative
+            :interactive-policy 'async :owner 'e-canvas-test
+            :runner (lambda (_handle _arguments _context) :deferred))
+           nil))
+         (source (generate-new-buffer " *e-canvas-causal-source*"))
+         (chat (generate-new-buffer " *e-canvas-causal-chat*"))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         calls
+         (kind
+          (e-canvas-kind-create
+           :name "causal-canvas"
+           :harness-function (lambda (_buffer) harness)
+           :prepare-buffer-function #'ignore
+           :prepare-harness-function (lambda (value _buffer _options) value)
+           :attachment-function
+           (lambda (_buffer)
+             (push 'attachment calls)
+             '(:uri "buffer://causal" :canvas t))
+           :session-reference-function (lambda (&rest _) nil)
+           :session-matches-function (lambda (&rest _) nil)
+           :initialize-session-function
+           (lambda (_harness _session-id _buffer _options)
+             (push 'initialize calls))
+           :bind-session-function
+           (lambda (_harness _session-id _buffer _options)
+             (push 'bind calls))
+           :present-session-function
+           (lambda (_buffer returned-chat _display)
+             (push 'present calls)
+             returned-chat))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat-open)
+                   (lambda (&rest _arguments)
+                     (with-current-buffer chat
+                       (setq-local e-chat--session-readiness-work creation))
+                     chat))
+                  ((symbol-function 'e-chat-session-attach-context)
+                   (lambda (&rest _arguments)
+                     (push 'attach calls))))
+          (should (eq (e-canvas--create-and-open-session
+                       kind harness source nil t)
+                      chat))
+          (should (equal (reverse (copy-sequence calls))
+                         '(attachment bind present)))
+          (e-work-finish creation '(:session-id "causal-session"))
+          (should (equal (reverse (copy-sequence calls))
+                         '(attachment bind present attach initialize))))
+      (when (buffer-live-p source) (kill-buffer source))
+      (when (buffer-live-p chat) (kill-buffer chat)))))
+
 (ert-deftest e-canvas-test-open-current-buffer-creates-canvas-session ()
   "Opening from the current buffer creates a chat session with canvas context."
   (let ((harness (e-canvas-test--harness)))
@@ -191,11 +247,11 @@
           (let ((e-chat-default-harness-id :canvas-test))
             (e-harness-registry-register :canvas-test harness)
             (let* ((binding
-                    (e-chat-service-create-board
+                    (e-chat-service-create-ephemeral-board
                      :harness harness :id "target-session"
                      :metadata '(:name "Canvas Owner")))
                    (board (e-chat-service-binding-board binding)))
-              (e-chat-service-create-participant
+              (e-chat-service-create-ephemeral-participant
                board harness :id "private-participant"
                :metadata '(:name "Private Participant"))
               (cl-letf (((symbol-function 'completing-read)

@@ -34,6 +34,44 @@
 
 (defvar e-modernchat-test--project-action-result nil)
 
+(defun e-modernchat-test--pending-admission (id)
+  "Return a started admission work named ID that the test settles later."
+  (e-work-start
+   (e-work-spec-create
+    :id id :execution 'cooperative :interactive-policy 'async
+    :owner 'e-modernchat-test
+    :runner (lambda (&rest _arguments) :deferred))
+   nil))
+
+(ert-deftest e-modernchat-test-send-surfaces-admission-failure-and-cancel ()
+  "Modern chat retains one bounded visible admission terminal activity."
+  (dolist (case '((failed . input-admission-failed)
+                  (cancelled . input-admission-cancelled)))
+    (with-temp-buffer
+      (setq-local e-modernchat-harness 'harness)
+      (setq-local e-modernchat-session-id "session")
+      (let ((work (e-modernchat-test--pending-admission
+                   (format "modernchat-%s" (car case))))
+            scheduled)
+        (cl-letf (((symbol-function 'e-chat-service-submit-session)
+                   (lambda (&rest _arguments) work))
+                  ((symbol-function 'e-modernchat--schedule-push)
+                   (lambda (&optional _buffer) (setq scheduled t))))
+          (e-modernchat--handle-ui-action
+           '((action . "send-message") (text . "hello")))
+          (pcase (car case)
+            ('failed
+             (e-work-fail work '(e-board-storage-error "write rejected")))
+            ('cancelled (e-work-cancel work)))
+          (should scheduled)
+          (should (eq (plist-get e-modernchat--first-admission-failure
+                                 :event-type)
+                      (cdr case)))
+          (should (stringp
+                   (plist-get
+                    (plist-get e-modernchat--first-admission-failure :payload)
+                    :summary))))))))
+
 (defun e-chat-service-test--session-ids (harness)
   "Return user-facing root session ids from HARNESS."
   (mapcar (lambda (session) (plist-get session :id))
@@ -62,19 +100,19 @@
 
 (defun e-modernchat-test--post-board-output (harness session-id id content)
   "Post one board-visible test output and drain its bounded projection page."
-  (let* ((binding (e-chat-service-ensure-binding harness session-id))
+  (let* ((binding (e-chat-service-ensure-ephemeral-binding harness session-id))
          (board (e-board-registry-board-source-board
                  (e-chat-service-binding-board binding))))
     (e-board-post-output
      board :id id :author "test" :tags '(main) :content content
      :source-output-key
      (list 'test session-id (e-board-message-count board)))
-    (e-chat-service-drain-binding binding)))
+    (e-chat-service-drain-ephemeral-binding binding)))
 
 (ert-deftest e-chat-service-test-board-output-identifies-terminal-presentation ()
   "A board output tells shells that the producing turn has already finished."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session
+         (session (e-chat-service-create-ephemeral-session
                    :harness harness :id "terminal-output"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (board (e-board-registry-board-source-board
@@ -118,7 +156,7 @@
 (ert-deftest e-chat-service-test-board-reasoning-is-snapshot-content ()
   "A coalesced board reasoning publication is not a raw appendable delta."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session
+         (session (e-chat-service-create-ephemeral-session
                    :harness harness :id "reasoning-snapshot"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (board (e-board-registry-board-source-board
@@ -145,7 +183,7 @@
 (ert-deftest e-chat-service-test-board-curation-reaches-modernchat-safe-stubs ()
   "Service transports a Board curation and ModernChat preserves its identity."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session
+         (session (e-chat-service-create-ephemeral-session
                    :harness harness :id "curation-service"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (registry-board (e-chat-service-binding-board binding))
@@ -172,7 +210,7 @@
                     (:disposition erased :source-kind "tool-result"
                      :tool-name "bash")))
      :source-activity-key (list participant-id 1 2))
-    (e-chat-service-drain-binding binding)
+    (e-chat-service-drain-ephemeral-binding binding)
     (let* ((event (car (e-chat-service-activity-events
                         harness "curation-service")))
            (dto (e-modernchat-view-model-activity event)))
@@ -398,7 +436,7 @@ messages so the transcript reads as one clean answer."
     (let* ((harness (e-harness-create
                      :backend (e-backend-create :name "noop")
                      :enabled-layer-ids nil))
-           (session (e-chat-service-create-session :harness harness :id "s1"))
+           (session (e-chat-service-create-ephemeral-session :harness harness :id "s1"))
            (binding (e-chat-service-binding harness (plist-get session :id))))
       (cl-letf (((symbol-function 'e-board-runtime-post-input)
                  (lambda (board &rest args)
@@ -412,7 +450,7 @@ messages so the transcript reads as one clean answer."
                     :content (plist-get args :content)
                     :reference (plist-get args :reference)
                     :source-input-key (plist-get args :source-input-key)))))
-        (should (stringp
+        (should (e-work-handle-p
                  (e-chat-service-submit-session
                   harness "s1" "hello" :references '(r1) :metadata '(:m t))))
         (should (eq (car called) (e-chat-service-binding-board binding)))
@@ -445,7 +483,7 @@ messages so the transcript reads as one clean answer."
            (harness (e-harness-create :enabled-layer-ids nil)))
       (e-harness-create-session harness :id "pre-board")
       (should-error
-       (e-chat-service-open-board board harness "pre-board")
+       (e-chat-service-open-ephemeral-board board harness "pre-board")
        :type 'e-session-missing)
       (e-harness-test-create-board-session
        harness :id "one" :board-id "shared"
@@ -453,14 +491,14 @@ messages so the transcript reads as one clean answer."
       (e-harness-test-create-board-session
        harness :id "two" :board-id "shared"
        :principal (e-board-registry-board-principal board))
-      (let* ((one (e-chat-service-open-board
+      (let* ((one (e-chat-service-open-ephemeral-board
                    board harness "one"
                    :participant-id "one"
                    :pickup-selector '(:tags (main))
                    :observer-selector '(:tags (main))
                    :default-tags '(main)
                    :default-to nil))
-             (_two (e-chat-service-open-board
+             (_two (e-chat-service-open-ephemeral-board
                     board harness "two"
                     :participant-id "two"
                     :pickup-selector '(:tags (main))
@@ -470,9 +508,21 @@ messages so the transcript reads as one clean answer."
              (source (e-board-registry-board-source-board board)))
         (e-board-registry-install-subscription
          board "two" '(:tags (review)) :id "two-review")
-        (let ((tagged (e-chat-service-post one "review" :tags '(review)))
-              (exact (e-chat-service-post one "self" :to "one"))
-              (unrouted (e-chat-service-post one "nobody" :tags '(missing))))
+        (let ((tagged
+               (plist-get
+                (e-work-status
+                 (e-chat-service-post one "review" :tags '(review)))
+                :result))
+              (exact
+               (plist-get
+                (e-work-status
+                 (e-chat-service-post one "self" :to "one"))
+                :result))
+              (unrouted
+               (plist-get
+                (e-work-status
+                 (e-chat-service-post one "nobody" :tags '(missing)))
+                :result)))
           (while (e-board-input-classifications source)
             (e-board-runtime--drain-input-routing
              board (lambda () (e-board-drain-input-classifications source))))
@@ -498,8 +548,8 @@ messages so the transcript reads as one clean answer."
                                           (string< (car left) (car right))))))
     (e-board-registry-create :id "board-a")
     (e-board-registry-create :id "board-b")
-    (let* ((first (e-chat-service-list-boards-page :limit 1))
-           (second (e-chat-service-list-boards-page
+    (let* ((first (e-chat-service-list-ephemeral-boards-page :limit 1))
+           (second (e-chat-service-list-ephemeral-boards-page
                     :after (plist-get first :next-after) :limit 1)))
       (should (= (length (plist-get first :boards)) 1))
       (should (= (length (plist-get second :boards)) 1))
@@ -508,11 +558,11 @@ messages so the transcript reads as one clean answer."
 (ert-deftest e-chat-service-test-root-catalog-uses-production-board-roles ()
   "Production constructors durably distinguish a root from its participant."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (binding (e-chat-service-create-board
+         (binding (e-chat-service-create-ephemeral-board
                    :harness harness :id "role-root"))
          (board (e-chat-service-binding-board binding))
          (participant
-          (e-chat-service-create-participant
+          (e-chat-service-create-ephemeral-participant
            board harness :id "role-participant")))
     (should
      (equal (plist-get
@@ -538,7 +588,7 @@ messages so the transcript reads as one clean answer."
     (e-session-create store :id session-id)
     (e-session-declare-board-state
      store session-id "board-owner" "legacy-board" "participant")
-    (should-error (e-chat-service-ensure-binding harness session-id)
+    (should-error (e-chat-service-ensure-ephemeral-binding harness session-id)
                   :type 'e-session-error)
     (should-not (gethash "legacy-board" e-board-registry--boards))
     (should (equal (e-session-board-association
@@ -566,7 +616,7 @@ messages so the transcript reads as one clean answer."
                (lambda (_board _harness _session-id &rest arguments)
                  (setq captured arguments)
                  :captured)))
-      (should (eq (e-chat-service-ensure-binding harness session-id)
+      (should (eq (e-chat-service-ensure-ephemeral-binding harness session-id)
                   :captured)))
     (should (equal (plist-get captured :participant-id) "ptc-restored"))
     (should (equal (plist-get captured :pickup-selector)
@@ -608,18 +658,18 @@ messages so the transcript reads as one clean answer."
                    (lambda (_board _harness _session-id &rest arguments)
                      (setq captured arguments)
                      :captured)))
-          (should (eq (e-chat-service-open-board
+          (should (eq (e-chat-service-open-ephemeral-board
                        canonical-board harness "canonical")
                       :captured))
           (should (equal (plist-get captured :default-tags) '(main)))
-          (should (eq (e-chat-service-open-board
+          (should (eq (e-chat-service-open-ephemeral-board
                        owner-board harness "legacy-owner")
                       :captured))
           ;; A noncanonical roleless association has no safe implicit policy.
           ;; A complete caller-supplied policy is the one explicit upgrade
           ;; permitted for that otherwise ambiguous legacy shape.
           (should (eq
-                   (e-chat-service-open-board
+                   (e-chat-service-open-ephemeral-board
                     explicit-roleless-board harness "explicit-roleless"
                     :participant-id "explicit-roleless-id"
                     :pickup-selector '(:tags (private))
@@ -633,13 +683,13 @@ messages so the transcript reads as one clean answer."
                                (e-session-local-state store "explicit-roleless"))
                               :participant-id)
                    "explicit-roleless-id"))
-          (should-error (e-chat-service-open-board
+          (should-error (e-chat-service-open-ephemeral-board
                          ambiguous-board harness "ambiguous")
                         :type 'e-session-error)
           ;; A participant may be admitted only with every explicit field.  The
           ;; resolved value is persisted before the attachment boundary runs.
           (should (eq
-                   (e-chat-service-open-board
+                   (e-chat-service-open-ephemeral-board
                     participant-board harness "legacy-participant"
                     :participant-id "private-admitted"
                     :pickup-selector '(:tags (private))
@@ -655,7 +705,7 @@ messages so the transcript reads as one clean answer."
             (should (equal (plist-get policy :default-tags) '(private))))
           ;; Partial upgrade input is rejected without adding a policy.
           (should-error
-           (e-chat-service-open-board
+           (e-chat-service-open-ephemeral-board
             partial-board harness "partial-participant"
             :participant-id "private-partial")
            :type 'e-session-error)
@@ -675,7 +725,7 @@ messages so the transcript reads as one clean answer."
              :default-tags (private)
              :default-to "durable-id"))
           (should-error
-           (e-chat-service-open-board
+           (e-chat-service-open-ephemeral-board
             durable-board harness "durable-participant"
             :participant-id "other-id")
            :type 'e-session-error)
@@ -693,11 +743,11 @@ messages so the transcript reads as one clean answer."
                  :id "participant-atomic-board" :principal "board-owner")))
     ;; Board resolution and policy validation both precede session creation.
     (should-error
-     (e-chat-service-create-participant
+     (e-chat-service-create-ephemeral-participant
       "missing-board" harness :id "invalid-board-session")
      :type 'e-board-registry-missing)
     (should-error
-     (e-chat-service-create-participant
+     (e-chat-service-create-ephemeral-participant
       board harness :id "invalid-selector-session"
       :pickup-selector '(:predicate (lambda (_message) t)))
      :type 'e-session-error)
@@ -708,13 +758,13 @@ messages so the transcript reads as one clean answer."
     ;; A duplicate session id is rejected before a participant id is reserved.
     (e-session-create store :id "existing-session")
     (should-error
-     (e-chat-service-create-participant
+     (e-chat-service-create-ephemeral-participant
       board harness :id "existing-session" :participant-id "unused-id")
      :type 'e-session-duplicate)
     (should-not (gethash "unused-id"
                          (e-board-registry-board-participants board)))
     ;; An explicit participant collision is also preflighted.
-    (e-chat-service-create-participant
+    (e-chat-service-create-ephemeral-participant
      board harness :id "first-private" :participant-id "same-participant")
     ;; Successful admission publishes the participant event only after the
     ;; session declaration has crossed its durable boundary.
@@ -727,7 +777,7 @@ messages so the transcript reads as one clean answer."
                       "same-participant")))
         (e-board-events source-board))))
     (should-error
-     (e-chat-service-create-participant
+     (e-chat-service-create-ephemeral-participant
       board harness :id "second-private" :participant-id "same-participant")
      :type 'e-board-registry-id-conflict)
     (should-error (e-session-local-state store "second-private")
@@ -737,7 +787,7 @@ messages so the transcript reads as one clean answer."
                (lambda (&rest _arguments)
                  (signal 'e-session-error (list "persist rejected")))))
       (should-error
-       (e-chat-service-create-participant
+       (e-chat-service-create-ephemeral-participant
         board harness :id "persist-failure" :participant-id "persist-id")
        :type 'e-session-error))
     (should-error (e-session-local-state store "persist-failure")
@@ -750,7 +800,7 @@ messages so the transcript reads as one clean answer."
                (lambda (&rest _arguments)
                  (signal 'e-session-error (list "commit rejected")))))
       (should-error
-       (e-chat-service-create-participant
+       (e-chat-service-create-ephemeral-participant
         board harness :id "commit-failure" :participant-id "commit-id")
        :type 'e-session-error))
     (should-error (e-session-local-state store "commit-failure")
@@ -769,7 +819,7 @@ messages so the transcript reads as one clean answer."
                (lambda (&rest _arguments)
                  (signal 'e-session-error (list "attachment rejected")))))
       (should-error
-       (e-chat-service-create-participant
+       (e-chat-service-create-ephemeral-participant
         board harness :id "attachment-failure" :participant-id "attach-id")
        :type 'e-session-error))
     (should-error (e-session-local-state store "attachment-failure")
@@ -782,10 +832,10 @@ messages so the transcript reads as one clean answer."
   "A participant cannot become a root by reusing the owner's id in its store."
   (let* ((owner-harness (e-harness-create :enabled-layer-ids nil))
          (participant-harness (e-harness-create :enabled-layer-ids nil))
-         (binding (e-chat-service-create-board
+         (binding (e-chat-service-create-ephemeral-board
                    :harness owner-harness :id "same-id"))
          (board (e-chat-service-binding-board binding)))
-    (e-chat-service-create-participant
+    (e-chat-service-create-ephemeral-participant
      board participant-harness :id "same-id")
     (should (equal (e-chat-service-test--session-ids owner-harness)
                    '("same-id")))
@@ -803,10 +853,10 @@ messages so the transcript reads as one clean answer."
                           :enabled-layer-ids nil :sessions writer-store))
          indexed-store)
     (unwind-protect
-        (let* ((binding (e-chat-service-create-board
+        (let* ((binding (e-chat-service-create-ephemeral-board
                          :harness writer-harness :id "indexed-root"))
                (board (e-chat-service-binding-board binding)))
-          (e-chat-service-create-participant
+          (e-chat-service-create-ephemeral-participant
            board writer-harness :id "indexed-participant")
           ;; This is the canonical pre-role representation already on disk.
           (e-session-create writer-store :id "legacy-root")
@@ -863,7 +913,7 @@ messages so the transcript reads as one clean answer."
         (e-chat-service--board-bindings (make-hash-table :test 'equal))
         good-events)
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding)))
       (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
         (let* ((good (e-chat-service-subscribe
@@ -917,7 +967,7 @@ messages so the transcript reads as one clean answer."
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding)))
       (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
           (let* ((subscription
@@ -953,7 +1003,7 @@ messages so the transcript reads as one clean answer."
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding))
            (source (e-board-registry-board-source-board board))
            (observer (e-chat-service-binding-observer binding)))
@@ -979,7 +1029,7 @@ messages so the transcript reads as one clean answer."
             (while (and (< calls 3)
                         (progn
                           (cl-incf calls)
-                          (e-chat-service-drain-binding binding))))
+                          (e-chat-service-drain-ephemeral-binding binding))))
             (should (= calls 1)))
           (let* ((new-observer (e-chat-service-binding-observer binding))
                  (main-client (e-chat-service-binding-client binding))
@@ -1015,13 +1065,13 @@ messages so the transcript reads as one clean answer."
             (should (memq binding
                           (gethash board-id e-chat-service--board-bindings)))
             (should (eq (e-chat-service-binding harness "main") binding))
-            (should (eq (e-chat-service-ensure-binding harness "main")
+            (should (eq (e-chat-service-ensure-ephemeral-binding harness "main")
                         binding))
             (should (equal (plist-get (plist-get stored-session
                                                  :board-session-state)
                                       :board-id)
                            board-id))
-            (should (stringp
+            (should (e-work-handle-p
                      (e-chat-service-submit-session
                       harness "main" "recovered")))))))))
 
@@ -1042,7 +1092,7 @@ messages so the transcript reads as one clean answer."
         (e-board-session-association--legacy-owners
          (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding))
            (source (e-board-registry-board-source-board board)))
       (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
@@ -1056,7 +1106,7 @@ messages so the transcript reads as one clean answer."
            source :id "detached-pending" :tags '(main) :content "pending"
            :source-fact-key '(test detached-main 1))
           (e-board-registry-detach-client board old-client-id)
-          (should-not (e-chat-service-drain-binding binding))
+          (should-not (e-chat-service-drain-ephemeral-binding binding))
           (let ((new-client (e-chat-service-binding-client binding))
                 (new-observer (e-chat-service-binding-observer binding))
                 (board-id (e-board-registry-board-id board)))
@@ -1077,9 +1127,9 @@ messages so the transcript reads as one clean answer."
             (should (eq (e-chat-service-binding harness "main") binding))
             (should (memq binding
                           (gethash board-id e-chat-service--board-bindings)))
-            (should (eq (e-chat-service-ensure-binding harness "main")
+            (should (eq (e-chat-service-ensure-ephemeral-binding harness "main")
                         binding))
-            (should (stringp
+            (should (e-work-handle-p
                      (e-chat-service-submit-session
                       harness "main" "recovered-after-detach")))))))))
 
@@ -1100,7 +1150,7 @@ messages so the transcript reads as one clean answer."
         (e-board-session-association--legacy-owners
          (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding))
            (source (e-board-registry-board-source-board board)))
       (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
@@ -1115,17 +1165,17 @@ messages so the transcript reads as one clean answer."
             (e-board-set-observer-state source
                                          (e-board-observer-id observer)
                                          'expired)
-            (should-not (e-chat-service-drain-binding binding))
+            (should-not (e-chat-service-drain-ephemeral-binding binding))
             (let ((replacement (e-chat-service-binding-observer binding)))
               (should (not (eq replacement observer)))
               (should (eq (e-board-observer-state replacement) 'active))
               (should (>= (e-board-observer-next-seq replacement)
                           (1- floor)))
               (should (eq (e-chat-service-binding harness "main") binding))
-              (should (eq (e-chat-service-ensure-binding harness "main")
+              (should (eq (e-chat-service-ensure-ephemeral-binding harness "main")
                           binding))
               (should (e-chat-service-subscription-active-p subscription))
-              (should (stringp
+              (should (e-work-handle-p
                        (e-chat-service-submit-session
                         harness "main" "retained-recovery"))))))))))
 
@@ -1150,7 +1200,7 @@ messages so the transcript reads as one clean answer."
          (lambda (function)
            (push function close-callbacks))))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "close"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "close"))
            (board (e-chat-service-binding-board binding))
            (board-id (e-board-registry-board-id board)))
       (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _arguments) nil)))
@@ -1184,10 +1234,10 @@ messages so the transcript reads as one clean answer."
           ;; releases the process-local board.  Public ensure must rebuild a
           ;; fresh board/runtime binding instead of leaking session-busy.
           (let ((replacement
-                 (e-chat-service-ensure-binding harness "close")))
+                 (e-chat-service-ensure-ephemeral-binding harness "close")))
             (should (e-chat-service-binding-p replacement))
             (should (not (eq replacement binding)))
-            (should (stringp
+            (should (e-work-handle-p
                      (e-chat-service-submit-session
                       harness "close" "after-completed-close")))))))))
 
@@ -1206,7 +1256,7 @@ messages so the transcript reads as one clean answer."
         (e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
         (e-chat-service--board-bindings (make-hash-table :test 'equal)))
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "main"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "main"))
            (board (e-chat-service-binding-board binding))
            (subscription (e-chat-service-subscribe harness "main" #'ignore)))
       (e-board-post-fact
@@ -1225,7 +1275,7 @@ messages so the transcript reads as one clean answer."
 (ert-deftest e-chat-service-test-replay-is-bounded-board-derived-and-causal ()
   "Replay never reads private transcripts and keeps participant-local turns distinct."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session :harness harness :id "replay"))
+         (session (e-chat-service-create-ephemeral-session :harness harness :id "replay"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (registry-board (e-chat-service-binding-board binding))
          (board (e-board-registry-board-source-board registry-board))
@@ -1248,7 +1298,7 @@ messages so the transcript reads as one clean answer."
      board :id "answer" :author (format "participant:%s" participant)
      :subject-participant-id participant :source-turn-id "same-turn"
      :tags '(main) :content "answer" :source-output-key (list participant 1 1))
-    (e-chat-service-drain-binding binding)
+    (e-chat-service-drain-ephemeral-binding binding)
     (cl-letf (((symbol-function 'e-harness-messages)
                (lambda (&rest _) (error "private transcript read")))
               ((symbol-function 'e-session-local-activity-events)
@@ -1281,7 +1331,7 @@ messages so the transcript reads as one clean answer."
 (ert-deftest e-chat-service-test-state-seeds-live-attached-turn-before-replay ()
   "A live attached turn is visible before any retained turn-started event."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session
+         (session (e-chat-service-create-ephemeral-session
                    :harness harness :id "live-state"))
          (session-id (plist-get session :id))
          (binding (e-chat-service-binding harness session-id))
@@ -1303,7 +1353,7 @@ messages so the transcript reads as one clean answer."
 (ert-deftest e-chat-service-test-projection-ring-evicts-at-hard-cap ()
   "History/live overlap cannot grow one presentation projection without bound."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session :harness harness :id "bounded"))
+         (session (e-chat-service-create-ephemeral-session :harness harness :id "bounded"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (board (e-board-registry-board-source-board
                  (e-chat-service-binding-board binding))))
@@ -1315,7 +1365,7 @@ messages so the transcript reads as one clean answer."
     (while (< (e-board-observer-next-index
                (e-chat-service-binding-observer binding))
               (e-board-message-count board))
-      (e-chat-service-drain-binding binding))
+      (e-chat-service-drain-ephemeral-binding binding))
     (let ((messages (e-chat-service-messages harness "bounded")))
       (should (= (length messages) e-chat-service-projection-capacity))
       (should (equal (plist-get (car messages) :id) "out-005"))
@@ -1325,7 +1375,7 @@ messages so the transcript reads as one clean answer."
   "A view receives bounded history once and only later messages live."
   (e-board-e2e-reset-runtime)
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session :harness harness :id "view"))
+         (session (e-chat-service-create-ephemeral-session :harness harness :id "view"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (board (e-board-registry-board-source-board
                  (e-chat-service-binding-board binding)))
@@ -1359,7 +1409,7 @@ messages so the transcript reads as one clean answer."
 (ert-deftest e-chat-service-test-activity-tail-cannot-starve-message-snapshot ()
   "A noisy activity tail cannot evict the durable conversation from a view."
   (let* ((harness (e-harness-create :enabled-layer-ids nil))
-         (session (e-chat-service-create-session :harness harness :id "mixed-view"))
+         (session (e-chat-service-create-ephemeral-session :harness harness :id "mixed-view"))
          (binding (e-chat-service-binding harness (plist-get session :id)))
          (board (e-board-registry-board-source-board
                  (e-chat-service-binding-board binding))))
@@ -1413,12 +1463,14 @@ messages so the transcript reads as one clean answer."
                        :items '((:type assistant-message :content "answer")
                                 (:type done :reason stop)))
              :enabled-layer-ids nil))
-           (session (e-chat-service-create-session :harness harness :id "chat-e2e"))
+           (session (e-chat-service-create-ephemeral-session :harness harness :id "chat-e2e"))
            (session-id (plist-get session :id))
            (binding (e-chat-service-binding harness session-id)))
       (e-chat-service-subscribe harness session-id
                                 (lambda (event) (push event events)))
-      (let ((input-id (e-chat-service-submit-session harness session-id "question")))
+      (let ((input-admission
+             (e-chat-service-submit-session harness session-id "question")))
+        (should (e-work-handle-p input-admission))
         (e-board-runtime--drain-input-routing
          (e-chat-service-binding-board binding)
          (lambda ()
@@ -1458,8 +1510,9 @@ messages so the transcript reads as one clean answer."
                                :role)
                               'assistant)))
                    events))
-          (should (cl-find input-id events :key (lambda (event)
-                                                  (plist-get event :turn-id)))))
+          (should (cl-find-if (lambda (event)
+                                (plist-get event :turn-id))
+                              events)))
         (let* ((snapshot (e-modernchat-view-model-snapshot harness session-id))
                (session-view (cdr (assq 'session snapshot)))
                (composer (cdr (assq 'composer snapshot))))
@@ -1535,7 +1588,7 @@ messages so the transcript reads as one clean answer."
            (_capability
             (e-harness-activate-capability
              harness (e-bayesian-reasoning-capability-create)))
-           (session (e-chat-service-create-session
+           (session (e-chat-service-create-ephemeral-session
                      :harness harness :id "bayesian-board-e2e"))
            (session-id (plist-get session :id))
            (binding (e-chat-service-binding harness session-id))
@@ -1560,8 +1613,8 @@ messages so the transcript reads as one clean answer."
           (e-board-runtime--drain-input-routing
            board (lambda () (e-board-drain-input-classifications source)))
           (e-board-runtime--drain-pickups)
-          (e-chat-service-drain-binding binding)))
-      (e-chat-service-drain-binding binding)
+          (e-chat-service-drain-ephemeral-binding binding)))
+      (e-chat-service-drain-ephemeral-binding binding)
       (let ((inputs (cl-remove-if-not
                      (lambda (message)
                        (eq (e-board-message-kind message) 'input))
@@ -1630,7 +1683,7 @@ messages so the transcript reads as one clean answer."
         idle-callback
         close-callbacks)
     (let* ((harness (e-harness-create :enabled-layer-ids nil))
-           (binding (e-chat-service-create-board :harness harness :id "idle"))
+           (binding (e-chat-service-create-ephemeral-board :harness harness :id "idle"))
            (board (e-chat-service-binding-board binding))
            (board-id (e-board-registry-board-id board))
            (e-board-registry-close-scheduler
@@ -1707,7 +1760,7 @@ messages so the transcript reads as one clean answer."
               (cl-letf (((symbol-function 'run-at-time)
                          (lambda (&rest _arguments) nil)))
                 (setq binding
-                      (e-chat-service-create-board
+                      (e-chat-service-create-ephemeral-board
                        :harness harness :id session-id)
                       board (e-chat-service-binding-board binding)
                       source (e-board-registry-board-source-board board)
@@ -1747,7 +1800,7 @@ messages so the transcript reads as one clean answer."
                           :principal principal)))
                   ('external-closing
                    (e-board-registry-close board)))
-                (should-not (e-chat-service-drain-binding binding))
+                (should-not (e-chat-service-drain-ephemeral-binding binding))
                 (e-chat-service--retire-binding binding)
                 (should (eq (e-chat-service-binding-lifecycle-state binding)
                             'retired))
@@ -1810,10 +1863,10 @@ messages so the transcript reads as one clean answer."
                   (e-board-registry-authorize-principal
                    board "terminal-admin" principal 'owner))
                 (let ((restored
-                       (e-chat-service-ensure-binding harness session-id)))
+                       (e-chat-service-ensure-ephemeral-binding harness session-id)))
                   (should (e-chat-service-binding-p restored))
                   (should (not (eq restored binding)))
-                  (should (stringp
+                  (should (e-work-handle-p
                            (e-chat-service-submit-session
                             harness session-id "after-terminal-retirement")))))))
       (e-harness-turn-state-reset-aggregate))))
@@ -1846,7 +1899,7 @@ messages so the transcript reads as one clean answer."
                  (lambda (_seconds _repeat function &rest arguments)
                    (push (cons function arguments) callbacks)
                    nil)))
-        (setq binding (e-chat-service-create-board
+        (setq binding (e-chat-service-create-ephemeral-board
                        :harness harness :id "queued-retirement")
               board (e-chat-service-binding-board binding))
         (e-chat-service-subscribe harness "queued-retirement" #'ignore)
@@ -1914,7 +1967,7 @@ messages so the transcript reads as one clean answer."
                        (lambda (_seconds _repeat function &rest arguments)
                          (push (cons function arguments) callbacks)
                          nil)))
-              (setq binding (e-chat-service-create-board
+              (setq binding (e-chat-service-create-ephemeral-board
                              :harness harness :id "external-close-callback")
                     board (e-chat-service-binding-board binding)
                     source (e-board-registry-board-source-board board)
@@ -1992,7 +2045,7 @@ messages so the transcript reads as one clean answer."
         (cl-letf (((symbol-function 'run-at-time)
                    (lambda (&rest _arguments) nil)))
           (let* ((harness (e-harness-create :enabled-layer-ids nil))
-                 (binding (e-chat-service-create-board
+                 (binding (e-chat-service-create-ephemeral-board
                            :harness harness :id "retry-retirement"))
                  (board (e-chat-service-binding-board binding))
                  (participant
@@ -2037,11 +2090,13 @@ messages so the transcript reads as one clean answer."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
         (e-board-registry--id-sequence 0)
-        (e-chat-service--continuation-reconciling (make-hash-table :test 'equal)))
+        (e-chat-service--continuation-reconciling (make-hash-table :test 'equal))
+        (e-chat-service--continuation-admissions (make-hash-table :test 'equal)))
     (let* ((runtime-board (e-board-registry-create :id "continuation-board" :principal "test"))
            (board (e-board-registry-board-source-board runtime-board))
            (queued nil)
-           (attempts 0))
+           (attempts 0)
+           admission)
       (e-board-orchestration-publish-fact
        board
        '(:version 1 :type manifest :idempotency-key "manifest"
@@ -2060,7 +2115,9 @@ messages so the transcript reads as one clean answer."
                    (setq attempts (1+ attempts))
                    (if (= attempts 1)
                        (error "publication interrupted")
-                     "continuation-message"))))
+                     (setq admission
+                           (e-modernchat-test--pending-admission
+                            "continuation-admission"))))))
         ;; This call models recovery after a restart that found the terminal
         ;; report but no continuation acknowledgement.
         (e-chat-service-reconcile-board-continuation runtime-board 'test)
@@ -2070,7 +2127,18 @@ messages so the transcript reads as one clean answer."
                                :state)
                     'failed))
         (e-chat-service-reconcile-board-continuation runtime-board 'test)
-        ;; A later restart finds the published acknowledgement and does not
+        (should-not
+         (eq (plist-get (plist-get
+                         (e-board-orchestration-run-projection board "run-1")
+                         :continuation)
+                        :state)
+             'published))
+        ;; Re-entry while the exact admission is live cannot enqueue a second
+        ;; continuation, and enqueue alone cannot claim durable publication.
+        (e-chat-service-reconcile-board-continuation runtime-board 'test)
+        (should (= attempts 2))
+        (e-work-finish admission '(:status posted))
+        ;; A later restart finds the commit-backed acknowledgement and does not
         ;; submit another input.
         (e-chat-service-reconcile-board-continuation runtime-board 'test))
       (should (= attempts 2))
@@ -2086,7 +2154,8 @@ messages so the transcript reads as one clean answer."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (e-board-registry--boards (make-hash-table :test 'equal))
         (e-board-registry--id-sequence 0)
-        (e-chat-service--continuation-reconciling (make-hash-table :test 'equal)))
+        (e-chat-service--continuation-reconciling (make-hash-table :test 'equal))
+        (e-chat-service--continuation-admissions (make-hash-table :test 'equal)))
     (let* ((runtime-board
             (e-board-registry-create :id "continuation-owner" :principal "test"))
            (board (e-board-registry-board-source-board runtime-board))
@@ -2106,7 +2175,8 @@ messages so the transcript reads as one clean answer."
       (cl-letf (((symbol-function 'e-chat-service-queue-session)
                  (lambda (_harness session-id _prompt &rest _arguments)
                    (setq queued-session session-id)
-                   "continuation-message")))
+                   (e-chat-service--finished-admission-work
+                    session-id "continuation-message"))))
         (e-chat-service-reconcile-board-continuation
          runtime-board 'test "canonical-owner"))
       (should (equal queued-session "canonical-owner"))
@@ -2228,7 +2298,7 @@ messages so the transcript reads as one clean answer."
                    (list (e-project-local--dynamic-capability project)
                          tools)))
                  (session
-                  (e-chat-service-create-session
+                  (e-chat-service-create-ephemeral-session
                    :harness harness
                    :id "coordinator"
                    :metadata (list :project-root project)))

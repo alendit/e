@@ -954,7 +954,9 @@ PROMPT forces completion even when only one/default instance exists."
   (condition-case nil
       (e-chat-session-context harness session-id)
     (e-session-missing
-     (e-chat--create-session harness session-id instance-id))))
+     (e-chat-service-create-ephemeral-session
+      :harness harness :id session-id
+      :metadata (e-chat--session-metadata instance-id)))))
 
 (defun e-chat--cancel-session-query-work ()
   "Cancel the request-scoped persistent SQLite view for this chat buffer."
@@ -997,11 +999,17 @@ PROMPT forces completion even when only one/default instance exists."
       (setq metadata (plist-put metadata :harness-instance-id instance-id)))
     metadata))
 
-(defun e-chat--create-session (harness &optional session-id instance-id)
-  "Create a chat session in HARNESS with SESSION-ID when non-nil."
-  (e-chat-service-create-session
-   :harness harness :id session-id
-   :metadata (e-chat--session-metadata instance-id)))
+(defun e-chat--start-session (harness &optional session-id instance-id metadata)
+  "Preallocate and asynchronously start one HARNESS chat session.
+
+Return detached identity plus the creation work.  The work deliberately
+settles only when SQLite atomically commits the first input with the session's
+root, Board association, and owner participant."
+  (let* ((session-id (or session-id (e-session-generate-id)))
+         (metadata (or metadata (e-chat--session-metadata instance-id)))
+         (work (e-chat-service-create-session-start
+                :harness harness :id session-id :metadata metadata)))
+    (list :id session-id :work work :metadata (copy-tree metadata t))))
 
 (defun e-chat--short-session-id (session-id)
   "Return a compact SESSION-ID for display."
@@ -1130,6 +1138,12 @@ context insertions from the chat buffer the user is looking at."
   (setq e-chat--event-subscription
         (e-chat-service-subscribe
          harness session-id (e-chat--event-consumer harness buffer))))
+
+(defun e-chat--subscribe-from-cursor (harness buffer session-id cursor)
+  "Subscribe BUFFER to canonical Board rows strictly after CURSOR."
+  (setq e-chat--event-subscription
+        (e-chat-service-subscribe-from-cursor
+         harness session-id cursor (e-chat--event-consumer harness buffer))))
 
 (defun e-chat--subscribe-view (harness buffer session-id)
   "Subscribe BUFFER and return SESSION-ID's matching bounded snapshot."
@@ -1494,13 +1508,16 @@ operation.  The facade retains only durable transcript and shell composition."
   (e-chat--render-event event))
 
 (cl-defun e-chat-open
-    (&key harness session-id new-session instance-id on-session-read-error)
+    (&key harness session-id new-session instance-id on-session-read-error
+          readiness-work metadata)
   "Attach and return an e chat buffer.
 HARNESS, SESSION-ID, and NEW-SESSION are injectable for presentation tests and
 reload.  INSTANCE-ID identifies a configured harness instance.
 ON-SESSION-READ-ERROR, when non-nil, receives an asynchronous bounded-read
-condition after the chat buffer renders it.  User-facing commands should call
-`e-chat-new' or `e-chat-resume'."
+condition after the chat buffer renders it.  READINESS-WORK is an already
+started participant admission supplied by a public Board-open operation;
+METADATA is its bounded optimistic header state.  User-facing commands should
+call `e-chat-new' or `e-chat-resume'."
   (let* ((instance (and (not harness)
                         instance-id
                         (e-harness-instance-get instance-id)))
@@ -1519,12 +1536,14 @@ condition after the chat buffer renders it.  User-facing commands should call
                (e-session-storage-sqlite-p
                 (e-chat-service-session-store chat-harness))))
          (session-metadata
-          (and creating-p (e-chat--session-metadata chat-instance-id)))
+          (or (and metadata (copy-tree metadata t))
+              (and creating-p (e-chat--session-metadata chat-instance-id))))
          (creation-work
-          (when creating-p
-            (e-chat-service-create-session-start
-             :harness chat-harness :id chat-session-id
-             :metadata session-metadata)))
+          (or readiness-work
+              (when creating-p
+                (e-chat-service-create-session-start
+                 :harness chat-harness :id chat-session-id
+                 :metadata session-metadata))))
          (buffer (or (e-chat--find-session-buffer
                       chat-session-id chat-harness chat-instance-id)
                      (get-buffer-create
@@ -1550,7 +1569,14 @@ condition after the chat buffer renders it.  User-facing commands should call
          (when (buffer-live-p buffer)
            (with-current-buffer buffer
              (if (eq (plist-get (e-work-status work) :state) 'finished)
-                 (e-chat-surface-set-status "idle" t)
+                 (progn
+                   ;; Atomic first-input admission installs the SQL binding.
+                   ;; Start the bounded view only after that commit; the
+                   ;; cursor crossing owns exactly-once canonical rendering.
+                   (unless e-chat--event-subscription
+                     (e-chat--subscribe-view
+                      chat-harness buffer chat-session-id))
+                   (e-chat-surface-set-status "idle" t))
                (let* ((error (plist-get (e-work-status work) :error))
                       (upgrade
                        (e-chat--runtime-store-upgrade-required-message error)))
@@ -1585,12 +1611,10 @@ condition after the chat buffer renders it.  User-facing commands should call
             (or (plist-get data :actual) "old")
             (or (plist-get data :required) "current"))))
 
-(cl-defun e-chat-create-session (&key harness metadata id)
-  "Create and return a chat session in HARNESS with METADATA and optional ID."
-  (e-chat-service-create-session
-   :harness (or harness (e-chat--default-harness))
-   :id id
-   :metadata metadata))
+(cl-defun e-chat-create-session-start (&key harness metadata id)
+  "Preallocate a chat session and return its detached id plus creation work."
+  (e-chat--start-session
+   (or harness (e-chat--default-harness)) id nil metadata))
 
 (cl-defun e-chat-submit-session
     (harness session-id prompt &key references delay metadata)
@@ -1624,6 +1648,33 @@ condition after the chat buffer renders it.  User-facing commands should call
   (append (list :source 'chat-composer
                 :submit-mode mode)
           (and references (list :references references))))
+
+(defun e-chat--watch-admission (buffer work intent)
+  "Surface failed or cancelled admission WORK for BUFFER and INTENT."
+  (unless (e-work-handle-p work)
+    (signal 'wrong-type-argument (list 'e-work-handle-p work)))
+  (e-work-on-settle
+   work
+   (lambda (settled)
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (let* ((status (e-work-status settled))
+                (state (plist-get status :state)))
+           (when (memq state '(failed cancelled))
+             (e-chat-surface-set-status
+              (format "%s admission %s"
+                      intent (if (eq state 'cancelled) "cancelled" "failed"))
+              t)
+             (let ((message
+                    (if (eq state 'cancelled)
+                        "SQLite admission cancelled"
+                      (e-work-error-message (plist-get status :error)))))
+               (e-chat--render-event
+                (list :type (if (eq state 'cancelled)
+                                'turn-cancelled
+                              'turn-failed)
+                      :turn-id nil
+                      :payload (list :admission t :error message)))))))))))
 
 (defun e-chat--failed-turn-target-at-point ()
   "Return failed turn target at point in a chat buffer, or nil."
@@ -1732,13 +1783,15 @@ HARNESS are internal test seams."
                            :source 'e-inspect-error
                            :source-session-id source-session-id
                            :source-turn-id source-turn-id))
-           (session (e-chat-create-session
-                     :harness source-harness
-                     :metadata metadata))
-           (new-session-id (plist-get session :id))
+           (new-session-id (e-session-generate-id))
            (prompt (e-chat--inspect-error-prompt detail))
            (reference (e-chat--inspect-error-reference detail prompt)))
-      (e-chat-open-session source-harness new-session-id t)
+      ;; Open and register the creation callback before the first input is
+      ;; admitted.  That callback installs the canonical SQL subscription
+      ;; before append settlement starts the provider-owned live turn.
+      (e-chat-surface-pop-to-buffer
+       (e-chat-open :harness source-harness :session-id new-session-id
+                    :new-session t))
       (e-chat-submit-session
        source-harness
        new-session-id
@@ -1820,51 +1873,71 @@ attachment, and the post-open overview refresh."
   "Open BOARD as the public interaction context for one chat participant.
 When SESSION-ID is nil, create a private execution session for the participant."
   (let* ((harness (or harness (e-chat--default-harness)))
-         (binding
-         (if session-id
-              (let (routing-arguments)
-                (when participant-id-supplied-p
-                  (setq routing-arguments
-                        (append routing-arguments
-                                (list :participant-id participant-id))))
-                (when pickup-selector-supplied-p
-                  (setq routing-arguments
-                        (append routing-arguments
-                                (list :pickup-selector pickup-selector))))
-                (when observer-selector-supplied-p
-                  (setq routing-arguments
-                        (append routing-arguments
-                                (list :observer-selector observer-selector))))
-                (when default-tags-supplied-p
-                  (setq routing-arguments
-                        (append routing-arguments
-                                (list :default-tags default-tags))))
-                (when default-to-supplied-p
-                  (setq routing-arguments
-                        (append routing-arguments
-                                (list :default-to default-to))))
-                (apply #'e-chat-service-open-board
-                       board harness session-id routing-arguments))
-            (let ((new-session-id (e-session-generate-id)))
-              (e-chat-service-create-participant-start
-               board harness :id new-session-id :metadata metadata
-               :participant-id participant-id
-               :pickup-selector pickup-selector
-               :observer-selector observer-selector
-               :default-tags default-tags :default-to default-to)
-              (or (e-chat-service-binding harness new-session-id)
-                  (signal 'e-session-error
-                          (list "Participant binding admission failed"
-                                new-session-id))))))
-         (buffer
-          (e-chat-open-session
-           harness (e-chat-service-binding-session-id binding)
-           display instance-id)))
-    buffer))
+         (sqlite-p
+          (e-session-storage-sqlite-p
+           (e-chat-service-session-store harness)))
+         routing-arguments)
+    (when participant-id-supplied-p
+      (setq routing-arguments
+            (append routing-arguments (list :participant-id participant-id))))
+    (when pickup-selector-supplied-p
+      (setq routing-arguments
+            (append routing-arguments (list :pickup-selector pickup-selector))))
+    (when observer-selector-supplied-p
+      (setq routing-arguments
+            (append routing-arguments
+                    (list :observer-selector observer-selector))))
+    (when default-tags-supplied-p
+      (setq routing-arguments
+            (append routing-arguments (list :default-tags default-tags))))
+    (when default-to-supplied-p
+      (setq routing-arguments
+            (append routing-arguments (list :default-to default-to))))
+    (if sqlite-p
+        (let* ((new-p (null session-id))
+               (session-id (or session-id (e-session-generate-id)))
+               (work
+                (if new-p
+                    (progn
+                      (unless (and (e-chat-service-binding-p board)
+                                   (e-chat-service-binding-sqlite-service board))
+                        (signal 'wrong-type-argument
+                                (list 'sqlite-chat-binding-p board)))
+                      (apply #'e-chat-service-create-participant-start
+                             board harness :id session-id :metadata metadata
+                             routing-arguments))
+                  (apply #'e-chat-service-open-board-start
+                         board harness session-id routing-arguments)))
+               (buffer
+                (e-chat-open
+                 :harness harness :session-id session-id
+                 :instance-id instance-id :readiness-work work
+                 :metadata (and new-p
+                                (or metadata (list :id session-id))))))
+          (when display
+            (e-chat-surface-pop-to-buffer buffer))
+          buffer)
+      (let* ((binding
+              (if session-id
+                  (apply #'e-chat-service-open-ephemeral-board
+                         board harness session-id routing-arguments)
+                (let ((new-session-id (e-session-generate-id)))
+                  (apply #'e-chat-service-create-participant-start
+                         board harness :id new-session-id :metadata metadata
+                         routing-arguments)
+                  (or (e-chat-service-binding harness new-session-id)
+                      (signal 'e-session-error
+                              (list "Participant binding admission failed"
+                                    new-session-id))))))
+             (buffer
+              (e-chat-open-session
+               harness (e-chat-service-binding-session-id binding)
+               display instance-id)))
+        buffer))))
 
 (cl-defun e-chat-list-boards-page (&key after limit)
-  "Return one bounded page of public board interaction contexts."
-  (e-chat-service-list-boards-page :after after :limit limit))
+  "Return one bounded page of explicit ephemeral Board contexts."
+  (e-chat-service-list-ephemeral-boards-page :after after :limit limit))
 
 (defun e-chat--start-session-query-view
     (buffer harness session-id generation &optional on-session-read-error)
@@ -1924,8 +1997,9 @@ identity, and renders the detached visible message window once."
                                         (e-work-status binding-settled) :state)
                                      ('finished
                                       (unless e-chat--event-subscription
-                                        (e-chat--subscribe
-                                         harness buffer session-id))
+                                        (e-chat--subscribe-from-cursor
+                                         harness buffer session-id
+                                         (plist-get result :cursor)))
                                       (e-chat-surface-set-status "idle" t))
                                      ((or 'failed 'cancelled)
                                       (e-chat-surface-set-status
@@ -1991,7 +2065,8 @@ empty."
         view)
     (unless persistent-query-p
       (e-chat--ensure-session harness session-id instance-id)
-      (setq binding (e-chat-service-ensure-binding harness session-id)))
+      (setq binding
+            (e-chat-service-ensure-ephemeral-binding harness session-id)))
     ;; New persistent chats already own a lightweight live Board controller
     ;; even though their durable view is still queued.  Reuse only that
     ;; process-local coordination object; never reconstruct a session value.
@@ -2039,14 +2114,16 @@ empty."
       (setq-local e-chat-session-id session-id)
       (setq-local e-chat-board-id
                   (and binding
-                       (e-board-registry-board-id
-                        (e-chat-service-binding-board binding))))
+                       (or (e-chat-service-binding-board-id binding)
+                           (and (e-chat-service-binding-board binding)
+                                (e-board-registry-board-id
+                                 (e-chat-service-binding-board binding))))))
       (setq-local e-chat-client-id
-                  (and binding
+                  (and binding (e-chat-service-binding-client binding)
                        (e-board-registry-client-id
                         (e-chat-service-binding-client binding))))
       (setq-local e-chat-observer-id
-                  (and binding
+                  (and binding (e-chat-service-binding-observer binding)
                        (e-board-observer-id
                         (e-chat-service-binding-observer binding))))
       (e-chat-transcript-set-preview-p nil)
@@ -2072,12 +2149,6 @@ empty."
       (if persistent-query-p
           (e-chat--rename-buffer-for-query-state nil)
         (e-chat--rename-buffer-for-session))
-      (when (and persistent-query-p binding)
-        ;; Establish the future-event cursor before submitting the detached
-        ;; SQLite view below.  Earlier Board events are ordered before those
-        ;; reads in the shared FIFO and therefore belong to the query result;
-        ;; later events belong only to this subscription.
-        (e-chat--subscribe harness buffer session-id))
       (unless persistent-query-p
         ;; Establish one cursor before rendering.  The returned bounded
         ;; snapshot covers everything before it; only later events can reach
@@ -2230,12 +2301,11 @@ CATEGORY is exposed through completion metadata when non-nil."
                                     nil
                                     t)))
     (if (equal selected e-chat--new-context-session-label)
-        (let ((session (e-chat--create-session
-                        default-harness
-                        nil
-                        (plist-get new-target :instance-id))))
-          (append new-target
-                  (list :session-id (plist-get session :id))))
+        (let ((session-id (e-session-generate-id)))
+          (e-chat-open :harness default-harness :session-id session-id
+                       :instance-id (plist-get new-target :instance-id)
+                       :new-session t)
+          (append new-target (list :session-id session-id :new-session t)))
       (let ((candidate
              (when-let ((index (cl-position selected (cdr labels)
                                       :test #'equal)))
@@ -2301,11 +2371,15 @@ CATEGORY is exposed through completion metadata when non-nil."
                (harness (if instance
                             (e-chat--harness-for-instance instance)
                           (e-chat--default-harness)))
-               (session (e-chat--create-session harness)))
+               (session-id (e-session-generate-id)))
+          (e-chat-open :harness harness :session-id session-id
+                       :instance-id (and instance
+                                         (e-harness-instance-id instance))
+                       :new-session t)
           (list :harness harness
                 :instance-id (and instance
                                   (e-harness-instance-id instance))
-                :session-id (plist-get session :id)))))))
+                :session-id session-id :new-session t))))))
 
 (defconst e-chat--context-display-action
   '(display-buffer-reuse-window
@@ -2576,8 +2650,8 @@ plain submit steers an active turn and prefix submit queues a follow-up."
                            :prefix-submit (and prefix t)))
      (lambda ()
        (condition-case err
-           (progn
-             (pcase intent
+           (let ((admission-work
+                  (pcase intent
                ('submit
                 (e-chat-service-submit-session
                  e-chat-harness e-chat-session-id prompt
@@ -2590,7 +2664,9 @@ plain submit steers an active turn and prefix submit queues a follow-up."
                 (e-chat-service-queue-session
                  e-chat-harness e-chat-session-id prompt
                  :references references
-                 :metadata (e-chat--submit-metadata 'queued references))))
+                 :metadata (e-chat--submit-metadata 'queued references))))))
+             (e-chat--watch-admission
+              (current-buffer) admission-work intent)
              (e-chat-composer-delete)
              (e-chat-surface-set-status
               (pcase intent
@@ -2632,7 +2708,7 @@ plain submit steers an active turn and prefix submit queues a follow-up."
   (let ((harness e-chat-harness)
         (session-id e-chat-session-id)
         (instance-id e-chat-harness-instance-id))
-    (e-chat-session-reset harness session-id)
+    (e-chat-session-reset-ephemeral harness session-id)
     (e-chat-attach-buffer (current-buffer) harness session-id instance-id)))
 
 ;;;###autoload

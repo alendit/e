@@ -33,7 +33,7 @@
 (defun e-chat-starter-test--answered-state (buffer-name)
   "Return an answered starter state wired to BUFFER-NAME."
   (let* ((harness (e-chat-starter-test--harness))
-         (_session (e-chat-service-create-session
+         (_session (e-chat-service-create-ephemeral-session
                     :harness harness :id "starter-action"))
          (subscription (e-chat-service-subscribe
                         harness "starter-action" #'ignore))
@@ -515,7 +515,7 @@ its final value only when the turn settled."
         (should (equal
                  (plist-get (e-harness-wait-batch harness session-id 1.0) :status)
                  'done))
-        (e-chat-service-drain-binding
+        (e-chat-service-drain-ephemeral-binding
          (e-chat-service-binding harness session-id))
         (e-ui-work-with-batch-drain
           (e-ui-work-drain-batch

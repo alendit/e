@@ -72,7 +72,7 @@
 (defun e-org-canvas-test--emit-board-event (harness event)
   "Deliver translated board EVENT to HARNESS session presentation subscribers."
   (let* ((session-id (plist-get event :session-id))
-         (binding (e-chat-service-ensure-binding harness session-id)))
+         (binding (e-chat-service-ensure-ephemeral-binding harness session-id)))
     (dolist (subscription
              (copy-sequence (e-chat-service-binding-subscribers binding)))
       (when (e-chat-service-subscription-active-p subscription)
@@ -81,7 +81,7 @@
 (defun e-org-canvas-test--import-board-input
     (harness session-id id content &optional attributes)
   "Import one historical board input fixture for HARNESS SESSION-ID."
-  (let* ((binding (e-chat-service-ensure-binding harness session-id))
+  (let* ((binding (e-chat-service-ensure-ephemeral-binding harness session-id))
          (board (e-board-registry-board-source-board
                  (e-chat-service-binding-board binding))))
     (e-board-import-message
@@ -93,7 +93,7 @@
     (while (< (e-board-observer-next-index
                (e-chat-service-binding-observer binding))
               (e-board-message-count board))
-      (e-chat-service-drain-binding binding))))
+      (e-chat-service-drain-ephemeral-binding binding))))
 
 (defun e-org-canvas-test--org-file (directory name)
   "Create an Org file NAME in DIRECTORY and return its path."
@@ -1189,11 +1189,13 @@
         (cl-letf (((symbol-function 'e-chat-service-submit-session)
                    (lambda (&rest args)
                      (setq call args)
-                     "turn-1")))
-          (should (equal
-                   (e-org-canvas-submit-prompt
-                    harness "session-1" "expand this" 'thread)
-                   "turn-1")))
+                     (e-org-canvas-test--finished-admission "message-1"))))
+          (let ((admission
+                 (e-org-canvas-submit-prompt
+                  harness "session-1" "expand this" 'thread)))
+            (should (e-work-handle-p admission))
+            (should (equal (plist-get (e-work-status admission) :result)
+                           "message-1"))))
         (should (equal (nth 2 call) "expand this"))
         (let ((metadata (plist-get (nthcdr 3 call) :metadata)))
           (should (equal (plist-get metadata :org-canvas-scope) 'thread))
@@ -1393,7 +1395,8 @@
                      (set-window-buffer window buffer)
                      buffer))
                   ((symbol-function 'e-chat-service-submit-session)
-                   (lambda (&rest _args) "turn-1")))
+                   (lambda (&rest _args)
+                     (e-org-canvas-test--finished-admission "message-1"))))
           (unwind-protect
               (progn
                 (e-org-canvas--prompt-scope 'thread)
@@ -1469,9 +1472,9 @@
                  :scope 'thread
                  :target-buffer (current-buffer)))
           (cl-letf (((symbol-function 'e-chat-service-submit-session)
-                     (lambda (&rest args)
+                    (lambda (&rest args)
                        (setq call args)
-                       "turn-1"))
+                       (e-org-canvas-test--finished-admission)))
                     ;; A freshly opened persistent Canvas can have its
                     ;; metadata mutation queued behind session admission.  The
                     ;; input pane already owns the authoritative live source.
@@ -1483,7 +1486,7 @@
               (goto-char (point-max))
               (insert "expand this")
               (e-org-canvas-input-submit)
-              (should (equal e-org-canvas-input--active-turn-id "turn-1")))
+              (should-not e-org-canvas-input--active-turn-id))
             (should (string-match-p "expand this" (nth 2 call)))
             (let ((references (plist-get (nthcdr 3 call) :references))
                   (metadata (plist-get (nthcdr 3 call) :metadata)))
@@ -1529,7 +1532,7 @@
                          :turn-id "turn-1"
                          :created-at (float-time)
                          :payload '(:status started)))
-                       "turn-1"))
+                       (e-org-canvas-test--finished-admission)))
                     ((symbol-function 'e-workspace-pop-to-buffer)
                      (lambda (&rest _args) nil)))
             (with-current-buffer buffer
@@ -1547,6 +1550,33 @@
               (should-not (e-chat-composer-active-p))
               (should (string-match-p "Thought for\\|Thinking"
                                       (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-org-canvas-test-input-admission-failure-and-cancel-are-visible ()
+  "Admission settlement is visible without inventing a live turn id."
+  (let ((buffer (generate-new-buffer " *org-canvas-admission*"))
+        events)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-org-canvas--input-render-event)
+                   (lambda (_buffer event)
+                     (push (copy-tree event t) events))))
+          (let ((failed (e-org-canvas-test--pending-admission))
+                (cancelled (e-org-canvas-test--pending-admission)))
+            (e-org-canvas--input-watch-admission buffer failed)
+            (e-org-canvas--input-watch-admission buffer cancelled)
+            (e-work-fail failed '(e-board-storage-error "admission failed"))
+            (e-work-cancel cancelled)
+            (should (= (cl-count 'turn-failed events
+                                 :key (lambda (event)
+                                        (plist-get event :type)))
+                       1))
+            (should (= (cl-count 'turn-cancelled events
+                                 :key (lambda (event)
+                                        (plist-get event :type)))
+                       1))
+            (should-not
+             (seq-find (lambda (event) (plist-get event :turn-id)) events))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1649,6 +1679,75 @@
             (should (string-match-p "Scheduled answer." (buffer-string)))
             (should-not (e-ui-work-pending
                          buffer :owner 'org-canvas-input-render))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p target)
+        (kill-buffer target)))))
+
+(ert-deftest e-org-canvas-test-canonical-rows-do-not-define-live-turn ()
+  "Canonical Board rows render without becoming a local turn-id veto."
+  (let* ((harness (e-org-canvas-test--harness))
+         (target (get-buffer-create "org-canvas-canonical-target"))
+         (e-org-canvas-input-auto-close-delay nil)
+         buffer)
+    (e-harness-test-create-board-session harness :id "session-1")
+    (unwind-protect
+        (progn
+          (setq buffer
+                (e-org-canvas--input-buffer
+                 :harness harness
+                 :session-id "session-1"
+                 :scope 'document
+                 :target-buffer target))
+          (e-org-canvas--input-handle-event
+           buffer
+           '(:type message-added
+             :canonical-row-p t
+             :session-id "session-1"
+             :turn-id "durable-input-id"
+             :created-at 0
+             :board-seq 1
+             :payload (:message (:role user :content "Canonical prompt."))))
+          (with-current-buffer buffer
+            (should-not e-org-canvas-input--active-turn-id))
+          (e-org-canvas--input-handle-event
+           buffer
+           (e-events-make
+            :type 'turn-started
+            :session-id "session-1"
+            :turn-id "live-harness-turn"
+            :created-at 0.5))
+          (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
+                     (lambda (_store) t)))
+            (e-org-canvas--input-handle-event
+             buffer
+             (e-events-make
+              :type 'turn-finished
+              :session-id "session-1"
+              :turn-id "live-harness-turn"
+              :created-at 0.75))
+            (e-org-canvas-test--drain-ui-work buffer))
+          (with-current-buffer buffer
+            (should (equal e-org-canvas-input--active-turn-id
+                           "live-harness-turn"))
+            (should e-org-canvas-input--subscription)
+            (should-not e-org-canvas-input--done-rendered-p))
+          (e-org-canvas--input-handle-event
+           buffer
+           '(:type message-added
+             :canonical-row-p t
+             :session-id "session-1"
+             :turn-id "live-harness-turn"
+             :created-at 1
+             :board-seq 2
+             :payload (:message (:role assistant
+                                 :content "Canonical answer."))))
+          (e-org-canvas-test--drain-ui-work buffer)
+          (with-current-buffer buffer
+            (should (equal e-org-canvas-input--active-turn-id
+                           "live-harness-turn"))
+            (should (string-match-p "Canonical answer." (buffer-string)))
+            (should-not e-org-canvas-input--subscription)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when (buffer-live-p target)
@@ -2463,3 +2562,27 @@ Body
 (provide 'e-org-canvas-test)
 
 ;;; e-org-canvas-test.el ends here
+(defun e-org-canvas-test--finished-admission (&optional result)
+  "Return one finished request-scoped admission work carrying RESULT."
+  (let ((work
+         (e-work-prepare
+          (e-work-spec-create
+           :id "org-canvas-test-admission" :execution 'cooperative
+           :interactive-policy 'async :owner 'test
+           :runner (lambda (&rest _arguments) :deferred))
+          nil)))
+    (e-work-start-prepared work :arguments nil)
+    (e-work-finish work (or result '(:status posted)))
+    work))
+
+(defun e-org-canvas-test--pending-admission ()
+  "Return one started request-scoped admission work."
+  (let ((work
+         (e-work-prepare
+          (e-work-spec-create
+           :id "org-canvas-test-pending-admission" :execution 'cooperative
+           :interactive-policy 'async :owner 'test
+           :runner (lambda (&rest _arguments) :deferred))
+          nil)))
+    (e-work-start-prepared work :arguments nil)
+    work))

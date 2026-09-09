@@ -203,10 +203,10 @@
          :chat-alpha "Alpha Target" alpha-harness t)
         (e-chat-test--register-chat-instance
          :chat-beta "Beta Target" beta-harness)
-        (e-chat-service-create-session
+        (e-chat-service-create-ephemeral-session
          :harness alpha-harness :id "alpha-session"
          :metadata '(:name "Alpha Session"))
-        (e-chat-service-create-session
+        (e-chat-service-create-ephemeral-session
          :harness beta-harness :id "beta-session"
          :metadata '(:name "Beta Session" :harness-instance-id :chat-beta))
         (let ((candidates (e-chat-overview-session-candidates)))
@@ -248,11 +248,11 @@ surface; switch, resume, active-sessions, and overview list only root chats."
         (e-chat-test--register-chat-instance
          :chat-alpha "Alpha Target" harness t)
         (let* ((binding
-                (e-chat-service-create-board
+                (e-chat-service-create-ephemeral-board
                  :harness harness :id "top-level"
                  :metadata '(:name "Top Level")))
                (board (e-chat-service-binding-board binding)))
-          (e-chat-service-create-participant
+          (e-chat-service-create-ephemeral-participant
            board harness :id "private-participant"
            :metadata '(:name "Private Participant")))
         (e-chat-test--create-session store :id "child-by-parent"
@@ -290,11 +290,11 @@ surface; switch, resume, active-sessions, and overview list only root chats."
     (unwind-protect
         (progn
           (let* ((binding
-                  (e-chat-service-create-board
+                  (e-chat-service-create-ephemeral-board
                    :harness writer-harness :id "top-level"
                    :metadata '(:name "Top Level")))
                  (board (e-chat-service-binding-board binding)))
-            (e-chat-service-create-participant
+            (e-chat-service-create-ephemeral-participant
              board writer-harness :id "private-participant"
              :metadata '(:name "Private Participant")))
           (e-chat-test--create-session
@@ -410,14 +410,24 @@ surface; switch, resume, active-sessions, and overview list only root chats."
         (progn
           (e-chat-test--create-session store :id "older-session"
                             :metadata '(:name "Older"))
-          (e-session-append-message
-           store "older-session"
-           '(:id "old-assistant" :role assistant :content "older answer"))
+          (let ((write
+                 (e-session-append-message
+                  store "older-session"
+                  '(:id "old-assistant" :role assistant
+                    :content "older answer"))))
+            (when (e-work-handle-p write)
+              (e-work-with-batch-await
+                (e-work-await-batch write :timeout 5.0))))
           (e-chat-test--create-session store :id "newer-session"
                             :metadata '(:name "Newer"))
-          (e-session-append-message
-           store "newer-session"
-           '(:id "new-assistant" :role assistant :content "newer answer"))
+          (let ((write
+                 (e-session-append-message
+                  store "newer-session"
+                  '(:id "new-assistant" :role assistant
+                    :content "newer answer"))))
+            (when (e-work-handle-p write)
+              (e-work-with-batch-await
+                (e-work-await-batch write :timeout 5.0))))
           (let ((buffer (get-buffer-create "*e-chat-overview-test*")))
             (unwind-protect
                 (with-current-buffer buffer
@@ -452,14 +462,14 @@ surface; switch, resume, active-sessions, and overview list only root chats."
           (e-chat-test--activate-chat-session
            (e-harness-create :backend (e-backend-fake-create :items nil))))
          (binding
-          (e-chat-service-create-board
+          (e-chat-service-create-ephemeral-board
            :harness harness :id "overview-root"
            :metadata '(:name "Overview Owner")))
          (board (e-chat-service-binding-board binding))
          (buffer (get-buffer-create "*e-chat-overview-roots-test*")))
     (unwind-protect
         (progn
-          (e-chat-service-create-participant
+          (e-chat-service-create-ephemeral-participant
            board harness :id "overview-private"
            :metadata '(:name "Overview Private"))
           (with-current-buffer buffer
@@ -675,10 +685,10 @@ surface; switch, resume, active-sessions, and overview list only root chats."
              :chat-alpha "Alpha Target" alpha-harness t)
             (e-chat-test--register-chat-instance
              :chat-beta "Beta Target" beta-harness)
-            (e-chat-service-create-session
+            (e-chat-service-create-ephemeral-session
              :harness alpha-harness :id "alpha-session"
              :metadata '(:name "Alpha Session"))
-            (e-chat-service-create-session
+            (e-chat-service-create-ephemeral-session
              :harness beta-harness :id "beta-session"
              :metadata '(:name "Beta Session"
                          :harness-instance-id :chat-beta))

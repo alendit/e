@@ -118,7 +118,7 @@
               (post "finished" 'turn-summary
                     '(:status finished :duration-seconds 0
                       :tool-count 1 :action-count 1)))
-            (e-chat-service-drain-binding binding)
+            (e-chat-service-drain-ephemeral-binding binding)
             (let* ((events (e-chat-service-activity-events
                             harness e-chat-session-id))
                    (curations

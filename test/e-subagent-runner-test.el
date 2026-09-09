@@ -122,17 +122,16 @@
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let ((binding (e-subagent--producer-binding parent "parent-1")))
-        (should-error
-         (e-subagent-registry-register
-          registry :subagent-id "sub_fake" :work-handle nil
-          :type :reviewer :role 'reviewer :session-id "child-1"
-          :parent-session-id "parent-1" :schedule 'direct
-          :producer-binding binding)
-         :type 'e-board-runtime-error)
-        (should-not (gethash "sub_fake"
-                             (e-subagent-registry-records registry)))
-        (should-not (e-subagent-registry-list registry "parent-1"))))))
+      (should-error
+       (e-subagent-registry-register
+        registry :subagent-id "sub_fake" :work-handle nil
+        :type :reviewer :role 'reviewer :session-id "child-1"
+        :parent-session-id "parent-1" :schedule 'direct
+        :publication-function #'ignore)
+       :type 'e-board-runtime-error)
+      (should-not (gethash "sub_fake"
+                           (e-subagent-registry-records registry)))
+      (should-not (e-subagent-registry-list registry "parent-1")))))
 
 (ert-deftest e-subagent-runner-test-delayed-admission-stays-pending-and-unpublished ()
   "A child is neither registered nor started before durable admission settles."
@@ -712,7 +711,7 @@ the harness."
          :subject-participant-id participant-id
          :source-turn-id "turn-visible"
          :source-output-key (list participant-id 1 1))
-        (e-chat-service-drain-binding binding)
+        (e-chat-service-drain-ephemeral-binding binding)
         (let ((raw (e-subagent-raw-read registry subagent-id 1)))
           (should (equal (plist-get raw :session-uri)
                          (format "session://e/sessions/%s/messages"
@@ -1048,13 +1047,47 @@ report is child-side and must not be on the parent surface."
                  (funcall subscriber '(:type reasoning-delta :payload (:content "hidden")))
                  (funcall subscriber '(:type tool-started :payload (:result "hidden")))
                  (funcall subscriber '(:type tool-finished :payload (:result "hidden")))
-                 (funcall subscriber '(:type turn-finished :payload nil))))
+                 (funcall subscriber '(:type turn-finished :payload nil))
+                 (let ((work
+                        (e-subagent-runner-test--deferred-work
+                         "direct-admission")))
+                   (e-work-finish work '(:status posted))
+                   work)))
               ((symbol-function 'e-chat-service-abort-session) #'ignore))
       (e-subagent-direct-runner
        nil "child" "go" nil (lambda (&rest _) nil)
        (lambda (event) (push event progress-events)))
       (should (equal (nreverse progress-events)
                      '(tool-started tool-finished turn-finished))))))
+
+(ert-deftest e-subagent-runner-test-direct-runner-surfaces-admission-settlement ()
+  "A rejected child input settles once even though no harness turn started."
+  (let (admission settlements progress-events unsubscribed)
+    (cl-letf (((symbol-function 'e-subagent--seed-child) #'ignore)
+              ((symbol-function 'e-chat-service-subscribe)
+               (lambda (_harness _session _callback) 'subscription))
+              ((symbol-function 'e-chat-service-unsubscribe)
+               (lambda (_subscription) (setq unsubscribed t)))
+              ((symbol-function 'e-chat-service-submit-session)
+               (lambda (&rest _arguments)
+                 (setq admission
+                       (e-subagent-runner-test--deferred-work
+                        "held-direct-admission"))))
+              ((symbol-function 'e-chat-service-abort-session) #'ignore))
+      (e-subagent-direct-runner
+       nil "child" "go" nil
+       (lambda (status &rest arguments)
+         (push (cons status arguments) settlements))
+       (lambda (event) (push event progress-events)))
+      (e-work-fail admission '(e-board-storage-error "admission rejected"))
+      (e-work-cancel admission)
+      (should (= (length settlements) 1))
+      (should (eq (caar settlements) 'failed))
+      (should (string-match-p
+               "admission rejected"
+               (plist-get (cdar settlements) :error)))
+      (should (equal progress-events '(turn-failed)))
+      (should unsubscribed))))
 
 (ert-deftest e-subagent-runner-test-interventions-publish-provenance-and-stay-explicit ()
   "Steer, interrupt, and shutdown retain bounded audit facts without auto-cancel."
@@ -1114,7 +1147,7 @@ report is child-side and must not be on the parent surface."
              (settle (plist-get (car captured) :on-settle))
              (board (e-board-registry-board-source-board
                      (e-chat-service-binding-board
-                      (e-chat-service-ensure-binding parent "parent-1")))))
+                      (e-chat-service-ensure-ephemeral-binding parent "parent-1")))))
         (e-subagent-report registry child-session-id [] "reported")
         (should (eq (plist-get (e-subagent-registry-get registry
                                                         (plist-get record :subagent-id))
@@ -1148,7 +1181,7 @@ report is child-side and must not be on the parent surface."
                 :metadata)))
              (board (e-board-registry-board-source-board
                      (e-chat-service-binding-board
-                      (e-chat-service-ensure-binding child session-id)))))
+                      (e-chat-service-ensure-ephemeral-binding child session-id)))))
         (should (e-board-orchestration-actions-report-from-context
                  (list :harness child :session-id session-id
                        :session-metadata session-metadata)

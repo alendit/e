@@ -60,7 +60,8 @@ an ordinary root session seeds its own lineage id."
 Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
 
 (defvar e-subagent--producer-bindings (make-hash-table :test 'equal)
-  "Live board producer bindings keyed by parent harness/session identity.")
+  "Live ephemeral producer bindings keyed by parent harness/session identity.
+Ordinary SQLite uses the chat binding directly and is never entered here.")
 
 (defun e-subagent--live-chat-binding (harness session-id)
   "Return SESSION-ID's process-local chat binding or signal clearly."
@@ -75,25 +76,62 @@ Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
   '(:prompt-cache-default :prompt-cache-retention)
   "Prompt-cache policy options inherited by child sessions when unspecified.")
 
-(defun e-subagent--producer-binding (parent-harness parent-session-id)
-  "Return current subagent-change producer authority for the parent session."
-  (let* ((key (list parent-harness parent-session-id))
-         (current (gethash key e-subagent--producer-bindings)))
-    (if (e-board-runtime-producer-binding-live-p current)
-        current
-      (let* ((chat-binding
-              (e-subagent--live-chat-binding
-               parent-harness parent-session-id))
-             (board (e-chat-service-binding-board chat-binding))
-             (producer-id
-              (format "subagent:%s:%s"
-                      (e-board-registry-board-id board)
-                      parent-session-id))
-             (binding
-              (e-board-runtime-producer-bind
-               producer-id board :tags '(subagent))))
-        (puthash key binding e-subagent--producer-bindings)
-        binding))))
+(defun e-subagent--producer-target (parent-harness parent-session-id)
+  "Return the SQL chat binding or ephemeral producer for the parent."
+  (let ((chat-binding
+         (e-subagent--live-chat-binding parent-harness parent-session-id)))
+    (if (e-board-sqlite-service-p
+         (e-chat-service-binding-sqlite-service chat-binding))
+        chat-binding
+      (let* ((key (list parent-harness parent-session-id))
+             (current (gethash key e-subagent--producer-bindings)))
+        (if (e-board-runtime-producer-binding-live-p current)
+            current
+          (let* ((board (e-chat-service-binding-board chat-binding))
+                 (producer-id
+                  (format "subagent:%s:%s"
+                          (e-board-registry-board-id board)
+                          parent-session-id))
+                 (binding
+                  (e-board-runtime-producer-bind
+                   producer-id board :tags '(subagent))))
+            (puthash key binding e-subagent--producer-bindings)
+            binding))))))
+
+(defun e-subagent--target-chat-binding (target)
+  "Return TARGET when it is a SQL chat binding, otherwise nil."
+  (and (e-chat-service-binding-p target)
+       (e-board-sqlite-service-p
+        (e-chat-service-binding-sqlite-service target))
+       target))
+
+(cl-defun e-subagent--publish-board-fact
+    (target &key tags attributes content source-fact-key)
+  "Publish one bounded fact through SQL or ephemeral TARGET."
+  (if-let* ((binding (e-subagent--target-chat-binding target)))
+    (e-chat-service-board-fact-start
+       binding :tags tags :attributes attributes :content content
+       :source-fact-key source-fact-key)
+    (e-board-runtime-producer-publish-fact
+     target :tags tags :attributes attributes :content content)))
+
+(defun e-subagent--lifecycle-publication-function (target)
+  "Return the process-local lifecycle publisher for TARGET."
+  (lambda (record)
+    (e-subagent--publish-board-fact
+     target
+     :tags (list 'change (plist-get record :status))
+     :attributes (list :subagent-id (plist-get record :subagent-id)
+                       :status (plist-get record :status)
+                       :type (plist-get record :type)
+                       :parent-session-id (plist-get record :parent-session-id)
+                       :session-id (plist-get record :session-id))
+     :content (format "Subagent %s is %s"
+                      (plist-get record :subagent-id)
+                      (plist-get record :status))
+     :source-fact-key
+     (list 'subagent-lifecycle (plist-get record :subagent-id)
+           (plist-get record :status)))))
 
 (defcustom e-subagent-child-layer-ids '(subagents-child)
   "Layer ids always added to a spawned child harness.
@@ -228,7 +266,20 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                   (finish 'cancelled))))
              ))
       (condition-case err
-          (e-chat-service-submit-session child-harness child-session-id prompt)
+          (let ((admission
+                 (e-chat-service-submit-session
+                  child-harness child-session-id prompt)))
+            (e-work-on-settle
+             admission
+             (lambda (settled)
+               (let* ((status (e-work-status settled))
+                      (state (plist-get status :state)))
+                 (pcase state
+                   ('failed
+                    (finish 'failed
+                            :error (e-work-error-message
+                                    (plist-get status :error))))
+                   ('cancelled (finish 'cancelled)))))))
         (error
          (finish 'failed :error (e-work-error-message err))))
       (list :cancel
@@ -308,15 +359,36 @@ finished result carries the compact summary and outputs."
   "Publish SUBAGENT-ID's terminal fact before its local registry settlement."
   (let* ((record (e-subagent-registry--record registry subagent-id))
          (assignment (e-subagent--durable-assignment record)))
-    (when (and assignment (not (plist-get record :durable-terminal-published)))
-      (let ((binding (plist-get record :producer-binding)))
-        (e-board-orchestration-actions-publish-terminal
-         (e-board-runtime-producer-binding-board binding) assignment status
-         :summary (or (plist-get args :summary) (plist-get record :result-summary) "")
-         :outputs (or (plist-get args :outputs) (plist-get record :outputs) [])
-         :error (plist-get args :error)
-         :author (list :session-id (plist-get record :session-id)))
-        (plist-put record :durable-terminal-published t)))))
+    (when (and assignment
+               (not (plist-get record :durable-terminal-published))
+               (not (plist-get record :durable-terminal-work)))
+      (let* ((target (plist-get record :publication-target))
+             (publication-target
+              (or (e-subagent--target-chat-binding target)
+                  (e-board-runtime-producer-binding-board target)))
+             (publication
+              (e-board-orchestration-actions-publish-terminal
+               publication-target assignment status
+               :summary (or (plist-get args :summary)
+                            (plist-get record :result-summary) "")
+               :outputs (or (plist-get args :outputs)
+                            (plist-get record :outputs) [])
+               :error (plist-get args :error)
+               :author (list :session-id (plist-get record :session-id)))))
+        (if (not (e-work-handle-p publication))
+            (plist-put record :durable-terminal-published t)
+          (plist-put record :durable-terminal-work publication)
+          (e-work-on-settle
+           publication
+           (lambda (settled)
+             (plist-put record :durable-terminal-work nil)
+             (pcase (plist-get (e-work-status settled) :state)
+               ('finished
+                (plist-put record :durable-terminal-published t))
+               ('failed
+                (plist-put record :durable-terminal-error
+                           (e-work-error-message
+                            (e-work-handle-error settled))))))))))))
 
 (defun e-subagent--settle (registry subagent-id status &rest args)
   "Settle SUBAGENT-ID in REGISTRY to STATUS with ARGS.
@@ -437,7 +509,6 @@ its own terminal assignment without blocking spawn."
          (child-harness (e-subagent--child-harness instance))
          (parent-binding
           (e-subagent--live-chat-binding parent-harness parent-session-id))
-         (parent-board (e-chat-service-binding-board parent-binding))
          (lineage-id (e-subagent--lineage-id registry parent-session-id))
          (assignment (and run-id (list :run-id run-id :task-key task-key :attempt attempt)))
          (_ (when (or run-id task-key attempt)
@@ -446,8 +517,12 @@ its own terminal assignment without blocking spawn."
          (metadata (e-subagent--child-metadata
                     instance parent-harness parent-session-id lineage-id label assignment))
          (schedule (or schedule 'direct))
-         (producer-binding
-          (e-subagent--producer-binding parent-harness parent-session-id))
+         (producer-target
+          (e-subagent--producer-target parent-harness parent-session-id))
+         (admission-target
+          (if (e-subagent--target-chat-binding parent-binding)
+              parent-binding
+            (e-chat-service-binding-board parent-binding)))
          (child-session-id (e-session-generate-id))
          (work-handle
           (e-work-prepare
@@ -470,8 +545,8 @@ its own terminal assignment without blocking spawn."
          admission-work admitted-result)
     (condition-case error
         (setq admission-work
-              (e-chat-service-create-participant-start
-               parent-board child-harness :id child-session-id :metadata metadata
+            (e-chat-service-create-participant-start
+               admission-target child-harness :id child-session-id :metadata metadata
                :pickup-selector '(:tags (subagent))
                :observer-selector :self :default-tags '(subagent)
                :default-to :self))
@@ -500,7 +575,9 @@ its own terminal assignment without blocking spawn."
                      :label label :schedule schedule
                      :child-harness child-harness
                      :parent-harness parent-harness
-                     :producer-binding producer-binding
+                     :publication-target producer-target
+                     :publication-function
+                     (e-subagent--lifecycle-publication-function producer-target)
                      :run-id run-id :task-key task-key :attempt attempt)
                     (e-subagent--inherit-prompt-cache-policy
                      parent-harness parent-session-id
@@ -695,10 +772,9 @@ not a tracked child."
                        reason e-subagent-max-intervention-reason-length nil nil "...")))
          (intervention (list :action action :reason bounded-reason :at (float-time))))
     (e-subagent-registry-update registry subagent-id :last-intervention intervention)
-    (e-board-runtime-producer-publish-fact
-     (e-subagent--producer-binding
-      (e-subagent-registry-parent-harness registry subagent-id)
-      (plist-get record :parent-session-id))
+    (e-subagent--publish-board-fact
+     (plist-get (e-subagent-registry--record registry subagent-id)
+                :publication-target)
      :tags (list 'intervention action)
      :attributes (list :subagent-id subagent-id
                        :action action
@@ -707,7 +783,10 @@ not a tracked child."
                        :session-id (plist-get record :session-id))
      :content (format "Subagent %s %s%s"
                       subagent-id action
-                      (if bounded-reason (format ": %s" bounded-reason) "")))
+                      (if bounded-reason (format ": %s" bounded-reason) ""))
+     :source-fact-key
+     (list 'subagent-intervention subagent-id action
+           (plist-get intervention :at)))
     (e-subagent-registry-get registry subagent-id)))
 
 (defun e-subagent-interrupt (registry subagent-id &optional reason)

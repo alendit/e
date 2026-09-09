@@ -64,8 +64,14 @@
                      'session-context-path))
       (should (= (plist-get (plist-get (nth 5 calls) :request) :limit) 3))
       (dolist (call calls)
-        (funcall (plist-get call :on-settle)
-                 (list :detached (vector (list :value "ok"))) nil))
+        (funcall
+         (plist-get call :on-settle)
+         (if (eq (plist-get (plist-get call :request) :op)
+                 'session-query-page)
+             '(:rows nil :next nil :limit 7
+               :byte-count nil :byte-limit nil)
+           (list :detached (vector (list :value "ok"))))
+         nil))
       (cl-loop
        for work in works
        for index from 0
@@ -90,8 +96,8 @@
       (should (equal (plist-get (e-work-status work) :result)
                      (list :value (vector (list :value "before"))))))))
 
-(ert-deftest e-session-async-query-test-page-overlays-inflight-association ()
-  "A page observes admitted Board state without waiting for its COMMIT."
+(ert-deftest e-session-async-query-test-page-snapshot-does-not-overlay-inflight-association ()
+  "A page follows its database snapshot, not Emacs admission timing."
   (e-session-async-query-test--with-held-reads (calls)
     (let* ((store (e-session-store-create))
            (state (e-session-async--state store))
@@ -119,9 +125,8 @@
             (let ((page-work
                    (e-session-async-query-page
                     store :limit 8 :root-p t :board-id "board:daily")))
-              ;; SQLite answered before either transaction.  The request-local
-              ;; result overlays only the two already-admitted optimistic
-              ;; commands; it does not retain their derived row globally.
+              ;; SQLite answered before either transaction.  The two admitted
+              ;; Emacs intents are not evidence that either row is committed.
               (funcall
                (plist-get (car calls) :on-settle)
                '(:rows nil :next nil :limit 8
@@ -131,10 +136,7 @@
                      (rows (plist-get page :rows)))
                 (should (eq (plist-get (e-work-status page-work) :state)
                             'finished))
-                (should (= (length rows) 1))
-                (should (equal (plist-get (car rows) :session-id) "daily"))
-                (should (equal (plist-get (car rows) :board-id)
-                               "board:daily"))
+                (should-not rows)
                 (should (= (hash-table-count
                             (e-session-store-sessions store))
                            0)))))
@@ -150,12 +152,12 @@
       (should (equal (car (plist-get (e-work-status work) :error))
                      'e-session-storage-error)))))
 
-(ert-deftest e-session-async-query-test-context-cut-keeps-acknowledged-mutation ()
-  "A prefetch retains a later admitted write until its result is consumed."
+(ert-deftest e-session-async-query-test-context-snapshot-before-commit-does-not-overlay-delayed-ack ()
+  "A context query excludes a mutation committed after its SQLite snapshot."
   (e-session-async-query-test--with-held-reads (calls)
     (let* ((store (e-session-store-create))
            (state (e-session-async--state store))
-           (work (e-session-async-context-path-base store "session"))
+           (work (e-session-async-context-path store "session"))
            (command
             (e-session-aggregate-command-prepare
              'append-message "session"
@@ -163,9 +165,8 @@
            (operation
             (e-session-async--operation-create
              :state state :session-id "session" :command command)))
-      ;; The SELECT entered the transport before this mutation.  Simulate the
-      ;; write acknowledgement retiring its ordinary pending intent before the
-      ;; already-finished query work is consumed.
+      ;; The SELECT entered the database before this mutation committed.  Its
+      ;; later acknowledgement cannot change the already-issued snapshot.
       (e-session-async--add-pending operation)
       (funcall
        (plist-get (car calls) :on-settle)
@@ -175,71 +176,38 @@
        nil)
       (setf (e-session-async--operation-settled operation) t)
       (e-session-async--remove-pending operation)
-      (let* ((path (plist-get (e-work-status work) :result))
-             (effective
-              (e-session-async-context-path-overlay-pending
-               store "session" path)))
-        (let ((message (car (plist-get effective :messages))))
-          (should (eq (plist-get message :type) 'message))
-          (should (equal (plist-get message :role) 'user))
-          (should (equal (plist-get message :content) "new prompt"))
-          (should (equal (plist-get message :parent-id) "root"))
-          (should (equal (plist-get message :id)
-                         (e-session-aggregate-command-delta-id command))))
-        (should (equal (plist-get effective :message-path-indexes) '(1)))
-        (should (equal (plist-get effective :current-head-id)
-                       (e-session-aggregate-command-delta-id command)))
-        (should (= (hash-table-count
-                    (e-session-async--state-context-query-cuts state))
-                   0))))))
+      (let ((path (plist-get (e-work-status work) :result)))
+        (should-not (plist-get path :messages))
+        (should (equal (plist-get path :current-head-id) "root"))))))
 
-(ert-deftest e-session-async-query-test-inflight-base-keeps-settled-metadata ()
-  "A retained new-session base advances through acknowledged metadata writes."
-  (let* ((store (e-session-store-create))
-         (state (e-session-async--state store))
-         (metadata-command
-          (e-session-aggregate-command-prepare
-           'session-info "daily"
-           '(:field context-reference :key :org-canvas-ref
-             :value (:uri "file:///tmp/daily.org"))))
-         (message-command
-          (e-session-aggregate-command-prepare
-           'append-message "daily"
-           '(:message (:role user :content "prompt"))))
-         (metadata-operation
-          (e-session-async--operation-create
-           :state state :session-id "daily" :command metadata-command))
-         (message-operation
-          (e-session-async--operation-create
-           :state state :session-id "daily" :command message-command)))
-    (unwind-protect
-        (progn
-          (e-session-async-prime-new-context-path
-           store '(:session-id "daily" :metadata (:project-root "/tmp/")
-                   :messages nil))
-          (e-session-async--start-work "daily" metadata-operation)
-          (e-session-async--start-work "daily" message-operation)
-          (e-session-async--add-pending metadata-operation)
-          (e-session-async--add-pending message-operation)
-          ;; The metadata write acknowledges while the prompt remains
-          ;; unsettled, exactly as in a new public Canvas turn.
-          (e-session-async--relational-write-settled
-           metadata-operation '(:accepted t) nil)
-          (let* ((base-work
-                  (e-session-async-context-path-base store "daily"))
-                 (effective
-                  (e-session-async-context-path-overlay-pending
-                   store "daily"
-                   (plist-get (e-work-status base-work) :result))))
-            (should
-             (equal
-              (plist-get (plist-get effective :metadata) :org-canvas-ref)
-              '(:uri "file:///tmp/daily.org")))
-            (should (equal (plist-get (plist-get effective :metadata)
-                                      :project-root)
-                           "/tmp/"))
-            (should (= (length (plist-get effective :messages)) 1))))
-      (e-session-async-reset store))))
+(ert-deftest e-session-async-query-test-context-commit-before-snapshot-is-not-duplicated-by-delayed-ack ()
+  "A committed context row appears once despite a still-pending local write."
+  (e-session-async-query-test--with-held-reads (calls)
+    (let* ((store (e-session-store-create))
+           (state (e-session-async--state store))
+           (message '(:id "committed" :role user :content "prompt"))
+           (command
+            (e-session-aggregate-command-prepare
+             'append-message "daily" (list :message message)))
+           (operation
+            (e-session-async--operation-create
+             :state state :session-id "daily" :command command)))
+      (e-session-async--start-work "daily" operation)
+      (e-session-async--add-pending operation)
+      (let ((work (e-session-async-context-path store "daily")))
+        ;; SQLite includes the committed row before the application receives
+        ;; the write acknowledgement.  Pending state must not duplicate it.
+        (funcall
+         (plist-get (car calls) :on-settle)
+         (list :session-id "daily" :current-head-id "committed"
+               :current-head-path-index 1 :messages (list message)
+               :message-path-indexes '(1) :context-records nil
+               :high-water 2)
+         nil)
+        (let ((path (plist-get (e-work-status work) :result)))
+          (should (= (length (plist-get path :messages)) 1))
+          (should (equal (plist-get (car (plist-get path :messages)) :id)
+                         "committed")))))))
 
 (ert-deftest e-session-async-query-test-cancellation-uses-opaque-port ()
   "Cancelling a read delegates to the storage port and settles the work."
@@ -276,42 +244,36 @@
     (e-work-cancel (e-session-async--read-operation-work operation))
     (should-not cancelled)))
 
-(ert-deftest e-session-async-query-test-chat-view-composes-three-bounded-reads ()
-  "Persistent chat view starts three reads and settles one detached result."
+(ert-deftest e-session-async-query-test-chat-view-uses-one-database-snapshot ()
+  "Persistent chat view is one consumer-shaped read with one change cursor."
   (e-session-async-query-test--with-held-reads (calls)
     (let* ((store (e-session-store-create))
            (work (e-session-async-chat-view store "daily" :limit 2)))
       (should (= (hash-table-count (e-session-store-sessions store)) 0))
-      (should (= (length calls) 3))
+      (should (= (length calls) 1))
       (should (eq (plist-get (e-work-status work) :state) 'started))
-      (dolist (call calls)
-        (let ((request (plist-get call :request)))
-          (pcase (plist-get request :op)
-            ('session-metadata
-             (funcall (plist-get call :on-settle)
-                      '(:session-id "daily" :name "Daily") nil))
-            ('session-board-association
-             (funcall (plist-get call :on-settle)
-                      '(:session-id "daily" :board-id "board") nil))
-            ('session-visible-message-page
-             (funcall (plist-get call :on-settle)
-                      '(:session-id "daily" :messages
-                        ((:id "m1" :role user :content "hello")
-                         (:id "m2" :role assistant :content "hi"))
-                        :truncated nil)
-                      nil)))))
+      (should (equal (plist-get (plist-get (car calls) :request) :op)
+                     'chat-session-view))
+      (funcall
+       (plist-get (car calls) :on-settle)
+       '(:session-id "daily"
+         :metadata (:session-id "daily" :name "Daily")
+         :association (:session-id "daily" :board-id "board")
+         :messages ((:id "m1" :role user :content "hello")
+                    (:id "m2" :role assistant :content "hi"))
+         :cursor 2 :through 2 :truncated nil)
+       nil)
       (should (eq (plist-get (e-work-status work) :state) 'finished))
       (should (equal (plist-get (e-work-status work) :result)
                      '(:session-id "daily"
                        :metadata (:session-id "daily" :name "Daily")
                        :association (:session-id "daily" :board-id "board")
                        :messages ((:id "m1" :role user :content "hello")
-                                  (:id "m2" :role assistant :content "hi")
-                                  )
-                       :truncated nil))))))
+                                  (:id "m2" :role assistant :content "hi"))
+                       :cursor 2 :through 2 :truncated nil))))))
 
 (ert-deftest e-session-async-query-test-chat-view-failure-is-request-local ()
-  "A failed child read fails the composition without domain state."
+  "A failed snapshot fails only its request without domain state."
   (e-session-async-query-test--with-held-reads (calls)
     (let* ((store (e-session-store-create))
            (work (e-session-async-chat-view store "daily" :limit 2))
@@ -320,13 +282,13 @@
                  (lambda (_store operation)
                    (push operation cancelled)
                    'dropped)))
-        (funcall (plist-get (nth 1 calls) :on-settle)
+        (funcall (plist-get (car calls) :on-settle)
                  nil '(e-session-storage-error "association failed")))
       (should (eq (plist-get (e-work-status work) :state) 'failed))
       (should (equal (car (plist-get (e-work-status work) :error))
                      'e-session-storage-error))
       (should (= (hash-table-count (e-session-store-sessions store)) 0))
-      (should (= (length cancelled) 2)))))
+      (should-not cancelled))))
 
 (provide 'e-session-async-query-test)
 

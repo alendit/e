@@ -201,10 +201,7 @@
                     store 'write
                     (e-runtime-store-dp6-test--session-append-body
                      "healthy" '(:value durable))
-                    '(session . "healthy"))
-                   (e-runtime-store-submit
-                    store 'read
-                    '(:op session-record-page :session-id "healthy"))))
+                    '(session . "healthy"))))
             (dolist (request requests)
               (e-runtime-store--observe
                request
@@ -231,8 +228,26 @@
           (should (eq (e-runtime-store-request--state (nth 2 requests)) 'failed))
           (should (eq (car (e-runtime-store-request--error (nth 2 requests)))
                       'e-runtime-store-persistence-suspect))
-          (dolist (index '(1 3 4))
+          (dolist (index '(1 3))
             (should (eq (e-runtime-store-request--state (nth index requests))
+                        'committed)))
+          ;; The reader connection is intentionally independent.  A consumer
+          ;; that requires the healthy write must issue its read after that
+          ;; write's commit acknowledgement, not infer dependency from local
+          ;; submission order.
+          (let ((verification
+                 (e-runtime-store-submit
+                  store 'read
+                  '(:op session-record-page :session-id "healthy"))))
+            (setq requests (append requests (list verification)))
+            (e-runtime-store--observe
+             verification
+             (lambda (settled)
+               (setq observed
+                     (nconc observed
+                            (list (e-runtime-store-request--id settled))))))
+            (e-runtime-store-dp6-test--wait-terminal verification)
+            (should (eq (e-runtime-store-request--state verification)
                         'committed)))
           (let* ((page (e-runtime-store-request--result (nth 4 requests)))
                  (records (plist-get page :records)))

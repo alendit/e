@@ -32,10 +32,10 @@ dispatch-to-settlement, and end-to-end timing through the existing nonblocking
 status surface; it performs no SQLite read to observe SQLite work.  A subsequent
 live startup counterexample invalidated the full-composition prewarm claim:
 session construction still synchronously hydrated the complete catalog and
-enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] is therefore =In-progress=.  Its
+enumerated durable identities.  [[file:92-runtime-store-failure-isolation/addendum2.org][Addendum 2]] was therefore returned to =In-progress=.  Its
 implementation makes startup transport-only; replaces catalog/checkpoint blobs,
 process-wide mirrors, and active aggregates with bounded detached SQLite
-queries; gives Board a bounded live controller; makes task scheduling
+queries; gives Board query-backed live coordination; makes task scheduling
 query-and-claim; and removes ordinary interactive storage waits across the
 persisted owners.  DP1 is Accepted after the
 independent correction review of =aa893823= closed with no P0--P2 findings and
@@ -58,9 +58,23 @@ snapshot/subscription gap.  The v5 gate was added after the canonical schema
 refusal was misclassified as owner damage and the synthetic migration fixture
 failed to represent historical journal shapes.  The canonical user store has
 now been explicitly upgraded to schema 6 with an independently verified schema
-5 backup.  The overall
-behavioral goal is Passing on repository-side evidence, while Feature 92 stays
-=In-review= and Addendum 2 stays ledger =In-progress= pending focused review.
+5 backup.  The overall behavioral goal was later invalidated by a public
+pre-readiness submit counterexample, while Feature 92 stayed =In-review= and
+Addendum 2 returned to =In-progress=.
+
+The 2026-09-09 RDBMS-live-truth correction supersedes the bounded Board
+controller portion of Addendum 2 and is now =Done=.  Ordinary SQLite Board work
+uses SQL-owned append/route/claim/change and orchestration operations with
+canonical returned rows; Emacs keeps only callbacks, timers, executing handles,
+request work, and presentation-owned pages/cursors.  Synchronous creation and
+generic Board APIs were removed or renamed as guarded ephemeral-only entry
+points.  The DP6 focused gate passes 346 expected tests with zero unexpected,
+and independent review reached =implementation-review-fixed-point=.  The exact
+public Org Canvas pre-readiness selector passes 1/1 in 4.421716 seconds: it
+submits before held admission/view work settles, observes three heartbeats,
+renders canonical results once, isolates a two-worker write failure to one
+owner, and then persists, queries, and renders a healthy sibling.  Feature 92
+remains =In-review= for its separate broader recovery/quarantine roadmap.
 
 The final Addendum 2 cleanup removes the remaining production chat
 unloaded-index/checkpoint-loader lifecycle and aggregate-peek preview fallback.

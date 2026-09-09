@@ -816,7 +816,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                (harness (e-harness-create
                          :sessions store :enabled-layer-ids nil))
                (root-session
-                (e-chat-service-create-session
+                (e-chat-service-create-ephemeral-session
                  :harness harness :id "routing-root"))
                (root-id (plist-get root-session :id))
                (root-binding (e-chat-service-binding harness root-id))
@@ -827,7 +827,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                  (e-board-runtime-attachment-participant
                   (e-chat-service-binding-attachment root-binding))))
                (update-session
-                (e-chat-service-create-participant
+                (e-chat-service-create-ephemeral-participant
                  runtime-board harness :id "routing-private"
                  :pickup-selector '(:tags (private-update))
                  :observer-selector :self
@@ -916,9 +916,9 @@ test covers only the chat presentation subscription's redundant callbacks."
                  (restarted (e-harness-create
                              :sessions loaded :enabled-layer-ids nil))
                  (restored-root
-                  (e-chat-service-ensure-binding restarted root-id))
+                  (e-chat-service-ensure-ephemeral-binding restarted root-id))
                  (restored-private
-                  (e-chat-service-ensure-binding restarted update-id))
+                  (e-chat-service-ensure-ephemeral-binding restarted update-id))
                  (restored-board
                   (e-chat-service-binding-board restored-root))
                  (restored-source
@@ -1171,7 +1171,7 @@ selected/sibling isolation boundary."
     (unwind-protect
         (let* ((harness (e-harness-create
                          :sessions store :enabled-layer-ids nil))
-               (session (e-chat-service-create-session
+               (session (e-chat-service-create-ephemeral-session
                          :harness harness :id "input-identity"))
                (session-id (plist-get session :id))
                (binding (e-chat-service-binding harness session-id))
@@ -1278,7 +1278,7 @@ selected/sibling isolation boundary."
                  (restarted (e-harness-create
                              :sessions loaded :enabled-layer-ids nil))
                  (restored-binding
-                  (e-chat-service-ensure-binding restarted session-id))
+                  (e-chat-service-ensure-ephemeral-binding restarted session-id))
                  (restored-board
                   (e-chat-service-binding-board restored-binding))
                  (restored-source
@@ -1680,8 +1680,8 @@ selected/sibling isolation boundary."
 
 
 
-(ert-deftest e-chat-test-new-creates-distinct-persisted-sessions ()
-  "Each new chat command invocation creates a distinct persisted session."
+(ert-deftest e-chat-test-new-first-input-admits-distinct-persisted-sessions ()
+  "Each new chat's first input atomically admits a distinct session."
   (let* ((directory (make-temp-file "e-chat-" t))
          (store (e-session-persistent-store-create directory))
          (backend (e-backend-fake-create
@@ -1689,21 +1689,27 @@ selected/sibling isolation boundary."
                             (:type done :reason stop))))
          (harness (e-chat-test--activate-chat-session
                    (e-harness-create :backend backend :sessions store)))
-         first-id second-id)
+         first-id second-id first-admission second-admission)
     (unwind-protect
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
             (e-chat-test--kill-chat-buffers)
             (with-current-buffer (e-chat-new)
-              (setq first-id e-chat-session-id))
+              (setq first-id e-chat-session-id)
+              (setq first-admission
+                    (e-chat-session-submit harness first-id "first")))
             (with-current-buffer (e-chat-new)
-              (setq second-id e-chat-session-id))
+              (setq second-id e-chat-session-id)
+              (setq second-admission
+                    (e-chat-session-submit harness second-id "second")))
             (should (not (equal first-id second-id)))
             ;; A persistent v6 session is authoritative in SQLite; verify the
             ;; two queued creates through exact detached queries instead of
             ;; asking for a reconstructed aggregate.
             (e-work-with-batch-await
+              (e-work-await-batch first-admission :timeout 5.0)
+              (e-work-await-batch second-admission :timeout 5.0)
               (dolist (session-id (list first-id second-id))
                 (should
                  (equal
@@ -1763,11 +1769,11 @@ selected/sibling isolation boundary."
           (e-chat-test--activate-chat-session
            (e-harness-create :backend (e-backend-fake-create :items nil))))
          (binding
-          (e-chat-service-create-board
+          (e-chat-service-create-ephemeral-board
            :harness harness :id "latest-root"
            :metadata '(:name "Latest Root")))
          (board (e-chat-service-binding-board binding)))
-    (e-chat-service-create-participant
+    (e-chat-service-create-ephemeral-participant
      board harness :id "latest-private"
      :metadata '(:name "Latest Private"))
     (should (equal (e-chat--latest-session-id harness) "latest-root"))))
@@ -2158,10 +2164,10 @@ selected/sibling isolation boundary."
              :chat-alpha "Alpha Target" alpha-harness t)
             (e-chat-test--register-chat-instance
              :chat-beta "Beta Target" beta-harness)
-            (e-chat-service-create-session
+            (e-chat-service-create-ephemeral-session
              :harness alpha-harness :id "alpha-session"
              :metadata '(:name "Alpha Session"))
-            (e-chat-service-create-session
+            (e-chat-service-create-ephemeral-session
              :harness beta-harness :id "beta-session"
              :metadata '(:name "Beta Session"
                          :harness-instance-id :chat-beta))

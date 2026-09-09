@@ -101,8 +101,12 @@ tests, matching how the buffer behaves when shown to a user."
               (e-session-storage-runtime-store store))))
         (unless (e-board-storage-board storage board-id)
           (e-board-storage-create-board storage board-id principal))))
-    (e-session-declare-board-state
-     store session-id principal board-id)
+    (let ((board-state
+           (e-session-declare-board-state
+            store session-id principal board-id)))
+      (when (e-work-handle-p board-state)
+        (e-work-with-batch-await
+          (e-work-await-batch board-state :timeout 5.0))))
     session))
 
 
@@ -364,7 +368,7 @@ Production presentation never performs this compatibility translation."
               (e-session-declare-board-state
                store session-id (format "chat:%s" session-id)
                (format "test-board:%s" session-id))))
-         (binding (e-chat-service-ensure-binding harness session-id))
+         (binding (e-chat-service-ensure-ephemeral-binding harness session-id))
          (board (and binding
                      (e-board-registry-board-source-board
                       (e-chat-service-binding-board binding))))
@@ -449,7 +453,7 @@ Production presentation never performs this compatibility translation."
       (while (< (e-board-observer-next-index
                  (e-chat-service-binding-observer binding))
                 (e-board-message-count board))
-        (e-chat-service-drain-binding binding)))
+        (e-chat-service-drain-ephemeral-binding binding)))
     envelopes))
 
 

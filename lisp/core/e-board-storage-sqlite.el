@@ -61,22 +61,6 @@
    :owner 'e-board-storage-sqlite
    :runner #'e-board-storage-sqlite--run-query))
 
-(defun e-board-storage-sqlite-controller-state-start
-    (runtime board-id &optional record-limit)
-  "Return immediately with bounded detached controller state for BOARD-ID."
-  (let* ((query
-          (e-board-storage-sqlite--query-create
-           :runtime runtime
-           :body (list :op 'board-controller-state :board-id board-id
-                       :record-limit (or record-limit 64))))
-         (work
-          (e-work-prepare
-           e-board-storage-sqlite--query-spec query
-           :context (list :domain-ref board-id :work-kind 'board-query))))
-    (setf (e-board-storage-sqlite--query-work query) work)
-    (e-work-start-prepared work :arguments query)
-    work))
-
 (defun e-board-storage-sqlite--utf8-prefix (string limit)
   "Return STRING truncated to at most LIMIT UTF-8 bytes."
   (if (<= (string-bytes string) limit)

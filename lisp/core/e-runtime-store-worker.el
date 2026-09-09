@@ -462,7 +462,25 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
 
 (defun e-runtime-store-worker--session-board-participant-admit (body)
   "Atomically admit BODY's session, Board participant, and optional pickup."
-  (let* ((session-result
+  (let* ((board-id (plist-get body :board-id))
+         (board-row
+          (car
+           (sqlite-select
+            e-runtime-store-worker--database
+            "SELECT trusted_principal,generation,revision,next_position,root_payload FROM boards WHERE board_id=?"
+            (vector board-id))))
+         (_
+          (unless board-row
+            (signal 'e-runtime-store-board-conflict
+                    (list "Unknown Board" board-id))))
+         (generation (e-runtime-store-worker--column board-row 1))
+         (_
+          (when (and (plist-get body :generation)
+                     (/= (plist-get body :generation) generation))
+            (signal 'e-runtime-store-board-conflict
+                    (list "Stale Board generation" board-id
+                          (plist-get body :generation) generation))))
+         (session-result
           (e-runtime-store-session-worker-write
            e-runtime-store-worker--database
            (list :op 'session-append-batch
@@ -480,7 +498,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
            e-runtime-store-worker--database
            (list :op 'board-participant-put
                  :board-id (plist-get body :board-id)
-                 :generation (plist-get body :generation)
+                 :generation generation
                  :participant participant)))
          (pickup (plist-get body :pickup))
          (pickup-result
@@ -489,7 +507,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
              e-runtime-store-worker--database
              (list :op 'board-pickup-session-admit
                    :board-id (plist-get body :board-id)
-                   :generation (plist-get body :generation)
+                   :generation generation
                    :delivery-id (plist-get pickup :delivery-id)
                    :session-id (plist-get body :session-id)
                    :record (plist-get pickup :record)
@@ -497,9 +515,76 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
     (list :session session-result
           :participant participant-result
           :pickup pickup-result
+          :association
+          (list :board-id board-id
+                :principal (plist-get (plist-get body :query-delta) :principal)
+                :association-role
+                (plist-get (plist-get body :query-delta) :association-role)
+                :routing-policy
+                (copy-tree
+                 (plist-get (plist-get body :query-delta) :routing-policy) t))
           :board-revision
           (or (plist-get pickup-result :board-revision)
               (plist-get participant-result :revision)))))
+
+(defun e-runtime-store-worker--chat-session-input-admit (body)
+  "Atomically admit one new chat session and its first routed input."
+  (let* ((session-id (plist-get body :session-id))
+         (board-id (plist-get body :board-id))
+         (principal (plist-get body :principal))
+         (existing
+          (car (sqlite-select
+                e-runtime-store-worker--database
+                "SELECT board_id,principal,routing_policy FROM session_query_state WHERE session_id=?"
+                (vector session-id))))
+         session-result participant-result)
+    (if existing
+        (unless (and (equal board-id
+                            (e-runtime-store-worker--column existing 0))
+                     (equal principal
+                            (e-runtime-store-worker--column existing 1)))
+          (signal 'e-runtime-store-board-conflict
+                  (list "Chat admission identity conflicts" session-id)))
+      (e-board-storage-sqlite-worker-write
+       e-runtime-store-worker--database
+       (list :op 'board-create :board-id board-id
+             :trusted-principal principal :root (list :board-id board-id)))
+      (setq session-result
+            (e-runtime-store-session-worker-write
+             e-runtime-store-worker--database
+             (list :op 'session-append-batch :session-id session-id
+                   :records (plist-get body :records)
+                   :query-delta (plist-get body :query-delta))))
+      (setq participant-result
+            (e-board-storage-sqlite-worker-write
+             e-runtime-store-worker--database
+             (list :op 'board-participant-put :board-id board-id
+                   :generation 1 :participant
+                   (plist-get body :participant)))))
+    (let* ((append-body (copy-sequence body))
+           (_ (setq append-body (plist-put append-body :op 'board-append-route)))
+           (append-result
+            (e-board-storage-sqlite-worker-write
+             e-runtime-store-worker--database append-body))
+           (policy
+            (if existing
+                (e-runtime-store-worker--value
+                 (e-runtime-store-worker--column existing 2))
+              (plist-get (plist-get body :query-delta) :routing-policy))))
+      ;; APPEND-RESULT carries a request-local association slot for callers
+      ;; that resolve a Board from SESSION-ID.  Composite admission already
+      ;; owns the exact association and must replace that slot, not append a
+      ;; duplicate plist key whose nil value shadows the committed policy.
+      (let ((result (copy-sequence append-result)))
+        (setq result (plist-put result :session session-result)
+              result (plist-put result :participant participant-result)
+              result (plist-put result :session-id session-id)
+              result
+              (plist-put
+               result :association
+               (list :board-id board-id :principal principal
+                     :association-role "owner" :routing-policy policy)))
+        result))))
 
 (defun e-runtime-store-worker--session-delete (body)
   "Delete one session through the session worker module."
@@ -601,6 +686,8 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
     ('session-append-batch (e-runtime-store-worker--session-append-batch body))
     ('session-board-participant-admit
      (e-runtime-store-worker--session-board-participant-admit body))
+    ('chat-session-input-admit
+     (e-runtime-store-worker--chat-session-input-admit body))
     ('session-delete (e-runtime-store-worker--session-delete body))
     ('tool-transition (e-runtime-store-worker--tool-transition body))
     ('resource-put (e-runtime-store-worker--resource-put body))
@@ -608,7 +695,9 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
     ('resource-delete-lineage
      (e-runtime-store-worker--resource-delete-lineage body))
     ('resource-expire (e-runtime-store-worker--resource-expire body))
-    ((or 'board-create 'board-clear 'board-record-put 'board-routing-put
+    ((or 'board-create 'board-clear 'board-record-put 'board-append-route
+         'board-record-append
+         'board-routing-put
          'board-pickup-transition 'board-participant-put
          'board-participant-delete 'board-participant-publish
          'board-replay-progress-put 'board-pickup-session-admit)
@@ -746,6 +835,42 @@ acknowledgement prefix."
        (ignore-errors (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
        (signal (car err) (cdr err))))))
 
+(defun e-runtime-store-worker--chat-session-view (body)
+  "Read one bounded chat DTO and Board change boundary in this SQL snapshot."
+  (let* ((session-id (plist-get body :session-id))
+         (limit (min 64 (max 1 (or (plist-get body :limit) 32))))
+         (metadata
+          (e-runtime-store-session-worker-read
+           e-runtime-store-worker--database
+           (list :op 'session-metadata :session-id session-id)))
+         (association
+          (e-runtime-store-session-worker-read
+           e-runtime-store-worker--database
+           (list :op 'session-board-association :session-id session-id)))
+         (board-id (and association (plist-get association :board-id))))
+    (unless (and metadata association (stringp board-id))
+      (signal 'e-runtime-store-board-conflict
+              (list "Session has no complete Board chat view" session-id)))
+    (let* ((window
+            (e-board-storage-sqlite-worker-read
+             e-runtime-store-worker--database
+             (list :op 'board-visible-window :board-id board-id :limit limit)))
+           (messages
+            (mapcar
+             (lambda (row)
+               (let* ((record (copy-tree (plist-get row :record) t))
+                      (kind (or (plist-get record :kind)
+                                (plist-get record :record-kind))))
+                 (plist-put record :role
+                            (if (eq kind 'input) 'user 'assistant))
+                 record))
+             (plist-get window :records))))
+      (list :session-id session-id :metadata metadata
+            :association association :messages messages
+            :cursor (plist-get window :cursor)
+            :through (plist-get window :through)
+            :truncated (and (plist-get window :truncated) t)))))
+
 (defun e-runtime-store-worker--read (body)
   "Execute bounded typed query BODY."
   (pcase (plist-get body :op)
@@ -803,6 +928,8 @@ acknowledgement prefix."
        (list :destination destination
              :bytes (file-attribute-size (file-attributes destination))
              :verified t)))
+    ('chat-session-view
+     (e-runtime-store-worker--chat-session-view body))
     ((or 'session-query-state 'session-state-get
          'session-query-state-get
          'session-metadata 'session-metadata-get
@@ -826,9 +953,11 @@ acknowledgement prefix."
        "SELECT call_id,state,payload,revision FROM tool_followups WHERE session_id=? ORDER BY call_id LIMIT ?"
        (vector (plist-get body :session-id)
                (min 1024 (max 1 (or (plist-get body :limit) 256)))))))
-    ((or 'board-get 'board-list 'board-record-page 'board-routing-get
+    ((or 'board-get 'board-list 'board-record-page 'board-visible-window
+         'board-orchestration-run 'board-orchestration-runs
+         'board-routing-get
          'board-pickup-list 'board-participant-list
-         'board-replay-progress-get 'board-controller-state)
+         'board-replay-progress-get)
      (e-board-storage-sqlite-worker-read
       e-runtime-store-worker--database body))
     ((or 'task-snapshot 'task-queue-status)
@@ -920,6 +1049,23 @@ acknowledgement prefix."
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown read operation" (plist-get body :op))))))
 
+(defun e-runtime-store-worker--read-snapshot (body)
+  "Execute BODY against one SQLite read snapshot.
+
+`store-backup' uses SQLite's own `VACUUM INTO' snapshot and cannot run inside a
+transaction.  Every ordinary bounded query is fenced by one read transaction so
+multi-statement consumer-shaped adapters return one database-issued boundary."
+  (if (eq (plist-get body :op) 'store-backup)
+      (e-runtime-store-worker--read body)
+    (sqlite-execute e-runtime-store-worker--database "BEGIN")
+    (condition-case err
+        (prog1 (e-runtime-store-worker--read body)
+          (sqlite-execute e-runtime-store-worker--database "COMMIT"))
+      (error
+       (ignore-errors
+         (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
+       (signal (car err) (cdr err))))))
+
 (defun e-runtime-store-worker--handle (request)
   "Handle one decoded REQUEST."
   (pcase (plist-get request :kind)
@@ -935,7 +1081,8 @@ acknowledgement prefix."
                 (signal 'e-runtime-store-worker-error
                         (list "Read-only worker rejected a mutation"))
               (e-runtime-store-worker--write request)))
-    ('read (e-runtime-store-worker--read (plist-get request :body)))
+    ('read (e-runtime-store-worker--read-snapshot
+            (plist-get request :body)))
     (_ (signal 'e-runtime-store-worker-error
                (list "Unknown request kind" (plist-get request :kind))))))
 

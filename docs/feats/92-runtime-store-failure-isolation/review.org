@@ -833,3 +833,32 @@ publication after release, owner-local failure, and unrelated session reopen.
 
 No live Emacs or canonical database participated.  The implementation requires
 a full Emacs restart for live use.
+
+* Addendum 2 DP6 RDBMS-first correction acceptance
+
+Independent implementation review found four runtime blockers after the first
+graphical pass: synchronous creation could wait for a first input that its
+caller could not submit; public Board and orchestration APIs still entered the
+ephemeral reducer; SQL binding retirement dereferenced a nonexistent Board;
+and routing silently treated participants after row 512 as absent.  Corrections
+removed the synchronous facade, made ordinary Board/orchestration access
+query-backed, added Board-free retirement, and made addressed routing exact
+while internally paging association policy.
+
+A final clean-cut review found one unguarded generic Board constructor that
+could enqueue a SQLite session root before failing.  It is now explicitly
+named =e-chat-service-create-ephemeral-board= and rejects SQLite before any
+mutation.  The stale overview fixture now waits for the commits whose database
+state it asserts; production adds no optimistic read overlay.  Re-review
+reached =implementation-review-fixed-point= with no remaining actionable DP6
+finding.
+
+The final focused gate passed 346 expected tests: 330 executed, 16 explicit
+legacy skips, and zero unexpected results.  The exact public graphical selector
+=e-runtime-store-recovery-graphical-f92a2-dp6-public-pre-readiness-turn=
+passed 1/1 with zero unexpected in 4.421716 seconds.  It covers pre-readiness
+new and existing Daily submission, three heartbeats, exactly-once canonical
+rendering, two-worker owner-local failure, and healthy-sibling persistence,
+query, and rendering.  Compilation, changed-file parenthesis checks, diff
+checks, and obsolete/blocking API reachability checks passed.  The running
+Emacs and canonical database were not used.

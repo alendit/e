@@ -197,7 +197,7 @@ capability-owned message details."
 
 (cl-defun e-modernchat-view-model-snapshot
     (harness session-id &key session-metadata composer-text message-limit
-             activity-limit)
+             activity-limit presentation-activities)
   "Return JSON-friendly snapshot for HARNESS SESSION-ID."
   (let* ((store (e-harness-sessions harness))
          (live-state (e-harness-executing-session-state harness session-id))
@@ -219,7 +219,8 @@ capability-owned message details."
                                   (e-chat-service-messages harness session-id))
                     (or message-limit e-modernchat-view-model-message-limit)))
          (activities (e-modernchat-view-model--take-last
-                      (e-chat-service-activity-events harness session-id)
+                      (append (e-chat-service-activity-events harness session-id)
+                              (copy-tree presentation-activities t))
                       (or activity-limit e-modernchat-view-model-activity-limit)))
          (attachments (e-modernchat-view-model--attachments metadata)))
     `((session . ((id . ,(e-modernchat-view-model--string session-id))

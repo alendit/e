@@ -1025,7 +1025,9 @@ returned in presentation order (oldest to newest within the window)."
           :limit limit
           :truncated truncated
           :byte-count bytes
-          :byte-limit e-runtime-store-session-worker-page-byte-limit)))
+          :byte-limit e-runtime-store-session-worker-page-byte-limit
+          :high-water
+          (e-runtime-store-session-worker--position database session-id))))
 
 (defun e-runtime-store-session-worker--context-path (database body)
   "Read exactly one selected parent path and apply its latest compaction.
@@ -1225,7 +1227,9 @@ unselected branch rows and unrelated journal families are never returned."
           e-runtime-store-session-worker-context-receipt-byte-limit
           :record-limit e-runtime-store-session-worker-context-path-row-limit
           :byte-count bytes
-          :byte-limit e-runtime-store-session-worker-context-path-byte-limit)))
+          :byte-limit e-runtime-store-session-worker-context-path-byte-limit
+          :high-water
+          (e-runtime-store-session-worker--position database session-id))))
 
 (defun e-runtime-store-session-worker--header (database body)
   "Return bounded metadata for SESSION-ID's journal."

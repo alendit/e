@@ -41,19 +41,9 @@ List buffers hook onto this to track live subagent status.")
   (run-hook-with-args 'e-subagent-registry-change-functions registry))
 
 (defun e-subagent-registry--publish-change (record)
-  "Publish RECORD's normalized lifecycle change through its producer binding."
-  (when-let ((binding (plist-get record :producer-binding)))
-    (e-board-runtime-producer-publish-fact
-     binding
-     :tags (list 'change (plist-get record :status))
-     :attributes (list :subagent-id (plist-get record :subagent-id)
-                       :status (plist-get record :status)
-                       :type (plist-get record :type)
-                       :parent-session-id (plist-get record :parent-session-id)
-                       :session-id (plist-get record :session-id))
-     :content (format "Subagent %s is %s"
-                      (plist-get record :subagent-id)
-                      (plist-get record :status)))))
+  "Publish RECORD's normalized lifecycle through its injected callback."
+  (when-let ((publish (plist-get record :publication-function)))
+    (funcall publish record)))
 
 (defun e-subagent-registry--next-id (registry)
   "Return the next stable subagent id from REGISTRY."
@@ -124,15 +114,16 @@ list and publishes no Board lifecycle facts."
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
-              child-harness parent-harness producer-binding run-id task-key attempt
+              child-harness parent-harness publication-function publication-target
+              run-id task-key attempt
               subagent-id work-handle)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
 progresses.  CHILD-HARNESS is the live harness running the child, stored
 internally so steer/read reach the child session on its own harness."
-  (unless (e-board-runtime-producer-binding-live-p producer-binding)
-    (signal 'e-board-runtime-producer-disabled
-            (list 'subagent-registry 'missing-live-binding)))
+  (unless (functionp publication-function)
+    (signal 'wrong-type-argument
+            (list 'functionp :publication-function)))
   (when subagent-id
     (let ((reservation
            (gethash subagent-id
@@ -153,7 +144,8 @@ internally so steer/read reach the child session on its own harness."
                        :schedule schedule
                        :child-harness child-harness
                        :parent-harness parent-harness
-                       :producer-binding producer-binding
+                       :publication-function publication-function
+                       :publication-target publication-target
                        :run-id run-id
                        :task-key task-key
                        :attempt attempt

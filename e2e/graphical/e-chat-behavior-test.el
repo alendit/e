@@ -341,7 +341,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
      (list participant-id 999 1))
     (let (rendered-event rendered-turn-id)
       (with-current-buffer (plist-get fixture :transcript)
-        (e-chat-service-drain-binding binding)
+        (e-chat-service-drain-ephemeral-binding binding)
         (let ((event
                (car
                 (last
@@ -821,7 +821,7 @@ than the invisible insertion position."
                  :attributes '(:status done)
                  :source-activity-key
                  (list participant-id turn-id 2))
-                (e-chat-service-drain-binding binding)
+                (e-chat-service-drain-ephemeral-binding binding)
                 ;; Apply the drained lifecycle event before projecting the
                 ;; curation boundary.  A settled latest round is temporarily
                 ;; shown as Working until the follow-up request makes it a
@@ -910,7 +910,7 @@ than the invisible insertion position."
                    :attributes '(:status started)
                    :source-activity-key
                    (list participant-id turn-id 3))
-                  (e-chat-service-drain-binding binding)
+                  (e-chat-service-drain-ephemeral-binding binding)
                   (e-graphical-test-wait-until
                    (lambda ()
                      (with-current-buffer transcript

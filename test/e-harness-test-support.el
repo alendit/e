@@ -30,7 +30,7 @@ the same board/session creation service used by presentation shells."
         (e-session-declare-board-state
          (e-harness-sessions harness) session-id principal board-id)
         (e-session-local-state (e-harness-sessions harness) session-id))
-    (e-chat-service-create-session
+    (e-chat-service-create-ephemeral-session
      :harness harness :id id :metadata metadata)))
 
 (defun e-harness-test--session-tokens (harness)

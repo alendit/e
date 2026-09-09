@@ -383,25 +383,37 @@ safe to store in a board envelope and contains no runtime state."
                                             e-board-orchestration-error-limit nil nil "...")))))
              (list :version version :type type :idempotency-key key :payload body))))))))
 
-(cl-defun e-board-orchestration-publish-fact (board fact &key author)
-  "Validate and idempotently publish durable orchestration FACT to BOARD."
+(cl-defun e-board-orchestration-fact-record-fields (fact &key author)
+  "Return canonical Board record fields for validated orchestration FACT."
   (let* ((normalized (e-board-orchestration-validate-fact fact))
          (payload (plist-get normalized :payload))
          (source-key (list (format "orchestration:%s:%s"
                                           (plist-get payload :run-id)
                                           (plist-get normalized :type))
                                     (plist-get normalized :idempotency-key) 0)))
+    (list :source-key source-key :author author :tags '(orchestration)
+          :attributes
+          (list :orchestration-version e-board-orchestration-fact-version
+                :orchestration-wire-version e-board-orchestration-wire-version
+                :orchestration-type (symbol-name (plist-get normalized :type))
+                :orchestration-run-id (plist-get payload :run-id)
+                :orchestration-payload
+                (e-board-orchestration--wire-encode payload)
+                :orchestration-idempotency-key
+                (plist-get normalized :idempotency-key))
+          :content (format "Orchestration %s for run %s"
+                           (plist-get normalized :type)
+                           (plist-get payload :run-id)))))
+
+(cl-defun e-board-orchestration-publish-fact (board fact &key author)
+  "Validate and idempotently publish durable orchestration FACT to BOARD."
+  (let ((fields (e-board-orchestration-fact-record-fields fact :author author)))
     (e-board-post-fact
-     board :author author :tags '(orchestration)
-     :attributes (list :orchestration-version e-board-orchestration-fact-version
-                       :orchestration-wire-version e-board-orchestration-wire-version
-                       :orchestration-type (symbol-name (plist-get normalized :type))
-                       :orchestration-payload
-                       (e-board-orchestration--wire-encode payload)
-                       :orchestration-idempotency-key (plist-get normalized :idempotency-key))
-     :content (format "Orchestration %s for run %s"
-                      (plist-get normalized :type) (plist-get payload :run-id))
-     :source-fact-key source-key)))
+     board :author (plist-get fields :author)
+     :tags (plist-get fields :tags)
+     :attributes (plist-get fields :attributes)
+     :content (plist-get fields :content)
+     :source-fact-key (plist-get fields :source-key))))
 
 (defun e-board-orchestration-fact-from-message (message)
   "Return normalized orchestration fact from board MESSAGE, or nil."
@@ -428,6 +440,38 @@ safe to store in a board envelope and contains no runtime state."
              :type type :payload payload
              :idempotency-key
              (plist-get attributes :orchestration-idempotency-key))))))
+
+(defun e-board-orchestration-fact-from-record (record)
+  "Return normalized orchestration fact from detached Board RECORD, or nil."
+  (if (e-board-message-p record)
+      (e-board-orchestration-fact-from-message record)
+    (when (and (listp record)
+               (eq (or (plist-get record :kind)
+                       (plist-get record :record-kind))
+                   'fact)
+               (memq 'orchestration (plist-get record :tags)))
+      (let* ((attributes (plist-get record :attributes))
+             (wire-version (plist-get attributes :orchestration-wire-version))
+             (type (e-board-orchestration--legacy-enum
+                    (plist-get attributes :orchestration-type)
+                    e-board-orchestration--fact-types :type))
+             (payload
+              (if wire-version
+                  (progn
+                    (unless (and (integerp wire-version)
+                                 (= wire-version
+                                    e-board-orchestration-wire-version))
+                      (e-board-orchestration--invalid
+                       :wire-version wire-version))
+                    (e-board-orchestration--wire-decode
+                     (plist-get attributes :orchestration-payload)))
+                (e-board-orchestration--legacy-payload
+                 type (plist-get attributes :orchestration-payload)))))
+        (e-board-orchestration-validate-fact
+         (list :version (plist-get attributes :orchestration-version)
+               :type type :payload payload
+               :idempotency-key
+               (plist-get attributes :orchestration-idempotency-key)))))))
 
 (defun e-board-orchestration--task-projection (task attempts reports)
   "Reduce TASK with ATTEMPTS and REPORTS into one task projection."
@@ -476,9 +520,14 @@ performs a clock-driven cancellation; a passed deadline is only evidence."
         (conflicts nil) (claims nil)
         (seen (make-hash-table :test 'equal)))
     (dolist (item facts)
-      (let ((fact (if (e-board-message-p item)
-                      (e-board-orchestration-fact-from-message item)
-                    (e-board-orchestration-validate-fact item))))
+      (let ((fact (cond
+                   ((e-board-message-p item)
+                    (e-board-orchestration-fact-from-message item))
+                   ((and (listp item)
+                         (or (plist-get item :record-kind)
+                             (plist-get item :kind)))
+                    (e-board-orchestration-fact-from-record item))
+                   (t (e-board-orchestration-validate-fact item)))))
         (when fact
           (let ((key (list (plist-get fact :type) (plist-get fact :idempotency-key))))
             (unless (gethash key seen)

@@ -47,8 +47,9 @@
     (should-error
      (e-chat-session-submit harness "session-1" "")
      :type 'user-error)
-    (let ((message-id (e-chat-session-submit harness "session-1" "hello")))
-      (should (stringp message-id))
+    (let ((admission (e-chat-session-submit harness "session-1" "hello")))
+      (should (e-work-handle-p admission))
+      (should (stringp (e-work-handle-result admission)))
       (e-chat-session-test--drain-board harness "session-1")
       (should (equal (plist-get (car (e-harness-messages harness "session-1"))
                                 :content)
@@ -124,14 +125,15 @@
     (should-error
      (e-chat-session-queue harness "session-1" "")
      :type 'user-error)
-    (let ((message-id
+    (let ((admission
            (e-chat-session-queue
             harness
             "session-1"
             "queued"
             :references '((:uri "buffer://source"))
             :metadata '(:source chat-composer))))
-      (should (stringp message-id))
+      (should (e-work-handle-p admission))
+      (should (stringp (e-work-handle-result admission)))
       (e-chat-session-test--drain-board harness "session-1")
       (let ((item (car (e-harness-queued-prompts harness "session-1"))))
         (should (equal (plist-get item :prompt) "queued"))
@@ -160,9 +162,12 @@
     (should-error
      (e-chat-session-steer harness "session-1" "")
      :type 'user-error)
-    (should (stringp (e-chat-session-steer
-                      harness "session-1" "focus here"
-                      :metadata '(:source chat-composer))))
+    (let ((admission
+           (e-chat-session-steer
+            harness "session-1" "focus here"
+            :metadata '(:source chat-composer))))
+      (should (e-work-handle-p admission))
+      (should (stringp (e-work-handle-result admission))))
     (e-chat-session-test--drain-board harness "session-1")
     (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
            (item (car (plist-get entry :pending-steering-input))))
@@ -187,7 +192,7 @@
      (e-harness-sessions harness)
      "session-1"
      '(:role user :content "persisted"))
-    (e-chat-session-reset harness "session-1")
+    (e-chat-session-reset-ephemeral harness "session-1")
     (should-not (e-harness-messages harness "session-1"))
     (e-chat-session-rename harness "session-1" "Renamed")
     (should (equal (e-session-display-title
@@ -327,49 +332,6 @@
     (should (e-work-spec-p
              (e-action-work
               (e-capabilities-action-spec capability :compact))))))
-
-(ert-deftest e-chat-session-test-persisted-canonical-attachment-replaces-canvas ()
-  "A persisted canonical attachment remains usable after replay."
-  (let* ((directory (make-temp-file "e-chat-session-context-" t))
-         (store (e-session-persistent-store-create directory))
-         reopened)
-    (unwind-protect
-        (progn
-          (e-session-create store :id "canonical")
-          (e-session-set-context-references
-           store "canonical" 'chat-session
-           '(:attachments
-             ((:uri "file://old.org" :label "old" :canvas t))))
-          (e-session-storage-close store)
-          (setq store nil)
-          (let* ((loaded (setq reopened
-                               (e-session-persistent-store-create directory)))
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions loaded)))
-            (should (equal (mapcar (lambda (attachment)
-                                     (plist-get attachment :uri))
-                                   (e-chat-session-attachments
-                                    harness "canonical"))
-                           '("file://old.org")))
-            (e-chat-session-attach-context
-             harness "canonical"
-             '(:uri "file://archive.org" :label "archive")
-             :canvas t)
-            (let ((attachments
-                   (e-chat-session-attachments harness "canonical")))
-              (should (= (length attachments) 1))
-              (should (equal (plist-get (car attachments) :uri)
-                             "file://archive.org"))
-              (should (plist-get (car attachments) :canvas)))
-            (should
-             (e-chat-session-context-attachments-provider
-              :harness harness :session-id "canonical"))))
-      (when store
-        (e-session-storage-close store))
-      (when reopened
-        (e-session-storage-close reopened))
-      (delete-directory directory t))))
 
 (ert-deftest e-chat-session-test-obsolete-attachment-metadata-rejected ()
   "The session schema no longer accepts the migrated legacy metadata key."

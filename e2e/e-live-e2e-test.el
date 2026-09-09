@@ -4387,13 +4387,13 @@ provider turn to settle without an implicit local deadline."
           (e-board-e2e-reset-runtime)
           (setq session-one
                 (plist-get
-                 (e-chat-service-create-session
+                 (e-chat-service-create-ephemeral-session
                   :harness harness :id "live-concurrent-one"
                   :metadata (list :project-root root))
                  :id))
           (setq session-two
                 (plist-get
-                 (e-chat-service-create-session
+                 (e-chat-service-create-ephemeral-session
                   :harness harness :id "live-concurrent-two"
                   :metadata (list :project-root root))
                  :id))

@@ -851,9 +851,7 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
     (e-session-append-activity-event
      store "newer-session" "newer-turn" 'turn-failed
      '(:error "newer failure"))
-    (cl-letf (((symbol-function 'e-chat-create-session)
-               (lambda (&rest _args) '(:id "inspection-session")))
-              ((symbol-function 'e-chat-open-session)
+    (cl-letf (((symbol-function 'e-chat-open-session)
                (lambda (&rest _args) nil))
               ((symbol-function 'e-chat-submit-session)
                (lambda (_harness _session-id submitted-prompt &rest _args)

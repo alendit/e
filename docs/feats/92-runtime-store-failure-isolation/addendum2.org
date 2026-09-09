@@ -4,9 +4,12 @@
 
 * Status
 
-Implemented in the current delivery package.  The document remains
-=In-progress= in the dev-work ledger pending focused review; this is not a
-Feature 92 =Done= claim.
+=Done=.  The 2026-09-09 RDBMS-first correction removes the counterexample that
+invalidated the prior DP3 and DP5 claims.  Ordinary SQLite chat no longer
+constructs a Board aggregate, predicts durable identities, or defers submission
+behind binding reconstruction.  Public Org Canvas can submit before worker or
+view readiness; SQLite returns the canonical identity, order, routing, pickup,
+and observation cursor used by the live presentation.
 
 This addendum rebaselines the remaining Feature 92 work around an RDBMS-first
 runtime boundary.  SQLite is the durable authority for identity, current state,
@@ -26,15 +29,11 @@ assumptions that ordinary startup or interactive access may construct a durable
 mirror, enumerate every session, or use an opaque catalog/checkpoint value as
 the normal query model.
 
-=F92A2-DP1= remains Accepted.  The implementation completes
-the scoped =F92A2-DP2=--=F92A2-DP5= runtime path: public Daily and persisted
-session navigation use detached bounded queries; selected provider context is
-assembled from one request-scoped path result plus bounded crossing optimistic
-mutations; Board uses one bounded current-state/set query; tasks query and
-atomically claim runnable work; and the public graphical delay/release/failure
-gate passes end to end.  No active-session generation loader, candidate
-aggregate, catalog/stub mirror, checkpoint publication, or durable-state cache
-is part of the ordinary v6 path.
+=F92A2-DP1=, the session-query portion of DP2, and task query-and-claim remain
+accepted inputs.  The bounded Board-controller design and the prior public
+gate are superseded.  DP6 below removes durable Board reconstruction from the
+ordinary SQLite path and makes SQL transactions and returned rows authoritative
+for append identity, order, routing, pickup state, and publication.
 
 The full repository run is retained as a regression census, not as a license to
 reintroduce superseded replica behavior.  The package-relevant suites, public
@@ -59,7 +58,9 @@ These terms have separate owners and must not be collapsed into a generic
 
 * Behavioral trace
 
-- Goal ID :: =F92A2-SQLITE-WORKING-SET= (stable identifier)
+- Goal ID :: =F92A2-RDBMS-LIVE-TRUTH= (stable identifier; supersedes
+  =F92A2-SQLITE-WORKING-SET= where that goal permitted a reconstructed Board
+  working set)
 - Behavioral goal :: Starting Emacs, opening Daily, browsing history, and
   running timers remain responsive regardless of durable session, Board, task,
   checkpoint, or catalog size.  SQLite remains authoritative for durable state
@@ -72,20 +73,29 @@ These terms have separate owners and must not be collapsed into a generic
   startup completes with only private open traffic.  At least three
   independently scheduled heartbeats and one composer edit complete while the
   hold remains.  Both an existing Daily and a new Daily return their buffers
-  immediately; exact session metadata, exact Board association, and the
-  visible recent-message page are separate bounded asynchronous queries.  A
+  immediately.  Before Board association or any other read settles, submit
+  through the real Org Canvas composer.  The submit operation immediately
+  admits one SQL-owned append-and-route transaction and returns no invented
+  durable identity.  Release the held reads and write in an adversarial order;
+  the canonical row returned by SQLite starts delivery and renders exactly
+  once.  An event committed between the initial visible-page snapshot and live
+  observation is returned through an authoritative database cursor rather than
+  lost in a SELECT-then-subscribe gap.  Exact session metadata, exact Board
+  association, and the visible recent-message page remain separate bounded
+  asynchronous queries.  A
   provider turn asks only for the selected branch/compaction path.  History is
   paged only when a history consumer asks for it.  No whole session, Board, or
   task durable state is copied into Emacs.
-- Product authority :: Operator.
-- Owning contract :: =F92A2-C01=--=F92A2-C10= below.  The parent's
+- Product authority :: User (explicit 2026-09-09 direction to trust the RDBMS
+  and remove application-side durable-state arbitration).
+- Owning contract :: =F92A2-C01=--=F92A2-C15= below.  The parent's
   requested-session validation/quarantine contract remains roadmap work and is
   not implemented through a reconstructed loader in this package.
-- Behavioral status :: Implemented and passing on the primary public graphical gate.  The
-  delivered revision proves immediate Daily open, live composer and
-  timer progress during held persistence, ordered release, owner-local failure,
-  and a healthy sibling readback.  The ledger remains In-progress pending
-  focused review; passing this gate is not a Feature 92 Done claim.
+- Behavioral status :: Passing on the direct public scenario.  The corrected
+  graphical test submits before the atomic first-input admission or detached
+  view settles, observes three independent heartbeats, renders canonical rows
+  exactly once, reports owner-local worker failure, and proves a healthy sibling
+  can still persist, query, and render.
 
 * Implementation ledger
 
@@ -117,22 +127,31 @@ These terms have separate owners and must not be collapsed into a generic
   authoritative current row includes the current context-generation identity,
   so context curation validates and advances it transactionally without an
   Emacs-owned session copy.
-- =F92A2-DP3= :: Implemented in the current tree.  Existing-session binding opens one bounded Board
-  controller query containing current rows, participant/pickup sets, set-based
-  routing, and a capped working window; full Board restoration is absent.
+- =F92A2-DP3= :: Superseded in part.  Its SQL set queries are useful, but
+  installing their durable participant, pickup, routing, counter, and message
+  results into an Emacs Board made a second authority.  Ordinary SQLite chat
+  must not open that controller.
 - =F92A2-DP4= :: Implemented in the current tree.  Scheduler construction/load issues no SQL;
   explicit start atomically claims runnable work and retains only executing
   records and live handles.  A durable enqueue retains its optimistic local
   value only until enqueue settlement, then releases it unless an atomic claim
   makes it executing.
-- =F92A2-DP5= :: Implemented in the current tree.  Overview, picker, resource,
+- =F92A2-DP5= :: Accepted only for bounded navigation and nonblocking storage
+  reachability.  Its public acceptance claim is invalidated.  Overview, picker, resource,
   Canvas, and Org Canvas persisted-session navigation use one bounded
   asynchronous root-session page operation.  A page overlays only the bounded
   mutations already in flight at request admission, so a just-enqueued Board
   association is visible without waiting and without installing a catalog or
   session mirror.  The nonblocking sweep rejects new ordinary v6 call sites for
-  the known blocking store/session operations, and the public graphical gate
-  passes.
+  the known blocking store/session operations.
+- =F92A2-DP6= :: Done after independent implementation review reached
+  =implementation-review-fixed-point=.  Ordinary SQLite Board access uses
+  SQL-owned append/route/claim/change-query and orchestration operations with a
+  coordination-only live registry.  Public creation/open APIs return buffers
+  or =e-work= values without a synchronous compatibility facade.  Provisional
+  durable IDs, binding-readiness submission deferral, predicted publication,
+  local durable-row vetoes, and the generic unguarded Board constructor are
+  removed.
 
 * Reason for the RDBMS-first boundary
 
@@ -204,15 +223,29 @@ command that needs selected context requests the required branch/compaction
 path explicitly.  It must not obtain a hidden full aggregate as a convenience
 for a current-state update.
 
-** Board is a lightweight controller
+** Board is coordination-only in the ordinary SQLite path
 
-Board startup uses exact current-row queries for the Board, participants, and
-pickups, plus a bounded visible working-message window and set-based routing
-queries.  The Board service retains live subscribers, callbacks, timers,
-working messages, and executing actions only.  Existing explicit observer
-continuation retains its bounded cursor contract, but no new generic Board
-history facade is introduced.  Board startup never replays all Board records
-and never performs one routing query per historical message.
+An ordinary SQLite Board does not reconstruct a Board object from durable
+rows.  SQLite transactions own message identity and order, participant and
+pickup state, routing decisions, claims, retries, and durable observation
+cursors.  The Board application service exposes consumer-shaped asynchronous
+operations for append-and-route, claim/settle, exact association/current-row
+queries, and bounded visible/change pages.
+
+Emacs may register a live endpoint callback or observer callback keyed by a
+durable identifier already returned by SQLite.  It may retain an executing
+claimed delivery handle and a presentation-owned page/cursor.  Those values do
+not authorize it to accept or reject a durable fact.  It must not retain root
+revision/position counters, participant or pickup collections, routing state,
+message history, seen-ID sets, durable turn maps, or predicted durable results
+as a Board mirror.  The explicit in-memory Board engine remains available only
+for genuinely ephemeral composition and its own tests; ordinary SQLite chat
+does not instantiate it.
+
+Observation crosses from a bounded database snapshot to later changes through
+one authoritative SQLite cursor.  Installing a process-local subscription
+after a SELECT without such a cursor is not a valid boundary because a commit
+can fall between the two operations.
 
 ** Task scheduling is claim-based
 
@@ -317,11 +350,16 @@ these are repository-controlled contracts.
 | F92A2-C03 | Exact session metadata, exact Board association, visible recent-message data, and selected provider context return detached bounded values through immediately returned =e-work= values. No result populates a process-wide durable mirror; historical paging is added only with a real consumer. | Session application service and SQLite query adapter; Daily/context consumers. | F92A2-DP2 | Existing-Daily query identity/count/row bounds and no-aggregate tests. | Not applicable. | Query latency and result bytes are observational. | Accepted | Passing in focused and graphical evidence. |
 | F92A2-C04 | Daily open returns its buffer immediately. Emacs retains only presentation, visible-window, callback/subscriber, timer, executing-turn, and bounded optimistic state. SQLite remains the authority; there is no whole/active session replay, candidate store, generation loader, active durable replica, or release cache. | Session application service and Daily/presentation surfaces. | F92A2-DP2 | Existing-Daily delayed exact/association/recent queries, selected context-path query, and no-mirror allocation evidence. | Not applicable. | Query and render latency are observational. | Accepted | Passing in the public graphical gate. |
 | F92A2-C05 | A sealed session command is interpreted against the authoritative current row inside one SQLite transaction that atomically commits journal, current-query state, deletion control, and receipt. Independent submissions have no semantic order; acknowledgement-before-later-submission and explicit multi-change transactions are the ordering boundaries. | Session domain, SQLite adapter, and worker. | F92A2-DP2 | Command wire validation, no-prefetch admission, transaction/rollback, replay/delete, reopen, and obsolete-relation tests. | Not applicable. | Derivation and transaction latency are observational. | Accepted | Passing in the relational command and worker suites. |
-| F92A2-C06 | Board constructs and initializes a lightweight controller from exact current rows, set-based participants/pickups/routing, and a bounded visible working window. No Board history replay or routing N+1 occurs. | Board application service and Board SQLite adapter. | F92A2-DP3 | Board scale, query-count, visible-window, and subscriber-teardown tests. | Not applicable. | Query/controller latency is observational. | Accepted | Passing in the Daily query-window graphical scenario. |
+| F92A2-C06 | Ordinary SQLite Board access never reconstructs or retains durable Board counters, participants, pickups, routing, messages, seen identities, or turn maps in an Emacs Board.  A coordination-only live registry retains callbacks, timers, executing claimed handles, and presentation-owned bounded pages/cursors; the explicit in-memory Board engine remains available only for ephemeral composition. | Board application service, SQLite adapter, and live coordination registry. | F92A2-DP6 | Static ordinary-path reachability plus retained-state inspection and ephemeral-engine regression tests. | Not applicable. | Live-registry cardinality is observational. | Accepted | Passing: SQL bindings retain no Board aggregate; public Board/orchestration access is query-backed. |
 | F92A2-C07 | Task startup queries and atomically claims runnable work as detached input and retains only executing task state/live handles. Terminal history remains in SQLite; no task snapshot is rebuilt in Emacs. | Task scheduler and task SQLite adapter. | F92A2-DP4 | Task scale, claim, and detached-runnable-bound tests. | Not applicable. | Claim and retained scheduler-state size are observational. | Accepted | Passing in focused task tests. |
 | F92A2-C08 | Interactive storage admits bounded work and returns without =e-runtime-store-call=, =e-runtime-store-await=, =accept-process-output=, flush, open/commit/retry/recovery/close wait, or synchronous settlement. A bounded transport buffer is capacity management, not semantic ordering. Only named batch/operator/offline/test APIs may block. | Each domain application service over the runtime transport. | F92A2-DP5 | Static reachability and delayed-open/read/write graphical portfolio. | Not applicable. | Admission and settlement latency are observational. | Accepted | Passing for startup, Daily, Board, task, session, cron, voice, Goodnite, raw-result, and session-tmp paths. |
 | F92A2-C09 | Stopped-store v5-to-v6 upgrade uses verified backup/rollback, derives solely from canonical journals, ignores retired projections, preserves identity/position/payload digest, validates rows/associations, atomically installs v6, and removes obsolete relations. Non-derivable canonical state names the affected session. | Offline migration adapter and session derivation domain. | F92A2-DP2 | Disposable v5/v6 projection-independence, parity, fault, rollback, reopen, and obsolete-relation tests. | Not applicable. | Upgrade time and database size are observational. | Accepted | Passing in the disposable offline migration suite. |
-| F92A2-C10 | Existing and new public Daily surfaces return buffers immediately and remain editable during held worker open/read/write. The gate observes at least three independent heartbeats and one composer edit. Read failures are request-local and write failures use owner-local suspect fencing. After one session fails, another session still enqueues, persists, queries, and renders. | Session/Board services and Org Canvas presentation. | F92A2-DP5 | Existing/new Daily, request-local read failure, and write-failure with healthy-sibling graphical scenarios. | Not applicable. | Heartbeat period and wall-clock latency are private test defaults. | Accepted | Passing in the public delay/release/write-failure scenario. |
+| F92A2-C10 | Existing and new public Daily surfaces return buffers immediately and remain editable during held worker open/read/write.  The real Org Canvas composer may submit before metadata, association, page, or Board work settles.  The gate observes at least three independent heartbeats and one composer edit. Read failures are request-local and write failures use owner-local suspect fencing. After one session fails, another session still submits, persists, queries, and renders. | Session/Board services and Org Canvas presentation. | F92A2-DP6 | Corrected pre-readiness existing/new Daily, request-local read failure, and write-failure with healthy-sibling graphical scenarios. | Not applicable. | Heartbeat period and wall-clock latency are private test defaults. | Accepted | Passing in the public pre-readiness graphical gate. |
+| F92A2-C11 | SQLite assigns canonical Board message and delivery identity, order, routing, and pickup state in one append-and-route transaction.  A claimed delivery starts a harness-owned live turn; its process-local turn identity may correlate with canonical durable identities but never accepts or rejects durable rows.  Interactive submission immediately admits the transaction without waiting for Board reads or inventing an application durable ID.  Commit failure settles visibly; it never silently drops a deferred closure. | Board SQL application service and worker transaction; chat submission composition. | F92A2-DP6 | Owner transaction tests, public pre-readiness composer scenario, and API-consumer tests proving admission handles are not turn IDs. | Not applicable. | Admission and commit latency are observational. | Accepted | Passing in SQL owner transactions and public composer tests. |
+| F92A2-C12 | Publication and live delivery use the canonical committed result returned by SQLite.  Duplicate/no-op/canonical ordering outcomes cannot produce predicted phantom events, and process-local IDs or projections never veto committed rows.  Chat submit/steer/queue consumers treat admission results as work handles, adopt a live turn identity only from a harness turn event, and never filter a committed Board row by the admission value. | Board SQLite adapter, live delivery coordinator, and chat/Org Canvas consumers. | F92A2-DP6 | Duplicate/no-op, canonical-order, local-ID disagreement, and public submit/steer/queue consumer tests. | Not applicable. | Delivery latency is observational. | Accepted | Passing: presentation consumes canonical rows and harness-owned live turn identity. |
+| F92A2-C13 | A bounded view plus subsequent live observation has one SQLite-owned cursor boundary.  A row committed between snapshot selection and callback installation is returned exactly once; Emacs retains only the displayed page and cursor, not a session/Board history projection. | Board query/change service and presentation subscriber. | F92A2-DP6 | Deterministic snapshot/change interleaving and graphical exactly-once render scenario. | Not applicable. | Page/change latency is observational. | Accepted | Passing in held-snapshot and exactly-once subscription tests. |
+| F92A2-C14 | A detached session query reflects one SQLite snapshot plus mutations identified by a database boundary.  Emacs admission or acknowledgement timing never decides whether an in-flight mutation is overlaid.  Every committed record eligible for the requested visible page or selected provider-context path appears exactly once according to the database-issued boundary. | Session query adapter and worker snapshot/cursor contract. | F92A2-DP6 | Both commit-before-snapshot and snapshot-before-commit interleavings for page and provider-context queries. | Not applicable. | Query latency is observational. | Accepted | Passing for both database-snapshot interleavings; no application overlay remains. |
+| F92A2-C15 | Causally indivisible durable admission facts are committed in one SQLite transaction.  New-session root, Board association, initial participant, and initial input/routing may not rely on transport FIFO; otherwise a dependent operation begins only after explicit commit acknowledgement. | Chat/session admission application service and SQLite worker. | F92A2-DP6 | Atomic new-session admission rollback/replay and deliberately reordered transport tests. | Not applicable. | Transaction latency is observational. | Accepted | Passing in atomic rollback/replay and public first-input admission tests. |
 
 Table names, private indexes, page sizes, callback representation, and
 presentation timeouts remain implementation choices unless a later correctness
@@ -334,13 +372,14 @@ presentation/request-value rules above are not optional implementation detail.
 
 - Trigger :: Startup prewarming exposed process-wide durable mirrors and
   synchronous interactive restoration.
-- Contract :: =F92A2-C01=--=F92A2-C10=.
+- Contract :: =F92A2-C01=--=F92A2-C15=.
 - Durable owner :: SQLite and its worker own durable identity, current state,
   ordering, history, associations, routing, task state, and indexes.
 - Process owner :: Emacs owns presentation, subscribers/callbacks, timers,
   executing work, bounded in-flight mutation, detached results, and viewport.
-- Desired direction :: Transport-only startup, query-shaped async access, and
-  explicit bounded working values.  There is no active durable session cache.
+- Desired direction :: Transport-only startup, query-shaped async access,
+  SQL-owned Board transitions and change cursors, and process-local live
+  coordination only.  There is no active durable session or Board cache.
 - Decision :: Correct through the ordered packages below.  Do not add a
   candidate store, generation loader, replay cache, background mirror, or
   renamed catalog/checkpoint projection.
@@ -356,7 +395,9 @@ presentation/request-value rules above are not optional implementation detail.
 | Session worker SQL | SQLite session worker | =e-runtime-store-session-worker.el= through generic dispatch | Retain relational mapping and transactions; generic transport must not interpret session semantics. |
 | Daily/presentation state | Session/Daily presentation service | Daily and Org Canvas callers | Return buffer first; retain only visible window, callbacks, timers, and executing turn state. |
 | Provider context | Session/provider service | provider context consumers | Query selected branch/compaction path pages; never request a hidden full session replica. |
-| Board controller and query mapping | Board service/adapter | Board application and SQLite modules | Construct/initialize from exact/set current rows plus visible window; no Board-history replay or routing N+1. |
+| Durable Board transition and query mapping | Board SQL application service | Board SQLite adapter and worker | Append/route/claim/settle and observe changes transactionally; return canonical rows and bounded pages/cursors. |
+| Live Board coordination | Board live coordinator | Callback/endpoint registration and executing delivery handles | Retain no durable counters, participant/pickup/routing collections, message history, turn maps, seen-ID sets, or predicted results. |
+| Ephemeral Board engine | In-memory Board domain | =e-board.el= and explicit in-memory composition/tests | Retain for genuinely ephemeral use; ordinary SQLite composition must not instantiate it. |
 | Task scheduler and storage | Task service/adapter | task queue and SQLite modules | Query-and-claim detached runnable input; retain executing state/live handles only; page terminal history. |
 | v5-to-v6 compatibility | Offline migration adapter | =e-runtime-migration.el= and offline worker | Keep operator-only verified backup, canonical-journal derivation, retired-projection independence, rollback, and reopen. |
 | Remaining persisted owners | Each domain application service | cron, voice, Goodnite, raw-result, and related ports | Convert interactive paths to async work; retain only legitimate bounded consumer state. |
@@ -375,7 +416,8 @@ worker remains unaware of those domain meanings.
 | Session command publication | =e-session-async.el= admits sealed commands independently and retains only bounded unsettled optimistic intents. | Retain owner-local suspicion; do not use the optimistic set or transport buffer as a history-ordering mechanism. |
 | v6 session SQL | =e-runtime-store-session-worker.el= interprets a sealed command against the current row and maps row/page/record operations inside SQLite transactions. | Retain; test exact identity, no-prefetch admission, cursor, transaction, replay, and bounded response contracts. |
 | Offline compatibility | =e-runtime-migration.el= and offline worker handle the canonical v5 journal, backup, and rollback; retired catalog/checkpoint projections are ignored. | Retain operator-only; no runtime v5 fallback. |
-| Board controller initialization | Existing-session binding composes one bounded controller from an exact/set query. | Retain the bounded working window and set-based routing; delete obsolete full-restoration tests. |
+| SQLite Board-controller reconstruction | Existing-session binding composes an =e-board= from exact/set durable rows. | Delete from ordinary SQLite composition; retain only explicit ephemeral in-memory Board use. |
+| Binding-local message/activity projections and turn maps | Chat binding rings/hash tables duplicate durable identity/history and reject mismatches. | Delete as durable authority; presentation may retain only its displayed page and executing-turn state. |
 | Task scheduler state | Queue load is SQL-free; explicit start submits an atomic runnable claim. | Retain executing state/live handles only; add terminal inspection only with a real consumer. |
 | Persisted-session navigation | Overview, picker, resource, Canvas, and Org Canvas surfaces request one bounded root-session summary page. | Retain only the displayed detached page; the synchronous facade rejects ordinary async v6 use before I/O. |
 | Remaining interactive storage | Cron, voice, Goodnite, raw-result, session-tmp, and task application paths expose enqueue-return operations. | Retain named synchronous calls only in explicit batch/operator/offline/test adapters and guard ordinary v6 callers with the static sweep. |
@@ -419,19 +461,14 @@ checkpoint relations.  The disposable v5 upgrade proves journal parity,
 witness-only legacy validation, affected-session diagnostics, fault rollback,
 and production-v6 reopen.  No test may accept process-wide mirror allocation.
 
-** F92A2-DP3: Bounded Board controller (Implemented)
+** F92A2-DP3: Bounded Board controller (Superseded)
 
-DP3 establishes =F92A2-C06=.  Construct and initialize a lightweight Board
-controller from exact current Board/participant/pickup rows, a set-based routing
-query, and the bounded visible working-message window needed by current
-subscribers.  Retain
-callbacks, subscriptions, timers, and executing actions only.  No generic
-history paging API is added without a presentation consumer.  No Board-history
-replay and no N+1 routing query is permitted.
-
-Gate: increasing unrelated Board history by an order of magnitude does not
-increase retained Emacs controller state beyond the declared visible window.
-Query-count, identity, visible-window, and subscriber-teardown tests pass.
+DP3 removed whole-history replay but still reconstructed durable Board
+counters, participants, pickups, routing, and messages into an =e-board=.
+That bounded replica is not an acceptable implementation of =F92A2-C06= and is
+removed from ordinary SQLite composition by DP6.  Its set-oriented SQL and
+bounded query techniques may be reused without installing their results as a
+durable authority in Emacs.
 
 ** F92A2-DP4: Query-and-claim task scheduler (Implemented)
 
@@ -444,9 +481,10 @@ the scheduler.
 Gate: increasing terminal history by an order of magnitude does not increase
 retained scheduler state beyond queue identity and executing task handles.
 
-** F92A2-DP5: All interactive paths and public acceptance (Implemented)
+** F92A2-DP5: All interactive paths (Accepted in part)
 
-DP5 establishes =F92A2-C08= and =F92A2-C10= after DP1--DP4.  Classify every
+DP5 establishes =F92A2-C08=.  Its former =F92A2-C10= public-acceptance claim is
+superseded by DP6.  Classify every
 interactive storage caller, convert remaining Board/task/cron/voice/Goodnite/
 raw-result/session/provider paths to bounded async owner operations, and keep
 explicit blocking only in named batch/operator/offline/test boundaries.
@@ -458,6 +496,70 @@ input, redisplay, three heartbeats, and a composer edit live.  Read failure,
 and post-publication write failure produce the distinct request/owner-local
 partitions above, while a healthy sibling continues enqueuing, persisting,
 querying, and rendering.
+
+** F92A2-DP6: SQL-owned Board truth and pre-readiness submission (Done)
+
+DP6 establishes the revised =F92A2-C06= and =F92A2-C10= plus
+=F92A2-C11=--=F92A2-C15=.  It is one delivery package because SQL-owned append,
+canonical publication, change observation, and the public pre-readiness turn
+are one closed Board transition; shipping only one part preserves either a
+lost-event gap or a second durable authority.
+
+The Board SQL application service admits append-and-route immediately and
+returns an =e-work= whose eventual value is the canonical committed row.  The
+worker transaction assigns message/delivery identity and order, computes
+routing, and creates pickup state.  A claimed delivery starts the harness-owned
+live turn.  Live coordination registers callbacks and retains executing
+claimed handles only.  Chat service post/submit/steer/queue consumers treat
+admission results as work handles, never turn IDs; presentation adopts a live
+turn identity only from the harness turn event and never uses that value to
+accept or reject a committed Board row.  Bounded Board view/change and session-context queries
+cross snapshots with SQLite-owned cursors/cuts, never process-local timing.
+Causally indivisible new-session facts use one admission transaction; separate
+dependent transactions require explicit acknowledgement rather than FIFO.
+Chat and Org Canvas render from canonical
+rows and presentation-owned pages; they do not open a reconstructed Board,
+invent a provisional durable ID, or maintain binding-local durable
+projections.
+
+Admission, mutation, commit, abort, and retry are owned by the existing
+runtime-store work lifecycle.  A failed read settles only its request.  A
+failed optimistic write marks only its owner suspect.  A worker replacement
+does not reconstruct Board state; later independent transactions may proceed.
+No fork, quarantine, historical explorer, generalized event framework, or
+canonical-database mutation is part of DP6.
+
+Gate: submit through the real public composer before held metadata,
+association, page, and Board work settle; observe three heartbeats and composer
+edits; release operations in a controlled adversarial order; render the
+canonical user and assistant results exactly once; prove a commit in the
+snapshot/change gap is delivered once; fail one owner and prove a sibling
+submits, persists, queries, and renders.  Static reachability proves ordinary
+SQLite chat does not construct =e-board= from durable rows or retain the
+deleted replica fields.  Reordered new-session admission and both session-query
+commit/snapshot interleavings prove that transport and Emacs callback timing do
+not become durable semantics.
+
+Final evidence on 2026-09-09:
+
+- the combined DP6 focused gate passed 346 expected tests: 330 executed, 16
+  explicit legacy skips, and zero unexpected results;
+- the complete exact-source suite passed all 2,948 tests: 2,882 executed, 66
+  explicit legacy skips, and zero unexpected results;
+- focused SQL tests cover canonical duplicate handling, unresolved pickup FIFO,
+  snapshot/change handoff, atomic admission rollback/replay, Board-free binding
+  retirement, detached orchestration, and an explicitly addressed 513th
+  participant;
+- the exact public graphical selector
+  =e-runtime-store-recovery-graphical-f92a2-dp6-public-pre-readiness-turn=
+  passed 1/1 with zero unexpected in 4.581719 seconds on the final tree;
+- =eldev -q -dtT compile=, Lisp-mode =check-parens= for every changed Elisp
+  file, =git diff --check=, and the obsolete/blocking API reachability audit
+  passed; and
+- independent implementation review reached
+  =implementation-review-fixed-point= after remediating synchronous creation,
+  public Board/orchestration access, nil-Board retirement, routing truncation,
+  and the last unguarded generic ephemeral constructor.
 
 * Public scenario portfolio
 
@@ -482,12 +584,56 @@ and each visible message is rendered once.  Open a new Daily in the same
 fixture and assert its buffer also returns immediately.  A provider turn
 requests only the selected branch/compaction path.
 
-** S92A2-BOARD-SCALE
+** S92A2-SQL-BOARD-TRUTH
 
-Construct and initialize one lightweight Board controller with a small current
-participant/pickup set, visible working window, and large unrelated
-history/routing set.  Assert exact/set query classes, no history replay, no
-per-message routing query, and bounded retained controller state.
+Against a database with old messages, duplicate source identities, multiple
+participants, and unresolved pickups, append and route one input.  Assert the
+transaction returns SQLite's canonical message identity/order and pickup
+states, duplicate append returns the existing row without phantom
+publication, and claim order comes from SQL.  Inspect live Emacs state and
+assert it contains endpoint callbacks and executing handles but no durable
+Board counters, participant/pickup/routing collections, message history,
+turn-map, or seen-ID set.
+
+** S92A2-PRE-READINESS-TURN
+
+Open an existing and a new public Daily while exact metadata, association,
+visible-page, and writer settlement are independently held.  Submit through
+the real Org Canvas composer before any binding-ready predicate can become
+true.  Assert immediate return, editable input, three independent heartbeats,
+one admitted SQL append-and-route operation, and no provisional durable ID.
+Release the transaction and reads in an adversarial order.  Assert SQLite's
+canonical message/delivery identity is used for delivery, a harness event
+supplies the live turn identity, and exactly one ordered visible user row and
+assistant row appear.  Fail one owner's write, observe its visible
+suspect state, and prove a sibling still submits, persists, queries, and
+renders.
+
+** S92A2-SNAPSHOT-CHANGE
+
+Take a bounded Board visible-page snapshot, commit one matching row before the
+presentation begins consuming later changes, and continue from the cursor
+returned with the snapshot.  Assert the intervening row is returned exactly
+once and no process-local seen set, turn map, or reconstructed Board decides
+whether the durable row exists.
+
+** S92A2-SESSION-SNAPSHOT
+
+For both visible-message and selected-provider-context queries, force a command
+to commit before SQLite takes its snapshot and then force a second command to
+commit after the snapshot.  Assert each query follows its database-issued
+boundary and contains each eligible command exactly once.  Repeat with callback
+settlement delayed past acknowledgement; Emacs timing does not change the
+result.
+
+** S92A2-ATOMIC-ADMISSION
+
+Create a new public chat and submit its first input while transport requests
+are deliberately reordered and one transaction fault is injected.  Assert the
+session root, Board association, initial participant, input, routes, and
+pickups are either transactionally present with canonical identities or absent
+after rollback.  No FIFO ordering assumption makes a partial runtime-visible
+session valid.
 
 ** S92A2-TASK-SCALE
 
@@ -537,11 +683,14 @@ absent.
 | DP1 startup/default/runtime-store suites | Retain | They prove transport-only startup and zero constructor domain traffic. |
 | Query derivation and v6 session worker suites | Strengthen | Add exact fields, bounded pages, typed filters, receipt replay, delta transactions, and no mirror allocation. |
 | Offline v5/v6 and migration suites | Strengthen | Preserve canonical journal parity, retired-projection independence, backup/rollback, affected-session diagnostics, and production-v6 reopen. |
-| Public existing/new Daily scenarios | Strengthen | Prove immediate buffer plus exact metadata/association/visible-page queries and selected context. |
+| Public existing/new Daily scenarios | Strengthen | Submit through the real composer before metadata/association/page/Board readiness; prove immediate buffer, responsive input/timers, canonical SQL identity, exactly-once render, and selected context. |
 | Catalog-startup/stub/projection tests | Replace | They encode the process-wide mirror that this addendum removes. |
 | Resume-checkpoint ordinary runtime tests | Replace | Checkpoints are migration witnesses only, not v6 runtime authority. |
 | Cooperative whole-session replay tests | Delete/replace | The target has no active replay, candidate store, generation loader, or release cache. |
-| Board complete-history replay tests | Replace | Test current-row/set controller initialization and the bounded visible working window. |
+| Board complete-history replay and controller-state tests | Replace | Test SQL append/route/claim/change transactions, coordination-only retained state, and presentation-owned bounded pages. |
+| Binding-local projection/turn-map tests | Delete/replace | They preserve a second durable identity/history authority; assert canonical SQLite rows and executing-turn presentation state instead. |
+| Session query optimistic-overlay tests | Replace | Exercise database-issued snapshot boundaries for both commit interleavings; do not encode Emacs admission timing as visibility. |
+| New-session FIFO-order tests | Replace | Prove atomic admission and rollback under reordered transport rather than shared-FIFO order. |
 | Task snapshot restore tests | Replace | Test query-and-claim runnable state; defer terminal inspection until it has a consumer. |
 | Runtime transport-buffer, receipt, latency, and owner-local failure tests | Retain/strengthen | Their capacity and failure partitions remain valid, but transport order is not a session semantic guarantee. |
 | Cron/voice/Goodnite/raw-result/session-tmp tests | Retain and adapt | Their application facades enqueue and return; only explicit batch/test storage adapters observe synchronously. |
@@ -665,8 +814,8 @@ empty-fixture timing:
 - no speculative application history page is retained without a consumer;
 - durable history growth does not increase retained Emacs state beyond the
   visible viewport and executing/request-owned values;
-- Board controller query count and retained controller state are bounded
-  independently of unrelated history and routing cardinality;
+- ordinary SQLite Board retained state contains no durable Board rows or
+  counters; query work is bounded by the explicit consumer page or claim;
 - task scheduler work follows runnable/executing cardinality, not terminal
   history; and
 - while a test-controlled worker hold remains active, the graphical gate sees
@@ -693,8 +842,9 @@ canonical store.
   replay, candidate stores, generation loaders, active durable replicas, and
   release caches are unreachable from ordinary v6; overview, picker, resource,
   Canvas, and Org Canvas navigation use bounded asynchronous root pages;
-- Board complete-history replay and per-message routing are replaced by exact
-  current/set queries and visible-window pages;
+- Board complete-history replay, controller reconstruction, and per-message
+  routing are replaced by SQL-owned append/route/claim/change transactions and
+  presentation-owned visible pages/cursors;
 - task snapshot restoration is replaced by query-and-claim runnable state;
   terminal inspection remains deferred until a consumer exists; and
 - residual source helpers exist only for explicit offline/test compatibility,
@@ -732,8 +882,10 @@ isolated graphical daemons.  The exact final revision must satisfy:
    branch/compaction context without whole-session/Board state.
 3. No application history/page facade exists without a concrete consumer;
    exact Daily/context requests allocate no unrelated session objects.
-4. Board controller construction/initialization uses exact current/set queries
-   and a bounded visible window, with no history replay or routing N+1.
+4. Ordinary SQLite Board composition never constructs an =e-board= from
+   durable rows.  SQL append/route/claim/change operations return canonical
+   rows; live state contains callbacks and executing handles only, while each
+   presentation owns its bounded page/cursor.
 5. Task scheduling query-and-claims detached runnable input and retains
    executing work/live handles only; terminal history remains query-only in
    SQLite until an inspection consumer is implemented.
@@ -748,15 +900,20 @@ isolated graphical daemons.  The exact final revision must satisfy:
 8. v5-to-v6 upgrade passes journal parity, bounded derivation,
    retired-projection independence, backup, install, reopen, fault rollback,
    affected-session diagnostics, and obsolete-relation removal checks.
-9. The package-relevant focused suite and all five public graphical selectors
-   pass on the exact revision.  A complete repository run is a regression
+9. The real public Org Canvas composer submits before held reads settle,
+   remains responsive with three independent heartbeats, and renders the
+   canonical committed turn exactly once.  Snapshot/change and session-query
+   interleavings, duplicate source identity, unresolved pickup FIFO, and
+   reordered/failed atomic new-session admission pass deterministically.
+10. The package-relevant focused suite and public graphical selectors pass on
+   the exact revision.  A complete repository run is a regression
    census; unrelated fixture failures and explicitly retired architecture tests
    are reported, not imported into this package as new requirements.
 
-Do not claim Feature 92 completion or mark this addendum Done merely because the
-public graphical scenarios pass.  The current implementation may advance to
-operator-directed review/commit only after those scenarios pass against
-nonempty disposable data on the exact revision; that prerequisite is now met.
+Feature 92 remains =In-review= because its broader recovery/quarantine roadmap
+is separate.  This addendum and DP6 are =Done=: the nonempty disposable-data
+graphical gate passes on the final tree, the focused package is green, obsolete
+interactive APIs are removed, and independent review reached a fixed point.
 
 * Term audit and residual vocabulary
 
@@ -1208,14 +1365,11 @@ Evidence on the corrected tree:
   global-hook transition; and
 - the public delayed Org Canvas selector passes 1/1.
 
-The complete exact-source suite runs 2,927 tests: 2,860 pass, 66 explicitly
-superseded/legacy cases skip, and one independently reproduced pre-existing
-failure remains:
-=e-runtime-store-s92-dp6-real-owner-failure-retains-unrelated-fifo= returns an
-empty record page after its forced worker replacement.  The same test fails at
-untouched =12ac4b3d= in a clean clone.  It is not changed or waived by this API
-cut; the loopback-dependent HTTP and MCP cases all pass when local sockets are
-permitted.
+The complete exact-source suite now runs 2,948 tests: 2,882 pass, 66 explicitly
+superseded/legacy cases skip, and zero results are unexpected.  In particular,
+the formerly pre-existing
+=e-runtime-store-s92-dp6-real-owner-failure-retains-unrelated-fifo= failure is
+now covered by the SQL-owned owner-local recovery path and passes.
 
 This change affects core session contracts and requires a full Emacs restart.
 Repository tests used disposable stores; the running Emacs and canonical user

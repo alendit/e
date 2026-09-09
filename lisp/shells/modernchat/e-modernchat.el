@@ -60,6 +60,9 @@
 (defvar-local e-modernchat--update-timer nil
   "Debounce timer for the current modern chat buffer.")
 
+(defvar-local e-modernchat--first-admission-failure nil
+  "First bounded failed or cancelled input admission shown by this buffer.")
+
 (defun e-modernchat--source-directory ()
   "Return the root directory of the e source tree."
   (or (and (fboundp 'e-source-directory) (e-source-directory))
@@ -127,7 +130,10 @@
     (user-error "This buffer is not attached to an e modern chat session"))
   (e-modernchat-view-model-snapshot
    e-modernchat-harness e-modernchat-session-id
-   :session-metadata e-modernchat-session-metadata))
+   :session-metadata e-modernchat-session-metadata
+   :presentation-activities
+   (and e-modernchat--first-admission-failure
+        (list e-modernchat--first-admission-failure))))
 
 (defun e-modernchat--push-snapshot (&optional buffer)
   "Push a full snapshot for BUFFER or the current buffer to egui."
@@ -163,6 +169,35 @@
   (ignore event)
   (when (buffer-live-p buffer)
     (e-modernchat--schedule-push buffer)))
+
+(defun e-modernchat--watch-admission (buffer work)
+  "Surface failed or cancelled admission WORK in modern chat BUFFER."
+  (unless (e-work-handle-p work)
+    (signal 'wrong-type-argument (list 'e-work-handle-p work)))
+  (e-work-on-settle
+   work
+   (lambda (settled)
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (let* ((status (e-work-status settled))
+                (state (plist-get status :state)))
+           (when (and (memq state '(failed cancelled))
+                      (null e-modernchat--first-admission-failure))
+             (setq-local
+              e-modernchat--first-admission-failure
+              (list :message-id (e-work-handle-id settled)
+                    :event-type
+                    (if (eq state 'cancelled)
+                        'input-admission-cancelled
+                      'input-admission-failed)
+                    :created-at (float-time)
+                    :payload
+                    (list :summary
+                          (if (eq state 'cancelled)
+                              "SQLite input admission cancelled"
+                            (e-work-error-message
+                             (plist-get status :error))))))
+             (e-modernchat--schedule-push buffer))))))))
 
 (defun e-modernchat--subscribe ()
   "Subscribe current modern chat buffer to harness events."
@@ -206,8 +241,10 @@
        (let ((text (string-trim
                     (or (e-modernchat--payload-field payload 'text) ""))))
          (unless (string-empty-p text)
-           (e-chat-service-submit-session
-            e-modernchat-harness e-modernchat-session-id text)
+           (e-modernchat--watch-admission
+            (current-buffer)
+            (e-chat-service-submit-session
+             e-modernchat-harness e-modernchat-session-id text))
            (e-modernchat--schedule-push))))
       ('cancel-turn
        (e-chat-service-abort-session

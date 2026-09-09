@@ -489,11 +489,12 @@ HARNESS defaults to the chat default harness.  When DISPLAY is non-nil, show the
 popup buffer.  DELAY is forwarded to the chat session submit path for tests."
   (let* ((harness (or harness (e-chat-default-harness)))
          (reference (e-chat-starter--capture-source))
-         (session (e-chat-create-session
-                   :harness harness
-                   :metadata (list :origin :global-session-starter
-                                   :source-reference reference)))
-         (session-id (plist-get session :id))
+         (session-id (e-session-generate-id))
+         (creation
+          (e-chat-service-create-session-start
+           :harness harness :id session-id
+           :metadata (list :origin :global-session-starter
+                           :source-reference reference)))
          (buffer (get-buffer-create
                   (e-chat-starter--buffer-name session-id)))
          (state (make-e-chat-starter-state
@@ -509,7 +510,21 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
       (e-chat-starter-mode)
       (setq-local e-chat-starter--state state)
       (e-chat-starter--render))
-    (e-chat-starter--subscribe state)
+    ;; Register before submitting the first input.  Atomic admission installs
+    ;; the SQL binding and settles CREATION before it starts the provider, so
+    ;; this observer cannot miss the live turn boundary.
+    (e-work-on-settle
+     creation
+     (lambda (settled)
+       (let ((status (e-work-status settled)))
+         (if (eq (plist-get status :state) 'finished)
+             (e-chat-starter--subscribe state)
+           (setf (e-chat-starter-state-status state) 'failed
+                 (e-chat-starter-state-error-message state)
+                 (e-work-error-message
+                  (or (plist-get status :error)
+                      '(e-work-cancelled "Session admission cancelled"))))
+           (e-chat-starter--schedule-render-state-buffer state)))))
     (e-chat-submit-session
      harness
      session-id

@@ -1108,6 +1108,9 @@ also emitting the normal compaction failure event."
 
 (defun e-harness-turn--cancel-active-request (entry)
   "Cancel ENTRY's active backend or tool request when one exists."
+  (when-let* ((work (plist-get entry :input-admission-work)))
+    (when (e-work-handle-p work)
+      (e-work-cancel work)))
   (when-let* ((work (plist-get entry :context-work)))
     (when (e-work-handle-p work)
       (e-work-cancel work)))
@@ -1265,8 +1268,8 @@ provider or loop failure."
               (e-session-append-message (e-harness-sessions harness)
                                         session-id
                                         message)))
-         ;; The asynchronous session facade returns its work handle once the
-         ;; immutable append has entered the owner FIFO.  That handle is not
+         ;; The asynchronous session facade returns the request work for the
+         ;; immutable append.  That handle is not
          ;; the semantic message and must never cross the harness event port.
          ;; Synchronous stores still return their normalized durable message.
          (if (not (e-work-handle-p append-result))
@@ -1280,7 +1283,16 @@ provider or loop failure."
                (let ((err (plist-get status :error)))
                  (signal (car err) (cdr err))))
              (when (eq state 'cancelled)
-               (signal 'e-work-cancelled (list append-result))))))
+               (signal 'e-work-cancelled (list append-result)))
+             ;; Provider context causally depends on the durable user input.
+             ;; Retain only this live turn's append handle and start the query
+             ;; from its explicit commit acknowledgement.
+             (when (eq (plist-get message :role) 'user)
+               (when-let* ((entry
+                            (gethash session-id
+                                     (e-harness-active-turns harness))))
+                 (when (equal (plist-get entry :id) turn-id)
+                   (plist-put entry :input-admission-work append-result)))))))
        ;; Terminal hooks and the Board adapter need the accepted assistant
        ;; value before SQLite acknowledges the append.  Keep that one value on
        ;; the active turn that owns it; durable session state replaces it on
@@ -1518,13 +1530,6 @@ cancellation.  SESSION-ID identifies the session."
              (e-work-fail turn-work err)
              (signal (car err) (cdr err)))))
         (e-harness-turn-state-put-active-turn harness session-id entry)
-        ;; Prefetch the selected-path base before the prompt append enters the
-        ;; shared worker FIFO.  Turn start composes that detached result with
-        ;; bounded writes only after this prompt has been admitted.
-        (when (e-session-async-enabled-p (e-harness-sessions harness))
-          (plist-put entry :context-path-work
-                     (e-session-async-context-path-base
-                      (e-harness-sessions harness) session-id)))
         (condition-case err
             (plist-put entry
                       :prompt-message-id
@@ -1884,7 +1889,7 @@ cancellation.  SESSION-ID identifies the session."
 	                  (start-provider context)))
 	               (error
 	                (finish-error err))))
-	            (start-turn
+	            (start-turn-after-input
 	             ()
 	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
 	               (plist-put entry :timer nil)
@@ -1924,7 +1929,31 @@ cancellation.  SESSION-ID identifies the session."
 	                        (e-harness-turn--auto-compaction-useful-prefix-p
 	                         harness session-id excluded))
 	                       (start-auto-compaction context)
-	                     (start-provider context)))))))
+	                     (start-provider context))))))
+	            (start-turn
+	             ()
+	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+	               (if-let* ((input-work
+	                          (plist-get entry :input-admission-work)))
+	                   (progn
+	                     (plist-put entry :input-admission-work nil)
+	                     (e-work-on-settle
+	                      input-work
+	                      (lambda (settled)
+	                        (when (active-entry-p)
+	                          (let ((status (e-work-status settled)))
+	                            (pcase (plist-get status :state)
+	                              ('finished
+	                               (unless (plist-get entry :cancelled)
+	                                 (start-turn-after-input)))
+	                              ('failed
+	                               (finish-error (plist-get status :error)))
+	                              ('cancelled
+	                               (unless (plist-get entry :cancelled)
+	                                 (finish-error
+	                                  (list 'e-work-cancelled
+	                                        "Input admission cancelled"))))))))))
+	                 (start-turn-after-input)))))
 	         (if (and delay (> delay 0))
 	             (plist-put entry :timer (run-at-time delay nil #'start-turn))
 	           (start-turn)))

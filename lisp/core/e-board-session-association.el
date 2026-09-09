@@ -17,7 +17,6 @@
 (require 'e-board-sqlite)
 (require 'e-session)
 (require 'e-session-storage)
-(require 'e-work)
 (require 'subr-x)
 
 (defun e-board-session-association-create-board (store principal)
@@ -58,31 +57,6 @@ callback runs; this service never proxies them through session storage."
   (setf (e-board-message-notification-function board) nil
         (e-board-processing-record-notification-function board) nil)
   t)
-
-(defun e-board-session-association-open-controller-start (store association)
-  "Return work opening ASSOCIATION's bounded live Board controller.
-
-ASSOCIATION is one detached exact session-association query result.  No session
-aggregate or Board history is loaded into Emacs."
-  (let ((board-id (plist-get association :board-id)))
-    (unless (and (stringp board-id) (not (string-empty-p board-id)))
-      (signal 'e-session-storage-error
-              (list "Session has no durable Board association" association)))
-    (or (condition-case nil
-            (let ((board (e-board-registry-get board-id)))
-              (e-work-start
-               (e-work-spec-create
-                :id "board-controller-existing" :execution 'cheap
-                :interactive-policy 'async :owner 'e-board-session-association
-                :runner (lambda (existing _context) existing))
-               board))
-          (e-board-registry-missing nil))
-        (if (e-session-storage-sqlite-p store)
-            (e-board-sqlite-open-controller-start
-             (e-session-storage-runtime-store store) board-id)
-          (signal 'e-session-storage-error
-                  (list "Persistent Board controller requires SQLite"
-                        board-id))))))
 
 (defun e-board-session-association-compose-ephemeral (store session)
   "Compose SESSION's explicitly in-memory Board runtime from STORE.

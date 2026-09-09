@@ -110,7 +110,7 @@
 (cl-defun e-board-e2e-create-session (harness &key id metadata)
   "Create and bind a board-backed session in HARNESS."
   (e-board-e2e-reset-runtime)
-  (plist-get (e-chat-service-create-session
+  (plist-get (e-chat-service-create-ephemeral-session
               :harness harness :id id :metadata metadata)
              :id))
 
