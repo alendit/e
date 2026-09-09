@@ -435,7 +435,7 @@
                        (apply read-page args))))
             (let ((store (e-runtime-sqlite-session-store
                           (e-default-runtime))))
-              (should-not (e-session-session-present-p store "lazy-default"))
+              (should-not (e-session-local-present-p store "lazy-default"))
               (should-error
                (e-session-aggregate-peek-session store "lazy-default")
                :type 'e-session-missing)))
@@ -976,7 +976,7 @@
              :build (cl-function
                      (lambda (&key sessions session-id options)
                        (list :strategy 'transcript-stack
-                             :messages (e-session-messages sessions session-id)
+                             :messages (e-session-local-messages sessions session-id)
                              :options options)))))
            (harness (e-harness-create
                      :sessions store

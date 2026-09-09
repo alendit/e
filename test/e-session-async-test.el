@@ -92,7 +92,7 @@
                   (e-chat-service-binding harness "participant-root"))
                  (board (e-chat-service-binding-board root-binding))
                  participant-work)
-            (cl-letf (((symbol-function 'e-session-get)
+            (cl-letf (((symbol-function 'e-session-local-state)
                        (lambda (&rest _)
                          (ert-fail "Participant admission loaded an aggregate")))
                       ((symbol-function 'e-runtime-store-call)
@@ -463,8 +463,17 @@
       (e-session-async-test--close store)
       (delete-directory directory t))))
 
-(ert-deftest e-session-async-rdbms-legacy-aggregate-read-fails-before-io ()
-  "A legacy aggregate facade cannot trigger reconstruction on async SQLite."
+(ert-deftest e-session-async-rdbms-retired-aggregate-api-is-absent ()
+  "The removed generic aggregate facade cannot remain callable."
+  (dolist (symbol '(e-chat-service-session
+                    e-session-get
+                    e-session-messages
+                    e-session-activity-events
+                    e-session--ensure-loaded))
+    (should-not (fboundp symbol))))
+
+(ert-deftest e-session-async-rdbms-local-read-fails-before-io ()
+  "An explicit local aggregate read cannot reconstruct async SQLite state."
   (let* ((directory (make-temp-file "e-session-no-replay-" t))
          (store (e-session-sqlite-store-create directory :asynchronous t)))
     (unwind-protect
@@ -472,7 +481,9 @@
                    (lambda (&rest _) (ert-fail "Aggregate read reached SQLite")))
                   ((symbol-function 'e-runtime-store-await)
                    (lambda (&rest _) (ert-fail "Aggregate read awaited SQLite"))))
-          (should-error (e-session-messages store "absent")
+          (should-error (e-session-local-messages store "absent")
+                        :type 'e-session-storage-error)
+          (should-error (e-session-local-present-p store "absent")
                         :type 'e-session-storage-error)
           (should (= (hash-table-count (e-session-store-sessions store)) 0)))
       (e-session-async-test--close store)

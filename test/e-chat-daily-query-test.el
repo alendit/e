@@ -66,7 +66,7 @@
                    :sessions store))
          view-work
          buffer
-         (forbidden '(e-session-get e-session-messages e-session-load-session
+         (forbidden '(e-session-local-state e-session-local-messages e-session-load-session
                       e-session-load-session-start e-chat-service-ensure-binding
                       e-chat--ensure-session
                       e-harness-session-title))

@@ -568,11 +568,14 @@ returned store uses detached queries and enqueue-and-return mutations."
                   write-mode)))
   (e-session-sqlite-store-create directory :asynchronous t))
 
-(defun e-session--ensure-loaded (store session-id)
-  "Return loaded SESSION-ID, loading its checkpoint suffix on demand."
+(defun e-session--ensure-local-state (store session-id)
+  "Return explicit local aggregate state for SESSION-ID.
+
+This boundary exists for in-memory stores and named offline/test workflows.
+Ordinary v6 SQLite consumers must use detached asynchronous queries."
   (when (e-session-async-enabled-p store)
     (signal 'e-session-storage-error
-            (list "Durable session aggregates are unavailable in async SQLite; use a bounded query"
+            (list "Local session state is unavailable in async SQLite; use a bounded query"
                   session-id)))
   (let ((key (cons store session-id)))
     (when (gethash key e-session--commit-in-progress)
@@ -802,7 +805,7 @@ only durable identity boundary."
                                       (or (plist-get frozen-message :id)
                                           (e-session-aggregate-command-delta-id
                                            command))))))))))
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -818,7 +821,7 @@ only durable identity boundary."
       (e-session-async-submit-command
        store session-id 'message-display
        (list :message-id message-id :display display) :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -861,7 +864,7 @@ only durable identity boundary."
                                       (e-session-aggregate-command-delta-id
                                        command)
                                       :tool-name (plist-get tool-call :name)))))))))
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -883,7 +886,7 @@ only durable identity boundary."
        (list :turn-id turn-id :response-entry-id response-entry-id
              :write-index write-index)
        :write-index write-index)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -897,7 +900,7 @@ only durable identity boundary."
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'process-report
                                       (list :report report) :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -912,7 +915,7 @@ only durable identity boundary."
        store session-id 'branch-summary
        (list :branch-id branch-id :summary summary :metadata metadata)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -932,7 +935,7 @@ only durable identity boundary."
              :tokens-before tokens-before :tokens-kept tokens-kept
              :metadata metadata)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -953,7 +956,7 @@ only durable identity boundary."
              :covered-entry-id covered-entry-id :fingerprints fingerprints
              :metadata metadata)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -973,7 +976,7 @@ only durable identity boundary."
        ;; after capacity reservation; GENERATION is the single sealed P owner.
        (list :generation generation)
        :write-index write-index)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -988,7 +991,7 @@ only durable identity boundary."
       (e-session-async-submit-command
        store session-id 'context-curation-package (list :package package)
        :write-index write-index)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -1004,7 +1007,7 @@ only durable identity boundary."
        store session-id 'session-info
        (list :field 'metadata :value metadata)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1018,7 +1021,7 @@ only durable identity boundary."
       (e-session-async-submit-command
        store session-id 'session-info (list :field 'config :value config)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1032,7 +1035,7 @@ only durable identity boundary."
        store session-id 'session-info
        (list :field 'context-references :owner owner :value references)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1047,7 +1050,7 @@ only durable identity boundary."
        store session-id 'session-info
        (list :field 'context-reference :key key :value reference)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1064,7 +1067,7 @@ only durable identity boundary."
        (list :field 'capability-state :capability-id capability-id
              :value state :version version)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1079,7 +1082,7 @@ only durable identity boundary."
        store session-id 'session-info
        (list :field 'turn-options :value options)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1093,7 +1096,7 @@ only durable identity boundary."
        store session-id 'session-info
        (list :field 'current-branch :value branch-id)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1106,7 +1109,7 @@ only durable identity boundary."
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'clear-messages nil
                                       :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-entry-mutation
      store session-id
      (lambda (aggregate)
@@ -1119,7 +1122,7 @@ only durable identity boundary."
       (e-session-async-submit-command
        store session-id 'session-info (list :field 'name :value name)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-event-mutation
      store session-id
      (lambda (aggregate)
@@ -1131,7 +1134,7 @@ only durable identity boundary."
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'board-message
                                       (list :message message) :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -1147,7 +1150,7 @@ only durable identity boundary."
   (if (e-session-async-enabled-p store)
       (e-session-async-submit-command store session-id 'board-messages-clear nil
                                       :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (e-session--commit-session-mutation
      store session-id
      (lambda (aggregate)
@@ -1166,7 +1169,7 @@ only durable identity boundary."
        (list :principal principal :board-id board-id
              :association-role association-role :routing-policy routing-policy)
        :write-index t)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (let ((state
            (e-session--commit-session-mutation
             store session-id
@@ -1183,7 +1186,7 @@ only durable identity boundary."
   "Fork SESSION-ID and publish the new aggregate through storage."
   (if (e-session-async-enabled-p store)
       (e-session-async-unsupported-command session-id 'fork)
-    (e-session--ensure-loaded store session-id)
+    (e-session--ensure-local-state store session-id)
     (if (not (e-session-storage-sqlite-p store))
       (let* ((fork (e-session-aggregate-fork
                     store session-id :at at :metadata metadata :name name))
@@ -1283,183 +1286,190 @@ facade."
   "Synchronously flush STORE's physical write queue."
   (e-session-storage-flush-write-queue store))
 
-(defun e-session-get (store session-id)
-  "Return loaded SESSION-ID semantic state."
-  (e-session--ensure-loaded store session-id))
+(defun e-session-local-state (store session-id)
+  "Return explicit process-local SESSION-ID aggregate state.
 
-(defun e-session-session-present-p (store session-id)
-  "Return non-nil when STORE contains SESSION-ID without replaying it."
+This API is valid only for in-memory stores and named offline/test workflows;
+it is not a durable SQLite read API."
+  (e-session--ensure-local-state store session-id))
+
+(defun e-session-local-present-p (store session-id)
+  "Return non-nil when STORE's local aggregate table contains SESSION-ID."
+  (when (e-session-async-enabled-p store)
+    (signal 'e-session-storage-error
+            (list "Local session state is unavailable in async SQLite; use a bounded query"
+                  session-id)))
   (e-session-aggregate-session-present-p store session-id))
 
-(defun e-session-messages (store session-id)
+(defun e-session-local-messages (store session-id)
   "Return SESSION-ID transcript messages."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-messages store session-id))
 
-(defun e-session-activity-events (store session-id)
+(defun e-session-local-activity-events (store session-id)
   "Return SESSION-ID activity events."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-activity-events store session-id))
 
-(defun e-session-latest-activity-event (store session-id)
+(defun e-session-local-latest-activity-event (store session-id)
   "Return SESSION-ID's latest durable activity event in constant time."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-latest-activity-event store session-id))
 
-(defun e-session-latest-token-usage-event (store session-id)
+(defun e-session-local-latest-token-usage-event (store session-id)
   "Return latest token-usage activity event."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-latest-token-usage-event store session-id))
 
-(defun e-session-session-events (store session-id)
+(defun e-session-local-session-events (store session-id)
   "Return SESSION-ID session events."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-session-events store session-id))
 
-(defun e-session-compactions (store session-id)
+(defun e-session-local-compactions (store session-id)
   "Return SESSION-ID compaction records."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-compactions store session-id))
 
-(defun e-session-provider-anchors (store session-id)
+(defun e-session-local-provider-anchors (store session-id)
   "Return SESSION-ID provider anchors."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-provider-anchors store session-id))
 
-(defun e-session-context-generations (store session-id)
+(defun e-session-local-context-generations (store session-id)
   "Return SESSION-ID context generations."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-context-generations store session-id))
 
-(defun e-session-context-promotions (store session-id)
+(defun e-session-local-context-promotions (store session-id)
   "Return SESSION-ID context promotions."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-context-promotions store session-id))
 
-(defun e-session-context-erasures (store session-id)
+(defun e-session-local-context-erasures (store session-id)
   "Return SESSION-ID context erasures."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-context-erasures store session-id))
 
-(defun e-session-erased-tool-call-ids (store session-id &optional head-id)
+(defun e-session-local-erased-tool-call-ids (store session-id &optional head-id)
   "Return erased tool-call identities on SESSION-ID's selected path."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-erased-tool-call-ids store session-id head-id))
 
-(defun e-session-context-curations (store session-id)
+(defun e-session-local-context-curations (store session-id)
   "Return SESSION-ID context curation records."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-context-curations store session-id))
 
-(defun e-session-context-lifetime-current-generation
+(defun e-session-local-context-lifetime-current-generation
     (store session-id &optional head-id)
   "Return current semantic context generation."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-context-lifetime-current-generation store session-id head-id))
 
 (defun e-session-context-lifetime-durable-message (entry)
   "Return a portable durable message projection."
   (e-session-aggregate-context-lifetime-durable-message entry))
 
-(defun e-session-context-lifetime-projection
+(defun e-session-local-context-lifetime-projection
     (store session-id &optional head-id)
   "Return the provider-neutral context projection."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-context-lifetime-projection store session-id head-id))
 
-(defun e-session-process-reports (store session-id)
+(defun e-session-local-process-reports (store session-id)
   "Return SESSION-ID process reports."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-process-reports store session-id))
 
-(cl-defun e-session-latest-compatible-provider-anchor
+(cl-defun e-session-local-latest-compatible-provider-anchor
     (store session-id provider-id &key model fingerprints)
   "Return the latest compatible provider anchor."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-latest-compatible-provider-anchor
    store session-id provider-id :model model :fingerprints fingerprints))
 
-(defun e-session-turn-options (store session-id)
+(defun e-session-local-turn-options (store session-id)
   "Return session-scoped turn options."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-turn-options store session-id))
 
 (defun e-session-metadata-context-references (metadata owner)
   "Return OWNER's durable context references from METADATA."
   (e-session-metadata-context-references-value metadata owner))
 
-(defun e-session-context-references (store session-id owner)
+(defun e-session-local-context-references (store session-id owner)
   "Return OWNER's durable context references."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-context-references store session-id owner))
 
-(defun e-session-capability-state (store session-id capability-id)
+(defun e-session-local-capability-state (store session-id capability-id)
   "Return durable CAPABILITY-ID state."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-capability-state store session-id capability-id))
 
-(defun e-session-current-path (store session-id &optional head-id)
+(defun e-session-local-current-path (store session-id &optional head-id)
   "Return SESSION-ID's current parent path."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-current-path store session-id head-id))
 
-(defun e-session-entries-in-turn (store session-id turn-id)
+(defun e-session-local-entries-in-turn (store session-id turn-id)
   "Return current-path entries for TURN-ID."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-entries-in-turn store session-id turn-id))
 
-(defun e-session-entry-by-id (store session-id entry-id)
+(defun e-session-local-entry-by-id (store session-id entry-id)
   "Return SESSION-ID entry ENTRY-ID."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-entry-by-id store session-id entry-id))
 
-(defun e-session-entry-previous (store session-id entry-id)
+(defun e-session-local-entry-previous (store session-id entry-id)
   "Return current-path predecessor of ENTRY-ID."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-entry-previous store session-id entry-id))
 
-(defun e-session-entry-next (store session-id entry-id)
+(defun e-session-local-entry-next (store session-id entry-id)
   "Return current-path successor of ENTRY-ID."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-entry-next store session-id entry-id))
 
-(defun e-session-latest-entry-of-type (store session-id type)
+(defun e-session-local-latest-entry-of-type (store session-id type)
   "Return latest current-path entry of TYPE."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-latest-entry-of-type store session-id type))
 
-(defun e-session-entries-from (store session-id first-entry-id)
+(defun e-session-local-entries-from (store session-id first-entry-id)
   "Return current path from FIRST-ENTRY-ID."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-entries-from store session-id first-entry-id))
 
-(defun e-session-entries-before (store session-id entry-id)
+(defun e-session-local-entries-before (store session-id entry-id)
   "Return current path entries before ENTRY-ID."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-entries-before store session-id entry-id))
 
-(defun e-session-compaction-boundary-valid-p (store session-id compaction)
+(defun e-session-local-compaction-boundary-valid-p (store session-id compaction)
   "Return non-nil when COMPACTION's boundary is on the current path."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-compaction-boundary-valid-p store session-id compaction))
 
-(defun e-session-latest-valid-compaction (store session-id)
+(defun e-session-local-latest-valid-compaction (store session-id)
   "Return latest current-path compaction."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-latest-valid-compaction store session-id))
 
-(defun e-session-provider-anchor-incompatibility-reason
+(defun e-session-local-provider-anchor-incompatibility-reason
     (store session-id anchor provider-id model fingerprints)
   "Return incompatibility reason for ANCHOR."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-provider-anchor-policy-incompatibility-reason
    (e-session-aggregate-current-path store session-id)
    anchor provider-id model fingerprints))
 
-(defun e-session-provider-anchor-compatible-p
+(defun e-session-local-provider-anchor-compatible-p
     (store session-id anchor provider-id model fingerprints)
   "Return non-nil when ANCHOR is compatible."
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-provider-anchor-policy-compatible-p
    (e-session-aggregate-current-path store session-id)
    anchor provider-id model fingerprints))
@@ -1480,11 +1490,11 @@ facade."
   "Return non-nil when ASSOCIATION carries routing policy."
   (e-session-aggregate-board-association-policy-present-p association))
 
-(defun e-session-board-messages (store session-id)
+(defun e-session-local-board-messages (store session-id)
   "Return detached board envelopes for SESSION-ID."
   ;; Board state is kept outside the generic session projection, but reading
   ;; it still has the facade's normal lazy-replay semantics for index stubs.
-  (e-session--ensure-loaded store session-id)
+  (e-session--ensure-local-state store session-id)
   (e-session-aggregate-board-messages store session-id))
 
 (defun e-session-generate-id ()
@@ -1542,7 +1552,7 @@ never touches durable files or another session's aggregate state."
 (defun e-session-checkpoint-manifest (store session-id)
   "Return semantic bounded checkpoint manifest for SESSION-ID."
   (e-session-catalog-checkpoint-manifest
-   (e-session--ensure-loaded store session-id)
+   (e-session--ensure-local-state store session-id)
    (e-session-aggregate-board-messages store session-id)))
 
 (defun e-session-refresh-index-metadata (store)

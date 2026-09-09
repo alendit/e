@@ -29,7 +29,7 @@ the same board/session creation service used by presentation shells."
              (session-id (plist-get session :id)))
         (e-session-declare-board-state
          (e-harness-sessions harness) session-id principal board-id)
-        (e-session-get (e-harness-sessions harness) session-id))
+        (e-session-local-state (e-harness-sessions harness) session-id))
     (e-chat-service-create-session
      :harness harness :id id :metadata metadata)))
 

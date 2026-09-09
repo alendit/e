@@ -747,7 +747,7 @@
                        (e-board-pickup board delivery-id))
                       events-during
                       (condition-case nil
-                          (e-session-activity-events sessions "session")
+                          (e-session-local-activity-events sessions "session")
                         (e-session-persistence-unavailable :frozen))
                       session-mutation-during
                       (condition-case err
@@ -778,7 +778,7 @@
                               'accepted))
                          (should
                           (= (length
-                              (e-session-activity-events sessions "session"))
+                              (e-session-local-activity-events sessions "session"))
                              1))
                          (e-session-append-activity-event
                           sessions "session" "after-ack" 'dependent nil
@@ -823,7 +823,7 @@
           (signal (car callback-error) (cdr callback-error)))
         (should session-callback-ran)
         (should board-callback-ran)
-        (should (= (length (e-session-activity-events sessions "session")) 2))
+        (should (= (length (e-session-local-activity-events sessions "session")) 2))
         (should (equal (e-board-message-content
                         (e-board-message board "after-ack"))
                        "published"))
@@ -835,7 +835,7 @@
          :type 'e-board-storage-conflict)
         (e-session-sqlite-store-close sessions)
         (setq sessions (e-session-sqlite-store-create directory))
-        (should (= (length (e-session-activity-events sessions "session")) 2))))))
+        (should (= (length (e-session-local-activity-events sessions "session")) 2))))))
 
 (ert-deftest e-board-sqlite-s6-composite-invalid-state-has-no-tear ()
   (ert-skip "Retired aggregate-based pickup admission scenario")
@@ -861,7 +861,7 @@
           "session" (e-session-board-input-admission-record admission) 'idle)
          :type 'e-board-storage-conflict)
         (should (eq (e-board-pickup-state pickup) 'ready))
-        (should-not (e-session-activity-events sessions "session"))))))
+        (should-not (e-session-local-activity-events sessions "session"))))))
 
 (provide 'e-board-sqlite-test)
 

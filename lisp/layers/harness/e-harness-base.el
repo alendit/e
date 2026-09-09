@@ -64,7 +64,7 @@ Filtering is performed before any ordering, bounds, or count is derived."
   (let ((erased (e-harness-base--erased-tool-call-id-set
                  erased-tool-call-ids)))
     (cl-loop for entry in
-             (e-session-current-path
+             (e-session-local-current-path
               (e-harness-sessions harness) session-id)
              for payload = (plist-get entry :payload)
              for receipt = (and (eq (plist-get entry :type) 'activity-event)
@@ -195,7 +195,7 @@ before current-path ordering, entry/byte bounds, and omitted-count derivation."
        (e-harness-base-receipt-projection
         harness session-id
         :erased-tool-call-ids
-        (e-session-erased-tool-call-ids store session-id)))
+        (e-session-local-erased-tool-call-ids store session-id)))
      :messages)))
 
 (defconst e-harness-base-instructions

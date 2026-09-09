@@ -690,7 +690,7 @@ not turn a presentation predicate into an aggregate read."
       (let ((store (e-harness-sessions harness)))
         (and (not (e-session-storage-sqlite-p store))
              (condition-case nil
-                 (let* ((session (e-session-get store session-id))
+                 (let* ((session (e-session-local-state store session-id))
                         (state (plist-get session :board-session-state)))
                    (and (stringp (plist-get state :board-id))
                         (plist-get state :principal)))
@@ -1780,7 +1780,7 @@ compatibility path never issues durable reads."
                   (e-chat-service-binding-start harness session-id)
                   (signal 'e-session-error
                           (list "SQLite Board binding is pending" session-id))))
-             (session (e-session-get store session-id))
+             (session (e-session-local-state store session-id))
              (board-state (plist-get session :board-session-state))
              (routing-policy (e-chat-service--session-routing-policy session))
              (principal (plist-get board-state :principal))
@@ -1988,7 +1988,7 @@ compatibility path never issues durable reads."
            (default-to nil default-to-supplied-p))
   "Open existing BOARD by attaching HARNESS SESSION-ID as one participant."
   (let* ((board (e-board-registry-get board))
-         (session (e-session-get (e-harness-sessions harness) session-id))
+         (session (e-session-local-state (e-harness-sessions harness) session-id))
          (state (plist-get session :board-session-state))
          (association (e-session-board-association session))
          (routing-policy
@@ -2269,7 +2269,7 @@ this path reads or reconstructs a durable session aggregate."
              :principal principal :require-session nil))
          (_ (when id
              (condition-case nil
-                 (progn (e-session-get store id)
+                 (progn (e-session-local-state store id)
                         (signal 'e-session-duplicate (list id)))
                (e-session-missing nil)))))
     (let ((session nil)
@@ -2368,7 +2368,7 @@ this path reads or reconstructs a durable session aggregate."
             :harness harness :metadata metadata :id id)))
       (let ((binding (e-chat-service-create-board
                       :harness harness :metadata metadata :id id)))
-        (e-session-get store
+        (e-session-local-state store
                        (e-chat-service-binding-session-id binding))))))
 
 (defun e-chat-service-ensure-binding (harness session-id)
@@ -2645,10 +2645,6 @@ not trigger a durable read merely because presentation code asks for status."
 (defun e-chat-service-active-turn-p (harness session-id)
   "Return non-nil when HARNESS SESSION-ID's board participant is running."
   (and (e-chat-service-active-turn harness session-id) t))
-
-(defun e-chat-service-session (harness session-id)
-  "Return SESSION-ID's private metadata through the board application seam."
-  (e-session-get (e-harness-sessions harness) session-id))
 
 (defun e-chat-service-session-options (harness session-id)
   "Return the effective option projection for SESSION-ID.

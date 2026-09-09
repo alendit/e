@@ -66,7 +66,7 @@
 
 (defun e-process-reporting--reports (context)
   "Return process reports owned by CONTEXT's active session."
-  (e-session-process-reports
+  (e-session-local-process-reports
    (e-process-reporting--session-store context)
    (e-process-reporting--session-id context)))
 
@@ -138,7 +138,7 @@
 (defun e-process-reporting--activity-events (harness session-id)
   "Return activity events for HARNESS SESSION-ID."
   (when (and (e-harness-p harness) (stringp session-id))
-    (e-session-activity-events (e-harness-sessions harness) session-id)))
+    (e-session-local-activity-events (e-harness-sessions harness) session-id)))
 
 (defun e-process-reporting--own-event-p (event)
   "Return non-nil when EVENT belongs to process marker capture itself."

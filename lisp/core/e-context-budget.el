@@ -19,7 +19,7 @@
 (require 'e-session)
 (require 'e-session-async)
 
-(declare-function e-session-latest-token-usage-event "e-session")
+(declare-function e-session-local-latest-token-usage-event "e-session")
 
 (defcustom e-context-budget-model-token-limits
   '(("claude-sonnet-5" . 364000)
@@ -82,7 +82,7 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
   "Return latest durable provider token usage event for SESSION-ID."
   (when (and harness session-id)
     (ignore-errors
-      (e-session-latest-token-usage-event
+      (e-session-local-latest-token-usage-event
        (e-harness-sessions harness)
        session-id))))
 
@@ -90,7 +90,7 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
   "Return latest valid compaction for SESSION-ID."
   (when (and harness session-id)
     (ignore-errors
-      (e-session-latest-valid-compaction
+      (e-session-local-latest-valid-compaction
        (e-harness-sessions harness)
        session-id))))
 
@@ -103,7 +103,7 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
              ;; Status redisplay is not a reason to query or reconstruct a
              ;; durable session.  It may use only the detached executing turn.
              (and (e-harness-executing-session-state harness session-id) t)
-           (ignore-errors (e-session-get store session-id) t)))))
+           (ignore-errors (e-session-local-state store session-id) t)))))
 
 (defun e-context-budget-usage-before-compaction-p (usage-event compaction)
   "Return non-nil when USAGE-EVENT predates COMPACTION."

@@ -663,10 +663,10 @@ aggregate or mirror."
                  :outcome 'checked
                  :summary "Terminal audit recorded")
                 value)))))
-          (setq original-session-get (symbol-function 'e-session-get))
+          (setq original-session-get (symbol-function 'e-session-local-state))
           (setq original-ensure-loaded
-                (symbol-function 'e-session--ensure-loaded))
-          (fset 'e-session--ensure-loaded
+                (symbol-function 'e-session--ensure-local-state))
+          (fset 'e-session--ensure-local-state
                 (lambda (&rest arguments)
                   (when (< (length synchronous-read-backtrace) 12)
                     (push (let ((print-level 4) (print-length 50))
@@ -674,9 +674,9 @@ aggregate or mirror."
                                     (seq-take (backtrace-frames) 24)
                                     arguments))
                           synchronous-read-backtrace))
-                  (error "Forbidden interactive e-session--ensure-loaded %S"
+                  (error "Forbidden interactive e-session--ensure-local-state %S"
                          arguments)))
-          (fset 'e-session-get
+          (fset 'e-session-local-state
                 (lambda (&rest arguments)
                   (when (< (length synchronous-read-backtrace) 12)
                     (push (let ((print-level 4) (print-length 50))
@@ -684,7 +684,7 @@ aggregate or mirror."
                                     (seq-take (backtrace-frames) 24)
                                     arguments))
                           synchronous-read-backtrace))
-                  (error "Forbidden interactive e-session-get %S" arguments)))
+                  (error "Forbidden interactive e-session-local-state %S" arguments)))
           (with-current-buffer target
             (org-mode)
             (insert "* Daily\n"
@@ -1319,9 +1319,9 @@ aggregate or mirror."
       (when service-subscription
         (e-chat-service-unsubscribe service-subscription))
       (when original-session-get
-        (fset 'e-session-get original-session-get))
+        (fset 'e-session-local-state original-session-get))
       (when original-ensure-loaded
-        (fset 'e-session--ensure-loaded original-ensure-loaded))
+        (fset 'e-session--ensure-local-state original-ensure-loaded))
       (ignore-errors
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'board-create)
@@ -1361,13 +1361,13 @@ aggregate or mirror."
     (unwind-protect
         (ert-info ((format "DP6B phase: %s" phase))
           (let (synchronous-session-get)
-            (cl-letf (((symbol-function 'e-session-get)
+            (cl-letf (((symbol-function 'e-session-local-state)
                        (lambda (&rest arguments)
                          (setq synchronous-session-get
                                (let ((print-level 4) (print-length 40))
                                  (list arguments
                                        (seq-take (backtrace-frames) 24))))
-                         (error "Public new-chat path called e-session-get %S"
+                         (error "Public new-chat path called e-session-local-state %S"
                                 arguments))))
               (progn
           (setq phase 'create-runtime)
@@ -1467,6 +1467,15 @@ aggregate or mirror."
                 (should surface-windows)
                 (should (eq (window-buffer (car surface-windows)) transcript))
                 (should (eq (window-buffer (cdr surface-windows)) composer))
+                ;; A real command in the transcript runs global
+                ;; `post-command-hook'.  This is the exact focus shape that
+                ;; previously escaped composer-only coverage and reached the
+                ;; removed aggregate reader from e-debug focus tracking.
+                (should (memq #'e-debug--record-focused-buffer
+                              (default-value 'post-command-hook)))
+                (select-window (car surface-windows))
+                (execute-kbd-macro (kbd "C-e"))
+                (should (eq e-debug--last-focused-buffer transcript))
                 (select-window (cdr surface-windows))
                 ;; Exercise the actual interactive composer path.  Calling
                 ;; `e-chat-submit-session' directly does not run submit-intent
@@ -1780,10 +1789,10 @@ aggregate or mirror."
                          :sessions sessions))
           (e-runtime-store-recovery-graphical--prepare-frame)
           (let (synchronous-session-get)
-            (cl-letf (((symbol-function 'e-session-get)
+            (cl-letf (((symbol-function 'e-session-local-state)
                        (lambda (&rest arguments)
                          (setq synchronous-session-get arguments)
-                         (error "Upgraded public chat called e-session-get")))
+                         (error "Upgraded public chat called e-session-local-state")))
                       ((symbol-function 'e-runtime-store-await)
                        (lambda (&rest arguments)
                          (error "Upgraded public chat awaited SQLite %S"

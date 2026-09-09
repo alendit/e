@@ -624,7 +624,7 @@ available."
                      ;; behavior without making async publication perform a
                      ;; session aggregate read.
                      (or (e-session-async-enabled-p store)
-                         (ignore-errors (e-session-get store session-id))))
+                         (ignore-errors (e-session-local-state store session-id))))
             (e-harness-activity--append-durable-activity-event
              harness session-id turn-id type payload)))
          (event

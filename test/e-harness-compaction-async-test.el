@@ -79,7 +79,7 @@
       (should-not failure)
       (should (equal (plist-get record :summary)
                      "Old exchange summary."))
-      (should (= (length (e-session-compactions
+      (should (= (length (e-session-local-compactions
                           (e-harness-sessions harness)
                           "session-1"))
                  1)))))
@@ -127,7 +127,7 @@
       (should (equal failure '(quit "Context compaction cancelled")))
       (accept-process-output nil 0.1)
       (should-not record)
-      (should-not (e-session-compactions
+      (should-not (e-session-local-compactions
                    (e-harness-sessions harness)
                    "session-1")))))
 
@@ -189,7 +189,7 @@
                                 :status)
                      'done))
       (should (= calls 2))
-      (let ((record (car (e-session-compactions store "session-1"))))
+      (let ((record (car (e-session-local-compactions store "session-1"))))
         (should record)
         (should (eq (plist-get (plist-get record :metadata) :reason)
                     'auto))))))

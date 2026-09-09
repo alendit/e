@@ -90,7 +90,7 @@
           (e-chat-session-ensure-project-root
            harness "session-1" project-root)
           (let ((metadata (plist-get
-                           (e-session-get
+                           (e-session-local-state
                             (e-harness-sessions harness) "session-1")
                            :metadata)))
             (should (equal (plist-get metadata :project-root) project-root))
@@ -98,7 +98,7 @@
           (e-chat-session-attach-context
            harness "session-1" '(:uri "buffer://source"))
           (let* ((metadata (plist-get
-                            (e-session-get
+                            (e-session-local-state
                              (e-harness-sessions harness) "session-1")
                             :metadata))
                  (references (plist-get metadata :context-references)))
@@ -276,12 +276,12 @@
                   :session-id "session-1"
                   :turn-id "turn-compact"))))
       (should (eq (plist-get result :status) 'started))
-      (should-not (e-session-compactions store "session-1")))
+      (should-not (e-session-local-compactions store "session-1")))
     (let ((deadline (+ (float-time) 1)))
-      (while (and (not (e-session-compactions store "session-1"))
+      (while (and (not (e-session-local-compactions store "session-1"))
                   (< (float-time) deadline))
         (accept-process-output nil 0.01)))
-    (should (equal (plist-get (car (e-session-compactions store "session-1"))
+    (should (equal (plist-get (car (e-session-local-compactions store "session-1"))
                               :summary)
                    "Action summary."))))
 

@@ -1024,7 +1024,7 @@ also emitting the normal compaction failure event."
   "Return estimated current suffix tokens since COMPACTION."
   (let* ((boundary-id (plist-get compaction :first-kept-entry-id))
          (entries (and boundary-id
-                       (cdr (e-session-entries-from
+                       (cdr (e-session-local-entries-from
                              (e-harness-sessions harness)
                              session-id
                              boundary-id)))))
@@ -1033,7 +1033,7 @@ also emitting the normal compaction failure event."
 
 (defun e-harness-turn--auto-compaction-no-progress-p (harness session-id)
   "Return non-nil when another auto-compaction would not move the boundary."
-  (when-let ((latest (e-session-latest-valid-compaction
+  (when-let ((latest (e-session-local-latest-valid-compaction
                       (e-harness-sessions harness)
                       session-id)))
     (let ((suffix-tokens
@@ -1052,7 +1052,7 @@ also emitting the normal compaction failure event."
       (cl-remove-if
        (lambda (message)
          (member (plist-get message :id) exclude-entry-ids))
-       (e-session-messages (e-harness-sessions harness) session-id)))
+       (e-session-local-messages (e-harness-sessions harness) session-id)))
      1))
 
 (defun e-harness-turn--auto-compaction-needed-p (harness session-id &optional context)
@@ -1341,7 +1341,7 @@ When a turn produced multiple assistant messages, return the last one."
                       (lambda (message)
                         (and (eq (plist-get message :role) 'assistant)
                              (equal (plist-get message :turn-id) turn-id)))
-                      (e-session-messages store session-id))))))))
+                      (e-session-local-messages store session-id))))))))
 
 (defun e-harness-turn--turn-session-metadata (harness session-id)
   "Return detached metadata for SESSION-ID's executing turn in HARNESS.
@@ -1352,7 +1352,7 @@ session value directly."
          (session
           (or (e-harness-executing-session-state harness session-id)
               (unless (e-session-async-enabled-p store)
-                (e-session-get store session-id)))))
+                (e-session-local-state store session-id)))))
     (copy-tree (plist-get session :metadata) t)))
 
 (defun e-harness-turn--run-turn-finished-hooks

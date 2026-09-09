@@ -161,7 +161,7 @@ covered by the adapter tests below."
                        (copy-tree
                         (mapcar
                          #'e-session-aggregate-context-record
-                         (e-session-context-promotions
+                         (e-session-local-context-promotions
                           (e-harness-sessions harness-ref)
                           "ephemeral-anchor-session"))))
                  (funcall on-item
@@ -217,7 +217,7 @@ covered by the adapter tests below."
           :anchors
           (mapcar (lambda (anchor)
                     (plist-get (plist-get anchor :metadata) :response-id))
-                  (e-session-provider-anchors
+                  (e-session-local-provider-anchors
                    (e-harness-sessions harness)
                    "ephemeral-anchor-session"))
           :curation-input curation-input
@@ -485,7 +485,7 @@ covered by the adapter tests below."
       ;; The request above selected a session-owned anchor produced by the
       ;; preceding real OpenAI response.  Keep a direct persistence assertion
       ;; alongside the wire-level previous_response_id proof.
-      (let* ((anchors (e-session-provider-anchors
+      (let* ((anchors (e-session-local-provider-anchors
                        (e-harness-sessions harness)
                        "session-1"))
              (latest (car (last anchors))))
@@ -558,7 +558,7 @@ covered by the adapter tests below."
     ;; Seed the live session options directly as hostile persisted/session
     ;; state; normal session-option normalization already drops unknown keys,
     ;; but the harness boundary must remain safe if such state is restored.
-    (let ((session (e-session-get (e-harness-sessions harness)
+    (let ((session (e-session-local-state (e-harness-sessions harness)
                                   "forged-anchor-session")))
       (plist-put
        session
@@ -579,7 +579,7 @@ covered by the adapter tests below."
     (let* ((body (car requests))
            (input (alist-get 'input body))
            (input-json (json-encode input))
-           (anchors (e-session-provider-anchors
+           (anchors (e-session-local-provider-anchors
                      (e-harness-sessions harness)
                      "forged-anchor-session"))
            (latest (car (last anchors))))
@@ -928,7 +928,7 @@ covered by the adapter tests below."
          '(:prompt-cache-default t))
         (e-board-e2e-prompt-batch harness "session-one" "first prompt")
         (should-not
-         (e-session-provider-anchors
+         (e-session-local-provider-anchors
           (e-harness-sessions harness) "session-one"))
         (setq current-state "OBSERVATION-NEW")
         (e-board-e2e-prompt-batch harness "session-one" "second prompt")
@@ -945,7 +945,7 @@ covered by the adapter tests below."
                             (car backend-requests))
                            :diagnostics))
                (anchors
-                (e-session-provider-anchors
+                (e-session-local-provider-anchors
                  (e-harness-sessions harness) "session-one"))
                (anchor-ids
                 (mapcar
@@ -1174,7 +1174,7 @@ ordinary-turn anchor."
                 ;; ordering independently of the resulting request body.
                 (setq curations-at-next-request
                       (copy-tree
-                       (e-session-context-promotions
+                       (e-session-local-context-promotions
                         (e-harness-sessions harness)
                         "canonical-observe-curate")))
                 (e-provider-continuation-integration--sse
@@ -1234,7 +1234,7 @@ ordinary-turn anchor."
                (d2-input (alist-get 'input d2-body))
                (d2-printed (json-encode d2-body))
                (anchors
-                (e-session-provider-anchors
+                (e-session-local-provider-anchors
                  (e-harness-sessions harness)
                  "canonical-observe-curate"))
                (anchor-ids
@@ -1403,7 +1403,7 @@ ordinary-turn anchor."
                  (alist-get 'text
                             (aref (alist-get 'content item) 0)))
                (append (alist-get 'input body) nil))))
-           (anchors (e-session-provider-anchors
+           (anchors (e-session-local-provider-anchors
                      (e-harness-sessions harness)
                      "branchable-inherited")))
       (should (= call-count 3))

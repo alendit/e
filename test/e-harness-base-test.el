@@ -248,7 +248,7 @@
       (e-harness-base-test--emit-receipt
        harness session-id id id "probe"
        (format "tmp://details/%s.json" id)))
-    (let* ((session (e-session-get store session-id))
+    (let* ((session (e-session-local-state store session-id))
            (root-id (plist-get session :root-event-id))
            (generation-id "generation-receipt-session")
            (generation
@@ -280,7 +280,7 @@
                provider :harness harness :session-id session-id
                :turn-id "turn-receipt-session" :context-purpose 'turn))
              (content (plist-get (car messages) :content)))
-        (should (equal (e-session-erased-tool-call-ids store session-id)
+        (should (equal (e-session-local-erased-tool-call-ids store session-id)
                        '("call-b")))
         (should (string-match-p "call-a" content))
         (should-not (string-match-p "call-b" content))
@@ -427,7 +427,7 @@
                    (lambda (entry)
                      (and (eq (plist-get entry :event-type) 'tool-finished)
                           (plist-get (plist-get entry :payload) :receipt)))
-                   (e-session-activity-events store session-id)))
+                   (e-session-local-activity-events store session-id)))
                  (receipt-id (plist-get receipt-event :id)))
             (should (plist-get receipt-event :checkpoint-retain))
             (e-harness-activity-emit-turn-event
@@ -458,7 +458,7 @@
                    (projection (e-harness-base-receipt-projection
                                 reopened session-id
                                 :max-entries 8 :max-bytes 4096)))
-              (should (e-session-entry-by-id
+              (should (e-session-local-entry-by-id
                        reopened-store session-id receipt-id))
               (should (string-match-p
                        "call-receipt"
@@ -498,7 +498,7 @@
                        (lambda (entry)
                          (equal (plist-get entry :event-type)
                                 'tool-finished))
-                       (e-session-activity-events store session-id))
+                       (e-session-local-activity-events store session-id))
                       :id)
                      (append (plist-get manifest :entry-ids) nil))))
           (e-session-migrate-session-checkpoint store session-id)
@@ -522,7 +522,7 @@
               "old context"
               (prin1-to-string
                (plist-get
-                (e-session-context-lifetime-projection
+                (e-session-local-context-lifetime-projection
                  reopened-store session-id)
                 :durable-tail))))))
       (delete-directory directory t))))

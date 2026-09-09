@@ -68,7 +68,43 @@
     "e-harness-compact-session"
     "e-harness-follow-up"
     "e-harness-prompt"
-    "e-harness-wait")
+    "e-harness-wait"
+    "e-chat-service-session"
+    "e-session--ensure-loaded"
+    "e-session-get"
+    "e-session-session-present-p"
+    "e-session-messages"
+    "e-session-activity-events"
+    "e-session-latest-activity-event"
+    "e-session-latest-token-usage-event"
+    "e-session-session-events"
+    "e-session-compactions"
+    "e-session-provider-anchors"
+    "e-session-context-generations"
+    "e-session-context-promotions"
+    "e-session-context-erasures"
+    "e-session-erased-tool-call-ids"
+    "e-session-context-curations"
+    "e-session-context-lifetime-current-generation"
+    "e-session-context-lifetime-projection"
+    "e-session-process-reports"
+    "e-session-latest-compatible-provider-anchor"
+    "e-session-turn-options"
+    "e-session-context-references"
+    "e-session-capability-state"
+    "e-session-current-path"
+    "e-session-entries-in-turn"
+    "e-session-entry-by-id"
+    "e-session-entry-previous"
+    "e-session-entry-next"
+    "e-session-latest-entry-of-type"
+    "e-session-entries-from"
+    "e-session-entries-before"
+    "e-session-compaction-boundary-valid-p"
+    "e-session-latest-valid-compaction"
+    "e-session-provider-anchor-incompatibility-reason"
+    "e-session-provider-anchor-compatible-p"
+    "e-session-board-messages")
   "Removed generic blocking API names that production code must not call.")
 
 (defconst e-nonblocking-sweep-test--durable-mirror-symbols
@@ -271,6 +307,11 @@ timer owner, or presentation module appearing here is a regression.")
   "Removed generic blocking API names stay out of lisp sources."
   (should (equal (e-nonblocking-sweep-test--scan-legacy-sync-calls)
                  e-nonblocking-sweep-test--expected-legacy-sync-calls)))
+
+(ert-deftest e-nonblocking-sweep-test-legacy-sync-symbols-are-undefined ()
+  "Removed generic blocking APIs stay absent from the loaded runtime."
+  (dolist (name e-nonblocking-sweep-test--legacy-sync-call-symbols)
+    (should-not (fboundp (intern name)))))
 
 (ert-deftest e-nonblocking-sweep-test-start-functions-stay-at-boundaries ()
   "Legacy callback start slots stay out of tool/action registrations."

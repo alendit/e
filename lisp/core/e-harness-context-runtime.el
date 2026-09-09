@@ -68,7 +68,7 @@ required; explicit `:deadline' options still apply."
         ;; async query results or the request-scoped executing turn state.
         ;; Presentation must never turn a mode-line refresh into hydration.
         (unless (e-session-async-enabled-p store)
-          (e-session-turn-options store session-id)))))
+          (e-session-local-turn-options store session-id)))))
 
 (defun e-harness-display-options (harness session-id)
   "Return lightweight display options for HARNESS SESSION-ID.
@@ -503,7 +503,7 @@ This pure projection never consults or installs a session aggregate."
   "Capture provider compaction MESSAGES and their exact coverage identity."
   (let* ((messages (e-harness-context-runtime--provider-compaction-messages
                     harness session-id generation))
-         (projection (e-session-context-lifetime-projection
+         (projection (e-session-local-context-lifetime-projection
                       (e-harness-sessions harness) session-id))
          ;; The projection's ordered frontier covers both read-only v2
          ;; records and active v3 curations.  Do not discard v3 record ids by
@@ -609,10 +609,10 @@ preview/status caller must not create a consumer frame or append a generation."
 
 (defun e-harness-context-runtime--context-lifetime-ensure-generation (harness session-id)
   "Return SESSION-ID's current v2 generation, creating its first boundary."
-  (or (e-session-context-lifetime-current-generation
+  (or (e-session-local-context-lifetime-current-generation
        (e-harness-sessions harness) session-id)
       (let* ((store (e-harness-sessions harness))
-             (session (e-session-get store session-id))
+             (session (e-session-local-state store session-id))
              (boundary (or (plist-get session :current-head-id)
                            (plist-get session :root-event-id)))
              (generation
@@ -707,7 +707,7 @@ installed in the session store."
   (let* ((store (e-harness-sessions harness))
          (projection
           (or detached-projection
-              (e-session-context-lifetime-projection store session-id)))
+              (e-session-local-context-lifetime-projection store session-id)))
          (generation (or (plist-get projection :generation)
                          (if detached-projection
                              (let* ((boundary
@@ -733,7 +733,7 @@ installed in the session store."
            ((plist-get projection :generation) projection)
            (detached-projection
             (plist-put (copy-tree projection t) :generation generation))
-           (t (e-session-context-lifetime-projection store session-id))))
+           (t (e-session-local-context-lifetime-projection store session-id))))
          (promotions (plist-get projection :promotions))
          ;; Session projection is the semantic authority for both the
          ;; temporary v2 compatibility projection and the literal v3 curation
@@ -1333,7 +1333,7 @@ refresh changes the projection that produced it."
 (defun e-harness-context-runtime--provider-anchor-compaction-boundary (harness session-id)
   "Return provider-anchor compatibility data for latest compaction boundary."
   (when-let ((compaction
-              (e-session-latest-valid-compaction
+              (e-session-local-latest-valid-compaction
                (e-harness-sessions harness)
                session-id)))
     (list :id (plist-get compaction :id)
@@ -1346,10 +1346,10 @@ refresh changes the projection that produced it."
           (cl-remove-if-not
            (lambda (anchor)
              (eq (plist-get anchor :provider-id) provider-id))
-           (e-session-provider-anchors (e-harness-sessions harness) session-id)))
+           (e-session-local-provider-anchors (e-harness-sessions harness) session-id)))
          (latest (car (last anchors))))
     (if latest
-        (e-session-provider-anchor-incompatibility-reason
+        (e-session-local-provider-anchor-incompatibility-reason
          (e-harness-sessions harness)
          session-id
          latest
@@ -1371,7 +1371,7 @@ refresh changes the projection that produced it."
   (let ((dynamic-messages
          (when context
            (e-harness-context-runtime--provider-anchor-dynamic-context-messages context)))
-        (entries (cdr (e-session-entries-from
+        (entries (cdr (e-session-local-entries-from
                        (e-harness-sessions harness)
                        session-id
                        (plist-get anchor :covered-entry-id)))))
@@ -1419,7 +1419,7 @@ not contaminate the anchor and is safe for either supported continuation mode."
 An inherited observation may branch repeatedly only from a clean anchor.  For
 a branchable backend, omit the current observation from the lookup identity;
 this lets a clean anchor match while
-`e-session-provider-anchor-incompatibility-reason' still rejects any
+`e-session-local-provider-anchor-incompatibility-reason' still rejects any
 persisted anchor that carries a non-nil observation
 fingerprint.  Linear backends keep the ordinary fingerprint and are rejected
 by `e-harness-context-runtime--provider-anchor-selection-allowed-p' when an
@@ -1486,7 +1486,7 @@ existing anchor fingerprint helper; opaque provider output is never hashed or
 otherwise interpreted here."
   (let* ((options (plist-get context :options))
          (generation (or (plist-get context :lifetime-generation)
-                         (e-session-context-lifetime-current-generation
+                         (e-session-local-context-lifetime-current-generation
                           (e-harness-sessions harness) session-id)))
          (identity
           (list :provider-id (plist-get options :provider-anchor-provider-id)
@@ -1507,7 +1507,7 @@ otherwise interpreted here."
 Entries after this identity are scanned separately when the candidate is
 consumed, and only their portable durable message projection may become the
 provider delta."
-  (when-let ((entry (car (last (e-session-current-path
+  (when-let ((entry (car (last (e-session-local-current-path
                                (e-harness-sessions harness) session-id)))))
     (plist-get entry :id)))
 
@@ -1521,7 +1521,7 @@ opaque candidate cannot create an orphaned provider tool bundle."
   (let ((after nil)
         (found nil)
         result)
-    (dolist (entry (e-session-current-path
+    (dolist (entry (e-session-local-current-path
                     (e-harness-sessions harness) session-id))
       (if after
           (when-let ((message
@@ -1544,17 +1544,17 @@ No session record is touched.  The candidate is fenced by GENERATION, the
   context rebuild either selects it exactly or discards it."
   (let* ((options (plist-get context :options))
          (current-generation
-          (e-session-context-lifetime-current-generation
+          (e-session-local-context-lifetime-current-generation
            (e-harness-sessions harness) session-id))
          (current-frontier
           (plist-get
-           (e-session-context-lifetime-projection
+           (e-session-local-context-lifetime-projection
             (e-harness-sessions harness) session-id)
            :promotion-frontier))
          (source-on-path
           (seq-some (lambda (entry)
                       (equal (plist-get entry :id) source-entry-id))
-                    (e-session-current-path
+                    (e-session-local-current-path
                      (e-harness-sessions harness) session-id))))
     ;; A promotion frontier changing while the provider request is in flight
     ;; makes its opaque coverage ambiguous.  Keep portable context as the
@@ -1589,7 +1589,7 @@ No session record is touched.  The candidate is fenced by GENERATION, the
   (let* ((options (plist-get context :options))
          (generation (plist-get context :lifetime-generation))
          (source-entry-id (plist-get candidate :source-entry-id))
-         (path (e-session-current-path (e-harness-sessions harness) session-id)))
+         (path (e-session-local-current-path (e-harness-sessions harness) session-id)))
     (and (eq (plist-get capabilities :provider-compaction) 'opaque)
          (equal (plist-get candidate :provider-id)
                 (plist-get options :provider-anchor-provider-id))
@@ -1602,7 +1602,7 @@ No session record is touched.  The candidate is fenced by GENERATION, the
                    path)
          (equal (plist-get candidate :promotion-frontier)
                 (plist-get
-                 (e-session-context-lifetime-projection
+                 (e-session-local-context-lifetime-projection
                   (e-harness-sessions harness) session-id)
                  :promotion-frontier))
          ;; Opaque compaction contains only durable context.  It cannot safely
@@ -1687,7 +1687,7 @@ state across a context rebuild."
     (when (and provider-id
                (e-harness-context-runtime--provider-anchor-selection-allowed-p options))
       (let ((anchor
-             (e-session-latest-compatible-provider-anchor
+             (e-session-local-latest-compatible-provider-anchor
               (e-harness-sessions harness)
               session-id
               provider-id

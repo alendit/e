@@ -159,14 +159,14 @@
   (cl-remove-if-not
    (lambda (event)
      (e-context-inspection--turn-entry-p event turn-id))
-   (e-session-activity-events store session-id)))
+   (e-session-local-activity-events store session-id)))
 
 (defun e-context-inspection--turn-messages (store session-id turn-id)
   "Return messages for SESSION-ID TURN-ID from STORE."
   (cl-remove-if-not
    (lambda (message)
      (e-context-inspection--turn-entry-p message turn-id))
-   (e-session-messages store session-id)))
+   (e-session-local-messages store session-id)))
 
 (defun e-context-inspection--terminal-failure-event (events)
   "Return the terminal failure event from EVENTS, or nil."
@@ -217,7 +217,7 @@ The result is read-only session-store evidence suitable for agent inspection."
          failures)
     (dolist (session-id (e-context-inspection--session-ids harness))
       (when session-id
-        (dolist (event (e-session-activity-events store session-id))
+        (dolist (event (e-session-local-activity-events store session-id))
           (when (e-context-inspection--turn-failed-event-p event)
             (push (e-context-inspection--failure-entry
                    harness session-id event)
@@ -251,7 +251,7 @@ v1 reports an explicit unavailable shape."
                    (or turn-id
                        (e-context-inspection--current-turn-id))))
          (store (e-harness-sessions harness))
-         (session (e-session-get store session-id))
+         (session (e-session-local-state store session-id))
          (events (and session
                       (e-context-inspection--turn-events
                        store session-id turn-id)))

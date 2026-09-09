@@ -35,6 +35,8 @@
                   (harness capability-id options &key session-id directory
                            overrides))
 (declare-function e-harness-sessions "e-harness" (harness))
+(declare-function e-harness-executing-session-state "e-harness-state"
+                  (harness session-id))
 
 (defconst e-chat-output-mode-instruction-priority 262
   "Instruction priority for the `chat-output-mode' capability.
@@ -80,21 +82,35 @@ root participate; otherwise resolve against DIRECTORY only."
         :directory root))
      :mode)))
 
-(defun e-chat-output-mode-session-get (harness session-id)
-  "Return the per-session output mode override for SESSION-ID, or nil."
+(defun e-chat-output-mode-session-get (harness session-id &optional metadata)
+  "Return SESSION-ID's output mode override from bounded live METADATA.
+
+For asynchronous SQLite, METADATA is a detached query result owned by the
+consumer.  During a turn the executing state's request-scoped metadata is used
+when METADATA is nil.  This function never reconstructs a durable session."
   (when (and harness session-id)
-    (let ((mode (plist-get
-                 (ignore-errors
-                   (e-session-capability-state
-                    (e-harness-sessions harness) session-id 'chat-output-mode))
-                 :mode)))
+    (let* ((store (e-harness-sessions harness))
+           (session-metadata
+            (or metadata
+                (plist-get
+                 (e-harness-executing-session-state harness session-id)
+                 :metadata)
+                (unless (e-session-async-enabled-p store)
+                  (plist-get (e-session-local-state store session-id)
+                             :metadata))))
+           (mode (plist-get
+                  (e-session-metadata-capability-state-value
+                   session-metadata 'chat-output-mode)
+                  :mode)))
       (and (e-chat-output-mode--mode-value-p mode) mode))))
 
-(defun e-chat-output-mode-resolve (&optional harness session-id directory)
+(defun e-chat-output-mode-resolve
+    (&optional harness session-id directory session-metadata)
   "Return the effective output mode symbol.
 A per-session override wins over global/project/runtime config; the default is
-`markdown'."
-  (or (e-chat-output-mode-session-get harness session-id)
+`markdown'.  SESSION-METADATA, when non-nil, is a detached bounded query
+result owned by the caller."
+  (or (e-chat-output-mode-session-get harness session-id session-metadata)
       (e-chat-output-mode--config-mode harness session-id directory)
       'markdown))
 

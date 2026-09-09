@@ -48,10 +48,10 @@
         (cl-letf (((symbol-function 'e-session-storage-submit-owned)
                    (lambda (&rest _) (list :held t))))
           (e-harness-create-session harness :id "session-1")
-          (cl-letf (((symbol-function 'e-session-activity-events)
+          (cl-letf (((symbol-function 'e-session-local-activity-events)
                      (lambda (&rest _)
                        (ert-fail "async activity path scanned the full list")))
-                    ((symbol-function 'e-session-latest-activity-event)
+                    ((symbol-function 'e-session-local-latest-activity-event)
                      (lambda (&rest _)
                        (ert-fail "async activity path read a durable tail"))))
             ;; The live event has its own bounded publication identity.  The
@@ -298,7 +298,7 @@
                                    "tmp://tool-invocations/turn-1/call-1.json")))))
           (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
-                 (events (e-session-activity-events reopened "session-1"))
+                 (events (e-session-local-activity-events reopened "session-1"))
                  (started (car events))
                  (finished (cadr events))
                  (started-payload (plist-get started :payload))
@@ -448,7 +448,7 @@
               "disk-provider-secret\\|password@example\\|disk-path-secret\\|disk-model-secret\\|disk-diagnostic-secret\\|disk-usage-secret\\|cache-key-disk-secret"
               durable-records)))
           (let* ((loaded (e-session-persistent-store-create directory))
-                 (activity (e-session-activity-events loaded "session-1"))
+                 (activity (e-session-local-activity-events loaded "session-1"))
                  (started (seq-find
                            (lambda (event)
                              (eq (plist-get event :event-type)
@@ -513,7 +513,7 @@
              (assistant (cl-find 'assistant messages
                                  :key (lambda (message)
                                         (plist-get message :role))))
-             (anchors (e-session-provider-anchors
+             (anchors (e-session-local-provider-anchors
                        (e-harness-sessions harness)
                        "session-1"))
              (anchor (car anchors))
@@ -558,7 +558,7 @@
                                         :provider-anchor-provider-id openai))))
       (e-harness-create-session harness :id "session-1")
       (e-harness-test-prompt-batch harness "session-1" "question")
-      (let ((anchors (e-session-provider-anchors
+      (let ((anchors (e-session-local-provider-anchors
                       (e-harness-sessions harness)
                       "session-1")))
         (should (= (length anchors) 1))
@@ -656,7 +656,7 @@ Return request options, persisted anchors, and the final context."
                     ('compaction
                      (let* ((store (e-harness-sessions harness))
                             (first-entry
-                             (car (e-session-current-path
+                             (car (e-session-local-current-path
                                    store "session-1"))))
                        (e-session-append-compaction
                         store "session-1" "refresh summary"
@@ -679,7 +679,7 @@ Return request options, persisted anchors, and the final context."
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-batch harness "session-1" "refresh")
     (list :requests (nreverse requests)
-          :anchors (e-session-provider-anchors
+          :anchors (e-session-local-provider-anchors
                     (e-harness-sessions harness) "session-1")
           :context (e-harness-turn-context
                     harness "session-1" "after-refresh"))))
@@ -739,7 +739,7 @@ Return request options, persisted anchors, and the final context."
       (e-harness-test-prompt-batch harness "session-1" "three")
       (let* ((ordered (nreverse requests))
              (third (nth 2 ordered))
-             (anchors (e-session-provider-anchors
+             (anchors (e-session-local-provider-anchors
                        (e-harness-sessions harness) "session-1")))
         (should (= (length ordered) 3))
         (should (equal
@@ -1555,8 +1555,8 @@ Return request options, persisted anchors, and the final context."
          (harness (e-harness-create :backend backend :sessions store)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-batch harness "session-1" "hello")
-    (let ((messages (e-session-messages store "session-1"))
-          (events (e-session-activity-events store "session-1")))
+    (let ((messages (e-session-local-messages store "session-1"))
+          (events (e-session-local-activity-events store "session-1")))
       (should (equal (length (delete-dups
                               (mapcar (lambda (message)
                                         (plist-get message :turn-id))
@@ -1674,7 +1674,7 @@ Return request options, persisted anchors, and the final context."
                      turn-finished)
                    (mapcar (lambda (event)
                              (plist-get event :event-type))
-                           (e-session-activity-events store "session-1"))))))
+                           (e-session-local-activity-events store "session-1"))))))
 
 (provide 'e-harness-tool-composition-test)
 

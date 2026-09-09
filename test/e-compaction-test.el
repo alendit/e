@@ -40,7 +40,7 @@ context owner's fingerprint implementation."
 The production session boundary is v3-only.  This helper exercises the
 read-only compatibility path by writing a literal journal envelope and replaying
 that same value into the fixture store."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session-local-state store session-id))
          (entry (list :type "context-promotion"
                       :session-id session-id
                       :id (format "legacy-entry:%s" (plist-get record :id))
@@ -258,7 +258,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                store session-id prepared checkpoint)))
         (e-compaction-apply-portable-boundary
          store session-id application))
-      (let* ((after (e-session-context-lifetime-projection
+      (let* ((after (e-session-local-context-lifetime-projection
                      store session-id))
              (promotions (plist-get after :promotions)))
         (should-not promotions)
@@ -308,7 +308,7 @@ later assistant/tool-call message instead of signalling no-boundary."
             :id "generation-v3-compaction"
             :checkpoint '((:role system :content "C0"))
             :covered-session-boundary
-            (plist-get (e-session-get store session-id) :root-event-id)))
+            (plist-get (e-session-local-state store session-id) :root-event-id)))
           (e-session-append-message store session-id
                                     '(:role user :content "before"))
           (e-session-append-message store session-id
@@ -317,7 +317,7 @@ later assistant/tool-call message instead of signalling no-boundary."
            store session-id v2-record)
           (e-session-append-context-curation-package
            store session-id (list :promotion v3-record :erasure nil))
-          (let* ((before (e-session-context-lifetime-projection
+          (let* ((before (e-session-local-context-lifetime-projection
                           store session-id))
                  (before-v3
                   (e-context-lifetime-curation-messages
@@ -363,7 +363,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                      store session-id preparation checkpoint)))
               (e-compaction-apply-portable-boundary
                store session-id application)))
-          (let* ((after (e-session-context-lifetime-projection
+          (let* ((after (e-session-local-context-lifetime-projection
                          store session-id))
                  (checkpoint
                   (e-context-lifetime-generation-checkpoint
@@ -372,11 +372,11 @@ later assistant/tool-call message instead of signalling no-boundary."
             (should-not (plist-get after :curations)))
           (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
-                 (after-reopen (e-session-context-lifetime-projection
+                 (after-reopen (e-session-local-context-lifetime-projection
                                 reopened session-id))
                  (fork (e-session-fork reopened session-id))
                  (fork-projection
-                  (e-session-context-lifetime-projection
+                  (e-session-local-context-lifetime-projection
                    reopened (plist-get fork :id))))
             (should (equal
                      (e-context-lifetime-generation-checkpoint
@@ -452,7 +452,7 @@ later assistant/tool-call message instead of signalling no-boundary."
             (e-session-append-context-curation-package
              store session-id (list :promotion v3-second :erasure nil))
             (let* ((projection
-                    (e-session-context-lifetime-projection store session-id))
+                    (e-session-local-context-lifetime-projection store session-id))
                    (entries (plist-get projection :promotion-message-entries))
                    (entry-shape
                     (mapcar
@@ -499,7 +499,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                              created-checkpoint))
               (e-compaction-apply-portable-boundary
                store session-id application)
-              (let* ((after (e-session-context-lifetime-projection
+              (let* ((after (e-session-local-context-lifetime-projection
                              store session-id))
                      (new-generation (plist-get after :generation))
                      (new-generation-id
@@ -545,7 +545,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                          reopened session-id checkpoint covered-boundary))
                        (fork (e-session-fork reopened session-id))
                        (fork-projection
-                        (e-session-context-lifetime-projection
+                        (e-session-local-context-lifetime-projection
                          reopened (plist-get fork :id)))
                        (fork-checkpoint
                         (e-context-lifetime-generation-checkpoint
@@ -598,7 +598,7 @@ later assistant/tool-call message instead of signalling no-boundary."
            (record (e-session-aggregate-context-record entry)))
       (should (string-prefix-p "generation:" (plist-get record :id)))
       (should (equal (plist-get record :covered-session-boundary)
-                     (plist-get (e-session-entry-by-id
+                     (plist-get (e-session-local-entry-by-id
                                  store session-id "old-intent")
                                 :id)))
       (should-not (plist-member record :durable-tail))
@@ -607,7 +607,7 @@ later assistant/tool-call message instead of signalling no-boundary."
       (e-session-append-message store session-id
                                 '(:id "new-intent" :role user
                                   :content "after boundary"))
-      (let* ((projection (e-session-context-lifetime-projection
+      (let* ((projection (e-session-local-context-lifetime-projection
                           store session-id))
              (generation (plist-get projection :generation))
              (tail (plist-get projection :durable-tail))
@@ -698,7 +698,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                              :keep-recent-tokens 1 :portable t)
        '(:summary "not a message sequence")))
      :type 'e-compaction-error)
-    (should-not (e-session-context-generations store session-id))))
+    (should-not (e-session-local-context-generations store session-id))))
 
 (ert-deftest e-compaction-test-disabled-preparation-does-not-build-portable-input ()
   "The ordinary compaction preparation remains lazy when opt-in is absent."
@@ -748,9 +748,9 @@ later assistant/tool-call message instead of signalling no-boundary."
         (e-compaction-preflight-portable-boundary
          store session-id preparation '((:role system :content "C1"))))
        :type 'e-compaction-error)
-      (should (= (length (e-session-context-generations store session-id)) 1))
+      (should (= (length (e-session-local-context-generations store session-id)) 1))
       (should (= (length (plist-get
-                          (e-session-context-lifetime-projection store session-id)
+                          (e-session-local-context-lifetime-projection store session-id)
                           :promotions))
                  1)))))
 
@@ -776,14 +776,14 @@ later assistant/tool-call message instead of signalling no-boundary."
         :id "generation-interleave-2"
         :checkpoint '((:role system :content "C2"))
         :covered-session-boundary
-        (plist-get (e-session-get store session-id) :current-head-id)))
+        (plist-get (e-session-local-state store session-id) :current-head-id)))
       (should-error
        (e-compaction-apply-portable-boundary
         store session-id
         (e-compaction-preflight-portable-boundary
          store session-id preparation '((:role system :content "C3"))))
        :type 'e-compaction-error)
-      (should (= (length (e-session-context-generations store session-id)) 2)))))
+      (should (= (length (e-session-local-context-generations store session-id)) 2)))))
 
 (ert-deftest e-compaction-test-portable-message-normalizes-real-session-metadata ()
   "Portable preparation strips realistic transcript metadata at one boundary."
@@ -859,7 +859,7 @@ later assistant/tool-call message instead of signalling no-boundary."
          (store (e-harness-sessions harness)))
     (e-harness-create-session harness :id "anchor-generation")
     (let* ((before (e-harness-turn-context harness "anchor-generation" "before"))
-           (session (e-session-get store "anchor-generation"))
+           (session (e-session-local-state store "anchor-generation"))
            (anchor
             (e-session-append-provider-anchor
              store "anchor-generation" 'fake

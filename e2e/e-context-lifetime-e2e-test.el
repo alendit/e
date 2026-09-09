@@ -492,7 +492,7 @@ loop, session, and ordinary tool behavior remains production behavior."
                 (prin1-to-string
                  (plist-get (plist-get next-request :parsed) :input)))
                (curations
-                (e-session-context-promotions
+                (e-session-local-context-promotions
                  (e-harness-sessions harness)
                  "context-lifetime-e2e"))
                (curation-record
@@ -526,10 +526,10 @@ loop, session, and ordinary tool behavior remains production behavior."
                (receipt-input-text
                 receipt-input)
                (erased-tool-call-ids
-                (e-session-erased-tool-call-ids
+                (e-session-local-erased-tool-call-ids
                  (e-harness-sessions harness) "context-lifetime-e2e"))
                (current-path
-                (e-session-current-path
+                (e-session-local-current-path
                  (e-harness-sessions harness)
                  "context-lifetime-e2e"))
                (tool-result-entry
@@ -542,7 +542,7 @@ loop, session, and ordinary tool behavior remains production behavior."
                          (prin1-to-string entry))))
                  current-path))
                (anchors
-                (e-session-provider-anchors
+                (e-session-local-provider-anchors
                  (e-harness-sessions harness)
                  "context-lifetime-e2e")))
           (should (= request-count 3))
@@ -852,7 +852,7 @@ inherited Responses items, rather than only the literal request body."
                          (e-context-lifetime-e2e--count
                           "STABLE-C-CHANGED" stable-change-text))))
                  (anchors
-                  (e-session-provider-anchors
+                  (e-session-local-provider-anchors
                    (e-harness-sessions harness) session-id))
                  (anchor-ids
                   (mapcar (lambda (anchor)
@@ -1251,7 +1251,7 @@ persisted anchor response ids for the caller's semantic assertions."
      :anchors
      (mapcar (lambda (anchor)
                (plist-get (plist-get anchor :metadata) :response-id))
-              (e-session-provider-anchors
+              (e-session-local-provider-anchors
               (e-harness-sessions harness) session-id)))))
 
 (ert-deftest e-context-lifetime-e2e-test-two-frame-curation-responses-compose ()
@@ -1382,13 +1382,13 @@ persisted anchor response ids for the caller's semantic assertions."
           (e-context-lifetime-e2e--prompt-batch
            harness session-id "Inspect A, curate it, then inspect and curate B.")))
       (let* ((store (e-harness-sessions harness))
-             (curations (e-session-context-curations store session-id))
+             (curations (e-session-local-context-curations store session-id))
              (activities
               (seq-filter
                (lambda (event)
                  (eq (plist-get event :event-type) 'context-curated))
                (e-chat-service-activity-events harness session-id)))
-             (messages (e-session-messages store session-id)))
+             (messages (e-session-local-messages store session-id)))
         (should (= request-count 5))
         (should (equal tool-calls '("inspect-a" "inspect-b")))
         (should (= (length captured-frames) 2))
@@ -1679,7 +1679,7 @@ multi-tool turn and a deliberate portable generation boundary."
              (lambda (anchor)
                (equal (plist-get (plist-get anchor :metadata) :response-id)
                       "resp-replaceable-seed"))
-             (e-session-provider-anchors store session-id)))
+             (e-session-local-provider-anchors store session-id)))
            (before-stable
             (e-context-lifetime-e2e--provider-anchor-fingerprints before-context))
            (before-current

@@ -201,7 +201,7 @@ window callbacks loadable before the composition root is evaluated."
                                                  e-chat-session-id))
              (usage-event
               (unless (e-session-async-enabled-p store)
-                (e-session-latest-token-usage-event
+                (e-session-local-latest-token-usage-event
                  store e-chat-session-id))))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)

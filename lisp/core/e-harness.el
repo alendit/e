@@ -221,7 +221,7 @@ session replica and is nil when no live consumer owns such a result."
          (plist-get (e-harness-executing-session-state harness session-id)
                     :messages)
          t)
-      (e-session-messages store session-id))))
+      (e-session-local-messages store session-id))))
 
 (defun e-harness-message-hidden-p (message)
   "Return non-nil when MESSAGE should be hidden from display.
@@ -247,7 +247,7 @@ JSON replay, so both are recognized."
   (let ((store (e-harness-sessions harness)))
     (unless (and (fboundp 'e-session-async-enabled-p)
                  (e-session-async-enabled-p store))
-      (plist-get (e-session-get store session-id) :name))))
+      (plist-get (e-session-local-state store session-id) :name))))
 
 (defun e-harness-session-list (harness)
   "Return display metadata for sessions owned by HARNESS."
@@ -259,7 +259,7 @@ JSON replay, so both are recognized."
 
 (defun e-harness-session-activity-events (harness session-id)
   "Return activity events for SESSION-ID in HARNESS."
-  (e-session-activity-events (e-harness-sessions harness) session-id))
+  (e-session-local-activity-events (e-harness-sessions harness) session-id))
 
 (cl-defun e-harness-record-hook-audit
     (harness session-id turn-id
@@ -308,10 +308,13 @@ all ordinary replies."
 
 
 (defun e-harness-state (harness session-id)
-  "Return settled state for SESSION-ID in HARNESS."
-  (let* ((entry (gethash session-id (e-harness-active-turns harness)))
-         (session (ignore-errors
-                    (e-session-get (e-harness-sessions harness) session-id))))
+  "Return bounded live state for SESSION-ID in HARNESS."
+  (let* ((store (e-harness-sessions harness))
+         (entry (gethash session-id (e-harness-active-turns harness)))
+         (session
+          (or (e-harness-executing-session-state harness session-id)
+              (unless (e-session-async-enabled-p store)
+                (ignore-errors (e-session-local-state store session-id))))))
     (list :session-id session-id
           :active-turn (when (e-harness-turn-state-active-turn-running-p entry)
                          (e-harness-turn-state-active-turn-id entry))

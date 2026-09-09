@@ -1405,7 +1405,7 @@ than the invisible insertion position."
                   'mode-name (plist-get fixture :transcript))
                  (with-current-buffer (plist-get fixture :transcript)
                    (e-chat-surface-mode-line-status-text t))
-                 (e-session-latest-token-usage-event
+                 (e-session-local-latest-token-usage-event
                   (e-harness-sessions (plist-get fixture :harness))
                   (plist-get fixture :session-id))
                  (with-current-buffer (plist-get fixture :transcript)

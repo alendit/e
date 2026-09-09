@@ -30,10 +30,10 @@
       (e-session-append-compaction
        store "source" "compact" :first-kept-entry-id (plist-get first :id))
       (let ((fork (e-session-fork store "source" :at (plist-get first :id))))
-        (should (= (length (e-session-messages store (plist-get fork :id))) 1)))
+        (should (= (length (e-session-local-messages store (plist-get fork :id))) 1)))
       (e-session-sqlite-store-close store)
       (setq store (e-session-sqlite-store-create directory))
-      (let ((restored (e-session-get store "source")))
+      (let ((restored (e-session-local-state store "source")))
         (should (equal (mapcar (lambda (message)
                                 (plist-get message :content))
                               (plist-get restored :messages))
@@ -44,7 +44,7 @@
       (e-session-clear-messages store "source")
       (e-session-sqlite-store-close store)
       (setq store (e-session-sqlite-store-create directory))
-      (should-not (e-session-messages store "source")))))
+      (should-not (e-session-local-messages store "source")))))
 
 (ert-deftest e-session-sqlite-constructor-does-not-reconcile-journal-roots ()
   (ert-skip "Retired raw v5 journal fixture; v6 appends require a relational delta")
@@ -72,7 +72,7 @@
                    (funcall read-page candidate session-id after limit))))
         (setq store (e-session-sqlite-store-create directory)))
       (should-not page-calls)
-      (should-not (e-session-session-present-p store "missing-catalog"))
+      (should-not (e-session-local-present-p store "missing-catalog"))
       (should-error
        (e-session-aggregate-peek-session store "missing-catalog")
        :type 'e-session-missing))))
@@ -98,7 +98,7 @@
                    (cl-incf record-count)
                    (apply read-records args))))
         (setq store (e-session-sqlite-store-create directory))
-        (should-not (e-session-session-present-p store "catalog-lazy"))
+        (should-not (e-session-local-present-p store "catalog-lazy"))
         (should-error
          (e-session-aggregate-peek-session store "catalog-lazy")
          :type 'e-session-missing)
@@ -106,7 +106,7 @@
         (should (= record-count 0))
         (should (equal
                  (mapcar (lambda (message) (plist-get message :content))
-                         (e-session-messages store "catalog-lazy"))
+                         (e-session-local-messages store "catalog-lazy"))
                  '("restored on access")))
         (should
          (plist-get
@@ -200,7 +200,7 @@
               (funcall ordinary-filter worker captured))))))
       (should (equal
                (mapcar (lambda (message) (plist-get message :content))
-                       (e-session-messages store "lazy-reentry"))
+                       (e-session-local-messages store "lazy-reentry"))
                '("committed before reopen")))
       (should response-seen)
       (should (equal (car reentrant-result) :unavailable))
@@ -213,16 +213,16 @@
        store "lazy-reentry" '(:role user :content "committed after replay"))
       (should (equal
                (mapcar (lambda (message) (plist-get message :content))
-                       (e-session-messages store "lazy-reentry"))
+                       (e-session-local-messages store "lazy-reentry"))
                '("committed before reopen" "committed after replay")))
       (e-session-unload-session store "lazy-reentry")
       (cl-letf (((symbol-function 'e-session-load-session)
                  (lambda (&rest _args)
                    (signal 'e-session-storage-error
                            '("injected lazy-load failure")))))
-        (should-error (e-session-get store "lazy-reentry")
+        (should-error (e-session-local-state store "lazy-reentry")
                       :type 'e-session-storage-error))
-      (should (= (length (e-session-messages store "lazy-reentry")) 2)))))
+      (should (= (length (e-session-local-messages store "lazy-reentry")) 2)))))
 
 (ert-deftest e-session-sqlite-s3-tool-cut-points-restore-classification ()
   "Production session/activity paths and explicit later transitions persist."
@@ -322,7 +322,7 @@
                  3))
       (should (equal (mapcar (lambda (message)
                                (plist-get message :content))
-                             (e-session-messages store "atomic-fork"))
+                             (e-session-local-messages store "atomic-fork"))
                      '("one" "two"))))
     (e-session-sqlite-store-close store)
     (setq store (e-session-sqlite-store-create directory))
@@ -332,7 +332,7 @@
                3))
     (should (equal (mapcar (lambda (message)
                              (plist-get message :content))
-                           (e-session-messages store "atomic-fork"))
+                           (e-session-local-messages store "atomic-fork"))
                    '("one" "two")))))
 
 (ert-deftest e-session-sqlite-s3-primary-success-survives-projection-failure ()
@@ -350,7 +350,7 @@
                '(:role user :content "committed once"))))
       (should (equal (plist-get entry :content) "committed once"))
       (should (= (length
-                  (e-session-messages store "projection-pending"))
+                  (e-session-local-messages store "projection-pending"))
                  1))
       (let ((status (e-session-storage-durability-status store)))
         (should (plist-get status :index-write-pending))
@@ -373,7 +373,7 @@
       (setq store (e-session-sqlite-store-create directory))
       (should (equal
                (mapcar (lambda (message) (plist-get message :content))
-                       (e-session-messages store "projection-pending"))
+                       (e-session-local-messages store "projection-pending"))
                '("committed once"))))))
 
 (ert-deftest e-session-sqlite-s3-restores-exact-tagged-values ()
@@ -392,7 +392,7 @@
        store "exact" "turn" 'exact-values payload)
       (e-session-sqlite-store-close store)
       (setq store (e-session-sqlite-store-create directory))
-      (let* ((event (car (last (e-session-activity-events store "exact"))))
+      (let* ((event (car (last (e-session-local-activity-events store "exact"))))
              (restored (plist-get event :payload))
              (restored-table (plist-get restored :map)))
         (should (equal (cl-loop for (key value) on payload by #'cddr
@@ -417,7 +417,7 @@
       (e-session-sqlite-store-close store)
       (setq store (e-session-sqlite-store-create directory))
       (should (equal (plist-get
-                      (car (e-session-messages store "large-message"))
+                      (car (e-session-local-messages store "large-message"))
                       :content)
                      content)))))
 
@@ -447,7 +447,7 @@
             (lambda ()
               (setq read-result
                     (condition-case err
-                        (e-session-messages store "commit-first")
+                        (e-session-local-messages store "commit-first")
                       (e-session-persistence-unavailable
                        (list :unavailable (cadr err))))
                     list-count
@@ -477,7 +477,7 @@
       (should (equal (car dependent-result) :unavailable))
       (should (equal (mapcar (lambda (message)
                                (plist-get message :content))
-                             (e-session-messages store "commit-first"))
+                             (e-session-local-messages store "commit-first"))
                      '("committed"))))
     ;; A failed physical commit discards only the isolated stage.  A later
     ;; ordinary mutation starts from the still-committed live aggregate.
@@ -489,13 +489,13 @@
          (e-session-append-message
           store "commit-first" '(:role user :content "failed"))
          :type 'e-session-storage-error))
-      (should (= (length (e-session-messages store "commit-first")) 1))
+      (should (= (length (e-session-local-messages store "commit-first")) 1))
       (cl-letf (((symbol-function 'e-session-storage-commit-mutation) commit))
         (e-session-append-message
          store "commit-first" '(:role user :content "recovered")))
       (should (equal (mapcar (lambda (message)
                                (plist-get message :content))
-                             (e-session-messages store "commit-first"))
+                             (e-session-local-messages store "commit-first"))
                      '("committed" "recovered"))))
     ;; The tool admission fence is intentionally ordered before its session
     ;; record.  If that record fails, classification is conservative but the
@@ -510,7 +510,7 @@
         '(:role tool-call
           :content (:id "uncertain-call" :name "external")))
        :type 'e-session-storage-error))
-    (should-not (e-session-messages store "fence-failure"))
+    (should-not (e-session-local-messages store "fence-failure"))
     (let ((facts
            (e-session-tool-followup-classifications
             store "fence-failure")))
@@ -608,7 +608,7 @@
             (should (eq (e-request-lifecycle-state request) 'finished)))
           (should (equal
                    (mapcar (lambda (message) (plist-get message :content))
-                           (e-session-messages store session-id))
+                           (e-session-local-messages store session-id))
                    '("canonical journal")))
           ;; The replayed aggregate remains writable; its next normal
           ;; projection can replace the legacy oversized checkpoint safely.
@@ -616,7 +616,7 @@
            store session-id '(:role assistant :content "healthy later write"))
           (should (equal
                    (mapcar (lambda (message) (plist-get message :content))
-                           (e-session-messages store session-id))
+                           (e-session-local-messages store session-id))
                    '("canonical journal" "healthy later write")))
           (should (e-runtime-store-live-p
                    (e-session-storage-runtime-store store))))
@@ -633,7 +633,7 @@
            (base (/ e-session-sqlite-test--large-content-bytes message-count))
            (remainder (% e-session-sqlite-test--large-content-bytes message-count))
            (runtime (e-session-storage-runtime-store store))
-           (parent (plist-get (e-session-get store "large") :root-event-id))
+           (parent (plist-get (e-session-local-state store "large") :root-event-id))
            (timestamp "2026-09-01T00:00:00Z")
            (batch nil)
            (batch-size 128)
@@ -696,7 +696,7 @@
       (should (> timer-ticks 0))
       (should queued-commit)
       (should (plist-get (e-runtime-store-await runtime queued-commit) :revision))
-      (should (= (length (e-session-messages store "large"))
+      (should (= (length (e-session-local-messages store "large"))
                  (1- e-session-sqlite-test--large-record-count)))
       (message "F87 large fixture records=%d content-bytes=%d elapsed=%.6f timer-ticks=%d"
                e-session-sqlite-test--large-record-count

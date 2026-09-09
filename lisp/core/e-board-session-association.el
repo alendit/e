@@ -100,7 +100,7 @@ ordinary SQLite v6 sessions."
     (e-board-orchestration-mark-restoring
      (e-board-registry-board-source-board board))
     (unwind-protect
-        (dolist (envelope (e-session-board-messages store session-id))
+        (dolist (envelope (e-session-local-board-messages store session-id))
           (if (plist-get envelope :record-type)
               (e-board-import-processing-record
                (e-board-registry-board-source-board board) envelope)

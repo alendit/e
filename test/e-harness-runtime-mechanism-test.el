@@ -222,7 +222,7 @@ Return request options, persisted anchors, and the final context."
                     ('compaction
                      (let* ((store (e-harness-sessions harness))
                             (first-entry
-                             (car (e-session-current-path
+                             (car (e-session-local-current-path
                                    store "session-1"))))
                        (e-session-append-compaction
                         store "session-1" "refresh summary"
@@ -245,7 +245,7 @@ Return request options, persisted anchors, and the final context."
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-batch harness "session-1" "refresh")
     (list :requests (nreverse requests)
-          :anchors (e-session-provider-anchors
+          :anchors (e-session-local-provider-anchors
                     (e-harness-sessions harness) "session-1")
           :context (e-harness-turn-context
                     harness "session-1" "after-refresh"))))
@@ -543,7 +543,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                         'advance-eligible)))
           (e-session-flush-write-queue store)
           (let* ((loaded (e-session-persistent-store-create directory))
-                 (activity (e-session-activity-events loaded "session-1"))
+                 (activity (e-session-local-activity-events loaded "session-1"))
                  (started
                   (seq-find
                    (lambda (event)
@@ -663,7 +663,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                :fingerprints first-fingerprints)))
         (let ((e-context-budget-estimate-bytes-per-token 2.0))
           (should
-           (eq (e-session-provider-anchor-incompatibility-reason
+           (eq (e-session-local-provider-anchor-incompatibility-reason
                 store session-id anchor 'openai "gpt-test"
                 (e-harness-context-runtime--provider-anchor-fingerprints first))
                'context-curation-revision-changed)))))))
@@ -1767,13 +1767,13 @@ backend-error-message helper must return only the bare reason."
                                             :erase (1))))))))))
           (should (equal order '(package control consume)))
           (e-session-flush-write-queue store)
-          (let* ((erasures (e-session-context-erasures store "erase-only"))
+          (let* ((erasures (e-session-local-context-erasures store "erase-only"))
                  (controls
                   (seq-filter
                    (lambda (event)
                      (eq (plist-get event :event-type)
                          'context-curation-response))
-                   (e-session-activity-events store "erase-only")))
+                   (e-session-local-activity-events store "erase-only")))
                  (consumed-event
                  (seq-find
                    (lambda (event)
@@ -1783,7 +1783,7 @@ backend-error-message helper must return only the bare reason."
                  (reopened (e-session-persistent-store-create directory)))
             (should (= (length erasures) 1))
             (should (equal
-                     (e-session-erased-tool-call-ids store "erase-only")
+                     (e-session-local-erased-tool-call-ids store "erase-only")
                      '("call-erase-only")))
             (should (= (length controls) 1))
             (should consumed-event)
@@ -1802,21 +1802,21 @@ backend-error-message helper must return only the bare reason."
                       :source-stubs
                       ((:disposition erased :source-kind "tool-result"
                         :tool-name "inspect")))))
-            (should-not (e-session-context-curations store "erase-only"))
+            (should-not (e-session-local-context-curations store "erase-only"))
             (let* ((reopened-erasures
-                    (e-session-context-erasures reopened "erase-only"))
+                    (e-session-local-context-erasures reopened "erase-only"))
                    (reopened-controls
                     (seq-filter
                      (lambda (event)
                        (eq (plist-get event :event-type)
                            'context-curation-response))
-                     (e-session-activity-events reopened "erase-only")))
+                     (e-session-local-activity-events reopened "erase-only")))
                    (control (car controls))
                    (reopened-control
                     (car reopened-controls)))
               (should (= (length reopened-erasures) 1))
               (should (equal
-                       (e-session-erased-tool-call-ids reopened "erase-only")
+                       (e-session-local-erased-tool-call-ids reopened "erase-only")
                        '("call-erase-only")))
               (should (= (length reopened-controls) 1))
               (should (equal (plist-get control :id)
@@ -1824,13 +1824,13 @@ backend-error-message helper must return only the bare reason."
               (should (equal (plist-get (plist-get reopened-control :payload)
                                         :response-entry-id)
                              "response-erase-only"))
-              (should (e-session-entry-by-id
+              (should (e-session-local-entry-by-id
                        reopened "erase-only" (plist-get control :id)))
               (should-not
                (seq-find
                 (lambda (message)
                   (equal (plist-get message :id) (plist-get control :id)))
-                (e-session-messages reopened "erase-only"))))))
+                (e-session-local-messages reopened "erase-only"))))))
       (delete-directory directory t))))
 
 (ert-deftest e-harness-test-context-lifetime-mixed-curation-package-is-atomic ()
@@ -1873,24 +1873,24 @@ backend-error-message helper must return only the bare reason."
                    (lambda (item)
                      (eq (plist-get item :type)
                          'context-curation-package))
-                   (e-session-current-path store "mixed")))
-                 (curations (e-session-context-curations store "mixed"))
-                 (erasures (e-session-context-erasures store "mixed")))
+                   (e-session-local-current-path store "mixed")))
+                 (curations (e-session-local-context-curations store "mixed"))
+                 (erasures (e-session-local-context-erasures store "mixed")))
             (should package-entry)
             (should (plist-get package-entry :promotion))
             (should (plist-get package-entry :erasure))
             (should (= (length curations) 1))
             (should (= (length erasures) 1))
-            (should (equal (e-session-erased-tool-call-ids store "mixed")
+            (should (equal (e-session-local-erased-tool-call-ids store "mixed")
                            '("call:harness-mixed-2"))))
           (e-session-flush-write-queue store)
           (let ((reopened (e-session-persistent-store-create directory)))
-            (should (= (length (e-session-context-curations
+            (should (= (length (e-session-local-context-curations
                                 reopened "mixed"))
                        1))
-            (should (= (length (e-session-context-erasures reopened "mixed"))
+            (should (= (length (e-session-local-context-erasures reopened "mixed"))
                        1))
-            (should (equal (e-session-erased-tool-call-ids reopened "mixed")
+            (should (equal (e-session-local-erased-tool-call-ids reopened "mixed")
                            '("call:harness-mixed-2"))))
 
           (e-harness-create-session harness :id "mixed-invalid")
@@ -1918,8 +1918,8 @@ backend-error-message helper must return only the bare reason."
                                :erase (1))))))
                :type 'e-context-lifetime-invalid-record))
             (should-not (e-context-lifetime-frame-consumed-p bad-frame))
-            (should-not (e-session-context-curations store "mixed-invalid"))
-            (should-not (e-session-context-erasures store "mixed-invalid")))
+            (should-not (e-session-local-context-curations store "mixed-invalid"))
+            (should-not (e-session-local-context-erasures store "mixed-invalid")))
 
           (e-harness-create-session harness :id "mixed-failure")
           (let (failure-frame failure-entry)
@@ -1950,8 +1950,8 @@ backend-error-message helper must return only the bare reason."
                                  :erase (2))))))
                  :type 'error)))
             (should-not (e-context-lifetime-frame-consumed-p failure-frame))
-            (should-not (e-session-context-curations store "mixed-failure"))
-            (should-not (e-session-context-erasures store "mixed-failure"))
+            (should-not (e-session-local-context-curations store "mixed-failure"))
+            (should-not (e-session-local-context-erasures store "mixed-failure"))
             (should-not
              (seq-find
               (lambda (event)
@@ -1995,7 +1995,7 @@ backend-error-message helper must return only the bare reason."
     (should (equal (e-context-lifetime-frame-id consumed) "frame:a"))
     (should (eq (plist-get entry :context-frame) frame-b))
     (should-not (e-context-lifetime-frame-consumed-p frame-b))
-    (let* ((record (car (e-session-context-curations store "session-1")))
+    (let* ((record (car (e-session-local-context-curations store "session-1")))
            (item (car (plist-get record :items))))
       (should (equal (plist-get item :value) "PAYLOAD-FRAME-VALUE"))
       (should (equal (plist-get item :source-observation-ids)
@@ -2040,7 +2040,7 @@ backend-error-message helper must return only the bare reason."
     (should (equal (e-context-lifetime-frame-id consumed) "frame:a-zero"))
     (should (eq (plist-get entry :context-frame) frame-b))
     (should-not (e-context-lifetime-frame-consumed-p frame-b))
-    (should-not (e-session-context-curations store "session-1"))))
+    (should-not (e-session-local-context-curations store "session-1"))))
 
 (ert-deftest e-harness-test-context-lifetime-curation-appends-before-consuming ()
   "A valid curation appends its record before the frame body is consumed."
@@ -2083,7 +2083,7 @@ backend-error-message helper must return only the bare reason."
                             :arguments
                             '(:keep (1) :summaries nil))))))))
     (should (equal order '(package consume)))
-    (should (= (length (e-session-context-curations store "session-1")) 1))
+    (should (= (length (e-session-local-context-curations store "session-1")) 1))
     (should (e-context-lifetime-frame-consumed-p
              (plist-get entry :context-frame)))))
 
@@ -2121,13 +2121,13 @@ backend-error-message helper must return only the bare reason."
                 harness "none-sync-session" :keep-recent-tokens 1)))
           (should record)))
       (should (= input-calls 0))
-      (should (= (length (e-session-compactions store "none-sync-session"))
+      (should (= (length (e-session-local-compactions store "none-sync-session"))
                  1))
       (should (string-match-p
                "NONE-SYNC-C1"
                (prin1-to-string
                 (e-context-lifetime-generation-checkpoint
-                 (e-session-context-lifetime-current-generation
+                 (e-session-local-context-lifetime-current-generation
                   store "none-sync-session"))))))))
 
 (ert-deftest e-harness-test-provider-compaction-none-skips-input-async ()
@@ -2178,13 +2178,13 @@ backend-error-message helper must return only the bare reason."
       (should record)
       (should-not failure)
       (should (= input-calls 0))
-      (should (= (length (e-session-compactions store "none-async-session"))
+      (should (= (length (e-session-local-compactions store "none-async-session"))
                  1))
       (should (string-match-p
                "NONE-ASYNC-C1"
                (prin1-to-string
                 (e-context-lifetime-generation-checkpoint
-                 (e-session-context-lifetime-current-generation
+                 (e-session-local-context-lifetime-current-generation
                   store "none-async-session"))))))))
 
 (ert-deftest e-harness-test-provider-compaction-candidate-fences-late-tail-and-promotion ()
@@ -2205,7 +2205,7 @@ backend-error-message helper must return only the bare reason."
                               :provider-anchor-provider-id fake)))
          (session-id "candidate-fence"))
     (e-harness-create-session harness :id session-id)
-    (let ((session (e-session-get (e-harness-sessions harness) session-id)))
+    (let ((session (e-session-local-state (e-harness-sessions harness) session-id)))
       (e-session-append-context-generation
        (e-harness-sessions harness) session-id
        (e-context-lifetime-generation-create
@@ -2292,7 +2292,7 @@ backend-error-message helper must return only the bare reason."
                               :provider-anchor-provider-id fake)))
          (session-id "candidate-mismatch"))
     (e-harness-create-session harness :id session-id)
-    (let ((session (e-session-get store session-id)))
+    (let ((session (e-session-local-state store session-id)))
       (e-session-append-context-generation
        store session-id
        (e-context-lifetime-generation-create
@@ -2382,7 +2382,7 @@ backend-error-message helper must return only the bare reason."
     (e-session-append-message store session-id
                               '(:role user :content "one-shot durable"))
     (let ((boundary (plist-get
-                     (car (last (e-session-current-path store session-id)))
+                     (car (last (e-session-local-current-path store session-id)))
                      :id)))
       (e-session-append-context-generation
        store session-id
@@ -2408,7 +2408,7 @@ backend-error-message helper must return only the bare reason."
     (let* ((first (e-harness-turn-context harness session-id "first-turn"))
            (first-options (plist-get first :options))
            (head (plist-get
-                  (car (last (e-session-current-path store session-id)))
+                  (car (last (e-session-local-current-path store session-id)))
                   :id)))
       (should (equal (plist-get first-options :provider-compaction-output)
                      '((:type "opaque" :marker "ONE-SHOT"))))

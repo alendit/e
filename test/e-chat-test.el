@@ -772,7 +772,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                  (ert-fail
                   (format "Submit intent consulted Board persistence: %S"
                           arguments))))
-              ((symbol-function 'e-session-get)
+              ((symbol-function 'e-session-local-state)
                (lambda (&rest arguments)
                  (ert-fail
                   (format "Submit intent read a session aggregate: %S"
@@ -1674,8 +1674,8 @@ selected/sibling isolation boundary."
                          "e-harness-turn-options"
                          "e-session-display-title"
                          "e-session-list"
-                         "e-session-activity-events"
-                         "e-session-get"))
+                         "e-session-local-activity-events"
+                         "e-session-local-state"))
       (should-not (string-match-p forbidden source)))))
 
 
@@ -1747,7 +1747,7 @@ selected/sibling isolation boundary."
                             (string-match-p "Beta Target" candidate))
                           (all-completions "" collection)))))
               (with-current-buffer (e-chat-new)
-                (let* ((session (e-session-get store e-chat-session-id))
+                (let* ((session (e-session-local-state store e-chat-session-id))
                        (metadata (plist-get session :metadata)))
                   (should (eq e-chat-harness-instance-id :chat-beta))
                   (should (eq (plist-get metadata :harness-instance-id)
@@ -1800,14 +1800,14 @@ selected/sibling isolation boundary."
             (should
              (e-chat-overview-session-unread-p
               harness
-              (e-session-get store "read-marker-attach")
+              (e-session-local-state store "read-marker-attach")
               :chat-default))
             (e-chat-overview-mark-session-read
              harness "read-marker-attach" :chat-default)
             (should-not
              (e-chat-overview-session-unread-p
               harness
-              (e-session-get store "read-marker-attach")
+              (e-session-local-state store "read-marker-attach")
               :chat-default))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -2992,7 +2992,7 @@ selected/sibling isolation boundary."
             (should
              (equal
               (mapcar (lambda (message) (plist-get message :content))
-                      (e-session-messages indexed-store "async-render"))
+                      (e-session-local-messages indexed-store "async-render"))
               '("render prompt" "render response")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))

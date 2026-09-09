@@ -48,15 +48,15 @@
           (should (equal second first))
           (should (= (length (e-harness-session-list harness)) 1))
           (should (equal (plist-get
-                          (plist-get (e-session-get
+                          (plist-get (e-session-local-state
                                       (e-harness-sessions harness)
                                       first)
                                      :metadata)
                           :source)
                          'e-debug)))))))
 
-(ert-deftest e-debug-test-ensure-session-rediscovers-existing-session ()
-  "The debug resolver finds an existing debug session when its cache is empty."
+(ert-deftest e-debug-test-ensure-session-does-not-enumerate-durable-sessions ()
+  "A lost process-local identity creates anew without catalog reconstruction."
   (e-debug-test--with-empty-harness-registry
     (let ((harness (e-harness-create
                     :backend (e-backend-fake-create :items nil)
@@ -66,8 +66,9 @@
                  (lambda () harness)))
         (let ((created (e-debug--ensure-session)))
           (setq e-debug--session-id nil)
-          (should (equal (e-debug--ensure-session) created))
-          (should (= (length (e-harness-session-list harness)) 1)))))))
+          (let ((replacement (e-debug--ensure-session)))
+            (should-not (equal replacement created))
+            (should (= (length (e-harness-session-list harness)) 2))))))))
 
 (ert-deftest e-debug-test-ensure-session-uses-last-focused-buffer-project-root ()
   "The standing debug session roots itself in the last focused buffer's project."
@@ -90,7 +91,7 @@
             (setq default-directory nested))
           (let ((default-directory home))
             (setq session-id (e-debug--ensure-session harness)))
-          (setq session (e-session-get (e-harness-sessions harness) session-id))
+          (setq session (e-session-local-state (e-harness-sessions harness) session-id))
           (should (equal (plist-get (plist-get session :metadata) :project-root)
                          (file-name-as-directory project))))
       (when (buffer-live-p source-buffer)
@@ -387,6 +388,7 @@
            (buffer (generate-new-buffer " *e-debug-popup-c-g-test*"))
            (e-debug--popup-buffer nil)
            (e-debug--popup-frame nil)
+           (e-debug--session-id "debug-session")
            hidden
            deleted)
       (e-harness-test-create-board-session harness :id "debug-session"

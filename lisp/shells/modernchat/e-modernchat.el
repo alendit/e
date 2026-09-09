@@ -48,6 +48,9 @@
 (defvar-local e-modernchat-session-id nil
   "Session id attached to the current modern chat buffer.")
 
+(defvar-local e-modernchat-session-metadata nil
+  "Detached metadata owned by the current modern chat presentation.")
+
 (defvar-local e-modernchat--egui-session nil
   "emacs-egui session metadata for the current modern chat buffer.")
 
@@ -123,7 +126,8 @@
   (unless (and e-modernchat-harness e-modernchat-session-id)
     (user-error "This buffer is not attached to an e modern chat session"))
   (e-modernchat-view-model-snapshot
-   e-modernchat-harness e-modernchat-session-id))
+   e-modernchat-harness e-modernchat-session-id
+   :session-metadata e-modernchat-session-metadata))
 
 (defun e-modernchat--push-snapshot (&optional buffer)
   "Push a full snapshot for BUFFER or the current buffer to egui."
@@ -267,7 +271,8 @@
           (or (ignore-errors (e-harness-session-title harness session-id))
               session-id)))
 
-(defun e-modernchat-open-session (harness session-id &optional display)
+(defun e-modernchat-open-session
+    (harness session-id &optional display session-metadata)
   "Open HARNESS SESSION-ID in a modern chat shell.
 Display the buffer when DISPLAY is non-nil."
   (e-modernchat--ensure-runtime)
@@ -278,6 +283,8 @@ Display the buffer when DISPLAY is non-nil."
     (with-current-buffer buffer
       (setq-local e-modernchat-harness harness)
       (setq-local e-modernchat-session-id session-id)
+      (setq-local e-modernchat-session-metadata
+                  (copy-tree session-metadata t))
       (setq-local e-modernchat--egui-session session)
       (add-hook 'kill-buffer-hook #'e-modernchat--cleanup nil t)
       (e-modernchat--wire-actions session buffer)
@@ -292,11 +299,11 @@ Display the buffer when DISPLAY is non-nil."
   "Create a new persisted chat session and open it in modern chat."
   (interactive)
   (let* ((harness (e-chat-service-default-harness))
-         (session (e-chat-service-create-session
-                   :harness harness
-                   :metadata (e-modernchat--session-metadata)))
-         (session-id (plist-get session :id)))
-    (e-modernchat-open-session harness session-id t)))
+         (metadata (e-modernchat--session-metadata))
+         (session-id (e-session-generate-id)))
+    (e-chat-service-create-session-start
+     :harness harness :id session-id :metadata metadata)
+    (e-modernchat-open-session harness session-id t metadata)))
 
 ;;;###autoload
 (defun e-modernchat-shell ()

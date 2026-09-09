@@ -210,7 +210,7 @@
              (fboundp 'e-harness-activity-emit-turn-event))
     (let ((store (e-harness-sessions harness)))
       (when (or (e-session-async-enabled-p store)
-                (ignore-errors (e-session-get store session-id)))
+                (ignore-errors (e-session-local-state store session-id)))
         (e-harness-activity-emit-turn-event
          harness session-id turn-id type payload)))))
 

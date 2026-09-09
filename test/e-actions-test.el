@@ -108,7 +108,7 @@
           (cl-remove-if-not
            (lambda (event)
              (eq (plist-get event :event-type) 'action-failed))
-           (e-session-activity-events
+           (e-session-local-activity-events
             (e-harness-sessions harness) "session-1")))
     (should (equal (length failed-events) 1))))
 
@@ -187,13 +187,13 @@
       (should (functionp finish))
       (should-not
        (cl-find 'action-finished
-                (e-session-activity-events
+                (e-session-local-activity-events
                  (e-harness-sessions harness) "session-1")
                 :key (lambda (event) (plist-get event :event-type)))))
     (funcall finish)
     (let ((finished
            (cl-find 'action-finished
-                    (e-session-activity-events
+                    (e-session-local-activity-events
                      (e-harness-sessions harness) "session-1")
                     :key (lambda (event) (plist-get event :event-type)))))
       (should finished)
@@ -289,7 +289,7 @@
      :type 'e-actions-invalid-arguments)
     (let ((serialized
            (prin1-to-string
-            (e-session-activity-events
+            (e-session-local-activity-events
              (e-harness-sessions harness) "session-1"))))
       (should-not (string-match-p "must-not-retain\\|:extra" serialized))
       (should-not (string-match-p "allowed" serialized)))))
@@ -310,7 +310,7 @@
      (e-actions-call 'failing-secret-action :run nil
                      (list :harness harness :session-id "session-1"
                            :turn-id "turn-1")))
-    (let* ((events (e-session-activity-events
+    (let* ((events (e-session-local-activity-events
                     (e-harness-sessions harness) "session-1"))
            (failed (seq-find (lambda (event)
                                (eq (plist-get event :event-type) 'action-failed))

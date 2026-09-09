@@ -100,10 +100,10 @@
           (let ((store (e-session-test--replay-legacy-copy
                         directory session-id)))
             (should (equal
-                     (plist-get (e-session-get store session-id) :created-at)
+                     (plist-get (e-session-local-state store session-id) :created-at)
                      "2026-08-07T10:13:47Z"))
             (should (equal
-                     (plist-get (car (e-session-messages store session-id))
+                     (plist-get (car (e-session-local-messages store session-id))
                                 :content)
                      "session exact"))))
       (delete-directory directory t))))
@@ -242,7 +242,7 @@ knowledge; those remain adapter details behind the storage owner."
               :loaded)))
           (should-not (plist-get (e-session-index-entry store session-id)
                                  :loaded))
-          (should (equal (plist-get (car (e-session-messages store session-id))
+          (should (equal (plist-get (car (e-session-local-messages store session-id))
                                     :content)
                          "bounded")))
       (delete-directory directory t))))
@@ -253,7 +253,7 @@ knowledge; those remain adapter details behind the storage owner."
 This helper writes the journal envelope directly and replays the same literal
 record into STORE.  It intentionally does not call a production context
 promotion writer; new production records are version 3 only."
-  (let* ((session (e-session-get store session-id))
+  (let* ((session (e-session-local-state store session-id))
          (entry (list :type "context-promotion"
                       :session-id session-id
                       :id (format "legacy-entry:%s" (plist-get record :id))
@@ -321,7 +321,7 @@ stand in for the pure curation preparation path."
     (setcar (plist-get policy :default-tags) 'caller-mutated)
     (setf (aref (plist-get policy :participant-id) 0) ?X)
     (should (equal (e-session-board-routing-policy
-                    (e-session-get store session-id))
+                    (e-session-local-state store session-id))
                    expected))
     (should (equal (plist-get (plist-get returned :routing-policy)
                               :participant-id)
@@ -337,7 +337,7 @@ stand in for the pure curation preparation path."
                   0)
             ?Y))
     (should (equal (plist-get (e-session-board-association
-                               (e-session-get store session-id))
+                               (e-session-local-state store session-id))
                               :routing-policy)
                    expected))))
 
@@ -354,7 +354,7 @@ stand in for the pure curation preparation path."
            "participant" policy)
           (e-session-flush-write-queue store)
           (let ((restored
-                 (e-session-get
+                 (e-session-local-state
                   (e-session-persistent-store-create directory) session-id)))
             (should (equal (e-session-board-routing-policy restored) policy))
             (let* ((pickup (plist-get (e-session-board-routing-policy restored)
@@ -380,7 +380,7 @@ stand in for the pure curation preparation path."
     (e-session-declare-board-state
      store session-id "chat:routing-invalid" "board-invalid" "owner")
     (let ((before (copy-tree (e-session-board-association
-                              (e-session-get store session-id)))))
+                              (e-session-local-state store session-id)))))
       (dolist (policy
                (list
                 '(:participant-id "p" :pickup-selector (:tags (private))
@@ -397,7 +397,7 @@ stand in for the pure curation preparation path."
           store session-id "chat:routing-invalid" "board-invalid" "owner"
           policy)))
       (should (equal (e-session-board-association
-                      (e-session-get store session-id))
+                      (e-session-local-state store session-id))
                      before)))
       ;; Names that happen to be callable remain data when they are used as
       ;; declarative selector atoms; executable objects/forms do not.
@@ -440,7 +440,7 @@ stand in for the pure curation preparation path."
           (let ((association-before
                  (copy-tree
                   (e-session-board-association
-                   (e-session-get store session-id))))
+                   (e-session-local-state store session-id))))
                 (durability-before
                  (e-session-storage-durability-status store)))
             (dolist (attributes invalid-attributes)
@@ -465,7 +465,7 @@ stand in for the pure curation preparation path."
                   (should-not json-called))
               (should (equal
                        (e-session-board-association
-                        (e-session-get store session-id))
+                        (e-session-local-state store session-id))
                        association-before))
               (should (equal (e-session-storage-durability-status store)
                              durability-before)))
@@ -480,13 +480,13 @@ stand in for the pure curation preparation path."
     (e-session-declare-board-state
      store "legacy-owner" "chat:legacy-owner" "legacy-board" "owner")
     (let ((association (e-session-board-association
-                        (e-session-get store "legacy-owner"))))
+                        (e-session-local-state store "legacy-owner"))))
       (should (equal association
                      '(:board-id "legacy-board"
                        :principal "chat:legacy-owner"
                        :association-role "owner")))
       (should-not (e-session-board-routing-policy
-                   (e-session-get store "legacy-owner"))))))
+                   (e-session-local-state store "legacy-owner"))))))
 
 (ert-deftest e-session-test-standalone-context-erasure-replay-is-rejected ()
   "Version-1 erasure is valid only inside the atomic curation package."
@@ -505,15 +505,15 @@ stand in for the pure curation preparation path."
      (e-session-aggregate-apply-record
       store (e-session-codec-replay-record record))
                   :type 'e-session-error)
-    (should-not (e-session-context-erasures store session-id))
-    (should-not (e-session-erased-tool-call-ids store session-id))))
+    (should-not (e-session-local-context-erasures store session-id))
+    (should-not (e-session-local-erased-tool-call-ids store session-id))))
 
 (ert-deftest e-session-test-create-and-read ()
   "Sessions can be created and read by id."
   (let ((store (e-session-store-create)))
     (e-session-create store :id "session-1" :metadata '(:model "fake"))
-    (should (equal (plist-get (e-session-get store "session-1") :id) "session-1"))
-    (should (equal (e-session-messages store "session-1") nil))))
+    (should (equal (plist-get (e-session-local-state store "session-1") :id) "session-1"))
+    (should (equal (e-session-local-messages store "session-1") nil))))
 
 (ert-deftest e-session-test-context-v2-records-round-trip-through-reopen ()
   "Literal version-2 records remain readable after a persistent reopen."
@@ -559,11 +559,11 @@ stand in for the pure curation preparation path."
           (let* ((before (e-session-persistent-store-create directory))
                  (before-generations
                   (mapcar #'e-session-aggregate-context-record
-                          (e-session-context-generations
+                          (e-session-local-context-generations
                            before session-id)))
                  (before-promotions
                   (mapcar #'e-session-aggregate-context-record
-                          (e-session-context-promotions
+                          (e-session-local-context-promotions
                            before session-id)))
                  (before-manifest
                   (plist-get (e-session-checkpoint-manifest
@@ -643,7 +643,7 @@ stand in for the pure curation preparation path."
                   :id "generation-v3"
                   :checkpoint '((:role system :content "C0"))
                   :covered-session-boundary
-                  (plist-get (e-session-get store session-id)
+                  (plist-get (e-session-local-state store session-id)
                              :root-event-id))))
           (e-session-test--append-literal-v2-record
            store session-id v2-record)
@@ -652,9 +652,9 @@ stand in for the pure curation preparation path."
           (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
                  (records (mapcar #'e-session-aggregate-context-record
-                                  (e-session-context-promotions
+                                  (e-session-local-context-promotions
                                    reopened session-id)))
-                 (projection (e-session-context-lifetime-projection
+                 (projection (e-session-local-context-lifetime-projection
                               reopened session-id))
                  (promotion-messages
                   (plist-get projection :promotion-messages))
@@ -662,17 +662,17 @@ stand in for the pure curation preparation path."
                  (fork-id (plist-get fork :id))
                  (fork-generation
                   (plist-get
-                   (e-session-context-lifetime-projection reopened fork-id)
+                   (e-session-local-context-lifetime-projection reopened fork-id)
                    :generation))
                  (selected-head
                   (plist-get
-                   (car (e-session-context-promotions reopened session-id))
+                   (car (e-session-local-context-promotions reopened session-id))
                    :id))
                  (selected-fork
                   (e-session-fork reopened session-id :at selected-head))
                  (selected-generation
                   (plist-get
-                   (e-session-context-lifetime-projection
+                   (e-session-local-context-lifetime-projection
                     reopened (plist-get selected-fork :id))
                    :generation)))
             (should (equal records (list v2-record v3-record)))
@@ -770,13 +770,13 @@ stand in for the pure curation preparation path."
             (should (equal (plist-get (plist-get package-entry :erasure)
                                       :id)
                            "erasure-package"))
-            (should (equal (plist-get (e-session-entry-by-id
+            (should (equal (plist-get (e-session-local-entry-by-id
                                        store session-id package-id)
                                       :id)
                            package-id))
-            (should (= (length (e-session-context-curations store session-id))
+            (should (= (length (e-session-local-context-curations store session-id))
                        1))
-            (let ((promotion (car (e-session-context-promotions
+            (let ((promotion (car (e-session-local-context-promotions
                                    store session-id))))
               (should (eq (plist-get promotion :type)
                           'context-promotion))
@@ -786,7 +786,7 @@ stand in for the pure curation preparation path."
                              (plist-get package-entry :created-at)))
               (should (equal (plist-get promotion :context-record)
                              v3-record)))
-            (should (equal (e-session-erased-tool-call-ids store session-id)
+            (should (equal (e-session-local-erased-tool-call-ids store session-id)
                            '("tool-call-package")))
             (should (equal (plist-get control :event-type)
                            'context-curation-response))
@@ -805,7 +805,7 @@ stand in for the pure curation preparation path."
                          (lambda (entry)
                            (eq (plist-get entry :type)
                                'context-curation-package))
-                         (e-session-current-path store session-id)))
+                         (e-session-local-current-path store session-id)))
                        1)))
           (e-session-flush-write-queue store)
           (let* ((reopened (e-session-persistent-store-create directory))
@@ -814,17 +814,17 @@ stand in for the pure curation preparation path."
                    (lambda (entry)
                      (eq (plist-get entry :type)
                          'context-curation-package))
-                   (e-session-current-path reopened session-id)))
+                   (e-session-local-current-path reopened session-id)))
                  (fork (e-session-fork reopened session-id
                                         :at "assistant-package"))
                  (fork-id (plist-get fork :id))
                  (source-projection
                   (prin1-to-string
-                   (e-session-context-lifetime-projection
+                   (e-session-local-context-lifetime-projection
                     reopened session-id)))
                  (fork-projection
                   (prin1-to-string
-                   (e-session-context-lifetime-projection
+                   (e-session-local-context-lifetime-projection
                     reopened fork-id))))
             (should package-entry)
             ;; The same package remains an exact retry after persistent
@@ -841,16 +841,16 @@ stand in for the pure curation preparation path."
                            v3-record))
             (should (equal (plist-get package-entry :erasure)
                            erasure-record))
-            (should (= (length (e-session-context-curations
+            (should (= (length (e-session-local-context-curations
                                 reopened session-id))
                        1))
-            (should (equal (e-session-erased-tool-call-ids
+            (should (equal (e-session-local-erased-tool-call-ids
                             reopened session-id)
                            '("tool-call-package")))
-            (should (e-session-entry-by-id
+            (should (e-session-local-entry-by-id
                      reopened session-id response-id))
             (should (equal (plist-get
-                            (plist-get (e-session-entry-by-id
+                            (plist-get (e-session-local-entry-by-id
                                         reopened session-id response-id)
                                        :payload)
                             :response-entry-id)
@@ -869,9 +869,9 @@ stand in for the pure curation preparation path."
                                     fork-projection))
             ;; Clean forks carry the portable selected meaning, never source
             ;; suppression authority or its audit control.
-            (should-not (e-session-erased-tool-call-ids reopened fork-id))
-            (should-not (e-session-context-erasures reopened fork-id))
-            (should-not (e-session-entry-by-id reopened fork-id response-id))
+            (should-not (e-session-local-erased-tool-call-ids reopened fork-id))
+            (should-not (e-session-local-context-erasures reopened fork-id))
+            (should-not (e-session-local-entry-by-id reopened fork-id response-id))
             (should-not (string-match-p "response-package" fork-projection))))
       (delete-directory directory t))))
 
@@ -930,15 +930,15 @@ stand in for the pure curation preparation path."
                      :content "both selected"))))
             (e-session-flush-write-queue store)
             (let* ((reopened (e-session-persistent-store-create directory))
-                   (records (e-session-context-curations reopened session-id))
+                   (records (e-session-local-context-curations reopened session-id))
                    (source-projection
-                    (e-session-context-lifetime-projection reopened session-id))
+                    (e-session-local-context-lifetime-projection reopened session-id))
                    (current-fork (e-session-fork reopened session-id))
                    (current-fork-id (plist-get current-fork :id))
                    (current-checkpoint
                     (e-context-lifetime-generation-checkpoint
                      (plist-get
-                      (e-session-context-lifetime-projection
+                      (e-session-local-context-lifetime-projection
                        reopened current-fork-id)
                       :generation)))
                    (source-text (prin1-to-string source-projection))
@@ -953,7 +953,7 @@ stand in for the pure curation preparation path."
                          (string-match-p "CURATED-B" current-text)))
               (should (string-match-p "BASE-CHECKPOINT" current-text))
               (should (= (length
-                          (e-session-context-curations reopened session-id))
+                          (e-session-local-context-curations reopened session-id))
                          2))
               (let* ((compaction
                       (e-session-append-compaction
@@ -971,7 +971,7 @@ stand in for the pure curation preparation path."
                         compacted session-id))))
                 (should
                  (equal (plist-get
-                         (e-session-latest-valid-compaction
+                         (e-session-local-latest-valid-compaction
                           compacted session-id)
                          :id)
                         (plist-get compaction :id)))
@@ -1024,33 +1024,33 @@ stand in for the pure curation preparation path."
                   (e-session-append-message
                    store session-id
                    '(:id "after-erasure" :role assistant :content "continued"))))
-            (should (equal (e-session-erased-tool-call-ids
+            (should (equal (e-session-local-erased-tool-call-ids
                             store session-id before-id)
                            nil))
-            (should (equal (e-session-erased-tool-call-ids
+            (should (equal (e-session-local-erased-tool-call-ids
                             store session-id before-erasure-id)
                            nil))
-            (should (equal (e-session-erased-tool-call-ids
+            (should (equal (e-session-local-erased-tool-call-ids
                             store session-id erasure-entry-id)
                            '("tool-call-1")))
-            (should (equal (e-session-erased-tool-call-ids
+            (should (equal (e-session-local-erased-tool-call-ids
                             store session-id (plist-get descendant :id))
                            '("tool-call-1")))
             (should (equal (mapcar #'e-context-lifetime-curation-erasure-tool-call-ids
-                                   (e-session-context-erasures store session-id))
+                                   (e-session-local-context-erasures store session-id))
                            '(("tool-call-1"))))
-            (should (eq (plist-get (e-session-entry-by-id
+            (should (eq (plist-get (e-session-local-entry-by-id
                                     store session-id erasure-entry-id)
                                    :type)
                         'context-curation-package))
-            (should (equal (plist-get (e-session-entry-by-id
+            (should (equal (plist-get (e-session-local-entry-by-id
                                        store session-id "response-1")
                                       :event-type)
                            'context-curation-response))
             (e-session-flush-write-queue store)
             (let* ((reopened (e-session-persistent-store-create directory))
                    (reopened-erasures
-                    (e-session-context-erasures reopened session-id))
+                    (e-session-local-context-erasures reopened session-id))
                    (sibling-message
                     (e-session-append-message
                      reopened session-id
@@ -1058,10 +1058,10 @@ stand in for the pure curation preparation path."
                        :role assistant :content "sibling continuation")))
                    (sibling-head-id (plist-get sibling-message :id))
                    (sibling-path
-                    (e-session-current-path reopened session-id sibling-head-id))
+                    (e-session-local-current-path reopened session-id sibling-head-id))
                    (sibling-projection
                     (prin1-to-string
-                     (e-session-context-lifetime-projection
+                     (e-session-local-context-lifetime-projection
                       reopened session-id sibling-head-id)))
                    ;; A fork made from the post-erasure head is also clean:
                    ;; it copies portable semantic context, never the source's
@@ -1071,22 +1071,22 @@ stand in for the pure curation preparation path."
                    (post-erasure-fork-id (plist-get post-erasure-fork :id))
                    (post-erasure-projection
                     (prin1-to-string
-                     (e-session-context-lifetime-projection
+                     (e-session-local-context-lifetime-projection
                       reopened post-erasure-fork-id))))
-              (should (equal (e-session-erased-tool-call-ids
+              (should (equal (e-session-local-erased-tool-call-ids
                               reopened session-id "after-erasure")
                              '("tool-call-1")))
               (should-error
-               (e-session-erased-tool-call-ids
+               (e-session-local-erased-tool-call-ids
                 reopened session-id "unknown-selected-head")
                :type 'e-session-error)
               ;; Capture the source-path audit view before moving the live
               ;; session head onto the intentionally clean sibling branch.
               (should (= (length reopened-erasures) 1))
-              (should (e-session-entry-by-id reopened session-id "response-1"))
+              (should (e-session-local-entry-by-id reopened session-id "response-1"))
               ;; The same-session sibling branches before the erasure and
               ;; remains free of it even after receiving a new descendant.
-              (should-not (e-session-erased-tool-call-ids
+              (should-not (e-session-local-erased-tool-call-ids
                            reopened session-id sibling-head-id))
               ;; An exact package identity on an inactive sibling is not a
               ;; retry for the selected path and must not be silently reused.
@@ -1110,11 +1110,11 @@ stand in for the pure curation preparation path."
                                       sibling-projection))
               ;; The post-erasure clean fork likewise does not copy the
               ;; detached erasure/control records or query result.
-              (should-not (e-session-erased-tool-call-ids
+              (should-not (e-session-local-erased-tool-call-ids
                            reopened post-erasure-fork-id))
-              (should-not (e-session-context-erasures
+              (should-not (e-session-local-context-erasures
                            reopened post-erasure-fork-id))
-              (should-not (e-session-entry-by-id
+              (should-not (e-session-local-entry-by-id
                            reopened post-erasure-fork-id "response-1"))
               (should (string-match-p "selected semantic context"
                                       sibling-projection))
@@ -1158,25 +1158,25 @@ stand in for the pure curation preparation path."
                                  (plist-get source :source-fingerprint)))
               (setf (aref value 0) ?X))
             (plist-put source :tool-call-id "replaced-tool-call"))
-          (let ((stored (car (e-session-context-erasures store session-id))))
+          (let ((stored (car (e-session-local-context-erasures store session-id))))
             (should (equal (plist-get stored :id) "erasure-detached"))
             (should (equal
                      (plist-get (car (plist-get stored :sources))
                                 :tool-call-id)
                      "tool-call-detached"))
-            (should (equal (e-session-erased-tool-call-ids
+            (should (equal (e-session-local-erased-tool-call-ids
                             store session-id)
                            '("tool-call-detached"))))
           (e-session-flush-write-queue store)
           (let ((reopened (e-session-persistent-store-create directory)))
-            (let ((stored (car (e-session-context-erasures
+            (let ((stored (car (e-session-local-context-erasures
                                 reopened session-id))))
               (should (equal (plist-get stored :id) "erasure-detached"))
               (should (equal
                        (plist-get (car (plist-get stored :sources))
                                   :tool-call-id)
                        "tool-call-detached")))
-            (should (equal (e-session-erased-tool-call-ids
+            (should (equal (e-session-local-erased-tool-call-ids
                             reopened session-id)
                            '("tool-call-detached")))))
       (delete-directory directory t))))
@@ -1273,10 +1273,10 @@ stand in for the pure curation preparation path."
             store "append-context"
             (list :promotion bad :erasure nil))
            :type 'e-session-error))
-        (should (= (length (e-session-context-generations
+        (should (= (length (e-session-local-context-generations
                             store "append-context"))
                    1))
-        (should-not (e-session-context-promotions store "append-context")))
+        (should-not (e-session-local-context-promotions store "append-context")))
       (dolist (bad (variants generation-record))
         (replay-fails 'context-generation bad))
       (dolist (bad (variants promotion-record))
@@ -1334,10 +1334,10 @@ stand in for the pure curation preparation path."
                  (e-session-test--replay-legacy-copy directory session-id)))
             (should (equal (mapcar (lambda (message)
                                      (plist-get message :content))
-                                   (e-session-messages reopened session-id))
+                                   (e-session-local-messages reopened session-id))
                            '("retain me")))
-            (should-not (e-session-context-generations reopened session-id))
-            (should-not (e-session-context-promotions reopened session-id))
+            (should-not (e-session-local-context-generations reopened session-id))
+            (should-not (e-session-local-context-promotions reopened session-id))
             (should-not
              (plist-member
               (plist-get (e-session-checkpoint-manifest reopened session-id)
@@ -1355,20 +1355,20 @@ stand in for the pure curation preparation path."
           (e-session-create store :id "board-session")
           (e-session-append-board-message store "board-session" first)
           (e-session-append-board-message store "board-session" first)
-          (should (= (length (e-session-board-messages
+          (should (= (length (e-session-local-board-messages
                               store "board-session"))
                      1))
           (e-session-clear-board-messages store "board-session")
           (e-session-append-board-message store "board-session" second)
           (e-session-flush-write-queue store)
           (let ((reopened (e-session-persistent-store-create directory)))
-            (let ((messages (e-session-board-messages
+            (let ((messages (e-session-local-board-messages
                              reopened "board-session")))
               (should (= (length messages) 1))
               (should (equal (plist-get (car messages) :id) "board-2"))
               (should (equal (plist-get (car messages) :content) "new")))
             (e-session-append-board-message reopened "board-session" second)
-            (should (= (length (e-session-board-messages
+            (should (= (length (e-session-local-board-messages
                                 reopened "board-session"))
                        1))))
       (delete-directory directory t))))
@@ -1386,7 +1386,7 @@ stand in for the pure curation preparation path."
     (should-error
      (e-session-append-board-message store "board-session" divergent)
      :type 'e-session-board-message-conflict)
-    (should (equal (e-session-board-messages store "board-session")
+    (should (equal (e-session-local-board-messages store "board-session")
                    (list first)))))
 
 (ert-deftest e-session-test-processing-journal-rejects-cross-record-reentrancy-in-order ()
@@ -1422,7 +1422,7 @@ stand in for the pure curation preparation path."
                            '("outer")))
             (let* ((reopened (e-session-persistent-store-create directory))
                    (restored (e-board-create :id "restored" :register nil)))
-              (dolist (envelope (e-session-board-messages reopened session-id))
+              (dolist (envelope (e-session-local-board-messages reopened session-id))
                 (e-board-import-processing-record restored envelope))
               (should (equal (mapcar #'e-board-processing-chain-id
                                      (e-board-list-processing-chains restored))
@@ -1467,7 +1467,7 @@ stand in for the pure curation preparation path."
           (should (equal (nreverse observed) '(first second after-release)))
           (should (equal
                    (mapcar (lambda (message) (plist-get message :content))
-                           (e-session-messages store session-id))
+                           (e-session-local-messages store session-id))
                    '("stored"))))
       (delete-directory directory t))))
 
@@ -1477,14 +1477,14 @@ stand in for the pure curation preparation path."
         (message '(:id "board-1" :kind output :content "retained")))
     (e-session-create store :id "board-session")
     (e-session-append-board-message store "board-session" message)
-    (let ((session (e-session-get store "board-session")))
+    (let ((session (e-session-local-state store "board-session")))
       (should-not (plist-member session :board-messages))
       (should-not (plist-member session :board-message-id-index))
       (plist-put session :board-messages
                  (list '(:id "board-1" :kind output :content "mutated")))
       (plist-put session :board-message-id-index (make-hash-table :test 'equal)))
     (e-session-append-board-message store "board-session" message)
-    (should (equal (e-session-board-messages store "board-session")
+    (should (equal (e-session-local-board-messages store "board-session")
                    (list message)))))
 
 (ert-deftest e-session-test-board-log-rejects-cyclic-envelope-values ()
@@ -1505,7 +1505,7 @@ stand in for the pure curation preparation path."
        (e-session-append-board-message
         store "board-session" (list :id "cycle" :value value))
        :type 'e-session-board-message-cycle))
-    (should-not (e-session-board-messages store "board-session"))))
+    (should-not (e-session-local-board-messages store "board-session"))))
 
 (ert-deftest e-session-test-board-messages-loads-an-indexed-session ()
   (ert-skip "Retired indexed aggregate restoration scenario")
@@ -1522,7 +1522,7 @@ stand in for the pure curation preparation path."
             (should-not (plist-get (e-session-aggregate-peek-session indexed session-id)
                                    :loaded))
             (should (equal (mapcar (lambda (message) (plist-get message :id))
-                                   (e-session-board-messages indexed session-id))
+                                   (e-session-local-board-messages indexed session-id))
                            '("message-1")))
             (should (plist-get (e-session-aggregate-peek-session indexed session-id)
                                :loaded))))
@@ -1549,13 +1549,13 @@ stand in for the pure curation preparation path."
             (aset (plist-get returned :value) 0 ?x)
             (aset (car (plist-get (plist-get returned :attributes) :nested))
                   0 ?x))
-          (let ((message (car (e-session-board-messages store "board-session"))))
+          (let ((message (car (e-session-local-board-messages store "board-session"))))
             (should (equal (plist-get message :id) "frozen"))
             (should (equal (plist-get message :value) "top-level"))
             (should (equal (plist-get (plist-get message :attributes) :nested)
                            '("original"))))
           (e-session-flush-write-queue store)
-          (let ((message (car (e-session-board-messages
+          (let ((message (car (e-session-local-board-messages
                                (e-session-persistent-store-create directory)
                                "board-session"))))
             (should (equal (plist-get message :id) "frozen"))
@@ -1587,7 +1587,7 @@ stand in for the pure curation preparation path."
                            (plist-get root :current-branch)
                            entry-id))
         (aset value 0 ?x)))
-    (let ((session (e-session-get store session-id)))
+    (let ((session (e-session-local-state store session-id)))
       (should (equal session-id "session-1"))
       (should (equal (plist-get session :name) "session name"))
       (should (equal (plist-get (plist-get session :metadata) :project-root)
@@ -1595,7 +1595,7 @@ stand in for the pure curation preparation path."
       (should (equal (plist-get session :current-branch) "branch-1"))
       (should (string-prefix-p "01" (plist-get session :root-event-id)))
       (should (string-prefix-p "01"
-                               (plist-get (car (e-session-messages store session-id))
+                               (plist-get (car (e-session-local-messages store session-id))
                                           :id))))))
 
 (ert-deftest e-session-test-board-log-rejects-invalid-record-types ()
@@ -1609,7 +1609,7 @@ stand in for the pure curation preparation path."
         store "board-session" (list :id "message" :record-type record-type))
        :type 'e-session-board-message-invalid-record-type))
     (should (equal (mapcar #'e-session-aggregate-board-message-identity
-                           (e-session-board-messages store "board-session"))
+                           (e-session-local-board-messages store "board-session"))
                    '((board-message . "message"))))))
 
 (ert-deftest e-session-test-checkpoint-manifest-detaches-board-identities ()
@@ -1630,13 +1630,13 @@ stand in for the pure curation preparation path."
       (aset (plist-get identity :id) 0 ?x)
       (aset (plist-get state :board-id) 0 ?x)
       (aset (plist-get state :principal) 0 ?x))
-    (should (equal (plist-get (car (e-session-board-messages store session-id)) :id)
+    (should (equal (plist-get (car (e-session-local-board-messages store session-id)) :id)
                    "record-1"))
-    (should (equal (plist-get (plist-get (e-session-get store session-id)
+    (should (equal (plist-get (plist-get (e-session-local-state store session-id)
                                           :board-session-state)
                               :board-id)
                    "board-1"))
-    (should (equal (plist-get (plist-get (e-session-get store session-id)
+    (should (equal (plist-get (plist-get (e-session-local-state store session-id)
                                           :board-session-state)
                               :principal)
                    "principal-1"))))
@@ -1649,7 +1649,7 @@ stand in for the pure curation preparation path."
     (e-session-create store :id "board-session")
     (e-session-append-board-message store "board-session" symbol-envelope)
     (e-session-append-board-message store "board-session" string-envelope)
-    (let ((messages (e-session-board-messages store "board-session")))
+    (let ((messages (e-session-local-board-messages store "board-session")))
       (should (= (length messages) 1))
       (should (eq (plist-get (car messages) :record-type)
                   'processing-chain)))))
@@ -1667,7 +1667,7 @@ stand in for the pure curation preparation path."
           (e-session-create store :id session-id)
           (e-session-append-board-message store session-id message)
           (e-session-storage-commit-mutation store session-id record)
-          (let ((messages (e-session-board-messages
+          (let ((messages (e-session-local-board-messages
                            (e-session-persistent-store-create directory) session-id)))
             (should (= (length messages) 1))
             (should (equal (plist-get (car messages) :id) "chain"))
@@ -1692,7 +1692,7 @@ stand in for the pure curation preparation path."
            (list :type "board-message" :session-id session-id
                  :message divergent))
           (should-error
-           (e-session-board-messages
+           (e-session-local-board-messages
             (e-session-persistent-store-create directory) session-id)
            :type 'e-session-board-message-conflict))
       (delete-directory directory t))))
@@ -1711,7 +1711,7 @@ stand in for the pure curation preparation path."
           (let ((reopened (e-session-persistent-store-create directory)))
             (should (equal
                      (mapcar #'e-session-aggregate-board-message-identity
-                             (e-session-board-messages reopened "board-session"))
+                             (e-session-local-board-messages reopened "board-session"))
                      '((board-message . "shared")
                        (processing-chain . "shared")
                        (processing-result . "shared"))))))
@@ -1726,7 +1726,7 @@ stand in for the pure curation preparation path."
     (e-session-append-message store "session-1"
                               '(:id "msg-2" :role assistant :content "hi"))
     (should (equal (mapcar (lambda (message) (plist-get message :id))
-                           (e-session-messages store "session-1"))
+                           (e-session-local-messages store "session-1"))
                    '("msg-1" "msg-2")))))
 
 
@@ -1739,12 +1739,12 @@ stand in for the pure curation preparation path."
      store session-id
      '(:id "user-1" :role user :content "hello"))
     (should-not
-     (plist-get (e-session-get store session-id) :latest-assistant-marker))
+     (plist-get (e-session-local-state store session-id) :latest-assistant-marker))
     (e-session-append-message
      store session-id
      '(:id "assistant-1" :role assistant :content "one"))
     (should (equal
-             (plist-get (e-session-get store session-id)
+             (plist-get (e-session-local-state store session-id)
                         :latest-assistant-marker)
              "assistant-1"))
     (e-session-append-message
@@ -1838,14 +1838,14 @@ stand in for the pure curation preparation path."
 (ert-deftest e-session-test-append-message-assigns-entry-ids-and-parent-links ()
   "Appending messages assigns durable ids and links to the previous head."
   (let ((store (e-session-store-create)))
-    (let* ((root (car (e-session-session-events
+    (let* ((root (car (e-session-local-session-events
                        store
                        (plist-get (e-session-create store :id "session-1") :id))))
            (first (e-session-append-message
                    store "session-1" '(:role user :content "hello")))
            (second (e-session-append-message
                     store "session-1" '(:role assistant :content "hi")))
-           (path (e-session-current-path store "session-1")))
+           (path (e-session-local-current-path store "session-1")))
       (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'"
                               (plist-get first :id)))
       (should (eq (plist-get root :event-type) 'session-created))
@@ -1877,7 +1877,7 @@ stand in for the pure curation preparation path."
                     '(:id "msg-1" :role assistant :content "hi"))))
       (e-session-set-message-display store "session-1"
                                      (plist-get message :id) 'hidden)
-      (should (eq (plist-get (car (e-session-messages store "session-1"))
+      (should (eq (plist-get (car (e-session-local-messages store "session-1"))
                              :display)
                   'hidden)))))
 
@@ -1892,7 +1892,7 @@ stand in for the pure curation preparation path."
            store "session-1" '(:id "msg-1" :role assistant :content "hi"))
           (e-session-set-message-display store "session-1" "msg-1" 'hidden)
           (let ((loaded (e-session-persistent-store-create directory)))
-            (should (eq (plist-get (car (e-session-messages loaded "session-1"))
+            (should (eq (plist-get (car (e-session-local-messages loaded "session-1"))
                                    :display)
                         'hidden))))
       (delete-directory directory t))))
@@ -1908,7 +1908,7 @@ stand in for the pure curation preparation path."
            store "session-1"
            '(:id "msg-1" :role user :origin harness :content "repair"))
           (let* ((loaded (e-session-persistent-store-create directory))
-                 (message (car (e-session-messages loaded "session-1"))))
+                 (message (car (e-session-local-messages loaded "session-1"))))
             (should (eq (plist-get message :origin) 'harness))))
       (delete-directory directory t))))
 
@@ -1929,7 +1929,7 @@ stand in for the pure curation preparation path."
            store session-id '(:id "msg-2" :role assistant :content "hi"))
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (mapcar (lambda (message) (plist-get message :id))
-                           (e-session-messages loaded session-id))
+                           (e-session-local-messages loaded session-id))
                            '("msg-1" "msg-2")))))
       (delete-directory directory t))))
 
@@ -1952,7 +1952,7 @@ stand in for the pure curation preparation path."
                '(:id "msg-1" :role user :content "quiet append"))
               (should-not append-to-file-called))
             (let* ((loaded (e-session-persistent-store-create directory))
-                   (messages (e-session-messages loaded session-id)))
+                   (messages (e-session-local-messages loaded session-id)))
               (should (equal (plist-get (car messages) :content)
                              "quiet append")))))
       (delete-directory directory t))))
@@ -2023,7 +2023,7 @@ stand in for the pure curation preparation path."
             (should (< 1 (length progress)))
             (should (equal (mapcar (lambda (message)
                                      (plist-get message :content))
-                                   (e-session-messages loaded session-id))
+                                   (e-session-local-messages loaded session-id))
                            (mapcar (lambda (index)
                                      (format
                                       "chunked message %d with enough bytes"
@@ -2059,7 +2059,7 @@ stand in for the pure curation preparation path."
                (second (e-session-append-message
                         store session-id '(:role assistant :content "hi")))
                (loaded (e-session-persistent-store-create directory))
-               (messages (e-session-messages loaded session-id)))
+               (messages (e-session-local-messages loaded session-id)))
           (should (equal (mapcar (lambda (message) (plist-get message :id))
                                  messages)
                          (list (plist-get first :id)
@@ -2083,9 +2083,9 @@ stand in for the pure curation preparation path."
              "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:02Z\",\"message\":{\"role\":\"assistant\",\"content\":\"hi\"}}\n"))
           (let* ((loaded (e-session-test--replay-legacy-copy
                           directory "legacy"))
-                 (events (e-session-session-events loaded "legacy"))
+                 (events (e-session-local-session-events loaded "legacy"))
                  (root (car events))
-                 (messages (e-session-messages loaded "legacy")))
+                 (messages (e-session-local-messages loaded "legacy")))
             (should (= (length events) 1))
             (should (eq (plist-get root :event-type) 'session-created))
             (should (plist-get root :id))
@@ -2123,7 +2123,7 @@ stand in for the pure curation preparation path."
                 (should-not (plist-get session :loaded))))
           (let ((indexed (e-session-persistent-index-store-create directory)))
             (should (equal (mapcar (lambda (message) (plist-get message :id))
-                                   (e-session-messages indexed session-id))
+                                   (e-session-local-messages indexed session-id))
                            '("msg-1" "msg-2")))))
       (delete-directory directory t))))
 
@@ -2226,7 +2226,7 @@ stand in for the pure curation preparation path."
           (e-session-set-metadata store session-id '(:project-root "/tmp/wide/"))
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (plist-get
-                            (plist-get (e-session-get loaded session-id) :metadata)
+                            (plist-get (e-session-local-state loaded session-id) :metadata)
                             :project-root)
 	                           "/tmp/wide/"))))
       (delete-directory directory t))))
@@ -2265,7 +2265,7 @@ stand in for the pure curation preparation path."
              "\n"))
           (let* ((store (e-session-test--replay-legacy-copy
                          directory "legacy-array"))
-                 (metadata (plist-get (e-session-get store "legacy-array")
+                 (metadata (plist-get (e-session-local-state store "legacy-array")
                                       :metadata)))
             (should (e-session-aggregate-keyword-plist-shape-p metadata))
             (should (equal (plist-get metadata :project-root)
@@ -2316,20 +2316,20 @@ stand in for the pure curation preparation path."
            '(:enabled t))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (metadata (plist-get
-                            (e-session-get loaded session-id)
+                            (e-session-local-state loaded session-id)
                             :metadata)))
             (should (equal (plist-get metadata :project-root)
                            "/tmp/project/"))
             (should (equal
                      (plist-get
                       (car (plist-get
-                            (e-session-context-references
+                            (e-session-local-context-references
                              loaded session-id 'chat-session)
                             :attachments))
                       :uri)
                      "buffer://source"))
             (should (equal (plist-get
-                            (e-session-capability-state
+                            (e-session-local-capability-state
                              loaded session-id 'mcp)
                             :enabled)
                            t))))
@@ -2349,7 +2349,7 @@ stand in for the pure curation preparation path."
              :subagent-label "review plan.org"
              :tmp-lineage-id "parent-1"))
           (let* ((loaded (e-session-persistent-store-create directory))
-                 (metadata (plist-get (e-session-get loaded session-id)
+                 (metadata (plist-get (e-session-local-state loaded session-id)
                                       :metadata)))
             (should (equal (plist-get metadata :parent-session-id) "parent-1"))
             (should (equal (plist-get metadata :subagent-role) "reviewer"))
@@ -2381,7 +2381,7 @@ stand in for the pure curation preparation path."
              "\n"))
           (let* ((store (e-session-test--replay-legacy-copy
                          directory "legacy"))
-                 (metadata (plist-get (e-session-get store "legacy")
+                 (metadata (plist-get (e-session-local-state store "legacy")
                                       :metadata))
                  (canvas (plist-get metadata :org-canvas)))
             (should (equal (plist-get metadata :name) "Legacy"))
@@ -2406,7 +2406,7 @@ stand in for the pure curation preparation path."
              :prompt-cache-default t
              :prompt-cache-retention "24h"))
           (let ((loaded (e-session-persistent-store-create directory)))
-            (should (equal (e-session-turn-options loaded session-id)
+            (should (equal (e-session-local-turn-options loaded session-id)
                            '(:model "gpt-test"
                              :reasoning-effort "high"
                              :prompt-cache-default t
@@ -2425,7 +2425,7 @@ stand in for the pure curation preparation path."
            :metadata '(:from "turn-1"))
           (let* ((loaded (e-session-persistent-store-create directory))
                  (summary (car (plist-get
-                                (e-session-get loaded session-id)
+                                (e-session-local-state loaded session-id)
                                 :branch-summaries))))
             (should (equal (plist-get summary :branch-id) "branch-a"))
             (should (equal (plist-get summary :summary)
@@ -2442,7 +2442,7 @@ stand in for the pure curation preparation path."
     (e-session-append-branch-summary store "session-1" "branch-b" "Second")
     (should (equal (mapcar (lambda (summary)
                              (plist-get summary :branch-id))
-                           (plist-get (e-session-get store "session-1")
+                           (plist-get (e-session-local-state store "session-1")
                                       :branch-summaries))
                    '("branch-a" "branch-b")))))
 
@@ -2461,7 +2461,7 @@ stand in for the pure curation preparation path."
            :tokens-kept 45)
           (let* ((loaded (e-session-persistent-store-create directory))
                  (compaction (car (plist-get
-                                   (e-session-get loaded session-id)
+                                   (e-session-local-state loaded session-id)
                                    :compactions))))
             (should (equal (plist-get compaction :summary)
                            "Compacted early transcript."))
@@ -2480,7 +2480,7 @@ stand in for the pure curation preparation path."
     (e-session-append-compaction store "session-1" "Second")
     (should (equal (mapcar (lambda (compaction)
                              (plist-get compaction :summary))
-                           (e-session-compactions store "session-1"))
+                           (e-session-local-compactions store "session-1"))
                    '("First" "Second")))))
 
 (ert-deftest e-session-test-provider-anchor-persists-through-replay ()
@@ -2500,7 +2500,7 @@ stand in for the pure curation preparation path."
                                         :current-state "def")
                         :metadata '(:response-id "resp-1")))
                (loaded (e-session-persistent-store-create directory))
-               (replayed (car (e-session-provider-anchors
+               (replayed (car (e-session-local-provider-anchors
                                loaded session-id))))
           (should (equal (plist-get replayed :id)
                          (plist-get anchor :id)))
@@ -2547,7 +2547,7 @@ stand in for the pure curation preparation path."
                         :fingerprints fingerprints
                         :metadata '(:response-id "resp-1")))
                (loaded (e-session-persistent-store-create directory))
-               (replayed (car (e-session-provider-anchors
+               (replayed (car (e-session-local-provider-anchors
                                loaded session-id))))
           (should (equal (plist-get replayed :id)
                          (plist-get anchor :id)))
@@ -2592,9 +2592,9 @@ stand in for the pure curation preparation path."
        :covered-entry-id (plist-get message :id)
        :fingerprints malformed
        :metadata '(:response-id "resp-1"))
-      (should (eq (e-session-provider-anchor-incompatibility-reason
+      (should (eq (e-session-local-provider-anchor-incompatibility-reason
                    store session-id
-                   (car (e-session-provider-anchors store session-id))
+                   (car (e-session-local-provider-anchors store session-id))
                    'openai
                    "gpt-test"
                    current)
@@ -2623,29 +2623,29 @@ stand in for the pure curation preparation path."
              :fingerprints '(:history "two")
              :metadata '(:response-id "resp-2"))))
       (should (equal (plist-get
-                      (e-session-latest-compatible-provider-anchor
+                      (e-session-local-latest-compatible-provider-anchor
                        store session-id 'openai
                        :model "gpt-test"
                        :fingerprints '(:history "two"))
                       :id)
                      (plist-get second-anchor :id)))
       (should-not
-       (e-session-latest-compatible-provider-anchor
+       (e-session-local-latest-compatible-provider-anchor
         store session-id 'openai
         :model "gpt-test"
         :fingerprints '(:history "changed")))
-      (plist-put (e-session-get store session-id)
+      (plist-put (e-session-local-state store session-id)
                  :current-head-id
                  (plist-get first-anchor :id))
       (should (equal (plist-get
-                      (e-session-latest-compatible-provider-anchor
+                      (e-session-local-latest-compatible-provider-anchor
                        store session-id 'openai
                        :model "gpt-test"
                        :fingerprints '(:history "one"))
                       :id)
                      (plist-get first-anchor :id)))
       (should-not
-       (e-session-latest-compatible-provider-anchor
+       (e-session-local-latest-compatible-provider-anchor
         store session-id 'openai
         :model "gpt-test"
         :fingerprints '(:history "two"))))))
@@ -2666,29 +2666,29 @@ stand in for the pure curation preparation path."
            (compaction (e-session-append-compaction
                         store "session-1" "kept suffix"
                         :first-kept-entry-id (plist-get second :id))))
-      (should (equal (plist-get (e-session-entry-by-id
+      (should (equal (plist-get (e-session-local-entry-by-id
                                  store "session-1" (plist-get second :id))
                                 :content)
                      "two"))
       (should (equal (mapcar (lambda (entry) (plist-get entry :id))
-                             (e-session-entries-in-turn
+                             (e-session-local-entries-in-turn
                               store "session-1" "turn-a"))
                      (list (plist-get first :id)
                            (plist-get second :id))))
-      (should (equal (plist-get (e-session-entry-previous
+      (should (equal (plist-get (e-session-local-entry-previous
                                  store "session-1" (plist-get third :id))
                                 :id)
                      (plist-get second :id)))
-      (should (equal (plist-get (e-session-entry-next
+      (should (equal (plist-get (e-session-local-entry-next
                                  store "session-1" (plist-get second :id))
                                 :id)
                      (plist-get third :id)))
-      (should (equal (plist-get (e-session-latest-entry-of-type
+      (should (equal (plist-get (e-session-local-latest-entry-of-type
                                  store "session-1" 'message)
                                 :id)
                      (plist-get third :id)))
       (should (equal (mapcar (lambda (entry) (plist-get entry :id))
-                             (e-session-entries-from
+                             (e-session-local-entries-from
                               store "session-1" (plist-get second :id)))
                      (list (plist-get second :id)
                            (plist-get third :id)
@@ -2698,7 +2698,7 @@ stand in for the pure curation preparation path."
   "Latest valid compaction ignores records with missing kept-entry boundaries."
   (let ((store (e-session-store-create)))
     (let* ((session-id (plist-get (e-session-create store :id "session-1") :id))
-           (root (car (e-session-session-events store session-id)))
+           (root (car (e-session-local-session-events store session-id)))
            (first (e-session-append-message
                    store "session-1" '(:role user :content "one")))
            (second (e-session-append-message
@@ -2710,12 +2710,12 @@ stand in for the pure curation preparation path."
              (e-session-append-compaction
               store "session-1" "valid"
               :first-kept-entry-id (plist-get second :id))))
-        (should (equal (plist-get (e-session-latest-valid-compaction
+        (should (equal (plist-get (e-session-local-latest-valid-compaction
                                    store "session-1")
                                   :id)
                        (plist-get valid :id)))
         (should (equal (mapcar (lambda (entry) (plist-get entry :id))
-                               (e-session-entries-before
+                               (e-session-local-entries-before
                                 store "session-1" (plist-get second :id)))
                        (list (plist-get root :id)
                              (plist-get first :id))))))))
@@ -2730,7 +2730,7 @@ stand in for the pure curation preparation path."
           (e-session-set-current-branch store session-id "branch-a")
           (e-session-set-current-branch store session-id "branch-b")
           (let ((loaded (e-session-persistent-store-create directory)))
-            (should (equal (plist-get (e-session-get loaded session-id)
+            (should (equal (plist-get (e-session-local-state loaded session-id)
                                       :current-branch)
                            "branch-b"))))
       (delete-directory directory t))))
@@ -2746,13 +2746,13 @@ stand in for the pure curation preparation path."
           (e-session-set-turn-options store session-id '(:model "gpt-test"))
           (e-session-set-current-branch store session-id "branch-a")
           (let* ((loaded (e-session-persistent-store-create directory))
-                 (events (e-session-session-events loaded session-id))
+                 (events (e-session-local-session-events loaded session-id))
                  (types (mapcar (lambda (event)
                                   (plist-get event :event-type))
                                 events))
                  (path-types (mapcar (lambda (entry)
                                        (plist-get entry :event-type))
-                                     (e-session-current-path loaded session-id))))
+                                     (e-session-local-current-path loaded session-id))))
             ;; v6 keeps canonical journal events exact; current metadata and
             ;; options live in the relational row rather than a checkpoint
             ;; that rewrites the replay prefix.
@@ -2775,7 +2775,7 @@ stand in for the pure curation preparation path."
   "Current-path reconstruction can target explicit branch heads."
   (let ((store (e-session-store-create)))
     (let* ((session-id (plist-get (e-session-create store :id "session-1") :id))
-           (root (car (e-session-session-events store session-id)))
+           (root (car (e-session-local-session-events store session-id)))
            (left (e-session-append-message
                   store session-id
                   '(:role user :content "left branch")))
@@ -2785,17 +2785,17 @@ stand in for the pure curation preparation path."
                          :content "right branch"
                          :parent-id (plist-get root :id)))))
       (should (equal (mapcar (lambda (entry) (plist-get entry :id))
-                             (e-session-current-path
+                             (e-session-local-current-path
                               store session-id (plist-get left :id)))
                      (list (plist-get root :id)
                            (plist-get left :id))))
       (should (equal (mapcar (lambda (entry) (plist-get entry :id))
-                             (e-session-current-path
+                             (e-session-local-current-path
                               store session-id (plist-get right :id)))
                      (list (plist-get root :id)
                            (plist-get right :id))))
       (should (equal (mapcar (lambda (entry) (plist-get entry :id))
-                             (e-session-current-path store session-id))
+                             (e-session-local-current-path store session-id))
                      (list (plist-get root :id)
                            (plist-get right :id)))))))
 
@@ -2810,7 +2810,7 @@ stand in for the pure curation preparation path."
            store session-id '(:id "msg-1" :role user :content "hello"))
           (e-session-clear-messages store session-id)
           (let ((loaded (e-session-persistent-store-create directory)))
-            (should (equal (e-session-messages loaded session-id) nil))
+            (should (equal (e-session-local-messages loaded session-id) nil))
             (let ((types
                    (mapcar
                     (lambda (record) (plist-get record :type))
@@ -2832,9 +2832,9 @@ stand in for the pure curation preparation path."
                  (new-message
                   (e-session-append-message
                    store session-id '(:role user :content "new")))
-                 (path (e-session-current-path store session-id))
+                 (path (e-session-local-current-path store session-id))
                  (loaded (e-session-persistent-store-create directory))
-                 (loaded-path (e-session-current-path loaded session-id)))
+                 (loaded-path (e-session-local-current-path loaded session-id)))
             (should (eq (plist-get clear-event :event-type) 'messages-cleared))
             (should (equal (plist-get new-message :parent-id)
                            (plist-get clear-event :id)))
@@ -2874,15 +2874,15 @@ stand in for the pure curation preparation path."
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (mapcar (lambda (event)
                                      (plist-get event :event-type))
-                                   (e-session-activity-events loaded session-id))
+                                   (e-session-local-activity-events loaded session-id))
                            '(reasoning-delta)))
             (should (equal (plist-get
-                            (car (e-session-activity-events loaded session-id))
+                            (car (e-session-local-activity-events loaded session-id))
                             :payload)
                            '(:content "Need current buffer state.")))))
           (e-session-clear-messages store session-id)
           (let ((loaded (e-session-persistent-store-create directory)))
-            (should (equal (e-session-activity-events loaded session-id) nil)))
+            (should (equal (e-session-local-activity-events loaded session-id) nil)))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-activity-events-preserve-append-order ()
@@ -2895,7 +2895,7 @@ stand in for the pure curation preparation path."
      store "session-1" "turn-1" 'tool-started '(:name "read"))
     (should (equal (mapcar (lambda (event)
                              (plist-get event :event-type))
-                           (e-session-activity-events store "session-1"))
+                           (e-session-local-activity-events store "session-1"))
                    '(reasoning-delta tool-started)))))
 
 (ert-deftest e-session-test-process-reports-persist-outside-messages ()
@@ -2911,12 +2911,12 @@ stand in for the pure curation preparation path."
                   '(:report-type "marker" :marker-id "marker-1"))))
             (should (eq (plist-get report :type) 'process-report))
             (should (equal (plist-get report :marker-id) "marker-1")))
-          (should-not (e-session-messages store "session-1"))
+          (should-not (e-session-local-messages store "session-1"))
           (let* ((loaded (e-session-persistent-store-create directory))
-                 (reports (e-session-process-reports loaded "session-1")))
+                 (reports (e-session-local-process-reports loaded "session-1")))
             (should (= (length reports) 1))
             (should (equal (plist-get (car reports) :marker-id) "marker-1"))
-            (should-not (e-session-messages loaded "session-1"))))
+            (should-not (e-session-local-messages loaded "session-1"))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-append-activity-event-can-skip-index-write ()
@@ -2937,7 +2937,7 @@ stand in for the pure curation preparation path."
       (should (= write-count 1)))
     (should (equal (mapcar (lambda (event)
                              (plist-get event :event-type))
-                           (e-session-activity-events store "session-1"))
+                           (e-session-local-activity-events store "session-1"))
                    '(reasoning-delta tool-started)))))
 
 (ert-deftest e-session-test-latest-token-usage-event-is-derived-on-append-replay-and-clear ()
@@ -2955,20 +2955,20 @@ stand in for the pure curation preparation path."
            store "session-1" "turn-2" 'token-usage '(:input-tokens 20))
           (should (equal (plist-get
                           (plist-get
-                           (e-session-latest-token-usage-event store "session-1")
+                           (e-session-local-latest-token-usage-event store "session-1")
                            :payload)
                           :input-tokens)
                          20))
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (plist-get
                             (plist-get
-                             (e-session-latest-token-usage-event loaded "session-1")
+                             (e-session-local-latest-token-usage-event loaded "session-1")
                              :payload)
                             :input-tokens)
                            20))
             (e-session-clear-messages loaded "session-1")
             (should-not
-             (e-session-latest-token-usage-event loaded "session-1"))))
+             (e-session-local-latest-token-usage-event loaded "session-1"))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-profile-records-persistent-appends-and-index-writes ()
@@ -3010,7 +3010,7 @@ stand in for the pure curation preparation path."
              loaded session-id '(:id "msg-2" :role assistant :content "replayed"))
             (should (equal (mapcar (lambda (message)
                                      (plist-get message :id))
-                                   (e-session-messages loaded session-id))
+                                   (e-session-local-messages loaded session-id))
                            '("msg-1" "msg-2")))
             (e-session-clear-messages loaded session-id)
             (e-session-append-message
@@ -3019,11 +3019,11 @@ stand in for the pure curation preparation path."
              loaded session-id "turn-2" 'tool-started '(:name "after-clear"))
             (should (equal (mapcar (lambda (message)
                                      (plist-get message :id))
-                                   (e-session-messages loaded session-id))
+                                   (e-session-local-messages loaded session-id))
                            '("msg-3")))
             (should (equal (mapcar (lambda (event)
                                      (plist-get event :event-type))
-                                   (e-session-activity-events loaded session-id))
+                                   (e-session-local-activity-events loaded session-id))
                            '(tool-started)))))
       (delete-directory directory t))))
 
@@ -3129,12 +3129,12 @@ stand in for the pure curation preparation path."
            (fork-id (plist-get fork :id)))
       (should (not (equal fork-id "src")))
       (should (equal (mapcar (lambda (m) (plist-get m :content))
-                             (e-session-messages store fork-id))
+                             (e-session-local-messages store fork-id))
                      '("one" "two")))
       ;; New turns append only to the fork; the source is untouched.
       (e-session-append-message store fork-id '(:role user :content "three"))
-      (should (= (length (e-session-messages store "src")) 2))
-      (should (= (length (e-session-messages store fork-id)) 3)))))
+      (should (= (length (e-session-local-messages store "src")) 2))
+      (should (= (length (e-session-local-messages store fork-id)) 3)))))
 
 (ert-deftest e-session-test-fork-mints-fresh-identity-and-linear-chain ()
   "Fork messages get fresh ids and a clean linear parent chain."
@@ -3144,7 +3144,7 @@ stand in for the pure curation preparation path."
     (e-session-append-message store "src" '(:id "m2" :role assistant :content "b"))
     (let* ((fork (e-session-fork store "src"))
            (fork-id (plist-get fork :id))
-           (messages (e-session-messages store fork-id))
+           (messages (e-session-local-messages store fork-id))
            (ids (mapcar (lambda (m) (plist-get m :id)) messages))
            (parents (mapcar (lambda (m) (plist-get m :parent-id)) messages)))
       ;; Fresh identity: source ids do not leak into the fork.
@@ -3164,7 +3164,7 @@ stand in for the pure curation preparation path."
            (metadata (plist-get fork :metadata)))
       (should (equal (plist-get metadata :project-root) "/tmp/proj/"))
       (should (equal (plist-get metadata :name) "Forked"))
-      (should (equal (plist-get (e-session-turn-options store fork-id) :model)
+      (should (equal (plist-get (e-session-local-turn-options store fork-id) :model)
                      "m-1")))))
 
 (ert-deftest e-session-test-fork-at-head-truncates-snapshot ()
@@ -3177,7 +3177,7 @@ stand in for the pure curation preparation path."
       (let* ((fork (e-session-fork store "src" :at (plist-get first :id)))
              (fork-id (plist-get fork :id)))
         (should (equal (mapcar (lambda (m) (plist-get m :content))
-                               (e-session-messages store fork-id))
+                               (e-session-local-messages store fork-id))
                        '("keep")))))))
 
 (ert-deftest e-session-test-fork-portable-generation-preserves-selected-at-boundary ()
@@ -3208,18 +3208,18 @@ stand in for the pure curation preparation path."
          (after-id (plist-get after-fork :id))
          (before-id (plist-get before-fork :id))
          (at-projection
-          (e-session-context-lifetime-projection store at-id))
+          (e-session-local-context-lifetime-projection store at-id))
          (after-projection
-          (e-session-context-lifetime-projection store after-id)))
+          (e-session-local-context-lifetime-projection store after-id)))
     (should (equal (mapcar (lambda (message) (plist-get message :content))
-                           (e-session-messages store before-id))
+                           (e-session-local-messages store before-id))
                    '("covered prefix")))
-    (should-not (e-session-context-lifetime-current-generation store before-id))
+    (should-not (e-session-local-context-lifetime-current-generation store before-id))
     (should (string-prefix-p "generation:fork:"
                              (e-context-lifetime-generation-id
                               (plist-get at-projection :generation))))
     (should (equal (mapcar (lambda (message) (plist-get message :content))
-                           (e-session-messages store at-id))
+                           (e-session-local-messages store at-id))
                    '("C1 selected fact")))
     (should (equal (e-context-lifetime-generation-checkpoint
                     (plist-get at-projection :generation))
@@ -3232,16 +3232,16 @@ stand in for the pure curation preparation path."
                    '((:role system :content "C1 selected fact")
                      (:role user :content "post-boundary tail"))))
     (should (equal (mapcar (lambda (message) (plist-get message :content))
-                           (e-session-messages store after-id))
+                           (e-session-local-messages store after-id))
                    '("C1 selected fact" "post-boundary tail")))
     (should-not (equal
                  (e-context-lifetime-generation-id
                   (plist-get after-projection :generation))
                  (e-context-lifetime-generation-id
-                  (e-session-context-lifetime-current-generation
+                  (e-session-local-context-lifetime-current-generation
                    store "portable-source"))))
     (should (equal (mapcar (lambda (message) (plist-get message :content))
-                           (e-session-messages store "portable-source"))
+                           (e-session-local-messages store "portable-source"))
                    '("covered prefix" "post-boundary tail")))
     (should source)))
 
@@ -3266,9 +3266,9 @@ stand in for the pure curation preparation path."
                  (fork-id (plist-get fork :id)))
             (e-session-flush-write-queue store)
             (let* ((reopened (e-session-persistent-store-create directory))
-                   (messages (e-session-messages reopened fork-id))
+                   (messages (e-session-local-messages reopened fork-id))
                    (projection
-                    (e-session-context-lifetime-projection reopened fork-id)))
+                    (e-session-local-context-lifetime-projection reopened fork-id)))
               (should (equal (mapcar (lambda (message)
                                        (plist-get message :content))
                                      messages)
@@ -3321,7 +3321,7 @@ stand in for the pure curation preparation path."
        :source-observation-ids ("observation-tool")
        :source-refs ("result-entry")
        :source-fingerprints ("tool-fingerprint")))
-    (let* ((projection (e-session-context-lifetime-projection
+    (let* ((projection (e-session-local-context-lifetime-projection
                         store session-id))
            (tail (plist-get projection :durable-tail))
            (contents (mapcar (lambda (message)
@@ -3354,9 +3354,9 @@ stand in for the pure curation preparation path."
                    :role (if (cl-evenp index) 'user 'tool)
                    :content (list :payload (make-string 1000 ?x)))))
           (let ((loaded (e-session-persistent-store-create directory)))
-            (should (= (length (e-session-messages loaded session-id)) 40))
-            (should (equal (plist-get (e-session-get loaded session-id) :summary)
-                           (plist-get (e-session-get store session-id) :summary)))))
+            (should (= (length (e-session-local-messages loaded session-id)) 40))
+            (should (equal (plist-get (e-session-local-state loaded session-id) :summary)
+                           (plist-get (e-session-local-state store session-id) :summary)))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-aggregate-test-persistent-replay-preserves-message-timestamp ()
@@ -3372,7 +3372,7 @@ stand in for the pure curation preparation path."
                (created-at (plist-get message :created-at)))
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (plist-get
-                            (car (e-session-messages loaded session-id))
+                            (car (e-session-local-messages loaded session-id))
                             :created-at)
                            created-at))
             (should (equal (plist-get created :id) session-id))))

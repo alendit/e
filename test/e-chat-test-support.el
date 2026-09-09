@@ -359,7 +359,7 @@ semantic block projection and its displayed text instead of that overlay."
   "Translate an old private test fixture into its explicit durable board log.
 Production presentation never performs this compatibility translation."
   (let* ((store (e-harness-sessions harness))
-         (_ (unless (plist-get (e-session-get store session-id)
+         (_ (unless (plist-get (e-session-local-state store session-id)
                                :board-session-state)
               (e-session-declare-board-state
                store session-id (format "chat:%s" session-id)
@@ -377,7 +377,7 @@ Production presentation never performs this compatibility translation."
          (sequence 0)
          (turn-inputs (make-hash-table :test 'equal))
          envelopes)
-    (dolist (message (e-session-messages store session-id))
+    (dolist (message (e-session-local-messages store session-id))
       (unless (memq (plist-get message :role) '(tool-call tool))
         (let* ((user-p (eq (plist-get message :role) 'user))
                (turn-id (plist-get message :turn-id))
@@ -417,7 +417,7 @@ Production presentation never performs this compatibility translation."
                     :reply-to-message-ids (and reply-id (list reply-id))
                     :routing-state 'historical)
                 envelopes))))
-    (dolist (event (e-session-activity-events store session-id))
+    (dolist (event (e-session-local-activity-events store session-id))
       (push (list :id (or (plist-get event :id)
                           (format "fixture-activity-%d" (1+ sequence)))
                   :kind 'activity
@@ -439,7 +439,7 @@ Production presentation never performs this compatibility translation."
         (dolist (envelope envelopes)
           (unless (e-board-message board (plist-get envelope :id))
             (e-board-import-message board envelope)))
-      (unless (plist-get (e-session-get store session-id) :board-session-state)
+      (unless (plist-get (e-session-local-state store session-id) :board-session-state)
         (e-session-declare-board-state
          store session-id (format "chat:%s" session-id)
          (format "test-board:%s" session-id)))

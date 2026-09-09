@@ -87,7 +87,7 @@
                          "Old exchange summary."))
           (should (equal (plist-get record :first-kept-entry-id)
                          (plist-get boundary :id)))
-          (should (= (length (e-session-messages store "session-1")) 4))
+          (should (= (length (e-session-local-messages store "session-1")) 4))
           (should
            (equal (plist-get (e-harness-context harness "session-1")
                              :messages)
@@ -134,7 +134,7 @@
         (lambda (event)
           (and (equal (plist-get event :turn-id) "turn-active")
                (eq (plist-get event :event-type) 'compaction-finished)))
-        (e-session-activity-events store "session-1"))))))
+        (e-session-local-activity-events store "session-1"))))))
 
 (ert-deftest e-harness-test-enabled-compaction-summarizes-portable-context-only ()
   "Enabled compaction sends C0/D0/curation, never a raw observation."
@@ -168,7 +168,7 @@
       (e-session-append-message store "session-1"
                                 '(:role assistant :content "kept answer"))
       (let* ((generation
-              (e-session-context-lifetime-current-generation store "session-1"))
+              (e-session-local-context-lifetime-current-generation store "session-1"))
              (frame
               (e-harness-test--curation-frame
                (e-context-lifetime-generation-id generation)
@@ -192,7 +192,7 @@
       (e-harness-compact-session-batch harness "session-1"
                                        :keep-recent-tokens 1)
       (let* ((prompt (prin1-to-string captured-messages))
-             (generation (e-session-context-lifetime-current-generation
+             (generation (e-session-local-context-lifetime-current-generation
                           store "session-1")))
         (should (string-match-p "Portable checkpoint" prompt))
         (should (string-match-p "Durable tail" prompt))
@@ -211,7 +211,7 @@
         (should (equal
                  (mapcar (lambda (message) (plist-get message :content))
                          (plist-get
-                          (e-session-context-lifetime-projection
+                          (e-session-local-context-lifetime-projection
                            store "session-1")
                           :durable-tail))
                  '("kept intent" "kept answer")))))))
@@ -303,9 +303,9 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
          :fingerprints '(:prompt-layout async-layout)
          :metadata '(:response-id "ASYNC-ANCHOR-MARKER")))
       (let* ((generation
-              (e-session-context-lifetime-current-generation store session-id))
+              (e-session-local-context-lifetime-current-generation store session-id))
              (generations-before
-              (length (e-session-context-generations store session-id))))
+              (length (e-session-local-context-generations store session-id))))
         (e-harness-test--append-compaction-curation
          store session-id
          (e-context-lifetime-generation-id generation)
@@ -324,7 +324,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
         (should captured-messages)
         (let* ((prompt (prin1-to-string captured-messages))
                (projection
-                (e-session-context-lifetime-projection store session-id))
+                (e-session-local-context-lifetime-projection store session-id))
                (checkpoint
                 (e-context-lifetime-generation-checkpoint
                  (plist-get projection :generation)))
@@ -332,8 +332,8 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                (tail-contents
                 (mapcar (lambda (message) (plist-get message :content))
                         tail)))
-          (should (= (length (e-session-compactions store session-id)) 1))
-          (should (= (length (e-session-context-generations store session-id))
+          (should (= (length (e-session-local-compactions store session-id)) 1))
+          (should (= (length (e-session-local-context-generations store session-id))
                      (1+ generations-before)))
           (should (string-match-p "ASYNC-OLD-INTENT" prompt))
           (should (string-match-p "ASYNC-OLD-ANSWER" prompt))
@@ -373,7 +373,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                  (e-harness-test--append-compaction-curation
                   store session-id
                   (e-context-lifetime-generation-id
-                   (e-session-context-lifetime-current-generation
+                   (e-session-local-context-lifetime-current-generation
                     store session-id))
                   "late")
                  (setq overlap-appended t)
@@ -393,9 +393,9 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
       (e-session-append-message store session-id
                                 '(:role user :content "STALE-RETAINED"))
       (let ((generations-before
-             (length (e-session-context-generations store session-id)))
+             (length (e-session-local-context-generations store session-id)))
             (compactions-before
-             (length (e-session-compactions store session-id))))
+             (length (e-session-local-compactions store session-id))))
         (e-harness-compact-session-start
          harness session-id
          :keep-recent-tokens 1
@@ -409,11 +409,11 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
         (should-not record)
         (should failure)
         (should (eq (car failure) 'e-compaction-error))
-        (should (= (length (e-session-compactions store session-id))
+        (should (= (length (e-session-local-compactions store session-id))
                    compactions-before))
-        (should (= (length (e-session-context-generations store session-id))
+        (should (= (length (e-session-local-context-generations store session-id))
                    generations-before))
-        (should (= (length (e-session-context-promotions store session-id))
+        (should (= (length (e-session-local-context-promotions store session-id))
                    1))
         (should captured-messages)))))
 
@@ -516,7 +516,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                                 second-prompt))
         (should (string-match-p "middle answer" second-prompt))
         (should-not (string-match-p "old answer" second-prompt)))
-      (should (equal (plist-get (e-session-latest-valid-compaction
+      (should (equal (plist-get (e-session-local-latest-valid-compaction
                                  store "session-1")
                                 :summary)
                      "Second summary.")))))
@@ -557,7 +557,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
-      (let ((record (car (e-session-compactions store "session-1"))))
+      (let ((record (car (e-session-local-compactions store "session-1"))))
         (should record)
         (should (eq (plist-get (plist-get record :metadata) :reason) 'auto)))
       (should (= (length calls) 2))
@@ -599,7 +599,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                                 :status)
                      'done))
       (should (= calls 1))
-      (should-not (e-session-compactions store "session-1")))))
+      (should-not (e-session-local-compactions store "session-1")))))
 
 (ert-deftest e-harness-test-auto-compaction_skip_no_progress_boundary ()
   "Auto-compaction skips when the prior boundary cannot move meaningfully."
@@ -642,7 +642,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                    (lambda (event)
                      (eq (plist-get event :type) 'compaction-failed))
                    events))
-      (should (= (length (e-session-compactions store "session-1")) 1)))))
+      (should (= (length (e-session-local-compactions store "session-1")) 1)))))
 
 (ert-deftest e-harness-test-auto-compaction-reuses-prompt-context-check ()
   "Prompt start does not build context twice just to check auto-compaction."
@@ -709,8 +709,8 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
       (should (seq-find
                (lambda (message)
                  (equal (plist-get message :content) "fresh prompt"))
-               (e-session-messages store "session-1")))
-      (should-not (e-session-compactions store "session-1")))))
+               (e-session-local-messages store "session-1")))
+      (should-not (e-session-local-compactions store "session-1")))))
 
 (ert-deftest e-harness-test-compact-session-failure-does-not_append-record ()
   "Backend compaction failures leave session compactions unchanged."
@@ -730,7 +730,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
     (should-error
      (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
      :type 'user-error)
-    (should-not (e-session-compactions store "session-1"))))
+    (should-not (e-session-local-compactions store "session-1"))))
 
 (ert-deftest e-harness-test-compaction-strips-tools-from-summary-request ()
   "Compaction omits the tool set so the model cannot answer with a tool-call.
@@ -802,7 +802,7 @@ an empty summary\"."
     (should-error
      (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
      :type 'e-compaction-error)
-    (let* ((events (e-session-activity-events store "session-1"))
+    (let* ((events (e-session-local-activity-events store "session-1"))
            (failed (seq-find
                     (lambda (event)
                       (eq (plist-get event :event-type)
@@ -885,7 +885,7 @@ an empty summary\"."
       (should (= request-count 1))
       (should (equal started '("before-invalid-session")))
       (should-not
-       (e-session-context-curations
+       (e-session-local-context-curations
         (e-harness-sessions harness) "invalid-promotion-session"))
       (should-not
        (seq-find

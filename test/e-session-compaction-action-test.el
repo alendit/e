@@ -72,16 +72,16 @@
                  :session-id "session-1"
                  :turn-id "turn-1")))
     (should (eq (plist-get result :status) 'started))
-    (should-not (e-session-compactions
+    (should-not (e-session-local-compactions
                  (e-harness-sessions harness) "session-1"))
     (should
      (e-session-compaction-action-test--wait-until
       (lambda ()
-        (e-session-compactions
+        (e-session-local-compactions
          (e-harness-sessions harness) "session-1"))))
     (let ((finished
            (cl-find 'action-finished
-                    (e-session-activity-events
+                    (e-session-local-activity-events
                      (e-harness-sessions harness) "session-1")
                     :key (lambda (event) (plist-get event :event-type)))))
       (should finished)

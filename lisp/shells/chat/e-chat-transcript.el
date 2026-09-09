@@ -86,6 +86,7 @@ concealment are scheduled for a later timer tick."
 ;; initialized here; the facade composes their public ports.
 (defvar e-chat-harness nil)
 (defvar e-chat-session-id nil)
+(defvar e-chat-session-metadata nil)
 (defconst e-chat-transcript--system-glyph "·"
   "Glyph shown before compact system chat blocks.")
 (defconst e-chat-transcript--user-glyph ">"
@@ -1314,7 +1315,8 @@ the chat transcript still owns the URL consumed by its link commands."
 Defaults to `markdown' outside an attached session."
   (if (and e-chat-harness e-chat-session-id)
       (ignore-errors
-        (e-chat-output-mode-resolve e-chat-harness e-chat-session-id))
+        (e-chat-output-mode-resolve
+         e-chat-harness e-chat-session-id nil e-chat-session-metadata))
     'markdown))
 
 (defun e-chat-transcript--structured-blocks-registry ()

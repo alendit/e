@@ -1163,3 +1163,92 @@ Evidence on the corrected source:
 This slice introduces no durable Emacs replica.  SQLite owns durable facts;
 the chat service owns owner admission; a Board binding owns only live
 coordination; and Grimoire owns Daily scheduling and presentation policy.
+
+* Generic aggregate-reader API clean cut (2026-09-09)
+
+A fresh public chat exposed a process-wide caller that the earlier cutover did
+not exercise.  Selecting the transcript ran =post-command-hook=, whose
+=e-debug--record-focused-buffer= predicate called =e-chat-service-session=.
+That wrapper reached the retired synchronous session aggregate reader and
+raised from an unrelated chat command.  The earlier graphical new-chat test
+kept the composer selected, so the predicate short-circuited before the stale
+call.  A poison-pill implementation of the old reader then made the defect
+visible but did not constitute API removal.
+
+This package makes the cut explicit.  =e-chat-service-session=,
+=e-session-get=, =e-session--ensure-loaded=, and the complete generic
+=e-session-*= aggregate-reader family no longer exist as callable symbols.
+In-memory and named offline/test workflows use the deliberately scoped
+=e-session-local-*= family.  Ordinary asynchronous runtime consumers use
+detached query metadata, executing-turn state, or process-local controller
+identity.  No compatibility alias or error-only tombstone remains.
+
+The concrete runtime migrations are:
+
+- debug focus tracking compares process-local session identity and never
+  enumerates or reads durable sessions;
+- debug session creation allocates an identity, enqueues creation, and returns;
+- chat and modernchat retain only detached metadata owned by their presentation
+  buffer, including output-mode selection;
+- orchestration terminal reports consume detached hook-context metadata; and
+- MCP and harness state views use bounded executing state on asynchronous
+  SQLite and local aggregates only for explicit in-memory operation.
+
+The structural gate scans all production Lisp for every retired function name
+and also asserts that every symbol is unbound after loading the runtime.  The
+public new-chat graphical gate now selects the transcript and executes a real
+command while the global debug focus hook is installed, before exercising the
+composer.  This is the transition the former test omitted.
+
+Evidence on the corrected tree:
+
+- the focused clean-cut suite passes 76/76 with zero unexpected results;
+- byte compilation succeeds after replacing a stale Eldev dependency cache;
+- the public delayed new-chat selector passes 1/1 with the transcript-selected
+  global-hook transition; and
+- the public delayed Org Canvas selector passes 1/1.
+
+The complete exact-source suite runs 2,927 tests: 2,860 pass, 66 explicitly
+superseded/legacy cases skip, and one independently reproduced pre-existing
+failure remains:
+=e-runtime-store-s92-dp6-real-owner-failure-retains-unrelated-fifo= returns an
+empty record page after its forced worker replacement.  The same test fails at
+untouched =12ac4b3d= in a clean clone.  It is not changed or waived by this API
+cut; the loopback-dependent HTTP and MCP cases all pass when local sockets are
+permitted.
+
+This change affects core session contracts and requires a full Emacs restart.
+Repository tests used disposable stores; the running Emacs and canonical user
+database were not contacted.
+
+** Architecture self-check
+
+1. Stopping here leaves the runtime better off because removed APIs cannot
+   acquire new callers and the reproduced global-hook crash is closed.
+2. The change advances the SQLite-authoritative direction: durable reads are
+   bounded queries; local aggregates are explicitly non-durable runtime state.
+3. The stable decision is the ownership boundary.  Presentation metadata and
+   debug identity remain small, reversible process-local choices.
+4. Session owns local aggregate mechanics, query work owns durable reads,
+   presentation owns detached metadata, and debug owns its live identity.
+5. Coupling decreases: generic callers can no longer depend on a whole-session
+   value, and the replacement inputs are consumer-shaped.
+6. No stable policy gained a dependency on SQLite, a worker, or a shell.
+7. Persistence remains behind the session application service; the global hook
+   performs no side effect except updating its process-local focus value.
+8. Added state is one detached metadata plist per visible chat buffer and one
+   debug project-root string; both live only with their presentation/controller.
+9. Interactive work is reduced: no session enumeration, reconstruction, worker
+   wait, or durable query occurs in focus tracking or new-session open.
+10. The local API names a real precondition shared by in-memory and explicit
+    offline/test implementations; asynchronous SQLite does not pretend to
+    implement it.
+11. There is no compatibility requirement for the removed synchronous API, so
+    aliases and error-only tombstones were deleted.
+12. The wrapper, durable debug-session rediscovery, and obsolete generic reader
+    definitions and callers are removed now.
+13. Expected detached-query failures remain request-local.  Unexpected use of
+    a local aggregate against asynchronous SQLite fails immediately at the
+    owning boundary.
+14. The graphical transcript-selection transition and the source/symbol scan
+    cover the concrete failure that escaped the earlier tests.

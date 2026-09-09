@@ -112,7 +112,7 @@
 When TURN-ID is non-nil, count only activity from that turn.
 When INCLUDE-ZERO-ROWS is non-nil, include active tools and actions with count
 zero."
-  (let* ((events (e-session-activity-events (e-harness-sessions harness)
+  (let* ((events (e-session-local-activity-events (e-harness-sessions harness)
                                             session-id))
          (events (if turn-id
                      (cl-remove-if-not

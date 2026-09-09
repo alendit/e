@@ -131,7 +131,7 @@
                  "call-context-lifetime")))
       (let ((e-context-lifetime-shadow-projection-enabled t))
         (let* ((store (e-harness-sessions harness))
-               (projection (e-session-context-lifetime-projection
+               (projection (e-session-local-context-lifetime-projection
                             store "session-1"))
                (curations (plist-get projection :curations))
                (context (e-harness-turn-context
@@ -356,14 +356,14 @@
                         (plist-get marker :content)))))
         (should-not (source-markers (nth 3 requests))))
       (let* ((store (e-harness-sessions harness))
-             (messages (e-session-messages store "marker-retirement"))
+             (messages (e-session-local-messages store "marker-retirement"))
              (assistant
               (car (last (seq-filter
                           (lambda (message)
                             (eq (plist-get message :role) 'assistant))
                           messages)))))
         (should (equal (plist-get assistant :content) "LABELS-RETIRED"))
-        (should (= (length (e-session-context-curations
+        (should (= (length (e-session-local-context-curations
                             store "marker-retirement"))
                    1))))))
 
@@ -614,7 +614,7 @@
             (should (equal (mapcar (lambda (message) (plist-get message :role))
                                    (e-harness-messages harness "session-1"))
                            '(user tool-call tool assistant)))
-            (let* ((projection (e-session-context-lifetime-projection
+            (let* ((projection (e-session-local-context-lifetime-projection
                                 store "session-1"))
                    (curations (plist-get projection :curations))
                    (tool-call
@@ -638,7 +638,7 @@
                      (lambda (event)
                        (eq (plist-get event :event-type)
                            'context-curation-response))
-                     (e-session-activity-events store "session-1")))
+                     (e-session-local-activity-events store "session-1")))
                    (control (car control-events))
                    (control-id (and control (plist-get control :id)))
                    (consumed-event
@@ -689,7 +689,7 @@
               (should-not (seq-find
                            (lambda (message)
                              (equal (plist-get message :id) control-id))
-                           (e-session-messages store "session-1")))
+                           (e-session-local-messages store "session-1")))
               (should-not (string-match-p control-id printed))
               (should
                (equal (plist-get projection :promotion-messages)
@@ -706,13 +706,13 @@
                                             (plist-get message :role))
                                           next-messages)))
               (let* ((reopened-record
-                      (car (e-session-context-curations reopened "session-1")))
+                      (car (e-session-local-context-curations reopened "session-1")))
                      (reopened-control
-                      (e-session-entry-by-id reopened "session-1" control-id))
+                      (e-session-local-entry-by-id reopened "session-1" control-id))
                      (fork (e-session-fork reopened "session-1"))
                      (fork-id (plist-get fork :id))
                      (fork-projection
-                      (e-session-context-lifetime-projection reopened fork-id))
+                      (e-session-local-context-lifetime-projection reopened fork-id))
                      (fork-generation (plist-get fork-projection :generation))
                      (fork-text
                       (prin1-to-string
@@ -720,13 +720,13 @@
                         fork-generation))))
                 (should (equal control-id
                                (plist-get reopened-record :response-entry-id)))
-                (should (equal (e-session-entry-by-id reopened
+                (should (equal (e-session-local-entry-by-id reopened
                                                       "session-1" control-id)
                                reopened-control))
                 (should (string-match-p "selected from tool result" fork-text))
                 (should-not (string-match-p raw-result-marker fork-text))
                 (should-not (string-match-p control-id fork-text))
-                (should-not (e-session-entry-by-id reopened fork-id control-id)))))
+                (should-not (e-session-local-entry-by-id reopened fork-id control-id)))))
         (delete-directory directory t)))))
 
 (ert-deftest e-harness-test-context-lifetime-preflights-before-assistant-append ()
@@ -811,7 +811,7 @@
                   (car (e-context-lifetime-frame-observations captured-frame))
                   :body)
                  (list :role 'system :content source-value)))
-        (should-not (e-session-context-curations
+        (should-not (e-session-local-context-curations
                      (e-harness-sessions harness) "completion-preflight"))
         (should-not
          (seq-find (lambda (message)
@@ -879,7 +879,7 @@
         (e-harness-test-prompt-batch
          harness "curation-recovery" "fresh question"))
       (let* ((store (e-harness-sessions harness))
-             (messages (e-session-messages store "curation-recovery"))
+             (messages (e-session-local-messages store "curation-recovery"))
              (correction-items
               (plist-get (nth 2 requests) :provider-request-replay-items))
              (correction-output
@@ -889,7 +889,7 @@
                         "function_call_output"))
                correction-items)))
         (should (= request-count 4))
-        (should (= (length (e-session-context-curations
+        (should (= (length (e-session-local-context-curations
                             store "curation-recovery"))
                    1))
         (should (= (seq-count
@@ -982,7 +982,7 @@
                                           (lambda (message)
                                             (eq (plist-get message :role) 'assistant))
                                           messages))))
-                   (record (car (e-session-context-curations
+                   (record (car (e-session-local-context-curations
                                  store "assistant-response-id")))
                    (event (seq-find
                            (lambda (entry)
@@ -1003,25 +1003,25 @@
               (should consumed-frame)
               (should (e-context-lifetime-frame-consumed-p consumed-frame))
               (let* ((reopened-record
-                      (car (e-session-context-curations
+                      (car (e-session-local-context-curations
                             reopened "assistant-response-id")))
                      (reopened-assistant
                       (seq-find (lambda (message)
                                   (equal (plist-get message :id) response-id))
-                                (e-session-messages reopened
+                                (e-session-local-messages reopened
                                                      "assistant-response-id")))
                      (fork (e-session-fork reopened "assistant-response-id"))
                      (fork-id (plist-get fork :id))
                      (fork-projection
-                      (e-session-context-lifetime-projection reopened fork-id))
+                      (e-session-local-context-lifetime-projection reopened fork-id))
                      (fork-generation (plist-get fork-projection :generation))
                      (source-record-after-fork
-                      (car (e-session-context-curations
+                      (car (e-session-local-context-curations
                             reopened "assistant-response-id")))
                      (source-assistant-after-fork
                       (seq-find (lambda (message)
                                   (equal (plist-get message :id) response-id))
-                                (e-session-messages reopened
+                                (e-session-local-messages reopened
                                                      "assistant-response-id"))))
                 (should (equal response-id
                                (plist-get reopened-record :response-entry-id)))
@@ -1067,7 +1067,7 @@
     (should (e-context-lifetime-frame-consumed-p
              (plist-get entry :context-frame)))
     (should (e-context-lifetime-frame-observations frame))
-    (should-not (e-session-context-curations store "session-1"))
+    (should-not (e-session-local-context-curations store "session-1"))
     (let ((consumed-event
            (seq-find (lambda (event)
                        (eq (plist-get event :type) 'context-frame-consumed))
@@ -1106,7 +1106,7 @@
     (should (equal (plist-get (car (e-context-lifetime-frame-observations frame))
                               :body)
                    '(:role system :content "HARNESS-EXACT-VALUE")))
-    (should-not (e-session-context-curations store "session-1"))))
+    (should-not (e-session-local-context-curations store "session-1"))))
 
 (ert-deftest e-harness-test-context-lifetime-steering-rebuilds-after-follow-up ()
   "Steering after a tool follow-up uses the fresh projection exactly once."
@@ -1238,7 +1238,7 @@
                                "resp-A" "resp-B"))
           (should-not (string-match-p marker printed-c)))
         (should-not
-         (e-session-provider-anchors
+         (e-session-local-provider-anchors
           (e-harness-sessions harness) "session-1"))))))
 
 (ert-deftest e-harness-test-provider-compaction-sync-installs-runtime-candidate ()
@@ -1306,11 +1306,11 @@
        (string-match-p
         "provider-state"
         (prin1-to-string
-         (list (e-session-messages (e-harness-sessions harness)
+         (list (e-session-local-messages (e-harness-sessions harness)
                                    "provider-session")
-               (e-session-activity-events
+               (e-session-local-activity-events
                 (e-harness-sessions harness) "provider-session")
-               (e-session-context-generations
+               (e-session-local-context-generations
                (e-harness-sessions harness) "provider-session"))))))))
 
 (ert-deftest e-harness-test-provider-compaction-async-captures-fixed-boundary ()
@@ -1334,7 +1334,7 @@
                               :provider-anchor-provider-id fake)))
          (session-id "async-candidate"))
     (e-harness-create-session harness :id session-id)
-    (let* ((session (e-session-get (e-harness-sessions harness) session-id))
+    (let* ((session (e-session-local-state (e-harness-sessions harness) session-id))
            (generation-entry
            (e-session-append-context-generation
              (e-harness-sessions harness) session-id
@@ -1383,7 +1383,7 @@
                                       :provider-anchor-provider-id fake)))
          (session-id "provider-generation-order"))
     (e-harness-create-session harness :id session-id)
-    (let* ((session (e-session-get store session-id))
+    (let* ((session (e-session-local-state store session-id))
            (root (plist-get session :root-event-id))
            (generation-a
             (e-session-append-context-generation
@@ -1395,7 +1395,7 @@
       (e-harness-context-provider-compaction-start
        harness session-id generation-a)
       (let* ((head-a (plist-get
-                      (car (last (e-session-current-path store session-id)))
+                      (car (last (e-session-local-current-path store session-id)))
                       :id))
              (generation-b
               (e-session-append-context-generation

@@ -367,7 +367,7 @@
         (should (equal (plist-get (e-work-handle-context work-handle) :turn-id)
                        "parent-turn"))
         ;; Child session carries durable lineage metadata sharing the parent id.
-        (let ((metadata (plist-get (e-session-get
+        (let ((metadata (plist-get (e-session-local-state
                                     (e-harness-sessions child-harness)
                                     child-session-id)
                                    :metadata)))
@@ -1141,11 +1141,17 @@ report is child-side and must not be on the parent surface."
              (child (e-subagent-registry-child-harness registry
                                                         (plist-get record :subagent-id)))
              (session-id (plist-get record :session-id))
+             (session-metadata
+              (copy-tree
+               (plist-get
+                (e-session-local-state (e-harness-sessions child) session-id)
+                :metadata)))
              (board (e-board-registry-board-source-board
                      (e-chat-service-binding-board
                       (e-chat-service-ensure-binding child session-id)))))
         (should (e-board-orchestration-actions-report-from-context
-                 (list :harness child :session-id session-id)
+                 (list :harness child :session-id session-id
+                       :session-metadata session-metadata)
                  :summary "durable" :outputs []))
         (let ((report (e-board-orchestration-fact-from-message
                        (cl-find-if (lambda (message)

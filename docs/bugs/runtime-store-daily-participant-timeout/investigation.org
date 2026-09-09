@@ -1151,3 +1151,36 @@ unexpected in 193.416323 seconds.
 The failed curation never reached SQLite, so the canonical database does not
 need migration or repair.  A full Emacs restart is required because the fix is
 in core context-lifetime code.
+
+* Fresh-chat global hook retained the removed aggregate API (2026-09-09)
+
+The reported =post-command-hook= failure was a direct stale caller, not a
+database or worker failure.  When a public chat transcript became selected,
+=e-debug--record-focused-buffer= tried to prove that the buffer belonged to the
+standing debug session.  Its predicate called =e-chat-service-session=, which
+called the synchronous aggregate reader rejected by asynchronous SQLite.
+
+The earlier public new-chat gate did not cover that transition.  It left the
+composer selected; the debug predicate therefore returned before reaching the
+stale call.  Unit tests also treated the old reader's deliberate async error as
+the removal boundary, so definitions and unexercised callers could coexist.
+
+The remediation deletes the complete generic aggregate-reader symbol family
+and migrates every textual caller.  Explicit local aggregate operations are
+named =e-session-local-*= and reject asynchronous stores before any I/O.
+Runtime presentation and coordination instead use detached query metadata,
+executing state, or process-local identity.  Debug focus tracking is now
+store-free, and creation of its standing session is enqueue-and-return.
+
+Regression coverage has two independent parts: a source and loaded-symbol gate
+for the entire retired API list, and a graphical new-chat test that selects the
+transcript and runs a real command with the global debug hook installed.  The
+focused clean-cut suite passes 76/76; the public new-chat and Org Canvas
+selectors each pass 1/1; and byte compilation succeeds.  The only complete-suite
+failure is the pre-existing DP6 forced-worker-replacement record-page defect,
+which reproduces unchanged at =12ac4b3d=.  Seven loopback HTTP/MCP tests pass
+when the sandbox permits local sockets.  The complete exact-source census is
+2,927 total: 2,860 passing, 66 explicit skips, and that one baseline failure.
+
+The correction requires a full Emacs restart.  It did not inspect or mutate the
+running editor or canonical database.

@@ -243,7 +243,7 @@
           (should (buffer-live-p buffer))
           (with-current-buffer buffer
             (let* ((board (e-board-registry-get e-chat-board-id))
-                   (session (e-session-get (e-harness-sessions harness)
+                   (session (e-session-local-state (e-harness-sessions harness)
                                            e-chat-session-id))
                    (state (plist-get session :board-session-state)))
               (should (equal e-chat-harness harness))

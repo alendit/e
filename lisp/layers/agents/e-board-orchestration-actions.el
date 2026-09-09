@@ -17,11 +17,9 @@
 (require 'e-chat-service)
 (require 'e-task-queue)
 
-(defun e-board-orchestration-actions-assignment (harness session-id)
-  "Return SESSION-ID's durable orchestration assignment on HARNESS, or nil."
-  (when-let* ((session (e-chat-service-session harness session-id))
-              (metadata (plist-get session :metadata))
-              (run-id (plist-get metadata :board-run-id))
+(defun e-board-orchestration-actions-assignment-from-metadata (metadata)
+  "Return the durable orchestration assignment in detached METADATA, or nil."
+  (when-let* ((run-id (plist-get metadata :board-run-id))
               (task-key (plist-get metadata :board-task-key))
               (attempt (plist-get metadata :board-attempt)))
     (list :run-id run-id :task-key task-key :attempt attempt)))
@@ -62,8 +60,10 @@ The stable assignment key makes callback retries no-ops at the board boundary."
 Return nil for ordinary children without a durable assignment."
   (let* ((harness (plist-get context :harness))
          (session-id (plist-get context :session-id))
-         (assignment (and harness session-id
-                          (e-board-orchestration-actions-assignment harness session-id))))
+         (assignment
+          (and harness session-id
+               (e-board-orchestration-actions-assignment-from-metadata
+                (plist-get context :session-metadata)))))
     (when assignment
       (let ((board (e-chat-service-binding-board
                     (e-chat-service-ensure-binding harness session-id))))

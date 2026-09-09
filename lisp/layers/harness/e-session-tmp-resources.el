@@ -45,7 +45,7 @@
 (declare-function e-harness-sessions "e-harness")
 (declare-function e-harness-executing-session-state "e-harness-state")
 (declare-function e-session-async-enabled-p "e-session-async")
-(declare-function e-session-get "e-session")
+(declare-function e-session-local-state "e-session")
 
 (defvar e-session-tmp--roots (make-hash-table :test 'equal)
   "Session tmp root directories keyed by lineage id.
@@ -87,9 +87,9 @@ sessions stay isolated."
                          (e-harness-executing-session-state harness session-id))
                     (unless (and (fboundp 'e-session-async-enabled-p)
                                  (e-session-async-enabled-p store))
-                      (and (fboundp 'e-session-get)
+                      (and (fboundp 'e-session-local-state)
                            (ignore-errors
-                             (e-session-get store session-id)))))))
+                             (e-session-local-state store session-id)))))))
           (plist-get (plist-get session :metadata) :tmp-lineage-id)))
       session-id))
 

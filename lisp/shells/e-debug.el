@@ -83,6 +83,9 @@ A fractional value is interpreted relative to the selected frame height."
 (defvar e-debug--last-focused-buffer nil
   "Most recent non-debug buffer selected before using the debug shell.")
 
+(defvar e-debug--session-project-root nil
+  "Process-local project root last applied to the standing debug session.")
+
 (defvar e-debug-popup-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-g") #'e-debug--dismiss-popup-or-keyboard-quit)
@@ -126,9 +129,8 @@ A fractional value is interpreted relative to the selected frame height."
     (with-current-buffer buffer
       (or e-debug-popup-mode
           (and (derived-mode-p 'e-chat-mode)
-               e-chat-harness
                e-chat-session-id
-               (e-debug--session-exists-p e-chat-harness e-chat-session-id))))))
+               (equal e-chat-session-id e-debug--session-id))))))
 
 (defun e-debug--record-focused-buffer ()
   "Remember the selected non-debug buffer for future debug session roots."
@@ -152,16 +154,15 @@ A fractional value is interpreted relative to the selected frame height."
 
 (defun e-debug--ensure-session-project-root (harness session-id)
   "Keep the standing debug session rooted in the last focused project."
-  (when-let ((project-root (e-debug--last-focused-project-root))
-             (session (e-chat-service-session harness session-id)))
-    (let* ((metadata (copy-sequence (plist-get session :metadata)))
-           (current-root (plist-get metadata :project-root)))
-      (when (or (not current-root)
-                (e-debug--narrower-project-root-p project-root current-root))
-        (e-session-set-session-config
-         (e-chat-service-session-store harness)
-         session-id
-         (list :project-root project-root))))))
+  (when-let ((project-root (e-debug--last-focused-project-root)))
+    (when (or (not e-debug--session-project-root)
+              (e-debug--narrower-project-root-p
+               project-root e-debug--session-project-root))
+      (setq e-debug--session-project-root project-root)
+      (e-session-set-session-config
+       (e-chat-service-session-store harness)
+       session-id
+       (list :project-root project-root)))))
 
 (defun e-debug--install-focus-tracking ()
   "Install hooks that keep `e-debug--last-focused-buffer' current."
@@ -184,24 +185,6 @@ A fractional value is interpreted relative to the selected frame height."
         :source 'e-debug
         :project-root (or (e-debug--last-focused-project-root)
                           (e-chat-project-root default-directory))))
-
-(defun e-debug--debug-session-p (session)
-  "Return non-nil when SESSION is the standing debug session."
-  (eq (plist-get (plist-get session :metadata) :source) 'e-debug))
-
-(defun e-debug--session-exists-p (harness session-id)
-  "Return non-nil when SESSION-ID exists in HARNESS as the debug session."
-  (when session-id
-    (when-let ((session (e-chat-service-session harness session-id)))
-      (e-debug--debug-session-p session))))
-
-(defun e-debug--find-session-id (harness)
-  "Return an existing standing debug session id in HARNESS, or nil."
-  (catch 'found
-    (dolist (session (e-harness-session-list harness))
-      (when (e-debug--debug-session-p session)
-        (throw 'found (plist-get session :id))))
-    nil))
 
 (defun e-debug--normalize-question (question)
   "Return QUESTION, using `e-debug-default-prompt' for blank input."
@@ -295,21 +278,20 @@ A fractional value is interpreted relative to the selected frame height."
                           (plist-get recent-failure :turn-id)))))
 
 (defun e-debug--ensure-session (&optional harness)
-  "Return the standing debug session id, creating it in HARNESS when needed."
+  "Return the process-local standing debug session id.
+
+Creation is enqueue-and-return.  Startup and focus tracking never enumerate or
+read durable sessions merely to rediscover an earlier debug identity."
   (let ((harness (or harness (e-debug--default-harness))))
-    (prog1
-        (cond
-         ((e-debug--session-exists-p harness e-debug--session-id)
-          e-debug--session-id)
-         ((e-debug--find-session-id harness)
-          (setq e-debug--session-id (e-debug--find-session-id harness)))
-         (t
-          (setq e-debug--session-id
-                (plist-get
-                 (e-chat-service-create-session
-                  :harness harness
-                  :metadata (e-debug--session-metadata))
-                 :id))))
+    (unless e-debug--session-id
+      (let* ((metadata (e-debug--session-metadata))
+             (session-id (e-session-generate-id)))
+        (setq e-debug--session-id session-id
+              e-debug--session-project-root
+              (plist-get metadata :project-root))
+        (e-chat-service-create-session-start
+         :harness harness :id session-id :metadata metadata)))
+    (prog1 e-debug--session-id
       (when e-debug--session-id
         (e-debug--ensure-session-project-root harness e-debug--session-id)))))
 
@@ -466,8 +448,7 @@ or tab package."
        (frame-parameter nil 'parent-frame)
        e-chat-harness
        e-chat-session-id
-       (or (equal e-chat-session-id e-debug--session-id)
-           (e-debug--session-exists-p e-chat-harness e-chat-session-id))))
+       (equal e-chat-session-id e-debug--session-id)))
 
 (defun e-debug--dismiss-popup-or-keyboard-quit ()
   "Dismiss a debug popup when focused, otherwise run `keyboard-quit'."

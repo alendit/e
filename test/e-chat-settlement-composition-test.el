@@ -570,13 +570,13 @@
             (e-session-append-message store e-chat-session-id
                                       '(:role user :content "new"))
             (e-chat-compact-session)
-            (should-not (e-session-compactions store e-chat-session-id))
+            (should-not (e-session-local-compactions store e-chat-session-id))
             (should
              (e-chat-test--wait-until
               (lambda ()
-                (e-session-compactions store e-chat-session-id))))
+                (e-session-local-compactions store e-chat-session-id))))
             (should (equal (plist-get
-                            (car (e-session-compactions
+                            (car (e-session-local-compactions
                                   store e-chat-session-id))
                             :summary)
                            "Compacted summary."))

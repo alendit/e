@@ -74,6 +74,20 @@ The complete exact-source suite passes 2,901/2,901 with zero unexpected results
 when its six loopback fixture tests are permitted; 2,835 execute and 66 explicitly
 superseded/legacy cases skip.
 
+The 2026-09-09 clean cut removes the generic synchronous session aggregate
+reader symbols instead of retaining error-only compatibility tombstones.  All
+callers now use detached asynchronous query state, executing process-local
+state, or explicitly named =e-session-local-*= operations restricted to
+in-memory/offline/test use.  The structural gate rejects both production
+references and loaded definitions for the entire retired family.  The public
+new-chat graphical gate now selects the transcript and runs the global debug
+focus hook before using the composer; it and the public delayed Org Canvas gate
+pass 1/1.  The focused clean-cut suite passes 76/76 and byte compilation
+succeeds.  The complete exact-source census is 2,927 total, 2,860 passing, 66
+explicit skips, and one independently reproduced baseline failure in the DP6
+forced-worker-replacement record-page test.  It fails unchanged at =12ac4b3d=
+and is not part of this API-removal slice.
+
 A later live tool continuation invalidated the assistant-only graphical proof.
 The corrected gate now emits a real =run_elisp= call and verifies its result in
 the follow-up provider request.  Request-local turn state owns the tool-call

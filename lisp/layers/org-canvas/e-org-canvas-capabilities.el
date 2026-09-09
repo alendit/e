@@ -77,7 +77,7 @@ SQLite and is obtained by the consumer's bounded asynchronous query."
          (session
           (or (e-harness-executing-session-state harness session-id)
               (unless (e-session-async-enabled-p store)
-                (e-session-get store session-id)))))
+                (e-session-local-state store session-id)))))
     (e-org-canvas--metadata-ref (plist-get session :metadata))))
 
 (defun e-org-canvas-session-p (harness session-id)

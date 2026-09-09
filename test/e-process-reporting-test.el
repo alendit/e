@@ -34,7 +34,7 @@
     (e-harness-activate-capability
      harness (e-process-reporting-capability-create))
     (condition-case nil
-        (e-session-get store "session-1")
+        (e-session-local-state store "session-1")
       (e-session-missing
        (e-harness-create-session
         harness :id "session-1"
@@ -189,7 +189,7 @@
         (should (= (length (plist-get read :triage)) 1))
         (should (equal (plist-get (car (plist-get read :triage)) :type)
                        "triage"))
-        (should (= (length (e-session-process-reports
+        (should (= (length (e-session-local-process-reports
                             loaded-store "session-1"))
                    2))))))
 
@@ -323,13 +323,13 @@
     (let* ((harness (e-process-reporting-test--harness store))
            (marker (e-process-reporting-test--call-action
                     harness :mark '(:signal "success" :note "Stored once.")))
-           (reports (e-session-process-reports store "session-1"))
+           (reports (e-session-local-process-reports store "session-1"))
            (durable-records
             (prin1-to-string
              (e-session-storage-read-session-records store "session-1"))))
       (should (= (length reports) 1))
       (should (equal (plist-get (car reports) :id) (plist-get marker :id)))
-      (should-not (e-session-messages store "session-1"))
+      (should-not (e-session-local-messages store "session-1"))
       (should (string-match-p "process-report" durable-records))
       (should-not (string-match-p "records.jsonl" durable-records)))))
 
@@ -350,8 +350,8 @@
               (list :harness harness :session-id "session-2"
                     :turn-id "turn-1"))))
         (should-not (plist-get other :suppressed))
-        (should (= (length (e-session-process-reports store "session-1")) 2))
-        (should (= (length (e-session-process-reports store "session-2")) 1))))))
+        (should (= (length (e-session-local-process-reports store "session-1")) 2))
+        (should (= (length (e-session-local-process-reports store "session-2")) 1))))))
 
 (ert-deftest e-process-reporting-test-marker-rejects-extra-fields-before-handler ()
   (e-process-reporting-test--with-store (store directory)
@@ -404,7 +404,7 @@
       (let ((serialized
              (prin1-to-string
               (list appended
-                    (e-session-activity-events
+                    (e-session-local-activity-events
                      (e-harness-sessions harness) "session-1")))))
         (should-not (string-match-p "must-not-retain\\|:impact" serialized))
         (should-not (e-process-reporting-test--list harness))))))
@@ -458,7 +458,7 @@
         (let ((serialized
                (prin1-to-string
                 (list appended
-                      (e-session-activity-events
+                      (e-session-local-activity-events
                        (e-harness-sessions harness) "session-1")))))
           (when secret
             (should-not (string-match-p (regexp-quote secret) serialized)))

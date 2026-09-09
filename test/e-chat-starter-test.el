@@ -500,7 +500,7 @@ its final value only when the turn settled."
         (should (equal
                  (plist-get
                   (plist-get
-                   (e-session-get (e-harness-sessions harness) session-id)
+                   (e-session-local-state (e-harness-sessions harness) session-id)
                    :metadata)
                   :origin)
                  :global-session-starter))

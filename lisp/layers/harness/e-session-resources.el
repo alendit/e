@@ -165,7 +165,7 @@ session id as their second argument."
   "Return built-in e SESSION-ID for ENGINE."
   (e-session-resources--require-synchronous-engine engine)
   (condition-case nil
-      (e-session-get (e-session-resources--e-store engine) session-id)
+      (e-session-local-state (e-session-resources--e-store engine) session-id)
     (e-session-missing
      (signal 'e-session-resources-unknown-session
              (list (format "Unknown session id: %s" session-id))))))
@@ -346,12 +346,12 @@ session id as their second argument."
       (e-session-resources--insert-field "project-root" (plist-get (plist-get index-entry :metadata) :project-root))
       (e-session-resources--insert-field "harness-instance-id" (plist-get (plist-get index-entry :metadata) :harness-instance-id))
       (insert "\nTranscript overview:\n")
-      (insert (format "- messages: %s\n" (length (e-session-messages store session-id))))
-      (insert (format "- activity events: %s\n" (length (e-session-activity-events store session-id))))
-      (insert (format "- session events: %s\n" (length (e-session-session-events store session-id))))
-      (insert (format "- compactions: %s\n" (length (e-session-compactions store session-id))))
-      (insert (format "- provider anchors: %s\n" (length (e-session-provider-anchors store session-id))))
-      (insert (format "- process reports: %s\n" (length (e-session-process-reports store session-id))))
+      (insert (format "- messages: %s\n" (length (e-session-local-messages store session-id))))
+      (insert (format "- activity events: %s\n" (length (e-session-local-activity-events store session-id))))
+      (insert (format "- session events: %s\n" (length (e-session-local-session-events store session-id))))
+      (insert (format "- compactions: %s\n" (length (e-session-local-compactions store session-id))))
+      (insert (format "- provider anchors: %s\n" (length (e-session-local-provider-anchors store session-id))))
+      (insert (format "- process reports: %s\n" (length (e-session-local-process-reports store session-id))))
       (insert "\nReadable subresources:\n")
       (dolist (projection projections)
         (insert (format "- %s\n"
@@ -361,7 +361,7 @@ session id as their second argument."
 
 (defun e-session-resources--render-e-messages (engine session-id)
   "Render built-in e messages for SESSION-ID."
-  (let ((messages (e-session-messages (e-session-resources--e-store engine)
+  (let ((messages (e-session-local-messages (e-session-resources--e-store engine)
                                       session-id))
         (index 1))
     (with-temp-buffer
@@ -388,23 +388,23 @@ session id as their second argument."
     ("messages" (e-session-resources--render-e-messages engine session-id))
     ("activity" (e-session-resources--render-entry-list
                   (format "Session %s activity" session-id)
-                  (e-session-activity-events
+                  (e-session-local-activity-events
                    (e-session-resources--e-store engine) session-id)))
     ("events" (e-session-resources--render-entry-list
                 (format "Session %s events" session-id)
-                (e-session-session-events
+                (e-session-local-session-events
                  (e-session-resources--e-store engine) session-id)))
     ("compactions" (e-session-resources--render-entry-list
                     (format "Session %s compactions" session-id)
-                    (e-session-compactions
+                    (e-session-local-compactions
                      (e-session-resources--e-store engine) session-id)))
     ("provider-anchors" (e-session-resources--render-entry-list
                          (format "Session %s provider anchors" session-id)
-                         (e-session-provider-anchors
+                         (e-session-local-provider-anchors
                           (e-session-resources--e-store engine) session-id)))
     ("process-reports" (e-session-resources--render-entry-list
                         (format "Session %s process reports" session-id)
-                        (e-session-process-reports
+                        (e-session-local-process-reports
                          (e-session-resources--e-store engine) session-id)))
     (_
      (signal 'e-session-resources-unsupported-projection

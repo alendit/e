@@ -813,12 +813,14 @@ adds its display name to the row."
                     (and harness
                          session-id
                          (e-harness-display-options harness session-id))))
-         (usage-event (ignore-errors
-                        (and harness
-                             session-id
-                             (e-session-latest-token-usage-event
-                              (e-chat-service-session-store harness)
-                              session-id)))))
+         (usage-event
+          (ignore-errors
+            (and harness
+                 session-id
+                 (let ((store (e-chat-service-session-store harness)))
+                   (unless (e-session-async-enabled-p store)
+                     (e-session-local-latest-token-usage-event
+                      store session-id)))))))
     (list :session-id session-id
           :message-count (or (plist-get state :message-count)
                              (plist-get session :message-count))
@@ -1249,7 +1251,8 @@ service.  Persistent SQLite lookup is always supplied by the displayed page."
     :session)
    (unless (e-session-async-enabled-p (e-chat-service-session-store harness))
      (condition-case nil
-         (e-chat-service-session harness session-id)
+         (e-session-local-state
+          (e-chat-service-session-store harness) session-id)
        (e-session-missing nil)))))
 
 (defun e-chat-overview--harness-for-instance-id (instance-id)

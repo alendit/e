@@ -64,6 +64,19 @@
     (should (null (e-chat-output-mode-session-get harness "session-1")))
     (should (eq (e-chat-output-mode-resolve harness "session-1") 'markdown))))
 
+(ert-deftest e-chat-output-mode-test-async-resolution-uses-detached-metadata ()
+  "Async output-mode resolution never reconstructs a session aggregate."
+  (let ((harness (e-harness-create :backend (e-backend-create :name "noop")))
+        (metadata '(:capability-state (:chat-output-mode (:mode org)))))
+    (cl-letf (((symbol-function 'e-session-async-enabled-p)
+               (lambda (_store) t))
+              ((symbol-function 'e-session-local-state)
+               (lambda (&rest _)
+                 (ert-fail "Async output mode attempted an aggregate read"))))
+      (should (eq (e-chat-output-mode-resolve
+                   harness "session-1" nil metadata)
+                  'org)))))
+
 (ert-deftest e-chat-output-mode-test-session-set-rejects-unknown ()
   "Setting an unknown per-session mode signals an error."
   (let ((harness (e-harness-create :backend (e-backend-create :name "noop"))))

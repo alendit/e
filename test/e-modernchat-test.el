@@ -39,6 +39,10 @@
   (mapcar (lambda (session) (plist-get session :id))
           (e-chat-service-root-session-list harness)))
 
+(defun e-chat-service-test--local-session (harness session-id)
+  "Return SESSION-ID from HARNESS's explicit in-memory test store."
+  (e-session-local-state (e-harness-sessions harness) session-id))
+
 (defun e-modernchat-test--file-bytes (file)
   "Return the exact bytes currently stored in FILE."
   (with-temp-buffer
@@ -512,7 +516,7 @@ messages so the transcript reads as one clean answer."
            board harness :id "role-participant")))
     (should
      (equal (plist-get
-             (plist-get (e-chat-service-session harness "role-root")
+             (plist-get (e-chat-service-test--local-session harness "role-root")
                         :board-session-state)
              :association-role)
             "owner"))
@@ -523,7 +527,7 @@ messages so the transcript reads as one clean answer."
     (should (equal (e-chat-service-test--session-ids harness) '("role-root")))
     ;; Filtering the public catalog never destroys the private session.
     (should (equal (plist-get
-                    (e-chat-service-session harness "role-participant") :id)
+                    (e-chat-service-test--local-session harness "role-participant") :id)
                    "role-participant"))))
 
 (ert-deftest e-chat-service-test-restored-participant-without-policy-fails-closed ()
@@ -538,7 +542,7 @@ messages so the transcript reads as one clean answer."
                   :type 'e-session-error)
     (should-not (gethash "legacy-board" e-board-registry--boards))
     (should (equal (e-session-board-association
-                    (e-session-get store session-id))
+                    (e-session-local-state store session-id))
                    '(:board-id "legacy-board"
                      :principal "board-owner"
                      :association-role "participant")))))
@@ -626,7 +630,7 @@ messages so the transcript reads as one clean answer."
                    :captured))
           (should (equal
                    (plist-get (e-session-board-routing-policy
-                               (e-session-get store "explicit-roleless"))
+                               (e-session-local-state store "explicit-roleless"))
                               :participant-id)
                    "explicit-roleless-id"))
           (should-error (e-chat-service-open-board
@@ -645,7 +649,7 @@ messages so the transcript reads as one clean answer."
                     :default-to "private-admitted")
                    :captured))
           (let ((policy (e-session-board-routing-policy
-                         (e-session-get store "legacy-participant"))))
+                         (e-session-local-state store "legacy-participant"))))
             (should (equal (plist-get policy :participant-id)
                            "private-admitted"))
             (should (equal (plist-get policy :default-tags) '(private))))
@@ -657,7 +661,7 @@ messages so the transcript reads as one clean answer."
            :type 'e-session-error)
           (should-not
            (e-session-board-routing-policy
-            (e-session-get store "partial-participant")))
+            (e-session-local-state store "partial-participant")))
           ;; A durable policy is authoritative; conflicting caller values are
           ;; rejected rather than silently ignored.
           (e-session-declare-board-state
@@ -677,7 +681,7 @@ messages so the transcript reads as one clean answer."
            :type 'e-session-error)
           (should (equal
                    (plist-get (e-session-board-routing-policy
-                               (e-session-get store "durable-participant"))
+                               (e-session-local-state store "durable-participant"))
                               :participant-id)
                    "durable-id")))))))
 
@@ -697,9 +701,9 @@ messages so the transcript reads as one clean answer."
       board harness :id "invalid-selector-session"
       :pickup-selector '(:predicate (lambda (_message) t)))
      :type 'e-session-error)
-    (should-error (e-session-get store "invalid-board-session")
+    (should-error (e-session-local-state store "invalid-board-session")
                   :type 'e-session-missing)
-    (should-error (e-session-get store "invalid-selector-session")
+    (should-error (e-session-local-state store "invalid-selector-session")
                   :type 'e-session-missing)
     ;; A duplicate session id is rejected before a participant id is reserved.
     (e-session-create store :id "existing-session")
@@ -726,7 +730,7 @@ messages so the transcript reads as one clean answer."
      (e-chat-service-create-participant
       board harness :id "second-private" :participant-id "same-participant")
      :type 'e-board-registry-id-conflict)
-    (should-error (e-session-get store "second-private")
+    (should-error (e-session-local-state store "second-private")
                   :type 'e-session-missing)
     ;; Owned failures after session allocation roll the session back.
     (cl-letf (((symbol-function 'e-session-storage-publish-admission)
@@ -736,7 +740,7 @@ messages so the transcript reads as one clean answer."
        (e-chat-service-create-participant
         board harness :id "persist-failure" :participant-id "persist-id")
        :type 'e-session-error))
-    (should-error (e-session-get store "persist-failure")
+    (should-error (e-session-local-state store "persist-failure")
                   :type 'e-session-missing)
     ;; A failure after the runtime attachment has prepared its participant
     ;; must not leave a replayable participant-added board event.  The event
@@ -749,7 +753,7 @@ messages so the transcript reads as one clean answer."
        (e-chat-service-create-participant
         board harness :id "commit-failure" :participant-id "commit-id")
        :type 'e-session-error))
-    (should-error (e-session-get store "commit-failure")
+    (should-error (e-session-local-state store "commit-failure")
                   :type 'e-session-missing)
     (should-not (gethash "commit-id"
                          (e-board-registry-board-participants board)))
@@ -768,7 +772,7 @@ messages so the transcript reads as one clean answer."
        (e-chat-service-create-participant
         board harness :id "attachment-failure" :participant-id "attach-id")
        :type 'e-session-error))
-    (should-error (e-session-get store "attachment-failure")
+    (should-error (e-session-local-state store "attachment-failure")
                   :type 'e-session-missing)
     (should-not (gethash "attach-id"
                          (e-board-registry-board-participants board)))))
@@ -787,7 +791,7 @@ messages so the transcript reads as one clean answer."
                    '("same-id")))
     (should-not (e-chat-service-test--session-ids participant-harness))
     (should (equal (plist-get
-                    (e-chat-service-session participant-harness "same-id") :id)
+                    (e-chat-service-test--local-session participant-harness "same-id") :id)
                    "same-id"))))
 
 (ert-deftest e-chat-service-test-root-catalog-replays-new-and-legacy-index-state ()
@@ -817,8 +821,8 @@ messages so the transcript reads as one clean answer."
                    :enabled-layer-ids nil :sessions indexed-store))
                  (participant-state
                   (plist-get
-                   (e-chat-service-session indexed-harness
-                                           "indexed-participant")
+                   (e-chat-service-test--local-session indexed-harness
+                                                       "indexed-participant")
                    :board-session-state)))
             (should (equal (plist-get participant-state :association-role)
                            "participant"))
@@ -840,7 +844,7 @@ messages so the transcript reads as one clean answer."
      (e-session-declare-board-state
       store "malformed" "chat:malformed" "malformed-board" "unexpected")
      :type 'error)
-    (should-not (plist-get (e-chat-service-session harness "malformed")
+    (should-not (plist-get (e-chat-service-test--local-session harness "malformed")
                            :board-session-state))))
 
 (ert-deftest e-chat-service-test-independent-observers-preserve-board-identity ()
@@ -980,7 +984,8 @@ messages so the transcript reads as one clean answer."
           (let* ((new-observer (e-chat-service-binding-observer binding))
                  (main-client (e-chat-service-binding-client binding))
                  (board-id (e-board-registry-board-id board))
-                 (stored-session (e-chat-service-session harness "main")))
+                 (stored-session
+                  (e-chat-service-test--local-session harness "main")))
             (should (not (eq old-observer new-observer)))
             (should (eq (e-board-observer-state old-observer) 'cancelled))
             (should (eq (e-board-observer-state new-observer) 'active))
@@ -1246,7 +1251,7 @@ messages so the transcript reads as one clean answer."
     (e-chat-service-drain-binding binding)
     (cl-letf (((symbol-function 'e-harness-messages)
                (lambda (&rest _) (error "private transcript read")))
-              ((symbol-function 'e-session-activity-events)
+              ((symbol-function 'e-session-local-activity-events)
                (lambda (&rest _) (error "private activity read")))
               ((symbol-function 'e-harness-state)
                (lambda (&rest _) (error "private state read")))

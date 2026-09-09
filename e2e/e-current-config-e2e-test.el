@@ -71,7 +71,7 @@ rewrite the user's file."
          (activities
           (seq-filter
            (lambda (event) (memq (plist-get event :event-type) types))
-           (e-session-activity-events (e-harness-sessions harness) session-id)))
+           (e-session-local-activity-events (e-harness-sessions harness) session-id)))
          (board-reasoning
           (seq-filter
            (lambda (message)
@@ -207,7 +207,7 @@ persistence, or response delivery fails.  It never skips."
                                  :assistant-content)
                       ""))
                  (messages
-                  (e-session-messages (e-harness-sessions harness) session-id))
+                  (e-session-local-messages (e-harness-sessions harness) session-id))
                  (binding (e-chat-service-binding harness session-id))
                  (board
                   (e-board-registry-board-source-board

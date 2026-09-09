@@ -314,7 +314,7 @@ drop the unpaired tool-call so the transcript stays valid."
 
 (defun e-context--compacted-messages (sessions session-id)
   "Return backend messages for SESSION-ID honoring latest compaction."
-  (if-let ((compaction (e-session-latest-valid-compaction sessions session-id)))
+  (if-let ((compaction (e-session-local-latest-valid-compaction sessions session-id)))
       (let* ((summary (list :role 'compaction-summary
                             :content (plist-get compaction :summary)
                             :id (plist-get compaction :id)
@@ -322,7 +322,7 @@ drop the unpaired tool-call so the transcript stays valid."
              (suffix
               (seq-filter
                (lambda (entry) (eq (plist-get entry :type) 'message))
-               (e-session-entries-from
+               (e-session-local-entries-from
                 sessions session-id
                 (plist-get compaction :first-kept-entry-id)))))
         (e-context--backend-messages
@@ -332,7 +332,7 @@ drop the unpaired tool-call so the transcript stays valid."
                           (e-context--message-entry-message entry)))
                        suffix))))
     (e-context--backend-messages
-     (e-session-messages sessions session-id))))
+     (e-session-local-messages sessions session-id))))
 
 (cl-defun e-context-transcript-stack-create ()
   "Create the classic transcript-stack context strategy."

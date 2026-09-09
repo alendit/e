@@ -594,6 +594,9 @@ those owner ports into the host hook lists."
 (defvar-local e-chat-session-id nil
   "Session id used by the current chat buffer.")
 
+(defvar-local e-chat-session-metadata nil
+  "Detached bounded metadata used by this chat presentation surface.")
+
 (defvar-local e-chat--session-readiness-work nil
   "Private session creation work retained by the current chat surface.")
 
@@ -1201,6 +1204,7 @@ context insertions from the chat buffer the user is looking at."
 METADATA and MESSAGES are either one settled query result or the bounded
 optimistic values of a newly admitted session.  Neither is retained as a
 durable session mirror."
+  (setq-local e-chat-session-metadata (copy-tree metadata t))
   (e-chat--rename-buffer-for-query-state metadata)
   (let ((inhibit-read-only t))
     (erase-buffer)

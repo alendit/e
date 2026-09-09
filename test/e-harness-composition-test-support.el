@@ -238,7 +238,7 @@ Return request options, persisted anchors, and the final context."
                     ('compaction
                      (let* ((store (e-harness-sessions harness))
                             (first-entry
-                             (car (e-session-current-path
+                             (car (e-session-local-current-path
                                    store "session-1"))))
                        (e-session-append-compaction
                         store "session-1" "refresh summary"
@@ -261,7 +261,7 @@ Return request options, persisted anchors, and the final context."
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-batch harness "session-1" "refresh")
     (list :requests (nreverse requests)
-          :anchors (e-session-provider-anchors
+          :anchors (e-session-local-provider-anchors
                     (e-harness-sessions harness) "session-1")
           :context (e-harness-turn-context
                     harness "session-1" "after-refresh"))))

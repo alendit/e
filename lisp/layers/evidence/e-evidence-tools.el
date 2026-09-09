@@ -46,7 +46,7 @@
   "Return a read-only message evidence slice for SESSION-ID in STORE."
   (let* ((offset (e-evidence-tools--natural-number offset 0))
          (limit (and limit (e-evidence-tools--natural-number limit 0)))
-         (messages (e-session-messages store session-id)))
+         (messages (e-session-local-messages store session-id)))
     (list :session-id session-id
           :offset offset
           :limit limit
@@ -58,7 +58,7 @@
   "Return a read-only activity event evidence slice for SESSION-ID in STORE."
   (let* ((offset (e-evidence-tools--natural-number offset 0))
          (limit (and limit (e-evidence-tools--natural-number limit 0)))
-         (events (e-session-activity-events store session-id)))
+         (events (e-session-local-activity-events store session-id)))
     (list :session-id session-id
           :offset offset
           :limit limit
@@ -83,7 +83,7 @@ TURN-ID and TOOL-CALL-ID identify the tool result."
           (lambda (candidate)
             (e-evidence-tools--tool-result-message-p
              candidate turn-id tool-call-id))
-          (e-session-messages store session-id))))
+          (e-session-local-messages store session-id))))
     (when message
       (list :session-id session-id
             :turn-id turn-id

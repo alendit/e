@@ -196,14 +196,22 @@ capability-owned message details."
      (t nil))))
 
 (cl-defun e-modernchat-view-model-snapshot
-    (harness session-id &key composer-text message-limit activity-limit)
+    (harness session-id &key session-metadata composer-text message-limit
+             activity-limit)
   "Return JSON-friendly snapshot for HARNESS SESSION-ID."
-  (let* ((session (e-chat-service-session harness session-id))
-         (metadata (plist-get session :metadata))
+  (let* ((store (e-harness-sessions harness))
+         (live-state (e-harness-executing-session-state harness session-id))
+         (local-state
+          (unless (e-session-async-enabled-p store)
+            (e-session-local-state store session-id)))
+         (metadata (or session-metadata
+                       (plist-get live-state :metadata)
+                       (plist-get local-state :metadata)))
          (state (ignore-errors (e-chat-service-state harness session-id)))
          (active-turn-id (or (plist-get (plist-get state :active-turn) :id)
                              (plist-get state :active-turn)))
-         (output-mode (e-chat-output-mode-resolve harness session-id))
+         (output-mode
+          (e-chat-output-mode-resolve harness session-id nil metadata))
          (registry (ignore-errors
                      (e-chat-service-structured-blocks harness session-id)))
          (messages (e-modernchat-view-model--take-last

@@ -613,7 +613,7 @@ after this accessor returns nil."
                        ;; A query-backed session is never reconstructed merely
                        ;; to resolve capability scope at a lifecycle edge.
                        (unless (e-session-async-enabled-p store)
-                         (ignore-errors (e-session-get store session-id))))))
+                         (ignore-errors (e-session-local-state store session-id))))))
          (e-harness-normalize-project-root
           (plist-get (plist-get session :metadata) :project-root))))
      (e-harness-default-project-root harness))))

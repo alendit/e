@@ -61,7 +61,7 @@ the durable aggregate merely to preserve this legacy convenience operation."
           (and project-root
                (or (e-harness-executing-session-state harness session-id)
                    (unless (e-session-async-enabled-p store)
-                     (e-session-get store session-id)))))
+                     (e-session-local-state store session-id)))))
          (metadata (plist-get session :metadata))
          (current-root (plist-get metadata :project-root)))
     (when (and session project-root
@@ -179,7 +179,7 @@ ordinary in-process session lookup."
          (state
           (or (e-harness-executing-session-state harness session-id)
               (unless (e-session-async-enabled-p store)
-                (e-session-get store session-id)))))
+                (e-session-local-state store session-id)))))
     (when state
       (e-chat-session-metadata-attachments (plist-get state :metadata)))))
 

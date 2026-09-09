@@ -141,7 +141,7 @@
                                   "assistant-read"))
                     (should-not
                      (plist-member
-                      (plist-get (e-session-get store "read-me") :metadata)
+                      (plist-get (e-session-local-state store "read-me") :metadata)
                       :e-chat-read-markers))
                     (e-chat-overview-render harness)
                     (should-not (string-match-p

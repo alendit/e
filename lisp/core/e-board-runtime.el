@@ -2676,9 +2676,14 @@ recreate an activity mailbox after retirement has begun."
 
 (defun e-board-runtime--require-live-session (harness session-id)
   "Return HARNESS's existing SESSION-ID, or signal a runtime-specific error."
-  (condition-case nil
-      (e-session-get (e-harness-sessions harness) session-id)
-    (error (signal 'e-board-runtime-session-missing (list session-id)))))
+  (let ((store (e-harness-sessions harness)))
+    (if (e-session-async-enabled-p store)
+        (or (e-harness-executing-session-state harness session-id)
+            (signal 'e-board-runtime-session-missing
+                    (list session-id 'detached-association-required)))
+      (condition-case nil
+          (e-session-local-state store session-id)
+        (error (signal 'e-board-runtime-session-missing (list session-id)))))))
 
 (cl-defun e-board-runtime-admission-available-p
     (board-or-id harness session-id participant-id
@@ -2718,7 +2723,8 @@ publishes an attachment."
     ;; For a predicted id, keep the query useful even before the runtime
     ;; session exists: an explicit duplicate is still an admission conflict.
     (when (and (not require-session)
-               (e-session-session-present-p store session-id))
+               (not (e-session-async-enabled-p store))
+               (e-session-local-present-p store session-id))
       (signal 'e-session-duplicate (list session-id)))
     t))
 
@@ -3052,7 +3058,7 @@ This operation never invokes an instance factory or loads dormant history."
           (or (plist-get metadata :output-sequence)
               (when (plist-get metadata :require-session-state)
                 (plist-get
-                 (e-session-get (e-harness-sessions harness) session-id)
+                 (e-session-local-state (e-harness-sessions harness) session-id)
                  :board-output-sequence))
               0)
           :generation generation :state 'active

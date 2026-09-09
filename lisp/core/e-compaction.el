@@ -114,7 +114,7 @@
 (defun e-compaction--message-entries (store session-id)
   "Return current-path message entries for SESSION-ID."
   (seq-filter #'e-compaction--message-entry-p
-              (e-session-current-path store session-id)))
+              (e-session-local-current-path store session-id)))
 
 (defun e-compaction--safe-boundary-entry-p (entry boundary-roles)
   "Return non-nil if compaction may keep suffix starting at ENTRY.
@@ -326,7 +326,7 @@ even when the legacy summarizer selected them for its own request."
     (dolist (entry entries)
       (puthash (plist-get entry :id) t summarized))
     (catch 'first-excluded
-      (dolist (entry (e-session-current-path store session-id))
+      (dolist (entry (e-session-local-current-path store session-id))
         (let ((id (plist-get entry :id)))
           (when (gethash id excluded)
             (throw 'first-excluded t))
@@ -348,7 +348,7 @@ portable generation data."
                    (lambda (entry)
                      (member (plist-get entry :id) exclude-entry-ids))
                    (e-compaction--message-entries store session-id)))
-         (previous (e-session-latest-valid-compaction store session-id))
+         (previous (e-session-local-latest-valid-compaction store session-id))
          (previous-boundary (plist-get previous :first-kept-entry-id))
          ;; Prefer a clean user-message boundary.  When none is available, fall
          ;; back to assistant/tool-call boundaries: a long single agentic turn
@@ -424,7 +424,7 @@ eligible durable messages through COVERED-SESSION-BOUNDARY; retained,
 excluded, and later entries remain a derived tail.  The durable projection
 removes tool bodies, provider replay metadata, anchors, continuation ids,
 cache counters, runtime frames, and diagnostics."
-  (let* ((projection (e-session-context-lifetime-projection store session-id))
+  (let* ((projection (e-session-local-context-lifetime-projection store session-id))
          (generation (plist-get projection :generation))
          ;; Keep literal v2 records available to the compatibility summary
          ;; path.  They came from the session journal and are never rebuilt by
@@ -441,7 +441,7 @@ cache counters, runtime frames, and diagnostics."
                                   (member (plist-get record :id)
                                           legacy-promotion-ids))
                          record))))
-                 (e-session-current-path store session-id))))
+                 (e-session-local-current-path store session-id))))
          (curations (copy-tree (plist-get projection :curations))))
     (list :generation-id
           (and generation
@@ -608,7 +608,7 @@ provider replay items, anchors, diagnostics, and other non-message journal
 entries are never included.  This is the sole provider-neutral input builder
 for optional opaque backend compaction."
   (let ((checkpoint (e-context-lifetime-portable-checkpoint checkpoint t))
-        (path (e-session-current-path store session-id))
+        (path (e-session-local-current-path store session-id))
         (after-boundary nil)
         (tail nil))
     (unless (seq-some (lambda (entry)
@@ -624,7 +624,7 @@ for optional opaque backend compaction."
           (push (e-context-lifetime-portable-message message) tail)))
       (when (equal (plist-get entry :id) covered-session-boundary)
         (setq after-boundary t)))
-    (let* ((projection (e-session-context-lifetime-projection store session-id))
+    (let* ((projection (e-session-local-context-lifetime-projection store session-id))
            (promotion-message-entries
             (or (plist-get projection :promotion-message-entries)
                 (mapcar (lambda (message)
@@ -647,7 +647,7 @@ for optional opaque backend compaction."
   (and boundary-id
        (seq-some (lambda (entry)
                    (equal (plist-get entry :id) boundary-id))
-                 (e-session-current-path store session-id))))
+                 (e-session-local-current-path store session-id))))
 
 (defun e-compaction--portable-preparation-input (preparation)
   "Validate and return the captured portable input in PREPARATION."
@@ -670,7 +670,7 @@ for optional opaque backend compaction."
 (defun e-compaction--portable-promotion-frontier (store session-id)
   "Return the active promotion IDs on SESSION-ID's current path."
   (copy-sequence
-   (plist-get (e-session-context-lifetime-projection store session-id)
+   (plist-get (e-session-local-context-lifetime-projection store session-id)
               :promotion-frontier)))
 
 (defun e-compaction-preflight-portable-boundary
@@ -686,7 +686,7 @@ domain validation or observe a different preparation."
          (boundary (plist-get input :covered-session-boundary))
          (prepared-generation-id (plist-get input :generation-id))
          (current-generation
-          (e-session-context-lifetime-current-generation store session-id))
+          (e-session-local-context-lifetime-current-generation store session-id))
          (current-generation-id
           (and current-generation
                (e-context-lifetime-generation-id current-generation)))

@@ -28,11 +28,14 @@
 
 (declare-function e-harness-sessions "e-harness" (harness))
 (declare-function e-harness-effective-capability-config "e-harness")
-(declare-function e-session-get "e-session" (store session-id))
+(declare-function e-harness-executing-session-state
+                  "e-harness-state" (harness session-id))
+(declare-function e-session-async-enabled-p "e-session-async" (store))
+(declare-function e-session-local-state "e-session" (store session-id))
 (declare-function e-session-set-capability-state "e-session"
                   (store session-id capability-id state))
-(declare-function e-session-capability-state "e-session"
-                  (store session-id capability-id))
+(declare-function e-session-metadata-capability-state-value
+                  "e-session-metadata" (metadata capability-id))
 
 (defun e-mcp-capability--generated-tool-name (tool)
   "Return the generated e tool name for MCP TOOL.
@@ -293,13 +296,17 @@ HARNESS, when present, contributes session-scoped runtime config."
 Each entry is (SERVER-ID . TOOLS) where TOOLS is t (all tools) or a list of
 tool-name strings."
   (when (and harness session-id)
-    (when-let ((session (ignore-errors
-                          (e-session-get (e-harness-sessions harness)
-                                         session-id))))
+    (let* ((store (e-harness-sessions harness))
+           (session
+            (or (e-harness-executing-session-state harness session-id)
+                (unless (e-session-async-enabled-p store)
+                  (ignore-errors
+                    (e-session-local-state store session-id))))))
+      (when session
       (or (e-mcp-capability--active-state-to-set
-           (e-session-capability-state
-            (e-harness-sessions harness) session-id 'mcp))
-          (plist-get (plist-get session :metadata) :mcp-active)))))
+           (e-session-metadata-capability-state-value
+            (plist-get session :metadata) 'mcp))
+          (plist-get (plist-get session :metadata) :mcp-active))))))
 
 (defun e-mcp-capability--tool-activated-p (active server-id tool-name)
   "Return non-nil when TOOL-NAME of SERVER-ID is activated in ACTIVE."

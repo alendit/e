@@ -87,7 +87,7 @@
         (progn
           (e-harness-activate-capability harness capability)
           (e-harness-create-session harness :id "session-1" :metadata metadata)
-          (cl-letf (((symbol-function 'e-session-get)
+          (cl-letf (((symbol-function 'e-session-local-state)
                      (lambda (&rest arguments)
                        (ert-fail
                         (format "terminal hook read session aggregate: %S"
@@ -939,7 +939,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
     (e-harness-create-session harness :id "session-1")
     (e-harness-test-prompt-batch harness "session-1" "question")
     (should-not
-     (e-session-provider-anchors (e-harness-sessions harness)
+     (e-session-local-provider-anchors (e-harness-sessions harness)
                                  "session-1"))))
 
 (ert-deftest e-harness-test-reset-clears-session-messages ()

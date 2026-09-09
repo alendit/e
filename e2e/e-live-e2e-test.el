@@ -363,7 +363,7 @@ assertion does not accidentally accept a top-level prompt-cache option."
   "Return durable activity events of TYPE for SESSION-ID."
   (seq-filter
    (lambda (event) (eq (plist-get event :event-type) type))
-   (e-session-activity-events (e-harness-sessions harness) session-id)))
+   (e-session-local-activity-events (e-harness-sessions harness) session-id)))
 
 (defun e-live-e2e--provider-metrics-record (finished-payload usage-payload)
   "Return bounded scalar metrics from FINISHED-PAYLOAD and USAGE-PAYLOAD.
@@ -2069,7 +2069,7 @@ event is a public sink event and is therefore checked in SINK-EVENTS, not the
 session activity ledger."
   (let* ((response-entry-id (plist-get record :response-entry-id))
          (curation-id (plist-get record :id))
-         (durable-events (e-session-activity-events store session-id))
+         (durable-events (e-session-local-activity-events store session-id))
          (controls
           (seq-filter
            (lambda (event)
@@ -2096,7 +2096,7 @@ session activity ledger."
          (equal (plist-get control :id) response-entry-id)
          (equal (plist-get control-payload :response-entry-id)
                 response-entry-id)
-         (e-session-entry-by-id store session-id response-entry-id)
+         (e-session-local-entry-by-id store session-id response-entry-id)
          consumed)))
 
 (defun e-live-e2e--autonomous-erase-audit-links (store session-id)
@@ -2105,7 +2105,7 @@ The curation response control and consumed-frame event are durable activity;
 the nil curation-id list is intentional for an erase disposition.  Return
 only opaque identities so callers cannot accidentally put event content into
 external evidence."
-  (let* ((events (e-session-activity-events store session-id))
+  (let* ((events (e-session-local-activity-events store session-id))
          (controls
           (seq-filter
            (lambda (event)
@@ -2142,7 +2142,7 @@ external evidence."
                (equal (plist-get control :turn-id)
                       (plist-get consumed :turn-id))
                (condition-case nil
-                   (e-session-entry-by-id store session-id response-entry-id)
+                   (e-session-local-entry-by-id store session-id response-entry-id)
                  (error nil)))
       (list :response-entry-id response-entry-id
             :frame-id frame-id
@@ -2906,9 +2906,9 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             :payload (:response-entry-id "response-1"
                       :curation-ids ("curation-1")))))
         (record '(:id "curation-1" :response-entry-id "response-1")))
-    (cl-letf (((symbol-function 'e-session-activity-events)
+    (cl-letf (((symbol-function 'e-session-local-activity-events)
                (lambda (&rest _) durable-events))
-              ((symbol-function 'e-session-entry-by-id)
+              ((symbol-function 'e-session-local-entry-by-id)
                (lambda (_store _session entry-id)
                  (and (equal entry-id "response-1")
                       (list :id entry-id)))))
@@ -2939,9 +2939,9 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
             :payload (:response-entry-id "response-old"
                       :frame-id "frame-old" :curation-ids nil)))
          (events (list unrelated control matching)))
-    (cl-letf (((symbol-function 'e-session-activity-events)
+    (cl-letf (((symbol-function 'e-session-local-activity-events)
                (lambda (&rest _) events))
-              ((symbol-function 'e-session-entry-by-id)
+              ((symbol-function 'e-session-local-entry-by-id)
                (lambda (_store _session entry-id)
                  (and (equal entry-id "response-1")
                       (list :id entry-id)))))
@@ -4452,7 +4452,7 @@ provider turn to settle without an implicit local deadline."
                     (format
                      "Call e2e_echo exactly once with text %S. Then reply with only that returned text."
                      nonce)))
-           (activities (e-session-activity-events
+           (activities (e-session-local-activity-events
                         (e-harness-sessions harness) session-id)))
       (should (e-live-e2e--activity-of-type harness session-id 'tool-started))
       (should (e-live-e2e--activity-of-type harness session-id 'tool-finished))
@@ -4691,7 +4691,7 @@ provider turn to settle without an implicit local deadline."
                                  "carrier"
                                  "The reserved curation carrier was absent from the source-bearing continuation."))
                  (let* ((curations
-                         (e-session-context-curations
+                         (e-session-local-context-curations
                           (e-harness-sessions harness) session-id))
                         (record-count (length curations)))
                    (unless (= record-count 1)
@@ -4726,7 +4726,7 @@ provider turn to settle without an implicit local deadline."
                          (e-live-e2e--prompt-batch-before-deadline
                           harness session-id follow-up-prompt deadline)))
                  (let* ((projection
-                         (e-session-context-lifetime-projection
+                         (e-session-local-context-lifetime-projection
                           (e-harness-sessions harness) session-id))
                         (item (car (plist-get curation-record :items)))
                         (expected
@@ -5139,7 +5139,7 @@ and provider arguments stay local to the scenario gates."
                           (package
                            (plist-get curation-preparation :package))
                           (actual-erasures
-                           (e-session-context-erasures store session-id))
+                           (e-session-local-context-erasures store session-id))
                           (actual-erasure (car actual-erasures))
                           (expected-erased-tool-call-ids
                            (and erasure-record
@@ -5154,9 +5154,9 @@ and provider arguments stay local to the scenario gates."
                             (lambda (entry)
                               (eq (plist-get entry :type)
                                   'context-curation-package))
-                            (e-session-current-path store session-id)))
+                            (e-session-local-current-path store session-id)))
                           (erased-tool-call-ids
-                           (e-session-erased-tool-call-ids store session-id))
+                           (e-session-local-erased-tool-call-ids store session-id))
                           (tool-finishes-after
                            (e-live-e2e--activity-of-type
                             harness session-id 'tool-finished))
@@ -5182,8 +5182,8 @@ and provider arguments stay local to the scenario gates."
                            (null (plist-get curation-preparation :record))
                            package-entry
                            (null (plist-get package-entry :promotion))
-                           (null (e-session-context-promotions store session-id))
-                           (null (e-session-context-curations store session-id)))
+                           (null (e-session-local-context-promotions store session-id))
+                           (null (e-session-local-context-curations store session-id)))
                       "no-promotion"
                       "Erase-only curation persisted a promotion component.")
                      (require-gate
@@ -5234,10 +5234,10 @@ and provider arguments stay local to the scenario gates."
                              (e-live-e2e--autonomous-erase-audit-links
                               reopened session-id))
                             (reopened-erasures
-                             (e-session-context-erasures reopened session-id))
+                             (e-session-local-context-erasures reopened session-id))
                             (reopened-erasure (car reopened-erasures))
                             (reopened-erased-tool-call-ids
-                             (e-session-erased-tool-call-ids
+                             (e-session-local-erased-tool-call-ids
                               reopened session-id))
                             (reopened-receipt-event
                              (seq-find
@@ -5249,7 +5249,7 @@ and provider arguments stay local to the scenario gates."
                                            'tool-finished)
                                        (equal (plist-get candidate :tool-call-id)
                                               tool-call-id))))
-                              (e-session-activity-events reopened session-id))))
+                              (e-session-local-activity-events reopened session-id))))
                        (require-gate
                         (and reopened-links
                              (equal (plist-get reopened-links :response-entry-id)
@@ -5264,9 +5264,9 @@ and provider arguments stay local to the scenario gates."
                         "reopen-erasure"
                         "The erasure record or selected erased IDs failed replay.")
                        (require-gate
-                        (and (null (e-session-context-curations
+                        (and (null (e-session-local-context-curations
                                    reopened session-id))
-                             (null (e-session-context-promotions
+                             (null (e-session-local-context-promotions
                                     reopened session-id)))
                         "reopen-no-promotion"
                         "Replay exposed a promotion or curation projection for erase-only state.")
@@ -5564,7 +5564,7 @@ replay, where those same values are strings."
        harness session-id
        (format "Reply with exactly this persistence token: %s" nonce))
       (let* ((reloaded-store (e-session-persistent-store-create store-dir))
-             (messages (e-session-messages reloaded-store session-id)))
+             (messages (e-session-local-messages reloaded-store session-id)))
         (should (>= (length messages) 2))
         (should (seq-some
                  (lambda (message)
@@ -5588,7 +5588,7 @@ replay, where those same values are strings."
                      :reason 'manual
                      :keep-recent-tokens 1)))
         (should (plist-get record :summary))
-        (should (e-session-latest-valid-compaction
+        (should (e-session-local-latest-valid-compaction
                  (e-harness-sessions harness) session-id))
         (should (e-live-e2e--activity-of-type
                  harness session-id 'compaction-finished))))))
@@ -5601,8 +5601,8 @@ replay, where those same values are strings."
      "Reply with exactly: ANCHOR-CHECK")
     ;; Continuation support is backend-specific; assert anchors when the
     ;; configured backend records them, otherwise skip rather than assume.
-    (if (e-session-provider-anchors (e-harness-sessions harness) session-id)
-        (should (e-session-provider-anchors
+    (if (e-session-local-provider-anchors (e-harness-sessions harness) session-id)
+        (should (e-session-local-provider-anchors
                  (e-harness-sessions harness) session-id))
       (ert-skip "The configured live backend does not record continuation anchors."))))
 
@@ -5675,7 +5675,7 @@ replay, where those same values are strings."
               (plist-get first-durable-assistant :content)
               old-marker))
             (should-not
-             (e-session-provider-anchors
+             (e-session-local-provider-anchors
               (e-harness-sessions harness) session-id)))
           (setq current-state new-marker)
           (let ((second-result
@@ -5711,7 +5711,7 @@ replay, where those same values are strings."
                (finished-diagnostics
                 (plist-get second-finished-payload :diagnostics))
                (anchors
-                (e-session-provider-anchors
+                (e-session-local-provider-anchors
                  (e-harness-sessions harness) session-id))
                (newest-anchor (car (last anchors))))
           (ert-info ((format "Codex continuation diagnostics: %S" diagnostics))
@@ -5925,7 +5925,7 @@ continuation and socket assertions used by the compatibility selector."
                                 deadline)))
                           (setq tool-turn-id (plist-get tool-result :id))
                           (setq curation-record
-                                (car (last (e-session-context-curations
+                                (car (last (e-session-local-context-curations
                                             (e-harness-sessions harness)
                                             session-id))))
                           (should (stringp tool-turn-id))
@@ -6171,7 +6171,7 @@ continuation and socket assertions used by the compatibility selector."
                    (format "curation arguments %S with captured tool sources %S do not match curation item %S"
                            captured-curation-arguments
                            captured-tool-sources item))))
-              (should (= (length (e-session-context-curations
+              (should (= (length (e-session-local-context-curations
                                   (e-harness-sessions harness)
                                   session-id))
                          1))
@@ -6788,7 +6788,7 @@ WebSocket and socket-replacement assertions."
                  (lambda (event)
                    (and (eq (plist-get event :event-type) 'turn-cancelled)
                         (equal (plist-get event :turn-id) turn-id)))
-                 (e-session-activity-events
+                 (e-session-local-activity-events
                   (e-harness-sessions harness) session-id)))
           (accept-process-output nil 0.05))
         (should cancelled)))))
