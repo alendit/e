@@ -14,6 +14,11 @@
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
 
+(defun e-chat-settlement-test--await (work)
+  "Observe request-scoped WORK at this explicit test boundary."
+  (e-work-with-batch-await
+    (e-work-await-batch work :timeout 5.0)))
+
 (ert-deftest e-chat-test-final-turn-collapses-progress-to-summary ()
   "Settled activity collapses to a navigable turn summary."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-summary"))
@@ -158,43 +163,35 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-replayed-active-provider-activity-restores-progress ()
-  "Replayed active provider activity restores the running progress block."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer nil))
+(ert-deftest e-chat-test-observed-active-provider-activity-renders-progress ()
+  "Observed live provider activity renders the running progress block."
+  (let ((buffer (e-chat-test--buffer nil "chat-provider-active")))
     (unwind-protect
-        (progn
-          (e-harness-create-session harness :id "chat-provider-active-replay")
-          (e-session-append-message
-           store "chat-provider-active-replay"
-           '(:role user :content "inspect" :turn-id "turn-1"))
-          (e-session-append-activity-event
-           store "chat-provider-active-replay" "turn-1" 'turn-started nil)
-          (e-session-append-activity-event
-           store "chat-provider-active-replay" "turn-1" 'provider-request-started
-           '(:status started))
-          (puthash "chat-provider-active-replay"
-                   '(:id "turn-1" :status running)
-                   (e-harness-active-turns harness))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "chat-provider-active-replay")
-          (setq buffer (e-chat-open :harness harness
-                                    :session-id "chat-provider-active-replay"))
-          (with-current-buffer buffer
-            (cl-letf (((symbol-function 'float-time)
-                       (lambda (&optional _time) 8.0)))
-              (e-ui-work-with-batch-drain
-                (e-ui-work-drain-batch :buffer (current-buffer))))
-            (let ((content (buffer-string)))
-              (should (string-match-p
-                       "Thinking for 0min [0-9]+sec" content)))
-            (should (equal (e-chat-activity-progress-turn-id) "turn-1"))
-            (should (plist-get (e-chat-activity-progress-state)
-                               :interval-active-p))
-            (with-current-buffer (e-chat-test--composer buffer)
-              (should (e-chat-composer-active-p)))))
+        (with-current-buffer buffer
+          (e-chat-test--mark-active-turn "turn-1")
+          (e-chat-render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:status started)))
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _time) 8.0)))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Thinking for 0min [0-9]+sec" content)))
+          (should (equal (e-chat-activity-progress-turn-id) "turn-1"))
+          (should (plist-get (e-chat-activity-progress-state)
+                             :interval-active-p))
+          (with-current-buffer (e-chat-test--composer buffer)
+            (should (e-chat-composer-active-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -354,22 +351,18 @@
 
 (ert-deftest e-chat-test-mode-line-status-prefers-provider-token-usage ()
   "Mode-line status uses provider token usage before estimated context size."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness :session-id "chat-mode-line-usage")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-surface-set-redraw-visible t)
-          (e-session-append-activity-event
-           store
-           e-chat-session-id
-           "turn-1"
-           'token-usage
+          (e-chat-test--mark-active-turn "turn-1")
+          (e-harness-activity-emit-turn-event
+           e-chat-harness e-chat-session-id "turn-1" 'token-usage
            '(:input-tokens 202598
              :cached-input-tokens 7552
              :output-tokens 419
@@ -435,11 +428,9 @@
 
 (ert-deftest e-chat-test-set-status-skips-tool-option-materialization ()
   "Ordinary status updates avoid building full turn options."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -460,11 +451,9 @@
 
 (ert-deftest e-chat-test-token-usage-event-skips-tool-option-materialization ()
   "Fresh token-usage mode-line refresh avoids full tool option materialization."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -473,22 +462,15 @@
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-surface-set-redraw-visible t)
-          (e-session-append-activity-event
-           store
-           e-chat-session-id
-           "turn-1"
-           'token-usage
-           '(:input-tokens 1200 :total-tokens 1300))
+          (e-chat-test--mark-active-turn "turn-1")
           (cl-letf (((symbol-function 'e-harness-turn-options)
                      (lambda (&rest _args)
                        (setq turn-option-calls (1+ turn-option-calls))
                        (error "full turn options should be skipped"))))
-            (e-chat-render-event
-             (e-events-make :type 'token-usage
-                            :session-id e-chat-session-id
-                            :turn-id "turn-1"
-                            :payload '(:input-tokens 1200
-                                       :total-tokens 1300))))
+            (e-harness-activity-emit-turn-event
+             e-chat-harness e-chat-session-id "turn-1" 'token-usage
+             '(:input-tokens 1200 :total-tokens 1300))
+            (e-chat-surface-set-status "idle" t))
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)
                                    :owner 'chat-mode-line-status))
@@ -497,53 +479,28 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-compaction-finished-refreshes-context-estimate ()
-  "Finished compactions immediately refresh stale context estimates."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create
-                   :backend backend
-                   :sessions store
-                   :default-options
-                   '(:model "gpt-5.5" :reasoning-effort "high")))
-         (e-chat-context-token-estimate-bytes-per-token 1.0)
-         (buffer (e-chat-open :harness harness
-                              :session-id "chat-compaction-refresh")))
+(ert-deftest e-chat-test-compaction-finished-invalidates-detached-status-cache ()
+  "Finished compactions invalidate cached status and render visibly."
+  (let ((buffer (e-chat-test--buffer nil "chat-compaction-refresh")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-surface-set-redraw-visible t)
-          (e-session-append-message
-           store
-           e-chat-session-id
-           (list :id "old"
-                 :role 'user
-                 :content (make-string 1000 ?x)))
-          (e-session-append-message
-           store
-           e-chat-session-id
-           '(:id "kept" :role user :content "kept suffix"))
-          (e-chat-surface-set-status "idle" t)
-          (e-ui-work-with-batch-drain
-            (e-ui-work-drain-batch :buffer (current-buffer)
-                                   :owner 'chat-mode-line-status))
-          (should (string-match-p "~[0-9]+ pct" mode-name))
-          (let ((before mode-name))
-            (e-session-append-compaction
-             store
-             e-chat-session-id
-             "summary"
-             :first-kept-entry-id "kept")
-            (e-chat-render-event
-             (e-events-make :type 'compaction-finished
-                            :session-id e-chat-session-id
-                            :turn-id "turn-compact"
-                            :payload '(:compaction-id "compaction-1"
-                                       :first-kept-entry-id "kept")))
-            (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer (current-buffer)
-                                     :owner 'chat-mode-line-status))
-            (should (string-match-p "~[0-9]+ pct" mode-name))
-            (should-not (equal mode-name before))))
+          (setq-local e-chat-surface--mode-line-context-estimate-cache
+                      (cons '(:tokens 100 :time 1) nil)
+                      e-chat-surface--mode-line-context-status-cache
+                      (cons '(:text "stale" :time 1) nil))
+          (e-chat-render-event
+           (e-events-make :type 'compaction-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-compact"
+                          :payload '(:compaction-id "compaction-1"
+                                     :first-kept-entry-id "kept")))
+          (should (equal e-chat-surface--mode-line-context-estimate-cache
+                         '(nil)))
+          (should (equal e-chat-surface--mode-line-context-status-cache
+                         '(nil)))
+          (should (string-match-p "Context compacted into compaction-1"
+                                  (buffer-string))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -551,33 +508,43 @@
   "Manual compaction command renders visible progress and writes a summary."
   (let* ((backend (e-backend-create
                    :name 'summary
-                   :stream
+                   :start
                    (cl-function
-                    (lambda (&key messages options on-item)
+                    (lambda (&key messages options on-item on-done
+                                   on-request-start &allow-other-keys)
                       (ignore messages options)
-                      (funcall on-item
-                               '(:type assistant-message
-                                 :content "Compacted summary."))))))
+                      (let ((request (e-backend-request-create)))
+                        (funcall on-request-start request)
+                        (funcall on-item
+                                 '(:type assistant-message
+                                   :content "Compacted summary."))
+                        (funcall on-done '(:status done))
+                        request)))))
          (harness (e-harness-create :backend backend))
          (buffer (e-chat-open :harness harness :session-id "chat-compact")))
     (unwind-protect
         (with-current-buffer buffer
           (let ((store (e-harness-sessions e-chat-harness)))
-            (e-session-append-message store e-chat-session-id
-                                      '(:role user :content "old"))
-            (e-session-append-message store e-chat-session-id
-                                      '(:role assistant :content "old answer"))
-            (e-session-append-message store e-chat-session-id
-                                      '(:role user :content "new"))
+            (dolist (message '((:role user :content "old")
+                               (:role assistant :content "old answer")
+                               (:role user :content "new")))
+              (e-chat-settlement-test--await
+               (e-chat-service-append-seed-message
+                e-chat-harness e-chat-session-id message)))
             (e-chat-compact-session)
-            (should-not (e-session-local-compactions store e-chat-session-id))
             (should
              (e-chat-test--wait-until
               (lambda ()
-                (e-session-local-compactions store e-chat-session-id))))
+                (plist-get
+                 (e-chat-settlement-test--await
+                  (e-session-async-context-path store e-chat-session-id))
+                 :compaction))))
             (should (equal (plist-get
-                            (car (e-session-local-compactions
-                                  store e-chat-session-id))
+                            (plist-get
+                             (e-chat-settlement-test--await
+                              (e-session-async-context-path
+                               store e-chat-session-id))
+                             :compaction)
                             :summary)
                            "Compacted summary."))
             (should (e-chat-test--wait-until
@@ -618,7 +585,7 @@
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-board-progress-uses-presentation-turn-identity ()
-  "Board-private turn ids do not make presentation progress look stale."
+  "SQL Board events and live coordination share presentation turn identity."
   (let ((buffer (e-chat-test--buffer nil "chat-board-progress-identity"))
         harness
         session-id)
@@ -627,73 +594,38 @@
           (setq harness e-chat-harness
                 session-id e-chat-session-id)
           (let* ((binding (e-chat-service-binding harness session-id))
-                 (attachment (e-chat-service-binding-attachment binding))
                  (participant-id
-                  (e-board-registry-participant-id
-                   (e-board-runtime-attachment-participant attachment)))
-                 (board (e-board-registry-board-source-board
-                         (e-chat-service-binding-board binding)))
-                 (presentation-turn-id "msg-progress-input")
-                 (source-turn-id '(board participant source-turn))
-                 (author (format "participant:%s" participant-id)))
-            (e-board-post-input
-             board :id presentation-turn-id :author "test-client" :tags '(main)
-             :content "inspect" :source-input-key '(test-progress 1 0))
-            (puthash session-id
-                     (list :id source-turn-id :status 'running)
-                     (e-harness-active-turns harness))
-            (e-board-post-activity
-             board :id "progress-turn-started" :author author
-             :subject-participant-id participant-id
-             :source-turn-id source-turn-id :activity-kind 'turn-started
-             :tags '(main) :reply-to-message-ids (list presentation-turn-id)
-             :source-activity-key '(test-progress 1 1))
-            (e-board-post-activity
-             board :id "progress-provider-started" :author author
-             :subject-participant-id participant-id
-             :source-turn-id source-turn-id
-             :activity-kind 'provider-request-started :tags '(main)
-             :attributes '(:status started)
-             :reply-to-message-ids (list presentation-turn-id)
-             :source-activity-key '(test-progress 1 2))
-            (e-board-post-activity
-             board :id "progress-provider-finished" :author author
-             :subject-participant-id participant-id
-             :source-turn-id source-turn-id
-             :activity-kind 'provider-request-finished :tags '(main)
-             :attributes '(:status done)
-             :reply-to-message-ids (list presentation-turn-id)
-             :source-activity-key '(test-progress 1 3))
+                  (e-chat-service-binding-participant-id binding))
+                 (board-id (e-chat-service-binding-board-id binding))
+                 (presentation-turn-id "msg-progress-input"))
+            (e-chat-test--mark-active-turn presentation-turn-id)
             (e-chat-test--dispatch-observed-event
              (list :type 'turn-started
                    :session-id session-id
                    :turn-id presentation-turn-id
-                   :board-id (e-board-registry-board-id
-                              (e-chat-service-binding-board binding))
+                   :board-id board-id
                    :subject-participant-id participant-id
                    :selected-participant-p t
-                   :source-turn-id source-turn-id
+                   :source-turn-id presentation-turn-id
                    :created-at 0))
             (e-chat-test--dispatch-observed-event
              (list :type 'provider-request-started
                    :session-id session-id
                    :turn-id presentation-turn-id
-                   :board-id (e-board-registry-board-id
-                              (e-chat-service-binding-board binding))
+                   :board-id board-id
                    :subject-participant-id participant-id
                    :selected-participant-p t
-                   :source-turn-id source-turn-id
+                   :source-turn-id presentation-turn-id
                    :created-at 1
                    :payload '(:status started)))
             (e-chat-test--dispatch-observed-event
              (list :type 'provider-request-finished
                    :session-id session-id
                    :turn-id presentation-turn-id
-                   :board-id (e-board-registry-board-id
-                              (e-chat-service-binding-board binding))
+                   :board-id board-id
                    :subject-participant-id participant-id
                    :selected-participant-p t
-                   :source-turn-id source-turn-id
+                   :source-turn-id presentation-turn-id
                    :created-at 2
                    :payload '(:status done)))
             (e-ui-work-with-batch-drain

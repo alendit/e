@@ -821,11 +821,217 @@ activity persistence."
                     :backend-request
                     (plist-get metadata :backend-request))))))
 
-(cl-defun e-harness-compact-session-start
+(cl-defun e-harness-turn--compact-session-sqlite-start
     (harness session-id &key instructions keep-recent-tokens allow-active-turn
              (allow-split-turn 'inherit-active-turn) exclude-entry-ids turn-id
              (reason 'manual) on-done on-error)
-  "Start compacting SESSION-ID in HARNESS and return a cancellable request.
+  "Start SQL-backed compaction from one detached selected-path projection."
+  (when (and (not allow-active-turn)
+             (e-harness-turn-state-active-turn-running-p
+              (gethash session-id (e-harness-active-turns harness))))
+    (signal 'e-harness-active-turn-exists (list session-id)))
+  (let* ((turn-id (or turn-id (e-harness-turn--next-turn-id)))
+         (entry (gethash session-id (e-harness-active-turns harness)))
+         (query-state
+          (and entry
+               (equal (plist-get entry :id) turn-id)
+               (plist-get entry :session-query-state)))
+         source-work summary-work append-work
+         summary-parts summary-message summary-item-types
+         preparation settled cancelled)
+    (cl-labels
+        ((record-failure (err)
+           (e-harness-activity-emit-turn-event
+            harness session-id turn-id 'compaction-failed
+            (list :message (e-harness-turn--backend-error-message err)
+                  :details (e-harness-turn--backend-error-details err)
+                  :reason reason))
+           (when on-error (funcall on-error err)))
+         (fail (err)
+           (unless settled
+             (setq settled t)
+             (dolist (work (list source-work summary-work append-work))
+               (when (and (e-work-handle-p work)
+                          (not (e-request-terminal-p
+                                (e-work-handle-lifecycle work))))
+                 (ignore-errors (e-work-cancel work))))
+             (record-failure err)))
+         (publish-record (record)
+           (unless (or settled cancelled)
+             (setq settled t)
+             (e-harness-activity-emit-turn-event
+              harness session-id turn-id 'compaction-finished
+              (list :compaction-id (plist-get record :id)
+                    :portable-generation-id nil
+                    :reason (plist-get (plist-get record :metadata) :reason)
+                    :first-kept-entry-id
+                    (plist-get record :first-kept-entry-id)
+                    :tokens-before (plist-get record :tokens-before)
+                    :tokens-kept (plist-get record :tokens-kept)))
+             (when on-done (funcall on-done record))))
+         (append-summary (summary)
+           (condition-case err
+               (progn
+                 (setq append-work
+                       (e-session-append-compaction
+                        (e-harness-sessions harness) session-id summary
+                        :first-kept-entry-id
+                        (plist-get preparation :first-kept-entry-id)
+                        :tokens-before (plist-get preparation :tokens-before)
+                        :tokens-kept (plist-get preparation :tokens-kept)
+                        :metadata (plist-get preparation :metadata)))
+                 (e-work-on-settle
+                  append-work
+                  (lambda (work)
+                    (let ((status (e-work-status work)))
+                      (if (eq (plist-get status :state) 'finished)
+                          (publish-record (plist-get status :result))
+                        (fail (or (plist-get status :error)
+                                  '(e-compaction-error
+                                    "Compaction append cancelled"))))))))
+             (error (fail err))))
+         (finish-summary (_result)
+           (unless (or settled cancelled)
+             (condition-case err
+                 (let ((summary
+                        (string-trim
+                         (or summary-message
+                             (string-join (nreverse summary-parts) "")))))
+                   (when (string-empty-p summary)
+                     (signal
+                      'e-compaction-error
+                      (list "Compaction backend returned an empty summary"
+                            (list :item-types
+                                  (nreverse (delq nil summary-item-types))))))
+                   (let ((pending
+                          (seq-filter
+                           (lambda (work)
+                             (and (e-work-handle-p work)
+                                  (not (e-request-terminal-p
+                                        (e-work-handle-lifecycle work)))))
+                           (copy-sequence
+                            (and entry
+                                 (plist-get entry :persistence-works))))))
+                     (if (null pending)
+                         (append-summary summary)
+                       (e-work-await-set
+                        pending :mode 'all
+                        :on-settle
+                        (lambda (set-status)
+                          (let ((failed
+                                 (seq-find
+                                  (lambda (work)
+                                    (not (eq (plist-get (e-work-status work)
+                                                        :state)
+                                             'finished)))
+                                  (plist-get set-status :done))))
+                            (if failed
+                                (fail
+                                 (or (plist-get (e-work-status failed) :error)
+                                     '(e-compaction-error
+                                       "Compaction dependency cancelled")))
+                              (append-summary summary))))))))
+               (error (fail err)))))
+         (start-summary (path)
+           (condition-case err
+               (progn
+                 (setq preparation
+                       (e-compaction-prepare-detached
+                        session-id
+                        (plist-get path :messages)
+                        (or (plist-get path :compaction)
+                            (plist-get path :latest-valid-compaction))
+                        :instructions instructions
+                        :keep-recent-tokens keep-recent-tokens
+                        :allow-split-turn
+                        (if (eq allow-split-turn 'inherit-active-turn)
+                            allow-active-turn
+                          allow-split-turn)
+                        :exclude-entry-ids exclude-entry-ids
+                        :reason reason))
+                 (e-harness-activity-emit-turn-event
+                  harness session-id turn-id 'compaction-prepared
+                  (list :first-kept-entry-id
+                        (plist-get preparation :first-kept-entry-id)
+                        :reason reason
+                        :tokens-before (plist-get preparation :tokens-before)
+                        :tokens-kept (plist-get preparation :tokens-kept)))
+                 (e-harness-activity-emit-turn-event
+                  harness session-id turn-id 'compaction-summary-started
+                  (list :backend t :reason reason))
+                 (setq summary-work
+                       (e-work-start
+                        (e-work-spec-create
+                         :id "compact_session_sqlite"
+                         :description "Summarize detached SQLite context."
+                         :execution 'backend :interactive-policy 'async
+                         :owner 'harness
+                         :backend (lambda (_arguments _context)
+                                    (e-harness-backend harness))
+                         :messages
+                         (lambda (_arguments _context)
+                           (e-compaction-prepared-summary-messages preparation))
+                         :options
+                         (lambda (_arguments _context)
+                           (e-harness-context-options-without-tools
+                            (e-harness-context-runtime--merge-turn-options
+                             (e-harness-default-options harness)
+                             (plist-get path :turn-options))))
+                         :item-handler
+                         (lambda (_handle item _arguments _context)
+                           (unless (or settled cancelled)
+                             (push (plist-get item :type) summary-item-types)
+                             (pcase (plist-get item :type)
+                               ('assistant-message
+                                (setq summary-message
+                                      (plist-get item :content)))
+                               ('assistant-delta
+                                (push (or (plist-get item :content) "")
+                                      summary-parts))))))
+                        nil
+                        :context (list :session-id session-id :turn-id turn-id)
+                        :on-done #'finish-summary
+                        :on-error #'fail)))
+             (error (fail err))))
+         (cancel ()
+           (unless settled
+             (setq cancelled t settled t)
+             (dolist (work (list source-work summary-work append-work))
+               (when (and (e-work-handle-p work)
+                          (not (e-request-terminal-p
+                                (e-work-handle-lifecycle work))))
+                 (ignore-errors (e-work-cancel work))))
+             (record-failure (list 'quit "Context compaction cancelled")))
+           t))
+      (e-harness-activity-emit-turn-event
+       harness session-id turn-id 'compaction-started
+       (list :instructions instructions :reason reason
+             :active-turn allow-active-turn))
+      (if query-state
+          (start-summary query-state)
+        (setq source-work
+              (e-session-async-context-path
+               (e-harness-sessions harness) session-id))
+        (e-work-on-settle
+         source-work
+         (lambda (work)
+           (let ((status (e-work-status work)))
+             (if (eq (plist-get status :state) 'finished)
+                 (start-summary (plist-get status :result))
+               (fail (or (plist-get status :error)
+                         '(e-compaction-error
+                           "Compaction context query cancelled"))))))))
+      (e-backend-request-create
+       :cancel #'cancel
+       :metadata (list :operation 'compaction :session-id session-id
+                       :turn-id turn-id
+                       :work-handle (or source-work summary-work append-work))))))
+
+(cl-defun e-harness-turn--compact-session-local-start
+    (harness session-id &key instructions keep-recent-tokens allow-active-turn
+             (allow-split-turn 'inherit-active-turn) exclude-entry-ids turn-id
+             (reason 'manual) on-done on-error)
+  "Start compacting local SESSION-ID in HARNESS and return a cancellable request.
 ON-DONE receives the durable compaction record.  ON-ERROR receives an Emacs
 condition list.  Preparation errors are reported before return by signaling and
 also emitting the normal compaction failure event."
@@ -1013,6 +1219,26 @@ also emitting the normal compaction failure event."
         (error
          (record-failure err)
          (signal (car err) (cdr err)))))))
+
+(cl-defun e-harness-compact-session-start
+    (harness session-id &key instructions keep-recent-tokens allow-active-turn
+             (allow-split-turn 'inherit-active-turn) exclude-entry-ids turn-id
+             (reason 'manual) on-done on-error)
+  "Start compacting SESSION-ID without blocking interactive callers."
+  (apply
+   (if (e-session-async-enabled-p (e-harness-sessions harness))
+       #'e-harness-turn--compact-session-sqlite-start
+     #'e-harness-turn--compact-session-local-start)
+   harness session-id
+   (append
+    (list :instructions instructions
+          :keep-recent-tokens keep-recent-tokens
+          :allow-active-turn allow-active-turn
+          :allow-split-turn allow-split-turn
+          :exclude-entry-ids exclude-entry-ids
+          :turn-id turn-id :reason reason)
+    (when on-done (list :on-done on-done))
+    (when on-error (list :on-error on-error)))))
 (defun e-harness-turn--auto-compaction-reserve-tokens ()
   "Return a normalized auto-compaction reserve."
   (if (and (integerp e-harness-auto-compaction-reserve-tokens)
@@ -1020,22 +1246,52 @@ also emitting the normal compaction failure event."
       e-harness-auto-compaction-reserve-tokens
     16384))
 
+(defun e-harness-turn--auto-compaction-query-state (harness session-id)
+  "Return SESSION-ID's bounded executing query state, or nil."
+  (e-harness-executing-session-state harness session-id))
+
+(defun e-harness-turn--auto-compaction-messages (harness session-id)
+  "Return messages available to auto-compaction policy for SESSION-ID."
+  (let ((store (e-harness-sessions harness)))
+    (if (e-session-async-enabled-p store)
+        (plist-get (e-harness-turn--auto-compaction-query-state
+                    harness session-id)
+                   :messages)
+      (e-session-local-messages store session-id))))
+
+(defun e-harness-turn--auto-compaction-latest (harness session-id)
+  "Return the latest compaction available to policy for SESSION-ID."
+  (let ((store (e-harness-sessions harness)))
+    (if (e-session-async-enabled-p store)
+        (plist-get (e-harness-turn--auto-compaction-query-state
+                    harness session-id)
+                   :latest-valid-compaction)
+      (e-session-local-latest-valid-compaction store session-id))))
+
 (defun e-harness-turn--auto-compaction-suffix-tokens (harness session-id compaction)
   "Return estimated current suffix tokens since COMPACTION."
   (let* ((boundary-id (plist-get compaction :first-kept-entry-id))
-         (entries (and boundary-id
-                       (cdr (e-session-local-entries-from
-                             (e-harness-sessions harness)
-                             session-id
-                             boundary-id)))))
+         (store (e-harness-sessions harness))
+         (entries
+          (if (e-session-async-enabled-p store)
+              (when boundary-id
+                (let ((tail
+                       (seq-drop-while
+                        (lambda (message)
+                          (not (equal (plist-get message :id) boundary-id)))
+                        (e-harness-turn--auto-compaction-messages
+                         harness session-id))))
+                  (cdr tail)))
+            (and boundary-id
+                 (cdr (e-session-local-entries-from
+                       store session-id boundary-id))))))
     (when entries
       (apply #'+ (mapcar #'e-compaction-entry-token-estimate entries)))))
 
 (defun e-harness-turn--auto-compaction-no-progress-p (harness session-id)
   "Return non-nil when another auto-compaction would not move the boundary."
-  (when-let ((latest (e-session-local-latest-valid-compaction
-                      (e-harness-sessions harness)
-                      session-id)))
+  (when-let ((latest (e-harness-turn--auto-compaction-latest
+                      harness session-id)))
     (let ((suffix-tokens
            (e-harness-turn--auto-compaction-suffix-tokens
             harness session-id latest))
@@ -1052,7 +1308,7 @@ also emitting the normal compaction failure event."
       (cl-remove-if
        (lambda (message)
          (member (plist-get message :id) exclude-entry-ids))
-       (e-session-local-messages (e-harness-sessions harness) session-id)))
+       (e-harness-turn--auto-compaction-messages harness session-id)))
      1))
 
 (defun e-harness-turn--auto-compaction-needed-p (harness session-id &optional context)
@@ -1284,6 +1540,37 @@ provider or loop failure."
                  (signal (car err) (cdr err))))
              (when (eq state 'cancelled)
                (signal 'e-work-cancelled (list append-result)))
+             ;; The executing turn may need an exact causal boundary (for
+             ;; example, a model-requested compaction) before these optimistic
+             ;; messages are durable.  Retain only its unsettled write handles
+             ;; and bounded selected-path message projection.
+             (when-let* ((entry
+                          (gethash session-id
+                                   (e-harness-active-turns harness))))
+               (when (equal (plist-get entry :id) turn-id)
+                 (push append-result (plist-get entry :persistence-works))
+                 (when-let* ((query-state
+                              (plist-get entry :session-query-state)))
+                   (let ((messages (plist-get query-state :messages)))
+                     (unless (seq-some
+                              (lambda (existing)
+                                (equal (plist-get existing :id)
+                                       (plist-get message :id)))
+                              messages)
+                       (plist-put query-state :messages
+                                  (append messages
+                                          (list (copy-tree message t)))))))
+                 (e-work-on-settle
+                  append-result
+                  (lambda (_settled)
+                    (when-let* ((current
+                                 (gethash session-id
+                                          (e-harness-active-turns harness))))
+                      (when (equal (plist-get current :id) turn-id)
+                        (plist-put
+                         current :persistence-works
+                         (delq append-result
+                               (plist-get current :persistence-works)))))))))
              ;; Provider context causally depends on the durable user input.
              ;; Retain only this live turn's append handle and start the query
              ;; from its explicit commit acknowledgement.
@@ -1841,13 +2128,40 @@ cancellation.  SESSION-ID identifies the session."
                       ;; result would attempt aggregate reconstruction for an
                       ;; async SQLite session.
                       frame)))
-                :on-tool-observation-presentation
-                (lambda (payload)
-                  (when (and (active-entry-p)
-                             (not (plist-get entry :cancelled)))
-                    (e-harness-context-lifetime-present-tool-observation
-                     payload)))
-                :context context)))
+	                :on-tool-observation-presentation
+	                (lambda (payload)
+	                  (when (and (active-entry-p)
+	                             (not (plist-get entry :cancelled)))
+	                    (e-harness-context-lifetime-present-tool-observation
+	                     payload)))
+	                :context context)))
+	            (resume-after-auto-compaction
+	             ()
+	             (if (not (e-session-async-enabled-p
+	                       (e-harness-sessions harness)))
+	                 (start-provider
+	                  (e-harness-turn-context harness session-id turn-id))
+	               (let ((work
+	                      (e-harness-turn-context-start
+	                       harness session-id turn-id)))
+	                 (plist-put entry :context-work work)
+	                 (e-work-on-settle
+	                  work
+	                  (lambda (settled)
+	                    (when (active-entry-p)
+	                      (plist-put entry :context-work nil)
+	                      (let ((status (e-work-status settled)))
+	                        (pcase (plist-get status :state)
+	                          ('finished
+	                           (unless (plist-get entry :cancelled)
+	                             (start-provider (plist-get status :result))))
+	                          ('failed
+	                           (finish-error (plist-get status :error)))
+	                          ('cancelled
+	                           (unless (plist-get entry :cancelled)
+	                             (finish-error
+	                              (list 'e-work-cancelled
+	                                    "Turn context query cancelled"))))))))))))
 	            (start-auto-compaction
 	             (context)
 	             (condition-case err
@@ -1868,9 +2182,7 @@ cancellation.  SESSION-ID identifies the session."
 	                       (setq compaction-settled t)
 	                       (when (and (active-entry-p)
 	                                  (not (plist-get entry :cancelled)))
-	                         (start-provider
-	                          (e-harness-turn-context
-	                           harness session-id turn-id))))
+	                         (resume-after-auto-compaction)))
 	                     :on-error
 	                     (lambda (err)
 	                       (setq compaction-settled t)
@@ -1909,8 +2221,18 @@ cancellation.  SESSION-ID identifies the session."
 	                            (pcase (plist-get status :state)
 	                              ('finished
 	                               (unless (plist-get entry :cancelled)
-	                                 (start-provider
-	                                  (plist-get status :result))))
+	                                 (let* ((context (plist-get status :result))
+	                                        (excluded
+	                                         (list
+	                                          (plist-get
+	                                           entry :prompt-message-id))))
+	                                   (if (and
+	                                        (e-harness-turn--auto-compaction-needed-p
+	                                         harness session-id context)
+	                                        (e-harness-turn--auto-compaction-useful-prefix-p
+	                                         harness session-id excluded))
+	                                       (start-auto-compaction context)
+	                                     (start-provider context)))))
 	                              ('failed
 	                               (finish-error
 	                                (plist-get status :error)))

@@ -335,26 +335,26 @@ even when the legacy summarizer selected them for its own request."
               (push entry result))))))
     (nreverse result)))
 
-(cl-defun e-compaction-prepare
-    (store session-id &key keep-recent-tokens instructions allow-split-turn
-           exclude-entry-ids (reason 'manual) portable)
-  "Prepare compaction data for SESSION-ID in STORE.
+(cl-defun e-compaction-prepare-detached
+    (session-id messages previous &key keep-recent-tokens instructions
+                allow-split-turn exclude-entry-ids (reason 'manual))
+  "Prepare compaction data from detached bounded MESSAGES and PREVIOUS.
 
-When PORTABLE is non-nil, also capture the opt-in provider-neutral input and
-summary request.  The default path deliberately does not build or decode any
-portable generation data."
+This is the SQL-facing pure policy boundary.  MESSAGES is one selected-path
+query result plus bounded optimistic messages owned by the executing turn;
+PREVIOUS is that query's latest valid compaction."
   (let* ((keep (or keep-recent-tokens e-compaction-keep-recent-tokens))
-         (entries (cl-remove-if
-                   (lambda (entry)
-                     (member (plist-get entry :id) exclude-entry-ids))
-                   (e-compaction--message-entries store session-id)))
-         (previous (e-session-local-latest-valid-compaction store session-id))
+         (entries
+          (cl-remove-if
+           (lambda (entry)
+             (member (plist-get entry :id) exclude-entry-ids))
+           (mapcar
+            (lambda (message)
+              (let ((entry (copy-tree message t)))
+                (plist-put entry :type 'message)
+                entry))
+            messages)))
          (previous-boundary (plist-get previous :first-kept-entry-id))
-         ;; Prefer a clean user-message boundary.  When none is available, fall
-         ;; back to assistant/tool-call boundaries: a long single agentic turn
-         ;; has only one user message, so a user-only search returns nil and the
-         ;; context could never compact otherwise.  `allow-split-turn' is kept
-         ;; as a parameter for callers/tests but no longer gates the fallback.
          (boundary
           (or (e-compaction--select-boundary
                entries keep '(user) previous-boundary)
@@ -372,47 +372,64 @@ portable generation data."
       (unless to-summarize
         (signal 'e-compaction-error
                 (list "Selected boundary would not compact any new messages")))
-      (let* ((tokens-before (apply #'+ (mapcar #'e-compaction-entry-token-estimate
-                                               to-summarize)))
-             (tokens-kept (apply #'+ (mapcar #'e-compaction-entry-token-estimate
-                                             to-keep)))
-             (resources (e-compaction--affected-resources to-summarize))
+      (list :session-id session-id
+            :first-kept-entry-id boundary-id
+            :summary-input (e-compaction--serialize-entries to-summarize)
+            :tokens-before
+            (apply #'+ (mapcar #'e-compaction-entry-token-estimate to-summarize))
+            :tokens-kept
+            (apply #'+ (mapcar #'e-compaction-entry-token-estimate to-keep))
+            :metadata
+            (list :reason reason
+                  :instructions instructions
+                  :previous-compaction-id (plist-get previous :id)
+                  :previous-summary (plist-get previous :summary)
+                  :boundary-role boundary-role
+                  :split-turn (not (eq boundary-role 'user))
+                  :compacted-entry-count (length to-summarize)
+                  :kept-entry-count (length to-keep)
+                  :affected-resources
+                  (e-compaction--affected-resources to-summarize))))))
+
+(cl-defun e-compaction-prepare
+    (store session-id &key keep-recent-tokens instructions allow-split-turn
+           exclude-entry-ids (reason 'manual) portable)
+  "Prepare compaction data for SESSION-ID in local STORE.
+
+When PORTABLE is non-nil, also capture the opt-in provider-neutral input and
+summary request.  The default path deliberately does not build or decode any
+portable generation data."
+  (let* ((entries (e-compaction--message-entries store session-id))
+         (previous (e-session-local-latest-valid-compaction store session-id))
+         (result
+          (e-compaction-prepare-detached
+           session-id entries previous
+           :keep-recent-tokens keep-recent-tokens
+           :instructions instructions
+           :allow-split-turn allow-split-turn
+           :exclude-entry-ids exclude-entry-ids
+           :reason reason)))
+    (if (not portable)
+        result
+      (let* ((boundary-id (plist-get result :first-kept-entry-id))
+             (previous-boundary (plist-get previous :first-kept-entry-id))
+             (to-summarize
+              (e-compaction--entries-between entries previous-boundary boundary-id))
              (portable-summarized-entries
-              (when portable
-                (e-compaction--portable-summarized-entries
-                 store session-id to-summarize exclude-entry-ids)))
+              (e-compaction--portable-summarized-entries
+               store session-id to-summarize exclude-entry-ids))
              (portable-input
-              (when portable
+              (progn
                 (unless portable-summarized-entries
                   (signal 'e-compaction-error
                           (list "No eligible durable portable boundary")))
                 (e-compaction-portable-input
                  store session-id portable-summarized-entries
-                 (plist-get (car (last portable-summarized-entries)) :id))))
-             (result
-              (list :session-id session-id
-                    :first-kept-entry-id boundary-id
-                    :summary-input (e-compaction--serialize-entries to-summarize)
-                    :tokens-before tokens-before
-                    :tokens-kept tokens-kept
-                    :metadata
-                    (list :reason reason
-                          :instructions instructions
-                          :previous-compaction-id (plist-get previous :id)
-                          :previous-summary (plist-get previous :summary)
-                          :boundary-role boundary-role
-                          :split-turn (not (eq boundary-role 'user))
-                          :compacted-entry-count (length to-summarize)
-                          :kept-entry-count (length to-keep)
-                          :affected-resources resources))))
-        (if portable
-            (progn
-              (plist-put result :portable-input portable-input)
-              (plist-put result :summary-messages
-                         (e-compaction-portable-summary-messages
-                          portable-input))
-              result)
-          result)))))
+                 (plist-get (car (last portable-summarized-entries)) :id)))))
+        (plist-put result :portable-input portable-input)
+        (plist-put result :summary-messages
+                   (e-compaction-portable-summary-messages portable-input))
+        result))))
 
 (defun e-compaction-portable-input
     (store session-id summarized-entries covered-session-boundary)

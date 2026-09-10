@@ -53,10 +53,15 @@ open/resume/recovery semantics."
   prepare-harness-function
   attachment-function
   session-reference-function
-  session-matches-function
   initialize-session-function
   bind-session-function
   present-session-function)
+
+(defvar-local e-canvas-session-id nil
+  "Process-local session identity attached to this base Canvas buffer.")
+
+(defvar-local e-canvas-harness nil
+  "Process-local harness attached to this base Canvas buffer.")
 
 (defun e-canvas--default-harness ()
   "Return the default chat harness used by canvas commands."
@@ -94,56 +99,27 @@ open/resume/recovery semantics."
           :label (file-name-nondirectory file)
           :file file)))
 
-(defun e-canvas--session-canvas-attachment (harness session-id)
-  "Return SESSION-ID's primary canvas attachment in HARNESS, or nil."
+(defun e-canvas--session-canvas-attachment (metadata)
+  "Return the primary canvas attachment in detached session METADATA."
   (seq-find (lambda (attachment)
               (plist-get attachment :canvas))
-            (e-chat-session-attachments harness session-id)))
+            (e-chat-session-metadata-attachments metadata)))
 
-(defun e-canvas--catalog-session-canvas-attachment (session)
-  "Return SESSION catalog metadata's primary canvas attachment, or nil.
-Malformed metadata is a nonmatch here: a generic buffer owns no durable
-reference that would justify failing or prompting for this historical session."
-  (condition-case nil
-      (seq-find (lambda (attachment)
-                  (plist-get attachment :canvas))
-                (e-chat-session-metadata-attachments
-                 (plist-get session :metadata)))
-    (user-error nil)))
-
-(defun e-canvas--session-canvas-buffer (harness session-id)
-  "Return the live canvas buffer for SESSION-ID in HARNESS, or nil.
+(defun e-canvas--session-canvas-buffer (metadata)
+  "Return the live canvas buffer described by detached METADATA, or nil.
 Prefer an existing buffer; otherwise visit a file-backed canvas on
 demand."
-  (when-let ((attachment (e-canvas--session-canvas-attachment
-                          harness session-id)))
+  (when-let ((attachment (e-canvas--session-canvas-attachment metadata)))
     (or (e-chat-session-attachment-live-buffer attachment)
         (when-let ((file (plist-get attachment :file)))
           (and (file-readable-p file)
                (find-file-noselect file))))))
 
 (defun e-canvas--buffer-canvas-session (harness buffer)
-  "Return a session id in HARNESS whose canvas is BUFFER, or nil.
-Match on buffer identity, recorded buffer name, or canvas URI so
-file-backed canvases resolve even without a recorded live buffer."
-  (catch 'session
-    ;; The base kind has no durable document reference.  Its implementation of
-    ;; the shared reference contract therefore exposes process-live reverse
-    ;; associations only and never hydrates historical sessions for discovery.
-    (dolist (session (seq-filter
-                      (lambda (candidate)
-                        (plist-get candidate :loaded))
-                      (e-harness-session-list harness)))
-      (when (e-canvas--session-matches-buffer-p session buffer)
-        (throw 'session (plist-get session :id))))))
-
-(defun e-canvas--session-matches-buffer-p (session buffer)
-  "Return non-nil when SESSION's catalog canvas belongs to BUFFER."
-  (when-let ((attachment
-              (e-canvas--catalog-session-canvas-attachment session)))
-    (or (eq (e-chat-session-attachment-live-buffer attachment) buffer)
-        (equal (plist-get attachment :buffer-name) (buffer-name buffer))
-        (equal (plist-get attachment :uri) (e-canvas--buffer-uri buffer)))))
+  "Return BUFFER's process-local session id when owned by HARNESS."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (and (eq e-canvas-harness harness) e-canvas-session-id))))
 
 (defun e-canvas--display-buffer-to-side (buffer)
   "Display BUFFER in a side pane next to the current window.
@@ -187,10 +163,11 @@ canvas sessions share one chat pane."
   (e-chat-session-rename
    harness session-id (format "Canvas: %s" (e-canvas--buffer-label buffer))))
 
-(defun e-canvas--bind-session (_harness _session-id _buffer _options)
-  "Bind a base Canvas session.
-The attachment itself is the base Canvas's process-live association."
-  nil)
+(defun e-canvas--bind-session (harness session-id buffer _options)
+  "Bind a base Canvas BUFFER to live HARNESS and SESSION-ID coordination."
+  (with-current-buffer buffer
+    (setq-local e-canvas-harness harness)
+    (setq-local e-canvas-session-id (copy-sequence session-id))))
 
 (defun e-canvas--present-session (buffer chat-buffer display)
   "Present base Canvas BUFFER and CHAT-BUFFER when DISPLAY is non-nil."
@@ -207,18 +184,10 @@ The attachment itself is the base Canvas's process-live association."
    :prepare-harness-function #'e-canvas--identity-prepare-harness
    :attachment-function #'e-canvas--buffer-attachment
    :session-reference-function #'e-canvas--buffer-canvas-session
-   :session-matches-function #'e-canvas--session-matches-buffer-p
    :initialize-session-function #'e-canvas--initialize-session
    :bind-session-function #'e-canvas--bind-session
    :present-session-function #'e-canvas--present-session)
   "Base Canvas kind used by generic buffer and file canvases.")
-
-(defun e-canvas--catalog-session (harness session-id)
-  "Return HARNESS catalog entry for SESSION-ID, or nil."
-  (and session-id
-       (seq-find (lambda (session)
-                   (equal (plist-get session :id) session-id))
-                 (e-harness-session-list harness))))
 
 (defun e-canvas--reference-current-p (kind harness buffer session-id)
   "Return non-nil when KIND still references HARNESS SESSION-ID from BUFFER."
@@ -325,22 +294,23 @@ OPTIONS belong to KIND, and DISPLAY controls presentation."
      kind harness session-id buffer options attachment admission-work)
     chat-buffer))
 
-(defun e-canvas--recover-unavailable-session
-    (kind harness buffer session-id condition options display)
-  "Offer to replace KIND's unavailable HARNESS SESSION-ID for BUFFER."
+(defun e-canvas--recover-session-reference
+    (kind harness buffer session-id reason condition options display)
+  "Offer to replace KIND's invalid HARNESS SESSION-ID for BUFFER.
+REASON and CONDITION describe the failed reference validation."
   (when (e-canvas--reference-current-p kind harness buffer session-id)
     (if (e-canvas--confirm-session-replacement
-         kind buffer session-id 'unavailable condition)
+         kind buffer session-id reason condition)
         (e-canvas--create-and-open-session
          kind harness buffer options display)
-      (message "Kept unavailable %s session reference %s"
+      (message "Kept invalid %s session reference %s"
                (e-canvas-kind-name kind) session-id))))
 
 (defun e-canvas--schedule-session-recovery
-    (kind harness buffer session-id condition options display)
+    (kind harness buffer session-id condition options display &optional reason)
   "Schedule UI recovery for KIND's unavailable HARNESS SESSION-ID for BUFFER.
 CONDITION is the load failure, OPTIONS belong to KIND, and DISPLAY controls
-replacement-session presentation."
+replacement-session presentation.  REASON defaults to `unavailable'."
   (when (buffer-live-p buffer)
     (e-ui-work-schedule
      (e-ui-work-spec-create
@@ -359,8 +329,9 @@ replacement-session presentation."
               kind harness buffer session-id)))
       :apply
       (lambda (_job _handle)
-        (e-canvas--recover-unavailable-session
-         kind harness buffer session-id condition options display))))))
+        (e-canvas--recover-session-reference
+         kind harness buffer session-id (or reason 'unavailable)
+         condition options display))))))
 
 (cl-defun e-canvas-open-buffer
     (kind buffer &key (session-id nil session-id-supplied-p)
@@ -383,49 +354,27 @@ owned by KIND, and DISPLAY requests that KIND present the opened session."
               session-id
               (funcall (e-canvas-kind-session-reference-function kind)
                        harness buffer))))
-         (persistent-query-p
-          (and reference
-               (e-session-storage-sqlite-p
-                (e-harness-sessions harness))))
          ;; A live chat buffer is presentation state with an immediate use:
          ;; preserve its subscriber/composer/controller lifetime.  It is not
          ;; a durable session replica and requires no SQLite lookup.
          (live-chat
           (and reference
-               (e-chat--find-session-buffer reference harness)))
-         ;; Catalog projections belong to the legacy synchronous store.  A
-         ;; v6 reference is validated by the bounded chat-view query started
-         ;; below; enumerating an in-memory catalog here would both block and
-         ;; reconstruct the file-store architecture SQLite replaced.
-         (session (unless (or live-chat persistent-query-p)
-                    (e-canvas--catalog-session harness reference)))
-         (matching
-          (and session
-               (funcall (e-canvas-kind-session-matches-function kind)
-                        session buffer))))
+               (e-chat--find-session-buffer reference harness))))
+    (unless (e-session-storage-sqlite-p (e-harness-sessions harness))
+      (signal 'e-session-storage-error
+              (list "Public Canvas requires SQLite" reference)))
     (cond
      (live-chat
       (funcall (e-canvas-kind-bind-session-function kind)
                harness reference buffer options)
       (funcall (e-canvas-kind-present-session-function kind)
                buffer live-chat display))
-     ((and reference persistent-query-p)
+     (reference
       ;; Open first; the chat surface requests exact metadata, association,
       ;; and visible messages asynchronously and reports an invalid reference
       ;; through its existing recovery callback.
       (e-canvas--bind-and-open-session
        kind harness reference buffer options display))
-     (matching
-      (e-canvas--bind-and-open-session
-       kind harness reference buffer options display))
-     (reference
-      (unless (e-canvas--confirm-session-replacement
-               kind buffer reference
-               (if session 'different-buffer 'missing))
-        (user-error "%s session %s was not replaced"
-                    (e-canvas-kind-name kind) reference))
-      (e-canvas--create-and-open-session
-       kind harness buffer options display))
      (t
       (e-canvas--create-and-open-session
        kind harness buffer options display)))))
@@ -461,21 +410,29 @@ Its durable creation remains pending until the user's first input is admitted
 atomically; callers must not issue a dependent session mutation before then."
   (cond
    ((and (derived-mode-p 'e-chat-mode) e-chat-session-id)
-    (list :session-id e-chat-session-id))
+    (list :session-id e-chat-session-id
+          :metadata (copy-tree e-chat-session-metadata t)))
    (candidates
-    (if-let ((session-id
-              (e-canvas--read-session
-               (mapcar (lambda (candidate) (plist-get candidate :session))
-                       candidates)
-               "Attach canvas context to e session: ")))
-        (list :session-id session-id)
+    (let* ((sessions
+            (mapcar (lambda (candidate) (plist-get candidate :session))
+                    candidates))
+           (session-id
+            (e-canvas--read-session
+             sessions "Attach canvas context to e session: ")))
+      (if session-id
+          (let ((session (seq-find
+                          (lambda (candidate)
+                            (equal (plist-get candidate :id) session-id))
+                          sessions)))
+            (list :session-id session-id
+                  :metadata (copy-tree (plist-get session :metadata) t)))
       (let* ((session-id (e-session-generate-id))
              (buffer (e-chat-open :harness harness :session-id session-id
                                   :new-session t)))
         (e-chat-surface-pop-to-buffer buffer)
         (list :session-id session-id :new-session t :buffer buffer
               :creation-work
-              (buffer-local-value 'e-chat--session-readiness-work buffer)))))
+              (buffer-local-value 'e-chat--session-readiness-work buffer))))))
    (t
     (let* ((session-id (e-session-generate-id))
            (buffer (e-chat-open :harness harness :session-id session-id
@@ -488,7 +445,9 @@ atomically; callers must not issue a dependent session mutation before then."
 (defun e-canvas--attach-after-query (harness attachment canvas)
   "Attach ATTACHMENT after a bounded session query for HARNESS settles."
   (if (and (derived-mode-p 'e-chat-mode) e-chat-session-id)
-      (e-canvas--attach harness e-chat-session-id attachment canvas)
+      (e-canvas--attach
+       harness e-chat-session-id attachment canvas
+       (e-chat-session-metadata-attachments e-chat-session-metadata))
     (let ((page-work (e-chat-session-candidates-start harness)))
       (e-work-on-settle
        page-work
@@ -510,14 +469,20 @@ atomically; callers must not issue a dependent session mutation before then."
                       (when (eq (plist-get (e-work-status created) :state)
                                 'finished)
                         (e-canvas--attach
-                         harness session-id attachment canvas))))
-                 (e-canvas--attach harness session-id attachment canvas)))))))
-      page-work)))
+                         harness session-id attachment canvas nil))))
+                 (e-canvas--attach
+                  harness session-id attachment canvas
+                  (e-chat-session-metadata-attachments
+                   (plist-get target :metadata))))))))
+      page-work))))
 
-(defun e-canvas--attach (harness session-id attachment &optional canvas)
-  "Attach ATTACHMENT to HARNESS SESSION-ID and optionally mark it CANVAS."
+(defun e-canvas--attach
+    (harness session-id attachment &optional canvas current-attachments)
+  "Attach ATTACHMENT to HARNESS SESSION-ID from detached CURRENT-ATTACHMENTS.
+When CANVAS is non-nil, mark ATTACHMENT as the primary canvas."
   (prog1 (e-chat-session-attach-context
-           harness session-id attachment :canvas canvas)
+           harness session-id attachment :canvas canvas
+           :current-attachments current-attachments)
     (message "Attached %s to e session %s"
              (plist-get attachment :label)
              session-id)))
@@ -542,8 +507,7 @@ attachment."
   (interactive)
   (unless (and (derived-mode-p 'e-chat-mode) e-chat-session-id)
     (user-error "Not in an e chat buffer"))
-  (let* ((harness (or e-chat-harness (e-canvas--default-harness)))
-         (buffer (e-canvas--session-canvas-buffer harness e-chat-session-id)))
+  (let ((buffer (e-canvas--session-canvas-buffer e-chat-session-metadata)))
     (unless buffer
       (user-error "This chat session has no canvas attached"))
     (e-canvas--display-buffer-to-side buffer)))

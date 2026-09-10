@@ -3,7 +3,7 @@
 (require 'ert)
 (require 'json)
 (require 'e-board)
-(require 'e-board-orchestration)
+(require 'e-board-orchestration-engine)
 
 (defun e-board-orchestration-test--fact (type key payload)
   (list :version 1 :type type :idempotency-key key :payload payload))

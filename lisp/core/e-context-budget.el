@@ -19,8 +19,6 @@
 (require 'e-session)
 (require 'e-session-async)
 
-(declare-function e-session-local-latest-token-usage-event "e-session")
-
 (defcustom e-context-budget-model-token-limits
   '(("claude-sonnet-5" . 364000)
     ("gpt-5.6" . 353400)
@@ -81,18 +79,26 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
 (defun e-context-budget--latest-token-usage-event (harness session-id)
   "Return latest durable provider token usage event for SESSION-ID."
   (when (and harness session-id)
-    (ignore-errors
-      (e-session-local-latest-token-usage-event
-       (e-harness-sessions harness)
-       session-id))))
+    (let ((store (e-harness-sessions harness)))
+      (if (e-session-async-enabled-p store)
+          (copy-tree
+           (plist-get (e-harness-executing-session-state harness session-id)
+                      :latest-token-usage-event)
+           t)
+        (ignore-errors
+          (e-session-local-latest-token-usage-event store session-id))))))
 
 (defun e-context-budget--latest-valid-compaction (harness session-id)
   "Return latest valid compaction for SESSION-ID."
   (when (and harness session-id)
-    (ignore-errors
-      (e-session-local-latest-valid-compaction
-       (e-harness-sessions harness)
-       session-id))))
+    (let ((store (e-harness-sessions harness)))
+      (if (e-session-async-enabled-p store)
+          (copy-tree
+           (plist-get (e-harness-executing-session-state harness session-id)
+                      :latest-valid-compaction)
+           t)
+        (ignore-errors
+          (e-session-local-latest-valid-compaction store session-id))))))
 
 (defun e-context-budget-session-exists-p (harness session-id)
   "Return non-nil when HARNESS has SESSION-ID."
@@ -100,9 +106,10 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
        session-id
        (let ((store (e-harness-sessions harness)))
          (if (e-session-async-enabled-p store)
-             ;; Status redisplay is not a reason to query or reconstruct a
-             ;; durable session.  It may use only the detached executing turn.
-             (and (e-harness-executing-session-state harness session-id) t)
+             ;; A presentation holding a durable SQL identity need not keep a
+             ;; second existence registry merely to format status.  The exact
+             ;; read or mutation that consumes the id remains authoritative.
+             t
            (ignore-errors (e-session-local-state store session-id) t)))))
 
 (defun e-context-budget-usage-before-compaction-p (usage-event compaction)
@@ -214,10 +221,11 @@ compaction is ignored and the current model-facing context is estimated."
     (harness session-id
              &key prefer-token-usage estimate-cache token-limits
              token-limit-function bytes-per-token estimate-cache-seconds
-             estimate-cache-key (estimate-context t) context-purpose)
+             estimate-cache-key (estimate-context t) context-purpose options)
   "Return budget plist for SESSION-ID through HARNESS.
 The plist includes `:model', `:reasoning-effort', `:used-tokens', `:window',
-and `:approximate'."
+and `:approximate'.  OPTIONS, when supplied, is a detached caller-owned option
+projection and takes precedence over synchronous session option lookup."
   (when (e-context-budget-session-exists-p harness session-id)
     (let* ((usage-event (e-context-budget--latest-token-usage-event
                          harness session-id))
@@ -240,13 +248,15 @@ and `:approximate'."
                       (ignore-errors
                         (e-harness-context
                          harness session-id nil context-purpose))))
-           (options (or (plist-get context :options)
-                        (ignore-errors
-                          (e-harness-display-options harness session-id))
-                        (ignore-errors
-                          (e-harness-turn-options harness session-id))))
-           (model (plist-get options :model))
-           (effort (e-context-budget-options-effort options))
+           (effective-options
+            (or (plist-get context :options)
+                options
+                (ignore-errors
+                  (e-harness-display-options harness session-id))
+                (ignore-errors
+                  (e-harness-turn-options harness session-id))))
+           (model (plist-get effective-options :model))
+           (effort (e-context-budget-options-effort effective-options))
            (estimated-tokens
             (and (not usage-tokens)
                  (or cached-tokens

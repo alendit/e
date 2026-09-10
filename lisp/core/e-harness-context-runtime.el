@@ -43,6 +43,11 @@ required; explicit `:deadline' options still apply."
   :type '(choice (const :tag "No default deadline" nil) number)
   :group 'e)
 
+(defvar e-harness-context-runtime-current-session-state nil
+  "Detached session state visible only while one context request is built.
+Context providers may consult this dynamically bound value instead of causing
+a second durable read or requiring a process-local session aggregate.")
+
 (defun e-harness-context-runtime--profile-call (event options thunk)
   "Measure context EVENT with OPTIONS when profiling is available."
   (if (and (fboundp 'e-dev-profile-enabled-p)
@@ -80,18 +85,33 @@ materializing tool definitions.  Presentation code uses it for status text."
 
 (defun e-harness-context-runtime--set-session-options (harness session-id options)
   "Replace SESSION-ID turn OPTIONS in HARNESS and emit an update event."
-  (let ((turn-options
+  (let ((result
          (e-session-set-turn-options
           (e-harness-sessions harness)
           session-id
           options)))
-    (e-harness-activity-emit
-     harness
-     (e-events-make :type 'session-options-changed
-                    :session-id session-id
-                    :turn-id "session-options"
-                    :payload (list :turn-options turn-options)))
-    turn-options))
+    (if (e-work-handle-p result)
+        (progn
+          (e-work-on-settle
+           result
+           (lambda (settled)
+             (when (eq (plist-get (e-work-status settled) :state) 'finished)
+               (e-harness-activity-emit
+                harness
+                (e-events-make :type 'session-options-changed
+                               :session-id session-id
+                               :turn-id "session-options"
+                               :payload
+                               (list :turn-options
+                                     (copy-tree options t)))))))
+          result)
+      (e-harness-activity-emit
+       harness
+       (e-events-make :type 'session-options-changed
+                      :session-id session-id
+                      :turn-id "session-options"
+                      :payload (list :turn-options result)))
+      result)))
 
 (defun e-harness-set-session-model (harness session-id model)
   "Set SESSION-ID's model override to MODEL in HARNESS."
@@ -374,13 +394,23 @@ This pure projection never consults or installs a session aggregate."
           :promotion-frontier (nreverse frontier))))
 
 (defun e-harness-context-runtime--detached-context
-    (harness session-id turn-id path)
-  "Build one model context from request-scoped selected PATH."
-  (let* ((capability-context
+    (harness session-id turn-id path &optional context-purpose)
+  "Build one model context from request-scoped selected PATH.
+CONTEXT-PURPOSE defaults to `turn'."
+  (let* ((context-purpose (or context-purpose 'turn))
+         (e-harness-context-runtime-current-session-state
+          (list :session-id session-id
+                :metadata (copy-tree (plist-get path :metadata) t)
+                :turn-options (copy-tree (plist-get path :turn-options) t)
+                :messages (copy-tree (plist-get path :messages) t)
+                :latest-valid-compaction
+                (copy-tree (plist-get path :compaction) t)
+                :current-branch (plist-get path :current-branch)))
+         (capability-context
           (e-capabilities-context
            (e-harness-effective-capabilities harness session-id turn-id)
            :harness harness :session-id session-id :turn-id turn-id
-           :context-purpose 'turn))
+           :context-purpose context-purpose))
          (turn-options
           (e-harness-context-runtime--strip-reserved-derived-context-options
            (e-harness-context-runtime--detached-turn-options
@@ -393,7 +423,8 @@ This pure projection never consults or installs a session aggregate."
            :options turn-options
            :prefix-messages (plist-get capability-context :messages)
            :prefix-segments (plist-get capability-context :segments))))
-    (when (e-harness-context-runtime--context-lifetime-enabled-p 'turn)
+    (when (e-harness-context-runtime--context-lifetime-enabled-p
+           context-purpose)
       (setq context
             (e-harness-context-lifetime-apply-projection
              harness session-id turn-id context context-capabilities
@@ -420,6 +451,46 @@ This pure projection never consults or installs a session aggregate."
     (e-harness-context-runtime--context-with-continuation-projection-identity
      context)))
 
+(defun e-harness-context-preview-start (harness session-id)
+  "Return immediately with work building SESSION-ID's detached preview.
+Persistent sessions are read with one bounded SQLite selected-path query.  The
+query result remains request-scoped and is never installed as executing state."
+  (if (not (e-session-async-enabled-p (e-harness-sessions harness)))
+      (e-work-start
+       (e-work-spec-create
+        :id "context-preview-memory" :execution 'cheap
+        :interactive-policy 'async :owner 'e-harness-context-runtime
+        :runner (lambda (_arguments _context)
+                  (e-harness-context harness session-id nil 'preview)))
+       nil)
+    (let* ((query
+            (e-session-async-context-path
+             (e-harness-sessions harness) session-id))
+           (result
+            (e-work-prepare
+             (e-work-spec-create
+              :id "context-preview-sqlite" :execution 'cooperative
+              :interactive-policy 'async :owner 'e-harness-context-runtime
+              :runner (lambda (_handle _arguments _context) :deferred))
+             nil :context (list :session-id session-id
+                                :work-kind 'context-preview))))
+      (e-work-start-prepared result :arguments nil)
+      (e-work-on-settle
+       query
+       (lambda (settled)
+         (let ((status (e-work-status settled)))
+           (if (not (eq (plist-get status :state) 'finished))
+               (e-work-fail result (plist-get status :error))
+             (condition-case error
+                 (e-work-finish
+                  result
+                  (e-harness-context-runtime--detached-context
+                   harness session-id nil
+                   (copy-tree (plist-get status :result) t)
+                   'preview))
+               (error (e-work-fail result error)))))))
+      result)))
+
 (defun e-harness-turn-context-start (harness session-id turn-id)
   "Return immediately with work building TURN-ID's provider context."
   (if (not (e-session-async-enabled-p (e-harness-sessions harness)))
@@ -431,7 +502,6 @@ This pure projection never consults or installs a session aggregate."
                   (e-harness-turn-context harness session-id turn-id)))
        nil)
     (let* ((store (e-harness-sessions harness))
-           (entry (gethash session-id (e-harness-active-turns harness)))
            (query (e-session-async-context-path store session-id))
            (result
             (e-work-prepare
@@ -461,6 +531,8 @@ This pure projection never consults or installs a session aggregate."
                           :turn-options (copy-tree
                                          (plist-get path :turn-options))
                           :messages (copy-tree (plist-get path :messages) t)
+                          :latest-valid-compaction
+                          (copy-tree (plist-get path :compaction) t)
                           :current-branch (plist-get path :current-branch)
                           :tool-receipts
                           (copy-tree (plist-get path :tool-receipts) t)

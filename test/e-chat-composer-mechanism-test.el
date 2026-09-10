@@ -73,7 +73,7 @@
   (let ((buffer (e-chat-test--buffer nil "chat-queue-render")))
     (unwind-protect
         (with-current-buffer (e-chat-test--composer buffer)
-          (cl-letf (((symbol-function 'e-chat-service-queued-inputs)
+          (cl-letf (((symbol-function 'e-harness-queued-prompts)
                      (lambda (&rest _)
                        '((:prompt "second line\ncontinued")
                          (:prompt "third")))))
@@ -200,42 +200,6 @@
                             (plist-get timeout-reference :label)))
     (should (string-match-p (regexp-quote "Status: timed out after 7s")
                             (plist-get timeout-reference :text)))))
-
-
-
-
-
-(ert-deftest e-chat-test-composer-bang-truncates-real-command-output ()
-  "Shell command capture caps oversized output with a visible marker."
-  (let ((e-chat-command-output-max-bytes 5)
-        (e-chat-command-output-timeout 5))
-    (let ((result (e-chat-composer--run-shell-command "printf 0123456789" temporary-file-directory)))
-      (should (equal (plist-get result :exit) 0))
-      (should (plist-get result :truncated))
-      (should (string-prefix-p "01234" (plist-get result :output)))
-      (should (string-match-p (regexp-quote "[Command output truncated]")
-                              (plist-get result :output))))))
-
-
-
-
-
-(ert-deftest e-chat-test-sync-command-output-rejects-hot-path ()
-  "The synchronous command-output helper fails before starting a shell command."
-  (let (started)
-    (cl-letf (((symbol-function 'e-chat-composer--run-shell-command-start)
-               (lambda (&rest _args)
-                 (setq started t)
-                 (error "shell command should not start"))))
-      (let ((err (should-error
-                  (e-request-with-hot-path 'chat-sync-command
-                    (e-chat-composer--run-shell-command
-                     "printf done"
-                     temporary-file-directory))
-                  :type 'e-request-blocking-call-in-hot-path)))
-        (should (equal (cdr err)
-                       '(e-chat-composer--run-shell-command chat-sync-command))))
-      (should-not started))))
 
 
 

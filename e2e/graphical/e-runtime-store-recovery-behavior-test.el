@@ -69,6 +69,15 @@ chat window tree after this test has already started its surface assertion."
 
 (defun e-runtime-store-recovery-graphical--arm-stall (directory operation)
   "Arm the isolated worker stall for OPERATION in DIRECTORY."
+  ;; An acceptance scenario may exercise the same SQL operation in separate
+  ;; phases.  A new hold must not inherit the prior phase's observation or
+  ;; release marker.
+  (dolist (suffix '("ready" "release"))
+    (let ((marker
+           (e-runtime-store-recovery-graphical--stall-file
+            directory operation suffix)))
+      (when (file-exists-p marker)
+        (delete-file marker))))
   (write-region
    "hold" nil
    (e-runtime-store-recovery-graphical--stall-file
@@ -773,11 +782,6 @@ aggregate or mirror."
              (concat "Remember this Daily decision: project Juniper uses alert "
                      "amber. Confirm both.")))
           (should (seq-every-p (lambda (count) (> count 0)) heartbeats))
-          (should-not
-           (e-board-mutation-frozen-p
-            (e-board-registry-board-source-board
-             (e-chat-service-binding-board
-              (e-chat-service-binding harness session-id)))))
           (when synchronous-operation
             (ert-fail
              (format "Org Canvas interactive path awaited %S\n%s"
@@ -822,11 +826,6 @@ aggregate or mirror."
              (e-runtime-store-recovery-graphical--runtime-operation-p
               runtime 'board-routing-put))
            3.0 "same-Board classification admitted during held Board record")
-          (should-not
-           (e-board-mutation-frozen-p
-            (e-board-registry-board-source-board
-             (e-chat-service-binding-board
-              (e-chat-service-binding harness session-id)))))
           (e-runtime-store-recovery-graphical--release-stall
            stall-directory 'board-record-put)
           (let ((deadline (+ (float-time) 1.0)))
@@ -1347,6 +1346,82 @@ aggregate or mirror."
       (delete-directory canvas-directory t)
       (delete-directory stall-directory t))))
 
+(ert-deftest e-runtime-store-recovery-graphical-s92-killed-open-retires-late-binding ()
+  "A chat killed before SQL readiness leaves no process-local binding."
+  (e-board-e2e-reset-runtime)
+  (let* ((directory (make-temp-file "e-runtime-store-killed-open-" t))
+         (stall-directory (make-temp-file "e-runtime-store-killed-stall-" t))
+         (process-environment
+          (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" stall-directory)
+                process-environment))
+         sessions runtime harness transcript readiness session-id)
+    (unwind-protect
+        (progn
+          (setq sessions
+                (cl-letf (((symbol-function 'e-runtime-store-await)
+                           #'e-runtime-store-recovery-graphical--await-with-pump))
+                  (e-session-sqlite-store-create directory)))
+          (e-session-enable sessions)
+          (setq runtime (e-session-storage-runtime-store sessions)
+                harness
+                (e-harness-create
+                 :backend (e-backend-fake-create :items nil)
+                 :sessions sessions))
+          (e-runtime-store-recovery-graphical--prepare-frame)
+          (e-runtime-store-recovery-graphical--arm-stall
+           stall-directory 'chat-session-owner-admit)
+          (setq transcript
+                (with-timeout (1.0 (ert-fail "Delayed chat open blocked"))
+                  (e-chat-open :harness harness
+                               :session-id "killed-before-readiness"
+                               :new-session t)))
+          (e-chat-surface-pop-to-buffer transcript)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--surface-windows transcript))
+           1.0 "delayed chat surface")
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--stall-ready-p
+              stall-directory 'chat-session-owner-admit))
+           5.0 "delayed owner admission")
+          (setq session-id (buffer-local-value 'e-chat-session-id transcript)
+                readiness
+                (buffer-local-value 'e-chat--session-readiness-work transcript))
+          (should (e-work-handle-p readiness))
+          (should-not
+           (buffer-local-value 'e-chat--event-subscription transcript))
+          (kill-buffer transcript)
+          (setq transcript nil)
+          (e-runtime-store-recovery-graphical--release-stall
+           stall-directory 'chat-session-owner-admit)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (and (eq (plist-get (e-work-status readiness) :state) 'finished)
+                  (null (gethash harness e-chat-service--bindings))
+                  (= (hash-table-count e-chat-service--board-bindings) 0)))
+           5.0 "late binding retirement")
+          ;; Presentation abandonment never cancels or rolls back the durable
+          ;; owner admission that SQLite has already accepted.
+          (let ((state
+                 (cl-letf (((symbol-function 'e-runtime-store-await)
+                            #'e-runtime-store-recovery-graphical--await-with-pump))
+                   (e-runtime-store-call
+                    runtime 'read
+                    (list :op 'session-query-state :session-id session-id)))))
+            (should (equal (plist-get state :session-id) session-id))))
+      (ignore-errors
+        (e-runtime-store-recovery-graphical--release-stall
+         stall-directory 'chat-session-owner-admit))
+      (when (buffer-live-p transcript) (kill-buffer transcript))
+      (when runtime
+        (ignore-errors (e-runtime-store--finalize-close runtime)))
+      (when (file-directory-p directory) (delete-directory directory t))
+      (when (file-directory-p stall-directory)
+        (delete-directory stall-directory t)))))
+
 (ert-deftest e-runtime-store-recovery-graphical-s92-public-new-chat-survives-delayed-worker ()
   "Public new-chat UI remains usable and ordered while SQLite is delayed."
   (e-board-e2e-reset-runtime)
@@ -1386,7 +1461,7 @@ aggregate or mirror."
           (e-runtime-store-recovery-graphical--prepare-frame)
           (setq phase 'open-new-chat)
           (e-runtime-store-recovery-graphical--arm-stall
-           stall-directory 'board-create)
+           stall-directory 'chat-session-owner-admit)
           (let ((started (float-time))
                 (original-chat-view
                  (symbol-function 'e-session-async-chat-view)))
@@ -1438,7 +1513,7 @@ aggregate or mirror."
                  (lambda ()
                    (e-runtime-store-recovery-graphical--pump-runtime runtime)
                    (e-runtime-store-recovery-graphical--stall-ready-p
-                    stall-directory 'board-create))
+                    stall-directory 'chat-session-owner-admit))
                  5.0 "new-chat persistence admission")
               (ert-test-failed
                (ert-fail
@@ -1453,13 +1528,9 @@ aggregate or mirror."
                                       transcript))))))
             (let* ((session-id
                     (buffer-local-value 'e-chat-session-id transcript))
-                   (binding (e-chat-service-binding harness session-id))
-                   (board (e-board-registry-board-source-board
-                           (e-chat-service-binding-board binding)))
                    (composer (e-chat-surface-composer-buffer transcript))
                    (draft "draft survives persistence stall")
-                   (message "public composer submit survives persistence stall")
-                   message-id)
+                   (message "public composer submit survives persistence stall"))
               (should (buffer-live-p composer))
               (let ((surface-windows
                      (e-runtime-store-recovery-graphical--surface-windows
@@ -1483,57 +1554,16 @@ aggregate or mirror."
                 ;; session-aggregate lookup in the public command.
                 (e-graphical-test-type-text message)
                 (call-interactively #'e-chat-submit)
-                (setq message-id
-                      (e-board-message-id
-                       (or (cl-find message (e-board-messages board)
-                                    :key #'e-board-message-content
-                                    :test #'equal)
-                           (ert-fail "Public composer did not post to Board"))))
                 (e-graphical-test-type-text draft))
               (should
                (e-runtime-store-recovery-graphical--runtime-operation-p
-                runtime 'board-participant-put))
+                runtime 'chat-session-owner-admit))
               (should
                (e-runtime-store-recovery-graphical--runtime-operation-p
-                runtime 'session-append-batch))
-              (setq phase 'participant-enqueued)
-              (cl-letf (((symbol-function 'e-runtime-store-await)
-                         (lambda (_store request &optional _timeout)
-                           (setq synchronous-operation
-                                 (e-runtime-store--request-operation request))
-                           (signal 'error
-                                   (list "New-chat timer called synchronous await"
-                                         synchronous-operation)))))
-                (setq phase 'classification-wait)
-                (condition-case _wait-error
-                    (e-graphical-test-wait-until
-                     (lambda ()
-                       (e-runtime-store-recovery-graphical--runtime-operation-p
-                        runtime 'board-routing-put))
-                     1.0 "same-Board classification timer admission")
-                  (ert-test-failed
-                   (ert-fail
-                    (format
-                     (concat "Timed out waiting for same-Board classification "
-                             "timer admission: active=%S queue=%S routing=%S "
-                             "scheduled=%S pending=%S synchronous=%S")
-                     (and (e-runtime-store--active-request runtime)
-                          (e-runtime-store-request--operation
-                           (e-runtime-store--active-request runtime)))
-                     (mapcar #'e-runtime-store-request--operation
-                             (e-runtime-store--client-queue runtime))
-                     (length (e-board-input-classifications board))
-                     (e-board-input-classification-scheduled board)
-                     (e-board-storage--pending-count
-                      (e-board-storage board))
-                     synchronous-operation)))))
-              (when synchronous-operation
-                (ert-fail (format "New-chat timer awaited %S"
-                                  synchronous-operation)))
-              (setq phase 'classification-enqueued)
+                runtime 'chat-session-input-admit))
+              (setq phase 'sql-input-enqueued)
               (e-graphical-test-wait-until (lambda () (> heartbeat 3))
                                            1.0 "independent heartbeat")
-              (should-not (e-board-mutation-frozen-p board))
               (setq phase 'heartbeat-live)
               (should (= (e-runtime-store-recovery-graphical--count-string
                           message transcript)
@@ -1546,7 +1576,7 @@ aggregate or mirror."
                                    (list "New-chat release called synchronous await"
                                          synchronous-operation)))))
                 (e-runtime-store-recovery-graphical--release-stall
-                 stall-directory 'board-create)
+                 stall-directory 'chat-session-owner-admit)
                 (setq phase 'new-chat-released)
                 (e-graphical-test-wait-until
                  (lambda ()
@@ -1569,9 +1599,6 @@ aggregate or mirror."
                 (should-not (string-match-p "Loading recent messages"
                                             (buffer-string))))
               (should-not detached-view-call)
-              (should (eq (e-board-message-routing-state
-                           (e-board-message board message-id))
-                          'routed))
               (condition-case _render-timeout
                   (e-graphical-test-wait-until
                    (lambda ()
@@ -1620,12 +1647,12 @@ aggregate or mirror."
               (setq heartbeat-timer nil))
 
             ;; Exercise the owner-local failure branch on a fresh public chat.
-            ;; Hold the session mutation after its Board root and participant
-            ;; have committed, then kill only the isolated worker process.
+            ;; Hold the atomic SQL owner admission, then kill only the isolated
+            ;; worker process.
             (let ((failure-id "new-chat-failure-owner"))
               (setq phase 'failure-open)
               (e-runtime-store-recovery-graphical--arm-stall
-               stall-directory 'session-append-batch)
+               stall-directory 'chat-session-owner-admit)
               (setq failure-transcript
                     (e-chat-open :harness harness :session-id failure-id
                                  :new-session t))
@@ -1633,26 +1660,67 @@ aggregate or mirror."
                (lambda ()
                  (e-runtime-store-recovery-graphical--pump-runtime runtime)
                  (e-runtime-store-recovery-graphical--stall-ready-p
-                  stall-directory 'session-append-batch))
+                  stall-directory 'chat-session-owner-admit))
                2.0 "new-chat failure session mutation")
               (setq phase 'failure-stalled)
               (let ((failed-process (e-runtime-store--process runtime)))
                 (delete-process failed-process)
                 (setq phase 'failure-worker-recovery)
-                ;; The runtime permits one same-ID recovery attempt.  Let the
-                ;; replacement reach the same held mutation, then lose that
-                ;; worker too so the owner-local failure becomes definitive.
-                (e-graphical-test-wait-until
-                 (lambda ()
-                   (e-runtime-store-recovery-graphical--pump-runtime runtime)
-                   (let ((replacement (e-runtime-store--process runtime)))
-                     (and replacement
-                          (not (eq replacement failed-process))
-                          (process-live-p replacement)
-                          (e-runtime-store-recovery-graphical--runtime-operation-p
-                           runtime 'session-append-batch))))
-                 2.0 "new-chat same-ID recovery attempt")
-                (delete-process (e-runtime-store--process runtime)))
+                ;; The transport may either partition immediately or replay
+                ;; once under the same request identity.  If replay begins,
+                ;; lose that isolated replacement too; the product contract is
+                ;; the resulting owner-local warning, not a particular retry
+                ;; timing window.
+                (condition-case _wait-error
+                    (e-graphical-test-wait-until
+                     (lambda ()
+                       (e-runtime-store-recovery-graphical--pump-runtime runtime)
+                       (or (string-match-p
+                            (regexp-quote failure-id)
+                            (or (e-chat-surface-status failure-transcript) ""))
+                           (let ((replacement
+                                  (e-runtime-store--process runtime)))
+                             (and replacement
+                                  (not (eq replacement failed-process))
+                                  (process-live-p replacement)
+                                  (or (e-runtime-store--recovering-request runtime)
+                                      (e-runtime-store-recovery-graphical--runtime-operation-p
+                                       runtime
+                                       'chat-session-owner-admit))))))
+                     2.0 "new-chat owner failure or same-ID recovery")
+                  (ert-test-failed
+                   (let* ((process (e-runtime-store--process runtime))
+                          (active (e-runtime-store--active-request runtime))
+                          (recovering
+                           (e-runtime-store--recovering-request runtime))
+                          (readiness
+                           (e-work-status
+                            (buffer-local-value
+                             'e-chat--session-readiness-work
+                             failure-transcript))))
+                     (ert-fail
+                      (format
+                       (concat "Owner failure made no progress: same-process=%S "
+                               "process-status=%S active=%S recovering=%S "
+                               "queue=%S readiness=%S surface=%S")
+                       (eq process failed-process)
+                       (and process (process-status process))
+                       (and active
+                            (list (e-runtime-store-request--kind active)
+                                  (e-runtime-store-request--operation active)
+                                  (e-runtime-store-request--state active)))
+                       (and recovering
+                            (list (e-runtime-store-request--kind recovering)
+                                  (e-runtime-store-request--operation recovering)
+                                  (e-runtime-store-request--state recovering)))
+                       (mapcar #'e-runtime-store-request--operation
+                               (e-runtime-store--client-queue runtime))
+                       (plist-get readiness :state)
+                       (e-chat-surface-status failure-transcript))))))
+                (unless (string-match-p
+                         (regexp-quote failure-id)
+                         (or (e-chat-surface-status failure-transcript) ""))
+                  (delete-process (e-runtime-store--process runtime))))
               (setq phase 'failure-worker-killed)
               (e-graphical-test-wait-until
                (lambda ()
@@ -1664,11 +1732,18 @@ aggregate or mirror."
               (setq phase 'failure-suspect-visible)
               (let ((warning (e-chat-surface-status failure-transcript)))
                 (should (string-match-p "suspect" warning))
-                (should (<= (string-bytes warning) 1152)))
+                (should (<= (string-bytes warning) 1152))
+                (with-temp-buffer
+                  (insert warning)
+                  (goto-char (point-min))
+                  (should (= (how-many (regexp-quote failure-id)) 1)))
+                (sit-for 0.05)
+                (should (equal (e-chat-surface-status failure-transcript)
+                               warning)))
               ;; The failed owner is now terminally partitioned.  Release the
               ;; operation-level test stall before proving unrelated recovery.
               (e-runtime-store-recovery-graphical--release-stall
-               stall-directory 'session-append-batch)
+               stall-directory 'chat-session-owner-admit)
               (setq unrelated-transcript
                     (e-chat-open :harness harness
                                  :session-id "new-chat-unrelated-owner"
@@ -1727,9 +1802,7 @@ aggregate or mirror."
       ;; deliberately stalled external worker.
       (ignore-errors
         (e-runtime-store-recovery-graphical--release-stall
-         stall-directory 'board-create)
-        (e-runtime-store-recovery-graphical--release-stall
-         stall-directory 'session-append-batch))
+         stall-directory 'chat-session-owner-admit))
       ;; These disposable runtimes belong only to this graphical process.
       ;; Finalize them directly so a failed assertion cannot be hidden behind
       ;; the synchronous compatibility close observer.
@@ -1999,7 +2072,7 @@ aggregate or mirror."
                               (e-work-status e-chat--session-readiness-work)
                               :state)))
                         (memq state '(finished failed cancelled))))))
-             3.0 "bounded Board controller query")
+             3.0 "bounded SQL Board binding")
             (with-current-buffer transcript
               (let ((status (e-work-status e-chat--session-readiness-work)))
                 (unless (eq (plist-get status :state) 'finished)
@@ -2015,9 +2088,6 @@ aggregate or mirror."
               (should (< (buffer-size) 4096)))
             (let* ((binding
                     (e-chat-service-binding harness "daily-known"))
-                   (source
-                    (e-board-registry-board-source-board
-                     (e-chat-service-binding-board binding)))
                    (controller-samples
                     (seq-filter
                      (lambda (sample)
@@ -2030,9 +2100,9 @@ aggregate or mirror."
                        :latencies)
                       :recent))))
               (should binding)
-              (should (<= (e-board-message-count source)
-                          e-board-sqlite-default-controller-record-limit))
-              (should (= (length controller-samples) 1)))
+              ;; SQL binding validates exact detached rows.  It must not
+              ;; reconstruct the retired bounded Board controller at all.
+              (should-not controller-samples))
             (should (= (hash-table-count (e-session-store-sessions sessions)) 0))
             (should-not
              (e-runtime-store-recovery-graphical--runtime-operations runtime))))
@@ -2101,6 +2171,8 @@ aggregate or mirror."
           (e-runtime-store-recovery-graphical--prepare-frame)
           (set-window-buffer (selected-window) target)
           (e-runtime-store-recovery-graphical--arm-stall
+           stall-directory 'chat-session-owner-admit)
+          (e-runtime-store-recovery-graphical--arm-stall
            stall-directory 'chat-session-input-admit)
           (setq heartbeat-timers
                 (mapcar
@@ -2137,6 +2209,12 @@ aggregate or mirror."
                  (buffer-list)))
           (should (stringp session-id))
           (should (buffer-live-p backing-chat))
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--stall-ready-p
+              stall-directory 'chat-session-owner-admit))
+           3.0 "held new Daily owner admission")
           (with-current-buffer input
             (goto-char (point-max))
             (e-graphical-test-type-text prompt)
@@ -2153,9 +2231,20 @@ aggregate or mirror."
               (e-graphical-test-wait-until
                (lambda ()
                  (e-runtime-store-recovery-graphical--pump-runtime runtime)
-                 (e-runtime-store-recovery-graphical--stall-ready-p
-                  stall-directory 'chat-session-input-admit))
-               3.0 "held atomic first-input admission")
+                 (and
+                  (e-runtime-store-recovery-graphical--runtime-operation-p
+                   runtime 'chat-session-input-admit)
+                  (when-let* ((pending
+                               (gethash
+                                session-id
+                                (e-chat-service--harness-pending-creations
+                                 harness)))
+                              (work
+                               (e-chat-service-create-operation-first-input-work
+                                pending)))
+                    (memq (plist-get (e-work-status work) :state)
+                          '(started running)))))
+               3.0 "queued atomic first-input admission")
             (ert-test-failed
              (ert-fail
               (format
@@ -2179,8 +2268,9 @@ aggregate or mirror."
                           pending)))))
                (when-let* ((binding
                             (e-chat-service-binding harness session-id)))
-                 (e-work-status
-                  (e-chat-service-binding-readiness-work binding)))
+                 (when-let* ((readiness
+                              (e-chat-service-binding-readiness-work binding)))
+                   (e-work-status readiness)))
                (e-session-persistence-suspect sessions session-id)
                (and (buffer-live-p input)
                     (with-current-buffer input (buffer-string)))
@@ -2190,6 +2280,14 @@ aggregate or mirror."
                    (buffer-substring-no-properties
                     (max (point-min) (- (point-max) 3000))
                     (point-max))))))))
+          (e-runtime-store-recovery-graphical--release-stall
+           stall-directory 'chat-session-owner-admit)
+          (e-graphical-test-wait-until
+           (lambda ()
+             (e-runtime-store-recovery-graphical--pump-runtime runtime)
+             (e-runtime-store-recovery-graphical--stall-ready-p
+              stall-directory 'chat-session-input-admit))
+           3.0 "held atomic first-input admission")
           (e-graphical-test-wait-until
            (lambda () (seq-every-p (lambda (count) (> count 0)) heartbeats))
            1.0 "three independent heartbeats")
@@ -2491,6 +2589,9 @@ aggregate or mirror."
         (when (timerp timer) (cancel-timer timer)))
       (when (e-graphical-test-stream-p stream)
         (e-graphical-test-stream-cancel stream))
+      (ignore-errors
+        (e-runtime-store-recovery-graphical--release-stall
+         stall-directory 'chat-session-owner-admit))
       (ignore-errors
         (e-runtime-store-recovery-graphical--release-stall
          stall-directory 'chat-session-input-admit))

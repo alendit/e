@@ -177,8 +177,6 @@
       (should (member "chat.activity-burst" ids))
       (should (member "chat.final-assistant-render" ids))
       (should (member "chat.ui-work-lifecycle" ids))
-      (should (member "chat.board-continuation" ids))
-      (should (member "chat.unread-event-cost" ids))
       (should (member "chat.status-context-cost" ids))
       (should (member "tool.lifecycle-dispatch" ids))
       (should (member "work.lifecycle-cheap" ids))

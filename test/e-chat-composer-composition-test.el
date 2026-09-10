@@ -392,7 +392,7 @@ must drop any revealed hidden blocks."
   (let ((buffer (e-chat-test--buffer nil "chat-queue-refresh")))
     (unwind-protect
         (with-current-buffer (e-chat-test--composer buffer)
-          (cl-letf (((symbol-function 'e-chat-service-queued-inputs)
+          (cl-letf (((symbol-function 'e-harness-queued-prompts)
                      (lambda (&rest _) '((:prompt "second")))))
             (goto-char (point-max))
             (insert "draft")
@@ -415,7 +415,7 @@ must drop any revealed hidden blocks."
         (queued '((:prompt "second"))))
     (unwind-protect
         (with-current-buffer (e-chat-test--composer buffer)
-          (cl-letf (((symbol-function 'e-chat-service-queued-inputs)
+          (cl-letf (((symbol-function 'e-harness-queued-prompts)
                      (lambda (&rest _) queued)))
             (e-chat-composer-insert-queued-prompts)
             (goto-char (point-max))
@@ -492,7 +492,8 @@ must drop any revealed hidden blocks."
 
 (ert-deftest e-chat-test-submits-composer-text-with-inline-references ()
   "Submitting converts inline reference atoms into ordered prompt context."
-  (let ((buffer (e-chat-test--buffer nil "chat-reference-submit")))
+  (let ((buffer (e-chat-test--buffer nil "chat-reference-submit"))
+        captured-prompt captured-references)
     (unwind-protect
         (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
@@ -506,16 +507,21 @@ must drop any revealed hidden blocks."
              :end-line 4
              :point-line 3))
           (insert ", then explain it.")
-          (e-chat-submit)
-          (should (e-chat-test--wait-until
-                   (lambda ()
-                     (e-chat-service-messages
-                      e-chat-harness e-chat-session-id))
-                   1.0))
-          (let* ((message (car (e-chat-service-messages
-                                e-chat-harness e-chat-session-id)))
-                 (content (plist-get message :content))
-                 (metadata (plist-get message :metadata)))
+          (cl-letf (((symbol-function 'e-chat-service-submit-session)
+                     (lambda (_harness _session-id prompt &rest arguments)
+                       (setq captured-prompt prompt
+                             captured-references
+                             (plist-get arguments :references))
+                       (e-work-start
+                        (e-work-spec-create
+                         :id "composer-reference-admission"
+                         :execution 'cooperative
+                         :interactive-policy 'async
+                         :owner 'e-chat-composer-composition-test
+                         :runner (lambda (&rest _args) :deferred))
+                        nil))))
+            (e-chat-submit))
+          (let ((content captured-prompt))
             (should (string-match-p
                      "Look at <reference id=\"ref-1\" label=\"source:2-4\">"
                      content))
@@ -523,7 +529,7 @@ must drop any revealed hidden blocks."
                      "\\[ref-1\\] source:2-4 (buffer://source)"
                      content))
             (should (string-match-p "two\nthree\nfour" content))
-            (should (equal (plist-get metadata :references)
+            (should (equal captured-references
                            '((:id "ref-1"
                               :uri "buffer://source"
                               :label "source:2-4"

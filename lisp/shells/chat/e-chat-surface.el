@@ -72,6 +72,9 @@ is enabled as a word-wrap fallback."
 (declare-function e-chat-service-session-store "e-chat-service")
 (declare-function e-chat-service-state "e-chat-service")
 
+(defvar e-chat-session-metadata nil
+  "Detached metadata for the chat presentation's current session.")
+
 (defvar-local e-chat-surface--output-follow-command-state nil
   "Paired transcript viewport captured before the current user command.
 This transient command state belongs to the surface because output-follow
@@ -186,6 +189,15 @@ window callbacks loadable before the composition root is evaluated."
   "Return MODEL's configured context window in tokens, or nil."
   (e-chat-surface--model-context-token-limit model))
 
+(defun e-chat-surface--display-options ()
+  "Return options from defaults plus this surface's detached metadata."
+  (let ((options (copy-tree (e-harness-default-options e-chat-harness) t))
+        (overrides
+         (copy-tree (plist-get e-chat-session-metadata :turn-options) t)))
+    (while overrides
+      (setq options (plist-put options (pop overrides) (pop overrides))))
+    options))
+
 (defun e-chat-surface--context-token-estimate (context)
   "Return approximate token count for model-facing CONTEXT."
   (e-context-status-context-token-estimate
@@ -195,17 +207,11 @@ window callbacks loadable before the composition root is evaluated."
   "Return semantic cache key for this surface's context estimate."
   (when (and e-chat-harness e-chat-session-id)
     (ignore-errors
-      (let* ((store (e-chat-service-session-store e-chat-harness))
-             (state (e-chat-service-state e-chat-harness e-chat-session-id))
-             (options (e-harness-display-options e-chat-harness
-                                                 e-chat-session-id))
-             (usage-event
-              (unless (e-session-async-enabled-p store)
-                (e-session-local-latest-token-usage-event
-                 store e-chat-session-id))))
+      (let* ((state (e-chat-service-state e-chat-harness e-chat-session-id))
+             (options (e-chat-surface--display-options)))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)
-              :latest-token-usage-id (plist-get usage-event :id)
+              :latest-token-usage-id nil
               :model (plist-get options :model)
               :reasoning-effort (plist-get options :reasoning-effort)
               :layers (e-harness-effective-layer-ids
@@ -219,19 +225,25 @@ window callbacks loadable before the composition root is evaluated."
     (setq-local e-chat-surface--mode-line-context-status-cache (cons nil nil)))
   (let ((e-context-status-estimate-cache-seconds
          e-chat-mode-line-context-estimate-cache-seconds)
-        (cache-key (e-chat-surface--mode-line-context-estimate-key)))
+        (cache-key (e-chat-surface--mode-line-context-estimate-key))
+        (asynchronous-p
+         (e-session-async-enabled-p
+          (e-chat-service-session-store e-chat-harness))))
     (e-context-status-text
      e-chat-harness e-chat-session-id
      :prefix "e-chat"
      :prefer-token-usage prefer-token-usage
-     :estimate-context (not prefer-token-usage)
+     :estimate-context (and (not asynchronous-p)
+                            (not prefer-token-usage))
      :estimate-cache e-chat-surface--mode-line-context-estimate-cache
      :estimate-cache-key cache-key
      :snapshot-cache e-chat-surface--mode-line-context-status-cache
      :snapshot-cache-key
      (list :status-key cache-key
            :prefer-token-usage (and prefer-token-usage t)
-           :estimate-context (not prefer-token-usage))
+           :estimate-context (and (not asynchronous-p)
+                                  (not prefer-token-usage)))
+     :options (e-chat-surface--display-options)
      :token-limit-function #'e-chat-surface--model-context-window
      :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
 
@@ -323,12 +335,18 @@ window callbacks loadable before the composition root is evaluated."
   "Return header-line text for STATUS and pending-work diagnostics."
   (let ((diagnostics (or (e-chat-surface--ui-work-diagnostics-text) "")))
     (if (and e-chat-harness e-chat-session-id)
-        (let* ((title (ignore-errors
-                        (e-harness-session-title
-                         e-chat-harness e-chat-session-id)))
-               (options (ignore-errors
-                          (e-harness-display-options
-                           e-chat-harness e-chat-session-id)))
+        (let* ((title (or (plist-get e-chat-session-metadata :name)
+                          (plist-get e-chat-session-metadata :title)
+                          e-chat-session-id))
+               (options
+                (append
+                 (copy-tree
+                  (plist-get e-chat-session-metadata :turn-options) t)
+                 (ignore-errors
+                   (copy-tree
+                    (e-harness-display-options
+                     e-chat-harness e-chat-session-id)
+                    t))))
                (model (plist-get options :model))
                (effort (e-context-budget-options-effort options)))
           (format "E Chat: %s - %s - %s/%s%s"
@@ -1317,7 +1335,7 @@ signal; route the display to a normal window in that case."
     (set-window-parameter window 'window-atom nil))
   (when-let ((composer e-chat-surface--surface-composer-buffer))
     (when (buffer-live-p composer)
-      ;; The surface is already being torn down.  Releasing its ephemeral
+      ;; The surface is already being torn down.  Releasing its temporary
       ;; dedication lets Emacs replace both buffers without mutating the window
       ;; tree out from under that traversal.
       (dolist (window (get-buffer-window-list composer nil t))

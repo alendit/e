@@ -593,6 +593,17 @@ available."
 
 (defun e-harness-activity-emit-turn-event (harness session-id turn-id type payload)
   "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."
+  (when (and session-id turn-id (eq type 'token-usage))
+    ;; Provider usage belongs to the executing request, not to a reconstructed
+    ;; session aggregate.  Retain one bounded value so status presentation can
+    ;; use it without an interactive SQLite read; durability remains below.
+    (when-let* ((entry (gethash session-id
+                                (e-harness-active-turns harness)))
+                (state (plist-get entry :session-query-state)))
+      (plist-put state :latest-token-usage-event
+                 (list :turn-id turn-id :event-type type
+                       :payload (copy-tree payload t)))
+      (plist-put entry :session-query-state state)))
   (when (and session-id turn-id (eq type 'provider-request-started))
     ;; A replacement request is an ordinary lifecycle boundary.  Preserve any
     ;; completed fragments from the preceding request before installing the

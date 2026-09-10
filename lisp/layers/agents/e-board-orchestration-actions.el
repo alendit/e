@@ -13,7 +13,7 @@
 
 ;;; Code:
 
-(require 'e-board-orchestration)
+(require 'e-board-orchestration-engine)
 (require 'e-chat-service)
 (require 'e-task-queue)
 (require 'e-work)
@@ -39,15 +39,15 @@
         (e-chat-service-binding-sqlite-service target))))
 
 (defun e-board-orchestration-actions--target (harness session-id)
-  "Return SESSION-ID's live SQL binding or explicit ephemeral Board."
+  "Return SESSION-ID's live SQL binding."
   (let ((binding (e-chat-service-binding harness session-id)))
     (unless binding
       (signal 'e-board-orchestration-error
               (list "Board binding is not ready" session-id)))
-    (if (e-board-orchestration-actions--sqlite-target-p binding)
-        binding
-      (e-board-orchestration-actions--source-board
-       (e-chat-service-binding-board binding)))))
+    (unless (e-board-orchestration-actions--sqlite-target-p binding)
+      (signal 'e-board-orchestration-error
+              (list "Orchestration requires SQL Board binding" session-id)))
+    binding))
 
 (defun e-board-orchestration-actions-terminal-key (assignment)
   "Return the stable terminal-report idempotency key for ASSIGNMENT."

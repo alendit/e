@@ -77,26 +77,15 @@ Ordinary SQLite uses the chat binding directly and is never entered here.")
   "Prompt-cache policy options inherited by child sessions when unspecified.")
 
 (defun e-subagent--producer-target (parent-harness parent-session-id)
-  "Return the SQL chat binding or ephemeral producer for the parent."
-  (let ((chat-binding
+  "Return the live SQL publication binding for the parent session."
+  (let ((binding
          (e-subagent--live-chat-binding parent-harness parent-session-id)))
-    (if (e-board-sqlite-service-p
-         (e-chat-service-binding-sqlite-service chat-binding))
-        chat-binding
-      (let* ((key (list parent-harness parent-session-id))
-             (current (gethash key e-subagent--producer-bindings)))
-        (if (e-board-runtime-producer-binding-live-p current)
-            current
-          (let* ((board (e-chat-service-binding-board chat-binding))
-                 (producer-id
-                  (format "subagent:%s:%s"
-                          (e-board-registry-board-id board)
-                          parent-session-id))
-                 (binding
-                  (e-board-runtime-producer-bind
-                   producer-id board :tags '(subagent))))
-            (puthash key binding e-subagent--producer-bindings)
-            binding))))))
+    (unless (e-board-sqlite-service-p
+             (e-chat-service-binding-sqlite-service binding))
+      (signal 'e-board-runtime-producer-disabled
+              (list "Subagent parent requires SQL Board binding"
+                    parent-session-id)))
+    binding))
 
 (defun e-subagent--target-chat-binding (target)
   "Return TARGET when it is a SQL chat binding, otherwise nil."
@@ -524,9 +513,7 @@ its own terminal assignment without blocking spawn."
          (producer-target
           (e-subagent--producer-target parent-harness parent-session-id))
          (admission-target
-          (if (e-subagent--target-chat-binding parent-binding)
-              parent-binding
-            (e-chat-service-binding-board parent-binding)))
+          parent-binding)
          (child-session-id (e-session-generate-id))
          (work-handle
           (e-work-prepare
@@ -859,8 +846,11 @@ demand without the transcript entering its own context."
          (harness (e-subagent-registry-child-harness registry subagent-id))
          (session-id (plist-get record :session-id))
          (limit (or limit 20))
-         (messages (and harness
-                        (e-chat-service-messages harness session-id)))
+         (messages
+          (and harness
+               (plist-get
+                (e-harness-executing-session-state harness session-id)
+                :messages)))
          (tail (last messages limit)))
     (list :subagent-id subagent-id
           :session-id session-id

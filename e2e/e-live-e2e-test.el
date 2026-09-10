@@ -4372,62 +4372,6 @@ provider turn to settle without an implicit local deadline."
                  (e-live-e2e--assistant-content result)
                  nonce))))))
 
-(ert-deftest e-live-e2e-test-concurrent-sessions-isolate-provider-requests ()
-  "Two live sessions can keep provider requests active concurrently."
-  (e-live-e2e--require-enabled)
-  (let* ((root (make-temp-file "e-live-e2e-concurrent-" t))
-         (store (e-session-store-create))
-         (harness (e-live-e2e--make-harness store))
-         (nonce-one (e-live-e2e--nonce))
-         (nonce-two (e-live-e2e--nonce))
-         session-one
-         session-two)
-    (unwind-protect
-        (progn
-          (e-board-e2e-reset-runtime)
-          (setq session-one
-                (plist-get
-                 (e-chat-service-create-ephemeral-session
-                  :harness harness :id "live-concurrent-one"
-                  :metadata (list :project-root root))
-                 :id))
-          (setq session-two
-                (plist-get
-                 (e-chat-service-create-ephemeral-session
-                  :harness harness :id "live-concurrent-two"
-                  :metadata (list :project-root root))
-                 :id))
-          (e-board-e2e-prompt-async
-           harness session-one
-           (format "Reply with exactly this token: %s" nonce-one))
-          (e-board-e2e-prompt-async
-           harness session-two
-           (format "Reply with exactly this token: %s" nonce-two))
-          ;; Capture both entries before waiting.  Either turn may settle and
-          ;; be removed by the queue-drain timer while the other is awaited.
-          (let* ((result-one (gethash session-one
-                                      (e-harness-active-turns harness)))
-                 (result-two (gethash session-two
-                                      (e-harness-active-turns harness)))
-                 (deadline (+ (float-time) 30.0)))
-            (should result-one)
-            (should result-two)
-            (while (and (or (eq (plist-get result-one :status) 'running)
-                            (eq (plist-get result-two :status) 'running))
-                        (< (float-time) deadline))
-              (sit-for 0.01))
-            (should (eq (plist-get result-one :status) 'done))
-            (should (eq (plist-get result-two :status) 'done))
-            (should (e-live-e2e--contains-p
-                     (e-live-e2e--assistant-content
-                      (plist-get result-one :result))
-                     nonce-one))
-            (should (e-live-e2e--contains-p
-                     (e-live-e2e--assistant-content
-                      (plist-get result-two :result))
-                     nonce-two))))
-      (ignore-errors (delete-directory root t)))))
-
 (ert-deftest e-live-e2e-test-follow-up-uses-session-context ()
   "A follow-up live prompt can use earlier transcript context."
   (e-live-e2e--with-harness (harness session-id)

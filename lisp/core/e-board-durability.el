@@ -14,13 +14,13 @@
 (require 'cl-lib)
 (require 'e-board-state)
 (require 'e-board-admission)
+(require 'e-board-selector)
 (require 'e-board-storage)
 
 (declare-function e-board-message "e-board" (board id))
 (declare-function e-board-participant "e-board" (board participant-id))
 (declare-function e-board--source-key-parts "e-board" (source-key))
 (declare-function e-board--pickup-queue "e-board" (board participant-id))
-(declare-function e-board--selector-attribute-clauses "e-board" (attributes))
 
 (defvar e-board--storage-replay-p nil
   "Non-nil while publishing an already committed durable Board transition.")
@@ -286,7 +286,7 @@ PARTICIPANT-IDS and OVERFLOW are already-decided Board policy values."
     (when (plist-member normalized :attributes)
       (setq normalized
             (plist-put normalized :attributes
-                       (e-board--selector-attribute-clauses
+                       (e-board-selector-attribute-clauses
                         (plist-get normalized :attributes)))))
     normalized))
 

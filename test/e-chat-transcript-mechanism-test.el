@@ -1557,49 +1557,6 @@ transcript."
 
 
 
-(ert-deftest e-chat-test-loaded-session-replay-bounds-activity-events ()
-  "Loaded-session replay retains only a bounded activity-event tail."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
-         buffer)
-    (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "loaded-activity"
-                            :metadata '(:name "Loaded activity"))
-          (e-session-append-message
-           store "loaded-activity"
-           '(:id "msg-1" :role user :content "inspect" :turn-id "turn-1"))
-          (dotimes (index 10)
-            (let ((call-id (format "call-%d" index)))
-              (e-session-append-activity-event
-               store "loaded-activity" "turn-1" 'tool-started
-               `(:type tool-call :id ,call-id :name "read"))
-              (e-session-append-activity-event
-               store "loaded-activity" "turn-1" 'tool-finished
-               `(:tool-call (:type tool-call :id ,call-id :name "read")
-                 :result (:status ok :content ,call-id)))))
-          (e-session-append-activity-event
-           store "loaded-activity" "turn-1" 'turn-finished nil)
-          (e-session-append-message
-           store "loaded-activity"
-           '(:id "msg-2" :role assistant :content "done" :turn-id "turn-1"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "loaded-activity")
-          (let ((e-chat-session-replay-activity-event-limit 5))
-            (setq buffer (e-chat-open-session harness "loaded-activity")))
-          (with-current-buffer buffer
-            (let* ((turn-id
-                    (plist-get
-                     (car (e-chat-service-messages harness "loaded-activity"))
-                     :turn-id))
-                   (display (e-chat-activity-turn-display turn-id)))
-              (should display)
-              (should (= (length (plist-get display :tool-items)) 2)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 
 
 

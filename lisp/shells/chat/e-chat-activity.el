@@ -1610,15 +1610,8 @@ or transcript marker and is consumed only by the transcript projection port."
 (defun e-chat-activity--turn-pending-hook-summary (turn-id)
   "Return capability-provided pending hook activity for TURN-ID, if any."
   (when (and e-chat-harness e-chat-session-id turn-id)
-    (when-let ((prompt
-                (seq-find
-                 (lambda (message)
-                   (and (eq (plist-get message :role) 'user)
-                        (equal (plist-get message :turn-id) turn-id)))
-                 (e-chat-service-messages e-chat-harness e-chat-session-id))))
-      (let ((summary (plist-get (plist-get prompt :metadata)
-                                :pending-summary)))
-        (and (stringp summary) summary)))))
+    (e-chat-service-pending-hook-summary
+     e-chat-harness e-chat-session-id turn-id)))
 
 (defun e-chat-activity--running-status-display-text (data)
   "Return the buffer text represented by running-status DATA."
@@ -1993,7 +1986,7 @@ function records only lifecycle audit text."
   (let ((identity (plist-get activity-event :message-id))
         ;; Curation is committed after a provider response and before the
         ;; follow-up request starts.  Retain that observed round ordinal only
-        ;; in this ephemeral projection so replay and live delivery compose in
+        ;; in this buffer-local projection so replay and live delivery compose in
         ;; the same chronological position.
         (round (e-chat-activity--last-round-record record)))
     (unless identity
@@ -2015,7 +2008,7 @@ function records only lifecycle audit text."
   (e-chat-activity--refresh-turn-details record))
 
 (defun e-chat-activity--record-turn-summary (record activity-event)
-  "Record aggregate Board ACTIVITY-EVENT data in RECORD without settling twice."
+  "Record detached Board ACTIVITY-EVENT summary in RECORD without settling twice."
   (let ((payload (plist-get activity-event :payload)))
     ;; Board emits this row only for provider-active turns.  Retain that
     ;; authoritative fact when bounded replay no longer includes the earlier
@@ -2096,7 +2089,7 @@ function records only lifecycle audit text."
                                   'activity))
       ('context-curated
        (e-chat-activity--record-context-curated record activity-event))
-      ;; Board summaries are aggregate data, not a second terminal edge.  The
+      ;; Board summaries are detached data, not a second terminal edge.  The
       ;; detailed terminal activity above remains the failure/cancellation
       ;; authority, while successful output already carries its terminal fact.
       ('turn-summary
@@ -2129,7 +2122,7 @@ function records only lifecycle audit text."
         (cl-pushnew turn-id turn-ids :test #'equal)))
     ;; Active-turn state belongs to the live Board controller.  Asking durable
     ;; storage whether this is a Board session first is redundant and, for v6
-    ;; SQLite, would turn presentation replay into a forbidden aggregate read.
+    ;; SQLite, would turn presentation replay into a forbidden durable read.
     (when-let* ((active-turn
                  (e-chat-service-active-turn
                   e-chat-harness e-chat-session-id))
@@ -2169,11 +2162,7 @@ remain aligned while their registries remain independent."
                  e-chat-session-replay-activity-event-limit
                  'e-chat-session-replay-activity-event-limit))
          (turn-ids (e-chat-activity--replay-turn-ids messages))
-         (source-events
-          (if activity-events-supplied-p
-              activity-events
-            (e-chat-service-activity-events
-             e-chat-harness e-chat-session-id)))
+         (source-events (and activity-events-supplied-p activity-events))
          (events
           (and turn-ids
                (cl-remove-if-not
@@ -2649,6 +2638,7 @@ provider/tool activity does not require a central per-record dispatch branch."
      t)
     ('token-usage
      (when (e-chat-transcript-event-selected-participant-p event)
+       (e-chat-surface-invalidate-mode-line-context-estimate)
        (e-chat-surface-request-mode-line-status-refresh t))
      t)
     ('provider-anchor-candidate t)

@@ -285,7 +285,7 @@ A chat buffer displayed in no window is never repainted for progress or
   "Return queued prompt items for the attached chat session."
   (when (and e-chat-harness e-chat-session-id)
     (ignore-errors
-      (e-chat-service-queued-inputs e-chat-harness e-chat-session-id))))
+      (e-harness-queued-prompts e-chat-harness e-chat-session-id))))
 
 (defun e-chat-composer--queue-preview-text (prompt)
   "Return compact one-line preview text for queued PROMPT."
@@ -468,8 +468,7 @@ Keep point inside the composer when movement starts there."
 (cl-defun e-chat-composer--run-shell-command-start
     (command directory &key on-done on-error on-request-start)
   "Start shell COMMAND in DIRECTORY and report captured output asynchronously.
-ON-DONE receives the same result plist returned by
-`e-chat-composer--run-shell-command'.
+ON-DONE receives captured output metadata.
 ON-ERROR receives an Emacs condition list.  ON-REQUEST-START receives a
 cancellable process request."
   (let* ((directory (file-name-as-directory (expand-file-name directory)))
@@ -568,28 +567,6 @@ cancellable process request."
         (error
          (fail err)
          nil)))))
-
-(defun e-chat-composer--run-shell-command (command directory)
-  "Run shell COMMAND in DIRECTORY and return captured output metadata."
-  (when (e-request-hot-path-active-p)
-    (e-request-hot-path-blocking-error 'e-chat-composer--run-shell-command))
-  (let ((done nil)
-        result
-        failure)
-    (e-chat-composer--run-shell-command-start
-     command
-     directory
-     :on-done (lambda (value)
-                (setq result value)
-                (setq done t))
-     :on-error (lambda (err)
-                 (setq failure err)
-                 (setq done t)))
-    (while (not done)
-      (accept-process-output nil 0.05))
-    (when failure
-      (signal (car failure) (cdr failure)))
-    result))
 
 (defun e-chat-composer--command-output-reference (command result)
   "Return a context reference for shell COMMAND RESULT."

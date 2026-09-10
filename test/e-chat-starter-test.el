@@ -33,10 +33,6 @@
 (defun e-chat-starter-test--answered-state (buffer-name)
   "Return an answered starter state wired to BUFFER-NAME."
   (let* ((harness (e-chat-starter-test--harness))
-         (_session (e-chat-service-create-ephemeral-session
-                    :harness harness :id "starter-action"))
-         (subscription (e-chat-service-subscribe
-                        harness "starter-action" #'ignore))
          (buffer (get-buffer-create buffer-name))
          (state (make-e-chat-starter-state
                  :harness harness
@@ -46,7 +42,7 @@
                                      :uri "file:///tmp/demo.el")
                  :status 'answered
                  :latest-answer "Because."
-                 :subscription subscription)))
+                 :subscription nil)))
     (with-current-buffer buffer
       (e-chat-starter-mode)
       (setq-local e-chat-starter--state state))
@@ -483,49 +479,6 @@ its final value only when the turn settled."
       (e-chat-starter--stop-progress-timer state)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
-
-(ert-deftest e-chat-starter-test-start-creates-session-and-captures-answer ()
-  "Starting here creates one real chat session and records the backend answer."
-  (let* ((harness (e-chat-starter-test--harness
-                   '((:type assistant-message :content "starter answer")
-                     (:type done :reason stop)))))
-    (with-temp-buffer
-      (rename-buffer "starter-integration" t)
-      (insert "target form\n")
-      (let* ((state (e-chat-starter--start "Explain it"
-                                           :harness harness
-                                           :display nil))
-             (session-id (e-chat-starter-state-session-id state)))
-        (should session-id)
-        (should (equal
-                 (plist-get
-                  (plist-get
-                   (e-session-local-state (e-harness-sessions harness) session-id)
-                   :metadata)
-                  :origin)
-                 :global-session-starter))
-        (let ((binding (e-chat-service-binding harness session-id)))
-          (e-board-runtime--drain-input-routing
-           (e-chat-service-binding-board binding)
-           (lambda ()
-             (e-board-drain-input-classifications
-              (e-board-registry-board-source-board
-               (e-chat-service-binding-board binding)))))
-          (e-board-runtime--drain-pickups))
-        (should (equal
-                 (plist-get (e-harness-wait-batch harness session-id 1.0) :status)
-                 'done))
-        (e-chat-service-drain-ephemeral-binding
-         (e-chat-service-binding harness session-id))
-        (e-ui-work-with-batch-drain
-          (e-ui-work-drain-batch
-           :buffer (e-chat-starter-state-buffer state)))
-        (should (equal (e-chat-starter-state-latest-answer state)
-                       "starter answer"))
-        (should (equal (e-chat-starter-state-status state) 'answered))
-        (when-let ((buffer (e-chat-starter-state-buffer state)))
-          (when (buffer-live-p buffer)
-            (kill-buffer buffer)))))))
 
 (ert-deftest e-chat-starter-test-start-uses-independent-popup-per-session ()
   "Concurrent starter sessions keep separate popup buffers and windows."

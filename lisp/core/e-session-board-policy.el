@@ -12,7 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'e-board)
+(require 'e-board-selector)
 (require 'e-session-codec)
 (require 'subr-x)
 

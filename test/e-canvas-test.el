@@ -17,9 +17,11 @@
 (require 'e-canvas)
 (require 'e-chat-session)
 (require 'e-harness)
-(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-registry)
+(require 'e-session-async)
+(require 'e-session-sqlite)
 (require 'e-shells)
+(require 'e-work)
 
 (defmacro e-canvas-test--with-empty-harness-registry (&rest body)
   "Run BODY with an isolated harness registry."
@@ -28,12 +30,49 @@
          (e-harness-registry--factories (make-hash-table :test 'equal)))
      ,@body))
 
-(defun e-canvas-test--harness ()
-  "Return a fake harness with chat-session capability active."
+(defun e-canvas-test--harness (&optional sessions)
+  "Return a fake harness with chat-session capability and SESSIONS."
   (let ((harness (e-harness-create
-                  :backend (e-backend-fake-create :items nil))))
+                  :backend (e-backend-fake-create :items nil)
+                  :sessions sessions)))
     (e-harness-activate-capability harness (e-chat-session-capability-create))
     harness))
+
+(defun e-canvas-test--await (work)
+  "Observe request-scoped WORK from this explicit test boundary."
+  (e-work-with-batch-await
+    (e-work-await-batch work :timeout 5.0)))
+
+(cl-defmacro e-canvas-test--with-sqlite-harness ((harness store) &rest body)
+  "Run BODY with a disposable SQLite STORE and public chat HARNESS."
+  (declare (indent 1) (debug ((symbolp symbolp) body)))
+  `(let* ((directory (make-temp-file "e-canvas-test-store-" t))
+          (,store (e-session-sqlite-store-create directory))
+          (,harness (e-canvas-test--harness ,store)))
+     (unwind-protect
+         (progn
+           (e-session-enable ,store)
+           ,@body)
+       (e-canvas-test--kill-chat-buffers)
+       (ignore-errors (e-session-sqlite-store-close ,store))
+       (delete-directory directory t))))
+
+(defun e-canvas-test--create-sql-session (harness session-id metadata)
+  "Create and admit SESSION-ID with detached METADATA in HARNESS."
+  (e-chat-service-create-session-start
+   :harness harness :id session-id :metadata metadata)
+  (e-canvas-test--await
+   (e-chat-service-binding-start harness session-id nil t)))
+
+(defun e-canvas-test--chat-metadata (chat-buffer store)
+  "Return CHAT-BUFFER's detached SQLite metadata from STORE."
+  (with-current-buffer chat-buffer
+    (when (e-work-handle-p e-chat--session-readiness-work)
+      (e-canvas-test--await e-chat--session-readiness-work))
+    (plist-get
+     (e-canvas-test--await
+      (e-session-async-session-metadata store e-chat-session-id))
+     :metadata)))
 
 (defun e-canvas-test--kill-chat-buffers ()
   "Kill all live e chat buffers."
@@ -68,7 +107,6 @@
              (push 'attachment calls)
              '(:uri "buffer://causal" :canvas t))
            :session-reference-function (lambda (&rest _) nil)
-           :session-matches-function (lambda (&rest _) nil)
            :initialize-session-function
            (lambda (_harness _session-id _buffer _options)
              (push 'initialize calls))
@@ -101,215 +139,171 @@
 
 (ert-deftest e-canvas-test-open-current-buffer-creates-canvas-session ()
   "Opening from the current buffer creates a chat session with canvas context."
-  (let ((harness (e-canvas-test--harness)))
-    (unwind-protect
-        (e-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :canvas-test))
-            (e-harness-registry-register :canvas-test harness)
-            (with-temp-buffer
-              (rename-buffer "canvas-source" t)
-              (insert "canvas body")
-              (let ((chat-buffer (e-canvas-open-for-current-buffer)))
-                (should (buffer-live-p chat-buffer))
-                (with-current-buffer chat-buffer
-                  (let* ((attachments (e-chat-session-attachments
-                                       e-chat-harness
-                                       e-chat-session-id))
-                         (attachment (car attachments)))
-                    (should (derived-mode-p 'e-chat-mode))
-                    (should (plist-get attachment :canvas))
-                    (should (equal (plist-get attachment :uri)
-                                   "buffer://canvas-source"))
-                    (should (string-match-p
-                             "canvas body"
-                             (plist-get
-                              (car (plist-get
-                                    (e-chat-session-context
-                                     e-chat-harness
-                                     e-chat-session-id)
-                                    :messages))
-                              :content)))))))))
-      (e-canvas-test--kill-chat-buffers))))
+  (e-canvas-test--with-sqlite-harness (harness store)
+    (e-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :canvas-test))
+        (e-harness-registry-register :canvas-test harness)
+        (with-temp-buffer
+          (rename-buffer "canvas-source" t)
+          (insert "canvas body")
+          (let* ((chat-buffer (e-canvas-open-for-current-buffer))
+                 (metadata (e-canvas-test--chat-metadata chat-buffer store))
+                 (attachment
+                  (car (e-chat-session-metadata-attachments metadata))))
+            (should (buffer-live-p chat-buffer))
+            (with-current-buffer chat-buffer
+              (should (derived-mode-p 'e-chat-mode)))
+            (should (plist-get attachment :canvas))
+            (should (equal (plist-get attachment :uri)
+                           "buffer://canvas-source"))
+            (should (string-match-p
+                     "canvas body"
+                     (e-chat-session--attachment-content attachment)))))))))
 
 (ert-deftest e-canvas-test-open-current-buffer-reveals-existing-canvas-session ()
   "Opening from an attached canvas buffer reuses the existing chat session."
-  (let ((harness (e-canvas-test--harness)))
-    (unwind-protect
-        (e-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :canvas-test))
-            (e-harness-registry-register :canvas-test harness)
-            (with-temp-buffer
-              (rename-buffer "canvas-existing" t)
-              (insert "canvas body")
-              (e-harness-test-create-board-session harness :id "session-1")
-              (e-chat-session-attach-context
-               harness
-               "session-1"
-               (e-canvas--buffer-attachment (current-buffer))
-               :canvas t)
-              (let ((chat-buffer (e-canvas-open-for-current-buffer)))
-                (should (buffer-live-p chat-buffer))
-                (with-current-buffer chat-buffer
-                  (should (derived-mode-p 'e-chat-mode))
-                  (should (equal e-chat-session-id "session-1")))
-                (should (= (length (e-harness-session-list harness)) 1))))))
-      (e-canvas-test--kill-chat-buffers))))
+  (e-canvas-test--with-sqlite-harness (harness store)
+    (e-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :canvas-test))
+        (e-harness-registry-register :canvas-test harness)
+        (with-temp-buffer
+          (rename-buffer "canvas-existing" t)
+          (insert "canvas body")
+          (let* ((attachment
+                  (e-chat-session--normalize-attachment
+                   (e-canvas--buffer-attachment (current-buffer)) t))
+                 (metadata
+                  (list :context-references
+                        (list :chat-session
+                              (list :attachments (list attachment))))))
+            (e-canvas-test--create-sql-session harness "session-1" metadata)
+            (setq-local e-canvas-harness harness)
+            (setq-local e-canvas-session-id "session-1")
+            (let ((chat-buffer (e-canvas-open-for-current-buffer)))
+              (should (buffer-live-p chat-buffer))
+              (e-canvas-test--chat-metadata chat-buffer store)
+              (with-current-buffer chat-buffer
+                (should (derived-mode-p 'e-chat-mode))
+                (should (equal e-chat-session-id "session-1"))))))))))
 
-(ert-deftest e-canvas-test-open-ignores-unloaded-catalog-canvas ()
-  "A generic buffer never hydrates an unloaded reverse canvas association."
-  (let ((harness (e-canvas-test--harness))
-        loaded)
-    (unwind-protect
-        (e-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :canvas-test))
-            (e-harness-registry-register :canvas-test harness)
-            (with-temp-buffer
-              (rename-buffer "catalog-canvas" t)
-              (let ((catalog-session
-                     '(:id "historical"
-                       :loaded nil
-                       :metadata
-                       (:context-references
-                        (:chat-session
-                         (:attachments
-                          ((:uri "buffer://catalog-canvas"
-                            :label "catalog-canvas"
-                            :canvas t))))))))
-                (let ((original-attachments
-                       (symbol-function 'e-chat-session-attachments)))
-                  (cl-letf (((symbol-function 'e-harness-session-list)
-                             (lambda (_harness) (list catalog-session)))
-                            ((symbol-function 'e-chat-session-attachments)
-                             (lambda (target-harness session-id)
-                               (if (equal session-id "historical")
-                                   (progn
-                                     (setq loaded t)
-                                     (error "historical session was hydrated"))
-                                 (funcall original-attachments
-                                          target-harness session-id)))))
-                    (let ((chat-buffer (e-canvas-open-for-current-buffer)))
-                      (should-not loaded)
-                      (with-current-buffer chat-buffer
-                        (should-not (equal e-chat-session-id
-                                           "historical"))))))))))
-      (e-canvas-test--kill-chat-buffers))))
+(ert-deftest e-canvas-test-open-does-not-enumerate-durable-sessions ()
+  "A generic Canvas open creates directly without a process-local catalog."
+  (e-canvas-test--with-sqlite-harness (harness store)
+    (e-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :canvas-test))
+        (e-harness-registry-register :canvas-test harness)
+        (with-temp-buffer
+          (rename-buffer "uncatalogued-canvas" t)
+          (cl-letf (((symbol-function 'e-harness-session-list)
+                     (lambda (&rest _)
+                       (error "Canvas enumerated a process-local catalog"))))
+            (let ((chat-buffer (e-canvas-open-for-current-buffer)))
+              (should (buffer-live-p chat-buffer))
+              (e-canvas-test--chat-metadata chat-buffer store))))))))
 
-(ert-deftest e-canvas-test-open-skips-malformed-unrelated-canvas-metadata ()
-  "Malformed generic catalog metadata cannot block a new canvas session."
-  (let ((harness (e-canvas-test--harness)))
-    (unwind-protect
-        (e-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :canvas-test))
-            (e-harness-registry-register :canvas-test harness)
-            (with-temp-buffer
-              (rename-buffer "clean-canvas" t)
-              (cl-letf (((symbol-function 'e-harness-session-list)
-                         (lambda (_harness)
-                           '((:id "malformed"
-                              :loaded t
-                              :metadata
-                              (:context-references
-                               (:chat-session
-                                (:attachments ("not-an-attachment")))))))))
-                (let ((chat-buffer (e-canvas-open-for-current-buffer)))
-                  (with-current-buffer chat-buffer
-                    (should-not (equal e-chat-session-id "malformed"))))))))
-      (e-canvas-test--kill-chat-buffers))))
+(ert-deftest e-canvas-test-open-does-not-read-unrelated-local-session-state ()
+  "A generic Canvas open does not inspect unrelated process-local state."
+  (e-canvas-test--with-sqlite-harness (harness store)
+    (e-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :canvas-test))
+        (e-harness-registry-register :canvas-test harness)
+        (with-temp-buffer
+          (rename-buffer "clean-canvas" t)
+          (cl-letf (((symbol-function 'e-session-local-state)
+                     (lambda (&rest _)
+                       (error "Canvas read process-local session state"))))
+            (let ((chat-buffer (e-canvas-open-for-current-buffer)))
+              (should (buffer-live-p chat-buffer))
+              (e-canvas-test--chat-metadata chat-buffer store))))))))
 
 (ert-deftest e-canvas-test-new-file-uses-file-backed-buffer-as-canvas ()
   "Creating a file canvas attaches its visited buffer and file URI."
-  (let ((file (make-temp-file "e-canvas-" nil ".txt"))
-        (harness (e-canvas-test--harness)))
+  (let ((file (make-temp-file "e-canvas-" nil ".txt")))
     (unwind-protect
-        (e-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :canvas-test))
-            (e-harness-registry-register :canvas-test harness)
-            (write-region "file canvas body" nil file nil 'silent)
-            (let ((chat-buffer (e-canvas-new-file file)))
-              (with-current-buffer chat-buffer
-                (let* ((attachment (car (e-chat-session-attachments
-                                         e-chat-harness
-                                         e-chat-session-id))))
-                  (should (plist-get attachment :canvas))
-                  (should (equal (plist-get attachment :uri)
-                                 (concat "file://" file)))
-                  (should (get-buffer (plist-get attachment :buffer-name))))))))
-      (e-canvas-test--kill-chat-buffers)
+        (e-canvas-test--with-sqlite-harness (harness store)
+          (e-canvas-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :canvas-test))
+              (e-harness-registry-register :canvas-test harness)
+              (write-region "file canvas body" nil file nil 'silent)
+              (let* ((chat-buffer (e-canvas-new-file file))
+                     (metadata (e-canvas-test--chat-metadata chat-buffer store))
+                     (attachment
+                      (car (e-chat-session-metadata-attachments metadata))))
+                (should (plist-get attachment :canvas))
+                (should (equal (plist-get attachment :uri)
+                               (concat "file://" file)))
+                (should (get-buffer (plist-get attachment :buffer-name)))))))
       (when-let ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
       (delete-file file))))
 
-(ert-deftest e-canvas-test-attach-current-buffer-to-selected-session ()
-  "Manual attachment offers and selects only a board-owning chat root."
-  (let ((harness (e-canvas-test--harness)))
-    (unwind-protect
-        (e-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :canvas-test))
-            (e-harness-registry-register :canvas-test harness)
-            (let* ((binding
-                    (e-chat-service-create-ephemeral-board
-                     :harness harness :id "target-session"
-                     :metadata '(:name "Canvas Owner")))
-                   (board (e-chat-service-binding-board binding)))
-              (e-chat-service-create-ephemeral-participant
-               board harness :id "private-participant"
-               :metadata '(:name "Private Participant"))
-              (cl-letf (((symbol-function 'completing-read)
-                         (lambda (_prompt collection &rest _args)
-                           (should (= (length collection) 2))
-                           (should (seq-some
-                                    (lambda (label)
-                                      (string-match-p "Canvas Owner" label))
-                                    collection))
-                           (should-not (seq-some
-                                        (lambda (label)
-                                          (string-match-p
-                                           "Private Participant" label))
-                                        collection))
-                           (cadr collection))))
-                (with-temp-buffer
-                  (rename-buffer "canvas-extra" t)
-                  (insert "extra context")
-                  (e-canvas-attach-current-buffer)
-                  (let ((attachment (car (e-chat-session-attachments
-                                          harness
-                                          "target-session"))))
-                    (should-not (plist-get attachment :canvas))
-                    (should (equal (plist-get attachment :uri)
-                                   "buffer://canvas-extra"))
-                    (should-not
-                     (e-chat-session-attachments
-                      harness "private-participant"))))))))
-      (e-canvas-test--kill-chat-buffers))))
-
 (ert-deftest e-canvas-test-attach-can-target-new-session ()
   "Manual attachment always offers an explicit new-session target."
-  (let ((harness (e-canvas-test--harness)))
-    (unwind-protect
-        (e-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :canvas-test))
-            (e-harness-registry-register :canvas-test harness)
-            (e-harness-test-create-board-session harness :id "existing")
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (should (equal (car collection) "[New e session]"))
-                         (car collection))))
-              (with-temp-buffer
-                (rename-buffer "canvas-new-target" t)
-                (e-canvas-attach-current-buffer)
-                (let* ((sessions (e-harness-session-list harness))
-                       (created (seq-find
-                                 (lambda (session)
-                                   (not (equal (plist-get session :id)
-                                               "existing")))
-                                 sessions))
-                       (attachments
-                        (e-chat-session-attachments
-                         harness (plist-get created :id))))
-                  (should created)
-                  (should (equal (plist-get (car attachments) :uri)
-                                 "buffer://canvas-new-target")))))))
-      (e-canvas-test--kill-chat-buffers))))
+  (e-canvas-test--with-sqlite-harness (harness store)
+    (e-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :canvas-test))
+        (e-harness-registry-register :canvas-test harness)
+        (e-canvas-test--create-sql-session harness "existing" nil)
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _args)
+                     (should (equal (car collection) "[New e session]"))
+                     (car collection))))
+          (with-temp-buffer
+            (rename-buffer "canvas-new-target" t)
+            (e-canvas-test--await (e-canvas-attach-current-buffer))
+            (let ((chat-buffer
+                   (seq-find
+                    (lambda (buffer)
+                      (with-current-buffer buffer
+                        (and (derived-mode-p 'e-chat-mode)
+                             (not (equal e-chat-session-id "existing")))))
+                    (buffer-list))))
+              (should (buffer-live-p chat-buffer))
+              (let* ((metadata (e-canvas-test--chat-metadata chat-buffer store))
+                     (attachment
+                      (car (e-chat-session-metadata-attachments metadata))))
+                (should (equal (plist-get attachment :uri)
+                               "buffer://canvas-new-target"))))))))))
+
+(ert-deftest e-canvas-test-attach-current-buffer-to-selected-sql-session ()
+  "Manual attachment selects a detached SQL root and persists its context."
+  (e-canvas-test--with-sqlite-harness (harness store)
+    (e-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :canvas-test))
+        (e-harness-registry-register :canvas-test harness)
+        (e-canvas-test--create-sql-session
+         harness "target-session" '(:name "Canvas Owner"))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _args)
+                     (should (= (length collection) 2))
+                     (let ((target
+                            (seq-find
+                             (lambda (label)
+                               (string-match-p "Canvas Owner" label))
+                             collection)))
+                       (should target)
+                       target))))
+          (with-temp-buffer
+            (rename-buffer "canvas-extra" t)
+            (insert "extra context")
+            (e-canvas-test--await (e-canvas-attach-current-buffer))
+            (let ((deadline (+ (float-time) 2.0))
+                  attachment)
+              (while (and (not attachment) (< (float-time) deadline))
+                (setq attachment
+                      (car
+                       (e-chat-session-metadata-attachments
+                        (plist-get
+                         (e-canvas-test--await
+                          (e-session-async-session-metadata
+                           store "target-session"))
+                         :metadata))))
+                (unless attachment
+                  (accept-process-output nil 0.01)))
+              (should attachment)
+              (should-not (plist-get attachment :canvas))
+              (should (equal (plist-get attachment :uri)
+                             "buffer://canvas-extra")))))))))
 
 (ert-deftest e-canvas-test-shell-descriptor-advertises-canvas-surface ()
   "Canvas shell publishes a generic shell manifest."

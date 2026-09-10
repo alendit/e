@@ -877,7 +877,15 @@ acknowledgement prefix."
     (unless (and metadata association (stringp board-id))
       (signal 'e-runtime-store-board-conflict
               (list "Session has no complete Board chat view" session-id)))
-    (let* ((window
+    (let* ((presentation-metadata
+            (append
+             (copy-tree (plist-get metadata :metadata) t)
+             (list :session-id session-id
+                   :name (plist-get metadata :name)
+                   :summary (plist-get metadata :summary)
+                   :turn-options
+                   (copy-tree (plist-get metadata :turn-options) t))))
+           (window
             (e-board-storage-sqlite-worker-read
              e-runtime-store-worker--database
              (list :op 'board-visible-window :board-id board-id :limit limit)))
@@ -889,9 +897,13 @@ acknowledgement prefix."
                                 (plist-get record :record-kind))))
                  (plist-put record :role
                             (if (eq kind 'input) 'user 'assistant))
+                 (plist-put record :metadata
+                            (copy-tree (plist-get record :attributes) t))
+                 (plist-put record :references
+                            (copy-tree (plist-get record :reference) t))
                  record))
              (plist-get window :records))))
-      (list :session-id session-id :metadata metadata
+      (list :session-id session-id :metadata presentation-metadata
             :association association :messages messages
             :cursor (plist-get window :cursor)
             :through (plist-get window :through)

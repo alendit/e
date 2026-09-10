@@ -234,6 +234,9 @@
     (let ((view
            (e-board-sqlite-service-test--await
             (e-session-async-chat-view store session-id :limit 2))))
+      (should (equal (plist-get (plist-get view :metadata) :name)
+                     session-id))
+      (should-not (plist-member (plist-get view :metadata) :metadata))
       (should (equal
                (mapcar (lambda (message) (plist-get message :content))
                        (plist-get view :messages))
@@ -363,16 +366,17 @@
       (unwind-protect
           (progn
             (should (e-chat-service--sql-binding-p binding))
-            (should-not (e-chat-service-binding-board binding))
-            (should-not (e-chat-service-binding-client binding))
-            (should-not (e-chat-service-binding-requester binding))
-            (should-not (e-chat-service-binding-attachment binding))
-            (should-not (e-chat-service-binding-observer binding))
-            (should-not (e-chat-service-binding-turn-map binding))
-            (should-not (e-chat-service-binding-pending-input-head binding))
-            (should-not (e-chat-service-binding-pending-input-tail binding))
-            (should-not (e-chat-service-binding-message-projection binding))
-            (should-not (e-chat-service-binding-activity-projection binding))
+            (dolist (retired
+                     '(e-chat-service-binding-client
+                       e-chat-service-binding-requester
+                       e-chat-service-binding-attachment
+                       e-chat-service-binding-observer
+                       e-chat-service-binding-turn-map
+                       e-chat-service-binding-pending-input-head
+                       e-chat-service-binding-pending-input-tail
+                       e-chat-service-binding-message-projection
+                       e-chat-service-binding-activity-projection))
+              (should-not (fboundp retired)))
             (should (equal (e-chat-service-binding-board-id binding) board-id))
             (should (equal (e-chat-service-binding-participant-id binding)
                            participant-id))
@@ -472,7 +476,8 @@
               (should (e-chat-service--sql-binding-p binding))
               (should (equal (e-chat-service-binding-board-id binding)
                              board-id))
-              (should-not (e-chat-service-binding-board binding))))
+              (should (e-board-sqlite-service-p
+                       (e-chat-service-binding-sqlite-service binding)))))
         (when (buffer-live-p buffer) (kill-buffer buffer))
         (when-let* ((binding (e-chat-service-binding harness session-id)))
           (e-chat-service--retire-binding binding))))))
@@ -487,31 +492,6 @@
                        "board-controller-state"
                        "e-board-sqlite-controller-from-state"))
       (should-not (string-match-p (regexp-quote retired) text)))))
-
-(ert-deftest e-chat-service-create-ephemeral-board-rejects-sqlite-before-mutation ()
-  "The explicit ephemeral constructor rejects SQLite before root submission."
-  (let* ((directory (make-temp-file "e-chat-ephemeral-guard-" t))
-         (store (e-session-sqlite-store-create directory))
-         (harness (e-harness-create :sessions store))
-         (session-submissions 0)
-         (board-allocations 0))
-    (unwind-protect
-        (cl-letf (((symbol-function 'e-harness-create-session)
-                   (lambda (&rest _)
-                     (cl-incf session-submissions)
-                     (error "session root submitted")))
-                  ((symbol-function 'e-board-session-association-create-board)
-                   (lambda (&rest _)
-                     (cl-incf board-allocations)
-                     (error "Board allocated"))))
-          (should-error
-           (e-chat-service-create-ephemeral-board
-            :harness harness :id "must-not-submit")
-           :type 'e-session-storage-error)
-          (should (= session-submissions 0))
-          (should (= board-allocations 0)))
-      (ignore-errors (e-session-sqlite-store-close store))
-      (delete-directory directory t))))
 
 (ert-deftest e-chat-service-sqlite-continuation-owner-never-reenters-ephemeral-board ()
   "Making a live SQL binding continuation owner stays on detached SQL queries."
@@ -530,7 +510,6 @@
               (e-board-sqlite-service-test--await
                (e-chat-service-binding-start harness session-id nil t)))
             (should (equal (e-chat-service-binding-board-id binding) board-id))
-            (should-not (e-chat-service-binding-board binding))
             (should (e-chat-service-binding-continuation-owner-p binding)))
         (when binding (e-chat-service--retire-binding binding))))))
 
@@ -557,12 +536,11 @@
               (unwind-protect
                   (progn
                     (setq subscription
-                          (e-chat-service-view-subscription
-                           (e-chat-service-subscribe-view
-                            harness session-id
-                            (lambda (event)
-                              (when (eq (plist-get event :type) 'message-added)
-                                (push (copy-tree event t) events))))))
+                          (e-chat-service-subscribe
+                           harness session-id
+                           (lambda (event)
+                             (when (eq (plist-get event :type) 'message-added)
+                               (push (copy-tree event t) events)))))
                     (let ((deadline (+ (float-time) 2.0)))
                       (while (and (not (file-exists-p ready))
                                   (< (float-time) deadline))
@@ -706,7 +684,6 @@
             (should (equal (plist-get created :id) session-id)))
           (let ((binding (e-chat-service-binding harness session-id)))
             (should (e-chat-service--sql-binding-p binding))
-            (should-not (e-chat-service-binding-board binding))
             (setq subscription
                   (e-chat-service-subscribe
                    harness session-id
@@ -867,7 +844,8 @@
              (e-chat-service-binding-start harness session-id)))
            (subscription (e-chat-service-subscribe harness session-id #'ignore))
            (e-chat-service-idle-close-delay 0))
-      (should-not (e-chat-service-binding-board binding))
+      (should (e-board-sqlite-service-p
+               (e-chat-service-binding-sqlite-service binding)))
       (e-chat-service-unsubscribe subscription)
       (let ((deadline (+ (float-time) 1.0)))
         (while (and (e-chat-service-binding harness session-id)

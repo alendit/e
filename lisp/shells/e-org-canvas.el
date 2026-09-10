@@ -113,6 +113,9 @@ Org Canvas status refreshes for the current buffer.")
 (defvar-local e-org-canvas--persistence-warning nil
   "First bounded persistence warning for this Org Canvas session.")
 
+(defvar-local e-org-canvas--pending-file-options nil
+  "Process-local file-creation options needed until the first prompt.")
+
 (defvar-local e-org-canvas-input--harness nil
   "Harness used by the current input pane.")
 
@@ -236,11 +239,9 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
              :prefer-token-usage t
              :estimate-context nil)))))
 
-(defun e-org-canvas--watch-session-readiness (buffer chat-buffer session-id)
-  "Reflect CHAT-BUFFER admission failure on Org Canvas BUFFER for SESSION-ID."
-  (when-let* ((work (and (buffer-live-p chat-buffer)
-                         (buffer-local-value
-                          'e-chat--session-readiness-work chat-buffer))))
+(defun e-org-canvas--watch-binding-readiness (buffer work session-id)
+  "Reflect failed binding WORK on Org Canvas BUFFER for SESSION-ID."
+  (when (e-work-handle-p work)
     (e-work-on-settle
      work
      (lambda (settled-work)
@@ -257,22 +258,63 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
                        (plist-get (e-work-status settled-work) :error))))
              (e-org-canvas--refresh-status))))))))
 
+(defun e-org-canvas--session-matches-buffer-p (metadata buffer)
+  "Return non-nil when detached session METADATA identifies BUFFER."
+  (let ((canvas (e-org-canvas--metadata-ref metadata)))
+    (and canvas
+         (buffer-live-p buffer)
+         (equal (plist-get canvas :uri)
+                (e-org-canvas--buffer-uri buffer)))))
+
+(defun e-org-canvas--watch-session-readiness
+    (buffer chat-buffer session-id display)
+  "Validate and observe CHAT-BUFFER opened for Org Canvas BUFFER.
+SESSION-ID is the referenced durable identity.  DISPLAY is forwarded if a
+mismatched reference is replaced after the detached SQLite query settles."
+  (when (buffer-live-p chat-buffer)
+    (let ((query-work
+           (buffer-local-value 'e-chat--session-query-work chat-buffer))
+          (readiness-work
+           (buffer-local-value 'e-chat--session-readiness-work chat-buffer)))
+      (cond
+       ((e-work-handle-p query-work)
+        (e-work-on-settle
+         query-work
+         (lambda (settled)
+           (when (and (buffer-live-p buffer)
+                      (buffer-live-p chat-buffer)
+                      (eq (plist-get (e-work-status settled) :state)
+                          'finished))
+             (let ((metadata
+                    (plist-get
+                     (plist-get (e-work-status settled) :result)
+                     :metadata)))
+               (if (e-org-canvas--session-matches-buffer-p metadata buffer)
+                   (e-org-canvas--watch-binding-readiness
+                    buffer
+                    (buffer-local-value
+                     'e-chat--session-readiness-work chat-buffer)
+                    session-id)
+                 (e-canvas--schedule-session-recovery
+                  e-org-canvas--kind
+                  (buffer-local-value 'e-org-canvas-harness buffer)
+                  buffer session-id nil nil display
+                  'different-buffer)))))))
+       ((e-work-handle-p readiness-work)
+        (e-org-canvas--watch-binding-readiness
+         buffer readiness-work session-id))))))
+
 (defun e-org-canvas--context-status-key ()
   "Return semantic cache key for the current Org Canvas context status."
   (when (and e-org-canvas-harness e-org-canvas-session-id)
     (ignore-errors
       (let* ((state (e-chat-service-state e-org-canvas-harness
                                           e-org-canvas-session-id))
-             (store (e-chat-service-session-store e-org-canvas-harness))
              (options (e-harness-display-options e-org-canvas-harness
-                                                 e-org-canvas-session-id))
-             (usage-event
-              (unless (e-session-async-enabled-p store)
-                (e-session-local-latest-token-usage-event
-                 store e-org-canvas-session-id))))
+                                                 e-org-canvas-session-id)))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)
-              :latest-token-usage-id (plist-get usage-event :id)
+              :latest-token-usage-id nil
               :model (plist-get options :model)
               :reasoning-effort (plist-get options :reasoning-effort)
               :layers (e-harness-effective-layer-ids
@@ -302,6 +344,11 @@ this lets the redraw hook skip the scroll unless the end actually advanced.")
 (defun e-org-canvas--refresh-status ()
   "Refresh the Org Canvas context-state indicator for the current buffer."
   (when (bound-and-true-p e-org-canvas-mode)
+    ;; A relevant live event is itself the invalidation signal.  SQL remains
+    ;; authoritative for durable state, while these cons cells cache only the
+    ;; presentation text derived for this buffer.
+    (setq-local e-org-canvas--status-estimate-cache (cons nil nil))
+    (setq-local e-org-canvas--status-snapshot-cache (cons nil nil))
     (setq-local mode-name (e-org-canvas--context-status-text))
     (force-mode-line-update)))
 
@@ -526,12 +573,6 @@ NEEDS-FILE-NAME become stable Org Canvas metadata."
   "Return SESSION's Org Canvas metadata, or nil."
   (e-org-canvas--metadata-ref (plist-get session :metadata)))
 
-(defun e-org-canvas--all-sessions (harness)
-  "Return ephemeral root sessions for HARNESS.
-
-Persistent presentation commands use a bounded asynchronous SQLite page."
-  (e-chat-service-root-session-list harness))
-
 (defun e-org-canvas--normalize-directory (directory)
   "Return normalized DIRECTORY."
   (file-name-as-directory (expand-file-name directory)))
@@ -554,10 +595,8 @@ Persistent presentation commands use a bounded asynchronous SQLite page."
           (e-org-canvas--normalize-directory project-root)))))
 
 (cl-defun e-org-canvas--session-candidates
-    (source &key file project-root)
-  "Return Org Canvas sessions in SOURCE filtered by FILE or PROJECT-ROOT.
-
-SOURCE is a detached bounded page, or an ephemeral harness for compatibility."
+    (sessions &key file project-root)
+  "Filter detached bounded SESSIONS by FILE or PROJECT-ROOT."
    (seq-filter
     (lambda (session)
       (and (e-org-canvas--session-canvas session)
@@ -566,15 +605,13 @@ SOURCE is a detached bounded page, or an ephemeral harness for compatibility."
           (or (not project-root)
               (e-org-canvas--session-matches-project-p
                session project-root))))
-     (if (e-harness-p source)
-         (e-org-canvas--all-sessions source)
-       source)))
+     sessions))
 
-(cl-defun e-org-canvas--sessions-by-file (harness &key project-root)
-  "Return Org Canvas sessions from HARNESS/page grouped by canvas URI."
+(cl-defun e-org-canvas--sessions-by-file (sessions &key project-root)
+  "Return detached bounded SESSIONS grouped by canvas URI."
   (let (groups)
     (dolist (session (e-org-canvas--session-candidates
-                      harness :project-root project-root))
+                      sessions :project-root project-root))
       (let* ((canvas (e-org-canvas--session-canvas session))
              (uri (plist-get canvas :uri))
              (cell (assoc uri groups)))
@@ -582,26 +619,6 @@ SOURCE is a detached bounded page, or an ephemeral harness for compatibility."
             (setcdr cell (append (cdr cell) (list session)))
           (push (cons uri (list session)) groups))))
     (nreverse groups)))
-
-(defun e-org-canvas--session-or-nil (harness session-id)
-  "Return ephemeral SESSION-ID metadata from HARNESS, or nil."
-  (e-canvas--catalog-session harness session-id))
-
-(defun e-org-canvas--session-matches-buffer-p (session buffer)
-  "Return non-nil when SESSION's Org Canvas metadata belongs to BUFFER."
-  (let ((canvas (and session (e-org-canvas--session-canvas session))))
-    (and canvas
-         (equal (plist-get canvas :uri)
-                (e-org-canvas--buffer-uri buffer)))))
-
-(defun e-org-canvas--buffer-session (harness buffer)
-  "Return BUFFER's matching referenced Org Canvas session id in HARNESS, or nil."
-  (with-current-buffer buffer
-    (and e-org-canvas-session-id
-         (e-org-canvas--session-matches-buffer-p
-          (e-org-canvas--session-or-nil harness e-org-canvas-session-id)
-          buffer)
-         e-org-canvas-session-id)))
 
 (defun e-org-canvas--buffer-referenced-session (buffer)
   "Return BUFFER's explicitly referenced Org Canvas session id, or nil."
@@ -698,11 +715,17 @@ OPTIONS carries optional `:target-folder' and `:needs-file-name' values."
     org-canvas))
 
 (defun e-org-canvas--bind-canvas-session
-    (harness session-id buffer _options)
+    (harness session-id buffer options)
   "Bind BUFFER to HARNESS SESSION-ID under the base Canvas contract."
   (let ((workspace (e-org-canvas--workspace-for-buffer buffer)))
     (e-org-canvas--restore-buffer-session
      buffer harness session-id workspace)
+    (with-current-buffer buffer
+      (setq-local e-org-canvas--pending-file-options
+                  (and (plist-get options :needs-file-name)
+                       (list :needs-file-name t
+                             :target-folder
+                             (plist-get options :target-folder)))))
     (message "Org Canvas enabled for %s; use s-i to add context"
              (buffer-name buffer))))
 
@@ -714,7 +737,8 @@ the Org source buffer only."
     (e-buffer-set-workspace chat-buffer workspace)
     (e-org-canvas--watch-session-readiness
      buffer chat-buffer
-     (buffer-local-value 'e-org-canvas-session-id buffer))
+     (buffer-local-value 'e-org-canvas-session-id buffer)
+     display)
     (e-org-canvas--select-org-buffer buffer)
     (when display
       (e-org-canvas--display-and-select-chat-buffer chat-buffer)))
@@ -730,7 +754,6 @@ the Org source buffer only."
    :session-reference-function
    (lambda (_harness buffer)
      (e-org-canvas--buffer-referenced-session buffer))
-   :session-matches-function #'e-org-canvas--session-matches-buffer-p
    :initialize-session-function #'e-org-canvas--initialize-session
    :bind-session-function #'e-org-canvas--bind-canvas-session
    :present-session-function #'e-org-canvas--present-canvas-session)
@@ -907,10 +930,22 @@ HARNESS and SESSION-ID are kept for call-site compatibility."
   (ignore harness session-id prompt)
   (e-org-canvas--fallback-file-name-suggestion buffer))
 
-(defun e-org-canvas--maybe-save-new-buffer (harness session-id prompt)
-  "Save a new unsaved Org Canvas before first PROMPT when safe."
-  (let* ((canvas (e-org-canvas-session-metadata harness session-id))
-         (buffer (e-org-canvas-session-buffer harness session-id)))
+(defun e-org-canvas--maybe-save-new-buffer
+    (harness session-id prompt &optional target-buffer)
+  "Save a newly created Org Canvas before first PROMPT when safe.
+TARGET-BUFFER is presentation-owned state; no durable session read is needed."
+  (let* ((buffer (or (and (buffer-live-p target-buffer) target-buffer)
+                     (e-org-canvas--live-session-buffer harness session-id)))
+         (options
+          (and (buffer-live-p buffer)
+               (buffer-local-value 'e-org-canvas--pending-file-options
+                                   buffer)))
+         (canvas
+          (and options
+               (e-org-canvas--metadata-for-buffer
+                buffer
+                :target-folder (plist-get options :target-folder)
+                :needs-file-name (plist-get options :needs-file-name)))))
     (when (and canvas
                (plist-get canvas :needs-file-name)
                (buffer-live-p buffer))
@@ -944,7 +979,9 @@ HARNESS and SESSION-ID are kept for call-site compatibility."
         (e-org-canvas-mark-session
          harness session-id buffer
          :target-folder (plist-get canvas :target-folder)
-         :needs-file-name nil)))))
+         :needs-file-name nil)
+        (with-current-buffer buffer
+          (setq-local e-org-canvas--pending-file-options nil))))))
 
 (defun e-org-canvas--input-status-text ()
   "Return the current input pane status block."
@@ -1390,9 +1427,10 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
     (harness session-id prompt scope &key references target-buffer)
   "Submit PROMPT to HARNESS SESSION-ID with Org Canvas SCOPE metadata.
 TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
-  (e-org-canvas--maybe-save-new-buffer harness session-id prompt)
+  (e-org-canvas--maybe-save-new-buffer
+   harness session-id prompt target-buffer)
   (let* ((buffer (or (and (buffer-live-p target-buffer) target-buffer)
-                     (e-org-canvas-session-buffer harness session-id)
+                     (e-org-canvas--live-session-buffer harness session-id)
                      (user-error "Org Canvas session has no live Org buffer")))
          (focus (with-current-buffer buffer
                   (e-org-canvas-capture-focus scope)))
@@ -1677,13 +1715,28 @@ paragraphs changed."
     (message "Reflowed %d paragraph%s to one sentence per line."
              changed (if (= changed 1) "" "s"))))
 
-(defun e-org-canvas--last-prompt-message (harness session-id)
-  "Return the last Org Canvas user prompt message for SESSION-ID."
+(defun e-org-canvas--last-prompt-message (messages)
+  "Return the last Org Canvas user prompt in detached MESSAGES."
   (cl-find-if
    (lambda (message)
      (and (eq (plist-get message :role) 'user)
           (plist-get (plist-get message :metadata) :org-canvas-scope)))
-   (reverse (e-chat-service-messages harness session-id))))
+   (reverse messages)))
+
+(defun e-org-canvas--reopen-prompt-from-messages
+    (harness session-id target messages)
+  "Reopen SESSION-ID's last prompt from detached bounded MESSAGES."
+  (let* ((message (or (e-org-canvas--last-prompt-message messages)
+                      (user-error "No previous Org Canvas prompt")))
+         (metadata (plist-get message :metadata))
+         (scope (or (plist-get metadata :org-canvas-scope) 'thread))
+         (input (e-org-canvas--input-buffer
+                 :harness harness :session-id session-id :scope scope
+                 :target-buffer target)))
+    (with-current-buffer input
+      (goto-char (point-max))
+      (insert (or (plist-get message :content) "")))
+    (e-org-canvas--display-input-buffer input)))
 
 ;;;###autoload
 (defun e-org-canvas-reopen-last-prompt ()
@@ -1691,19 +1744,23 @@ paragraphs changed."
   (interactive)
   (pcase-let ((`(,harness ,session-id ,target)
                (e-org-canvas--ensure-current-session)))
-    (let* ((message (or (e-org-canvas--last-prompt-message harness session-id)
-                        (user-error "No previous Org Canvas prompt")))
-           (metadata (plist-get message :metadata))
-           (scope (or (plist-get metadata :org-canvas-scope) 'thread))
-           (input (e-org-canvas--input-buffer
-                   :harness harness
-                   :session-id session-id
-                   :scope scope
-                   :target-buffer target)))
-      (with-current-buffer input
-        (goto-char (point-max))
-        (insert (or (plist-get message :content) "")))
-      (e-org-canvas--display-input-buffer input))))
+    (let ((work
+           (e-session-async-chat-view
+            (e-chat-service-session-store harness) session-id
+            :limit e-chat-session-replay-message-limit)))
+      (e-work-on-settle
+       work
+       (lambda (settled)
+         (let ((status (e-work-status settled)))
+           (if (eq (plist-get status :state) 'finished)
+               (e-org-canvas--reopen-prompt-from-messages
+                harness session-id target
+                (plist-get (plist-get status :result) :messages))
+             (message "Unable to query the previous Org Canvas prompt: %s"
+                      (e-work-error-message
+                       (or (plist-get status :error)
+                           '(e-work-cancelled "cancelled"))))))))
+      work)))
 
 (defun e-org-canvas--thread-open-p (thread)
   "Return non-nil when THREAD summary is still awaiting an agent response.
@@ -1807,35 +1864,32 @@ prompt enumerating them, and leave the draft for review before submission."
 (defun e-org-canvas-resume-session (harness session-id)
   "Resume HARNESS SESSION-ID without synchronously reading persistence.
 
-Ephemeral stores return the buffer directly.  Persistent stores return
-request-scoped work immediately and open the buffer after exact metadata
-settles."
+Return request-scoped SQL work immediately and open the buffer after exact
+metadata settles."
   (let ((store (e-chat-service-session-store harness)))
-    (if (not (e-session-async-enabled-p store))
-        (e-org-canvas--resume-session-summary
-         harness
-         (or (e-org-canvas--session-or-nil harness session-id)
-             (user-error "No Org Canvas session %s" session-id)))
-      (let ((work (e-session-async-session-metadata store session-id)))
-        (e-work-on-settle
-         work
-         (lambda (settled)
-           (let ((status (e-work-status settled)))
-             (if (not (eq (plist-get status :state) 'finished))
-                 (message "Unable to query Org Canvas session %s: %s"
-                          session-id
-                          (e-work-error-message
-                           (or (plist-get status :error)
-                               '(e-work-cancelled "cancelled"))))
-               (let ((row (plist-get status :result)))
-                 (if (null row)
-                     (message "No Org Canvas session %s" session-id)
-                   (e-org-canvas--resume-session-summary
-                    harness
-                    (list :id session-id
-                          :name (plist-get row :name)
-                          :metadata (copy-tree (plist-get row :metadata) t)))))))))
-        work))))
+    (unless (e-session-storage-sqlite-p store)
+      (signal 'e-session-storage-error
+              (list "Org Canvas session resume requires SQLite" session-id)))
+    (let ((work (e-session-async-session-metadata store session-id)))
+      (e-work-on-settle
+       work
+       (lambda (settled)
+         (let ((status (e-work-status settled)))
+           (if (not (eq (plist-get status :state) 'finished))
+               (message "Unable to query Org Canvas session %s: %s"
+                        session-id
+                        (e-work-error-message
+                         (or (plist-get status :error)
+                             '(e-work-cancelled "cancelled"))))
+             (let ((row (plist-get status :result)))
+               (if (null row)
+                   (message "No Org Canvas session %s" session-id)
+                 (e-org-canvas--resume-session-summary
+                  harness
+                  (list :id session-id
+                        :name (plist-get row :name)
+                        :metadata (copy-tree (plist-get row :metadata) t)))))))))
+      work)))
 
 (defun e-org-canvas--queried-sessions (candidates)
   "Return detached session summaries carried by CANDIDATES."

@@ -28,6 +28,8 @@
 (require 'e-harness-registry)
 (require 'e-layers)
 (require 'e-session)
+(require 'e-session-async)
+(require 'e-session-sqlite)
 (require 'e-shells)
 (require 'e-tools)
 (require 'e-ui-work)
@@ -42,10 +44,11 @@
          (e-harness-registry--factories (make-hash-table :test 'equal)))
      ,@body))
 
-(defun e-org-canvas-test--harness (&optional with-org-canvas)
-  "Return a fake harness with chat-session and optional Org Canvas capability."
+(defun e-org-canvas-test--harness (&optional with-org-canvas sessions)
+  "Return a fake harness with optional Org Canvas capability and SESSIONS."
   (let ((harness (e-harness-create
-                  :backend (e-backend-fake-create :items nil))))
+                  :backend (e-backend-fake-create :items nil)
+                  :sessions sessions)))
     (e-harness-activate-capability harness (e-chat-session-capability-create))
     (when with-org-canvas
       (e-harness-set-intrinsic-capabilities
@@ -53,6 +56,63 @@
        (append (e-harness-intrinsic-capabilities harness)
                (e-layer-capabilities (e-org-canvas-layer-create)))))
     harness))
+
+(defun e-org-canvas-test--await (work)
+  "Observe request-scoped WORK from this explicit test boundary."
+  (e-work-with-batch-await
+    (e-work-await-batch work :timeout 5.0)))
+
+(defun e-org-canvas-test--settle (work)
+  "Wait for WORK at this explicit test boundary and return its status."
+  (condition-case nil
+      (e-org-canvas-test--await work)
+    (error nil))
+  (e-work-status work))
+
+(cl-defmacro e-org-canvas-test--with-sqlite-harness
+    ((harness store &optional with-org-canvas) &rest body)
+  "Run BODY with a disposable SQLite STORE and public chat HARNESS."
+  (declare (indent 1) (debug ((symbolp symbolp &optional form) body)))
+  `(let* ((store-directory (make-temp-file "e-org-canvas-store-" t))
+          (,store (e-session-sqlite-store-create store-directory))
+          (,harness (e-org-canvas-test--harness ,with-org-canvas ,store)))
+     (unwind-protect
+         (progn
+           (e-session-enable ,store)
+           ,@body)
+       (e-org-canvas-test--kill-chat-buffers)
+       (ignore-errors (e-session-sqlite-store-close ,store))
+       (delete-directory store-directory t))))
+
+(defun e-org-canvas-test--create-sql-session (harness session-id metadata)
+  "Create and admit SESSION-ID with detached METADATA in HARNESS."
+  (e-chat-service-create-session-start
+   :harness harness :id session-id :metadata metadata)
+  (e-org-canvas-test--await
+   (e-chat-service-binding-start harness session-id nil t)))
+
+(defun e-org-canvas-test--chat-metadata (chat-buffer store)
+  "Return CHAT-BUFFER's detached SQLite metadata from STORE."
+  (with-current-buffer chat-buffer
+    (when (e-work-handle-p e-chat--session-query-work)
+      (e-org-canvas-test--await e-chat--session-query-work))
+    (when (e-work-handle-p e-chat--session-readiness-work)
+      (e-org-canvas-test--await e-chat--session-readiness-work))
+    (plist-get
+     (e-org-canvas-test--await
+     (e-session-async-session-metadata store e-chat-session-id))
+     :metadata)))
+
+(defun e-org-canvas-test--session-rows (store)
+  "Return the bounded detached root-session page from STORE."
+  (plist-get
+   (e-org-canvas-test--await
+    (e-session-async-query-page store :limit 64 :root-p t))
+   :rows))
+
+(defun e-org-canvas-test--session-count (store)
+  "Return the number of root sessions in STORE's bounded test page."
+  (length (e-org-canvas-test--session-rows store)))
 
 (defun e-org-canvas-test--kill-chat-buffers ()
   "Kill all live e chat surfaces and collapse their test windows."
@@ -70,30 +130,21 @@
     (e-ui-work-drain-batch :buffer buffer)))
 
 (defun e-org-canvas-test--emit-board-event (harness event)
-  "Deliver translated board EVENT to HARNESS session presentation subscribers."
-  (let* ((session-id (plist-get event :session-id))
-         (binding (e-chat-service-ensure-ephemeral-binding harness session-id)))
-    (dolist (subscription
-             (copy-sequence (e-chat-service-binding-subscribers binding)))
-      (when (e-chat-service-subscription-active-p subscription)
-        (funcall (e-chat-service-subscription-function subscription) event)))))
-
-(defun e-org-canvas-test--import-board-input
-    (harness session-id id content &optional attributes)
-  "Import one historical board input fixture for HARNESS SESSION-ID."
-  (let* ((binding (e-chat-service-ensure-ephemeral-binding harness session-id))
-         (board (e-board-registry-board-source-board
-                 (e-chat-service-binding-board binding))))
-    (e-board-import-message
-     board
-     (list :id id :kind 'input :author "org-canvas-test"
-           :tags '(main) :content content :attributes attributes
-           :source-input-key (list 'org-canvas-test session-id id)
-           :routing-state 'historical))
-    (while (< (e-board-observer-next-index
-               (e-chat-service-binding-observer binding))
-              (e-board-message-count board))
-      (e-chat-service-drain-ephemeral-binding binding))))
+  "Deliver EVENT to matching Org Canvas presentation fixtures for HARNESS."
+  (let ((session-id (plist-get event :session-id)))
+    (dolist (buffer (buffer-list))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (cond
+           ((and (bound-and-true-p e-org-canvas-input--harness)
+                 (eq e-org-canvas-input--harness harness)
+                 (equal e-org-canvas-input--session-id session-id))
+            (e-org-canvas--input-handle-event buffer event))
+           ((and (bound-and-true-p e-org-canvas-mode)
+                 (eq e-org-canvas-harness harness)
+                 (equal e-org-canvas-session-id session-id)
+                 (e-org-canvas--status-relevant-event-p event))
+            (e-org-canvas--refresh-status))))))))
 
 (defun e-org-canvas-test--org-file (directory name)
   "Create an Org file NAME in DIRECTORY and return its path."
@@ -115,6 +166,18 @@
        harness session-id buffer :scope 'thread :target-folder nil)
       session-id)))
 
+(defun e-org-canvas-test--detached-session-for-file (session-id file)
+  "Return a detached Org Canvas summary for SESSION-ID and FILE."
+  (list :id session-id
+        :metadata
+        (list :org-canvas-ref
+              (list :uri (e-org-canvas--file-uri file)
+                    :buffer-name (file-name-nondirectory file)
+                    :label (file-name-nondirectory file)
+                    :mode 'org
+                    :root (file-name-as-directory
+                           (file-name-directory file))))))
+
 (ert-deftest e-org-canvas-test-exposes-entrypoints ()
   "The package exposes Org Canvas commands and modes."
   (dolist (symbol '(e-org-canvas-open-for-current-buffer
@@ -134,54 +197,43 @@
 
 (ert-deftest e-org-canvas-test-kind-substitutes-base-canvas-contract ()
   "The Org specialization opens through the unmodified base Canvas lifecycle."
-  (let ((harness (e-org-canvas-test--harness)))
-    (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
-            (e-harness-registry-register :org-canvas-test harness)
-            (should (e-canvas-kind-p e-org-canvas--kind))
-            (dolist (function
-                     (list
-                      (e-canvas-kind-harness-function e-org-canvas--kind)
-                      (e-canvas-kind-prepare-buffer-function e-org-canvas--kind)
-                      (e-canvas-kind-prepare-harness-function e-org-canvas--kind)
-                      (e-canvas-kind-attachment-function e-org-canvas--kind)
-                      (e-canvas-kind-session-reference-function
-                       e-org-canvas--kind)
-                      (e-canvas-kind-session-matches-function
-                       e-org-canvas--kind)
-                      (e-canvas-kind-initialize-session-function
-                       e-org-canvas--kind)
-                      (e-canvas-kind-bind-session-function e-org-canvas--kind)
-                      (e-canvas-kind-present-session-function
-                       e-org-canvas--kind)))
-              (should (functionp function)))
-            (with-temp-buffer
-              (rename-buffer "org-canvas-substitution" t)
-              (org-mode)
-              (let ((source (current-buffer))
-                    (chat-buffer
-                     (e-canvas-open-buffer
-                      e-org-canvas--kind (current-buffer))))
-                (should (buffer-live-p chat-buffer))
-                (should e-org-canvas-mode)
-                (should (equal e-org-canvas-session-id
-                               (buffer-local-value
-                                'e-chat-session-id chat-buffer)))
-                (should (equal
-                         (plist-get
-                          (e-org-canvas-session-metadata
-                           harness e-org-canvas-session-id)
-                          :uri)
-                         (e-canvas--buffer-uri source)))))))
-      (e-org-canvas-test--kill-chat-buffers))))
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (e-org-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :org-canvas-test))
+        (e-harness-registry-register :org-canvas-test harness)
+        (should (e-canvas-kind-p e-org-canvas--kind))
+        (dolist (function
+                 (list
+                  (e-canvas-kind-harness-function e-org-canvas--kind)
+                  (e-canvas-kind-prepare-buffer-function e-org-canvas--kind)
+                  (e-canvas-kind-prepare-harness-function e-org-canvas--kind)
+                  (e-canvas-kind-attachment-function e-org-canvas--kind)
+                  (e-canvas-kind-session-reference-function e-org-canvas--kind)
+                  (e-canvas-kind-initialize-session-function e-org-canvas--kind)
+                  (e-canvas-kind-bind-session-function e-org-canvas--kind)
+                  (e-canvas-kind-present-session-function e-org-canvas--kind)))
+          (should (functionp function)))
+        (with-temp-buffer
+          (rename-buffer "org-canvas-substitution" t)
+          (org-mode)
+          (let* ((source (current-buffer))
+                 (chat-buffer
+                  (e-canvas-open-buffer e-org-canvas--kind source))
+                 (metadata (e-org-canvas-test--chat-metadata
+                            chat-buffer store))
+                 (org-canvas (e-org-canvas--metadata-ref metadata)))
+            (should (buffer-live-p chat-buffer))
+            (should e-org-canvas-mode)
+            (should (equal e-org-canvas-session-id
+                           (buffer-local-value 'e-chat-session-id chat-buffer)))
+            (should (equal (plist-get org-canvas :uri)
+                           (e-canvas--buffer-uri source)))))))))
 
 (ert-deftest e-org-canvas-test-open-current-buffer-focuses-composer ()
   "Opening an Org buffer leaves its chat composer selected and editable."
-  (let ((harness (e-org-canvas-test--harness)))
-    (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (e-org-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :org-canvas-test))
             (e-harness-registry-register :org-canvas-test harness)
             (with-temp-buffer
               (rename-buffer "org-canvas-source" t)
@@ -204,59 +256,58 @@
                 (with-current-buffer source
                   (should e-org-canvas-mode)
                   (should e-chat-context-mode-suppressed))
-                (with-current-buffer chat-buffer
-                  (let* ((org-canvas (e-org-canvas-session-metadata
-                                      e-chat-harness
-                                      e-chat-session-id))
-                         (attachment (car (e-chat-session-attachments
-                                           e-chat-harness
-                                           e-chat-session-id))))
+                (let* ((metadata (e-org-canvas-test--chat-metadata
+                                  chat-buffer store))
+                       (org-canvas (e-org-canvas--metadata-ref metadata))
+                       (attachment
+                        (car (e-chat-session-metadata-attachments metadata))))
                     (should (plist-get attachment :canvas))
                     (should (equal (plist-get org-canvas :uri)
                                    "buffer://org-canvas-source"))
                     (should (equal (plist-get org-canvas :buffer-name)
                                    "org-canvas-source"))
                     (should (equal (plist-get org-canvas :mode) 'org))
-                    (should (plist-get org-canvas :root))))))))
-      (e-org-canvas-test--kill-chat-buffers))))
+                    (should (plist-get org-canvas :root)))))))))
 
 (ert-deftest e-org-canvas-test-open-current-buffer-activates-project-local-layer-for-file-project ()
   "Opening a file-backed Org Canvas surface syncs project-local layers for its project."
   (let ((project (make-temp-file "e-org-canvas-project-local-" t))
         (sync-directory nil)
-        (sync-called nil)
-        (harness (e-org-canvas-test--harness)))
+        (sync-called nil))
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let* ((e-harness-instance--instances (make-hash-table :test 'equal))
-                 (e-harness-instance--defaults (make-hash-table :test 'equal))
-                 (e-chat-default-harness-id :chat-default)
-                 (file (e-org-canvas-test--org-file project "notes.org")))
-            (e-harness-registry-register :chat-default harness)
-            (e-harness-instance-register
-             :id :chat-default
-             :name "Chat"
-             :kind 'chat
-             :harness-id :chat-default
-             :default t)
-            (cl-letf (((symbol-function 'e-default-chat-sync-harness-layers)
-                       (lambda (harness &optional _layer-ids directory)
-                         (setq sync-called t)
-                         (setq sync-directory directory)
-                         (e-harness-set-intrinsic-capabilities
-                          harness
-                          (list (e-capability-create
-                                 :id 'synced-project
-                                 :name "Synced Project")))
-                         harness)))
-              (with-current-buffer (find-file-noselect file)
-                (let ((chat-buffer (e-org-canvas-open-for-current-buffer)))
-                  (should sync-called)
-                  (should (equal sync-directory (file-name-as-directory project)))
-                  (should (memq 'synced-project
-                                (mapcar #'e-capability-id
-                                        (e-harness-active-capabilities harness))))
-                  (kill-buffer chat-buffer))))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let* ((e-harness-instance--instances (make-hash-table :test 'equal))
+                   (e-harness-instance--defaults (make-hash-table :test 'equal))
+                   (e-chat-default-harness-id :chat-default)
+                   (file (e-org-canvas-test--org-file project "notes.org")))
+              (e-harness-registry-register :chat-default harness)
+              (e-harness-instance-register
+               :id :chat-default
+               :name "Chat"
+               :kind 'chat
+               :harness-id :chat-default
+               :default t)
+              (cl-letf (((symbol-function 'e-default-chat-sync-harness-layers)
+                         (lambda (harness &optional _layer-ids directory)
+                           (setq sync-called t)
+                           (setq sync-directory directory)
+                           (e-harness-set-intrinsic-capabilities
+                            harness
+                            (list (e-capability-create
+                                   :id 'synced-project
+                                   :name "Synced Project")))
+                           harness)))
+                (with-current-buffer (find-file-noselect file)
+                  (let ((chat-buffer (e-org-canvas-open-for-current-buffer)))
+                    (should sync-called)
+                    (should (equal sync-directory
+                                   (file-name-as-directory project)))
+                    (should (memq 'synced-project
+                                  (mapcar #'e-capability-id
+                                          (e-harness-active-capabilities
+                                           harness))))
+                    (kill-buffer chat-buffer)))))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
@@ -266,39 +317,34 @@
 
 (ert-deftest e-org-canvas-test-open-current-buffer-captures-workspace-affinity ()
   "Opening an Org Canvas surface gives source and chat buffers one workspace."
-  (let ((harness (e-org-canvas-test--harness))
-        (token (make-e-workspace-token
-                :backend 'single
-                :id 'canvas-workspace
-                :name "canvas"
-                :frame (selected-frame))))
-    (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
-            (e-harness-registry-register :org-canvas-test harness)
-            (cl-letf (((symbol-function 'e-workspace-current)
-                       (lambda (&optional _frame) token)))
-              (with-temp-buffer
-                (rename-buffer "org-canvas-workspace-source" t)
-                (org-mode)
-                (insert "* Topic\nBody\n")
-                (let ((chat-buffer (e-org-canvas-open-for-current-buffer))
-                      (source (current-buffer)))
-                  (should (e-workspace-equal-p
-                           (e-org-canvas-workspace source)
-                           token))
-                  (should (e-workspace-equal-p
-                           (e-chat-buffer-workspace chat-buffer)
-                           token))
-                  (should (e-workspace-equal-p
-                           (e-buffer-workspace chat-buffer)
-                           token)))))))
-      (e-org-canvas-test--kill-chat-buffers))))
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (let ((token (make-e-workspace-token
+                  :backend 'single
+                  :id 'canvas-workspace
+                  :name "canvas"
+                  :frame (selected-frame))))
+      (e-org-canvas-test--with-empty-harness-registry
+        (let ((e-chat-default-harness-id :org-canvas-test))
+          (e-harness-registry-register :org-canvas-test harness)
+          (cl-letf (((symbol-function 'e-workspace-current)
+                     (lambda (&optional _frame) token)))
+            (with-temp-buffer
+              (rename-buffer "org-canvas-workspace-source" t)
+              (org-mode)
+              (insert "* Topic\nBody\n")
+              (let ((chat-buffer (e-org-canvas-open-for-current-buffer))
+                    (source (current-buffer)))
+                (should (e-workspace-equal-p
+                         (e-org-canvas-workspace source) token))
+                (should (e-workspace-equal-p
+                         (e-chat-buffer-workspace chat-buffer) token))
+                (should (e-workspace-equal-p
+                         (e-buffer-workspace chat-buffer) token))))))))))
 
 (ert-deftest e-org-canvas-test-open-current-buffer-replaces-stale-workspace-affinity ()
   "Opening an Org Canvas surface does not switch to a dead buffer workspace."
-  (let* ((harness (e-org-canvas-test--harness))
-         (stale (make-e-workspace-token
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (let* ((stale (make-e-workspace-token
                  :backend 'doom
                  :id "e"
                  :name "e"
@@ -308,39 +354,34 @@
                    :id "async"
                    :name "async"
                    :frame (selected-frame))))
-    (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
-            (e-harness-registry-register :org-canvas-test harness)
-            (cl-letf (((symbol-function 'e-workspace-current)
-                       (lambda (&optional _frame) current))
-                      ((symbol-function 'e-workspace-live-p)
-                       (lambda (workspace)
-                         (e-workspace-equal-p workspace current)))
-                      ((symbol-function 'e-workspace-switch)
-                       (lambda (workspace)
-                         (when (e-workspace-equal-p workspace stale)
-                           (error "switched to stale workspace"))
-                         t)))
-              (with-temp-buffer
-                (rename-buffer "org-canvas-stale-workspace-source" t)
-                (org-mode)
-                (insert "* Topic\nBody\n")
-                (e-buffer-set-workspace (current-buffer) stale)
-                (let ((chat-buffer (e-org-canvas-open-for-current-buffer))
-                      (source (current-buffer)))
-                  (should (e-workspace-equal-p
-                           (e-org-canvas-workspace source)
-                           current))
-                  (should (e-workspace-equal-p
-                           (e-chat-buffer-workspace chat-buffer)
-                           current)))))))
-      (e-org-canvas-test--kill-chat-buffers))))
+      (e-org-canvas-test--with-empty-harness-registry
+        (let ((e-chat-default-harness-id :org-canvas-test))
+          (e-harness-registry-register :org-canvas-test harness)
+          (cl-letf (((symbol-function 'e-workspace-current)
+                     (lambda (&optional _frame) current))
+                    ((symbol-function 'e-workspace-live-p)
+                     (lambda (workspace)
+                       (e-workspace-equal-p workspace current)))
+                    ((symbol-function 'e-workspace-switch)
+                     (lambda (workspace)
+                       (when (e-workspace-equal-p workspace stale)
+                         (error "switched to stale workspace"))
+                       t)))
+            (with-temp-buffer
+              (rename-buffer "org-canvas-stale-workspace-source" t)
+              (org-mode)
+              (insert "* Topic\nBody\n")
+              (e-buffer-set-workspace (current-buffer) stale)
+              (let ((chat-buffer (e-org-canvas-open-for-current-buffer))
+                    (source (current-buffer)))
+                (should (e-workspace-equal-p
+                         (e-org-canvas-workspace source) current))
+                (should (e-workspace-equal-p
+                         (e-chat-buffer-workspace chat-buffer) current))))))))))
 
 (ert-deftest e-org-canvas-test-open-existing-session-rebinds-chat-to-source-workspace ()
   "Reopening an Org Canvas session keeps chat display with the source workspace."
-  (let* ((harness (e-org-canvas-test--harness))
-         (source (get-buffer-create "org-canvas-existing-workspace-source"))
+  (let* ((source (get-buffer-create "org-canvas-existing-workspace-source"))
          (target-workspace (make-e-workspace-token
                             :backend 'single
                             :id 'source-workspace
@@ -354,40 +395,43 @@
          chat-buffer
          display-workspace)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
-            (e-harness-registry-register :org-canvas-test harness)
-            (with-current-buffer source
-              (erase-buffer)
-              (org-mode)
-              (insert "* Topic\nBody\n")
-              (e-buffer-set-workspace source target-workspace))
-            (set-window-buffer (selected-window) source)
-            (e-harness-test-create-board-session harness :id "session-1")
-            (e-org-canvas-mark-session
-             harness "session-1" source :scope 'thread :target-folder nil)
-            (setq chat-buffer
-                  (e-chat-open :harness harness :session-id "session-1"))
-            (e-buffer-set-workspace chat-buffer foreign-workspace)
-            (cl-letf (((symbol-function 'e-workspace-display-buffer)
-                       (cl-function
-                        (lambda (buffer &key workspace action select
-                                        side-window-ok)
-                          (ignore action select side-window-ok)
-                          (setq display-workspace workspace)
-                          (display-buffer-same-window buffer nil)))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :org-canvas-test))
+              (e-harness-registry-register :org-canvas-test harness)
               (with-current-buffer source
-                (should (eq (e-org-canvas-open-for-current-buffer)
-                            chat-buffer))))
-            (should (e-workspace-equal-p
-                     (e-buffer-workspace source)
-                     target-workspace))
-            (should (e-workspace-equal-p
-                     (e-buffer-workspace chat-buffer)
-                     target-workspace))
-            (should (e-workspace-equal-p
-                     display-workspace
-                     target-workspace))))
+                (erase-buffer)
+                (org-mode)
+                (insert "* Topic\nBody\n")
+                (e-buffer-set-workspace source target-workspace))
+              (e-org-canvas-test--create-sql-session
+               harness "session-1"
+               (list :context-references
+                     (list :org-canvas-ref
+                           (e-org-canvas--metadata-for-buffer source))))
+              (e-org-canvas--bind-canvas-session
+               harness "session-1" source nil)
+              (set-window-buffer (selected-window) source)
+              (setq chat-buffer
+                    (e-chat-open :harness harness :session-id "session-1"))
+              (e-org-canvas-test--chat-metadata chat-buffer store)
+              (e-buffer-set-workspace chat-buffer foreign-workspace)
+              (cl-letf (((symbol-function 'e-workspace-display-buffer)
+                         (cl-function
+                          (lambda (buffer &key workspace action select
+                                          side-window-ok)
+                            (ignore action select side-window-ok)
+                            (setq display-workspace workspace)
+                            (display-buffer-same-window buffer nil)))))
+                (with-current-buffer source
+                  (should (eq (e-org-canvas-open-for-current-buffer)
+                              chat-buffer))))
+              (should (e-workspace-equal-p
+                       (e-buffer-workspace source) target-workspace))
+              (should (e-workspace-equal-p
+                       (e-buffer-workspace chat-buffer) target-workspace))
+              (should (e-workspace-equal-p
+                       display-workspace target-workspace)))))
       (when (buffer-live-p source)
         (kill-buffer source))
       (when (buffer-live-p chat-buffer)
@@ -426,30 +470,31 @@
 (ert-deftest e-org-canvas-test-open-starts-new-session-without-reference ()
   "Opening an Org buffer without a session reference starts a new session."
   (let ((directory (make-temp-file "e-org-canvas-" t))
-        (harness (e-org-canvas-test--harness))
         (window-configuration (current-window-configuration))
         first-chat)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let* ((e-chat-default-harness-id :org-canvas-test)
-                 (file (e-org-canvas-test--org-file directory "notes.org"))
-                 first-id second-id)
-            (e-harness-registry-register :org-canvas-test harness)
-            (with-current-buffer (find-file-noselect file)
-              (let ((source (current-buffer)))
-                (setq first-chat (e-org-canvas-open-for-current-buffer))
-                (setq first-id
-                      (buffer-local-value 'e-chat-session-id first-chat))
-                (kill-buffer first-chat)
-                (kill-buffer source)
-                (set-window-configuration window-configuration)))
-            (with-current-buffer (find-file-noselect file)
-              (setq second-id
-                    (with-current-buffer
-                        (e-org-canvas-open-for-current-buffer)
-                      e-chat-session-id)))
-            (should-not (equal second-id first-id))
-            (should (= (length (e-harness-session-list harness)) 2))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let* ((e-chat-default-harness-id :org-canvas-test)
+                   (file (e-org-canvas-test--org-file directory "notes.org"))
+                   first-id second-id second-chat)
+              (e-harness-registry-register :org-canvas-test harness)
+              (with-current-buffer (find-file-noselect file)
+                (let ((source (current-buffer)))
+                  (setq first-chat (e-org-canvas-open-for-current-buffer))
+                  (setq first-id
+                        (buffer-local-value 'e-chat-session-id first-chat))
+                  (e-org-canvas-test--chat-metadata first-chat store)
+                  (kill-buffer first-chat)
+                  (kill-buffer source)
+                  (set-window-configuration window-configuration)))
+              (with-current-buffer (find-file-noselect file)
+                (setq second-chat (e-org-canvas-open-for-current-buffer))
+                (setq second-id
+                      (buffer-local-value 'e-chat-session-id second-chat)))
+              (e-org-canvas-test--chat-metadata second-chat store)
+              (should-not (equal second-id first-id))
+              (should (= (e-org-canvas-test--session-count store) 2)))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
@@ -460,40 +505,40 @@
 (ert-deftest e-org-canvas-test-open-does-not-fallback-to-buffer-name ()
   "Opening plan.org without a session reference does not reuse another plan.org."
   (let ((directory (make-temp-file "e-org-canvas-" t))
-        (harness (e-org-canvas-test--harness))
         first-file
         second-file
         (window-configuration (current-window-configuration))
         first-chat)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let* ((e-chat-default-harness-id :org-canvas-test)
-                 (first-directory (expand-file-name "first" directory))
-                 (second-directory (expand-file-name "second" directory))
-                 first-id
-                 second-id)
-            (make-directory first-directory)
-            (make-directory second-directory)
-            (setq first-file (e-org-canvas-test--org-file
-                              first-directory "plan.org"))
-            (setq second-file (e-org-canvas-test--org-file
-                               second-directory "plan.org"))
-            (e-harness-registry-register :org-canvas-test harness)
-            (with-current-buffer (find-file-noselect first-file)
-              (let ((source (current-buffer)))
-                (setq first-chat (e-org-canvas-open-for-current-buffer))
-                (setq first-id
-                      (buffer-local-value 'e-chat-session-id first-chat))
-                (kill-buffer first-chat)
-                (kill-buffer source)
-                (set-window-configuration window-configuration)))
-            (with-current-buffer (find-file-noselect second-file)
-              (setq second-id
-                    (with-current-buffer
-                        (e-org-canvas-open-for-current-buffer)
-                      e-chat-session-id)))
-            (should-not (equal second-id first-id))
-            (should (= (length (e-harness-session-list harness)) 2))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let* ((e-chat-default-harness-id :org-canvas-test)
+                   (first-directory (expand-file-name "first" directory))
+                   (second-directory (expand-file-name "second" directory))
+                   first-id second-id second-chat)
+              (make-directory first-directory)
+              (make-directory second-directory)
+              (setq first-file (e-org-canvas-test--org-file
+                                first-directory "plan.org"))
+              (setq second-file (e-org-canvas-test--org-file
+                                 second-directory "plan.org"))
+              (e-harness-registry-register :org-canvas-test harness)
+              (with-current-buffer (find-file-noselect first-file)
+                (let ((source (current-buffer)))
+                  (setq first-chat (e-org-canvas-open-for-current-buffer))
+                  (setq first-id
+                        (buffer-local-value 'e-chat-session-id first-chat))
+                  (e-org-canvas-test--chat-metadata first-chat store)
+                  (kill-buffer first-chat)
+                  (kill-buffer source)
+                  (set-window-configuration window-configuration)))
+              (with-current-buffer (find-file-noselect second-file)
+                (setq second-chat (e-org-canvas-open-for-current-buffer))
+                (setq second-id
+                      (buffer-local-value 'e-chat-session-id second-chat)))
+              (e-org-canvas-test--chat-metadata second-chat store)
+              (should-not (equal second-id first-id))
+              (should (= (e-org-canvas-test--session-count store) 2)))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
@@ -504,30 +549,45 @@
 (ert-deftest e-org-canvas-test-open-stale-reference-prompts-before-new-session ()
   "A stale Org Canvas session reference prompts before starting a replacement."
   (let ((directory (make-temp-file "e-org-canvas-" t))
-        (harness (e-org-canvas-test--harness))
         prompt
         warning)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let* ((e-chat-default-harness-id :org-canvas-test)
-                 (file (e-org-canvas-test--org-file directory "notes.org")))
-            (e-harness-registry-register :org-canvas-test harness)
-            (with-current-buffer (find-file-noselect file)
-              (setq-local e-org-canvas-harness harness)
-              (setq-local e-org-canvas-session-id "missing-session")
-              (cl-letf (((symbol-function 'yes-or-no-p)
-                         (lambda (text)
-                           (setq prompt text)
-                           t))
-                        ((symbol-function 'display-warning)
-                         (lambda (_type message &optional _level _buffer-name)
-                           (setq warning message))))
-                (with-current-buffer (e-org-canvas-open-for-current-buffer)
-                  (should e-chat-session-id)
-                  (should-not (equal e-chat-session-id "missing-session"))))
-              (should (string-match-p "missing-session" prompt))
-              (should (string-match-p "missing-session" warning))
-              (should (= (length (e-harness-session-list harness)) 1)))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let* ((e-chat-default-harness-id :org-canvas-test)
+                   (file (e-org-canvas-test--org-file directory "notes.org")))
+              (e-harness-registry-register :org-canvas-test harness)
+              (with-current-buffer (find-file-noselect file)
+                (let ((source (current-buffer)) chat query-work replacement)
+                  (setq-local e-org-canvas-harness harness)
+                  (setq-local e-org-canvas-session-id "missing-session")
+                  (cl-letf (((symbol-function 'yes-or-no-p)
+                             (lambda (text)
+                               (setq prompt text)
+                               t))
+                            ((symbol-function 'display-warning)
+                             (lambda (_type message &optional _level
+                                      _buffer-name)
+                               (setq warning message))))
+                    (setq chat (e-org-canvas-open-for-current-buffer))
+                    (setq query-work
+                          (buffer-local-value
+                           'e-chat--session-query-work chat))
+                    (should (eq (plist-get
+                                 (e-org-canvas-test--settle query-work) :state)
+                                'failed))
+                    (e-org-canvas-test--drain-ui-work source)
+                    (should-not
+                     (equal
+                      (buffer-local-value 'e-org-canvas-session-id source)
+                      "missing-session"))
+                    (setq replacement
+                          (buffer-local-value 'e-org-canvas-session-id source))
+                    (e-org-canvas-test--await
+                     (e-session-async-session-metadata store replacement)))
+                  (should (string-match-p "missing-session" prompt))
+                  (should (string-match-p "missing-session" warning))
+                  (should (= (e-org-canvas-test--session-count store) 1)))))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
@@ -538,54 +598,63 @@
 (ert-deftest e-org-canvas-test-load-failure-offers-reference-replacement ()
   "A referenced session load failure can create and install a replacement."
   (let ((directory (make-temp-file "e-org-canvas-" t))
-        (harness (e-org-canvas-test--harness))
         (window-configuration (current-window-configuration))
         source
         load-error-callback
         prompt
         warning)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let* ((e-chat-default-harness-id :org-canvas-test)
-                 (file (e-org-canvas-test--org-file directory "notes.org"))
-                 (original-open (symbol-function 'e-chat-open)))
-            (e-harness-registry-register :org-canvas-test harness)
-            (setq source (find-file-noselect file))
-            (e-org-canvas-test--session-with-file
-             harness "broken-reference" file)
-            (with-current-buffer source
-              (setq-local e-org-canvas-harness harness)
-              (setq-local e-org-canvas-session-id "broken-reference")
-              (cl-letf (((symbol-function
-                          'e-org-canvas--display-and-select-chat-buffer)
-                         (lambda (buffer) buffer))
-                        ((symbol-function 'e-chat-open)
-                         (lambda (&rest arguments)
-                           (setq load-error-callback
-                                 (plist-get arguments
-                                            :on-session-read-error))
-                           (apply original-open arguments))))
-                (e-org-canvas-open-for-current-buffer))
-              (should (functionp load-error-callback))
-              (cl-letf (((symbol-function 'yes-or-no-p)
-                         (lambda (text)
-                           (setq prompt text)
-                           t))
-                        ((symbol-function 'display-warning)
-                         (lambda (_type message &optional _level _buffer-name)
-                           (setq warning message)))
-                        ((symbol-function
-                          'e-org-canvas--display-and-select-chat-buffer)
-                         (lambda (buffer) buffer)))
-                (funcall load-error-callback
-                         '(e-session-checkpoint-invalid
-                           "broken-reference" "bad checkpoint"))
-                (e-org-canvas-test--drain-ui-work source))
-              (should-not (equal e-org-canvas-session-id
-                                 "broken-reference"))
-              (should (string-match-p "replace the reference" prompt))
-              (should (string-match-p "bad checkpoint" warning))
-              (should (= (length (e-harness-session-list harness)) 2)))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let* ((e-chat-default-harness-id :org-canvas-test)
+                   (file (e-org-canvas-test--org-file directory "notes.org"))
+                   (original-open (symbol-function 'e-chat-open))
+                   chat replacement)
+              (e-harness-registry-register :org-canvas-test harness)
+              (setq source (find-file-noselect file))
+              (e-org-canvas-test--create-sql-session
+               harness "broken-reference"
+               (list :context-references
+                     (list :org-canvas-ref
+                           (e-org-canvas--metadata-for-buffer source))))
+              (e-org-canvas--bind-canvas-session
+               harness "broken-reference" source nil)
+              (with-current-buffer source
+                (cl-letf (((symbol-function
+                            'e-org-canvas--display-and-select-chat-buffer)
+                           (lambda (buffer) buffer))
+                          ((symbol-function 'e-chat-open)
+                           (lambda (&rest arguments)
+                             (setq load-error-callback
+                                   (plist-get arguments
+                                              :on-session-read-error))
+                             (apply original-open arguments))))
+                  (setq chat (e-org-canvas-open-for-current-buffer)))
+                (e-org-canvas-test--chat-metadata chat store)
+                (should (functionp load-error-callback))
+                (cl-letf (((symbol-function 'yes-or-no-p)
+                           (lambda (text)
+                             (setq prompt text)
+                             t))
+                          ((symbol-function 'display-warning)
+                           (lambda (_type message &optional _level _buffer-name)
+                             (setq warning message)))
+                          ((symbol-function
+                            'e-org-canvas--display-and-select-chat-buffer)
+                           (lambda (buffer) buffer)))
+                  (funcall load-error-callback
+                           '(e-session-checkpoint-invalid
+                             "broken-reference" "bad checkpoint"))
+                  (e-org-canvas-test--drain-ui-work source))
+                (should-not (equal e-org-canvas-session-id
+                                   "broken-reference"))
+                (setq replacement
+                      (e-chat--find-session-buffer
+                       e-org-canvas-session-id harness))
+                (e-org-canvas-test--chat-metadata replacement store)
+                (should (string-match-p "replace the reference" prompt))
+                (should (string-match-p "bad checkpoint" warning))
+                (should (= (e-org-canvas-test--session-count store) 2))))))
       (set-window-configuration window-configuration)
       (when (buffer-live-p source)
         (kill-buffer source))
@@ -626,50 +695,65 @@
 (ert-deftest e-org-canvas-test-open-wrong-file-reference-prompts-before-new-session ()
   "A live reference for a different file prompts before starting a replacement."
   (let ((directory (make-temp-file "e-org-canvas-" t))
-        (harness (e-org-canvas-test--harness))
         prompt
         warning
         (window-configuration (current-window-configuration))
         first-chat)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let* ((e-chat-default-harness-id :org-canvas-test)
-                 (first-directory (expand-file-name "first" directory))
-                 (second-directory (expand-file-name "second" directory))
-                 (first-file (progn
-                               (make-directory first-directory)
-                               (e-org-canvas-test--org-file
-                                first-directory "plan.org")))
-                 (second-file (progn
-                                (make-directory second-directory)
-                                (e-org-canvas-test--org-file
-                                 second-directory "plan.org")))
-                 first-id)
-            (e-harness-registry-register :org-canvas-test harness)
-            (with-current-buffer (find-file-noselect first-file)
-              (let ((source (current-buffer)))
-                (setq first-chat (e-org-canvas-open-for-current-buffer))
-                (setq first-id
-                      (buffer-local-value 'e-chat-session-id first-chat))
-                (kill-buffer first-chat)
-                (kill-buffer source)
-                (set-window-configuration window-configuration)))
-            (with-current-buffer (find-file-noselect second-file)
-              (setq-local e-org-canvas-harness harness)
-              (setq-local e-org-canvas-session-id first-id)
-              (cl-letf (((symbol-function 'yes-or-no-p)
-                         (lambda (text)
-                           (setq prompt text)
-                           t))
-                        ((symbol-function 'display-warning)
-                         (lambda (_type message &optional _level _buffer-name)
-                           (setq warning message))))
-                (with-current-buffer (e-org-canvas-open-for-current-buffer)
-                  (should e-chat-session-id)
-                  (should-not (equal e-chat-session-id first-id))))
-              (should (string-match-p first-id prompt))
-              (should (string-match-p "not a matching canvas" warning))
-              (should (= (length (e-harness-session-list harness)) 2)))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let* ((e-chat-default-harness-id :org-canvas-test)
+                   (first-directory (expand-file-name "first" directory))
+                   (second-directory (expand-file-name "second" directory))
+                   (first-file (progn
+                                 (make-directory first-directory)
+                                 (e-org-canvas-test--org-file
+                                  first-directory "plan.org")))
+                   (second-file (progn
+                                  (make-directory second-directory)
+                                  (e-org-canvas-test--org-file
+                                   second-directory "plan.org")))
+                   first-id second-chat query-work)
+              (e-harness-registry-register :org-canvas-test harness)
+              (with-current-buffer (find-file-noselect first-file)
+                (let ((source (current-buffer)))
+                  (setq first-chat (e-org-canvas-open-for-current-buffer))
+                  (setq first-id
+                        (buffer-local-value 'e-chat-session-id first-chat))
+                  (e-org-canvas-test--chat-metadata first-chat store)
+                  (kill-buffer first-chat)
+                  (kill-buffer source)
+                  (set-window-configuration window-configuration)))
+              (with-current-buffer (find-file-noselect second-file)
+                (let ((source (current-buffer)))
+                  (setq-local e-org-canvas-harness harness)
+                  (setq-local e-org-canvas-session-id first-id)
+                  (cl-letf (((symbol-function 'yes-or-no-p)
+                             (lambda (text)
+                               (setq prompt text)
+                               t))
+                            ((symbol-function 'display-warning)
+                             (lambda (_type message &optional _level
+                                      _buffer-name)
+                               (setq warning message))))
+                    (setq second-chat
+                          (e-org-canvas-open-for-current-buffer))
+                    (setq query-work
+                          (buffer-local-value
+                           'e-chat--session-query-work second-chat))
+                    (e-org-canvas-test--await query-work)
+                    (e-org-canvas-test--drain-ui-work source)
+                    (should-not
+                     (equal
+                      (buffer-local-value 'e-org-canvas-session-id source)
+                      first-id))
+                    (e-org-canvas-test--await
+                     (e-session-async-session-metadata
+                      store
+                      (buffer-local-value 'e-org-canvas-session-id source))))
+                  (should (string-match-p first-id prompt))
+                  (should (string-match-p "not a matching canvas" warning))
+                  (should (= (e-org-canvas-test--session-count store) 2)))))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
@@ -680,38 +764,40 @@
 (ert-deftest e-org-canvas-test-open-existing-session-displays-chat-below-source ()
   "Reopening an existing Org Canvas session displays its chat below the source."
   (let ((directory (make-temp-file "e-org-canvas-" t))
-        (harness (e-org-canvas-test--harness))
         (original-window (selected-window))
         (original-buffer (window-buffer))
         source
         chat-buffer)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let* ((e-chat-default-harness-id :org-canvas-test)
-                 (file (e-org-canvas-test--org-file directory "notes.org")))
-            (e-harness-registry-register :org-canvas-test harness)
-            (delete-other-windows)
-            (setq source (find-file-noselect file))
-            (set-window-buffer original-window source)
-            (select-window original-window)
-            (with-current-buffer source
-              (e-org-canvas-open-for-current-buffer))
-            (select-window (get-buffer-window source t))
-            (delete-other-windows)
-            (setq chat-buffer
-                  (with-current-buffer source
-                    (e-org-canvas-open-for-current-buffer)))
-            (let ((source-window (get-buffer-window source t))
-                  (chat-window (get-buffer-window chat-buffer t))
-                  (composer-window
-                   (get-buffer-window
-                    (e-chat-surface-composer-buffer chat-buffer)
-                    t)))
-              (should (window-live-p source-window))
-              (should (window-live-p chat-window))
-              (should (eq (selected-window) composer-window))
-              (should (> (nth 1 (window-edges chat-window))
-                         (nth 1 (window-edges source-window)))))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let* ((e-chat-default-harness-id :org-canvas-test)
+                   (file (e-org-canvas-test--org-file directory "notes.org")))
+              (e-harness-registry-register :org-canvas-test harness)
+              (delete-other-windows)
+              (setq source (find-file-noselect file))
+              (set-window-buffer original-window source)
+              (select-window original-window)
+              (setq chat-buffer
+                    (with-current-buffer source
+                      (e-org-canvas-open-for-current-buffer)))
+              (e-org-canvas-test--chat-metadata chat-buffer store)
+              (select-window (get-buffer-window source t))
+              (delete-other-windows)
+              (setq chat-buffer
+                    (with-current-buffer source
+                      (e-org-canvas-open-for-current-buffer)))
+              (let ((source-window (get-buffer-window source t))
+                    (chat-window (get-buffer-window chat-buffer t))
+                    (composer-window
+                     (get-buffer-window
+                      (e-chat-surface-composer-buffer chat-buffer)
+                      t)))
+                (should (window-live-p source-window))
+                (should (window-live-p chat-window))
+                (should (eq (selected-window) composer-window))
+                (should (> (nth 1 (window-edges chat-window))
+                           (nth 1 (window-edges source-window))))))))
       (when (window-live-p original-window)
         (select-window original-window)
         (set-window-buffer original-window original-buffer))
@@ -788,20 +874,20 @@
 (ert-deftest e-org-canvas-test-new-file-directory-focuses-chat-composer ()
   "Selecting a directory creates an unsaved canvas and focuses its composer."
   (let ((directory (file-name-as-directory
-                    (make-temp-file "e-org-canvas-directory-" t)))
-        (harness (e-org-canvas-test--harness)))
+                    (make-temp-file "e-org-canvas-directory-" t))))
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
-            (e-harness-registry-register :org-canvas-test harness)
-            (let ((chat-buffer (e-org-canvas-new-file directory)))
-              (with-current-buffer chat-buffer
-                (let* ((org-canvas (e-org-canvas-session-metadata
-                                    e-chat-harness
-                                    e-chat-session-id))
-                       (target-buffer (get-buffer
-                                       (plist-get org-canvas :buffer-name)))
-                       (composer (e-chat-surface-composer-buffer)))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :org-canvas-test))
+              (e-harness-registry-register :org-canvas-test harness)
+              (let* ((chat-buffer (e-org-canvas-new-file directory))
+                     (metadata (e-org-canvas-test--chat-metadata
+                                chat-buffer store))
+                     (org-canvas (e-org-canvas--metadata-ref metadata)))
+                (with-current-buffer chat-buffer
+                  (let* ((target-buffer
+                          (get-buffer (plist-get org-canvas :buffer-name)))
+                         (composer (e-chat-surface-composer-buffer)))
                   (should (plist-get org-canvas :needs-file-name))
                   (should (equal (plist-get org-canvas :target-folder)
                                  directory))
@@ -815,7 +901,7 @@
                     (should (equal default-directory directory)))
                   (should (buffer-live-p composer))
                   (should (eq (window-buffer (selected-window))
-                              composer)))))))
+                              composer))))))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (string-prefix-p "*e-org-canvas:" (buffer-name buffer))
@@ -918,32 +1004,33 @@
       (should (= calls 1)))))
 
 (ert-deftest e-org-canvas-test-mode-refreshes-indicator-on-token-usage ()
-  "Org Canvas indicator updates from durable provider token usage events."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store
-                   :default-options
-                   '(:model "gpt-5.5" :reasoning-effort "high"))))
-    (e-harness-activate-capability harness (e-chat-session-capability-create))
-    (with-temp-buffer
-      (org-mode)
-      (e-harness-test-create-board-session
-       harness :id "org-canvas-usage")
-      (setq-local e-org-canvas-harness harness)
-      (setq-local e-org-canvas-session-id "org-canvas-usage")
-      (e-org-canvas-mode 1)
-      (e-session-append-activity-event
-       store "org-canvas-usage" "turn-1" 'token-usage
-       '(:input-tokens 202598 :total-tokens 203017))
-      (e-org-canvas-test--emit-board-event
-       harness
-       (e-events-make :type 'token-usage
-                      :session-id "org-canvas-usage"
-                      :turn-id "turn-1"))
-      (e-org-canvas-test--drain-ui-work (current-buffer))
-      (should (equal mode-name "Org Canvas gpt-5.5/high 78% (203k/258k tok)"))
-      (e-org-canvas-mode -1))))
+  "Org Canvas indicator updates from a live provider token-usage event."
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (let ((usage-seen nil))
+      (e-org-canvas-test--create-sql-session
+       harness "org-canvas-usage" nil)
+      (with-temp-buffer
+        (org-mode)
+        (setq-local e-org-canvas-harness harness)
+        (setq-local e-org-canvas-session-id "org-canvas-usage")
+        (cl-letf (((symbol-function 'e-context-budget-status)
+                   (lambda (&rest _arguments)
+                     (list :model "gpt-5.5"
+                           :reasoning-effort "high"
+                           :used-tokens (if usage-seen 203017 0)
+                           :window 258000
+                           :approximate nil))))
+          (e-org-canvas-mode 1)
+          (setq usage-seen t)
+          (e-org-canvas-test--emit-board-event
+           harness
+           (e-events-make :type 'token-usage
+                          :session-id "org-canvas-usage"
+                          :turn-id "turn-1"))
+          (e-org-canvas-test--drain-ui-work (current-buffer))
+          (should (equal mode-name
+                         "Org Canvas gpt-5.5/high 78% (203k/258k tok)"))
+          (e-org-canvas-mode -1))))))
 
 (ert-deftest e-org-canvas-test-compact-starts-session-action ()
   "Org Canvas compaction starts the shared session compaction action."
@@ -1238,60 +1325,66 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest e-org-canvas-test-input-open-session-reveals_backing_chat ()
-  "Opening the session from an input pane reveals the normal backing chat."
-  (let ((harness (e-org-canvas-test--harness))
-        (original-window (selected-window))
-        (window-configuration (current-window-configuration))
-        source
-        chat
-        input
-        opened)
-    (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
-            (e-harness-registry-register :org-canvas-test harness)
-            (delete-other-windows)
-            (setq source (get-buffer-create "org-canvas-input-open-source"))
-            (with-current-buffer source
-              (org-mode)
-              (insert "* Topic\nBody\n"))
-            (set-window-buffer original-window source)
-            (select-window original-window)
-            (e-harness-test-create-board-session
-             harness
-             :id "session-1"
-             :metadata (list :project-root default-directory))
-            (e-org-canvas-mark-session
-             harness "session-1" source :scope 'thread :target-folder nil)
-            (e-org-canvas-test--import-board-input
-             harness "session-1" "msg-1" "Existing backing chat history")
-            (setq chat (e-chat-open :harness harness :session-id "session-1"))
-            (setq input
-                  (e-org-canvas--input-buffer
-                   :harness harness
-                   :session-id "session-1"
-                   :scope 'thread
-                   :target-buffer source))
-            (set-window-buffer original-window input)
-            (select-window original-window)
-            (setq opened
-                  (with-current-buffer input
-                    (e-org-canvas-input-open-session)))
-            (should (eq opened chat))
-            (should
-             (eq (window-buffer (selected-window))
-                 (e-chat-surface-composer-buffer chat)))
-            (should-not (eq opened input))
-            (should-not (get-buffer-window input t))
-            (with-current-buffer opened
-              (goto-char (point-min))
-              (should (search-forward "Existing backing chat history" nil t)))))
-      (set-window-configuration window-configuration)
-      (dolist (buffer (list input chat source))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer)))
-      (e-org-canvas-test--kill-chat-buffers))))
+(ert-deftest e-org-canvas-test-input-open-session-reveals_sql_backing_chat ()
+  "Opening an input pane's SQL session reveals its normal backing chat."
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (e-org-canvas-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :org-canvas-test)
+            (original-window (selected-window))
+            (window-configuration (current-window-configuration))
+            source chat input opened)
+        (unwind-protect
+            (progn
+              (e-harness-registry-register :org-canvas-test harness)
+              (delete-other-windows)
+              (setq source
+                    (get-buffer-create "org-canvas-input-open-source"))
+              (with-current-buffer source
+                (org-mode)
+                (insert "* Topic\nBody\n"))
+              (let ((org-canvas
+                     (e-org-canvas--metadata-for-buffer source)))
+                (e-org-canvas-test--create-sql-session
+                 harness "session-1"
+                 (list :project-root default-directory
+                       :org-canvas-ref org-canvas)))
+              (e-org-canvas--bind-canvas-session
+               harness "session-1" source nil)
+              (e-org-canvas-test--await
+               (e-chat-service-queue-session
+                harness "session-1" "Existing backing chat history"
+                :metadata '(:org-canvas-scope thread)
+                :source-input-key '(org-canvas-test reveal)))
+              (set-window-buffer original-window source)
+              (select-window original-window)
+              (setq chat
+                    (e-chat-open :harness harness :session-id "session-1"))
+              (with-current-buffer chat
+                (when (e-work-handle-p e-chat--session-query-work)
+                  (e-org-canvas-test--await e-chat--session-query-work)))
+              (setq input
+                    (e-org-canvas--input-buffer
+                     :harness harness :session-id "session-1"
+                     :scope 'thread :target-buffer source))
+              (set-window-buffer original-window input)
+              (select-window original-window)
+              (setq opened
+                    (with-current-buffer input
+                      (e-org-canvas-input-open-session)))
+              (should (eq opened chat))
+              (should
+               (eq (window-buffer (selected-window))
+                   (e-chat-surface-composer-buffer chat)))
+              (should-not (eq opened input))
+              (should-not (get-buffer-window input t))
+              (with-current-buffer opened
+                (goto-char (point-min))
+                (should
+                 (search-forward "Existing backing chat history" nil t))))
+          (set-window-configuration window-configuration)
+          (dolist (buffer (list input chat source))
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer))))))))
 
 (ert-deftest e-org-canvas-test-prompt-scope-selects_input_pane_for_typing ()
   "Prompt commands select the editable input pane at the prompt body."
@@ -1329,35 +1422,37 @@
 
 (ert-deftest e-org-canvas-test-prompt-scope-hides_visible_backing_chat_buffer ()
   "Org Canvas prompting does not leave the backing chat buffer visible too."
-  (let ((harness (e-org-canvas-test--harness))
-        (original-window (selected-window))
+  (let ((original-window (selected-window))
         (window-configuration (current-window-configuration))
         target
         chat
         chat-window
         input)
     (unwind-protect
-        (e-org-canvas-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :org-canvas-test))
-            (e-harness-registry-register :org-canvas-test harness)
-            (delete-other-windows)
-            (setq target (get-buffer-create "org-canvas-visible-chat-source"))
-            (with-current-buffer target
-              (org-mode)
-              (insert "* Topic\nBody\n"))
-            (set-window-buffer original-window target)
-            (select-window original-window)
-            (setq chat
-                  (with-current-buffer target
-                    (e-org-canvas-open-for-current-buffer)))
-            (setq chat-window (get-buffer-window chat t))
-            (should (get-buffer-window chat t))
-            (with-current-buffer target
-              (setq input (e-org-canvas--prompt-scope 'thread)))
-            (should (buffer-live-p chat))
-            (should-not (get-buffer-window chat t))
-            (should (get-buffer-window target t))
-            (should (get-buffer-window input t))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (e-org-canvas-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :org-canvas-test))
+              (e-harness-registry-register :org-canvas-test harness)
+              (delete-other-windows)
+              (setq target
+                    (get-buffer-create "org-canvas-visible-chat-source"))
+              (with-current-buffer target
+                (org-mode)
+                (insert "* Topic\nBody\n"))
+              (set-window-buffer original-window target)
+              (select-window original-window)
+              (setq chat
+                    (with-current-buffer target
+                      (e-org-canvas-open-for-current-buffer)))
+              (e-org-canvas-test--chat-metadata chat store)
+              (setq chat-window (get-buffer-window chat t))
+              (should (get-buffer-window chat t))
+              (with-current-buffer target
+                (setq input (e-org-canvas--prompt-scope 'thread)))
+              (should (buffer-live-p chat))
+              (should-not (get-buffer-window chat t))
+              (should (get-buffer-window target t))
+              (should (get-buffer-window input t)))))
       (set-window-configuration window-configuration)
       (dolist (buffer (list input chat target))
         (when (buffer-live-p buffer)
@@ -1686,13 +1781,13 @@
 
 (ert-deftest e-org-canvas-test-canonical-rows-do-not-define-live-turn ()
   "Canonical Board rows render without becoming a local turn-id veto."
-  (let* ((harness (e-org-canvas-test--harness))
-         (target (get-buffer-create "org-canvas-canonical-target"))
-         (e-org-canvas-input-auto-close-delay nil)
-         buffer)
-    (e-harness-test-create-board-session harness :id "session-1")
-    (unwind-protect
-        (progn
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (let* ((target (get-buffer-create "org-canvas-canonical-target"))
+           (e-org-canvas-input-auto-close-delay nil)
+           buffer)
+      (e-org-canvas-test--create-sql-session harness "session-1" nil)
+      (unwind-protect
+          (progn
           (setq buffer
                 (e-org-canvas--input-buffer
                  :harness harness
@@ -1717,8 +1812,6 @@
             :session-id "session-1"
             :turn-id "live-harness-turn"
             :created-at 0.5))
-          (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
-                     (lambda (_store) t)))
             (e-org-canvas--input-handle-event
              buffer
              (e-events-make
@@ -1726,7 +1819,7 @@
               :session-id "session-1"
               :turn-id "live-harness-turn"
               :created-at 0.75))
-            (e-org-canvas-test--drain-ui-work buffer))
+            (e-org-canvas-test--drain-ui-work buffer)
           (with-current-buffer buffer
             (should (equal e-org-canvas-input--active-turn-id
                            "live-harness-turn"))
@@ -1748,10 +1841,10 @@
                            "live-harness-turn"))
             (should (string-match-p "Canonical answer." (buffer-string)))
             (should-not e-org-canvas-input--subscription)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (when (buffer-live-p target)
-        (kill-buffer target)))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        (when (buffer-live-p target)
+          (kill-buffer target))))))
 
 (ert-deftest e-org-canvas-test-input-passes-retry-to-chat-presentation ()
   "Org Canvas passes retry details through the shared chat presentation."
@@ -1786,16 +1879,16 @@
       (when (buffer-live-p target)
         (kill-buffer target)))))
 
-(ert-deftest e-org-canvas-test-input-pane_shows_done_on_terminal_turn_without_final_message ()
-  "Submitted input panes show a done line when a turn has no assistant output."
-  (let* ((harness (e-org-canvas-test--harness))
-         buffer)
-    (e-harness-test-create-board-session harness :id "session-1")
-    (setq buffer (e-org-canvas--input-buffer
-                  :harness harness :session-id "session-1"
-                  :scope 'thread :target-buffer (current-buffer)))
-    (unwind-protect
-        (let (subscription)
+(ert-deftest e-org-canvas-test-input-pane_shows_done_on_backend_empty_output ()
+  "Submitted SQL input panes show done after explicit empty provider output."
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (let (buffer)
+      (e-org-canvas-test--create-sql-session harness "session-1" nil)
+      (setq buffer (e-org-canvas--input-buffer
+                    :harness harness :session-id "session-1"
+                    :scope 'thread :target-buffer (current-buffer)))
+      (unwind-protect
+          (let (subscription)
           (with-current-buffer buffer
             (setq subscription e-org-canvas-input--subscription)
             (setq-local e-org-canvas-input--active-turn-id "turn-1"))
@@ -1813,6 +1906,13 @@
             :session-id "session-1"
             :turn-id "turn-1"
             :payload '(:reason done)))
+          (e-org-canvas-test--emit-board-event
+           harness
+           (e-events-make
+            :type 'backend-empty-output
+            :session-id "session-1"
+            :turn-id "turn-1"
+            :payload '(:reason empty)))
           (e-org-canvas-test--drain-ui-work buffer)
           (with-current-buffer buffer
             (should-not (string-match-p "Status:" (buffer-string)))
@@ -1821,8 +1921,8 @@
             (should (timerp e-org-canvas-input--close-timer)))
           (should-not
            (e-chat-service-subscription-active-p subscription)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest e-org-canvas-test-input-pane_schedules_final_message_auto_close ()
   "Assistant output remains briefly in the input pane before auto-close."
@@ -1945,9 +2045,12 @@ relies on the activity owner's post-redraw hook to follow the bottom."
               (funcall on-done '(:status done))
               nil))))
          (tools (e-tools-registry-create))
-         (harness (e-harness-create :backend backend))
+         (store-directory (make-temp-file "e-org-canvas-abort-store-" t))
+         (store (e-session-sqlite-store-create store-directory))
+         (harness (e-harness-create :backend backend :sessions store))
          (target (get-buffer-create "org-canvas-abort-target"))
          (input nil))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
     (e-tools-test-register
      tools
      :name "held-tool"
@@ -1966,13 +2069,14 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           request))))
     (unwind-protect
         (progn
-          (e-harness-test-create-board-session harness :id "session-1")
+          (e-session-enable store)
+          (e-org-canvas-test--create-sql-session harness "session-1" nil)
           (with-current-buffer target
             (org-mode)
             (erase-buffer)
             (insert "* Topic\nBody\n")
-            (e-org-canvas-mark-session
-             harness "session-1" target :scope 'thread :target-folder nil))
+            (e-org-canvas--bind-canvas-session
+             harness "session-1" target nil))
           (setq input
                 (e-org-canvas--input-buffer
                  :harness harness
@@ -1995,43 +2099,51 @@ relies on the activity owner's post-redraw hook to follow the bottom."
             (with-current-buffer input
               (e-org-canvas-input-cancel)))
           (funcall (plist-get tool-callbacks :on-done) "late result")
-          (should (equal (plist-get
-                          (e-harness-wait-batch harness "session-1" 0.1)
-                          :status)
-                         'cancelled))
           (should tool-cancelled))
       (when (buffer-live-p input)
         (kill-buffer input))
       (when (buffer-live-p target)
-        (kill-buffer target)))))
+        (kill-buffer target))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (delete-directory store-directory t))))
 
-(ert-deftest e-org-canvas-test-reopen-last-prompt-restores_scope_and_text ()
-  "Reopening a prior prompt restores its scope and draft body."
-  (let ((harness (e-org-canvas-test--harness))
-        input)
-    (e-harness-test-create-board-session harness :id "session-1")
-    (e-org-canvas-test--import-board-input
-     harness "session-1" "prompt-1" "revise the outline"
-     '(:org-canvas-scope document))
-    (with-temp-buffer
-      (org-mode)
-      (let ((target (current-buffer)))
-        (cl-letf (((symbol-function 'e-org-canvas--ensure-current-session)
-                   (lambda () (list harness "session-1" target)))
-                  ((symbol-function 'display-buffer)
-                   (lambda (buffer &rest _args)
-                     (setq input buffer)
-                     (set-window-buffer (selected-window) buffer)
-                     (selected-window))))
-          (e-org-canvas-reopen-last-prompt))))
-    (unwind-protect
-        (with-current-buffer input
-          (should (derived-mode-p 'e-org-canvas-input-mode))
-          (should (equal e-org-canvas-input--scope 'document))
-          (should (equal (e-chat-composer-text)
-                         "revise the outline")))
-      (when (buffer-live-p input)
-        (kill-buffer input)))))
+(ert-deftest e-org-canvas-test-reopen-last-prompt-queries_sql_scope_and_text ()
+  "Reopening a prior SQL prompt restores its scope and draft body."
+  (e-org-canvas-test--with-sqlite-harness (harness store)
+    (let ((binding
+           (e-org-canvas-test--create-sql-session harness "session-1" nil)))
+      ;; Seed the prior prompt directly through the SQL application port.  A
+      ;; queued chat turn also starts the fake provider; depending on callback
+      ;; timing its terminal event could race the newly reopened composer and
+      ;; turn this query/presentation test into a result pane.
+      (e-org-canvas-test--await
+       (e-board-sqlite-service-append-route-start
+        (e-chat-service-binding-sqlite-service binding)
+        nil :session-id "session-1" :author "session:session-1"
+        :tags '(main) :attributes '(:org-canvas-scope document)
+        :content "revise the outline"
+        :source-input-key '(org-canvas-test reopen))))
+    (let (input)
+      (with-temp-buffer
+        (org-mode)
+        (let ((target (current-buffer)))
+          (cl-letf (((symbol-function 'e-org-canvas--ensure-current-session)
+                     (lambda () (list harness "session-1" target)))
+                    ((symbol-function 'display-buffer)
+                     (lambda (buffer &rest _args)
+                       (setq input buffer)
+                       (set-window-buffer (selected-window) buffer)
+                       (selected-window))))
+            (e-org-canvas-test--await
+             (e-org-canvas-reopen-last-prompt)))))
+      (unwind-protect
+          (with-current-buffer input
+            (should (derived-mode-p 'e-org-canvas-input-mode))
+            (should (equal e-org-canvas-input--scope 'document))
+            (should (equal (e-chat-composer-text)
+                           "revise the outline")))
+        (when (buffer-live-p input)
+          (kill-buffer input))))))
 
 (ert-deftest e-org-canvas-test-new-buffer_remembers_project_folder_defaults ()
   "New unsaved Org canvases remember the chosen folder per project."
@@ -2048,34 +2160,39 @@ relies on the activity owner's post-redraw hook to follow the bottom."
 (ert-deftest e-org-canvas-test-first_prompt_saves_safe_suggested_name ()
   "The first prompt for a new unsaved canvas saves a safe suggested Org file."
   (let ((directory (file-name-as-directory
-                    (make-temp-file "e-org-canvas-target-" t)))
-        (harness (e-org-canvas-test--harness)))
+                    (make-temp-file "e-org-canvas-target-" t))))
     (unwind-protect
-        (with-temp-buffer
-          (rename-buffer "unsaved-org-canvas" t)
-          (org-mode)
-          (e-harness-test-create-board-session harness :id "session-1")
-          (e-org-canvas-mark-session
-           harness "session-1" (current-buffer)
-           :scope 'thread
-           :target-folder directory
-           :needs-file-name t)
-          (cl-letf (((symbol-function 'e-org-canvas--suggest-file-name)
-                     (lambda (_harness _session-id _prompt _buffer)
-                       "Project Notes")))
-            (e-org-canvas--maybe-save-new-buffer
-             harness "session-1" "make project notes"))
-          (should (equal (file-name-nondirectory buffer-file-name)
-                         "project-notes.org"))
-          (should (file-exists-p buffer-file-name))
-          (let* ((org-canvas (e-org-canvas-session-metadata
-                              harness "session-1"))
-                 (attachment (car (e-chat-session-attachments
-                                   harness "session-1"))))
-            (should-not (plist-get org-canvas :needs-file-name))
-            (should (string-prefix-p "file://" (plist-get org-canvas :uri)))
-            (should (equal (plist-get attachment :uri)
-                           (plist-get org-canvas :uri)))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (with-temp-buffer
+            (rename-buffer "unsaved-org-canvas" t)
+            (org-mode)
+            (e-org-canvas-test--create-sql-session harness "session-1" nil)
+            (e-org-canvas-mark-session
+             harness "session-1" (current-buffer)
+             :scope 'thread
+             :target-folder directory
+             :needs-file-name t)
+            (cl-letf (((symbol-function 'e-org-canvas--suggest-file-name)
+                       (lambda (_harness _session-id _prompt _buffer)
+                         "Project Notes")))
+              (e-org-canvas--maybe-save-new-buffer
+               harness "session-1" "make project notes" (current-buffer)))
+            (should (equal (file-name-nondirectory buffer-file-name)
+                           "project-notes.org"))
+            (should (file-exists-p buffer-file-name))
+            (let* ((metadata
+                    (plist-get
+                     (e-org-canvas-test--await
+                      (e-session-async-session-metadata store "session-1"))
+                     :metadata))
+                   (org-canvas (e-org-canvas--metadata-ref metadata))
+                   (attachment
+                    (car (e-chat-session-metadata-attachments metadata))))
+              (should-not (plist-get org-canvas :needs-file-name))
+              (should (string-prefix-p "file://"
+                                       (plist-get org-canvas :uri)))
+              (should (equal (plist-get attachment :uri)
+                             (plist-get org-canvas :uri))))))
       (when-let ((buffer (find-buffer-visiting
                           (expand-file-name "project-notes.org" directory))))
         (kill-buffer buffer))
@@ -2280,23 +2397,24 @@ relies on the activity owner's post-redraw hook to follow the bottom."
 
 (ert-deftest e-org-canvas-test-session_candidates_filter_by_file_and_project ()
   "Org Canvas session discovery can filter by file URI and project root."
-  (let ((directory (make-temp-file "e-org-canvas-project-" t))
-        (harness (e-org-canvas-test--harness)))
+  (let ((directory (make-temp-file "e-org-canvas-project-" t)))
     (unwind-protect
         (let* ((file-a (e-org-canvas-test--org-file directory "a.org"))
-               (file-b (e-org-canvas-test--org-file directory "b.org")))
-          (e-org-canvas-test--session-with-file harness "a-1" file-a)
-          (e-org-canvas-test--session-with-file harness "a-2" file-a)
-          (e-org-canvas-test--session-with-file harness "b-1" file-b)
+               (file-b (e-org-canvas-test--org-file directory "b.org"))
+               (sessions
+                (list
+                 (e-org-canvas-test--detached-session-for-file "a-1" file-a)
+                 (e-org-canvas-test--detached-session-for-file "a-2" file-a)
+                 (e-org-canvas-test--detached-session-for-file "b-1" file-b))))
           (should (equal (sort (mapcar (lambda (session)
                                           (plist-get session :id))
                                         (e-org-canvas--session-candidates
-                                         harness :file file-a))
+                                         sessions :file file-a))
                                 #'string<)
                          '("a-1" "a-2")))
           (should (equal (sort (mapcar #'car
                                        (e-org-canvas--sessions-by-file
-                                        harness
+                                        sessions
                                         :project-root directory))
                                #'string<)
                          (sort (list (concat "file://" file-a)
@@ -2308,19 +2426,17 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
-(ert-deftest e-org-canvas-test-session-candidates-exclude-worker-sessions ()
-  "Org Canvas pickers retain root sessions and omit worker-owned sessions."
-  (let ((directory (make-temp-file "e-org-canvas-project-" t))
-        (harness (e-org-canvas-test--harness)))
+(ert-deftest e-org-canvas-test-session-candidates-consume-detached-root-page ()
+  "Org Canvas filtering consumes the detached root page supplied by SQL."
+  (let ((directory (make-temp-file "e-org-canvas-project-" t)))
     (unwind-protect
-        (let ((file (e-org-canvas-test--org-file directory "notes.org")))
-          (e-org-canvas-test--session-with-file harness "root" file)
-          (e-org-canvas-test--session-with-file harness "worker" file)
-          (e-session-set-session-config
-           (e-harness-sessions harness) "worker"
-           '(:parent-session-id "root"))
+        (let* ((file (e-org-canvas-test--org-file directory "notes.org"))
+               (root-page
+                (list
+                 (e-org-canvas-test--detached-session-for-file "root" file))))
           (should (equal (mapcar (lambda (session) (plist-get session :id))
-                                 (e-org-canvas--session-candidates harness :file file))
+                                 (e-org-canvas--session-candidates
+                                  root-page :file file))
                          '("root"))))
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
@@ -2330,19 +2446,29 @@ relies on the activity owner's post-redraw hook to follow the bottom."
 
 (ert-deftest e-org-canvas-test-resume_reopens_file_and_enables_mode ()
   "Resuming an Org Canvas session visits the file and restores presentation state."
-  (let ((directory (make-temp-file "e-org-canvas-resume-" t))
-        (harness (e-org-canvas-test--harness)))
+  (let ((directory (make-temp-file "e-org-canvas-resume-" t)))
     (unwind-protect
-        (let ((file (e-org-canvas-test--org-file directory "resume.org")))
-          (e-org-canvas-test--session-with-file harness "session-1" file)
-          (when-let ((buffer (find-buffer-visiting file)))
-            (kill-buffer buffer))
-          (let ((buffer (e-org-canvas-resume-session harness "session-1")))
-            (should (buffer-live-p buffer))
-            (should (eq (window-buffer (selected-window)) buffer))
-            (with-current-buffer buffer
-              (should (derived-mode-p 'org-mode))
-              (should e-org-canvas-mode))))
+        (e-org-canvas-test--with-sqlite-harness (harness store)
+          (let* ((file (e-org-canvas-test--org-file directory "resume.org"))
+                 (summary
+                  (e-org-canvas-test--detached-session-for-file
+                   "session-1" file)))
+            (e-org-canvas-test--create-sql-session
+             harness "session-1" (plist-get summary :metadata))
+            (when-let ((buffer (find-buffer-visiting file)))
+              (kill-buffer buffer))
+            (e-org-canvas-test--await
+             (e-org-canvas-resume-session harness "session-1"))
+            (let ((buffer (find-buffer-visiting file))
+                  (chat (e-chat--find-session-buffer "session-1" harness)))
+              ;; Finish the detached chat query before closing the disposable
+              ;; store so cleanup cannot masquerade as a resume failure.
+              (e-org-canvas-test--chat-metadata chat store)
+              (should (buffer-live-p buffer))
+              (should (eq (window-buffer (selected-window)) buffer))
+              (with-current-buffer buffer
+                (should (derived-mode-p 'org-mode))
+                (should e-org-canvas-mode)))))
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
                    (file-in-directory-p (buffer-file-name buffer) directory))

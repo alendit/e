@@ -47,35 +47,9 @@ METADATA is caller-provided turn metadata.  Return admission work."
 METADATA is caller-provided turn activity metadata.  Return admission work."
   (e-chat-service-steer-session harness session-id prompt :metadata metadata))
 
-(defun e-chat-session-ensure-project-root (harness session-id project-root)
-  "Ensure live SESSION-ID has PROJECT-ROOT when no root is already known.
-
-For an asynchronous SQLite session, only the executing request's detached
-metadata may answer this question.  A presentation attach never reconstructs
-the durable aggregate merely to preserve this legacy convenience operation."
-  (let* ((project-root (and project-root
-                            (file-name-as-directory
-                             (expand-file-name project-root))))
-         (store (e-harness-sessions harness))
-         (session
-          (and project-root
-               (or (e-harness-executing-session-state harness session-id)
-                   (unless (e-session-async-enabled-p store)
-                     (e-session-local-state store session-id)))))
-         (metadata (plist-get session :metadata))
-         (current-root (plist-get metadata :project-root)))
-    (when (and session project-root
-               (not current-root))
-      (e-session-set-session-config
-       store session-id (list :project-root project-root)))))
-
 (defun e-chat-session-abort (harness session-id)
   "Abort SESSION-ID's board-attached active chat turn."
   (e-chat-service-abort-session harness session-id))
-
-(defun e-chat-session-reset-ephemeral (harness session-id)
-  "Reset an explicitly ephemeral SESSION-ID and its Board projection."
-  (e-chat-service-reset-ephemeral-session harness session-id))
 
 (cl-defun e-chat-session-compact-start
     (harness session-id &key instructions keep-recent-tokens
@@ -102,9 +76,13 @@ the durable aggregate merely to preserve this legacy convenience operation."
   "Set SESSION-ID reasoning EFFORT through HARNESS."
   (e-harness-set-session-reasoning-effort harness session-id effort))
 
+(defun e-chat-session-set-options (harness session-id options)
+  "Replace SESSION-ID turn OPTIONS through HARNESS and return persistence work."
+  (e-harness-set-session-options harness session-id options))
+
 (defun e-chat-session-context (harness session-id)
-  "Return context preview data for SESSION-ID through HARNESS."
-  (e-harness-context harness session-id nil 'preview))
+  "Return request-scoped work building SESSION-ID context through HARNESS."
+  (e-harness-context-preview-start harness session-id))
 
 (defun e-chat-session--attachment-uri (attachment)
   "Return ATTACHMENT's canonical URI."
@@ -171,15 +149,10 @@ METADATA may come from a live session or a transcript-free catalog entry."
 (defun e-chat-session-attachments (harness session-id)
   "Return request-scoped context attachments for SESSION-ID in HARNESS.
 
-Persistent sessions expose attachment metadata through the detached state of
-the executing turn.  This accessor performs no durable read and deliberately
-returns nil outside that bounded lifetime.  Ephemeral stores retain their
-ordinary in-process session lookup."
-  (let* ((store (e-harness-sessions harness))
-         (state
-          (or (e-harness-executing-session-state harness session-id)
-              (unless (e-session-async-enabled-p store)
-                (e-session-local-state store session-id)))))
+Attachment metadata comes only from the detached state of the executing turn.
+Presentation callers must use the metadata returned by their bounded SQLite
+query instead of consulting this live execution helper."
+  (let ((state (e-harness-executing-session-state harness session-id)))
     (when state
       (e-chat-session-metadata-attachments (plist-get state :metadata)))))
 
@@ -322,6 +295,38 @@ avoids a redundant durable read without installing a metadata mirror."
    :owner 'actions
    :runner #'e-chat-session--compact-action-work-runner))
 
+(defun e-chat-session--context-action-work-runner
+    (handle _arguments context)
+  "Build detached chat context from action CONTEXT on HANDLE."
+  (let ((child
+         (e-chat-session-context
+          (e-chat-session--action-harness context)
+          (e-chat-session--action-session-id context))))
+    (setf (e-work-handle-cancel-function handle)
+          (lambda (_handle)
+            (unless (e-request-terminal-p (e-work-handle-lifecycle child))
+              (e-work-cancel child))
+            t))
+    (e-work-on-settle
+     child
+     (lambda (settled)
+       (let ((status (e-work-status settled)))
+         (pcase (plist-get status :state)
+           ('finished (e-work-finish handle (plist-get status :result)))
+           ('failed (e-work-fail handle (plist-get status :error)))
+           ('cancelled (e-work-cancel handle))))))
+    :deferred))
+
+(defun e-chat-session--context-action-work ()
+  "Return Work spec for detached chat-session context inspection."
+  (e-work-spec-create
+   :id "chat_session_context"
+   :description "Build the active chat session context preview."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'actions
+   :runner #'e-chat-session--context-action-work-runner))
+
 (defun e-chat-session--uri-file-name (uri)
   "Return local filename for file URI, or nil."
   (when (string-prefix-p "file://" uri)
@@ -411,9 +416,15 @@ request-time source descriptor."
 (cl-defun e-chat-session-context-attachments-provider
     (&key harness session-id _turn-id _context-purpose)
   "Return live attachment context messages for SESSION-ID in HARNESS."
-  (let ((attachments (and harness
-                          session-id
-                          (e-chat-session-attachments harness session-id))))
+  (let* ((request-state
+          (and (boundp 'e-harness-context-runtime-current-session-state)
+               e-harness-context-runtime-current-session-state))
+         (attachments
+          (and harness session-id
+               (if request-state
+                   (e-chat-session-metadata-attachments
+                    (plist-get request-state :metadata))
+                 (e-chat-session-attachments harness session-id)))))
     (when attachments
       (let* ((has-canvas (cl-some (lambda (attachment)
                                     (plist-get attachment :canvas))
@@ -531,13 +542,6 @@ request-time source descriptor."
                      (e-chat-session-abort
                       (e-chat-session--action-harness context)
                       (e-chat-session--action-session-id context))))
-                  :reset
-                  (e-chat-session--action
-                   #'e-chat-session-reset-ephemeral
-                   (lambda (context _arguments)
-                     (e-chat-session-reset-ephemeral
-                      (e-chat-session--action-harness context)
-                      (e-chat-session--action-session-id context))))
                   :compact
                   (e-chat-session--action
                    #'e-chat-session-compact-start
@@ -607,10 +611,8 @@ request-time source descriptor."
                   :context
                   (e-chat-session--action
                    #'e-chat-session-context
-                   (lambda (context _arguments)
-                     (e-chat-session-context
-                      (e-chat-session--action-harness context)
-                      (e-chat-session--action-session-id context)))))))
+                   nil nil
+                   (e-chat-session--context-action-work)))))
 
 (provide 'e-chat-session)
 

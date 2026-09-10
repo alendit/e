@@ -25,7 +25,7 @@
   "egui-backed modern chat shell for e."
   :group 'e)
 
-(defcustom e-modernchat-view-model-message-limit 200
+(defcustom e-modernchat-view-model-message-limit 64
   "Maximum number of recent messages included in a modern chat snapshot."
   :type 'integer
   :group 'e-modernchat)
@@ -197,47 +197,45 @@ capability-owned message details."
 
 (cl-defun e-modernchat-view-model-snapshot
     (harness session-id &key session-metadata composer-text message-limit
-             activity-limit presentation-activities)
-  "Return JSON-friendly snapshot for HARNESS SESSION-ID."
-  (let* ((store (e-harness-sessions harness))
-         (live-state (e-harness-executing-session-state harness session-id))
-         (local-state
-          (unless (e-session-async-enabled-p store)
-            (e-session-local-state store session-id)))
+             activity-limit messages presentation-activities)
+  "Return a JSON-friendly snapshot from detached bounded MESSAGES.
+
+SESSION-METADATA and MESSAGES belong to the calling presentation viewport.
+The view model never reads a durable session aggregate."
+  (let* ((live-state (e-harness-executing-session-state harness session-id))
          (metadata (or session-metadata
-                       (plist-get live-state :metadata)
-                       (plist-get local-state :metadata)))
+                       (plist-get live-state :metadata)))
+         (options (append (copy-tree (plist-get metadata :turn-options) t)
+                          (copy-tree (e-harness-default-options harness) t)))
          (state (ignore-errors (e-chat-service-state harness session-id)))
          (active-turn-id (or (plist-get (plist-get state :active-turn) :id)
                              (plist-get state :active-turn)))
          (output-mode
-          (e-chat-output-mode-resolve harness session-id nil metadata))
+          (e-chat-output-mode-resolve
+           harness session-id (plist-get metadata :project-root) metadata))
          (registry (ignore-errors
                      (e-chat-service-structured-blocks harness session-id)))
          (messages (e-modernchat-view-model--take-last
                     (cl-remove-if #'e-harness-message-hidden-p
-                                  (e-chat-service-messages harness session-id))
+                                  (copy-tree messages t))
                     (or message-limit e-modernchat-view-model-message-limit)))
          (activities (e-modernchat-view-model--take-last
-                      (append (e-chat-service-activity-events harness session-id)
-                              (copy-tree presentation-activities t))
+                      (copy-tree presentation-activities t)
                       (or activity-limit e-modernchat-view-model-activity-limit)))
          (attachments (e-modernchat-view-model--attachments metadata)))
     `((session . ((id . ,(e-modernchat-view-model--string session-id))
-                  (name . ,(or (e-chat-service-session-name harness session-id)
-                               (e-chat-service-session-title harness session-id)))
+                  (name . ,(or (plist-get metadata :name)
+                               (plist-get metadata :title)
+                               session-id))
                   (projectRoot . ,(e-modernchat-view-model--string
                                    (plist-get metadata :project-root)))
                   (activeTurnId . ,(e-modernchat-view-model--string
                                     active-turn-id))
                   (model . ,(e-modernchat-view-model--string
-                             (plist-get (e-harness-display-options
-                                         harness session-id)
-                                        :model)))
+                             (plist-get options :model)))
                   (layers . ,(vconcat
                               (mapcar #'symbol-name
-                                      (e-harness-effective-layer-ids
-                                       harness session-id))))
+                                      (e-harness-enabled-layer-ids harness))))
                   (outputMode . ,(e-modernchat-view-model--string
                                   output-mode))))
       (messages . ,(vconcat

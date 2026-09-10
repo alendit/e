@@ -122,6 +122,9 @@ the `hidden' block kind.")
   "Separator shown between prompt and agent-side blocks in a turn.")
 (defvar e-chat-session-replay-activity-event-limit)
 
+(defvar-local e-chat-transcript--rerender-function nil
+  "Presentation callback that requests a fresh bounded transcript view.")
+
 (defun e-chat-transcript--profile-enabled-p ()
   "Return non-nil when developer profiling is currently available."
   (and (fboundp 'e-dev-profile-enabled-p)
@@ -451,34 +454,10 @@ supplied, use the same service snapshot as MESSAGES."
         (e-chat-transcript--render-session tail)))))
 
 (defun e-chat-transcript--rerender-transcript ()
-  "Rebuild this transcript's durable projection in place.
-The composition root owns activity replay and calls this owner for durable
-projection changes; this local path is also used by transcript-only audit
-reveal, so it deliberately knows nothing about activity or facade state."
-  (when (and e-chat-harness e-chat-session-id
-             (e-chat-surface-transcript-p)
-             (not e-chat-transcript--preview-buffer))
-    (let* ((output-tail-windows
-            (e-chat-surface-capture-output-tail-windows))
-           (messages
-            (e-chat-service-messages e-chat-harness e-chat-session-id))
-           (title nil))
-      (setq title
-            (save-excursion
-              (goto-char (point-min))
-              (buffer-substring-no-properties
-               (point-min)
-               (or (and (search-forward "\n\n" nil t) (point))
-                   (point-min)))))
-      (let ((inhibit-read-only t))
-        (e-chat-transcript--cancel-pending-markdown-presentation)
-        (erase-buffer)
-        (e-chat-transcript-reset)
-        (when (not (string-empty-p title))
-          (e-chat-transcript--insert-protected title 'e-chat-title-face))
-        (e-chat-transcript--render-session-replay messages))
-      (e-chat-surface-restore-output-tail-windows
-       output-tail-windows))))
+  "Ask the owning presentation to request a fresh bounded transcript view."
+  (unless (functionp e-chat-transcript--rerender-function)
+    (user-error "This transcript has no bounded view refresh owner"))
+  (funcall e-chat-transcript--rerender-function))
 
 
 (defun e-chat-transcript--mark-protected (start end)
@@ -2090,14 +2069,11 @@ separate dimmed representation instead."
     (&optional (messages nil messages-supplied-p)
                (replay-activity-events nil replay-activity-events-supplied-p))
   "Render the attached session transcript in the current buffer.
-When MESSAGES is supplied, render that message list instead of the
-attached session's full transcript.  REPLAY-ACTIVITY-EVENTS is the matching
-service snapshot when supplied."
-  (let* ((messages (if messages-supplied-p
-                       messages
-                     (e-chat-service-messages
-                      e-chat-harness e-chat-session-id)))
-         (turn-index 0)
+MESSAGES is a detached bounded query result.  This presentation owner never
+falls back to a durable session mirror.  REPLAY-ACTIVITY-EVENTS is the matching
+detached activity page when supplied."
+  (ignore messages-supplied-p)
+  (let* ((turn-index 0)
          turn-id)
     (ignore replay-activity-events replay-activity-events-supplied-p)
     (dolist (message messages)
@@ -2486,11 +2462,9 @@ must not need to inspect its representation to schedule their own work."
   "Validate positive replay LIMIT VALUE for OPTION."
   (e-chat-transcript--validated-replay-limit value option))
 
-(defun e-chat-transcript-render-session (&optional messages activity-events)
-  "Render the attached transcript, optionally from bounded snapshots."
-  (if messages
-      (e-chat-transcript--render-session messages activity-events)
-      (e-chat-transcript--render-session)))
+(defun e-chat-transcript-render-session (messages &optional activity-events)
+  "Render detached bounded MESSAGES and optional ACTIVITY-EVENTS."
+  (e-chat-transcript--render-session messages activity-events))
 
 (defun e-chat-transcript-render-session-loading (session)
   "Render cheap loading state for unloaded indexed SESSION."
@@ -2551,8 +2525,14 @@ the session query application operation."
            nil turn-id nil (plist-get message :id) nil t))))))
 
 (defun e-chat-transcript-rerender ()
-  "Rebuild the current transcript while preserving its paired composer."
+  "Request a bounded refresh from the current transcript's presentation."
   (e-chat-transcript--rerender-transcript))
+
+(defun e-chat-transcript-set-rerender-function (function)
+  "Set current transcript's bounded-view refresh callback to FUNCTION."
+  (unless (or (null function) (functionp function))
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (setq-local e-chat-transcript--rerender-function function))
 
 (defun e-chat-transcript-rerender-assistant-blocks ()
   "Rerender assistant blocks through the transcript owner."

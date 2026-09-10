@@ -188,56 +188,6 @@ depends on the facade."
         (and (string= left-time right-time)
              (> left-seq right-seq)))))
 
-(defun e-chat-overview--session-candidates ()
-  "Return ephemeral session candidates displayed by the overview.
-
-Persistent SQLite consumers use `e-chat-overview-session-candidates-start'."
-  (let ((instances (e-chat-overview--chat-instances))
-        (default-instance-id
-         (when-let ((default-instance
-                     (or (e-chat-overview--default-chat-instance)
-                         (e-harness-instance-default :kind 'chat))))
-           (e-harness-instance-id default-instance)))
-        (store-counts (make-hash-table :test 'eq))
-        candidates)
-    (if instances
-        (progn
-          (dolist (instance instances)
-            (let* ((harness (e-chat-overview--harness-for-instance instance))
-                   (store (e-chat-service-session-store harness)))
-              (puthash store (1+ (or (gethash store store-counts) 0))
-                       store-counts)))
-          (dolist (instance instances)
-            (let ((harness (e-chat-overview--harness-for-instance instance))
-                  (instance-id (e-harness-instance-id instance)))
-              (dolist (session (e-chat-service-root-session-list harness))
-                (when (and (e-chat-overview--board-session-p session)
-                           (e-chat-overview--session-belongs-to-instance-p
-                            harness session instance-id default-instance-id
-                            (e-chat-overview--shared-session-store-p
-                             harness store-counts)))
-                  (push (list :instance instance
-                              :instance-id instance-id
-                              :harness harness
-                              :session session
-                              :session-id (plist-get session :id))
-                        candidates)))))
-          (setq candidates
-                (sort candidates
-                      (lambda (left right)
-                        (e-chat-overview--session-candidate-newer-p
-                         (plist-get left :session)
-                         (plist-get right :session))))))
-      (let ((harness (e-chat-overview--default-harness)))
-        (setq candidates
-              (mapcar (lambda (session)
-                        (list :harness harness
-                              :session session
-                              :session-id (plist-get session :id)))
-                      (seq-filter #'e-chat-overview--board-session-p
-                                  (e-chat-service-root-session-list harness))))))
-    candidates))
-
 (defun e-chat-overview--page-descriptors (&optional harness)
   "Return bounded harness descriptors for one overview page request."
   (if harness
@@ -487,17 +437,9 @@ assigned to their presentation owner after settlement."
      instance-id)))
 
 (defun e-chat-overview--latest-assistant-marker (harness session)
-  "Return SESSION's latest assistant message marker from HARNESS, if loaded."
-  (or (plist-get session :latest-assistant-marker)
-      (when (plist-get session :loaded)
-        (let ((session-id (plist-get session :id))
-              marker)
-          (dolist (message (reverse (e-chat-service-messages harness session-id)))
-            (when (and (not marker)
-                       (eq (plist-get message :role) 'assistant))
-              (setq marker (or (plist-get message :id)
-                               (plist-get message :created-at)))))
-          marker))))
+  "Return SESSION's detached latest-assistant marker."
+  (ignore harness)
+  (plist-get session :latest-assistant-marker))
 
 (defun e-chat-overview--session-unread-p (harness session &optional instance-id)
   "Return non-nil when SESSION has unread assistant output in HARNESS."
@@ -813,14 +755,7 @@ adds its display name to the row."
                     (and harness
                          session-id
                          (e-harness-display-options harness session-id))))
-         (usage-event
-          (ignore-errors
-            (and harness
-                 session-id
-                 (let ((store (e-chat-service-session-store harness)))
-                   (unless (e-session-async-enabled-p store)
-                     (e-session-local-latest-token-usage-event
-                      store session-id)))))))
+         (usage-event nil))
     (list :session-id session-id
           :message-count (or (plist-get state :message-count)
                              (plist-get session :message-count))
@@ -1024,7 +959,7 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
    "\n\n"))
 
 (defun e-chat-overview--render-resume-preview (harness session)
-  "Render SESSION from HARNESS into the reusable resume preview buffer."
+  "Render detached bounded SESSION metadata into the resume preview buffer."
   (let* ((session-id (plist-get session :id))
          (buffer (get-buffer-create
                   e-chat-overview--resume-preview-buffer-name)))
@@ -1032,21 +967,8 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
       (let ((inhibit-read-only t))
         (e-chat-overview--initialize-preview-buffer
          buffer harness session-id t)
-        (if (plist-get session :loaded)
-            (let ((messages
-                   (e-chat-overview--tail-messages
-                    (e-chat-service-messages harness session-id)
-                    e-chat-resume-preview-message-limit)))
-              (if messages
-                  (e-chat-transcript-render-session messages)
-                ;; A loaded index row can legitimately have no board snapshot
-                ;; yet (for example immediately after startup).  Preserve the
-                ;; historical title-only preview instead of presenting an
-                ;; empty picker pane.
-                (e-chat-transcript-insert-protected
-                 (e-chat-overview--session-preview-metadata-text session))))
-          (e-chat-transcript-insert-protected
-           (e-chat-overview--session-preview-metadata-text session)))
+        (e-chat-transcript-insert-protected
+         (e-chat-overview--session-preview-metadata-text session))
         (setq buffer-read-only t)
         (goto-char (point-min))))
     buffer))
@@ -1122,11 +1044,11 @@ the identity fields when it decides how to open the selected session."
         :session-id (plist-get candidate :session-id)
         :instance-id (plist-get candidate :instance-id)))
 
-(defun e-chat-overview-active-session-candidates ()
-  "Return active or recent session candidates suitable for a picker."
+(defun e-chat-overview-active-session-candidates (candidates)
+  "Filter detached bounded CANDIDATES for the active-session picker."
   (cl-remove-if-not
    #'e-chat-overview--active-session-has-prompt-p
-   (e-chat-overview--session-candidates)))
+   candidates))
 
 (defun e-chat-overview-active-session-candidate-key (candidate)
   "Return the search key for active-session CANDIDATE."
@@ -1236,24 +1158,15 @@ surface; the overview owner never opens a chat buffer itself."
         (e-chat-overview--invalidate-unread-cache)))))
 
 (defun e-chat-overview--session-for-id (harness session-id &optional instance-id)
-  "Return displayed detached metadata for HARNESS SESSION-ID.
-
-For an ephemeral harness without a displayed page, use its direct session
-service.  Persistent SQLite lookup is always supplied by the displayed page."
-  (or
-   (plist-get
-    (seq-find
-     (lambda (candidate)
-       (and (eq harness (plist-get candidate :harness))
-            (equal session-id (plist-get candidate :session-id))
-            (equal instance-id (plist-get candidate :instance-id))))
-     e-chat-overview--displayed-candidates)
-    :session)
-   (unless (e-session-async-enabled-p (e-chat-service-session-store harness))
-     (condition-case nil
-         (e-session-local-state
-          (e-chat-service-session-store harness) session-id)
-       (e-session-missing nil)))))
+  "Return displayed detached metadata for HARNESS SESSION-ID."
+  (plist-get
+   (seq-find
+    (lambda (candidate)
+      (and (eq harness (plist-get candidate :harness))
+           (equal session-id (plist-get candidate :session-id))
+           (equal instance-id (plist-get candidate :instance-id))))
+    e-chat-overview--displayed-candidates)
+   :session))
 
 (defun e-chat-overview--harness-for-instance-id (instance-id)
   "Return live harness for INSTANCE-ID, or the overview/default harness."
@@ -1446,16 +1359,6 @@ not open an unbounded process-wide presentation subscription."
 
 
 ;;; Public overview contract
-
-(defun e-chat-overview-session-candidates ()
-  "Return the current displayed page or ephemeral session candidates.
-
-This accessor never queries SQLite.  Persistent commands that need a fresh
-page use `e-chat-overview-session-candidates-start'."
-  (if (and (derived-mode-p 'e-chat-overview-mode)
-           e-chat-overview--page-loaded-p)
-      (copy-tree e-chat-overview--displayed-candidates t)
-    (e-chat-overview--session-candidates)))
 
 (defun e-chat-overview-board-session-p (session)
   "Return non-nil when SESSION carries board-native identity."

@@ -188,7 +188,7 @@ using STALE-PREFIX or `e-context-status-stale-snapshot-prefix'."
              estimate-cache-key snapshot-cache snapshot-cache-key
              allow-stale-snapshot snapshot-cache-only stale-snapshot-prefix
              token-limits token-limit-function bytes-per-token
-             (estimate-context t) (context-purpose 'status))
+             (estimate-context t) (context-purpose 'status) options)
   "Return context-state status text for SESSION-ID through HARNESS.
 PREFIX is the leading label.  When PREFER-TOKEN-USAGE is non-nil and fresh
 provider usage exists, skip the expensive context-token estimate.
@@ -207,6 +207,7 @@ TOKEN-LIMIT-FUNCTION, when non-nil, is called with the model id and should
 return its context window in tokens or nil; it takes precedence over the
 static TOKEN-LIMITS alias.  TOKEN-LIMITS and BYTES-PER-TOKEN override the
 configured defaults.
+OPTIONS, when supplied, is the caller's detached option projection.
 When ESTIMATE-CONTEXT is nil, avoid building full model-facing context.
 CONTEXT-PURPOSE defaults to `status', so optional status callers use provider
 snapshot builders and skip dynamic providers that have no snapshot path."
@@ -246,7 +247,8 @@ snapshot builders and skip dynamic providers that have no snapshot path."
                             e-context-status-estimate-cache-seconds
                             :estimate-cache-key estimate-cache-key
                             :estimate-context estimate-context
-                            :context-purpose context-purpose)))
+                            :context-purpose context-purpose
+                            :options options)))
               (let ((model (plist-get status :model))
                     (effort (plist-get status :reasoning-effort))
                     (used-tokens (plist-get status :used-tokens))

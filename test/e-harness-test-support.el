@@ -30,8 +30,10 @@ the same board/session creation service used by presentation shells."
         (e-session-declare-board-state
          (e-harness-sessions harness) session-id principal board-id)
         (e-session-local-state (e-harness-sessions harness) session-id))
-    (e-chat-service-create-ephemeral-session
-     :harness harness :id id :metadata metadata)))
+    ;; This helper is for core unit tests whose subject is live harness
+    ;; execution rather than the public chat application service.  Public
+    ;; Canvas/chat fixtures use disposable SQLite stores directly.
+    (e-harness-create-session harness :id id :metadata metadata)))
 
 (defun e-harness-test--session-tokens (harness)
   "Return the synthetic token table for HARNESS."

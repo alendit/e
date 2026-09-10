@@ -85,19 +85,15 @@ root participate; otherwise resolve against DIRECTORY only."
 (defun e-chat-output-mode-session-get (harness session-id &optional metadata)
   "Return SESSION-ID's output mode override from bounded live METADATA.
 
-For asynchronous SQLite, METADATA is a detached query result owned by the
-consumer.  During a turn the executing state's request-scoped metadata is used
-when METADATA is nil.  This function never reconstructs a durable session."
+METADATA is a detached query result owned by the consumer.  During a turn the
+executing state's request-scoped metadata is used when METADATA is nil.  This
+function never consults a durable session replica."
   (when (and harness session-id)
-    (let* ((store (e-harness-sessions harness))
-           (session-metadata
+    (let* ((session-metadata
             (or metadata
                 (plist-get
                  (e-harness-executing-session-state harness session-id)
-                 :metadata)
-                (unless (e-session-async-enabled-p store)
-                  (plist-get (e-session-local-state store session-id)
-                             :metadata))))
+                 :metadata)))
            (mode (plist-get
                   (e-session-metadata-capability-state-value
                    session-metadata 'chat-output-mode)

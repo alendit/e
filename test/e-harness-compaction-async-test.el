@@ -18,6 +18,8 @@
 (require 'e-harness)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-session)
+(require 'e-session-async)
+(require 'e-session-sqlite)
 (require 'e-work)
 
 (defun e-harness-compaction-async-test--wait-until (predicate &optional timeout)
@@ -39,6 +41,13 @@
                               '(:role assistant :content "old answer"))
     (e-session-append-message store "session-1"
                               '(:role user :content "new question"))))
+
+(defun e-harness-compaction-async-test--await (value)
+  "Return VALUE after observing it when it is asynchronous work."
+  (if (e-work-handle-p value)
+      (e-work-with-batch-await
+        (e-work-await-batch value :timeout 5.0))
+    value))
 
 (ert-deftest e-harness-compaction-async-test-start-returns-before-summary ()
   "Async compaction returns a request before the backend summary finishes."
@@ -193,6 +202,57 @@
         (should record)
         (should (eq (plist-get (plist-get record :metadata) :reason)
                     'auto))))))
+
+(ert-deftest e-harness-compaction-async-test-sql-auto-compaction-queries-again ()
+  "SQL auto-compaction uses detached context both before and after its write."
+  (let* ((directory (make-temp-file "e-auto-compact-sql-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (calls 0)
+         (backend
+          (e-backend-create
+           :name 'sql-auto-summary
+           :start
+           (cl-function
+            (lambda (&key on-item on-done &allow-other-keys)
+              (setq calls (1+ calls))
+              (funcall on-item
+                       (if (= calls 1)
+                           '(:type assistant-message :content "SQL summary.")
+                         '(:type assistant-message :content "SQL answer.")))
+              (funcall on-done '(:status done))
+              (e-backend-request-create
+               :metadata (list :provider 'sql-auto-summary :call calls))))))
+         (harness (e-harness-create
+                   :backend backend :sessions store
+                   :default-options '(:model "sql-small")))
+         (e-context-budget-model-token-limits '(("sql-small" . 100)))
+         (e-harness-auto-compaction-reserve-tokens 10)
+         (e-compaction-keep-recent-tokens 1))
+    (unwind-protect
+        (progn
+          (e-harness-compaction-async-test--await
+           (e-harness-create-session harness :id "sql-session"))
+          (dolist (message
+                   (list
+                    (list :role 'user :content (make-string 240 ?q))
+                    (list :role 'assistant :content (make-string 240 ?a))
+                    '(:role user :content "new topic")))
+            (e-harness-compaction-async-test--await
+             (e-session-append-message store "sql-session" message)))
+          (e-harness-test-prompt-async harness "sql-session" "fresh prompt")
+          (should (equal
+                   (plist-get (e-harness-wait-batch harness "sql-session" 5.0)
+                              :status)
+                   'done))
+          (should (= calls 2))
+          (let ((path
+                 (e-harness-compaction-async-test--await
+                  (e-session-async-context-path store "sql-session"))))
+            (should (equal (plist-get (plist-get path :compaction) :summary)
+                           "SQL summary."))))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
 
 (ert-deftest e-harness-compaction-async-test-sync-auto-compaction-keeps-provider-request ()
   "Synchronous auto-compaction must not overwrite the following provider request."

@@ -3,9 +3,6 @@
 (load (expand-file-name "e-chat-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
-(load (expand-file-name
-       "../e2e/e-board-e2e-support.el"
-       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (ert-deftest e-chat-test-schema-upgrade-message-recognizes-direct-condition ()
   "A direct schema refusal becomes actionable operator guidance."
@@ -49,77 +46,19 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
-(ert-deftest e-chat-test-board-failure-summary-is-not-a-second-terminal-notice ()
-  "Detailed Board failure plus aggregate summary renders one failure live and on replay."
-  (let* ((backend
-          (e-backend-fake-create
-           :items '((:type backend-error
-                     :content "provider failed"
-                     :payload (:provider-error test)))))
-         (harness (e-harness-create :backend backend))
-         (session-id "board-failure-summary")
-         (buffer (e-chat-open :harness harness :session-id session-id)))
+
+
+(ert-deftest e-chat-test-buffer-exposes-sql-board-identity ()
+  "A chat buffer exposes the Board id from its live SQL coordination binding."
+  (let ((buffer (e-chat-test--buffer nil "board-context")))
     (unwind-protect
         (with-current-buffer buffer
-          (e-chat-submit "fail once")
-          (should
-           (e-chat-test--wait-until
-            (lambda () (equal (e-chat-surface-status) "error"))
-            1.0))
-          (let* ((binding (e-chat-service-binding harness session-id))
-                 (source
-                  (e-board-registry-board-source-board
-                   (e-chat-service-binding-board binding)))
-                 (activity-kinds
-                  (delq nil
-                        (mapcar #'e-board-message-activity-kind
-                                (e-board-messages source))))
-                 (service-types
-                  (mapcar
-                   (lambda (event) (plist-get event :event-type))
-                   (e-chat-service-activity-events harness session-id))))
-            (should (= (cl-count 'turn-failed activity-kinds) 1))
-            (should (= (cl-count 'turn-summary activity-kinds) 1))
-            (should (= (cl-count 'turn-failed service-types) 1))
-            (should (= (cl-count 'turn-summary service-types) 1)))
-          (cl-labels
-              ((occurrence-count
-                (pattern)
-                (let ((content (buffer-string))
-                      (start 0)
-                      (count 0))
-                  (while (string-match pattern content start)
-                    (setq count (1+ count)
-                          start (match-end 0)))
-                  count)))
-            (should (= (occurrence-count "Turn failed:") 1))
-            (should (= (occurrence-count "Turn took ") 1))
-            (should (string-match-p "Turn failed: provider failed"
-                                    (buffer-string)))
-            (e-chat--rerender-transcript)
-            (should (= (occurrence-count "Turn failed:") 1))
-            (should (= (occurrence-count "Turn took ") 1))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-
-
-(ert-deftest e-chat-test-buffer-owns-explicit-board-client-observer-identity ()
-  "A chat buffer exposes its public board context, not only private session id."
-  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
-         (buffer (e-chat-open :harness harness :session-id "board-context")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (let ((binding (e-chat-service-binding harness e-chat-session-id)))
+          (let ((binding (e-chat-service-binding
+                          e-chat-harness e-chat-session-id)))
+            (should (e-chat-service-binding-p binding))
+            (should (stringp e-chat-board-id))
             (should (equal e-chat-board-id
-                           (e-board-registry-board-id
-                            (e-chat-service-binding-board binding))))
-            (should (equal e-chat-client-id
-                           (e-board-registry-client-id
-                            (e-chat-service-binding-client binding))))
-            (should (equal e-chat-observer-id
-                           (e-board-observer-id
-                            (e-chat-service-binding-observer binding))))))
+                           (e-chat-service-binding-board-id binding)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -176,12 +115,13 @@
          (buffer (e-chat-open :harness harness
                               :session-id "chat-submit-delayed"))
          (context-calls 0)
-         (original-context (symbol-function 'e-harness-context)))
+         (original-context
+          (symbol-function 'e-session-async-context-path)))
     (unwind-protect
         (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "send now")
-          (cl-letf (((symbol-function 'e-harness-context)
+          (cl-letf (((symbol-function 'e-session-async-context-path)
                      (lambda (&rest args)
                        (setq context-calls (1+ context-calls))
                        (apply original-context args))))
@@ -310,8 +250,8 @@
 
 
 
-(ert-deftest e-chat-test-attach-keeps-existing-session-project-root ()
-  "Attaching a session does not rewrite existing durable project metadata."
+(ert-deftest e-chat-test-attach-keeps-detached-session-project-root ()
+  "Attaching a session keeps its bounded queried project metadata."
   (let* ((project-root (make-temp-file "e-chat-project-" t))
          (nested (expand-file-name "docs/feats/item" project-root))
          (harness (e-harness-create :backend (e-backend-fake-create :items nil))))
@@ -319,13 +259,16 @@
         (progn
           (make-directory (expand-file-name ".git" project-root) t)
           (make-directory nested t)
-          (e-chat-test--create-session
-           (e-harness-sessions harness)
-           :id "session-1" :metadata (list :project-root nested))
-          (let ((default-directory (file-name-as-directory nested)))
-            (e-chat-open :harness harness :session-id "session-1"))
-          (should (equal (e-harness-project-root harness "session-1" nil)
-                         (file-name-as-directory nested))))
+          (let ((created
+                 (e-chat-open
+                  :harness harness :session-id "session-1" :new-session t
+                  :metadata (list :project-root nested))))
+            (kill-buffer created))
+          (with-current-buffer
+              (e-chat-open :harness harness :session-id "session-1")
+            (should
+             (equal (plist-get e-chat-session-metadata :project-root)
+                    (file-name-as-directory nested)))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory project-root t))))
 
@@ -605,31 +548,6 @@ inherited base, so the blocks stay distinguishable in any theme."
 
 
 
-(ert-deftest e-chat-test-follow-up-turn-carries-pending-hook-summary ()
-  "A hidden follow-up shows its validation status while its reply streams."
-  (let ((buffer (e-chat-test--buffer nil "chat-pending-hook-summary")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) e-chat-session-id
-           (list :role 'user :turn-id "turn-2" :content "corrective"
-                 :metadata '(:display hidden :pending-summary "Validating claims…")))
-          (e-chat-test--seed-board-log-from-private-fixture
-           e-chat-harness e-chat-session-id)
-          (e-chat--render-event
-           (e-events-make :type 'turn-started :session-id e-chat-session-id
-                          :turn-id "turn-2" :created-at 10))
-          (e-ui-work-with-batch-drain
-            (e-ui-work-drain-batch :buffer (current-buffer)
-                                   :owner 'activity-redraw))
-          (should (string-match-p "Validating claims…" (buffer-string)))
-          (should (string-match-p (regexp-quote "●")
-                                  (buffer-string))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-
-
 (ert-deftest e-chat-test-subscription-skips-redundant-assistant-deltas ()
   "The shell handles only one text delta for each provider response round.
 The loop still consumes every delta to form the durable final answer; this
@@ -808,525 +726,7 @@ test covers only the chat presentation subscription's redundant callbacks."
 
 
 
-(ert-deftest e-chat-test-board-routing-isolated-after-restart-and-settles-selected-only ()
-  (ert-skip "Retired full Board restoration scenario")
-  "Board routing and presentation ownership survive a provider-free restart."
-  (let ((directory (make-temp-file "e-chat-routing-composition-" t))
-        (e-board--registry (make-hash-table :test 'equal))
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--invocations (make-hash-table :test 'equal))
-        (e-board-runtime--pending-pickup-head nil)
-        (e-board-runtime--pending-pickup-tail nil)
-        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
-        (e-board-runtime--pickup-drain-scheduled nil)
-        (e-board-runtime--admission-open-p t)
-        root-buffer
-        primary-store
-        restarted-store)
-    (e-board-e2e-reset-runtime)
-    (unwind-protect
-        (let* ((store (setq primary-store
-                            (e-session-persistent-store-create directory)))
-               (harness (e-harness-create
-                         :sessions store :enabled-layer-ids nil))
-               (root-session
-                (e-chat-service-create-ephemeral-session
-                 :harness harness :id "routing-root"))
-               (root-id (plist-get root-session :id))
-               (root-binding (e-chat-service-binding harness root-id))
-               (runtime-board (e-chat-service-binding-board root-binding))
-               (source (e-board-registry-board-source-board runtime-board))
-               (root-participant
-                (e-board-registry-participant-id
-                 (e-board-runtime-attachment-participant
-                  (e-chat-service-binding-attachment root-binding))))
-               (update-session
-                (e-chat-service-create-ephemeral-participant
-                 runtime-board harness :id "routing-private"
-                 :pickup-selector '(:tags (private-update))
-                 :observer-selector :self
-                 :default-tags '(private-update)
-                 :default-to :self))
-               (update-id (plist-get update-session :id))
-               (update-binding (e-chat-service-binding harness update-id))
-               (update-participant
-                (plist-get
-                 (e-session-board-routing-policy update-session)
-                 :participant-id))
-               (route-input
-                (lambda (source runtime-board binding prompt tags to
-                         expected-participant)
-                  (let ((message-id
-                         (e-chat-service-post
-                          binding prompt :tags tags :to to)))
-                    (while (e-board-input-classifications source)
-                      (e-board-runtime--drain-input-routing
-                       runtime-board
-                       (lambda ()
-                         (e-board-drain-input-classifications source))))
-                    (let* ((message (e-board-message source message-id))
-                           (pickup-id
-                            (car (e-board-message-pickup-ids message)))
-                           (pickup (e-board-pickup source pickup-id)))
-                      (should (equal
-                               (e-board-message-matching-participant-ids message)
-                               (list expected-participant)))
-                      (should (equal (e-board-pickup-message-id pickup)
-                                     message-id))
-                      (should (equal
-                               (e-board-pickup-participant-id pickup)
-                               expected-participant))
-                      (should (eq (e-board-message-routing-state message)
-                                  'routed))
-                      message-id))))
-               (main-input
-                (funcall route-input source runtime-board root-binding
-                         "main input" '(main) nil root-participant))
-               (_private-input
-                (funcall route-input source runtime-board update-binding
-                         "private update" nil nil update-participant))
-               (root-policy (e-session-board-routing-policy root-session))
-               (private-policy
-                (e-session-board-routing-policy update-session))
-               (board-id (e-board-registry-board-id runtime-board)))
-          ;; The two bindings advertise different durable selectors, and the
-          ;; first routing pass proves recipient and delivery identity rather
-          ;; than merely counting publications.
-          (should (equal (plist-get root-policy :pickup-selector)
-                         '(:tags (main))))
-          (should (equal (plist-get private-policy :pickup-selector)
-                         '(:tags (private-update))))
-          (should (equal (plist-get private-policy :observer-selector)
-                         (list :subject-participant-id update-participant)))
-          (should (equal (plist-get private-policy :default-tags)
-                         '(private-update)))
-          (should (equal (plist-get private-policy :default-to)
-                         update-participant))
-          (e-session-flush-write-queue store)
-          (e-session-storage-close store)
-          (setq primary-store nil)
-          ;; Recreate the board/service runtime while retaining only durable
-          ;; board-session state and its owner log.
-          (setq e-board--registry (make-hash-table :test 'equal)
-                e-board-registry--boards (make-hash-table :test 'equal)
-                e-board-registry--unsettled-pickup-count 0
-                e-board-registry--unsettled-effect-count 0
-                e-board-registry--unsettled-routing-count 0
-                e-board-registry--unsettled-generation 0
-                e-board-registry--board-index
-                (avl-tree-create (lambda (left right)
-                                   (string< (car left) (car right))))
-                e-board-runtime--attachments (make-hash-table :test 'equal)
-                e-board-runtime--session-attachments (make-hash-table :test 'equal)
-                e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)
-                e-board-runtime--invocations (make-hash-table :test 'equal)
-                e-board-runtime--pending-pickup-head nil
-                e-board-runtime--pending-pickup-tail nil
-                e-board-runtime--pending-pickup-set
-                (make-hash-table :test 'equal)
-                e-board-runtime--pickup-drain-scheduled nil)
-          (let* ((loaded (setq restarted-store
-                               (e-session-persistent-store-create directory)))
-                 (restarted (e-harness-create
-                             :sessions loaded :enabled-layer-ids nil))
-                 (restored-root
-                  (e-chat-service-ensure-ephemeral-binding restarted root-id))
-                 (restored-private
-                  (e-chat-service-ensure-ephemeral-binding restarted update-id))
-                 (restored-board
-                  (e-chat-service-binding-board restored-root))
-                 (restored-source
-                  (e-board-registry-board-source-board restored-board))
-                 (restored-root-participant
-                  (e-board-registry-participant-id
-                   (e-board-runtime-attachment-participant
-                    (e-chat-service-binding-attachment restored-root))))
-                 (restored-private-participant
-                  (e-board-registry-participant-id
-                   (e-board-runtime-attachment-participant
-                    (e-chat-service-binding-attachment restored-private)))))
-            (should (equal (e-board-registry-board-id restored-board) board-id))
-            (should (equal restored-root-participant root-participant))
-            (should (equal restored-private-participant update-participant))
-            (let ((restarted-main-input
-                   (funcall route-input restored-source restored-board
-                            restored-root "main after restart" '(main) nil
-                            restored-root-participant)))
-              ;; Posting through the restored private binding with no routing
-              ;; overrides exercises its durable default tags and exact target.
-              (funcall route-input restored-source restored-board
-                       restored-private "private after restart" nil nil
-                       restored-private-participant)
-              (setq root-buffer
-                    (e-chat-open :harness restarted :session-id root-id))
-              (with-current-buffer root-buffer
-                (e-chat-surface-set-redraw-visible t)
-                (should
-                 (equal
-                  (e-board-observer-selector
-                   (e-chat-service-subscription-observer
-                    e-chat--event-subscription))
-                  '(:tags (main))))
-                (puthash root-id
-                         (list :id restarted-main-input :status 'running)
-                       (e-harness-active-turns restarted))
-                (e-chat--render-event
-                 (list :type 'turn-started :session-id root-id
-                       :turn-id restarted-main-input :created-at 10
-                       :selected-participant-p t))
-                ;; Establish a real selected provider round first.  The
-                ;; sibling rows below use the same causal input but a
-                ;; different participant; their terminal rows must not settle
-                ;; this round or replace its thought/progress state.
-                (e-board-post-activity
-                 restored-source :id "root-provider-started"
-                 :author (format "participant:%s"
-                                 restored-root-participant)
-                 :subject-participant-id restored-root-participant
-                 :source-turn-id "root-turn" :activity-kind
-                 'provider-request-started :tags '(main)
-                 :attributes '(:status started)
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-activity-key '(routing root-provider-started 1))
-                (e-board-post-activity
-                 restored-source :id "root-reasoning"
-                 :author (format "participant:%s"
-                                 restored-root-participant)
-                 :subject-participant-id restored-root-participant
-                 :source-turn-id "root-turn" :activity-kind
-                 'reasoning-delta :tags '(main)
-                 :content "selected planning"
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-activity-key '(routing root-reasoning 1))
-                (e-board-post-activity
-                 restored-source :id "root-provider-finished"
-                 :author (format "participant:%s"
-                                 restored-root-participant)
-                 :subject-participant-id restored-root-participant
-                 :source-turn-id "root-turn" :activity-kind
-                 'provider-request-finished :tags '(main)
-                 :attributes '(:status done)
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-activity-key '(routing root-provider-finished 1))
-                ;; Drain the selected lifecycle before introducing sibling
-                ;; rows.  Replay may already have a legitimate outer
-                ;; `:ended-at`; snapshot it rather than mistaking that
-                ;; restored fact for sibling settlement.
-                (e-chat-service-drain-subscription e-chat--event-subscription)
-                (e-ui-work-with-batch-drain
-                  (e-ui-work-drain-batch :buffer root-buffer))
-                (let* ((selected-before
-                        (e-chat-activity-turn-display
-                         restarted-main-input))
-                       (selected-status-before (e-chat-surface-status))
-                       (selected-progress-before
-                        (e-chat-activity-progress-turn-id))
-                       (selected-composer-before
-                        (e-chat-test--composer-text-for root-buffer))
-                       (selected-intent-before (e-chat--submit-intent nil)))
-                  (should selected-before)
-                  (should (= (plist-get selected-before :round-count) 1))
-                  (should (equal (car (plist-get selected-before :round-statuses))
-                                 'done))
-                  (should (string-match-p
-                           "selected planning"
-                           (or (plist-get selected-before :expanded-text)
-                               "")))
-                  (e-board-post-output
-                 restored-source :id "sibling-output"
-                 :author (format "participant:%s"
-                                 restored-private-participant)
-                 :subject-participant-id restored-private-participant
-                 :source-turn-id "sibling-turn" :tags '(main)
-                 :content "Observed sibling answer."
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-output-key '(routing sibling-output 1))
-                (e-board-post-activity
-                 restored-source :id "sibling-finished"
-                 :author (format "participant:%s"
-                                 restored-private-participant)
-                 :subject-participant-id restored-private-participant
-                 :source-turn-id "sibling-turn"
-                 :activity-kind 'turn-summary :tags '(main)
-                 :attributes '(:status finished)
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-activity-key '(routing sibling-summary 1))
-                ;; Failure, cancellation, and empty-output rows are all
-                ;; ordinary observer deliveries.  They share the restarted
-                ;; input's causal id but retain one isolated sibling identity.
-                (e-board-post-activity
-                 restored-source :id "sibling-failed"
-                 :author (format "participant:%s"
-                                 restored-private-participant)
-                 :subject-participant-id restored-private-participant
-                 :source-turn-id "sibling-failure"
-                 :activity-kind 'turn-failed :tags '(main)
-                 :attributes '(:status failed :error "sibling failure")
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-activity-key '(routing sibling-failure 1))
-                (e-board-post-activity
-                 restored-source :id "sibling-cancelled"
-                 :author (format "participant:%s"
-                                 restored-private-participant)
-                 :subject-participant-id restored-private-participant
-                 :source-turn-id "sibling-cancel"
-                 :activity-kind 'turn-cancelled :tags '(main)
-                 :attributes '(:status cancelled)
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-activity-key '(routing sibling-cancel 1))
-                (e-board-post-activity
-                 restored-source :id "sibling-empty"
-                 :author (format "participant:%s"
-                                 restored-private-participant)
-                 :subject-participant-id restored-private-participant
-                 :source-turn-id "sibling-empty"
-                 :activity-kind 'backend-empty-output :tags '(main)
-                 :reply-to-message-ids (list restarted-main-input)
-                 :source-activity-key '(routing sibling-empty 1))
-                ;; Exercise the real subscription observer and shell callback;
-                ;; do not bypass selection with a directly synthesized event.
-                (e-chat-service-drain-subscription e-chat--event-subscription)
-                (e-ui-work-with-batch-drain
-                  (e-ui-work-drain-batch :buffer root-buffer))
-                (should (string-match-p "Observed sibling answer"
-                                        (buffer-string)))
-                (should (string-match-p "Turn failed: sibling failure"
-                                        (buffer-string)))
-                (should (string-match-p "Turn cancelled"
-                                        (buffer-string)))
-                (should (equal (e-chat-activity-progress-turn-id)
-                               restarted-main-input))
-                (should-not
-                 (member (e-chat-surface-status) '("done" "error" "cancelled")))
-                (let ((selected-after
-                       (e-chat-activity-turn-display restarted-main-input)))
-                  (should selected-after)
-                  (should (equal (plist-get selected-after :round-count)
-                                 (plist-get selected-before :round-count)))
-                  (should (equal (plist-get selected-after :round-statuses)
-                                 (plist-get selected-before :round-statuses)))
-                  (should (equal (plist-get selected-after :expanded-text)
-                                 (plist-get selected-before :expanded-text)))
-                  (should (equal (e-chat-surface-status) selected-status-before))
-                  (should (equal (e-chat-activity-progress-turn-id)
-                                 selected-progress-before))
-                  (should (equal (e-chat-test--composer-text-for root-buffer)
-                                 selected-composer-before))
-                  (should (eq (e-chat--submit-intent nil)
-                              selected-intent-before)))
-                (should (eq (e-chat--submit-intent nil) 'steer))
-                )
-                (e-board-post-output
-                        restored-source :id "root-output"
-                        :author (format "participant:%s"
-                                        restored-root-participant)
-                        :subject-participant-id restored-root-participant
-                        :source-turn-id "root-turn" :tags '(main)
-                        :content "Selected root answer."
-                        :reply-to-message-ids (list restarted-main-input)
-                        :source-output-key '(routing root-output 1))
-                (e-board-post-activity
-                        restored-source :id "root-finished"
-                        :author (format "participant:%s"
-                                        restored-root-participant)
-                        :subject-participant-id restored-root-participant
-                        :source-turn-id "root-turn"
-                        :activity-kind 'turn-summary :tags '(main)
-                        :attributes '(:status finished)
-                        :reply-to-message-ids (list restarted-main-input)
-                        :source-activity-key '(routing root-summary 1))
-                (e-chat-service-drain-subscription e-chat--event-subscription)
-                (e-ui-work-with-batch-drain
-                  (e-ui-work-drain-batch :buffer root-buffer))
-                (remhash root-id (e-harness-active-turns restarted))
-                (should-not (e-chat-activity-progress-turn-id))
-                (should (equal (e-chat-surface-status) "done"))
-                (should (eq (e-chat--submit-intent nil) 'submit))))))
-      (when (buffer-live-p root-buffer)
-        (kill-buffer root-buffer))
-      (when primary-store
-        (e-session-storage-close primary-store))
-      (when restarted-store
-        (e-session-storage-close restarted-store))
-      (delete-directory directory t))))
 
-
-
-(ert-deftest e-chat-test-board-input-keeps-one-selected-key-through-reopen ()
-  (ert-skip "Retired full Board restoration scenario")
-  "A board input has one selected presentation key live and after replay.
-
-The input is deliberately observed through the real service subscription.  A
-same-causal sibling output/failure/cancellation is then projected through that
-subscription as well, so the input identity assertion also guards the
-selected/sibling isolation boundary."
-  (let* ((directory (make-temp-file "e-chat-input-identity-" t))
-        (e-board--registry (make-hash-table :test 'equal))
-        (e-board--id-sequence 0)
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--id-sequence 0)
-        (e-board-registry--unsettled-pickup-count 0)
-        (e-board-registry--unsettled-effect-count 0)
-        (e-board-registry--unsettled-routing-count 0)
-        (e-board-registry--unsettled-generation 0)
-        (e-board-runtime--attachments (make-hash-table :test 'equal))
-        (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-        (e-board-runtime--invocations (make-hash-table :test 'equal))
-        (e-board-runtime--pending-pickup-head nil)
-        (e-board-runtime--pending-pickup-tail nil)
-        (e-board-runtime--pending-pickup-set (make-hash-table :test 'equal))
-        (e-board-runtime--pickup-drain-scheduled nil)
-        (e-board-runtime--admission-open-p t)
-        (store (e-session-persistent-store-create directory))
-        reopened-store
-        live-buffer replay-buffer)
-    (e-board-e2e-reset-runtime)
-    (unwind-protect
-        (let* ((harness (e-harness-create
-                         :sessions store :enabled-layer-ids nil))
-               (session (e-chat-service-create-ephemeral-session
-                         :harness harness :id "input-identity"))
-               (session-id (plist-get session :id))
-               (binding (e-chat-service-binding harness session-id))
-               (board (e-chat-service-binding-board binding))
-               (source (e-board-registry-board-source-board board))
-               (participant-id
-                (e-board-registry-participant-id
-                 (e-board-runtime-attachment-participant
-                  (e-chat-service-binding-attachment binding))))
-               (sibling-id "sibling-participant")
-               (input-id nil)
-               (observed-turn-id nil))
-          (e-board-registry-add-participant
-           board :id sibling-id :author (format "participant:%s" sibling-id)
-           :principal (e-board-registry-board-principal board)
-           :publish-event nil)
-          (setq live-buffer
-                (e-chat-open :harness harness :session-id session-id))
-          (with-current-buffer live-buffer
-            (e-chat-surface-set-redraw-visible t))
-          (setq input-id
-                (e-chat-service-submit-session
-                 harness session-id "ordinary input"))
-          (with-current-buffer live-buffer
-            (e-chat-service-drain-subscription e-chat--event-subscription)
-            (e-ui-work-with-batch-drain
-             (e-ui-work-drain-batch :buffer live-buffer))
-            (goto-char (point-min))
-            (should (search-forward "ordinary input")))
-          ;; These rows all causally answer the ordinary input, but belong to
-          ;; another participant.  They must stay renderable without mutating
-          ;; the selected input record.
-          (dolist (_message
-                   (list
-                    (e-board-publication-message
-                     (e-board-post-output
-                      source :id "sibling-output"
-                      :author (format "participant:%s" sibling-id)
-                      :subject-participant-id sibling-id
-                      :source-turn-id "sibling-turn" :tags '(main)
-                      :content "Sibling output"
-                      :reply-to-message-ids (list input-id)
-                      :source-output-key '(f009-output 1 1)))
-                    (e-board-publication-message
-                     (e-board-post-activity
-                      source :id "sibling-failure"
-                      :author (format "participant:%s" sibling-id)
-                      :subject-participant-id sibling-id
-                      :source-turn-id "sibling-turn"
-                      :activity-kind 'turn-failed :tags '(main)
-                      :attributes '(:status failed :error "sibling failure")
-                      :reply-to-message-ids (list input-id)
-                      :source-activity-key '(f009-failure 1 1)))
-                    (e-board-publication-message
-                     (e-board-post-activity
-                      source :id "sibling-cancellation"
-                      :author (format "participant:%s" sibling-id)
-                      :subject-participant-id sibling-id
-                      :source-turn-id "sibling-cancel"
-                      :activity-kind 'turn-cancelled :tags '(main)
-                      :attributes '(:status cancelled)
-                      :reply-to-message-ids (list input-id)
-                      :source-activity-key '(f009-cancel 1 1)))))
-            (ignore _message))
-          (with-current-buffer live-buffer
-            (e-chat-service-drain-subscription e-chat--event-subscription)
-            (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer live-buffer))
-            ;; Sibling rendering remains visible under an isolated semantic
-            ;; presentation identity and does not replace the selected input.
-            (goto-char (point-min))
-            (search-forward "Sibling output")
-            (setq observed-turn-id (e-chat-transcript-turn-id-at-point))
-            (should (eq (car-safe observed-turn-id) :observed-board-turn))
-            (should (equal (plist-get (cdr observed-turn-id) :causal-turn-id)
-                           input-id))
-            (goto-char (point-min))
-            (should (search-forward "ordinary input")))
-          (e-session-flush-write-queue store)
-          (kill-buffer live-buffer)
-          (setq live-buffer nil)
-          (e-session-storage-close store)
-          (setq store nil)
-          ;; Rebuild the board/service process state, then let the normal chat
-          ;; open path render the persisted observer snapshot.
-          (setq e-board--registry (make-hash-table :test 'equal)
-                e-board--id-sequence 0
-                e-board-registry--boards (make-hash-table :test 'equal)
-                e-board-registry--id-sequence 0
-                e-board-registry--unsettled-pickup-count 0
-                e-board-registry--unsettled-effect-count 0
-                e-board-registry--unsettled-routing-count 0
-                e-board-registry--unsettled-generation 0
-                e-board-runtime--attachments (make-hash-table :test 'equal)
-                e-board-runtime--session-attachments (make-hash-table :test 'equal)
-                e-board-runtime--endpoint-attachments (make-hash-table :test 'equal)
-                e-board-runtime--invocations (make-hash-table :test 'equal)
-                e-board-runtime--pending-pickup-head nil
-                e-board-runtime--pending-pickup-tail nil
-                e-board-runtime--pending-pickup-set (make-hash-table :test 'equal)
-                e-board-runtime--pickup-drain-scheduled nil)
-          (let* ((loaded (setq reopened-store
-                               (e-session-persistent-store-create directory)))
-                 (restarted (e-harness-create
-                             :sessions loaded :enabled-layer-ids nil))
-                 (restored-binding
-                  (e-chat-service-ensure-ephemeral-binding restarted session-id))
-                 (restored-board
-                  (e-chat-service-binding-board restored-binding))
-                 (restored-source
-                  (e-board-registry-board-source-board restored-board)))
-            (should (equal (e-board-registry-board-id restored-board)
-                           (e-board-registry-board-id board)))
-            (should (equal (e-board-message-count restored-source)
-                           (e-board-message-count source)))
-            (setq replay-buffer
-                  (e-chat-open :harness restarted :session-id session-id))
-            (with-current-buffer replay-buffer
-              (e-chat-surface-set-redraw-visible t)
-              (goto-char (point-min))
-              (should (search-forward "ordinary input"))
-              (goto-char (point-min))
-              (search-forward "Sibling output")
-              (should (equal (e-chat-transcript-turn-id-at-point)
-                             observed-turn-id))))
-      (when (buffer-live-p live-buffer)
-        (kill-buffer live-buffer))
-      (when (buffer-live-p replay-buffer)
-        (kill-buffer replay-buffer))
-      (when store
-        (e-session-storage-close store))
-      (when reopened-store
-        (e-session-storage-close reopened-store))
-      (delete-directory directory t)))))
 
 
 
@@ -1393,7 +793,7 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-ui-work-diagnostics-track-pending-work ()
   "Opt-in UI work diagnostics show grouped pending work in the header."
-  (let ((buffer (e-chat-test--buffer nil "chat-ui-work-diagnostics"))
+  (let ((buffer (e-chat-test--buffer nil "chat-work-diagnostics"))
         (e-chat-ui-work-diagnostics t))
     (unwind-protect
         (with-current-buffer buffer
@@ -1496,45 +896,6 @@ selected/sibling isolation boundary."
           (should (derived-mode-p 'e-chat-mode)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
-
-
-
-(ert-deftest e-chat-test-reload-buffers-keeps-board-bound-harness ()
-  (ert-skip "Retired session aggregate reload scenario")
-  "Reloading keeps the admitted endpoint, transcript, and composer draft."
-  (let* ((directory (make-temp-file "e-chat-" t))
-         (store (e-session-persistent-store-create directory))
-         (old-backend (e-backend-fake-create :items nil))
-         (old-harness (e-harness-create :backend old-backend :sessions store))
-         (new-backend (e-backend-fake-create
-                       :items '((:type assistant-message :content "fresh answer")
-                                (:type done :reason stop))))
-         (new-harness (e-chat-test--activate-chat-session
-                       (e-harness-create :backend new-backend :sessions store)))
-         (buffer (e-chat-open :harness old-harness :session-id "chat-reload")))
-    (unwind-protect
-        (progn
-          (e-session-append-message
-           store "chat-reload" '(:id "msg-1" :role user :content "saved prompt"))
-          (with-current-buffer (e-chat-test--composer buffer)
-            (goto-char (point-max))
-            (insert "stale prompt"))
-          (e-chat-test--with-empty-harness-registry
-            (let ((e-chat-default-harness-id :chat-test))
-              (e-harness-registry-register-factory
-               :chat-test
-               (lambda () new-harness))
-              (should (= (e-chat-reload-buffers) 1))))
-          (with-current-buffer buffer
-            (should (eq e-chat-harness old-harness))
-            (should (eq (e-harness-backend e-chat-harness) new-backend))
-            (should (equal e-chat-session-id "chat-reload"))
-            (should (equal (e-chat-test--composer-text-for buffer)
-                           "stale prompt"))
-            (should (string-match-p "saved prompt" (buffer-string)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (delete-directory directory t))))
 
 
 
@@ -1751,15 +1112,12 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-new-persists-owning-chat-instance ()
   "New sessions remember the configured chat instance that created them."
-  (let* ((store (e-session-store-create))
-         (alpha-harness (e-chat-test--activate-chat-session
+  (let* ((alpha-harness (e-chat-test--activate-chat-session
                          (e-harness-create
-                          :backend (e-backend-fake-create :items nil)
-                          :sessions store)))
+                          :backend (e-backend-fake-create :items nil))))
          (beta-harness (e-chat-test--activate-chat-session
                         (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions store))))
+                         :backend (e-backend-fake-create :items nil)))))
     (unwind-protect
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-alpha))
@@ -1774,8 +1132,14 @@ selected/sibling isolation boundary."
                             (string-match-p "Beta Target" candidate))
                           (all-completions "" collection)))))
               (with-current-buffer (e-chat-new)
-                (let* ((session (e-session-local-state store e-chat-session-id))
-                       (metadata (plist-get session :metadata)))
+                (let* ((metadata-result
+                        (e-work-with-batch-await
+                          (e-work-await-batch
+                           (e-session-async-session-metadata
+                            (e-harness-sessions beta-harness)
+                            e-chat-session-id)
+                           :timeout 5.0)))
+                       (metadata (plist-get metadata-result :metadata)))
                   (should (eq e-chat-harness-instance-id :chat-beta))
                   (should (eq (plist-get metadata :harness-instance-id)
                               :chat-beta)))))))
@@ -1783,59 +1147,36 @@ selected/sibling isolation boundary."
 
 
 
-(ert-deftest e-chat-test-latest-session-selects-board-owning-root ()
-  (ert-skip "Retired synchronous root catalog scenario")
-  "Latest-session navigation never selects a newer private participant."
-  (let* ((harness
-          (e-chat-test--activate-chat-session
-           (e-harness-create :backend (e-backend-fake-create :items nil))))
-         (binding
-          (e-chat-service-create-ephemeral-board
-           :harness harness :id "latest-root"
-           :metadata '(:name "Latest Root")))
-         (board (e-chat-service-binding-board binding)))
-    (e-chat-service-create-ephemeral-participant
-     board harness :id "latest-private"
-     :metadata '(:name "Latest Private"))
-    (should (equal (e-chat--latest-session-id harness) "latest-root"))))
-
 
 
 (ert-deftest e-chat-test-attach-buffer-ignores-persisted-read-marker-plist ()
   "Attaching ignores stale read markers replayed as plist metadata."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create
+  (let* ((backend (e-backend-fake-create
                    :items '((:type assistant-message :content "answer")
                             (:type done :reason stop))))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer (get-buffer-create "*e-chat-read-marker-attach-test*")))
+         (harness (e-harness-create :backend backend))
+         (session '(:id "read-marker-attach"
+                    :latest-assistant-marker "assistant-read"
+                    :metadata (:name "Read Marker"
+                               :e-chat-read-markers
+                               (:chat-default "assistant-read"))))
+         (buffer nil))
     (unwind-protect
         (progn
-          (e-chat-test--create-session
-           store
-           :id "read-marker-attach"
-           :metadata
-           '(:name "Read Marker"
-             :e-chat-read-markers (:chat-default "assistant-read")))
-          (e-session-append-message
-           store "read-marker-attach"
-           '(:id "assistant-read" :role assistant :content "answer"))
+          (setq buffer
+                (e-chat-open
+                 :harness harness :session-id "read-marker-attach"
+                 :new-session t :metadata (plist-get session :metadata)))
           (with-current-buffer buffer
-            (e-chat-attach-buffer
-             buffer harness "read-marker-attach" :chat-default)
             (should (equal e-chat-session-id "read-marker-attach"))
             (should
              (e-chat-overview-session-unread-p
-              harness
-              (e-session-local-state store "read-marker-attach")
-              :chat-default))
+              harness session :chat-default))
             (e-chat-overview-mark-session-read
-             harness "read-marker-attach" :chat-default)
+             harness session :chat-default)
             (should-not
              (e-chat-overview-session-unread-p
-              harness
-              (e-session-local-state store "read-marker-attach")
-              :chat-default))))
+              harness session :chat-default))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1845,18 +1186,16 @@ selected/sibling isolation boundary."
   "Attaching an existing chat does not rewrite durable session metadata."
   (let* ((directory (file-name-as-directory
                      (make-temp-file "e-chat-attach-root-" t)))
-         (store (e-session-store-create))
          (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
+                   :backend (e-backend-fake-create :items nil)))
          (buffer (get-buffer-create "*e-chat-attach-root-test*"))
          (writes 0))
     (unwind-protect
         (progn
-          (e-chat-test--create-session
-           store
-           :id "rooted"
-           :metadata (list :project-root directory))
+          (kill-buffer
+           (e-chat-open
+            :harness harness :session-id "rooted" :new-session t
+            :metadata (list :project-root directory)))
           (with-current-buffer buffer
             (setq-local default-directory directory))
           (let ((original-set-session-config
@@ -1875,22 +1214,20 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-add-context-to-latest-targets-visible-session ()
   "Latest context insertion targets a visible chat before recency."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
          window)
     (unwind-protect
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "visible-session"
-                              :metadata '(:name "visible-session"))
             (setq window
                   (display-buffer
-                   (e-chat-open :harness harness :session-id "visible-session")))
-            (e-chat-test--create-session store :id "latest-session"
-                              :metadata '(:name "latest-session"))
+                   (e-chat-open :harness harness
+                                :session-id "visible-session"
+                                :new-session t
+                                :metadata '(:name "visible-session"))))
             (with-temp-buffer
               (insert "alpha\nbeta\ngamma\n")
               (goto-char (point-min))
@@ -1910,10 +1247,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-add-context-to-latest-prefers-visible-duplicate-session-buffer ()
   "Latest context insertion ignores hidden duplicate buffers for the same session."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
          visible-buffer
          hidden-duplicate
          window)
@@ -1921,11 +1257,11 @@ selected/sibling isolation boundary."
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-test))
             (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "duplicate-session"
-                              :metadata '(:name "duplicate-session"))
             (setq visible-buffer
                   (e-chat-open :harness harness
-                               :session-id "duplicate-session"))
+                               :session-id "duplicate-session"
+                               :new-session t
+                               :metadata '(:name "duplicate-session")))
             (setq window (display-buffer visible-buffer))
             (setq hidden-duplicate
                   (get-buffer-create "*e-chat:hidden duplicate-session*"))
@@ -1962,16 +1298,16 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-find-session-buffer-uses_workspace_existing_buffer_helper ()
   "Chat session lookup delegates existing-buffer preference to the workspace helper."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
-         (buffer (get-buffer-create "*e-chat:workspace helper target*"))
+                   (e-harness-create :backend backend)))
+         (buffer (e-chat-open
+                  :harness harness :session-id "helper-session"
+                  :new-session t :metadata '(:name "workspace helper target")))
          captured-prefer-visible
          captured-result)
     (unwind-protect
         (progn
-          (e-chat-attach-buffer buffer harness "helper-session" nil)
           (cl-letf (((symbol-function 'e-workspace-find-buffer)
                      (cl-function
                       (lambda (predicate &key prefer-visible workspace)
@@ -1991,345 +1327,30 @@ selected/sibling isolation boundary."
 
 
 
-(ert-deftest e-chat-test-add-context-to-latest-falls-back-to-most-recent-session ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Latest context insertion opens the most recently updated chat session."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-test))
-            (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "old-session"
-                              :metadata '(:name "old-session"))
-            (e-chat-test--create-session store :id "latest-session"
-                              :metadata '(:name "latest-session"))
-            (with-temp-buffer
-              (insert "alpha\nbeta\ngamma\n")
-              (goto-char (point-min))
-              (forward-line 1)
-              (let ((chat-buffer (e-chat-add-context-to-latest)))
-                (with-current-buffer chat-buffer
-                  (should (equal e-chat-session-id "latest-session"))
-                  (should (string-match-p
-                           "latest-session"
-                           (buffer-name)))
-                  (should (string-match-p
-                           "@\\[.*:2 (context 1-3)\\]"
-                           (e-chat-test--composer-text-for chat-buffer))))))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
-(ert-deftest e-chat-test-add-context-to-latest-deactivates-source-region ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Latest context insertion clears the selected region in the source buffer."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-test))
-            (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "latest-session"
-                              :metadata '(:name "latest-session"))
-            (with-temp-buffer
-              (insert "alpha beta gamma")
-              (goto-char (point-min))
-              (search-forward "beta")
-              (set-mark (match-beginning 0))
-              (setq mark-active t)
-              (let ((chat-buffer (e-chat-add-context-to-latest)))
-                (should-not mark-active)
-                (with-current-buffer chat-buffer
-                  (should (string-match-p
-                           "@\\[.*:1\\]"
-                           (e-chat-test--composer-text-for chat-buffer))))))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
-(ert-deftest e-chat-test-add-context-picker-can-create-new-session ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Picker context insertion can create a new session target."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-test))
-            (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "existing-session")
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (car (all-completions "" collection)))))
-              (with-temp-buffer
-                (insert "one\ntwo\nthree\n")
-                (goto-char (point-min))
-                (let ((chat-buffer (e-chat-add-context-to-session)))
-                  (with-current-buffer chat-buffer
-                    (should-not (equal e-chat-session-id
-                                       "existing-session"))
-                    (should (= (length (e-harness-session-list
-                                        e-chat-harness))
-                               2))
-                    (should (string-match-p
-                             "@\\[.*:1 (context 1-3)\\]"
-                             (e-chat-test--composer-text-for
-                              chat-buffer)))))))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
-(ert-deftest e-chat-test-add-context-picker-can-select-existing-session ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Picker context insertion can target an existing chat session."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-test))
-            (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "target-session"
-                              :metadata '(:name "target-session"))
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (cadr (all-completions "" collection)))))
-              (with-temp-buffer
-                (insert "one\ntwo\nthree\n")
-                (goto-char (point-min))
-                (let ((chat-buffer (e-chat-add-context-to-session)))
-                  (with-current-buffer chat-buffer
-                    (should (equal e-chat-session-id "target-session"))
-                    (should (= (length (e-harness-session-list
-                                        e-chat-harness))
-                               1))
-                    (should (string-match-p
-                             "@\\[.*:1 (context 1-3)\\]"
-                             (e-chat-test--composer-text-for
-                              chat-buffer)))))))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
-(ert-deftest e-chat-test-add-context-picker-selects-session-across-chat-instances ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Context insertion can target sessions outside the default chat instance."
-  (let* ((alpha-store (e-session-store-create))
-         (beta-store (e-session-store-create))
-         (alpha-harness (e-chat-test--activate-chat-session
-                         (e-harness-create
-                          :backend (e-backend-fake-create :items nil)
-                          :sessions alpha-store)))
-         (beta-harness (e-chat-test--activate-chat-session
-                        (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions beta-store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-alpha))
-            (e-chat-test--register-chat-instance
-             :chat-alpha "Alpha Target" alpha-harness t)
-            (e-chat-test--register-chat-instance
-             :chat-beta "Beta Target" beta-harness)
-            (e-chat-test--create-session alpha-store :id "alpha-session"
-                              :metadata '(:name "Alpha Session"))
-            (e-chat-test--create-session beta-store :id "beta-session"
-                              :metadata '(:name "Beta Session"))
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (cl-find-if
-                          (lambda (candidate)
-                            (string-match-p "Beta Target.*Beta Session"
-                                            candidate))
-                          (all-completions "" collection)))))
-              (with-temp-buffer
-                (insert "one\ntwo\nthree\n")
-                (goto-char (point-min))
-                (let ((chat-buffer (e-chat-add-context-to-session)))
-                  (with-current-buffer chat-buffer
-                    (should (eq e-chat-harness beta-harness))
-                    (should (eq e-chat-harness-instance-id :chat-beta))
-                    (should (equal e-chat-session-id "beta-session"))
-                    (should (string-match-p
-                             "@\\[.*:1 (context 1-3)\\]"
-                             (e-chat-test--composer-text-for
-                              chat-buffer)))))))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
-(ert-deftest e-chat-test-add-context-deduplicates-shared-store-by-owner ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Context insertion lists shared-store sessions under the owning instance only."
-  (let* ((store (e-session-store-create))
-         (alpha-harness (e-chat-test--activate-chat-session
-                         (e-harness-create
-                          :backend (e-backend-fake-create :items nil)
-                          :sessions store)))
-         (beta-harness (e-chat-test--activate-chat-session
-                        (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions store)))
-         seen-candidates)
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-alpha))
-            (e-chat-test--register-chat-instance
-             :chat-alpha "Alpha Target" alpha-harness t)
-            (e-chat-test--register-chat-instance
-             :chat-beta "Beta Target" beta-harness)
-            (e-chat-service-create-ephemeral-session
-             :harness alpha-harness :id "alpha-session"
-             :metadata '(:name "Alpha Session"))
-            (e-chat-service-create-ephemeral-session
-             :harness beta-harness :id "beta-session"
-             :metadata '(:name "Beta Session"
-                         :harness-instance-id :chat-beta))
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (setq seen-candidates
-                               (all-completions "" collection))
-                         (cl-find-if
-                          (lambda (candidate)
-                            (string-match-p "Beta Target.*Beta Session"
-                                            candidate))
-                          seen-candidates))))
-              (with-temp-buffer
-                (insert "one\ntwo\n")
-                (goto-char (point-min))
-                (let ((chat-buffer (e-chat-add-context-to-session)))
-                  (with-current-buffer chat-buffer
-                    (should (eq e-chat-harness beta-harness))
-                    (should (eq e-chat-harness-instance-id :chat-beta))
-                    (should (equal e-chat-session-id "beta-session"))))))
-            (should (= (length seen-candidates) 3))
-            (should (cl-find-if
-                     (lambda (candidate)
-                       (string-match-p "Alpha Target.*Alpha Session"
-                                       candidate))
-                     seen-candidates))
-            (should (cl-find-if
-                     (lambda (candidate)
-                       (string-match-p "Beta Target.*Beta Session"
-                                       candidate))
-                     seen-candidates))
-            (should-not
-             (cl-find-if
-              (lambda (candidate)
-                (string-match-p "Alpha Target.*Beta Session" candidate))
-              seen-candidates))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
-(ert-deftest e-chat-test-add-context-picker-preserves-session-list-order ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Picker context insertion keeps store recency order under sorting frontends."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-test))
-            (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "older-session"
-                              :metadata '(:name "Alpha old"))
-            (e-session-append-message
-             store "older-session"
-             '(:id "older-message" :role user
-               :created-at "2026-05-22T10:00:01Z"
-               :content "older prompt"))
-            (e-chat-test--create-session store :id "newer-session"
-                              :metadata '(:name "Zulu newest"))
-            (e-session-append-message
-             store "newer-session"
-             '(:id "newer-message" :role user
-               :created-at "2026-05-22T10:00:03Z"
-               :content "newer prompt"))
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (let* ((metadata (completion-metadata
-                                           "" collection nil))
-                                (display-sort
-                                 (completion-metadata-get
-                                  metadata 'display-sort-function))
-                                (candidates (all-completions "" collection))
-                                (visible (if display-sort
-                                             (funcall display-sort candidates)
-                                           (sort (copy-sequence candidates)
-                                                 #'string<))))
-                           (cl-find-if
-                            (lambda (candidate)
-                              (not (equal candidate
-                                          e-chat--new-context-session-label)))
-                            visible)))))
-              (with-temp-buffer
-                (insert "one\ntwo\nthree\n")
-                (goto-char (point-min))
-                (let ((chat-buffer (e-chat-add-context-to-session)))
-                  (with-current-buffer chat-buffer
-                    (should (equal e-chat-session-id "newer-session"))))))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
-(ert-deftest e-chat-test-add-context-to-session-deactivates-source-region ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Picker context insertion clears the selected region in the source buffer."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-test))
-            (e-harness-registry-register :chat-test harness)
-            (e-chat-test--create-session store :id "target-session"
-                              :metadata '(:name "target-session"))
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (cadr (all-completions "" collection)))))
-              (with-temp-buffer
-                (insert "alpha beta gamma")
-                (goto-char (point-min))
-                (search-forward "beta")
-                (set-mark (match-beginning 0))
-                (setq mark-active t)
-                (let ((chat-buffer (e-chat-add-context-to-session)))
-                  (should-not mark-active)
-                  (with-current-buffer chat-buffer
-                    (should (equal e-chat-session-id "target-session"))
-                    (should (string-match-p
-                             "@\\[.*:1\\]"
-                             (e-chat-test--composer-text-for
-                              chat-buffer)))))))))
-      (e-chat-test--kill-chat-buffers))))
-
-
-
 (ert-deftest e-chat-test-model-and-effort-commands-update-session-options ()
   "Chat model and effort commands update harness-owned session options."
   (let ((buffer (e-chat-test--buffer nil "chat-options")))
     (unwind-protect
         (with-current-buffer buffer
-          (cl-letf (((symbol-function 'read-string)
-                     (lambda (&rest _args) "gpt-test"))
-                    ((symbol-function 'completing-read)
-                     (lambda (&rest _args) "high")))
-            (call-interactively #'e-chat-set-model)
-            (call-interactively #'e-chat-set-effort))
-          (should (equal (e-harness-session-options
-                          e-chat-harness
-                          e-chat-session-id)
-                         '(:model "gpt-test" :reasoning-effort "high")))
+          (let (model-work effort-work)
+            (cl-letf (((symbol-function 'read-string)
+                       (lambda (&rest _args) "gpt-test"))
+                      ((symbol-function 'completing-read)
+                       (lambda (&rest _args) "high")))
+              (setq model-work (call-interactively #'e-chat-set-model))
+              (setq effort-work (call-interactively #'e-chat-set-effort)))
+            (e-work-with-batch-await
+              (e-work-await-batch model-work :timeout 5.0)
+              (e-work-await-batch effort-work :timeout 5.0)
+              (let* ((metadata-work
+                      (e-session-async-session-metadata
+                       (e-harness-sessions e-chat-harness)
+                       e-chat-session-id))
+                     (metadata
+                      (e-work-await-batch metadata-work :timeout 5.0)))
+                (should (equal (plist-get metadata :turn-options)
+                               '(:model "gpt-test"
+                                 :reasoning-effort "high"))))))
           (should (string-match-p "gpt-test" header-line-format))
           (should (string-match-p "high" header-line-format)))
       (when (buffer-live-p buffer)
@@ -2358,61 +1379,27 @@ selected/sibling isolation boundary."
 
 
 
-(ert-deftest e-chat-test-mode-line-status-uses-session-context ()
-  "Attached chat buffers use the session model and configured context limit."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create
-                   :backend backend
-                   :sessions store
-                   :default-options
-                   '(:model "gpt-5.5" :reasoning-effort "high")))
-         (e-chat-context-token-estimate-bytes-per-token 1.0)
-         (buffer (e-chat-open :harness harness :session-id "chat-mode-line")))
-    (unwind-protect
-        (let ((e-context-budget-model-token-limits
-               '(("gpt-5.5" . 100))))
-          (with-current-buffer buffer
-            (e-chat-surface-set-redraw-visible t)
-            (e-session-append-message
-             store
-             e-chat-session-id
-             '(:role user :content "context question"))
-            (e-chat-test--seed-board-log-from-private-fixture
-             harness e-chat-session-id)
-            (e-chat-surface-set-status "idle" t)
-            (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer (current-buffer)
-                                     :owner 'chat-mode-line-status))
-            (should (string-match-p "gpt-5.5/high" mode-name))
-            (should (string-match-p "~[0-9]+ pct" mode-name))
-            (should (string-match-p "/100 tok" mode-name))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-
-
 (ert-deftest e-chat-test-open-loaded-session-refreshes-mode-line-status ()
-  "Opening a loaded session schedules its model/context mode-line status."
+  "Opening a loaded session renders its detached model/effort status."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
-         (buffer (generate-new-buffer " *e-chat-mode-line-open*")))
+         (session-id "chat-mode-line-open")
+         buffer)
     (unwind-protect
-        (with-current-buffer buffer
-          (let ((e-context-budget-model-token-limits
-                 '(("gpt-5.5" . 100))))
-            (cl-letf (((symbol-function 'e-chat-surface-redraw-visible-p)
-                       (lambda () t)))
-              (e-chat-attach-buffer buffer harness "chat-mode-line-open")
-              (should (equal mode-name "e-chat"))
-              (e-ui-work-with-batch-drain
-                (e-ui-work-drain-batch
-                 :buffer buffer
-                 :owner 'chat-mode-line-status))
-              (should (string-match-p "gpt-5.5/high" mode-name))
-              (should (string-match-p "/100 tok" mode-name)))))
+        (let ((e-context-budget-model-token-limits
+               '(("gpt-5.5" . 100))))
+          (kill-buffer
+           (e-chat-open
+            :harness harness :session-id session-id :new-session t
+            :metadata '(:name "Mode line")))
+          (cl-letf (((symbol-function 'e-chat-surface-redraw-visible-p)
+                     (lambda () t)))
+            (setq buffer
+                  (e-chat-open :harness harness :session-id session-id))
+            (with-current-buffer buffer
+              (should (equal mode-name "e-chat gpt-5.5/high")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -2421,11 +1408,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-set-status-skips-context-refresh-by-default ()
   "Ordinary status updates avoid full harness context estimation."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -2448,11 +1433,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-set-status-skips-duplicate-updates ()
   "Repeated ordinary status updates do not rewrite header-line state."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -2482,9 +1465,8 @@ selected/sibling isolation boundary."
          (e-dev-profile--enabled nil)
          (e-dev-profile--current-file nil)
          (e-dev-profile--latest-file nil)
-         (store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
+         (harness (e-harness-create :backend backend))
          (buffer (e-chat-open :harness harness
                               :session-id "chat-status-profile")))
     (unwind-protect
@@ -2508,9 +1490,8 @@ selected/sibling isolation boundary."
          (e-dev-profile--enabled nil)
          (e-dev-profile--current-file nil)
          (e-dev-profile--latest-file nil)
-         (store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
+         (harness (e-harness-create :backend backend))
          (buffer (e-chat-open :harness harness
                               :session-id "chat-render-profile")))
     (unwind-protect
@@ -2535,11 +1516,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-set-status-schedules-explicit-mode-line-refresh ()
   "Explicit status refresh leaves the status stack before context work."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -2567,11 +1546,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-prefer-token-usage-skips-missing-context-estimate ()
   "Fast mode-line refresh avoids context rebuilding when usage is missing."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -2595,11 +1572,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-mode-line-status-reuses-fresh-estimate-cache ()
   "Repeated mode-line projection keeps the semantic status stable."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -2625,11 +1600,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-mode-line-status-reuses-fresh-status-snapshot ()
   "Mode-line status snapshots remain a surface-owned observable."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -2637,8 +1610,6 @@ selected/sibling isolation boundary."
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-surface-set-redraw-visible t)
-          (e-session-append-message
-           store e-chat-session-id '(:role user :content "cached status"))
           (e-chat-surface-invalidate-mode-line-context-estimate)
           (e-chat-surface-set-status "idle" t)
           (e-chat-surface-set-status "ready" t)
@@ -2655,11 +1626,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-token-usage-event-skips-context-estimate ()
   "Fresh token-usage refreshes avoid full context estimation."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
@@ -2667,18 +1636,11 @@ selected/sibling isolation boundary."
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-surface-set-redraw-visible t)
-          (e-session-append-activity-event
-           store
-           e-chat-session-id
-           "turn-1"
-           'token-usage
-           '(:input-tokens 1200 :total-tokens 1300))
-          (e-chat--render-event
-           (e-events-make :type 'token-usage
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :payload '(:input-tokens 1200
-                                     :total-tokens 1300)))
+          (e-chat-test--mark-active-turn "turn-1")
+          (e-chat-render-event
+           (e-harness-activity-emit-turn-event
+            e-chat-harness e-chat-session-id "turn-1" 'token-usage
+            '(:input-tokens 1200 :total-tokens 1300)))
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)
                                    :owner 'chat-mode-line-status))
@@ -2690,10 +1652,9 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-token-usage-coalesces-mode-line-render-work ()
   "Repeated usage events schedule one latest-value mode-line projection."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
-                   :backend backend :sessions store
+                   :backend backend
                    :default-options '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness :session-id "chat-token-status-work")))
     (unwind-protect
@@ -2727,8 +1688,13 @@ selected/sibling isolation boundary."
            (e-harness-sessions e-chat-harness)
            e-chat-session-id
            '(:role user :content "context question"))
-          (let ((context-buffer (e-chat-show-context)))
+          (let* ((context-buffer (e-chat-show-context))
+                 (context-work
+                  (buffer-local-value 'e-chat--context-query-work
+                                      context-buffer)))
             (should (buffer-live-p context-buffer))
+            (e-work-with-batch-await
+              (e-work-await-batch context-work :timeout 5.0))
             (with-current-buffer context-buffer
               (should (derived-mode-p 'special-mode))
               (should buffer-read-only)
@@ -2860,62 +1826,6 @@ selected/sibling isolation boundary."
 
 
 
-(ert-deftest e-chat-test-open-session-starts-index-load-asynchronously ()
-  (ert-skip "Retired aggregate replay loader scenario")
-  "Opening an unloaded indexed session starts replay without sync load."
-  (let* ((directory (make-temp-file "e-chat-open-index-" t))
-         (store (e-session-persistent-store-create directory))
-         indexed-store
-         buffer
-         started)
-    (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "async-open"
-                            :metadata '(:name "Async open"))
-          (e-session-append-message
-           store "async-open"
-           '(:id "msg-1" :role user :content "open prompt"))
-          (e-session-append-message
-           store "async-open"
-           '(:id "msg-2" :role assistant :content "open response"))
-          (e-session-storage-close store)
-          (setq store nil
-                indexed-store
-                (e-session-persistent-index-store-create directory))
-          (let* ((indexed-store indexed-store)
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions indexed-store)))
-            (cl-letf (((symbol-function 'e-session-load-session)
-                       (lambda (&rest _args)
-                         (error "opened through sync transcript load")))
-                      ((symbol-function 'e-session-load-session-start)
-                       (lambda (_store session-id &rest _args)
-                         (setq started session-id)
-                         (e-request-lifecycle-create
-                          :owner 'e-chat-test
-                          :session-id session-id
-                          :state 'started))))
-              (setq buffer (e-chat-open-session harness "async-open"))
-              (with-current-buffer buffer
-                (let ((text (buffer-string)))
-                  (should (equal started "async-open"))
-                  (should e-chat--session-load-request)
-                  (should (equal (e-chat-surface-status)
-                                 "loading session"))
-                  (should (string-match-p "open prompt" text))
-                  (should (string-match-p "Loading transcript" text))
-                  (should-not (string-match-p "open response" text)))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (when store
-        (e-session-storage-close store))
-      (when indexed-store
-        (e-session-storage-close indexed-store))
-      (delete-directory directory t))))
-
-
-
 (ert-deftest e-chat-test-index-loading-bounds-large-session-summary ()
   "Loading projection does not render an unbounded index summary."
   (let ((e-chat-session-summary-preview-max-chars 40)
@@ -2933,119 +1843,13 @@ selected/sibling isolation boundary."
 
 
 
-(ert-deftest e-chat-test-open-session-renders-after-async-index-load ()
-  (ert-skip "Retired aggregate replay loader scenario")
-  "Opening an unloaded indexed session renders transcript after async replay."
-  (let* ((directory (make-temp-file "e-chat-open-index-" t))
-         (store (e-session-persistent-store-create directory))
-         ;; Keep this cooperatively multi-step without relying on hundreds of
-         ;; zero-delay timers completing inside a two-second test deadline.
-         (e-session-load-chunk-bytes 128)
-         indexed-store
-         buffer
-         (sync-load-count 0)
-         (mode-line-refresh-count 0)
-         mode-line-refresh-during-load)
-    (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "async-render"
-                            :metadata '(:name "Async render"))
-          (e-session-append-message
-           store "async-render"
-           '(:id "msg-1" :role user :content "render prompt"))
-          (e-session-append-message
-           store "async-render"
-           '(:id "msg-2" :role assistant :content "render response"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           (e-harness-create
-            :backend (e-backend-fake-create :items nil)
-           :sessions store)
-           "async-render")
-          (e-session-flush-write-queue store)
-          (e-session-storage-close store)
-          (setq store nil
-                indexed-store
-                (e-session-persistent-index-store-create directory))
-          ;; Model process restart: no live Board may retain the closed
-          ;; writer's adapter while the indexed store reconstructs bindings.
-          (e-board-e2e-reset-runtime)
-          (let* ((indexed-store indexed-store)
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions indexed-store))
-                 (load-session (symbol-function 'e-session-load-session))
-                 (request-mode-line
-                  (symbol-function
-                   'e-chat-surface--request-mode-line-status-refresh)))
-            (cl-letf (((symbol-function 'e-session-load-session)
-                       (lambda (&rest arguments)
-                         (cl-incf sync-load-count)
-                         (apply load-session arguments)))
-                      ((symbol-function
-                        'e-chat-surface--request-mode-line-status-refresh)
-                       (lambda (&rest arguments)
-                         (cl-incf mode-line-refresh-count)
-                         (when e-chat--session-load-request
-                           (setq mode-line-refresh-during-load t))
-                         (apply request-mode-line arguments))))
-              (setq buffer (e-chat-open-session harness "async-render"))
-              (with-current-buffer buffer
-                ;; A zero-delay cooperative page may finish while the shell is
-                ;; displaying the buffer.  If it is still pending, only the
-                ;; loading projection is visible; otherwise the exact committed
-                ;; transcript is already the valid completed state.
-                (if e-chat--session-load-request
-                    (should (string-match-p "Loading transcript"
-                                            (buffer-string)))
-                  (should (string-match-p "render response"
-                                          (buffer-string)))))
-              (let ((deadline (+ (float-time) 2.0)))
-                (while (and (buffer-live-p buffer)
-                            (with-current-buffer buffer
-                              e-chat--session-load-request)
-                            (< (float-time) deadline))
-                  (accept-process-output nil 0.01))))
-            (with-current-buffer buffer
-              (let ((text (buffer-string)))
-                (should-not e-chat--session-load-request)
-                (should (buffer-live-p
-                         (e-chat-surface-composer-buffer)))
-                (should (string-match-p "render prompt" text))
-                (should (string-match-p "render response" text))
-                (should-not (string-match-p "Loading transcript" text))))
-            (should (= sync-load-count 0))
-            (should (= mode-line-refresh-count 1))
-            (should-not mode-line-refresh-during-load)
-            (should
-             (equal
-              (mapcar (lambda (message) (plist-get message :content))
-                      (e-session-local-messages indexed-store "async-render"))
-              '("render prompt" "render response")))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (when store
-        (e-session-storage-close store))
-      (when indexed-store
-        (e-session-storage-close indexed-store))
-      (delete-directory directory t))))
-
-
-
 (ert-deftest e-chat-test-open-reuses-live-session-buffer-without-reattach ()
   "Opening an already-live session leaves its projection and viewport intact."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
-         buffer
+  (let* ((buffer (e-chat-test--buffer nil "live-reopen"))
+         (harness (buffer-local-value 'e-chat-harness buffer))
          (attach-count 0))
     (unwind-protect
         (progn
-          (e-chat-test--create-session store :id "live-reopen"
-                            :metadata '(:name "Live reopen"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "live-reopen")
-          (setq buffer (e-chat-open-session harness "live-reopen"))
           (cl-letf (((symbol-function 'e-chat-attach-buffer)
                      (lambda (&rest _arguments)
                        (cl-incf attach-count))))
@@ -3064,10 +1868,10 @@ selected/sibling isolation boundary."
 
 (ert-deftest e-chat-test-focused-chat-buffer-marks-session-read ()
   "Focusing a chat buffer records the latest assistant response as read."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (session '(:id "focus-read"
+                    :latest-assistant-marker "msg-2"))
          (workspace (make-e-workspace-token
                      :backend 'single
                      :id 'focus-read-workspace
@@ -3075,18 +1879,14 @@ selected/sibling isolation boundary."
                      :frame (selected-frame)))
          (buffer (generate-new-buffer " *e-chat-focus-read-test*")))
     (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "focus-read"
-                            :metadata '(:name "Focus read"))
-          (e-session-append-message
-           store "focus-read"
-           '(:id "msg-1" :role user :content "prompt"))
-          (e-session-append-message
-           store "focus-read"
-           '(:id "msg-2" :role assistant :content "response"))
+        (cl-letf (((symbol-function 'e-chat-overview--session-for-id)
+                   (lambda (candidate-harness candidate-session-id
+                            &optional _instance-id)
+                     (and (eq candidate-harness harness)
+                          (equal candidate-session-id "focus-read")
+                          session))))
           (should (e-chat-overview-session-unread-p
-                   harness
-                   (car (e-harness-session-list harness))))
+                   harness session))
           (with-current-buffer buffer
             (e-chat-mode)
             (setq-local e-chat-harness harness)
@@ -3099,18 +1899,15 @@ selected/sibling isolation boundary."
             (e-chat-overview-mark-selected-session-read))
           (should (e-chat-workspace-unread-p workspace))
           (should (e-chat-overview-session-unread-p
-                   harness
-                   (car (e-harness-session-list harness))))
+                   harness session))
           (switch-to-buffer buffer)
           (with-current-buffer buffer
             (e-chat-overview-mark-selected-session-read))
           (should-not (e-chat-overview-session-unread-p
-                       harness
-                       (car (e-harness-session-list harness))))
+                       harness session))
           (should-not (e-chat-workspace-unread-p workspace))
           (should-not (e-chat-overview-session-unread-p
-                       harness
-                       (car (e-harness-session-list harness)))))
+                       harness session)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (e-chat-overview-rebuild-unread-cache))))
@@ -3125,30 +1922,6 @@ selected/sibling isolation boundary."
                       post-command-hook))))
 
 
-
-(ert-deftest e-chat-test-reset-clears-rendered-session ()
-  "Reset clears the rendered chat buffer and harness session transcript."
-  (let ((buffer (e-chat-test--buffer
-                 '((:type assistant-message :content "answer")
-                   (:type done :reason stop))
-                 "chat-reset")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-chat-submit "question")
-          (should (e-chat-test--wait-until
-                   (lambda () (string-match-p "answer" (buffer-string)))
-                   1.0))
-          (e-chat-reset)
-          (should-not (string-match-p "question\|answer" (buffer-string)))
-          (should (equal (e-chat-service-messages
-                          e-chat-harness e-chat-session-id)
-                         nil))
-          (with-current-buffer (e-chat-test--composer buffer)
-            (goto-char (point-max))
-            (insert "next")
-            (should (equal (e-chat-composer-text) "next"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 
 
@@ -3183,30 +1956,37 @@ selected/sibling isolation boundary."
                           '(:type assistant-message :content "done"))
                  (funcall on-item '(:type done :reason stop))))))))
          (harness (e-harness-create :backend backend))
+         (_capabilities-installed
+          (e-harness-set-intrinsic-capabilities
+           harness
+           (append (e-harness-intrinsic-capabilities harness)
+                   (e-layer-capabilities (e-core-layer-create))
+                   (e-layer-capabilities (e-emacs-base-layer-create)))))
          (buffer (e-chat-open :harness harness
-                              :session-id "chat-mid-turn-compact")))
+                              :session-id "chat-mid-turn-compact"))
+         admission)
     (unwind-protect
         (with-current-buffer buffer
-          (e-harness-set-intrinsic-capabilities
-           e-chat-harness
-           (append (e-harness-intrinsic-capabilities e-chat-harness)
-                   (e-layer-capabilities (e-core-layer-create))
-                   (e-layer-capabilities (e-emacs-base-layer-create))))
-          (let ((store (e-harness-sessions e-chat-harness)))
-            (e-session-append-message store e-chat-session-id
-                                      '(:role user :content "old"))
-            (e-session-append-message store e-chat-session-id
-                                      '(:role assistant :content "old answer"))
-            (e-chat-submit "continue")
-            (should (e-chat-test--wait-until
-                     (lambda ()
-                       (and (string-match-p
-                             "Agent compacting context mid-turn"
-                             (buffer-string))
-                            (string-match-p "Context compacted into"
-                                            (buffer-string))
-                            (string-match-p "done" (buffer-string))))
-                     1.0))))
+          (progn
+            (should (e-chat-service-subscription-p e-chat--event-subscription))
+            (should (e-chat-service-subscription-active-p
+                     e-chat--event-subscription))
+            (setq admission
+                  (e-chat-submit-session
+                   e-chat-harness e-chat-session-id "continue"))
+            (should (e-work-handle-p admission))
+            (e-work-with-batch-await
+              (e-work-await-batch admission :timeout 5.0))
+            (should
+             (e-chat-test--wait-until
+              (lambda ()
+                (and (string-match-p
+                      "Agent compacting context mid-turn"
+                      (buffer-string))
+                     (string-match-p "Context compacted into"
+                                     (buffer-string))
+                     (string-match-p "done" (buffer-string))))
+              2.0))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

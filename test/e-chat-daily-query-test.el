@@ -20,13 +20,15 @@
    :interactive-policy 'async :owner 'e-chat-daily-query-test
    :runner (lambda (_handle _arguments _context) :deferred)))
 
-(ert-deftest e-chat-daily-query-test-new-persistent-open-stays-pending-until-input ()
-  "A new SQLite session opens without querying before atomic first input."
+(ert-deftest e-chat-daily-query-test-new-persistent-open-starts-sql-binding ()
+  "A new SQLite session opens and starts owner admission without querying."
   (let* ((store (e-session-store-create))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
          (creation-work (e-work-start e-chat-daily-query-test--spec nil))
+         (binding-work (e-work-start e-chat-daily-query-test--spec nil))
+         binding-call
          (view-call-count 0)
          buffer)
     (unwind-protect
@@ -34,6 +36,10 @@
                    (lambda (_store) t))
                   ((symbol-function 'e-chat-service-create-session-start)
                    (lambda (&rest _arguments) creation-work))
+                  ((symbol-function 'e-chat-service-binding-start)
+                   (lambda (&rest arguments)
+                     (setq binding-call arguments)
+                     binding-work))
                   ((symbol-function 'e-session-async-chat-view)
                    (lambda (&rest _arguments)
                      (cl-incf view-call-count)
@@ -45,15 +51,73 @@
           (with-current-buffer buffer
             (should (buffer-live-p buffer))
             (should-not e-chat--session-query-work)
-            (should (eq e-chat--session-readiness-work creation-work))
+            (should (eq e-chat--session-readiness-work binding-work))
             (should (string-match-p "daily-new" (buffer-string)))
             (should-not (string-match-p "Loading recent messages"
                                         (buffer-string)))
             (should-not (string-match-p "Unable to load recent messages"
                                         (buffer-string))))
           (should (= view-call-count 0))
+          (should (equal binding-call (list harness "daily-new" nil t)))
           (should (eq (plist-get (e-work-status creation-work) :state)
+                      'started))
+          (should (eq (plist-get (e-work-status binding-work) :state)
                       'started)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-daily-query-test-killed-open-retires-late-binding ()
+  "Killing a new chat before SQL readiness cannot leak its late binding."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (creation-work (e-work-start e-chat-daily-query-test--spec nil))
+         (binding-work (e-work-start e-chat-daily-query-test--spec nil))
+         (service (e-board-sqlite-service--create :runtime nil))
+         (binding
+          (e-chat-service--binding-create
+           :harness harness :session-id "daily-killed"
+           :board-id "board-killed" :sqlite-service service
+           :lifecycle-state 'active :lifecycle-generation 0
+           :subscribers nil :executing-turns (make-hash-table :test 'equal)))
+         (e-chat-service--bindings (make-hash-table :test 'eq))
+         (e-chat-service--board-bindings (make-hash-table :test 'equal))
+         buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
+                   (lambda (_store) t))
+                  ((symbol-function 'e-chat-service-create-session-start)
+                   (lambda (&rest _arguments) creation-work))
+                  ((symbol-function 'e-chat-service-binding-start)
+                   (lambda (&rest _arguments) binding-work)))
+          (setq buffer
+                (e-chat-open :harness harness :session-id "daily-killed"
+                             :new-session t))
+          (should (buffer-live-p buffer))
+          (kill-buffer buffer)
+          (setq buffer nil)
+          ;; Closing presentation must not cancel the durable admission.
+          (should (eq (plist-get (e-work-status creation-work) :state)
+                      'started))
+          (e-work-finish creation-work '(:id "daily-killed"))
+          ;; Model the service installing its coordination immediately before
+          ;; it acknowledges the shared readiness work.
+          (let ((bindings (make-hash-table :test 'equal)))
+            (puthash "daily-killed" binding bindings)
+            (puthash harness bindings e-chat-service--bindings)
+            (puthash "board-killed" (list binding)
+                     e-chat-service--board-bindings))
+          (e-work-finish binding-work binding)
+          (let ((deadline (+ (float-time) 0.5)))
+            (while (and (gethash harness e-chat-service--bindings)
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
+          (should-not (gethash harness e-chat-service--bindings))
+          (should-not (gethash "board-killed"
+                               e-chat-service--board-bindings))
+          (should (eq (e-chat-service-binding-lifecycle-state binding)
+                      'retired)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -65,9 +129,8 @@
                    :sessions store))
          view-work
          buffer
-         (forbidden '(e-session-local-state e-session-local-messages e-session-load-session
-                      e-session-load-session-start e-chat-service-ensure-ephemeral-binding
-                      e-chat--ensure-session
+         (forbidden '(e-session-local-state e-session-local-messages
+                      e-session-load-session e-session-load-session-start
                       e-harness-session-title))
          original-functions
          (e-session-async-chat-view

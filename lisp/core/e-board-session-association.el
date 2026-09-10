@@ -13,7 +13,7 @@
 ;;; Code:
 
 (require 'e-board-registry)
-(require 'e-board-orchestration)
+(require 'e-board-orchestration-engine)
 (require 'e-board-sqlite)
 (require 'e-session)
 (require 'e-session-storage)

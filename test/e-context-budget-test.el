@@ -45,10 +45,11 @@
 
 (ert-deftest e-context-budget-test-sonnet-5-window-enables-auto-compaction ()
   "Sonnet 5 usage can cross the manually configured compaction threshold."
-  (let* ((harness (e-harness-create
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
+                   :sessions store
                    :default-options '(:model "claude-sonnet-5")))
-         (store (e-harness-sessions harness))
          (e-harness-auto-compaction-reserve-tokens 16384))
     (e-session-create store :id "sonnet-5-budget")
     (e-session-append-message
@@ -66,10 +67,11 @@
 
 (ert-deftest e-context-budget-test-gpt-56-sol-window-enables-auto-compaction ()
   "GPT-5.6 Sol provider usage can cross the auto-compaction threshold."
-  (let* ((harness (e-harness-create
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
+                   :sessions store
                    :default-options '(:model "gpt-5.6-sol")))
-         (store (e-harness-sessions harness))
          (e-harness-auto-compaction-reserve-tokens 16384))
     (e-session-create store :id "gpt-56-budget")
     (e-session-append-message

@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-board-selector)
 (require 'e-work)
 (require 'e-board-state)
 (require 'e-board-admission)
@@ -2421,120 +2422,12 @@ subscription IDs, so replay does not depend on traversal or input order."
     (and (cl-every (lambda (tag) (member tag tags)) all)
          (or (null any) (cl-some (lambda (tag) (member tag tags)) any)))))
 
-(defun e-board--proper-list-p (value)
-  "Return non-nil when VALUE is a finite proper list.
-The ordinary `proper-list-p' helper is not suitable at this trust boundary:
-callers may hand us a cyclic value and the board must reject it without
-walking forever.  Keep this small cycle-aware walker local to the board
-grammar so session admission can consume one authoritative predicate."
-  (let ((tail value)
-        (seen (make-hash-table :test 'eq))
-        valid)
-    (setq valid t)
-    (while (and valid (consp tail))
-      (if (gethash tail seen)
-          (setq valid nil)
-        (puthash tail t seen)
-        (setq tail (cdr tail))))
-    (and valid (null tail))))
-
-(defun e-board--selector-attribute-value-valid-p (value)
-  "Return non-nil when nested attribute VALUE is reversible data.
-Attribute values are declarative data, not predicates.  Symbols remain data
-even when their names are callable; actual function objects and lambda forms
-are rejected.  The walk is iterative and cycle-aware because the session
-codec preserves vectors, lists, plists, and dotted conses reversibly."
-  (let ((pending (list (list :value value)))
-        (visiting (make-hash-table :test 'eq))
-        (leave-marker (make-symbol "board-attribute-leave"))
-        (valid t))
-    (while (and valid pending)
-      (let ((task (pop pending)))
-        (if (eq (car task) leave-marker)
-            (remhash (cdr task) visiting)
-          (let ((current (cadr task)))
-            (cond
-             ((or (null current) (eq current t) (numberp current)
-                  (stringp current) (symbolp current)) nil)
-             ((functionp current)
-              (setq valid nil))
-             ((and (consp current)
-                   (memq (car current) '(lambda function)))
-              (setq valid nil))
-             ((or (vectorp current) (consp current))
-              (if (gethash current visiting)
-                  (setq valid nil)
-                (puthash current t visiting)
-                (push (cons leave-marker current) pending)
-                (if (vectorp current)
-                    (let ((index (1- (length current))))
-                      (while (>= index 0)
-                        (push (list :value (aref current index)) pending)
-                        (setq index (1- index))))
-                  (push (list :value (cdr current)) pending)
-                  (push (list :value (car current)) pending))))
-             (t
-              (setq valid nil)))))))
-    valid))
-
-(defun e-board-selector-attributes-valid-p (attributes)
-  "Return non-nil when ATTRIBUTES has the board matcher grammar.
-The top level is nil, an even keyword plist, or a proper alist of keyword
-key/value conses.  Values may contain the reversible declarative data forms
-accepted by the session codec.  This function is pure and intentionally does
-not normalize or retain caller-owned objects."
-  (cond
-   ((null attributes) t)
-   ((not (e-board--proper-list-p attributes)) nil)
-   ((keywordp (car attributes))
-    (let ((tail attributes)
-          seen
-          (valid t))
-      (while (and valid tail)
-        (if (not (consp (cdr tail)))
-            (setq valid nil)
-          (let ((key (pop tail))
-                (value (pop tail)))
-            (setq valid
-                  (and (keywordp key)
-                       (not (memq key seen))
-                       (e-board--selector-attribute-value-valid-p value)))
-            (push key seen))))
-      valid))
-   (t
-    (cl-every
-     (lambda (pair)
-       (and (consp pair)
-            (keywordp (car pair))
-            ;; An alist entry is a keyword-to-value cons.  Its complete CDR
-            ;; is the value, so nested list values remain unambiguous.
-            (e-board--selector-attribute-value-valid-p (cdr pair))))
-     attributes))))
-
-(defun e-board--selector-attribute-clauses (attributes)
-  "Return ATTRIBUTES as canonical key/value conses after validation."
-  (unless (e-board-selector-attributes-valid-p attributes)
-    (signal 'wrong-type-argument (list 'board-selector-attributes attributes)))
-  (cond
-   ((null attributes) nil)
-   ((keywordp (car attributes))
-    (let (clauses)
-      (while attributes
-        (let ((key (pop attributes))
-              (value (pop attributes)))
-          (push (cons key value) clauses)))
-      (nreverse clauses)))
-   (t
-    (mapcar (lambda (pair)
-              (cons (car pair) (cdr pair)))
-            attributes))))
-
 (defun e-board--selector-attributes-match-p (selector message)
   "Return non-nil when SELECTOR's bounded attribute clauses match MESSAGE."
   (cl-every (lambda (pair)
               (equal (plist-get (e-board-message-attributes message) (car pair))
                      (cdr pair)))
-            (e-board--selector-attribute-clauses
+            (e-board-selector-attribute-clauses
              (plist-get selector :attributes))))
 
 (defun e-board--fault-subscription (board subscription err)

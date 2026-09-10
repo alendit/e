@@ -15,7 +15,6 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'e-board)
 
 (define-error 'e-board-orchestration-error "Board orchestration error")
 (define-error 'e-board-orchestration-invalid-fact
@@ -43,9 +42,6 @@
   '(manifest attempt-selection task-attempt terminal-report conflict
     continuation-claim)
   "Fact types understood by the orchestration reducer.")
-
-(defvar e-board-orchestration--restoration-states (make-hash-table :test 'equal)
-  "Durable board restoration state keyed by board id.")
 
 (defun e-board-orchestration--invalid (field value)
   "Signal a contract error for FIELD with VALUE."
@@ -278,19 +274,6 @@ places each original plist tail in the corresponding property value."
   "Return the immutable durable claim key for PUBLICATION-KEY at STATUS."
   (format "continuation-claim:%s:%s" publication-key status))
 
-(defun e-board-orchestration-mark-restoring (board)
-  "Mark BOARD as replaying durable facts before run state is exposed."
-  (puthash (e-board-id board) 'restoring e-board-orchestration--restoration-states))
-
-(defun e-board-orchestration-mark-restored (board)
-  "Mark BOARD's durable fact replay complete."
-  (puthash (e-board-id board) 'restored e-board-orchestration--restoration-states))
-
-(defun e-board-orchestration-restoration-state (board)
-  "Return BOARD's durable replay state, or `ready' for live boards."
-  (or (gethash (e-board-id board) e-board-orchestration--restoration-states)
-      'ready))
-
 (defun e-board-orchestration-validate-fact (fact)
   "Validate and normalize versioned orchestration FACT.
 FACT is a plist with `:type', `:payload', and an idempotency key.  The result is
@@ -405,21 +388,14 @@ safe to store in a board envelope and contains no runtime state."
                            (plist-get normalized :type)
                            (plist-get payload :run-id)))))
 
-(cl-defun e-board-orchestration-publish-fact (board fact &key author)
-  "Validate and idempotently publish durable orchestration FACT to BOARD."
-  (let ((fields (e-board-orchestration-fact-record-fields fact :author author)))
-    (e-board-post-fact
-     board :author (plist-get fields :author)
-     :tags (plist-get fields :tags)
-     :attributes (plist-get fields :attributes)
-     :content (plist-get fields :content)
-     :source-fact-key (plist-get fields :source-key))))
-
-(defun e-board-orchestration-fact-from-message (message)
-  "Return normalized orchestration fact from board MESSAGE, or nil."
-  (when (and (eq (e-board-message-kind message) 'fact)
-             (memq 'orchestration (e-board-message-tags message)))
-    (let* ((attributes (e-board-message-attributes message))
+(defun e-board-orchestration-fact-from-record (record)
+  "Return normalized orchestration fact from detached Board RECORD, or nil."
+  (when (and (listp record)
+             (eq (or (plist-get record :kind)
+                     (plist-get record :record-kind))
+                 'fact)
+             (memq 'orchestration (plist-get record :tags)))
+    (let* ((attributes (plist-get record :attributes))
            (wire-version (plist-get attributes :orchestration-wire-version))
            (type (e-board-orchestration--legacy-enum
                   (plist-get attributes :orchestration-type)
@@ -430,7 +406,8 @@ safe to store in a board envelope and contains no runtime state."
                   (unless (and (integerp wire-version)
                                (= wire-version
                                   e-board-orchestration-wire-version))
-                    (e-board-orchestration--invalid :wire-version wire-version))
+                    (e-board-orchestration--invalid
+                     :wire-version wire-version))
                   (e-board-orchestration--wire-decode
                    (plist-get attributes :orchestration-payload)))
               (e-board-orchestration--legacy-payload
@@ -440,38 +417,6 @@ safe to store in a board envelope and contains no runtime state."
              :type type :payload payload
              :idempotency-key
              (plist-get attributes :orchestration-idempotency-key))))))
-
-(defun e-board-orchestration-fact-from-record (record)
-  "Return normalized orchestration fact from detached Board RECORD, or nil."
-  (if (e-board-message-p record)
-      (e-board-orchestration-fact-from-message record)
-    (when (and (listp record)
-               (eq (or (plist-get record :kind)
-                       (plist-get record :record-kind))
-                   'fact)
-               (memq 'orchestration (plist-get record :tags)))
-      (let* ((attributes (plist-get record :attributes))
-             (wire-version (plist-get attributes :orchestration-wire-version))
-             (type (e-board-orchestration--legacy-enum
-                    (plist-get attributes :orchestration-type)
-                    e-board-orchestration--fact-types :type))
-             (payload
-              (if wire-version
-                  (progn
-                    (unless (and (integerp wire-version)
-                                 (= wire-version
-                                    e-board-orchestration-wire-version))
-                      (e-board-orchestration--invalid
-                       :wire-version wire-version))
-                    (e-board-orchestration--wire-decode
-                     (plist-get attributes :orchestration-payload)))
-                (e-board-orchestration--legacy-payload
-                 type (plist-get attributes :orchestration-payload)))))
-        (e-board-orchestration-validate-fact
-         (list :version (plist-get attributes :orchestration-version)
-               :type type :payload payload
-               :idempotency-key
-               (plist-get attributes :orchestration-idempotency-key)))))))
 
 (defun e-board-orchestration--task-projection (task attempts reports)
   "Reduce TASK with ATTEMPTS and REPORTS into one task projection."
@@ -514,15 +459,14 @@ or out-of-order facts cannot skip retry identities during replay."
 
 (defun e-board-orchestration-reduce (facts &optional now)
   "Reduce valid durable FACTS into one idempotent run projection.
-FACTS may be normalized facts or board messages.  This pure reducer never
-performs a clock-driven cancellation; a passed deadline is only evidence."
+FACTS may be normalized facts or detached record plists.  This pure reducer
+never performs a clock-driven cancellation; a passed deadline is only
+evidence."
   (let ((manifests nil) (selections nil) (attempts nil) (reports nil)
         (conflicts nil) (claims nil)
         (seen (make-hash-table :test 'equal)))
     (dolist (item facts)
       (let ((fact (cond
-                   ((e-board-message-p item)
-                    (e-board-orchestration-fact-from-message item))
                    ((and (listp item)
                          (or (plist-get item :record-kind)
                              (plist-get item :kind)))
@@ -613,42 +557,6 @@ performs a clock-driven cancellation; a passed deadline is only evidence."
                 :attempt-selections (copy-tree selections)
                 :continuation-claims (copy-tree claims)
                 :terminal-status terminal-status))))))
-
-(defun e-board-orchestration--run-facts (board run-id)
-  "Return BOARD facts that belong to RUN-ID.
-The board journal may retain several completed runs.  Select before reduction
-so an older run cannot be reported missing because a newer manifest exists."
-  (cl-remove-if-not
-   (lambda (message)
-     (when-let ((fact (e-board-orchestration-fact-from-message message)))
-       (equal run-id (plist-get (plist-get fact :payload) :run-id))))
-   (e-board-messages board)))
-
-(defun e-board-orchestration-run-projection (board run-id &optional now)
-  "Return BOARD's bounded projection for RUN-ID without hiding restoration.
-A board marked `restoring' has not replayed all persisted facts, so callers
-must not treat its absent run as definitively missing."
-  (if (eq (e-board-orchestration-restoration-state board) 'restoring)
-      (list :run-id run-id :state 'not-restored-yet)
-    (let ((facts (e-board-orchestration--run-facts board run-id)))
-      (if facts
-          (e-board-orchestration-reduce facts now)
-        (list :run-id run-id :state 'missing)))))
-
-(defun e-board-orchestration-run-ids (board)
-  "Return the durable manifest run ids visible on BOARD after restoration."
-  (unless (eq (e-board-orchestration-restoration-state board) 'restoring)
-    (delete-dups
-     (delq nil
-           (mapcar (lambda (message)
-                     (when-let* ((fact (e-board-orchestration-fact-from-message message))
-                                 ((eq (plist-get fact :type) 'manifest)))
-                       (plist-get (plist-get fact :payload) :run-id)))
-                   (e-board-messages board))))))
-
-(defun e-board-orchestration-project-board (board &optional now)
-  "Reduce BOARD's most recent durable orchestration manifest into a projection."
-  (e-board-orchestration-reduce (e-board-messages board) now))
 
 (provide 'e-board-orchestration)
 

@@ -17,7 +17,9 @@
 (require 'e-chat-service)
 (require 'e-chat-output-mode)
 (require 'e-modernchat-view-model)
+(require 'e-session-async)
 (require 'e-shells)
+(require 'e-work)
 (require 'e-workspaces)
 (require 'project)
 (require 'url-util)
@@ -50,6 +52,21 @@
 
 (defvar-local e-modernchat-session-metadata nil
   "Detached metadata owned by the current modern chat presentation.")
+
+(defvar-local e-modernchat--view-messages nil
+  "Detached bounded message window owned by this presentation.")
+
+(defvar-local e-modernchat--presentation-activities nil
+  "Bounded transient activity values owned by this presentation.")
+
+(defvar-local e-modernchat--view-work nil
+  "Request-scoped SQLite chat-view work for this presentation.")
+
+(defvar-local e-modernchat--view-generation 0
+  "Generation fencing stale request-scoped view callbacks.")
+
+(defvar-local e-modernchat--view-rerun-p nil
+  "Non-nil when a canonical event requires one follow-up view query.")
 
 (defvar-local e-modernchat--egui-session nil
   "emacs-egui session metadata for the current modern chat buffer.")
@@ -131,9 +148,11 @@
   (e-modernchat-view-model-snapshot
    e-modernchat-harness e-modernchat-session-id
    :session-metadata e-modernchat-session-metadata
+   :messages e-modernchat--view-messages
    :presentation-activities
-   (and e-modernchat--first-admission-failure
-        (list e-modernchat--first-admission-failure))))
+   (append e-modernchat--presentation-activities
+           (and e-modernchat--first-admission-failure
+                (list e-modernchat--first-admission-failure)))))
 
 (defun e-modernchat--push-snapshot (&optional buffer)
   "Push a full snapshot for BUFFER or the current buffer to egui."
@@ -164,11 +183,102 @@
                    (e-modernchat--push-snapshot target)))
                buffer))))))
 
-(defun e-modernchat--handle-event (buffer event)
-  "Handle board-observed EVENT for modern chat BUFFER."
-  (ignore event)
+(defun e-modernchat--subscribe-from-cursor (buffer cursor)
+  "Subscribe BUFFER to canonical Board changes strictly after CURSOR."
   (when (buffer-live-p buffer)
-    (e-modernchat--schedule-push buffer)))
+    (with-current-buffer buffer
+      (unless e-modernchat--event-subscription
+        (setq e-modernchat--event-subscription
+              (e-chat-service-subscribe-from-cursor
+               e-modernchat-harness e-modernchat-session-id cursor
+               (lambda (event)
+                 (e-modernchat--handle-event buffer event))))))))
+
+(defun e-modernchat--finish-view-binding (buffer result generation)
+  "Bind BUFFER from detached RESULT while GENERATION remains current."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (= generation e-modernchat--view-generation)
+        (let* ((association (plist-get result :association))
+               (cursor (or (plist-get result :cursor) 0))
+               (binding-work
+                (e-chat-service-binding-start
+                 e-modernchat-harness e-modernchat-session-id association)))
+          (e-work-on-settle
+           binding-work
+           (lambda (settled)
+             (when (and (buffer-live-p buffer)
+                        (eq (plist-get (e-work-status settled) :state)
+                            'finished))
+               (with-current-buffer buffer
+                 (when (= generation e-modernchat--view-generation)
+                   (e-modernchat--subscribe-from-cursor buffer cursor)))))))))))
+
+(defun e-modernchat--view-settled (buffer work generation)
+  "Apply request-scoped WORK to BUFFER for GENERATION."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and (eq work e-modernchat--view-work)
+                 (= generation e-modernchat--view-generation))
+        (setq e-modernchat--view-work nil)
+        (let ((status (e-work-status work)))
+          (if (eq (plist-get status :state) 'finished)
+              (let ((result (plist-get status :result)))
+                (setq e-modernchat-session-metadata
+                      (copy-tree (plist-get result :metadata) t)
+                      e-modernchat--view-messages
+                      (copy-tree (plist-get result :messages) t))
+                (e-modernchat--finish-view-binding buffer result generation))
+            (unless e-modernchat--first-admission-failure
+              (setq e-modernchat--first-admission-failure
+                    (list :message-id (e-work-handle-id work)
+                          :event-type 'session-read-failed
+                          :created-at (float-time)
+                          :payload
+                          (list :summary
+                                (e-work-error-message
+                                 (plist-get status :error)))))))
+          (e-modernchat--push-snapshot buffer)
+          (when e-modernchat--view-rerun-p
+            (setq e-modernchat--view-rerun-p nil)
+            (e-modernchat--start-view-query buffer)))))))
+
+(defun e-modernchat--start-view-query (&optional buffer)
+  "Start one detached bounded SQLite view query for BUFFER."
+  (let ((buffer (or buffer (current-buffer))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (if (and (e-work-handle-p e-modernchat--view-work)
+                 (not (memq (plist-get (e-work-status e-modernchat--view-work)
+                                       :state)
+                            '(finished failed cancelled))))
+            (setq e-modernchat--view-rerun-p t)
+          (cl-incf e-modernchat--view-generation)
+          (let* ((generation e-modernchat--view-generation)
+                 (work
+                  (e-session-async-chat-view
+                   (e-chat-service-session-store e-modernchat-harness)
+                   e-modernchat-session-id
+                   :limit (min 64
+                               (max 1 e-modernchat-view-model-message-limit)))))
+            (setq e-modernchat--view-work work)
+            (e-work-on-settle
+             work
+             (lambda (settled)
+               (e-modernchat--view-settled buffer settled generation)))))))))
+
+(defun e-modernchat--handle-event (buffer event)
+  "Apply board-observed EVENT to modern chat BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (if (plist-get event :board-seq)
+          (e-modernchat--start-view-query buffer)
+        (setq e-modernchat--presentation-activities
+              (e-modernchat-view-model--take-last
+               (append e-modernchat--presentation-activities
+                       (list (copy-tree event t)))
+               e-modernchat-view-model-activity-limit))
+        (e-modernchat--schedule-push buffer)))))
 
 (defun e-modernchat--watch-admission (buffer work)
   "Surface failed or cancelled admission WORK in modern chat BUFFER."
@@ -199,15 +309,6 @@
                              (plist-get status :error))))))
              (e-modernchat--schedule-push buffer))))))))
 
-(defun e-modernchat--subscribe ()
-  "Subscribe current modern chat buffer to harness events."
-  (let ((buffer (current-buffer)))
-    (setq e-modernchat--event-subscription
-          (e-chat-service-subscribe
-           e-modernchat-harness e-modernchat-session-id
-           (lambda (event)
-             (e-modernchat--handle-event buffer event))))))
-
 (defun e-modernchat--cleanup ()
   "Clean up current modern chat buffer subscriptions and timers."
   (when (timerp e-modernchat--update-timer)
@@ -215,7 +316,14 @@
   (setq e-modernchat--update-timer nil)
   (when (and e-modernchat-harness e-modernchat--event-subscription)
     (e-chat-service-unsubscribe e-modernchat--event-subscription))
-  (setq e-modernchat--event-subscription nil))
+  (setq e-modernchat--event-subscription nil)
+  (when (and (e-work-handle-p e-modernchat--view-work)
+             (not (memq (plist-get (e-work-status e-modernchat--view-work)
+                                   :state)
+                        '(finished failed cancelled))))
+    (ignore-errors (e-work-cancel e-modernchat--view-work)))
+  (setq e-modernchat--view-work nil
+        e-modernchat--view-rerun-p nil))
 
 (defun e-modernchat--open-resource (uri)
   "Open resource URI from modern chat."
@@ -302,17 +410,22 @@
   "Return metadata for a modern chat session created from the current buffer."
   (list :project-root (e-modernchat--project-root default-directory)))
 
-(defun e-modernchat--buffer-name (harness session-id)
-  "Return modern chat buffer name for HARNESS SESSION-ID."
+(defun e-modernchat--buffer-name (_harness session-id)
+  "Return modern chat buffer name for SESSION-ID."
   (format "*e-modernchat:%s*"
-          (or (ignore-errors (e-harness-session-title harness session-id))
-              session-id)))
+          session-id))
 
 (defun e-modernchat-open-session
-    (harness session-id &optional display session-metadata)
+    (harness session-id &optional display session-metadata readiness-work)
   "Open HARNESS SESSION-ID in a modern chat shell.
-Display the buffer when DISPLAY is non-nil."
+Display the buffer when DISPLAY is non-nil.  SESSION-METADATA is an optional
+optimistic header for a newly admitted session; READINESS-WORK is that
+session's asynchronous first-input admission."
   (e-modernchat--ensure-runtime)
+  (unless (e-session-storage-sqlite-p
+           (e-chat-service-session-store harness))
+    (signal 'e-session-storage-error
+            (list "Modern chat requires SQLite" session-id)))
   (let* ((session (emacs-egui-create-buffer
                    :app-name e-modernchat--app-name
                    :buffer-name (e-modernchat--buffer-name harness session-id)))
@@ -322,11 +435,21 @@ Display the buffer when DISPLAY is non-nil."
       (setq-local e-modernchat-session-id session-id)
       (setq-local e-modernchat-session-metadata
                   (copy-tree session-metadata t))
+      (setq-local e-modernchat--view-messages nil)
+      (setq-local e-modernchat--presentation-activities nil)
       (setq-local e-modernchat--egui-session session)
       (add-hook 'kill-buffer-hook #'e-modernchat--cleanup nil t)
       (e-modernchat--wire-actions session buffer)
-      (e-modernchat--subscribe)
-      (run-at-time 0.6 nil #'e-modernchat--push-snapshot buffer))
+      (e-modernchat--push-snapshot buffer)
+      (if readiness-work
+          (e-work-on-settle
+           readiness-work
+           (lambda (settled)
+             (when (and (buffer-live-p buffer)
+                        (eq (plist-get (e-work-status settled) :state)
+                            'finished))
+               (e-modernchat--start-view-query buffer))))
+        (e-modernchat--start-view-query buffer)))
     (when display
       (e-workspace-pop-to-buffer buffer))
     buffer))
@@ -337,10 +460,12 @@ Display the buffer when DISPLAY is non-nil."
   (interactive)
   (let* ((harness (e-chat-service-default-harness))
          (metadata (e-modernchat--session-metadata))
-         (session-id (e-session-generate-id)))
-    (e-chat-service-create-session-start
-     :harness harness :id session-id :metadata metadata)
-    (e-modernchat-open-session harness session-id t metadata)))
+         (session-id (e-session-generate-id))
+         (readiness-work
+          (e-chat-service-create-session-start
+           :harness harness :id session-id :metadata metadata)))
+    (e-modernchat-open-session
+     harness session-id t metadata readiness-work)))
 
 ;;;###autoload
 (defun e-modernchat-shell ()

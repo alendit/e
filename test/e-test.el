@@ -27,7 +27,6 @@
     e-chat-show-context
     e-chat-submit
     e-chat-abort
-    e-chat-reset
     e-canvas-open-for-current-buffer
     e-canvas-new-buffer
     e-canvas-new-file
@@ -274,7 +273,6 @@
   (should (commandp 'e-chat-context-mode))
   (should (commandp 'e-chat-submit))
   (should (commandp 'e-chat-abort))
-  (should (commandp 'e-chat-reset))
   (should (commandp 'e-canvas-open-for-current-buffer))
   (should (commandp 'e-canvas-new-buffer))
   (should (commandp 'e-canvas-new-file))

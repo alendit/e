@@ -31,6 +31,7 @@
 (require 'e-layer)
 (require 'e-prompts)
 (require 'e-request)
+(require 'e-session-sqlite)
 (require 'e-store)
 (require 'e-work)
 (require 'e-ui-work)
@@ -43,6 +44,117 @@
 (defvar persp-activated-functions)
 
 ;; Shared helpers for owner-level chat presentation tests.
+
+(defvar e-chat-test-support--sqlite-fixtures nil
+  "Disposable SQLite stores created for public chat presentation tests.")
+
+(defvar e-chat-test-support--sqlite-harnesses (make-hash-table :test 'eq)
+  "Harnesses whose default store was replaced by a disposable SQLite store.")
+
+(defvar e-chat-test-support--opened-sessions (make-hash-table :test 'eq)
+  "Session ids first created through each disposable SQLite harness.")
+
+(defun e-chat-test-support--sqlite-harness (operation &rest arguments)
+  "Call harness constructor OPERATION with a disposable SQLite store.
+Only presentation tests that omit an explicit store are adapted.  The public
+chat API itself continues to reject non-SQL stores."
+  (if (plist-member arguments :sessions)
+      (apply operation arguments)
+    (let* ((directory (make-temp-file "e-chat-test-sql-" t))
+           (store (e-session-sqlite-store-create directory :asynchronous t))
+           (harness (apply operation (append arguments (list :sessions store)))))
+      (push (cons store directory) e-chat-test-support--sqlite-fixtures)
+      (puthash harness t e-chat-test-support--sqlite-harnesses)
+      (puthash harness (make-hash-table :test 'equal)
+               e-chat-test-support--opened-sessions)
+      harness)))
+
+(defun e-chat-test-support--open-sql-session (operation &rest arguments)
+  "Call public chat OPERATION, creating a disposable session on first open."
+  (let* ((harness (plist-get arguments :harness))
+         (session-id (plist-get arguments :session-id))
+         (sessions (and harness
+                        (gethash harness
+                                 e-chat-test-support--opened-sessions)))
+         (explicit-new-p (and sessions session-id
+                              (plist-get arguments :new-session)))
+         (create-p (and sessions session-id
+                        (not (gethash session-id sessions))
+                        (not explicit-new-p))))
+    (when (or explicit-new-p create-p)
+      (puthash session-id t sessions)
+      (when create-p
+        (setq arguments (plist-put arguments :new-session t))))
+    (condition-case error
+        (let ((buffer (apply operation arguments)))
+          ;; Most owner tests exercise settled presentation behavior, not the
+          ;; nonblocking-open boundary covered by the graphical suite.  Observe
+          ;; readiness here so SQLite callbacks cannot race their assertions.
+          (when (and sessions (buffer-live-p buffer))
+            (when-let* ((work
+                         (buffer-local-value
+                          'e-chat--session-query-work buffer)))
+              (e-work-with-batch-await
+                (e-work-await-batch work :timeout 5.0)))
+            (when-let* ((work
+                         (buffer-local-value
+                          'e-chat--session-readiness-work buffer)))
+              (e-work-with-batch-await
+                (e-work-await-batch work :timeout 5.0))))
+          buffer)
+      (error
+       (when (or explicit-new-p create-p)
+         (remhash session-id sessions))
+       (signal (car error) (cdr error))))))
+
+(defun e-chat-test-support--close-sqlite-fixtures ()
+  "Release every disposable public-chat SQLite fixture."
+  (e-chat-test--kill-chat-buffers)
+  ;; Killing the presentation buffers unsubscribes them, but production keeps
+  ;; an unsubscribed live controller for the bounded idle-retirement interval.
+  ;; Tests own these harnesses and stores outright, so retire their remaining
+  ;; coordination synchronously before closing the worker they reference.
+  (maphash
+   (lambda (harness _tracked)
+     ;; A held fake-provider turn is legitimate test state.  Drop those live
+     ;; handles before retiring the binding so no late callback can target the
+     ;; fixture after its worker has closed.
+     (clrhash (e-harness-prompt-queues harness))
+     (clrhash (e-harness-prompt-queue-counts harness))
+     (clrhash (e-harness-active-turns harness))
+     (when-let* ((bindings (gethash harness e-chat-service--bindings)))
+       (let (owned)
+         (maphash (lambda (_session-id binding) (push binding owned)) bindings)
+         (dolist (binding owned)
+           (e-chat-service--retire-binding binding))))
+     (should-not (gethash harness e-chat-service--bindings))
+     (let (board-leaks)
+       (maphash
+        (lambda (board-id bindings)
+          (when (cl-some
+                 (lambda (binding)
+                   (eq (e-chat-service-binding-harness binding) harness))
+                 bindings)
+            (push board-id board-leaks)))
+        e-chat-service--board-bindings)
+       (should-not board-leaks)))
+   e-chat-test-support--sqlite-harnesses)
+  (dolist (fixture e-chat-test-support--sqlite-fixtures)
+    (ignore-errors (e-session-sqlite-store-close (car fixture)))
+    (when (file-directory-p (cdr fixture))
+      (delete-directory (cdr fixture) t)))
+  (setq e-chat-test-support--sqlite-fixtures nil)
+  (clrhash e-chat-test-support--sqlite-harnesses)
+  (clrhash e-chat-test-support--opened-sessions))
+
+(defun e-chat-test-support--run-test (operation &rest arguments)
+  "Call ERT OPERATION with ARGUMENTS and close SQL presentation fixtures."
+  (unwind-protect (apply operation arguments)
+    (e-chat-test-support--close-sqlite-fixtures)))
+
+(advice-add 'e-harness-create :around #'e-chat-test-support--sqlite-harness)
+(advice-add 'e-chat-open :around #'e-chat-test-support--open-sql-session)
+(advice-add 'ert-run-test :around #'e-chat-test-support--run-test)
 
 
 
@@ -163,19 +275,14 @@ tests, matching how the buffer behaves when shown to a user."
 
 (defun e-chat-test--mark-active-turn (turn-id &optional status)
   "Mark TURN-ID as the current active turn in the test chat buffer."
-  (let* ((binding (e-chat-service-binding e-chat-harness e-chat-session-id))
-         (attachment (and binding
-                          (e-chat-service-binding-attachment binding)))
-         (participant-id
-          (and attachment
-               (e-board-registry-participant-id
-                (e-board-runtime-attachment-participant attachment)))))
-    (when participant-id
-      (puthash (list participant-id turn-id)
-               turn-id
-               (e-chat-service-binding-turn-map binding))))
   (puthash e-chat-session-id
-           (list :id turn-id :status (or status 'running))
+           (list :id turn-id :status (or status 'running)
+                 :session-query-state
+                 (list :session-id e-chat-session-id
+                       :metadata nil
+                       :turn-options
+                       (copy-tree (e-harness-default-options e-chat-harness))
+                       :messages nil))
            (e-harness-active-turns e-chat-harness)))
 
 
@@ -356,105 +463,6 @@ semantic block projection and its displayed text instead of that overlay."
     (lambda (subscriber)
       (equal (plist-get subscriber :session-id) session-id))
     (e-harness-subscribers harness))))
-
-
-
-(defun e-chat-test--seed-board-log-from-private-fixture (harness session-id)
-  "Translate an old private test fixture into its explicit durable board log.
-Production presentation never performs this compatibility translation."
-  (let* ((store (e-harness-sessions harness))
-         (_ (unless (plist-get (e-session-local-state store session-id)
-                               :board-session-state)
-              (e-session-declare-board-state
-               store session-id (format "chat:%s" session-id)
-               (format "test-board:%s" session-id))))
-         (binding (e-chat-service-ensure-ephemeral-binding harness session-id))
-         (board (and binding
-                     (e-board-registry-board-source-board
-                      (e-chat-service-binding-board binding))))
-         (participant-id
-          (if binding
-              (e-board-registry-participant-id
-               (e-board-runtime-attachment-participant
-                (e-chat-service-binding-attachment binding)))
-            (format "fixture:%s" session-id)))
-         (sequence 0)
-         (turn-inputs (make-hash-table :test 'equal))
-         envelopes)
-    (dolist (message (e-session-local-messages store session-id))
-      (unless (memq (plist-get message :role) '(tool-call tool))
-        (let* ((user-p (eq (plist-get message :role) 'user))
-               (turn-id (plist-get message :turn-id))
-               (stored-id (plist-get message :id))
-               (message-id
-                (if (and user-p turn-id (stringp stored-id)
-                         (string-match-p
-                          "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'" stored-id))
-                    turn-id
-                  (or stored-id turn-id)))
-               (reply-id (and (not user-p) turn-id
-                              (gethash turn-id turn-inputs))))
-          (when (and user-p turn-id)
-            (puthash turn-id message-id turn-inputs))
-          (push (list :id message-id
-                    :kind (if user-p 'input 'output)
-                    :author (if (eq (plist-get message :role) 'user)
-                                "fixture-client" "fixture-participant")
-                    :tags '(main) :content (plist-get message :content)
-                    :reference (plist-get message :references)
-                    :attributes
-                    (let ((attributes
-                           (copy-tree (plist-get message :metadata))))
-                      (if-let ((display (plist-get message :display)))
-                          (plist-put attributes :display display)
-                        attributes))
-                    :source-input-key
-                    (and user-p
-                         (list 'fixture session-id (cl-incf sequence)))
-                    :source-output-key
-                    (and (not user-p)
-                         (list 'fixture session-id (cl-incf sequence)))
-                    :source-turn-id turn-id
-                    :created-at (plist-get message :created-at)
-                    :subject-participant-id
-                    (and (not user-p) participant-id)
-                    :reply-to-message-ids (and reply-id (list reply-id))
-                    :routing-state 'historical)
-                envelopes))))
-    (dolist (event (e-session-local-activity-events store session-id))
-      (push (list :id (or (plist-get event :id)
-                          (format "fixture-activity-%d" (1+ sequence)))
-                  :kind 'activity
-                  :author (format "participant:%s" participant-id)
-                  :tags '(main) :attributes (copy-tree (plist-get event :payload))
-                  :subject-participant-id participant-id
-                  :source-turn-id (plist-get event :turn-id)
-                  :reply-to-message-ids
-                  (when-let ((input-id (gethash (plist-get event :turn-id)
-                                                turn-inputs)))
-                    (list input-id))
-                  :activity-kind (plist-get event :event-type)
-                  :created-at (plist-get event :created-at)
-                  :source-activity-key
-                  (list participant-id 1 (cl-incf sequence)))
-            envelopes))
-    (setq envelopes (nreverse envelopes))
-    (if board
-        (dolist (envelope envelopes)
-          (unless (e-board-message board (plist-get envelope :id))
-            (e-board-import-message board envelope)))
-      (unless (plist-get (e-session-local-state store session-id) :board-session-state)
-        (e-session-declare-board-state
-         store session-id (format "chat:%s" session-id)
-         (format "test-board:%s" session-id)))
-      (dolist (envelope envelopes)
-        (e-session-append-board-message store session-id envelope)))
-    (when binding
-      (while (< (e-board-observer-next-index
-                 (e-chat-service-binding-observer binding))
-                (e-board-message-count board))
-        (e-chat-service-drain-ephemeral-binding binding)))
-    envelopes))
 
 
 

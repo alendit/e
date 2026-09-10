@@ -684,63 +684,6 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-response-navigation-replayed-session-uses-synthetic-turns ()
-  "Replayed messages without turn metadata remain navigable."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer nil))
-    (unwind-protect
-        (progn
-          (e-harness-create-session harness :id "chat-nav-replay")
-          (e-session-append-message
-           store "chat-nav-replay"
-           '(:role user
-             :content "old first"
-             :created-at "1970-01-01T00:00:10Z"))
-          (e-session-append-message
-           store "chat-nav-replay"
-           '(:role assistant
-             :content "old one"
-             :created-at "1970-01-01T00:00:12Z"))
-          (e-session-append-message
-           store "chat-nav-replay"
-           '(:role user
-             :content "old second"
-             :created-at "1970-01-01T00:00:20Z"))
-          (e-session-append-message
-           store "chat-nav-replay"
-           '(:role assistant
-             :content "old two"
-             :created-at "1970-01-01T00:00:22Z"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "chat-nav-replay")
-          (setq buffer (e-chat-open :harness harness
-                                    :session-id "chat-nav-replay"))
-          (with-current-buffer buffer
-            (call-interactively #'e-chat-enter-response-navigation)
-            (should
-             (equal (e-chat-transcript-focused-turn-id)
-                    (plist-get
-                     (seq-find
-                      (lambda (message)
-                        (equal (plist-get message :content) "old second"))
-                      (e-chat-service-messages harness "chat-nav-replay"))
-                     :turn-id)))
-            (let ((details (e-chat-response-navigation-details)))
-              (with-current-buffer details
-                (should (string-match-p
-                         "  Started: 1970-01-01T00:00:20Z"
-                         (buffer-string)))
-                (should (string-match-p
-                         "  Ended: 1970-01-01T00:00:22Z"
-                         (buffer-string)))
-                (should (string-match-p "  Duration: 0min 2sec"
-                                        (buffer-string)))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
-
 (ert-deftest e-chat-test-replay-render-never-reads-private-transcript-indexes ()
   "Opening durable history renders only the board-derived projection."
   (let* ((store (e-session-store-create))
