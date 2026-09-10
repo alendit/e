@@ -213,6 +213,23 @@ path.  Its only production references are the bounded compatibility cleanup
 that deletes inert legacy metadata and documentation that names the retired
 property; the immutable historical manifest is not rewritten.
 
+** Post-completion fresh-owner regression closure
+
+A real fresh-start report exposed a gap in the original acceptance fixture:
+the test delayed child admission only after the Daily owner already had a live
+binding.  The corrected source-only graphical gate now holds the owner's atomic
+admission before any binding or run exists, proves immediate public return,
+composer input and three heartbeats during the hold, then releases into the
+existing child delay/failure and independent-session readback scenario.
+
+The same full gate exposed two restart defects that were previously hidden by
+the in-memory Board path.  Durable lifecycle facts now use child session ids
+rather than resettable process-local subagent ids.  Terminal SQL publication
+queries the authoritative run and publishes its stable reconciliation input
+through SQLite idempotency.  The complete public graphical suite passes 3/3
+with three tests actually selected and executed; see
+=docs/bugs/grimoire-daily-owner-admission-no-live-binding/=.
+
 * Completion criterion
 
 This feature is complete only when every F93-C01 through F93-C10 row is

@@ -205,6 +205,18 @@
            :source-hash (e-board-storage-signature-hash signature))
      (cons 'session session-id))))
 
+(defun e-board-sqlite-service-admit-session-owner-start
+    (service session-id board-id principal records query-delta participant)
+  "Atomically admit a chat owner without creating a synthetic input row."
+  (e-board-sqlite-service--start
+   service 'write
+   (list :op 'chat-session-owner-admit :session-id session-id
+         :board-id board-id :principal principal
+         :records (vconcat (copy-tree records t))
+         :query-delta (copy-tree query-delta t)
+         :participant (copy-tree participant t))
+   (cons 'session session-id)))
+
 (cl-defun e-board-sqlite-service-admit-participant-start
     (service session-id board-id records query-delta participant &key pickup)
   "Atomically admit SESSION-ID as BOARD-ID PARTICIPANT.

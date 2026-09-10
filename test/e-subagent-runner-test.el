@@ -115,6 +115,24 @@
   (e-subagent-resume registry subagent-id prompt runner
                      :source-turn-id "parent-resume-turn"))
 
+(ert-deftest e-subagent-runner-test-lifecycle-key-uses-durable-session-id ()
+  "Restarted process-local child ids cannot collide in durable Board facts."
+  (let (keys)
+    (cl-letf (((symbol-function 'e-subagent--publish-board-fact)
+               (lambda (_target &rest arguments)
+                 (push (plist-get arguments :source-fact-key) keys))))
+      (let ((publish (e-subagent--lifecycle-publication-function 'target)))
+        (funcall publish '(:subagent-id "sub_000001"
+                           :session-id "child-before-restart"
+                           :status queued))
+        (funcall publish '(:subagent-id "sub_000001"
+                           :session-id "child-after-restart"
+                           :status queued))))
+    (should
+     (equal (nreverse keys)
+            '((subagent-lifecycle "child-before-restart" queued)
+              (subagent-lifecycle "child-after-restart" queued))))))
+
 (ert-deftest e-subagent-runner-test-register-rejects-unreserved-explicit-id ()
   "An explicit child id cannot bypass admission with a nil work handle."
   (e-subagent-runner-test--with-instances

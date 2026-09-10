@@ -291,7 +291,8 @@ by this projection boundary."
 
 (cl-defstruct (e-chat-service-create-operation
                (:constructor e-chat-service--create-operation-create))
-  work harness store session-id metadata admission first-input-work settled)
+  work harness store session-id metadata admission first-input-work
+  owner-admission-work settled)
 
 (cl-defstruct (e-chat-service-participant-operation
                (:constructor e-chat-service--participant-operation-create))
@@ -2451,6 +2452,99 @@ semantic interpretation responsibility."
           (e-chat-service--reconcile-binding-continuation binding))
         binding)))
 
+(defun e-chat-service--pending-owner-admission-data (pending)
+  "Return PENDING's deterministic detached owner-admission data."
+  (let* ((session-id
+          (e-chat-service-create-operation-session-id pending))
+         (principal (format "chat:%s" session-id))
+         (identity
+          (secure-hash 'sha256 (format "chat-session:%s" session-id)))
+         (board-id (concat "brd_" (substring identity 0 32)))
+         (participant-id (concat "ptc_" (substring identity 32 64)))
+         (policy
+          (e-chat-service--routing-policy
+           participant-id '(:tags (main)) '(:tags (main)) '(main) nil))
+         (session
+          (or (e-chat-service-create-operation-admission pending)
+              (let ((value
+                     (e-session-board-admission-records
+                      :id session-id
+                      :metadata
+                      (e-chat-service-create-operation-metadata pending)
+                      :principal principal :board-id board-id
+                      :association-role e-chat-service--board-role-root
+                      :routing-policy policy)))
+                (setf (e-chat-service-create-operation-admission pending)
+                      (copy-tree value t))
+                value)))
+         (records (plist-get session :admission-records)))
+    (list
+     :session-id session-id :principal principal :board-id board-id
+     :records records
+     :query-delta
+     (e-session-query-derive
+      (e-chat-service--annotate-admission-records records))
+     :participant
+     (list :id participant-id :author "e-chat"
+           :principal principal :controller principal
+           :role 'owner :state 'active
+           :subscription-id (concat "sub_" participant-id)
+           :publication-pending nil))))
+
+(defun e-chat-service--settle-pending-owner-admission (pending settled)
+  "Settle PENDING from terminal owner-admission work SETTLED."
+  (let* ((harness (e-chat-service-create-operation-harness pending))
+         (session-id (e-chat-service-create-operation-session-id pending))
+         (table (e-chat-service--harness-pending-creations harness))
+         (status (e-work-status settled)))
+    (when (eq (gethash session-id table) pending)
+      (remhash session-id table))
+    (unless (e-chat-service-create-operation-settled pending)
+      (setf (e-chat-service-create-operation-settled pending) t)
+      (if (eq (plist-get status :state) 'finished)
+          (let ((association
+                 (plist-get (plist-get status :result) :association)))
+            (if association
+                (e-work-finish
+                 (e-chat-service-create-operation-work pending)
+                 (list :id session-id
+                       :metadata
+                       (copy-tree
+                        (e-chat-service-create-operation-metadata pending) t)
+                       :board-session-state (copy-tree association t)))
+              (e-work-fail
+               (e-chat-service-create-operation-work pending)
+               (list 'e-session-error
+                     "Owner admission returned no association" session-id))))
+        (e-work-fail
+         (e-chat-service-create-operation-work pending)
+         (plist-get status :error))))))
+
+(defun e-chat-service--start-pending-owner-admission (pending)
+  "Start or return PENDING's atomic empty-owner admission work."
+  (or (e-chat-service-create-operation-owner-admission-work pending)
+      (let* ((data (e-chat-service--pending-owner-admission-data pending))
+             (service
+              (e-board-sqlite-service-create
+               (e-session-storage-runtime-store
+                (e-chat-service-create-operation-store pending))))
+             (work
+              (e-board-sqlite-service-admit-session-owner-start
+               service
+               (plist-get data :session-id)
+               (plist-get data :board-id)
+               (plist-get data :principal)
+               (plist-get data :records)
+               (plist-get data :query-delta)
+               (plist-get data :participant))))
+        (setf (e-chat-service-create-operation-owner-admission-work pending)
+              work)
+        (e-work-on-settle
+         work
+         (lambda (settled)
+           (e-chat-service--settle-pending-owner-admission pending settled)))
+        work)))
+
 (defun e-chat-service--finish-bind-operation (operation binding error)
   "Settle OPERATION exactly once with BINDING or ERROR."
   (unless (e-chat-service-bind-operation-settled operation)
@@ -2587,7 +2681,15 @@ semantic interpretation responsibility."
        (lambda (settled)
          (if prerequisite
              (e-chat-service--bind-creation-settled operation settled)
-           (e-chat-service--bind-association-settled operation settled))))))
+           (e-chat-service--bind-association-settled operation settled))))
+      (when (and prerequisite
+                 (e-chat-service-bind-operation-continuation-owner-p operation))
+        (when-let* ((pending
+                     (gethash
+                      (e-chat-service-bind-operation-session-id operation)
+                      (e-chat-service--harness-pending-creations
+                       (e-chat-service-bind-operation-harness operation)))))
+          (e-chat-service--start-pending-owner-admission pending)))))
   :deferred)
 
 (defconst e-chat-service--bind-operation-spec
@@ -2624,7 +2726,9 @@ controller has been built."
         (when-let* ((operation (e-work-handle-arguments current)))
           (when (e-chat-service-bind-operation-p operation)
             (setf (e-chat-service-bind-operation-continuation-owner-p operation)
-                  t))))
+                  t)
+            (when pending
+              (e-chat-service--start-pending-owner-admission pending)))))
       (or current
           (let* ((operation
                   (e-chat-service--bind-operation-create
@@ -3609,48 +3713,16 @@ implementation detail of the chat service."
               (progn
                 (when (e-chat-service-create-operation-first-input-work pending)
                   (user-error "Initial chat admission is already pending"))
-                (let* ((principal (format "chat:%s" session-id))
-                       (identity
-                        (secure-hash 'sha256
-                                     (format "chat-session:%s" session-id)))
-                       (board-id (concat "brd_" (substring identity 0 32)))
-                       (participant-id
-                        (concat "ptc_" (substring identity 32 64)))
-                       (policy
-                        (e-chat-service--routing-policy
-                         participant-id '(:tags (main)) '(:tags (main))
-                         '(main) nil))
-                       (session
-                        (or (e-chat-service-create-operation-admission pending)
-                            (let ((value
-                                   (e-session-board-admission-records
-                                    :id session-id
-                                    :metadata
-                                    (e-chat-service-create-operation-metadata
-                                     pending)
-                                    :principal principal :board-id board-id
-                                    :association-role
-                                    e-chat-service--board-role-root
-                                    :routing-policy policy)))
-                              (setf
-                               (e-chat-service-create-operation-admission pending)
-                               (copy-tree value t))
-                              value)))
-                       (records (plist-get session :admission-records))
-                       (query-delta
-                        (e-session-query-derive
-                         (e-chat-service--annotate-admission-records records)))
-                       (participant
-                        (list :id participant-id :author "e-chat"
-                              :principal principal :controller principal
-                              :role 'owner :state 'active
-                              :subscription-id
-                              (concat "sub_" participant-id)
-                              :publication-pending nil))
+                (let* ((data
+                        (e-chat-service--pending-owner-admission-data pending))
                        (admission-work
                         (e-board-sqlite-service-admit-session-input-start
-                         service session-id board-id principal records
-                         query-delta participant
+                         service session-id
+                         (plist-get data :board-id)
+                         (plist-get data :principal)
+                         (plist-get data :records)
+                         (plist-get data :query-delta)
+                         (plist-get data :participant)
                          :author (format "session:%s" session-id)
                          :tags effective-tags
                          :attributes effective-attributes

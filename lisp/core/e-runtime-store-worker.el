@@ -527,22 +527,24 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
           (or (plist-get pickup-result :board-revision)
               (plist-get participant-result :revision)))))
 
-(defun e-runtime-store-worker--chat-session-input-admit (body)
-  "Atomically admit one new chat session and its first routed input."
+(defun e-runtime-store-worker--chat-session-owner-admit (body)
+  "Atomically admit one chat owner session without fabricating input."
   (let* ((session-id (plist-get body :session-id))
          (board-id (plist-get body :board-id))
          (principal (plist-get body :principal))
          (existing
           (car (sqlite-select
                 e-runtime-store-worker--database
-                "SELECT board_id,principal,routing_policy FROM session_query_state WHERE session_id=?"
+                "SELECT board_id,principal,association_role,routing_policy FROM session_query_state WHERE session_id=?"
                 (vector session-id))))
          session-result participant-result)
     (if existing
         (unless (and (equal board-id
                             (e-runtime-store-worker--column existing 0))
                      (equal principal
-                            (e-runtime-store-worker--column existing 1)))
+                            (e-runtime-store-worker--column existing 1))
+                     (equal "owner"
+                            (e-runtime-store-worker--column existing 2)))
           (signal 'e-runtime-store-board-conflict
                   (list "Chat admission identity conflicts" session-id)))
       (e-board-storage-sqlite-worker-write
@@ -561,23 +563,45 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
              (list :op 'board-participant-put :board-id board-id
                    :generation 1 :participant
                    (plist-get body :participant)))))
+    (list :status (if existing 'existing 'created)
+          :session session-result
+          :participant participant-result
+          :session-id session-id
+          :association
+          (list :board-id board-id :principal principal
+                :association-role "owner"
+                :routing-policy
+                (if existing
+                    (e-runtime-store-worker--value
+                     (e-runtime-store-worker--column existing 3))
+                  (copy-tree
+                   (plist-get (plist-get body :query-delta) :routing-policy)
+                   t))))))
+
+(defun e-runtime-store-worker--chat-session-input-admit (body)
+  "Atomically admit one new chat session and its first routed input."
+  (let* ((owner-result
+          (e-runtime-store-worker--chat-session-owner-admit body))
+         (session-id (plist-get body :session-id))
+         (board-id (plist-get body :board-id))
+         (principal (plist-get body :principal)))
     (let* ((append-body (copy-sequence body))
            (_ (setq append-body (plist-put append-body :op 'board-append-route)))
            (append-result
             (e-board-storage-sqlite-worker-write
              e-runtime-store-worker--database append-body))
            (policy
-            (if existing
-                (e-runtime-store-worker--value
-                 (e-runtime-store-worker--column existing 2))
-              (plist-get (plist-get body :query-delta) :routing-policy))))
+            (plist-get (plist-get owner-result :association)
+                       :routing-policy)))
       ;; APPEND-RESULT carries a request-local association slot for callers
       ;; that resolve a Board from SESSION-ID.  Composite admission already
       ;; owns the exact association and must replace that slot, not append a
       ;; duplicate plist key whose nil value shadows the committed policy.
       (let ((result (copy-sequence append-result)))
-        (setq result (plist-put result :session session-result)
-              result (plist-put result :participant participant-result)
+        (setq result (plist-put result :session
+                                (plist-get owner-result :session))
+              result (plist-put result :participant
+                                (plist-get owner-result :participant))
               result (plist-put result :session-id session-id)
               result
               (plist-put
@@ -688,6 +712,8 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
      (e-runtime-store-worker--session-board-participant-admit body))
     ('chat-session-input-admit
      (e-runtime-store-worker--chat-session-input-admit body))
+    ('chat-session-owner-admit
+     (e-runtime-store-worker--chat-session-owner-admit body))
     ('session-delete (e-runtime-store-worker--session-delete body))
     ('tool-transition (e-runtime-store-worker--tool-transition body))
     ('resource-put (e-runtime-store-worker--resource-put body))

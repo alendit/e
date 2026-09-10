@@ -26,6 +26,13 @@
                     :publication-key "continue-run-1")
      :deadline (:kind none))))
 
+(defconst e-board-runs-shell-test--deferred-work-spec
+  (e-work-spec-create
+   :id "board-runs-shell-test-query" :execution 'cooperative
+   :interactive-policy 'async :owner 'test
+   :runner (lambda (_handle _arguments _context) :deferred))
+  "Manual query work used to prove list-buffer return-before-read behavior.")
+
 (defun e-board-runs-shell-test--summary (board &optional registry)
   "Return BOARD's signal-focused RUN-1 summary using REGISTRY."
   (e-board-runs-shell--format-summary
@@ -50,7 +57,7 @@
       'terminal-report "report-b"
       '(:run-id "run-1" :task-key "task" :attempt 0 :status failed
         :summary "second" :outputs [])))
-    (let ((buffer (e-board-runs-list-buffer :board board)))
+    (let ((buffer (e-board-runs-list-buffer :target board)))
       (unwind-protect
           (with-current-buffer buffer
             (should (derived-mode-p 'e-board-runs-shell-mode))
@@ -70,7 +77,7 @@
   "A fact publication refreshes the shell without inspecting a child session."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (board (e-board-create :id "run-shell-notification")))
-    (let ((buffer (e-board-runs-list-buffer :board board)))
+    (let ((buffer (e-board-runs-list-buffer :target board)))
       (unwind-protect
           (progn
             (with-current-buffer buffer
@@ -84,12 +91,41 @@
         (remove-hook 'e-subagent-registry-change-functions
                      #'e-board-runs-shell--refresh-registry-buffers)))))
 
+(ert-deftest e-board-runs-shell-test-sql-query-renders-after-return ()
+  "A query-backed list returns its buffer before the detached page settles."
+  (let ((work (e-work-start e-board-runs-shell-test--deferred-work-spec nil))
+        buffer)
+    (cl-letf (((symbol-function 'e-board-orchestration-actions-list-runs)
+               (lambda (_target &optional _now) work))
+              ((symbol-function 'e-board-runs-shell--target-id)
+               (lambda (_target) "sqlite-board"))
+              ((symbol-function 'e-board-orchestration-actions--sqlite-target-p)
+               (lambda (_target) t)))
+      (setq buffer (e-board-runs-list-buffer :target 'sqlite-binding))
+      (unwind-protect
+          (progn
+            (with-current-buffer buffer
+              (should-not tabulated-list-entries))
+            (e-work-finish
+             work
+             (list '(:run-id "run-1" :manifest (:tasks nil)
+                     :tasks nil :terminal-status done)))
+            (with-current-buffer buffer
+              (should (= (length tabulated-list-entries) 1))
+              (should (equal (aref (cadr (car tabulated-list-entries)) 1)
+                             "sqlite-board"))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))
+        (remove-hook 'e-board-orchestration-actions-projection-change-functions
+                     #'e-board-runs-shell--refresh-buffers)
+        (remove-hook 'e-subagent-registry-change-functions
+                     #'e-board-runs-shell--refresh-registry-buffers)))))
+
 (ert-deftest e-board-runs-shell-test-commands-are-interactive ()
   "The bounded run shell exposes detail and manual refresh commands."
   (let ((e-board--registry (make-hash-table :test 'equal))
         (board (e-board-create :id "run-shell-commands"))
         (buffer nil))
-    (setq buffer (e-board-runs-list-buffer :board board))
+    (setq buffer (e-board-runs-list-buffer :target board))
     (unwind-protect
         (with-current-buffer buffer
           (dolist (cell '(("RET" . e-board-runs-shell-show-details)

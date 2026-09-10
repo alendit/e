@@ -240,6 +240,16 @@ The concrete post-implementation review findings above are resolved.  The
 final source and canonical readback satisfy F93-C01 through F93-C10.  No
 unresolved correctness finding remains.
 
+** Post-completion regression review
+
+The public fresh-Daily report invalidated the earlier graphical proof because
+owner admission was not delayed before binding.  The corrected fixture uses
+current source, explicitly selects and executes the Grimoire tests, and holds
+fresh owner admission itself.  Review of that path also removed SQL dependence
+on reconstructed Board projections, replaced resettable subagent ids in
+durable fact keys, and added query-driven idempotent continuation publication.
+The complete public graphical suite now executes and passes 3/3.
+
 * Live reload
 
 Core runtime and session behavior changed, so using it in a running Emacs

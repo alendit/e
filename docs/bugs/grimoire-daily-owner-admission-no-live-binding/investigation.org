@@ -1,0 +1,73 @@
+#+title: Investigation: Grimoire Daily owner admission produced no live binding
+#+startup: overview
+
+* Status
+
+Done.
+
+* Root cause
+
+Grimoire called =e-chat-service-create-session-start= and immediately read
+=e-chat-service-binding=.  SQLite session creation is deliberately
+asynchronous, so a fresh passive session correctly had no binding at that
+instant.  Grimoire treated the expected pending state as a terminal error.
+
+Three adjacent defects became visible after exercising the exact source path:
+
+1. promoting a passive pending session to the Daily continuation owner had no
+   durable operation to create the owner association before the first input;
+2. the SQL Daily path still inspected and finalized through a process-local
+   Board projection, while activity/detail presentation assumed a synchronous
+   Board target;
+3. restart recovery persisted the process-local =sub_000001= identifier as a
+   Board idempotency key and had no SQL consumer to publish a newly ready
+   reconciliation continuation.
+
+The third defect caused a real restart collision: the reset process reused
+=sub_000001= for a different child, SQLite rejected the conflicting fact, and
+owner-local failure isolation correctly marked that Board suspect.
+
+* Why the earlier tests missed it
+
+- The unit fixture used an ephemeral harness whose create/bind path completed
+  immediately.
+- The graphical delay test held child participant admission, not the fresh
+  Daily owner's admission before any binding existed.
+- Grimoire tests could load stale =.elc= files instead of the edited source.
+- Several assertions inspected the same reconstructed Board path that was
+  broken in production.
+- Invoking the graphical runner with a custom test file but without a matching
+  selector loaded the fixture and executed zero tests.  Executed test count is
+  now part of the acceptance evidence.
+
+* Remediation
+
+- The worker now has one atomic owner-admission operation that creates or
+  validates the Board, session state, and owner participant without inventing
+  a chat message.
+- Chat session binding composes pending creation with that operation and
+  installs the live binding only after commit.
+- Grimoire waits through work callbacks, while its public buffer still returns
+  immediately; ordinary SQL Daily start, inspection, activity, restart, and
+  finalization use detached bounded queries.
+- Durable subagent lifecycle keys use the globally unique child session id,
+  never the resettable process-local display id.
+- After a terminal SQL fact commits, the orchestration application service
+  queries the authoritative run, queues a stable continuation source key, and
+  appends its published claim.  Concurrent observations are harmless because
+  SQLite deduplicates the source key.
+- Stored-session migration errors surface visibly and do not silently replace
+  the durable document session id.
+
+* Verification
+
+- =e= focused Board/SQLite/orchestration/shell tests: 32/32 passed.
+- Durable lifecycle identity regression: 1/1 passed.
+- Grimoire Daily unit tests: 53/53 passed.
+- Grimoire topic/session tests: 13/13 passed.
+- Public graphical Grimoire Daily suite: 3/3 passed, including the real SQLite
+  fresh-owner delay/failure/isolation scenario and visible restart recovery.
+
+The graphical suite used private temporary repositories and SQLite stores.
+The running Emacs and canonical user database were not opened, reloaded, or
+modified.

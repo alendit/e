@@ -23,6 +23,57 @@
    'manifest "manifest"
    (list :run-id "run-1" :tasks tasks :deadline '(:kind none))))
 
+(defun e-board-orchestration-actions-test--finished-work (id result)
+  "Return cooperative work ID already finished with RESULT."
+  (let ((work
+         (e-work-start
+          (e-work-spec-create
+           :id id :execution 'cooperative :interactive-policy 'async
+           :owner 'e-board-orchestration-actions-test
+           :runner (lambda (_handle _arguments _context) :deferred))
+          nil)))
+    (e-work-finish work result)
+    work))
+
+(ert-deftest e-board-orchestration-actions-test-sql-terminal-queues-continuation-once ()
+  "A terminal SQL fact drives its stable continuation through SQLite state."
+  (let ((target (e-chat-service--binding-create
+                 :harness 'harness :sqlite-service 'service
+                 :board-id "board-1"))
+        facts queued)
+    (cl-letf (((symbol-function 'e-board-orchestration-actions--sqlite-target-p)
+               (lambda (_target) t))
+              ((symbol-function 'e-board-sqlite-service-orchestration-fact-start)
+               (lambda (_service _board-id fact &rest _arguments)
+                 (push fact facts)
+                 (e-board-orchestration-actions-test--finished-work
+                  "fact" '(:status committed))))
+              ((symbol-function 'e-board-orchestration-actions-run-projection)
+               (lambda (_target _run-id &optional _now)
+                 (e-board-orchestration-actions-test--finished-work
+                  "projection"
+                  '(:run-id "run-1" :terminal-status done
+                    :continuation
+                    (:state pending :session-id "owner-1"
+                     :publication-key "continue-1" :prompt "reconcile")))))
+              ((symbol-function 'e-chat-service-queue-session)
+               (lambda (_harness session-id prompt &rest arguments)
+                 (push (list session-id prompt arguments) queued)
+                 (e-board-orchestration-actions-test--finished-work
+                  "queue" '(:status committed)))))
+      (let ((work
+             (e-board-orchestration-actions-publish-terminal
+              target '(:run-id "run-1" :task-key "task" :attempt 0) 'done
+              :summary "done" :outputs [])))
+        (should (eq (plist-get (e-work-status work) :state) 'finished))))
+    (should (= (length facts) 2))
+    (should (equal (plist-get (car facts) :type) 'continuation-claim))
+    (should
+     (equal queued
+            '(("owner-1" "reconcile"
+               (:metadata (:board-run-id "run-1")
+                :source-input-key (board-continuation "continue-1"))))))))
+
 (ert-deftest e-board-orchestration-actions-test-bounds-run-projections ()
   "Run observation keeps every durable section bounded with evidence."
   (let ((e-board--registry (make-hash-table :test 'equal))

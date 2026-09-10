@@ -1,0 +1,26 @@
+#+title: Grimoire Daily owner admission produced no live binding
+#+startup: overview
+
+* Status
+
+Done.
+
+* Report
+
+Opening a fresh Grimoire Daily returned a chat buffer whose mode line remained
+=queued= and then reported:
+
+#+begin_example
+Grimoire Daily session preparation failed: Session error:
+"Daily session admission produced no live binding"
+#+end_example
+
+The failure was visible on the ordinary public graphical Daily path after a
+fresh Emacs start.
+
+* Required behavior
+
+The public Daily buffer must return immediately.  Its owner session and Board
+association may settle asynchronously, but Daily dispatch must begin only from
+the resulting live binding.  Delayed SQLite work must not block the composer or
+timers, and restart recovery must still produce one visible continuation.

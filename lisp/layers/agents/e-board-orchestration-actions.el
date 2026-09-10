@@ -56,6 +56,97 @@
           (plist-get assignment :task-key)
           (plist-get assignment :attempt)))
 
+(defconst e-board-orchestration-actions--terminal-publication-work-spec
+  (e-work-spec-create
+   :id "board-terminal-publication" :execution 'cooperative
+   :interactive-policy 'async :owner 'subagents
+   :runner (lambda (_handle _arguments _context) :deferred))
+  "Work contract for terminal publication and its durable continuation.")
+
+(defun e-board-orchestration-actions--finish-from-work
+    (outer child &optional result)
+  "Settle OUTER from CHILD, returning RESULT after CHILD succeeds."
+  (e-work-on-settle
+   child
+   (lambda (settled)
+     (pcase (plist-get (e-work-status settled) :state)
+       ('finished (e-work-finish outer
+                                 (if result result
+                                   (e-work-handle-result settled))))
+       ('failed (e-work-fail outer (e-work-handle-error settled)))
+       ('cancelled (e-work-cancel outer))))))
+
+(defun e-board-orchestration-actions--publish-sql-continuation
+    (target outer terminal-result projection)
+  "Publish PROJECTION's pending continuation through SQL TARGET."
+  (let ((continuation (plist-get projection :continuation)))
+    (if (not (eq (plist-get continuation :state) 'pending))
+        (e-work-finish outer terminal-result)
+      (let* ((run-id (plist-get projection :run-id))
+             (publication-key (plist-get continuation :publication-key))
+             (queue-work
+              (e-chat-service-queue-session
+               (e-chat-service-binding-harness target)
+               (plist-get continuation :session-id)
+               (plist-get continuation :prompt)
+               :metadata (list :board-run-id run-id)
+               :source-input-key (list 'board-continuation publication-key))))
+        (e-work-on-settle
+         queue-work
+         (lambda (settled)
+           (pcase (plist-get (e-work-status settled) :state)
+             ('finished
+              (let ((claim-work
+                     (e-board-sqlite-service-orchestration-fact-start
+                      (e-chat-service-binding-sqlite-service target)
+                      (e-chat-service-binding-board-id target)
+                      (list
+                       :version e-board-orchestration-fact-version
+                       :type 'continuation-claim
+                       :idempotency-key
+                       (e-board-orchestration-continuation-claim-key
+                        publication-key 'published)
+                       :payload
+                       (list :run-id run-id :publication-key publication-key
+                             :status 'published)))))
+                (e-board-orchestration-actions--finish-from-work
+                 outer claim-work terminal-result)))
+             ('failed (e-work-fail outer (e-work-handle-error settled)))
+             ('cancelled (e-work-cancel outer)))))))))
+
+(defun e-board-orchestration-actions--publish-sql-terminal
+    (target fact author)
+  "Publish terminal FACT and its ready continuation through SQL TARGET."
+  (let* ((outer
+          (e-work-start
+           e-board-orchestration-actions--terminal-publication-work-spec nil))
+         (publication
+          (e-board-sqlite-service-orchestration-fact-start
+           (e-chat-service-binding-sqlite-service target)
+           (e-chat-service-binding-board-id target) fact :author author)))
+    (e-work-on-settle
+     publication
+     (lambda (settled)
+       (pcase (plist-get (e-work-status settled) :state)
+         ('finished
+          (let* ((terminal-result (e-work-handle-result settled))
+                 (run-id (plist-get (plist-get fact :payload) :run-id))
+                 (query
+                  (e-board-orchestration-actions-run-projection target run-id)))
+            (e-work-on-settle
+             query
+             (lambda (queried)
+               (pcase (plist-get (e-work-status queried) :state)
+                 ('finished
+                  (e-board-orchestration-actions--publish-sql-continuation
+                   target outer terminal-result
+                   (e-work-handle-result queried)))
+                 ('failed (e-work-fail outer (e-work-handle-error queried)))
+                 ('cancelled (e-work-cancel outer)))))))
+         ('failed (e-work-fail outer (e-work-handle-error settled)))
+         ('cancelled (e-work-cancel outer)))))
+    outer))
+
 (cl-defun e-board-orchestration-actions-publish-terminal
     (target assignment status &key summary outputs error author)
   "Publish ASSIGNMENT's bounded terminal STATUS report to TARGET.
@@ -71,9 +162,8 @@ The stable assignment key makes callback retries no-ops at the board boundary."
                                       :participant-session-id
                                       (plist-get author :session-id))))))
     (if (e-board-orchestration-actions--sqlite-target-p target)
-        (e-board-sqlite-service-orchestration-fact-start
-         (e-chat-service-binding-sqlite-service target)
-         (e-chat-service-binding-board-id target) fact :author author)
+        (e-board-orchestration-actions--publish-sql-terminal
+         target fact author)
       (e-board-orchestration-publish-fact
        (e-board-orchestration-actions--source-board target) fact
        :author author))))
@@ -118,13 +208,20 @@ Return nil for ordinary children without a durable assignment."
           (plist-get assignment :run-id) (plist-get assignment :task-key)
           (plist-get assignment :attempt) status))
 
-(defun e-board-orchestration-actions--publish-attempt (board assignment status)
+(defun e-board-orchestration-actions--publish-attempt (target assignment status)
   "Publish one idempotent durable task ATTEMPT state."
-  (e-board-orchestration-publish-fact
-   board
-   (list :version e-board-orchestration-fact-version :type 'task-attempt
-         :idempotency-key (e-board-orchestration-actions--attempt-key assignment status)
-         :payload (append (copy-tree assignment) (list :status status)))))
+  (let ((fact
+         (list :version e-board-orchestration-fact-version :type 'task-attempt
+               :idempotency-key
+               (e-board-orchestration-actions--attempt-key assignment status)
+               :payload
+               (append (copy-tree assignment) (list :status status)))))
+    (if (e-board-orchestration-actions--sqlite-target-p target)
+        (e-board-sqlite-service-orchestration-fact-start
+         (e-chat-service-binding-sqlite-service target)
+         (e-chat-service-binding-board-id target) fact)
+      (e-board-orchestration-publish-fact
+       (e-board-orchestration-actions--source-board target) fact))))
 
 (defun e-board-orchestration-actions-select-next-attempt
     (board run-id task-key accepted-attempt)

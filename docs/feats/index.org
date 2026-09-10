@@ -176,6 +176,14 @@ canonical run; schema, associations, immutable history, foreign keys, and full
 database integrity read back clean, and no reachable update-session behavior
 remains.
 
+A 2026-09-10 fresh-Daily regression report reopened the actual public gate.
+The corrected exact-source fixture now delays owner admission before a binding
+exists and executes all three Grimoire graphical tests explicitly.  It exposed
+and closed synchronous binding inspection, SQL Board-replica access,
+restart-unsafe subagent lifecycle keys, and missing SQL continuation
+publication.  The full public suite passes 3/3; details are in
+[[file:../bugs/grimoire-daily-owner-admission-no-live-binding/investigation.org][the investigation]].
+
 A post-completion real Doom restart exposed a packaging regression that the
 isolated graphical runner could not see: project-local startup compilation
 recursed into Grimoire's =test/= tree, while the graphical fixture installed its

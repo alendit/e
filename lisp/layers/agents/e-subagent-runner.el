@@ -130,7 +130,11 @@ Ordinary SQLite uses the chat binding directly and is never entered here.")
                       (plist-get record :subagent-id)
                       (plist-get record :status))
      :source-fact-key
-     (list 'subagent-lifecycle (plist-get record :subagent-id)
+     ;; `subagent-id' is a process-local display identity whose sequence starts
+     ;; over after Emacs restarts.  Durable idempotency must follow the globally
+     ;; unique child session instead, or a restarted registry can collide with
+     ;; an earlier child's Board fact.
+     (list 'subagent-lifecycle (plist-get record :session-id)
            (plist-get record :status)))))
 
 (defcustom e-subagent-child-layer-ids '(subagents-child)
@@ -785,7 +789,7 @@ not a tracked child."
                       subagent-id action
                       (if bounded-reason (format ": %s" bounded-reason) ""))
      :source-fact-key
-     (list 'subagent-intervention subagent-id action
+     (list 'subagent-intervention (plist-get record :session-id) action
            (plist-get intervention :at)))
     (e-subagent-registry-get registry subagent-id)))
 

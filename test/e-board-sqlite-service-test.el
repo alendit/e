@@ -601,6 +601,73 @@
       (write-region "release" nil release nil 'silent)
       (delete-directory stall-directory t))))
 
+(ert-deftest e-chat-service-sqlite-pending-owner-binding-admits-without-input ()
+  "A passive new owner binds asynchronously without a synthetic message."
+  (let* ((directory (make-temp-file "e-chat-owner-admit-" t))
+         (stall-directory (make-temp-file "e-chat-owner-stall-" t))
+         (process-environment
+          (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" stall-directory)
+                process-environment))
+         (hold
+          (expand-file-name "chat-session-owner-admit.hold" stall-directory))
+         (ready
+          (expand-file-name "chat-session-owner-admit.ready" stall-directory))
+         (release
+          (expand-file-name "chat-session-owner-admit.release" stall-directory))
+         (store (e-session-sqlite-store-create directory))
+         (harness (e-harness-create :sessions store))
+         (session-id "passive-daily-owner")
+         creation ordinary-bind owner-bind binding)
+    (unwind-protect
+        (progn
+          (write-region "hold" nil hold nil 'silent)
+          (setq creation
+                (e-chat-service-create-session-start
+                 :harness harness :id session-id
+                 :metadata '(:name "Passive Daily owner")))
+          ;; `e-chat-open' may already have requested an ordinary binding.
+          ;; Promoting the same in-flight request to continuation owner must
+          ;; reuse it and must not wait in the caller.
+          (setq ordinary-bind
+                (e-chat-service-binding-start harness session-id))
+          (setq owner-bind
+                (e-chat-service-binding-start harness session-id nil t))
+          (should (eq ordinary-bind owner-bind))
+          (let ((deadline (+ (float-time) 2.0)))
+            (while (and (not (file-exists-p ready))
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.01))
+            (should (file-exists-p ready)))
+          (should (eq (plist-get (e-work-status owner-bind) :state) 'started))
+          (should (eq (plist-get (e-work-status creation) :state) 'started))
+          (should-not (e-chat-service-binding harness session-id))
+          (write-region "release" nil release nil 'silent)
+          (setq binding (e-board-sqlite-service-test--await owner-bind))
+          (should (eq (plist-get (e-work-status creation) :state) 'finished))
+          (should (eq binding (e-chat-service-binding harness session-id)))
+          (should (e-chat-service-binding-continuation-owner-p binding))
+          (let ((association
+                 (e-runtime-store-call
+                  (e-session-storage-runtime-store store) 'read
+                  (list :op 'session-board-association
+                        :session-id session-id))))
+            (should (equal (plist-get association :association-role) "owner"))
+            (should
+             (equal (plist-get association :board-id)
+                    (e-chat-service-binding-board-id binding))))
+          (let ((page
+                 (e-board-sqlite-service-test--await
+                  (e-board-sqlite-service-record-page-start
+                   (e-chat-service-binding-sqlite-service binding)
+                   (e-chat-service-binding-board-id binding)
+                   :generation 1 :after 0 :limit 16))))
+            (should-not (plist-get page :records))))
+      (write-region "release" nil release nil 'silent)
+      (when binding (e-chat-service--retire-binding binding))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (delete-directory directory t)
+      (delete-directory stall-directory t))))
+
 (ert-deftest e-chat-service-sqlite-new-session-commits-first-input-atomically ()
   "A new SQLite chat remains local until one transaction admits first input."
   (let* ((directory (make-temp-file "e-chat-sql-new-" t))
