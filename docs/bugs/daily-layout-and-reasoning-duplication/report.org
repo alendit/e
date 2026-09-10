@@ -1,0 +1,15 @@
+#+title: Daily Layout Composition and Repeated Reasoning
+#+startup: overview
+
+* Report
+
+On 2026-09-10, a public Grimoire Daily chat could open with the composer and
+transcript in the wrong vertical order.  During a tool-bearing turn, the same
+pre-tool reasoning text was also rendered twice.
+
+* Expected behavior
+
+Opening a Daily owns one complete presentation transition: document,
+transcript, and composer are immediately composed in that order.  Streamed
+reasoning may be consolidated at a provider boundary, but the consolidated
+snapshot must replace its live fragments rather than appear beside them.

@@ -111,7 +111,7 @@
        :id session-id
        :metadata (list :project-root (file-name-as-directory
                                       (file-name-directory file))))
-      (e-org-canvas--mark-session
+      (e-org-canvas-mark-session
        harness session-id buffer :scope 'thread :target-folder nil)
       session-id)))
 
@@ -364,7 +364,7 @@
               (e-buffer-set-workspace source target-workspace))
             (set-window-buffer (selected-window) source)
             (e-harness-test-create-board-session harness :id "session-1")
-            (e-org-canvas--mark-session
+            (e-org-canvas-mark-session
              harness "session-1" source :scope 'thread :target-folder nil)
             (setq chat-buffer
                   (e-chat-open :harness harness :session-id "session-1"))
@@ -733,7 +733,7 @@
             (org-mode)
             (insert "* Helper\nbody\n"))
           (e-harness-test-create-board-session harness :id "helper-session")
-          (e-org-canvas--mark-session harness "helper-session" buffer)
+          (e-org-canvas-mark-session harness "helper-session" buffer)
           (cl-letf (((symbol-function 'e-workspace-find-buffer)
                      (cl-function
                       (lambda (predicate &key prefer-visible workspace)
@@ -1047,7 +1047,7 @@
       (insert "* Topic\nBody\n")
       (e-harness-test-create-board-session harness :id "plain")
       (e-harness-test-create-board-session harness :id "org")
-      (e-org-canvas--mark-session
+      (e-org-canvas-mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (let ((plain (plist-get (e-harness-context harness "plain")
                               :messages))
@@ -1084,7 +1084,7 @@
       (org-mode)
       (insert "* Live heading\nBody\n")
       (e-harness-test-create-board-session harness :id "org")
-      (e-org-canvas--mark-session
+      (e-org-canvas-mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (e-session-append-message
        (e-harness-sessions harness)
@@ -1132,7 +1132,7 @@
       (org-mode)
       (insert "* Topic\nBody\n")
       (e-harness-test-create-board-session harness :id "org")
-      (e-org-canvas--mark-session
+      (e-org-canvas-mark-session
        harness "org" (current-buffer) :scope 'document :target-folder nil)
       (e-session-append-message
        (e-harness-sessions harness)
@@ -1183,7 +1183,7 @@
       (org-mode)
       (insert "* Topic\nBody\n")
       (e-harness-test-create-board-session harness :id "session-1")
-      (e-org-canvas--mark-session
+      (e-org-canvas-mark-session
        harness "session-1" (current-buffer) :scope 'thread :target-folder nil)
       (let (call)
         (cl-letf (((symbol-function 'e-chat-service-submit-session)
@@ -1262,7 +1262,7 @@
              harness
              :id "session-1"
              :metadata (list :project-root default-directory))
-            (e-org-canvas--mark-session
+            (e-org-canvas-mark-session
              harness "session-1" source :scope 'thread :target-folder nil)
             (e-org-canvas-test--import-board-input
              harness "session-1" "msg-1" "Existing backing chat history")
@@ -1379,7 +1379,7 @@
       (setq mark-active t)
       (let ((target (current-buffer))
             (window (selected-window)))
-        (e-org-canvas--mark-session
+        (e-org-canvas-mark-session
          harness "session-1" target :scope 'thread :target-folder nil)
         (cl-letf (((symbol-function 'e-org-canvas--ensure-current-session)
                    (lambda () (list harness "session-1" target)))
@@ -1462,7 +1462,7 @@
           (rename-buffer "org-canvas-submit-input" t)
           (org-mode)
           (insert "* Topic\nBody\n")
-          (e-org-canvas--mark-session
+          (e-org-canvas-mark-session
            harness "session-1" (current-buffer)
            :scope 'thread :target-folder nil)
           (setq buffer
@@ -1506,7 +1506,7 @@
           (rename-buffer "org-canvas-submit-progress" t)
           (org-mode)
           (insert "* Topic\nBody\n")
-          (e-org-canvas--mark-session
+          (e-org-canvas-mark-session
            harness "session-1" (current-buffer)
            :scope 'thread :target-folder nil)
           (setq buffer
@@ -1971,7 +1971,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
             (org-mode)
             (erase-buffer)
             (insert "* Topic\nBody\n")
-            (e-org-canvas--mark-session
+            (e-org-canvas-mark-session
              harness "session-1" target :scope 'thread :target-folder nil))
           (setq input
                 (e-org-canvas--input-buffer
@@ -2055,7 +2055,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (rename-buffer "unsaved-org-canvas" t)
           (org-mode)
           (e-harness-test-create-board-session harness :id "session-1")
-          (e-org-canvas--mark-session
+          (e-org-canvas-mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
            :target-folder directory
@@ -2104,7 +2104,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (rename-buffer "unsaved-org-canvas-backend" t)
           (org-mode)
           (e-harness-test-create-board-session harness :id "session-1")
-          (e-org-canvas--mark-session
+          (e-org-canvas-mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
            :target-folder directory
@@ -2133,7 +2133,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (rename-buffer "unsaved-org-canvas-empty-backend" t)
           (org-mode)
           (e-harness-test-create-board-session harness :id "session-1")
-          (e-org-canvas--mark-session
+          (e-org-canvas-mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
            :target-folder directory
@@ -2173,7 +2173,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (org-mode)
           (e-harness-test-create-board-session harness :id "session-1")
           (e-harness-set-session-model harness "session-1" "model-for-names")
-          (e-org-canvas--mark-session
+          (e-org-canvas-mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
            :target-folder directory
@@ -2259,7 +2259,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (rename-buffer "unsaved-org-canvas-unsafe-manual" t)
           (org-mode)
           (e-harness-test-create-board-session harness :id "session-1")
-          (e-org-canvas--mark-session
+          (e-org-canvas-mark-session
            harness "session-1" (current-buffer)
            :scope 'thread
            :target-folder directory
@@ -2358,7 +2358,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
       (insert "* Parent\n** Child\nBody\n* Other\n")
       (goto-char (point-min))
       (e-harness-test-create-board-session harness :id "org")
-      (e-org-canvas--mark-session
+      (e-org-canvas-mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (e-actions-call 'org-canvas :overview nil
                       (list :harness harness :session-id "org"))
@@ -2383,7 +2383,7 @@ Body
 ")
       (goto-char (point-min))
       (e-harness-test-create-board-session harness :id "org")
-      (e-org-canvas--mark-session
+      (e-org-canvas-mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
       (e-actions-call
        'org-canvas

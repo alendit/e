@@ -502,7 +502,7 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
     ;; request-scoped value and does not need a synchronous metadata readback.
     (copy-tree org-canvas-metadata t)))
 
-(cl-defun e-org-canvas--mark-session
+(cl-defun e-org-canvas-mark-session
     (harness session-id buffer &key scope target-folder needs-file-name focus)
   "Mark HARNESS SESSION-ID as an Org Canvas session for BUFFER.
 SCOPE and FOCUS are accepted for caller compatibility.  TARGET-FOLDER and
@@ -941,7 +941,7 @@ HARNESS and SESSION-ID are kept for call-site compatibility."
                     (select-safe-coding-system-function nil))
                 (write-file file nil))))))
       (when (buffer-file-name buffer)
-        (e-org-canvas--mark-session
+        (e-org-canvas-mark-session
          harness session-id buffer
          :target-folder (plist-get canvas :target-folder)
          :needs-file-name nil)))))

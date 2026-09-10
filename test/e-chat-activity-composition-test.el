@@ -1315,6 +1315,52 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-combined-reasoning-snapshot-replaces-stream-fragments ()
+  "A provider-boundary snapshot does not repeat its streamed reasoning."
+  (let ((e-chat-activity-reasoning-visible-line-limit 3)
+        (buffer (e-chat-test--buffer nil "chat-combined-reasoning")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (dolist (content '("one combined " "reasoning line"))
+            (e-chat-render-event
+             (e-events-make :type 'reasoning-delta
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 1
+                            :payload (list :content content))))
+          (e-chat-render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload '(:content "one combined reasoning line"
+                                      :content-mode snapshot
+                                      :combined t)))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)))
+          (let* ((text (buffer-string))
+                 (display (e-chat-activity-turn-display "turn-1")))
+            (should (= (e-chat-test--count-occurrences
+                        "one combined reasoning line" text)
+                       1))
+            (should (= (e-chat-test--count-occurrences
+                        "one combined reasoning line"
+                        (plist-get display :expanded-text))
+                       1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-reasoning-snapshots-render-as-markdown-lines ()
   "Board reasoning snapshots use deterministic Markdown presentation."
   (let ((e-chat-activity-reasoning-visible-line-limit 3)

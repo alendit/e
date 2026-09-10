@@ -1,0 +1,93 @@
+#+title: Daily Layout Composition and Repeated Reasoning Investigation
+#+startup: overview
+
+* Status
+
+Fixed in the repository.  Grimoire now calls the public chat composition API
+directly, its public graphical Daily test asserts the complete surface ordering
+before asynchronous admission advances, and combined reasoning snapshots
+replace the live fragments they consolidate.
+
+* Causes
+
+** Stale presentation API
+
+Grimoire's topic shell guarded a call to the removed private function
+=e-chat--after-display-buffer=.  The guard made the clean-cut API removal look
+optional: the call was silently skipped, so later selection/display activity
+could repair the layout after the public open path had already returned.
+
+The shell now requires and calls =e-chat-after-display-buffer=.  Its graphical
+test uses only public composer/surface APIs and checks document -> transcript ->
+composer window order, the transcript/composer atom, and composer selection.
+
+** Stream snapshot appended as another reasoning entry
+
+For a tool-bearing provider response, the loop preserves assistant text before
+the tool as reasoning.  The harness publishes the live reasoning event and, at
+the following provider boundary, publishes a =:content-mode snapshot= with
+=:combined t= containing the consolidated text.  Chat activity treated every
+non-appending snapshot as a new entry, so it displayed both the fragments and
+their combined replacement.
+
+Chat activity now gives =snapshot + combined= its actual protocol meaning: it
+replaces the latest reasoning child and intermittent entry from the same
+activity source.  Ordinary snapshots remain separate entries.
+
+* Clean-cut API audit
+
+The audit covered production and test Elisp in =e= and Grimoire.  Grimoire no
+longer calls private =e-chat--*=, =e-org-canvas--*=,
+=e-board-orchestration-actions--*=, or =e-session--*= APIs.  The two extension
+contracts Grimoire legitimately consumes are now public, with no compatibility
+aliases:
+
+- =e-org-canvas-mark-session=
+- =e-board-orchestration-actions-publish-attempt=
+
+The research replay helper was also moved from removed =e-session-get= to the
+explicit process-local =e-session-local-state= query.  Negative tests that name
+the removed API to prove it is unreachable remain intentionally unchanged.
+
+* Acceptance evidence
+
+- Focused activity composition: combined reasoning appears exactly once in the
+  visible buffer and expanded activity details.
+- Public Grimoire topic composition graphical test: document, transcript, and
+  composer are ordered immediately.
+- Public real-SQLite Daily delayed-open/write/release/failure test: passes.
+- Grimoire Daily run, topic session, and commit suites: 82/82 pass.
+- Public Org Canvas and Board orchestration action suites: pass.
+- Exact stale/private-symbol grep across both repositories: clean, except for
+  deliberate negative guard tests.
+
+The user's running Emacs was not changed or reloaded, and the canonical
+database was not used.  Acceptance tests used isolated Emacs processes and a
+temporary SQLite database.
+
+* Architecture self-check
+
+1. This slice leaves the public Daily path executable and directly tested.
+2. It moves toward public, consumer-shaped presentation and activity protocols.
+3. Replacement is limited to the stable =snapshot + combined= signal; no new
+   speculative stream abstraction was added.
+4. The harness owns stream consolidation; chat activity owns its projection;
+   the Grimoire shell owns Daily window composition.
+5. Coupling is reduced by replacing cross-package private calls with two narrow
+   public operations.
+6. Policy does not acquire a dependency on presentation or persistence.
+7. Window mutation remains in the shell and activity rendering remains in its
+   presentation owner.
+8. No durable state is added; only an existing bounded live activity entry is
+   replaced.
+9. Replacement scans the already bounded intermittent activity list once and
+   adds no storage work.
+10. The public operations name behavior Grimoire actually consumes; no caller
+    is forced through an unsupported contract.
+11. This is a clean cut: obsolete private names have no compatibility aliases.
+12. Stale calls, guards, declarations, mocks, and private-state assertions were
+    removed.
+13. Missing required presentation APIs fail during availability checks instead
+    of being silently swallowed.
+14. A focused renderer regression proves reconciliation independently, while
+    public graphical tests prove the real Daily composition boundary.

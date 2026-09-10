@@ -208,7 +208,7 @@ Return nil for ordinary children without a durable assignment."
           (plist-get assignment :run-id) (plist-get assignment :task-key)
           (plist-get assignment :attempt) status))
 
-(defun e-board-orchestration-actions--publish-attempt (target assignment status)
+(defun e-board-orchestration-actions-publish-attempt (target assignment status)
   "Publish one idempotent durable task ATTEMPT state."
   (let ((fact
          (list :version e-board-orchestration-fact-version :type 'task-attempt
@@ -288,7 +288,7 @@ metadata but never alter the manifest's accepted-attempt selection."
                         queue :prompt prompt :summary summary :metadata metadata
                         :harness-instance-id harness-instance-id)))
           (puthash (plist-get record :task-id) board e-board-orchestration-actions--queue-boards)
-          (e-board-orchestration-actions--publish-attempt
+          (e-board-orchestration-actions-publish-attempt
            board (e-board-orchestration-actions--queue-assignment record)
            (plist-get record :status))
           record))))

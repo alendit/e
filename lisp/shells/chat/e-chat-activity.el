@@ -306,24 +306,30 @@ here so activity changes do not mutate a transcript record.")
   (or (e-chat-activity--active-round-record record)
       (e-chat-activity--last-round-record record)))
 
-(defun e-chat-activity--append-round-reasoning (record content &optional append)
+(defun e-chat-activity--append-round-reasoning
+    (record content &optional append replace)
   "Append reasoning CONTENT to RECORD's current round.
-When APPEND is non-nil, merge CONTENT into the previous reasoning child."
+When APPEND is non-nil, merge CONTENT into the previous reasoning child.
+When REPLACE is non-nil, replace that child with a combined snapshot."
   (when-let ((round (and content
                          (not (string-empty-p content))
                          (e-chat-activity--round-record-for-child record))))
     (let* ((reasoning (plist-get round :reasoning))
            (last-reasoning (car (last reasoning))))
-      (if (and append last-reasoning)
-          (plist-put last-reasoning
-                     :content
-                     (concat (plist-get last-reasoning :content) content))
+      (cond
+       ((and replace last-reasoning)
+        (plist-put last-reasoning :content content))
+       ((and append last-reasoning)
+        (plist-put last-reasoning
+                   :content
+                   (concat (plist-get last-reasoning :content) content)))
+       (t
         (plist-put round
                    :reasoning
                    (append reasoning
                            (list (list :kind 'reasoning
                                        :round (plist-get round :round)
-                                       :content content))))))))
+                                       :content content)))))))))
 
 (defun e-chat-activity--current-round-tool-batch (round)
   "Return ROUND's current tool batch, creating it when needed."
@@ -1361,10 +1367,12 @@ STATUS defaults to `done'."
                     ended-at))))
     (e-chat-activity--refresh-turn-details record)))
 
-(defun e-chat-activity--record-reasoning-delta (record content &optional append source)
+(defun e-chat-activity--record-reasoning-delta
+    (record content &optional append source replace)
   "Record reasoning CONTENT in RECORD and its semantic activity records."
-  (e-chat-activity--append-round-reasoning record content append)
-  (e-chat-activity--add-intermittent-entry record "Reasoning" content append source)
+  (e-chat-activity--append-round-reasoning record content append replace)
+  (e-chat-activity--add-intermittent-entry
+   record "Reasoning" content append source replace)
   (e-chat-activity--refresh-turn-details record))
 
 (defun e-chat-activity--reasoning-append-p (payload)
@@ -1372,6 +1380,11 @@ STATUS defaults to `done'."
 Board activity uses `snapshot' content because its publisher has already
 coalesced the raw provider stream."
   (not (eq (plist-get payload :content-mode) 'snapshot)))
+
+(defun e-chat-activity--reasoning-replace-p (payload)
+  "Return non-nil when PAYLOAD replaces its streamed reasoning fragments."
+  (and (eq (plist-get payload :content-mode) 'snapshot)
+       (plist-get payload :combined)))
 
 (defun e-chat-activity--record-tool-started (record payload &optional source created-at)
   "Record tool-started PAYLOAD in RECORD.
@@ -1502,27 +1515,40 @@ When SOURCE is non-nil, only match entries from that source."
            (eq (plist-get entry :source) source)))
     (plist-get record :intermittent-entries))))
 
-(defun e-chat-activity--add-intermittent-entry (record title content &optional append source)
+(defun e-chat-activity--add-intermittent-entry
+    (record title content &optional append source replace)
   "Add intermittent TITLE and CONTENT to RECORD.
 When APPEND is non-nil, merge CONTENT into the previous entry with TITLE.
-SOURCE identifies where the entry came from for duplicate suppression."
+SOURCE identifies where the entry came from for duplicate suppression.
+When REPLACE is non-nil, replace the latest matching entry's content."
   (when (and record content (not (string-empty-p content)))
     (when (eq source 'activity)
       (e-chat-activity--remove-intermittent-entry record title content 'transcript))
     (let* ((entries (plist-get record :intermittent-entries))
-           (last-entry (car (last entries))))
-      (if (and append
-               last-entry
-               (equal (plist-get last-entry :title) title))
-          (plist-put last-entry
-                     :content
-                     (concat (plist-get last-entry :content) content))
+           (last-entry (car (last entries)))
+           (replace-entry
+            (and replace
+                 (cl-find-if
+                  (lambda (entry)
+                    (and (equal (plist-get entry :title) title)
+                         (eq (plist-get entry :source) source)))
+                  (reverse (copy-sequence entries))))))
+      (cond
+       (replace-entry
+        (plist-put replace-entry :content content))
+       ((and append
+             last-entry
+             (equal (plist-get last-entry :title) title))
+        (plist-put last-entry
+                   :content
+                   (concat (plist-get last-entry :content) content)))
+       (t
         (plist-put record
                    :intermittent-entries
                    (append entries
                            (list (list :title title
                                        :content content
-                                       :source source))))))))
+                                       :source source)))))))))
 
 (defun e-chat-activity--delete-turn-transient (&optional _turn-id)
   "Delete the current transient activity projection through transcript API."
@@ -2041,7 +2067,8 @@ function records only lifecycle audit text."
           record
           (plist-get payload :content)
           (e-chat-activity--reasoning-append-p payload)
-          'activity)))
+          'activity
+          (e-chat-activity--reasoning-replace-p payload))))
       ('tool-started
        (e-chat-activity--record-tool-started
         record
@@ -2579,7 +2606,8 @@ provider/tool activity does not require a central per-record dispatch branch."
            record
            (plist-get payload :content)
            (e-chat-activity--reasoning-append-p payload)
-           'activity)
+           'activity
+           (e-chat-activity--reasoning-replace-p payload))
           (when (e-chat-transcript-event-selected-participant-p event)
             (e-chat-surface-set-status "reasoning")))
          ('tool-started

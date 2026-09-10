@@ -95,7 +95,7 @@ Use this saved Codex replay context. The original control plan is intentionally 
              (setq error (list (symbol-name (car err))
                                (error-message-string err)))))
           (setq ended (current-time))
-          (setq session (e-session-get (e-harness-sessions harness) session-id))
+          (setq session (e-session-local-state harness session-id))
           (setq metrics
                 (list :variant (symbol-name variant)
                       :style (symbol-name style)
