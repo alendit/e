@@ -1114,7 +1114,7 @@ bound instead of silently truncating the eligible set."
             (rows
              (sqlite-select
               e-board-storage-sqlite-worker--database
-              "SELECT position,payload,LENGTH(payload),source_kind,source_key,source_hash FROM board_records WHERE board_id=? AND generation=? AND position<=? AND record_kind IN ('input','output') ORDER BY position DESC LIMIT ?"
+              "SELECT position,payload,LENGTH(payload),source_kind,source_key,source_hash FROM board_records WHERE board_id=? AND generation=? AND position<=? AND (record_kind IN ('input','output') OR (record_kind='activity' AND source_kind='context-curation')) ORDER BY position DESC LIMIT ?"
               (vector board-id generation through limit)))
             (bytes 0) selected truncated)
        ;; Prefer the newest complete presentation rows when the byte bound is

@@ -1,0 +1,12 @@
+#+title: Chat private context event leak report
+
+* Report
+
+A completed chat turn rendered the raw =context-frame-consumed= harness event
+as a System row.  The row exposed internal context-lifetime fields including
+=frame-id=, =consumer-request-id=, and =response-entry-id=.
+
+Context consumption is private session audit.  It must produce no chat or
+Board presentation by itself.  When the audit includes a valid curation
+package, presentation may show only the bounded, content-free
+=context-curated= projection.

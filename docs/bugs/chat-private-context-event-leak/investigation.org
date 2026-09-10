@@ -1,0 +1,65 @@
+#+title: Chat private context event leak investigation
+
+* Live Evidence
+
+The user's screenshot showed a raw =context-frame-consumed= event between the
+input and assistant response of a completed chat turn.  Its printed payload
+contained private frame, request, and response identities.  No request was
+sent to the running Emacs: the screenshot fully identified the presentation
+failure, and repository-side reproduction could exercise the boundary without
+touching live state.
+
+* Root Cause
+
+The SQLite chat bridge used a wildcard default in
+=e-chat-service--sql-harness-event=.  Every harness event not handled by an
+earlier branch was forwarded directly to presentation.  The chat activity
+renderer did not claim =context-frame-consumed=, so the facade's generic
+unknown-event fallback printed the entire event.
+
+The former in-memory Board projector had the correct policy: raw context
+consumption remained private, while a package-bearing event became a bounded
+=context-curated= Board activity.  The SQLite-authoritative cutover bypassed
+that projection and its privacy boundary.
+
+The graphical Daily gate asserted that the expected answer appeared once, but
+did not assert that unknown System events or private context identities were
+absent.  It therefore passed with the additional leaked row.
+
+* Fix
+
+- The SQLite chat bridge now has an explicit allowlist for request-local live
+  presentation events; unknown and durable-audit events fail closed.
+- Raw =context-frame-consumed= is dropped.  A valid curation package is
+  converted to a content-free =context-curated= projection and appended once
+  as canonical SQLite Board activity.
+- Only =context-curated= activity rows cross the SQL Board/chat boundary.
+  Initial visible-window SQL selects that explicit public activity source, so
+  historical private activities cannot displace or enter the viewport.
+- Hook audit is reduced to its generic public status fields before live
+  delivery.
+- The chat activity owner defensively claims raw context-consumption events so
+  they cannot reach the generic renderer if another adapter violates the
+  boundary later.
+
+* Acceptance Evidence
+
+- The SQL service regression proves raw context audit and unknown audit produce
+  no event, hook audit drops private state, duplicate curation delivery creates
+  and emits one canonical public activity, and no private identity reaches the
+  Board row or subscriber.
+- The shell regression proves a raw context event cannot render a System row.
+- The public graphical delayed Daily test now asserts that neither transcript
+  nor composer contains an unknown =Event:= row or any private context identity.
+- The isolated graphical selector passes 1/1 with zero unexpected results.
+- The affected Feature 92/Daily matrix passes 348 tests: 332 expected passes,
+  16 explicit legacy skips, and zero unexpected results.
+- The complete repository suite passes all 2,950 results: 2,884 expected
+  passes, 66 explicit legacy skips, and zero unexpected results.
+- Byte compilation and =git diff --check= pass.
+
+* Live Emacs Status
+
+The running Emacs and canonical user database were not contacted or changed.
+The correction changes core service behavior and requires a full Emacs restart
+before the live process uses it.

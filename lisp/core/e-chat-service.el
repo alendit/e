@@ -77,6 +77,38 @@
     "retrieved-excerpt")
   "Public semantic source kinds accepted in curation stubs.")
 
+(defconst e-chat-service--public-live-harness-event-types
+  '(turn-started provider-request-started provider-request-finished
+    turn-retrying reasoning-delta tool-started tool-finished
+    action-started action-finished action-failed hook-audit turn-steered
+    assistant-delta backend-empty-output token-usage provider-anchor-candidate
+    turn-summary compaction-started compaction-prepared
+    compaction-summary-started compaction-finished compaction-failed
+    queue-changed session-reset tool-progress)
+  "Harness events safe and useful for request-local live presentation.
+
+This is deliberately fail-closed.  Durable audit events and unknown event
+types never cross the chat presentation boundary merely because the harness
+emitted them.")
+
+(defconst e-chat-service--public-hook-audit-keys
+  '(:owner :hook-id :outcome :truth-status :summary :pending-summary)
+  "Generic hook status fields allowed to cross the presentation boundary.")
+
+(defun e-chat-service--public-live-harness-event (event)
+  "Return a presentation-safe copy of allowlisted harness EVENT."
+  (let ((copy (copy-tree event t)))
+    (when (eq (plist-get copy :type) 'hook-audit)
+      (let ((payload (plist-get copy :payload)))
+        (setq copy
+              (plist-put
+               copy :payload
+               (cl-loop for key in e-chat-service--public-hook-audit-keys
+                        when (plist-member payload key)
+                        append (list key (copy-tree (plist-get payload key)
+                                                    t)))))))
+    copy))
+
 (defun e-chat-service--curation-source-stub (stub)
   "Return validated content-free curation source STUB."
   (unless (and (proper-list-p stub) (zerop (% (length stub) 2)))
@@ -176,6 +208,20 @@
           (signal 'e-chat-service-invalid-activity
                   (list 'context-curated :source-stub-counts projection))))
       (list kept summaries summarized erased stubs))))
+
+(defun e-chat-service--public-curation-projection (projection)
+  "Return validated content-free public curation PROJECTION.
+
+Private frame, response, provider, and activity identities are not accepted
+by this projection boundary."
+  (pcase-let ((`(,kept ,summaries ,summarized ,erased ,stubs)
+               (e-chat-service--curation-counts projection)))
+    (append
+     (list :kept-source-count kept
+           :summary-count summaries
+           :summarized-source-count summarized
+           :erased-source-count erased)
+     (when stubs (list :source-stubs (copy-tree stubs t))))))
 
 (defun e-chat-service--curation-source-stub-label (stub)
   "Return compact human-readable label for curation source STUB."
@@ -667,6 +713,16 @@ preserving the manifest's prompt and publication identity."
                                  :source-turn-id
                                  (plist-get message :source-turn-id)
                                  :selected-participant-p selected-p)))))
+      ('activity
+       (when-let* ((activity-kind (plist-get message :activity-kind))
+                   ((eq activity-kind 'context-curated)))
+         (append identity
+                 (list :type activity-kind
+                       :session-id
+                       (e-chat-service-binding-session-id binding)
+                       :turn-id turn-id
+                       :payload
+                       (copy-tree (plist-get message :attributes) t)))))
       (_ nil))))
 
 (defun e-chat-service--sql-deliver-event (binding event)
@@ -1601,7 +1657,7 @@ so a sibling cannot settle a selected binding through a malformed projection."
                (e-board-sqlite-service-record-page-start
                 service board-id :after cursor
                 :limit e-chat-service-observer-page-limit
-                :selector '(:kinds (input output))))))
+                :selector '(:kinds (input output activity))))))
            (generation
             (or (e-chat-service-subscription-lifecycle-generation subscription)
                 0)))
@@ -2188,6 +2244,52 @@ semantic interpretation responsibility."
                 binding (plist-get status :error) t)))))
         work))))
 
+(defun e-chat-service--sql-context-curated-source-key (binding event)
+  "Return EVENT's stable private source key for BINDING's curation row."
+  (let ((source-id
+         (or (plist-get event :board-activity-sequence)
+             (plist-get event :activity-entry-id)
+             (plist-get event :id))))
+    (unless source-id
+      (signal 'e-chat-service-invalid-activity
+              (list 'context-curated :missing-source-identity)))
+    (list "harness-activity"
+          (e-chat-service-binding-session-id binding)
+          source-id)))
+
+(defun e-chat-service--sql-publish-context-curated (binding event projection)
+  "Persist EVENT's safe curation PROJECTION and wake BINDING subscribers."
+  (let* ((attributes
+          (e-chat-service--public-curation-projection projection))
+         (participant-id (e-chat-service-binding-participant-id binding))
+         (work
+          (e-board-sqlite-service-record-append-start
+           (e-chat-service-binding-sqlite-service binding)
+           (e-chat-service-binding-board-id binding)
+           'activity 'context-curation
+           (e-chat-service--sql-context-curated-source-key binding event)
+           :author (format "participant:%s" participant-id)
+           :subject-participant-id participant-id
+           :source-turn-id (plist-get event :turn-id)
+           :tags (copy-tree (e-chat-service-binding-default-tags binding) t)
+           :activity-kind 'context-curated
+           :attributes attributes)))
+    (e-work-on-settle
+     work
+     (lambda (settled)
+       (let ((status (e-work-status settled)))
+         (if (eq (plist-get status :state) 'finished)
+             (when-let* ((message
+                          (plist-get (plist-get status :result) :message))
+                         (projected
+                          (e-chat-service--sql-message-event binding message)))
+               ;; Canonical rows wake the cursor-backed observer.  The cursor,
+               ;; rather than this callback, decides whether the row is new.
+               (e-chat-service--sql-notify-event binding projected))
+           (e-chat-service--sql-note-failure
+            binding (plist-get status :error) t)))))
+    work))
+
 (defun e-chat-service--sql-harness-event (binding event)
   "Translate one live harness EVENT for coordination-only BINDING."
   (let ((type (plist-get event :type)))
@@ -2240,11 +2342,17 @@ semantic interpretation responsibility."
        (e-chat-service--sql-notify-event
         binding (append (copy-tree event t)
                         (list :selected-participant-p t))))
+      ('context-frame-consumed
+       (when-let* ((curation
+                    (plist-get (plist-get event :payload) :curation)))
+         (e-chat-service--sql-publish-context-curated
+          binding event curation)))
       ((or 'message-added) nil)
       (_
-       (e-chat-service--sql-notify-event
-        binding (append (copy-tree event t)
-                        (list :selected-participant-p t)))))))
+       (when (memq type e-chat-service--public-live-harness-event-types)
+         (e-chat-service--sql-notify-event
+          binding (append (e-chat-service--public-live-harness-event event)
+                          (list :selected-participant-p t))))))))
 
 (defun e-chat-service--sql-resume-ready (binding)
   "Request and run BINDING's exact bounded ready pickup after restart."

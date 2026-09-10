@@ -2235,6 +2235,13 @@ aggregate or mirror."
           (should (= (e-runtime-store-recovery-graphical--count-string
                       prompt backing-chat)
                      1))
+          (dolist (surface (list input backing-chat))
+            (with-current-buffer surface
+              (should-not (string-match-p "Event:" (buffer-string)))
+              (should-not
+               (string-match-p
+                "frame-id\\|consumer-request-id\\|response-entry-id"
+                (buffer-string)))))
 
           ;; Drop only test-local presentation/coordinator state, then reopen
           ;; the same durable Daily while its one consumer-shaped metadata /

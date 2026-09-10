@@ -534,6 +534,27 @@ inherited base, so the blocks stay distinguishable in any theme."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-raw-context-consumption-never-renders ()
+  "Private frame-consumption audit cannot reach the generic System row."
+  (let ((buffer (e-chat-test--buffer nil "chat-private-frame-audit")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make
+            :type 'context-frame-consumed
+            :session-id e-chat-session-id :turn-id "turn-private"
+            :payload '(:frame-id "private-frame"
+                       :consumer-request-id "private-consumer"
+                       :response-entry-id "private-response")))
+          (let ((content (buffer-string)))
+            (should-not (string-match-p "Event:" content))
+            (should-not
+             (string-match-p
+              "private-frame\\|private-consumer\\|private-response"
+              content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 
 
 (ert-deftest e-chat-test-pending-hook-summary-keeps-validation-visible ()

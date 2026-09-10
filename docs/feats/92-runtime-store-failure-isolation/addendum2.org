@@ -1406,3 +1406,28 @@ database were not contacted.
     owning boundary.
 14. The graphical transcript-selection transition and the source/symbol scan
     cover the concrete failure that escaped the earlier tests.
+
+* Private harness audit presentation correction (2026-09-10)
+
+The SQLite chat bridge initially forwarded unrecognized harness events to the
+shell.  This bypassed the former Board projection boundary and allowed raw
+=context-frame-consumed= audit, including frame, request, and response
+identities, to render through the generic System-event fallback.
+
+The bridge is now fail-closed.  It forwards only an explicit set of
+request-local live presentation events and reduces hook audit to generic status
+fields.  Raw context consumption remains private.  A valid curation package is
+instead validated, projected to bounded content-free =context-curated=
+attributes, and appended idempotently as canonical SQLite Board activity.
+Only that explicitly public activity source participates in an initial visible
+window, while the shell also claims raw context audit defensively.
+
+The SQL regression covers private and unknown event suppression, hook-audit
+projection, duplicate curation idempotence, canonical replay, and absence of
+private identities.  The shell regression covers the generic-renderer defense.
+The public graphical delayed Daily gate now asserts the absence of unknown
+=Event:= rows and private context identifiers on both transcript and composer;
+the isolated selector passes 1/1 with zero unexpected results.  The affected
+Feature 92/Daily matrix passes 348 tests (332 expected passes and 16 explicit
+legacy skips), the complete repository suite passes all 2,950 results (2,884
+expected passes and 66 explicit legacy skips), and byte compilation succeeds.

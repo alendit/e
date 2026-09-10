@@ -2533,6 +2533,11 @@ provider/tool activity does not require a central per-record dispatch branch."
     ;; event renderer on live delivery; replay already ignores this event in
     ;; the activity record owner above.
     ('reasoning-raw-delta t)
+    ;; Frame consumption is private lifetime audit.  A package-bearing event
+    ;; is projected to the content-free `context-curated' activity before it
+    ;; reaches presentation; the raw event must never fall through to the
+    ;; facade's generic System renderer.
+    ('context-frame-consumed t)
     ('turn-retrying
      (let* ((turn-id (e-chat-transcript-presentation-turn-id
                       (plist-get event :turn-id) event))

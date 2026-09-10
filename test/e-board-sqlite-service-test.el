@@ -11,6 +11,7 @@
 (require 'e-backend)
 (require 'e-chat-service)
 (require 'e-chat)
+(require 'e-events)
 (require 'e-harness)
 (require 'e-session)
 (require 'e-session-query)
@@ -680,6 +681,114 @@
         (e-chat-service--retire-binding binding))
       (ignore-errors (e-session-sqlite-store-close store))
       (delete-directory directory t))))
+
+(ert-deftest e-chat-service-sqlite-context-consumption-is-private-unless-curated ()
+  "SQL chat drops raw lifetime audit and durably projects safe curation once."
+  (e-board-sqlite-service-test--with-fixture
+      (store service board-id session-id _participant-id)
+    (let* ((harness (e-harness-create :sessions store))
+           (binding
+            (e-board-sqlite-service-test--await
+             (e-chat-service-binding-start harness session-id)))
+           events
+           (subscription
+            (e-chat-service-subscribe
+             harness session-id
+             (lambda (event) (push (copy-tree event t) events)))))
+      (unwind-protect
+          (progn
+            (e-chat-service--sql-harness-event
+             binding
+             (e-events-make
+              :type 'context-frame-consumed :session-id session-id
+              :turn-id "turn-private"
+              :payload '(:frame-id "private-frame"
+                         :consumer-request-id "private-consumer"
+                         :response-entry-id "private-response")))
+            (e-chat-service--sql-harness-event
+             binding
+             (e-events-make
+              :type 'private-lifetime-audit :session-id session-id
+              :turn-id "turn-private"
+              :payload '(:secret "private-audit")))
+            (accept-process-output nil 0.05)
+            (should-not events)
+            (e-chat-service--sql-harness-event
+             binding
+             (e-events-make
+              :type 'hook-audit :session-id session-id
+              :turn-id "turn-hook"
+              :payload '(:owner capability :hook-id validate
+                         :outcome passed :summary "Validated"
+                         :private-capability-state "private-hook-state")))
+            (should (= (length events) 1))
+            (should
+             (equal (plist-get (car events) :payload)
+                    '(:owner capability :hook-id validate
+                      :outcome passed :summary "Validated")))
+            (should-not
+             (string-match-p "private-hook-state"
+                             (prin1-to-string (car events))))
+            (setq events nil)
+            (let ((event
+                   (e-events-make
+                    :type 'context-frame-consumed :session-id session-id
+                    :turn-id "turn-curated"
+                    :activity-entry-id "private-event"
+                    :board-activity-sequence 9
+                    :payload
+                    '(:frame-id "private-frame"
+                      :consumer-request-id "private-consumer"
+                      :response-entry-id "private-response"
+                      :curation
+                      (:kept-source-count 1
+                       :summary-count 1
+                       :summarized-source-count 1
+                       :erased-source-count 0
+                       :source-stubs
+                       ((:disposition kept
+                         :source-kind "dynamic-context")
+                        (:disposition summarized
+                         :source-kind "tool-result"
+                         :tool-name "inspect")))))))
+              (e-chat-service--sql-harness-event binding event)
+              (e-chat-service--sql-harness-event binding event))
+            (let ((deadline (+ (float-time) 3.0)))
+              (while (and (not (seq-find
+                                (lambda (event)
+                                  (eq (plist-get event :type)
+                                      'context-curated))
+                                events))
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (let* ((curated
+                    (seq-find
+                     (lambda (event)
+                       (eq (plist-get event :type) 'context-curated))
+                     events))
+                   (printed (prin1-to-string curated))
+                   (page
+                    (e-board-sqlite-service-test--await
+                     (e-board-sqlite-service-record-page-start
+                      service board-id :generation 1 :after 0 :limit 16
+                      :selector '(:kinds (activity)))))
+                   (record
+                    (plist-get (car (plist-get page :records)) :record)))
+              (should curated)
+              (should (= (cl-count 'context-curated events
+                                   :key (lambda (event)
+                                          (plist-get event :type)))
+                         1))
+              (should (equal (plist-get curated :payload)
+                             (plist-get record :attributes)))
+              (should (eq (plist-get record :activity-kind)
+                          'context-curated))
+              (should-not
+               (string-match-p
+                "private-frame\\|private-consumer\\|private-response\\|private-event\\|private-audit"
+                (concat printed (prin1-to-string record))))))
+        (e-chat-service-unsubscribe subscription)
+        (e-chat-service--retire-binding binding)))))
 
 (ert-deftest e-chat-service-sqlite-last-subscriber-retires-without-board-object ()
   "Zero-delay SQL idle cleanup retires only coordination-owned live state."
