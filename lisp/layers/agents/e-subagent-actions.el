@@ -20,7 +20,6 @@
 (require 'e-capabilities)
 (require 'e-subagent-registry)
 (require 'e-subagent-runner)
-(require 'e-board-orchestration-actions)
 
 (defvar e-subagent-actions-default-registry (e-subagent-registry-create)
   "Process-wide default subagent registry shared by the capability.")
@@ -39,6 +38,37 @@
    ((symbolp value) value)
    ((stringp value) (intern (string-remove-prefix ":" value)))
    (t (signal 'wrong-type-argument (list 'symbolp :schedule)))))
+
+(defun e-subagent-actions--publication-target (context)
+  "Return CONTEXT's explicit parent-session SQL publication target."
+  (e-subagent-publication-target
+   (plist-get context :harness) (plist-get context :session-id)))
+
+(defun e-subagent-actions--cancel-with-audit
+    (operation registry context arguments)
+  "Run cancellation OPERATION with CONTEXT's explicit audit target.
+If target resolution fails, still run cancellation with an unavailable target
+so request-owned child coordination is retired, then re-signal the original
+resolution error.  An unexpected cancellation defect wins when it leaves the
+record live."
+  (let ((subagent-id (e-subagent-actions--subagent-id arguments))
+        (reason (plist-get arguments :reason))
+        target target-error)
+    (condition-case error
+        (setq target (e-subagent-actions--publication-target context))
+      (error (setq target-error error)))
+    (if (not target-error)
+        (funcall operation registry target subagent-id reason)
+      (condition-case cancellation-error
+          (funcall operation registry nil subagent-id reason)
+        (error
+         ;; A nil audit target is expected to reject publication after the
+         ;; runner has cancelled and removed the live record.  Preserve any
+         ;; other defect that prevented that required cleanup.
+         (when (gethash subagent-id
+                        (e-subagent-registry-records registry))
+           (signal (car cancellation-error) (cdr cancellation-error)))))
+      (signal (car target-error) (cdr target-error)))))
 
 (defun e-subagent-actions--spawn (registry context arguments)
   "Spawn a subagent from ARGUMENTS under CONTEXT's session lineage."
@@ -76,9 +106,10 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
               :outputs (plist-get record :outputs)
               :session-id (plist-get record :session-id))))))
 
-(defun e-subagent-actions--steer (registry _context arguments)
+(defun e-subagent-actions--steer (registry context arguments)
   "Steer a running subagent's active turn in REGISTRY."
   (e-subagent-steer registry
+                    (e-subagent-actions--publication-target context)
                     (e-subagent-actions--subagent-id arguments)
                     (plist-get arguments :prompt)
                     (plist-get arguments :reason)))
@@ -89,25 +120,15 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
                    (e-subagent-actions--subagent-id arguments)
                    (plist-get arguments :prompt)))
 
-(defun e-subagent-actions--resume (registry context arguments)
-  "Resume a settled-but-live subagent in REGISTRY with one new turn."
-  (e-subagent-resume registry
-                     (e-subagent-actions--subagent-id arguments)
-                     (plist-get arguments :prompt)
-                     nil
-                     :source-turn-id (plist-get context :turn-id)))
-
-(defun e-subagent-actions--interrupt (registry _context arguments)
+(defun e-subagent-actions--interrupt (registry context arguments)
   "Interrupt a subagent in REGISTRY."
-  (e-subagent-interrupt registry
-                        (e-subagent-actions--subagent-id arguments)
-                        (plist-get arguments :reason)))
+  (e-subagent-actions--cancel-with-audit
+   #'e-subagent-interrupt registry context arguments))
 
-(defun e-subagent-actions--shutdown (registry _context arguments)
+(defun e-subagent-actions--shutdown (registry context arguments)
   "Shut down a subagent in REGISTRY."
-  (e-subagent-shutdown registry
-                       (e-subagent-actions--subagent-id arguments)
-                       (plist-get arguments :reason)))
+  (e-subagent-actions--cancel-with-audit
+   #'e-subagent-shutdown registry context arguments))
 
 (defun e-subagent-actions--configure-type (_registry _context arguments)
   "Configure a spawnable type's shared harness from ARGUMENTS."
@@ -119,8 +140,6 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
 
 (defun e-subagent-actions--report (registry context arguments)
   "Record a child-reported structured result for CONTEXT's own session."
-  (e-board-orchestration-actions-report-from-context
-   context :outputs (plist-get arguments :outputs) :summary (plist-get arguments :summary))
   (or (e-subagent-report
        registry
        (plist-get context :session-id)
@@ -222,18 +241,6 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
     :required ["subagent-id"])
   "Action parameters for interrupt and shutdown.")
 
-(defconst e-subagent-actions--resume-parameters
-  '(:type "object"
-    :properties
-    (:subagent-id
-     (:type "string"
-      :description "Subagent id returned by spawn.")
-     :prompt
-     (:type "string"
-      :description "Optional prompt for the resumed turn; defaults to a minimal continue."))
-    :required ["subagent-id"])
-  "Action parameters for the resume action.")
-
 (defconst e-subagent-actions--report-parameters
   '(:type "object"
     :properties
@@ -267,7 +274,7 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
 (defun e-subagent-actions-parent-alist (&optional registry)
   "Return the parent-facing subagent actions plist bound to REGISTRY.
 These are the actions a session uses to spawn and manage its children:
-spawn, list, status, read, steer, send, resume, interrupt, shutdown,
+spawn, list, status, read, steer, send, interrupt, shutdown,
 configure-type.  The child-side `report' is not here; see
 `e-subagent-actions-child-alist'."
   (let ((registry (or registry e-subagent-actions-default-registry)))
@@ -294,10 +301,6 @@ configure-type.  The child-side `report' is not here; see
      (e-subagent-actions--action
       registry #'e-subagent-actions--send
       e-subagent-actions--send-parameters)
-     :resume
-     (e-subagent-actions--action
-      registry #'e-subagent-actions--resume
-      e-subagent-actions--resume-parameters)
      :interrupt
      (e-subagent-actions--action
       registry #'e-subagent-actions--interrupt

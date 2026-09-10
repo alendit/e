@@ -13,7 +13,7 @@
 ;; fact; two entry points reuse it:
 ;;
 ;; - `e-annotations-answer' publishes the current Org buffer's actionable
-;;   threads through explicitly installed producer authority.
+;;   threads through an explicitly installed SQLite publication target.
 ;; - `e-annotation-answer-sweep' publishes one fact per actionable file in an
 ;;   unattended set supplied by policy outside this module.
 ;;
@@ -27,17 +27,17 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-annotation-org)
-(require 'e-board-runtime)
+(require 'e-board-sqlite-service)
 
-(defvar e-annotation-answer-producer-binding nil
-  "Explicit process-local board producer authority for annotation facts.")
+(defvar e-annotation-answer-publication-target nil
+  "Explicit SQLite Board target for annotation facts.")
 
-(defun e-annotation-answer-bind-producer (binding)
-  "Install current live board producer BINDING for annotation dispatch."
-  (unless (e-board-runtime-producer-binding-live-p binding)
-    (signal 'e-board-runtime-producer-disabled
-            (list 'annotation-answer 'missing-live-binding)))
-  (setq e-annotation-answer-producer-binding binding))
+(defun e-annotation-answer-configure-publication-target (target)
+  "Install explicit SQLite publication TARGET for annotation dispatch."
+  (unless (e-board-sqlite-publication-target-valid-p target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p target)))
+  (setq e-annotation-answer-publication-target target))
 
 (defcustom e-annotation-answer-sweep-inhibit nil
   "When non-nil, `e-annotation-answer-sweep' dispatches nothing.
@@ -112,23 +112,29 @@ what to do with each thread."
   "Return actionable annotation threads on FILE."
   (plist-get (e-annotation-org-list :file file :actionable-only t) :threads))
 
+(defun e-annotation-answer--source-key (file prompt)
+  "Return the stable publication key for FILE and fixed PROMPT."
+  (list 'annotation-answer (expand-file-name file)
+        (secure-hash 'sha256 prompt)))
+
 ;; --- Tier 0 dispatch --------------------------------------------------------
 
 (cl-defun e-annotation-answer-dispatch
-    (&key file producer-binding)
+    (&key file publication-target)
   "Publish actionable annotation threads from FILE as one board work input.
-PRODUCER-BINDING, or the explicitly configured default, must be current live
-process authority."
+PUBLICATION-TARGET, or the explicitly configured default, names the durable
+SQLite Board receiving the work."
   (e-annotation-org--require-org-file file)
   (let ((threads (e-annotation-answer--actionable file)))
     (when threads
-      (e-board-runtime-producer-publish-input
-       (or producer-binding e-annotation-answer-producer-binding)
-       :tags '(annotation answer)
-       :attributes (list :file (expand-file-name file)
-                         :thread-count (length threads))
-       :content (e-annotation-answer--prompt file threads)
-       :reference (expand-file-name file)))))
+      (let ((prompt (e-annotation-answer--prompt file threads)))
+        (e-board-sqlite-publication-target-append-route-start
+         (or publication-target e-annotation-answer-publication-target)
+         prompt (e-annotation-answer--source-key file prompt)
+         :tags '(annotation answer)
+         :attributes (list :file (expand-file-name file)
+                           :thread-count (length threads))
+         :reference (expand-file-name file))))))
 
 ;;;###autoload
 (defun e-annotations-answer ()
@@ -152,14 +158,14 @@ participant to handle.  The buffer must visit a saved Org file."
 ;; --- Tier 2 sweep -----------------------------------------------------------
 
 (cl-defun e-annotation-answer-sweep
-    (files &key producer-binding)
+    (files &key publication-target)
   "Publish board work for each Org file in FILES with actionable threads.
 Generic mechanism: the caller supplies which files to sweep (grimoire policy
 decides that).  Honors the `e-annotation-answer-sweep-inhibit' kill switch and
 defers a file whose live buffer has unsaved edits, so a background write never
 clobbers in-progress work; the loop is idempotent and catches it next pass.
 Return a plist summarizing the sweep."
-  (let ((binding (or producer-binding e-annotation-answer-producer-binding))
+  (let ((target (or publication-target e-annotation-answer-publication-target))
         (dispatched nil)
         (deferred nil)
         (skipped nil))
@@ -175,12 +181,13 @@ Return a plist summarizing the sweep."
           (let ((threads (ignore-errors (e-annotation-answer--actionable file))))
             (if (null threads)
                 (push file skipped)
-              (e-board-runtime-producer-publish-input
-               binding :tags '(annotation answer sweep)
-               :attributes (list :file (expand-file-name file)
-                                 :thread-count (length threads))
-               :content (e-annotation-answer--prompt file threads)
-               :reference (expand-file-name file))
+              (let ((prompt (e-annotation-answer--prompt file threads)))
+                (e-board-sqlite-publication-target-append-route-start
+                 target prompt (e-annotation-answer--source-key file prompt)
+                 :tags '(annotation answer sweep)
+                 :attributes (list :file (expand-file-name file)
+                                   :thread-count (length threads))
+                 :reference (expand-file-name file)))
               (push file dispatched)))))))
     (list :inhibited e-annotation-answer-sweep-inhibit
           :dispatched (nreverse dispatched)

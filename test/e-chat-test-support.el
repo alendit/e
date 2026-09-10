@@ -51,6 +51,14 @@
 (defvar e-chat-test-support--sqlite-harnesses (make-hash-table :test 'eq)
   "Harnesses whose default store was replaced by a disposable SQLite store.")
 
+(defvar e-chat-test-support-share-sqlite-store nil
+  "When non-nil, give implicit test harnesses one shared disposable store.
+This models production compositions whose independent harnesses publish into
+one authoritative runtime database, notably parent and subagent harnesses.")
+
+(defvar e-chat-test-support--shared-sqlite-fixture nil
+  "Current shared disposable STORE . DIRECTORY fixture, or nil.")
+
 (defvar e-chat-test-support--opened-sessions (make-hash-table :test 'eq)
   "Session ids first created through each disposable SQLite harness.")
 
@@ -60,10 +68,20 @@ Only presentation tests that omit an explicit store are adapted.  The public
 chat API itself continues to reject non-SQL stores."
   (if (plist-member arguments :sessions)
       (apply operation arguments)
-    (let* ((directory (make-temp-file "e-chat-test-sql-" t))
-           (store (e-session-sqlite-store-create directory :asynchronous t))
+    (let* ((fixture
+            (or (and e-chat-test-support-share-sqlite-store
+                     e-chat-test-support--shared-sqlite-fixture)
+                (let* ((directory (make-temp-file "e-chat-test-sql-" t))
+                       (store
+                        (e-session-sqlite-store-create
+                         directory :asynchronous t))
+                       (created (cons store directory)))
+                  (push created e-chat-test-support--sqlite-fixtures)
+                  (when e-chat-test-support-share-sqlite-store
+                    (setq e-chat-test-support--shared-sqlite-fixture created))
+                  created)))
+           (store (car fixture))
            (harness (apply operation (append arguments (list :sessions store)))))
-      (push (cons store directory) e-chat-test-support--sqlite-fixtures)
       (puthash harness t e-chat-test-support--sqlite-harnesses)
       (puthash harness (make-hash-table :test 'equal)
                e-chat-test-support--opened-sessions)
@@ -130,12 +148,15 @@ chat API itself continues to reject non-SQL stores."
      (should-not (gethash harness e-chat-service--bindings))
      (let (board-leaks)
        (maphash
-        (lambda (board-id bindings)
-          (when (cl-some
-                 (lambda (binding)
-                   (eq (e-chat-service-binding-harness binding) harness))
-                 bindings)
-            (push board-id board-leaks)))
+        (lambda (_runtime boards)
+          (maphash
+           (lambda (board-id bindings)
+             (when (cl-some
+                    (lambda (binding)
+                      (eq (e-chat-service-binding-harness binding) harness))
+                    bindings)
+               (push board-id board-leaks)))
+           boards))
         e-chat-service--board-bindings)
        (should-not board-leaks)))
    e-chat-test-support--sqlite-harnesses)
@@ -144,6 +165,7 @@ chat API itself continues to reject non-SQL stores."
     (when (file-directory-p (cdr fixture))
       (delete-directory (cdr fixture) t)))
   (setq e-chat-test-support--sqlite-fixtures nil)
+  (setq e-chat-test-support--shared-sqlite-fixture nil)
   (clrhash e-chat-test-support--sqlite-harnesses)
   (clrhash e-chat-test-support--opened-sessions))
 

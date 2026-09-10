@@ -18,12 +18,15 @@
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-harness)
-(load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
-(load (expand-file-name "../e2e/e-board-e2e-support.el"
+(load (expand-file-name "e-chat-test-support.el"
+                       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
+(load (expand-file-name "e-board-producer-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
 (require 'e-harness-instances)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-store)
 (require 'e-subagent-registry)
 (require 'e-subagent-runner)
@@ -40,47 +43,40 @@
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
-         (e-board--registry (make-hash-table :test 'equal))
-         (e-board--id-sequence 0)
-         (e-board-registry--boards (make-hash-table :test 'equal))
-         (e-board-registry--id-sequence 0)
-         (e-board-runtime--attachments (make-hash-table :test 'equal))
-         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-         (e-board-runtime--invocations (make-hash-table :test 'equal))
-         (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
-         (e-board-runtime--producer-epoch 0)
-         (e-board-runtime--producer-head nil)
-         (e-board-runtime--producer-tail nil)
-         (e-board-runtime--producer-drain-scheduled nil)
-         (e-board-runtime--producer-scheduler (lambda (_callback)))
-         (e-board-runtime--work-activity-mailboxes (make-hash-table :test 'equal))
-         (e-board-runtime--pending-activity-head nil)
-         (e-board-runtime--pending-activity-tail nil)
-         (e-board-runtime--pending-activity-set (make-hash-table :test 'equal))
-         (e-board-runtime--activity-drain-scheduled nil)
-         (e-board-runtime--admission-open-p t)
-         (e-board-runtime--unsettled-producer-count 0)
-         (e-board-runtime--unsettled-generation 0)
-         (e-subagent--producer-bindings (make-hash-table :test 'equal))
          (e-subagent--configured-harnesses
           (make-hash-table :test 'eq :weakness 'key))
+         (e-chat-test-support-share-sqlite-store t)
+         (e-chat-test-support--shared-sqlite-fixture nil)
          (e-work--unsettled-count 0)
          (e-work--unsettled-generation 0)
          (e-work--unsettled-change-functions nil))
-     (e-board-e2e-reset-runtime)
-     (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) 'timer))
-               ((symbol-function 'timerp) (lambda (value) (eq value 'timer)))
-               ((symbol-function 'cancel-timer) #'ignore))
-       (e-harness-instance-register
-        :id :reviewer
-        :name "Reviewer"
-        :kind 'reviewer
-        :subagent t
-        :description "Use for review."
-        :factory (lambda () (e-harness-create
-                             :backend (e-backend-fake-create :items nil))))
-       ,@body)))
+     (e-harness-instance-register
+      :id :reviewer
+      :name "Reviewer"
+      :kind 'reviewer
+     :subagent t
+     :description "Use for review."
+     :factory (lambda () (e-harness-create
+                           :backend (e-backend-fake-create :items nil))))
+     (unwind-protect
+         (cl-letf (((symbol-function 'e-harness-test-create-board-session)
+                    #'e-subagent-runner-test--create-board-session))
+           ,@body)
+       ;; Retire SQL callbacks while the per-test e-work accounting remains
+       ;; dynamically bound; the outer shared ERT teardown then has no work.
+       (e-chat-test-support--close-sqlite-fixtures))))
+
+(cl-defun e-subagent-runner-test--create-board-session
+    (harness &key id metadata)
+  "Create and bind one disposable SQL chat session for HARNESS."
+  (let* ((creation
+          (e-chat-service-create-session-start
+           :harness harness :id id :metadata metadata))
+         (binding (e-chat-service-binding-start harness id nil t)))
+    (e-work-with-batch-await
+      (e-work-await-batch creation :timeout 5.0))
+    (e-work-with-batch-await
+      (e-work-await-batch binding :timeout 5.0))))
 
 (defun e-subagent-runner-test--capturing-runner (captured)
   "Return a runner that records its call into CAPTURED and never settles."
@@ -105,15 +101,33 @@
 
 (defun e-subagent-runner-test--spawn
     (registry parent-harness parent-session-id &rest arguments)
-  "Spawn test work from one explicit parent turn."
+  "Spawn test work and await its real disposable-SQL admission."
+  (let* ((result
+          (apply #'e-subagent-spawn registry parent-harness parent-session-id
+                 :source-turn-id "parent-turn" arguments))
+         (subagent-id (plist-get result :subagent-id)))
+    (should
+     (e-chat-test--wait-until
+      (lambda ()
+        (gethash subagent-id (e-subagent-registry-records registry)))
+      5.0))
+    (e-subagent-registry-get registry subagent-id)))
+
+(defun e-subagent-runner-test--spawn-pending
+    (registry parent-harness parent-session-id &rest arguments)
+  "Spawn test work without awaiting deliberately controlled admission."
   (apply #'e-subagent-spawn registry parent-harness parent-session-id
          :source-turn-id "parent-turn" arguments))
 
-(defun e-subagent-runner-test--resume
-    (registry subagent-id &optional prompt runner)
-  "Resume test work from one explicit parent turn."
-  (e-subagent-resume registry subagent-id prompt runner
-                     :source-turn-id "parent-resume-turn"))
+(defun e-subagent-runner-test--publication-target (harness session-id)
+  "Return SESSION-ID's detached SQL publication target in HARNESS."
+  (e-chat-service-publication-target
+   (e-chat-service-binding harness session-id)))
+
+(defun e-subagent-runner-test--records (harness session-id)
+  "Read SESSION-ID's bounded canonical Board records from disposable SQLite."
+  (e-board-producer-test-records
+   (e-subagent-runner-test--publication-target harness session-id)))
 
 (ert-deftest e-subagent-runner-test-lifecycle-key-uses-durable-session-id ()
   "Restarted process-local child ids cannot collide in durable Board facts."
@@ -121,13 +135,14 @@
     (cl-letf (((symbol-function 'e-subagent--publish-board-fact)
                (lambda (_target &rest arguments)
                  (push (plist-get arguments :source-fact-key) keys))))
-      (let ((publish (e-subagent--lifecycle-publication-function 'target)))
-        (funcall publish '(:subagent-id "sub_000001"
-                           :session-id "child-before-restart"
-                           :status queued))
-        (funcall publish '(:subagent-id "sub_000001"
-                           :session-id "child-after-restart"
-                           :status queued))))
+      (e-subagent--publish-lifecycle
+       'target '(:subagent-id "sub_000001"
+                 :session-id "child-before-restart"
+                 :status queued))
+      (e-subagent--publish-lifecycle
+       'target '(:subagent-id "sub_000001"
+                 :session-id "child-after-restart"
+                 :status queued)))
     (should
      (equal (nreverse keys)
             '((subagent-lifecycle "child-before-restart" queued)
@@ -144,9 +159,8 @@
        (e-subagent-registry-register
         registry :subagent-id "sub_fake" :work-handle nil
         :type :reviewer :role 'reviewer :session-id "child-1"
-        :parent-session-id "parent-1" :schedule 'direct
-        :publication-function #'ignore)
-       :type 'e-board-runtime-error)
+        :parent-session-id "parent-1" :schedule 'direct)
+       :type 'e-subagent-registry-error)
       (should-not (gethash "sub_fake"
                            (e-subagent-registry-records registry)))
       (should-not (e-subagent-registry-list registry "parent-1")))))
@@ -166,7 +180,7 @@
                 ((symbol-function 'e-subagent--inherit-prompt-cache-policy)
                  #'ignore))
         (let* ((pending
-                (e-subagent-runner-test--spawn
+                (e-subagent-runner-test--spawn-pending
                  registry parent "parent-1" :type :reviewer :prompt "go"
                  :run-id "run-1" :task-key "review" :attempt 0
                  :on-running (lambda (_record) (cl-incf running-calls))
@@ -201,16 +215,12 @@
                    (e-subagent-registry-work-handle registry subagent-id)))
           (should (= runner-calls 0))
           (should (= running-calls 0))
-          (e-board-runtime-drain-producers)
           (should-not
            (cl-find-if
-            (lambda (message)
-              (member (e-board-message-tags message)
+            (lambda (record)
+              (member (plist-get record :tags)
                       '((subagent change queued) (subagent change running))))
-            (e-board-messages
-             (e-board-registry-board-source-board
-              (e-chat-service-binding-board
-               (e-chat-service-binding parent "parent-1"))))))
+            (e-subagent-runner-test--records parent "parent-1")))
           (e-work-finish admission '(:id "child"))
           (should-not
            (e-subagent-registry-pending-admission registry subagent-id))
@@ -240,11 +250,9 @@
                       ;; Execute the real admission through its commit before
                       ;; holding delivery of the successful acknowledgement.
                       (let ((committed (apply original-create arguments)))
-                        (should
-                         (eq (plist-get (e-work-status committed) :state)
-                             'finished))
+                        (e-board-producer-test-await committed)
                         admission))))
-                (e-subagent-runner-test--spawn
+                (e-subagent-runner-test--spawn-pending
                  registry parent "parent-1" :type :reviewer :prompt "go"
                  :run-id "run-1" :task-key "review" :attempt 0
                  :on-running (lambda (_record) (cl-incf running-calls))
@@ -254,43 +262,36 @@
                            (error "runner start exploded")))))
              (subagent-id (plist-get pending :subagent-id))
              (session-id (plist-get pending :session-id))
-             (handle (e-subagent-registry-work-handle registry subagent-id))
-             (board (e-board-registry-board-source-board
-                     (e-chat-service-binding-board
-                      (e-chat-service-binding parent "parent-1")))))
+             (handle (e-subagent-registry-work-handle registry subagent-id)))
         (should (eq (plist-get pending :status) 'pending))
         (should (= running-calls 0))
         (e-work-finish admission '(:id "child"))
-        (let ((record (e-subagent-registry-get registry subagent-id))
-              (child (e-subagent-registry-child-harness
-                      registry subagent-id)))
-          (should (= running-calls 1))
-          (should (= early-failure-calls 0))
-          (should (eq (plist-get record :status) 'failed))
-          (should (eq (plist-get (e-work-status handle) :state) 'failed))
-          ;; Admission committed before start, so this is resumable durable
-          ;; history, not a provisional binding to discard.
-          (should (e-chat-service-binding child session-id))
-          (e-board-runtime-drain-producers)
-          (let* ((messages (e-board-messages board))
+        (should (= running-calls 1))
+        (should (= early-failure-calls 0))
+        (should (eq (plist-get (e-work-status handle) :state) 'failed))
+        (should-not (gethash subagent-id
+                             (e-subagent-registry-records registry)))
+        ;; Admission and all terminal history are durable even though live
+        ;; execution coordination is gone.
+        (let* ((records (e-subagent-runner-test--records parent "parent-1"))
                  (running
                   (cl-count-if
-                   (lambda (message)
-                     (equal (e-board-message-tags message)
+                   (lambda (record)
+                     (equal (plist-get record :tags)
                             '(subagent change running)))
-                   messages))
+                   records))
                  (terminal
                   (cl-remove-if-not
-                   (lambda (message)
+                   (lambda (record)
                      (let ((fact
-                            (e-board-orchestration-fact-from-message message)))
+                            (e-board-orchestration-fact-from-record record)))
                        (eq (plist-get fact :type) 'terminal-report)))
-                   messages)))
+                   records)))
             (should (= running 1))
             (should (= (length terminal) 1))
             (let ((payload
                    (plist-get
-                    (e-board-orchestration-fact-from-message (car terminal))
+                    (e-board-orchestration-fact-from-record (car terminal))
                     :payload)))
               (should (equal (plist-get payload :run-id) "run-1"))
               (should (equal (plist-get payload :task-key) "review"))
@@ -299,19 +300,18 @@
               (should
                (string-match-p "runner start exploded"
                                (plist-get payload :error))))
-            (e-subagent--settle registry subagent-id 'failed :error "late")
-            (should
-             (string-match-p
-              "runner start exploded"
-              (plist-get (e-subagent-registry-get registry subagent-id) :error)))
+            (e-subagent--settle
+             registry (e-subagent-runner-test--publication-target
+                       parent "parent-1")
+             subagent-id 'failed :error "late")
             (should
              (= (cl-count-if
-                 (lambda (message)
+                 (lambda (record)
                    (let ((fact
-                          (e-board-orchestration-fact-from-message message)))
+                          (e-board-orchestration-fact-from-record record)))
                      (eq (plist-get fact :type) 'terminal-report)))
-                 (e-board-messages board))
-                1))))))))
+                 (e-subagent-runner-test--records parent "parent-1"))
+                1)))))))
 
 (ert-deftest e-subagent-runner-test-admission-failure-never-registers-or-starts ()
   "A rejected durable admission fails once without a child registry ghost."
@@ -326,7 +326,7 @@
       (cl-letf (((symbol-function 'e-chat-service-create-participant-start)
                  (lambda (&rest _arguments) admission)))
         (let* ((pending
-                (e-subagent-runner-test--spawn
+                (e-subagent-runner-test--spawn-pending
                  registry parent "parent-1" :type :reviewer :prompt "go"
                  :on-failure
                  (lambda (_error _pending) (cl-incf failure-calls))
@@ -384,65 +384,64 @@
         (should (equal (plist-get (e-work-handle-context work-handle) :turn-id)
                        "parent-turn"))
         ;; Child session carries durable lineage metadata sharing the parent id.
-        (let ((metadata (plist-get (e-session-local-state
-                                    (e-harness-sessions child-harness)
-                                    child-session-id)
-                                   :metadata)))
+        (let ((metadata
+               (plist-get
+                (e-board-producer-test-await
+                 (e-session-async-session-metadata
+                  (e-harness-sessions child-harness) child-session-id))
+                :metadata)))
           (should (equal (plist-get metadata :parent-session-id) "parent-1"))
           (should (equal (plist-get metadata :tmp-lineage-id) "parent-1"))
           (should (equal (plist-get metadata :project-root)
                          "/tmp/example-project/"))
           (should (equal (plist-get metadata :subagent-label) "review plan.org")))
         ;; The explicit seed landed in the child's own store before the task.
-        (should (equal (mapcar (lambda (m) (plist-get m :content))
-                               (e-harness-messages child-harness
-                                                   child-session-id))
+        (should (equal (mapcar
+                        (lambda (message) (plist-get message :content))
+                        (plist-get
+                         (e-board-producer-test-await
+                          (e-session-async-visible-message-page
+                           (e-harness-sessions child-harness)
+                           child-session-id 8))
+                         :messages))
                        '("context note")))
-        (e-board-runtime-drain-producers)
         (let* ((binding (e-chat-service-binding parent "parent-1"))
                (child-binding
                 (e-chat-service-binding child-harness child-session-id))
-               (messages (e-board-messages
-                          (e-board-registry-board-source-board
-                           (e-chat-service-binding-board binding))))
+               (records (e-subagent-runner-test--records parent "parent-1"))
                (facts (cl-remove-if-not
-                       (lambda (message)
-                         (eq (e-board-message-kind message) 'fact))
-                       messages)))
-          (should (eq (e-chat-service-binding-board child-binding)
-                      (e-chat-service-binding-board binding)))
+                       (lambda (record)
+                         (eq (plist-get record :kind) 'fact))
+                       records)))
+          (should (equal (e-chat-service-binding-board-id child-binding)
+                         (e-chat-service-binding-board-id binding)))
           (should (equal
                    (e-chat-service-binding-default-to child-binding)
-                   (e-board-registry-participant-id
-                    (e-board-runtime-attachment-participant
-                     (e-chat-service-binding-attachment child-binding)))))
+                   (e-chat-service-binding-participant-id child-binding)))
           (should (equal (e-chat-service-binding-default-tags child-binding)
                          '(subagent)))
           (should (>= (length facts) 2))
           (should (cl-every
-                   (lambda (message)
+                   (lambda (record)
                      (string-match-p
                       "\\`producer:subagent:brd_[[:alnum:]]+:parent-1\\'"
-                      (e-board-message-author message)))
+                      (plist-get record :author)))
                    facts))
-          (let ((tags (mapcar #'e-board-message-tags facts)))
+          (let ((tags (mapcar (lambda (record) (plist-get record :tags)) facts)))
             (should (member '(subagent change queued) tags))
             (should (member '(subagent change running) tags))))
-        ;; A real child progress event publishes with the spawning turn instead
-        ;; of failing later from the activity-drain timer.
-        (e-subagent--record-progress
-         registry (plist-get record :subagent-id) work-handle 'tool-finished)
-        (e-board-runtime--drain-activity-mailboxes)
-        (let* ((binding (e-chat-service-binding parent "parent-1"))
-               (activities
-                (cl-remove-if-not
-                 (lambda (message) (eq (e-board-message-kind message) 'activity))
-                 (e-board-messages
-                  (e-board-registry-board-source-board
-                   (e-chat-service-binding-board binding))))))
-          (should (= (length activities) 1))
-          (should (equal (e-board-message-source-turn-id (car activities))
-                         "parent-turn")))))))
+        ;; Live progress remains bounded process-local execution state.
+        (let ((snapshot
+               (e-subagent--record-progress
+                registry (plist-get record :subagent-id)
+                work-handle 'tool-finished)))
+          (should (eq (plist-get snapshot :event) 'tool-finished))
+          (should
+           (equal snapshot
+                  (plist-get
+                   (e-subagent-registry-get
+                    registry (plist-get record :subagent-id))
+                   :progress))))))))
 
 (ert-deftest e-subagent-runner-test-final-message-is-default-result ()
   "A settle with a summary records it as the compact result."
@@ -458,10 +457,11 @@
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (subagent-id (plist-get record :subagent-id))
              (settle (plist-get (car captured) :on-settle)))
-        (funcall settle 'done :summary "3 issues found")
-        (let ((final (e-subagent-registry-get registry subagent-id)))
+        (let ((final (funcall settle 'done :summary "3 issues found")))
           (should (eq (plist-get final :status) 'done))
-          (should (equal (plist-get final :result-summary) "3 issues found")))))))
+          (should (equal (plist-get final :result-summary) "3 issues found"))
+          (should-not (gethash subagent-id
+                               (e-subagent-registry-records registry))))))))
 
 (ert-deftest e-subagent-runner-test-report-overrides-final-message ()
   "A child-reported result is authoritative over a later final message."
@@ -482,8 +482,7 @@
                            (list '(:kind org-link :uri "tmp://r.org" :label "review"))
                            "reported summary")
         ;; A later final message must not overwrite the reported result.
-        (funcall settle 'done :summary "chatter final message")
-        (let ((final (e-subagent-registry-get registry subagent-id)))
+        (let ((final (funcall settle 'done :summary "chatter final message")))
           (should (equal (plist-get final :result-summary) "reported summary"))
           (should (equal (plist-get final :outputs)
                          (list '(:kind org-link :uri "tmp://r.org" :label "review"))))
@@ -503,100 +502,70 @@
                       :runner (lambda (_h _s _p _seed _on-settle)
                                 (list :cancel (lambda () (setq cancelled t))))))
              (subagent-id (plist-get record :subagent-id)))
-        (e-subagent-interrupt registry subagent-id)
+        (let ((terminal
+               (e-subagent-interrupt
+                registry
+                (e-subagent-runner-test--publication-target parent "parent-1")
+                subagent-id)))
+          (should (eq (plist-get terminal :status) 'cancelled)))
         (should cancelled)
-        (should (eq (plist-get (e-subagent-registry-get registry subagent-id)
-                               :status)
-                    'cancelled))))))
+        (should-not (gethash subagent-id
+                             (e-subagent-registry-records registry)))))))
 
-(ert-deftest e-subagent-runner-test-resume-restarts-failed-child ()
-  "Resume drives a new turn on a failed child's live session and clears residue.
-The child session and its context stay intact; resume re-opens the record to
-`running', clears the prior error, and re-arms the settle callback so the new
-turn's result lands."
+(ert-deftest e-subagent-runner-test-interrupt-cleans-up-when-audit-target-fails ()
+  "Explicit cancellation is not conditional on Board audit availability."
   (e-subagent-runner-test--with-instances
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil)))
-           (captured (list nil)))
+           (cancelled nil))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-runner-test--spawn
-                      registry parent "parent-1"
-                      :type :reviewer :prompt "go"
-                      :runner (e-subagent-runner-test--capturing-runner captured)))
+      (let* ((record
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1"
+               :type :reviewer :prompt "go"
+               :runner
+               (lambda (_h _s _p _seed _on-settle)
+                 (list :cancel (lambda () (setq cancelled t))))))
              (subagent-id (plist-get record :subagent-id))
-             (first-handle (e-subagent-registry-work-handle registry subagent-id))
-             (settle (plist-get (car captured) :on-settle)))
-        ;; The first turn dies on a transient backend error.
-        (funcall settle 'failed :error "Backend returned no assistant output")
-        (should (eq (e-subagent-registry-status registry subagent-id) 'failed))
-        ;; Resume with a fresh capturing runner; the record re-opens.
-        (let ((resumed (e-subagent-runner-test--resume
-                        registry subagent-id "keep going"
-                        (e-subagent-runner-test--capturing-runner captured))))
-          (should (eq (plist-get resumed :status) 'running))
-          (should-not (plist-get resumed :error))
-          (should (equal (plist-get (car captured) :prompt) "keep going"))
-          ;; A fresh awaitable work handle is minted for the resumed turn.
-          (let ((second-handle
-                 (e-subagent-registry-work-handle registry subagent-id)))
-            (should (e-work-handle-p second-handle))
-            (should-not (eq second-handle first-handle)))
-          ;; The resumed turn settles and its result is recorded.
-          (funcall (plist-get (car captured) :on-settle)
-                   'done :summary "finished on retry")
-          (let ((final (e-subagent-registry-get registry subagent-id)))
-            (should (eq (plist-get final :status) 'done))
-            (should (equal (plist-get final :result-summary)
-                           "finished on retry"))))))))
+             (work (e-subagent-registry-work-handle registry subagent-id)))
+        (should-error
+         (e-subagent-interrupt registry nil subagent-id "audit unavailable")
+         :type 'wrong-type-argument)
+        (should cancelled)
+        (should (eq (plist-get (e-work-status work) :state) 'cancelled))
+        (should-not (gethash subagent-id
+                             (e-subagent-registry-records registry)))
+        (should-not (e-subagent-registry-list registry "parent-1"))))))
 
-(ert-deftest e-subagent-runner-test-resume-defaults-prompt ()
-  "Resume with no prompt uses a minimal continue prompt."
+(ert-deftest e-subagent-runner-test-action-interrupt-cleans-up-without-binding ()
+  "The public action still cancels when its parent SQL target is unavailable."
   (e-subagent-runner-test--with-instances
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil)))
-           (captured (list nil)))
+           (cancelled nil))
       (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-runner-test--spawn
-                      registry parent "parent-1"
-                      :type :reviewer :prompt "go"
-                      :runner (e-subagent-runner-test--capturing-runner captured)))
+      (let* ((record
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1"
+               :type :reviewer :prompt "go"
+               :runner
+               (lambda (_h _s _p _seed _on-settle)
+                 (list :cancel (lambda () (setq cancelled t))))))
              (subagent-id (plist-get record :subagent-id))
-             (settle (plist-get (car captured) :on-settle)))
-        (funcall settle 'cancelled)
-        (e-subagent-runner-test--resume registry subagent-id nil
-                           (e-subagent-runner-test--capturing-runner captured))
-        (should (stringp (plist-get (car captured) :prompt)))
-        (should-not (string-empty-p (plist-get (car captured) :prompt)))))))
-
-(ert-deftest e-subagent-runner-test-resume-refuses-running-and-shutdown ()
-  "Resume refuses a running child, a shut-down child, and a done child."
-  (e-subagent-runner-test--with-instances
-    (let* ((registry (e-subagent-registry-create))
-           (parent (e-harness-create
-                    :backend (e-backend-fake-create :items nil)))
-           (captured (list nil))
-           (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
-      (e-harness-test-create-board-session parent :id "parent-1")
-      ;; A running child is not resumable.
-      (let* ((running (e-subagent-runner-test--spawn
-                       registry parent "parent-1"
-                       :type :reviewer :prompt "go" :runner noop))
-             (running-id (plist-get running :subagent-id)))
-        (should-error (e-subagent-runner-test--resume registry running-id nil noop)
-                      :type 'user-error))
-      ;; A deliberately shut-down child is refused even though it is terminal.
-      (let* ((record (e-subagent-runner-test--spawn
-                      registry parent "parent-1"
-                      :type :reviewer :prompt "go"
-                      :runner (e-subagent-runner-test--capturing-runner captured)))
-             (subagent-id (plist-get record :subagent-id)))
-        (e-subagent-shutdown registry subagent-id)
-        (should (eq (e-subagent-registry-status registry subagent-id) 'cancelled))
-        (should (e-subagent-registry-shutdown-p registry subagent-id))
-        (should-error (e-subagent-runner-test--resume registry subagent-id nil noop)
-                      :type 'user-error)))))
+             (work (e-subagent-registry-work-handle registry subagent-id)))
+        (e-chat-service-close-board
+         (e-chat-service-binding parent "parent-1"))
+        (should-error
+         (e-subagent-actions--interrupt
+          registry (list :harness parent :session-id "parent-1")
+          (list :subagent-id subagent-id :reason "parent view closed"))
+         :type 'e-subagent-error)
+        (should cancelled)
+        (should (eq (plist-get (e-work-status work) :state) 'cancelled))
+        (should-not (gethash subagent-id
+                             (e-subagent-registry-records registry)))))))
 
 (ert-deftest e-subagent-runner-test-list-scopes-to-parent ()
   "List returns only the calling parent's direct children."
@@ -653,17 +622,16 @@ turn's result lands."
                    (lambda (_h _s prompt &rest _) (setq steered prompt) "turn-1"))
                   ((symbol-function 'e-chat-service-queue-session)
                    (lambda (_h _s prompt &rest _) (setq queued prompt) nil)))
-          (e-subagent-steer registry subagent-id "steer this")
+          (e-subagent-steer
+           registry
+           (e-subagent-runner-test--publication-target parent "parent-1")
+           subagent-id "steer this")
           (e-subagent-send registry subagent-id "follow up")
           (should (equal steered "steer this"))
           (should (equal queued "follow up")))))))
 
-(ert-deftest e-subagent-runner-test-send-refuses-settled-child ()
-  "Send refuses a failed, cancelled, or done child instead of queueing.
-A settled child has no active turn, so `e-harness-test-queue-prompt' would raise the
-low-level `e-harness-no-active-turn'.  Send must guard status up front like
-`e-subagent-resume', point failed/cancelled children at resume, and never reach
-the harness."
+(ert-deftest e-subagent-runner-test-send-refuses-retired-child ()
+  "Send rejects a terminal child after its live record has been retired."
   (e-subagent-runner-test--with-instances
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
@@ -673,7 +641,7 @@ the harness."
       (e-harness-test-create-board-session parent :id "parent-1")
       (cl-letf (((symbol-function 'e-harness-test-queue-prompt)
                  (lambda (_h _s prompt &rest _) (setq queued prompt) nil)))
-        ;; A failed child is not sendable; the error points at resume.
+        ;; A failed child is no longer process-local or sendable.
         (let* ((record (e-subagent-runner-test--spawn
                         registry parent "parent-1"
                         :type :reviewer :prompt "go"
@@ -681,11 +649,10 @@ the harness."
                (subagent-id (plist-get record :subagent-id)))
           (funcall (plist-get (car captured) :on-settle)
                    'failed :error "boom")
-          (should (eq (e-subagent-registry-status registry subagent-id) 'failed))
-          (let ((err (should-error
-                      (e-subagent-send registry subagent-id "follow up")
-                      :type 'user-error)))
-            (should (string-match-p "resume" (cadr err))))
+          (should-not (gethash subagent-id
+                               (e-subagent-registry-records registry)))
+          (should-error (e-subagent-send registry subagent-id "follow up")
+                        :type 'user-error)
           (should-not queued))
         ;; A done child is likewise refused.
         (let* ((record (e-subagent-runner-test--spawn
@@ -694,13 +661,14 @@ the harness."
                         :runner (e-subagent-runner-test--capturing-runner captured)))
                (subagent-id (plist-get record :subagent-id)))
           (funcall (plist-get (car captured) :on-settle) 'done :summary "ok")
-          (should (eq (e-subagent-registry-status registry subagent-id) 'done))
+          (should-not (gethash subagent-id
+                               (e-subagent-registry-records registry)))
           (should-error (e-subagent-send registry subagent-id "follow up")
                         :type 'user-error)
           (should-not queued))))))
 
 (ert-deftest e-subagent-runner-test-raw-read-returns-excerpt-and-uri ()
-  "Raw read returns a bounded excerpt and the child session:// URI."
+  "Raw read returns a bounded live excerpt and the child session:// URI."
   (e-subagent-runner-test--with-instances
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
@@ -714,31 +682,24 @@ the harness."
                                            '(:role assistant :content "two"))
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (subagent-id (plist-get record :subagent-id))
-             (child-session-id (plist-get record :session-id))
-             (child-harness (plist-get (car captured) :child-harness))
-             (binding (e-chat-service-binding child-harness child-session-id))
-             (participant-id
-              (e-board-registry-participant-id
-               (e-board-runtime-attachment-participant
-                (e-chat-service-binding-attachment binding)))))
-        (e-board-post-output
-         (e-board-registry-board-source-board
-          (e-chat-service-binding-board binding))
-         :author (format "participant:%s" participant-id)
-         :content "visible output"
-         :subject-participant-id participant-id
-         :source-turn-id "turn-visible"
-         :source-output-key (list participant-id 1 1))
-        (e-chat-service-drain-ephemeral-binding binding)
-        (let ((raw (e-subagent-raw-read registry subagent-id 1)))
+             (child-session-id (plist-get record :session-id)))
+        (let ((raw
+               (cl-letf
+                   (((symbol-function 'e-harness-executing-session-state)
+                     (lambda (harness session-id)
+                       (when (and (eq harness
+                                      (plist-get (car captured) :child-harness))
+                                  (equal session-id child-session-id))
+                         '(:messages ((:role user :content "one")
+                                      (:role assistant :content "two")))))))
+                 (e-subagent-raw-read registry subagent-id 1))))
           (should (equal (plist-get raw :session-uri)
                          (format "session://e/sessions/%s/messages"
                                  child-session-id)))
-          ;; Bounded to the last board-visible message only; private seed
-          ;; context is intentionally absent from the observable transcript.
+          ;; The request is bounded to the last live child message.
           (should (equal (mapcar (lambda (m) (plist-get m :content))
                                  (plist-get raw :messages))
-                         '("visible output"))))))))
+                         '("two"))))))))
 
 (ert-deftest e-subagent-runner-test-configure-type-toggles-layers ()
   "configure-type enables and disables layers on the type's shared harness."
@@ -849,15 +810,14 @@ A later configure-type override is preserved across subsequent spawns."
                  registry (plist-get record :subagent-id)))
                (child-session-id (plist-get record :session-id))
                (session-options
-                (e-harness-session-options child child-session-id))
-               (turn-options (e-harness-turn-options child child-session-id)))
+                (plist-get
+                 (e-board-producer-test-await
+                  (e-session-async-query-state
+                   (e-harness-sessions child) child-session-id))
+                 :turn-options)))
           (should (eq (plist-get session-options :prompt-cache-default) t))
           (should (equal (plist-get session-options :prompt-cache-retention)
-                         "24h"))
-          (should (stringp (plist-get turn-options :prompt-cache-key)))
-          (should (equal (plist-get turn-options :prompt-cache-retention)
-                         "24h"))
-          (should-not (plist-member turn-options :prompt-cache-default)))))))
+                         "24h")))))))
 
 (ert-deftest e-subagent-runner-test-configure-type-passes-layer-config ()
   "configure-type writes a capability's runtime config on the type's harness.
@@ -879,7 +839,7 @@ report is child-side and must not be on the parent surface."
            (capability (e-subagents-parent-capability-create :registry registry))
            (store (e-store-create)))
       (should (eq (e-capability-id capability) 'subagents))
-      (dolist (action '(:spawn :list :status :read :steer :send :resume
+      (dolist (action '(:spawn :list :status :read :steer :send
                         :interrupt :shutdown :configure-type))
         (should (e-capabilities-action-spec capability action)))
       (should-not (e-capabilities-action-spec capability :report))
@@ -902,7 +862,7 @@ report is child-side and must not be on the parent surface."
            (store (e-store-create)))
       (should (eq (e-capability-id capability) 'subagents))
       (should (e-capabilities-action-spec capability :report))
-      (dolist (action '(:spawn :list :status :read :steer :send
+      (dolist (action '(:spawn :list :status :read :steer :send :resume
                         :interrupt :shutdown :configure-type))
         (should-not (e-capabilities-action-spec capability action)))
       (should-not (e-capability-tools capability))
@@ -989,35 +949,6 @@ report is child-side and must not be on the parent surface."
         ;; An unknown id is a per-reference error, not a signal.
         (should (plist-get (e-waitable-resolve "subagent:sub_999999") :error))))))
 
-(ert-deftest e-subagent-runner-test-awaitable-handle-is-enrolled-on-parent-board ()
-  "The mirror handle is board-visible before a parent await subscribes to it."
-  (e-subagent-runner-test--with-instances
-    (let* ((registry (e-subagent-registry-create))
-           (parent (e-harness-create
-                    :backend (e-backend-fake-create :items nil))))
-      (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-runner-test--spawn
-                      registry parent "parent-1"
-                      :type :reviewer :prompt "go"
-                      :runner (lambda (_h _s _p _seed _on)
-                                (list :cancel #'ignore))))
-             (handle (e-subagent-registry-work-handle
-                      registry (plist-get record :subagent-id)))
-             (binding (e-chat-service-binding parent "parent-1"))
-             (board (e-board-registry-board-source-board
-                     (e-chat-service-binding-board binding))))
-        (should (eq (e-board-work-handle
-                     (e-board-observed-work board (e-work-handle-id handle)))
-                    handle))
-        (let ((aggregation
-               (e-board-subscribe-aggregation
-                board (list (e-work-handle-id handle)) 'all "target")))
-          (should aggregation))))))
-
-(provide 'e-subagent-runner-test)
-
-;;; e-subagent-runner-test.el ends here
-
 (ert-deftest e-subagent-runner-test-progress-snapshots-are-monotonic-and-bounded ()
   "Child progress retains only the latest bounded snapshot on its work handle."
   (e-subagent-runner-test--with-instances
@@ -1045,11 +976,17 @@ report is child-side and must not be on the parent surface."
           (should (numberp (plist-get updated :started-at)))
           (should (= (plist-get updated :last-activity-at) 200.0))
           (should (= (plist-get updated :last-turn-at) first-turn-at)))
-        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 300.0)))
-          (e-subagent--settle registry subagent-id 'done :summary "done"))
-        (let ((finished (e-subagent-registry-get registry subagent-id)))
+        (let ((finished
+               (cl-letf (((symbol-function 'float-time)
+                          (lambda (&optional _) 300.0)))
+                 (e-subagent--settle
+                  registry
+                  (e-subagent-runner-test--publication-target parent "parent-1")
+                  subagent-id 'done :summary "done"))))
           (should (eq (plist-get finished :status) 'done))
-          (should (= (plist-get finished :last-turn-at) 300.0)))))))
+          (should (= (plist-get finished :last-turn-at) 300.0))
+          (should-not (gethash subagent-id
+                               (e-subagent-registry-records registry))))))))
 
 (ert-deftest e-subagent-runner-test-direct-runner-ignores-reasoning-deltas ()
   "The direct runner maps meaningful lifecycle events but not reasoning deltas."
@@ -1122,33 +1059,38 @@ report is child-side and must not be on the parent surface."
         (cl-letf (((symbol-function 'e-chat-service-steer-session)
                    (lambda (_harness _session prompt &rest _)
                      (should (equal prompt "Run one focused test.")))))
-          (e-subagent-steer registry subagent-id "Run one focused test." reason))
+          (e-subagent-steer
+           registry
+           (e-subagent-runner-test--publication-target parent "parent-1")
+           subagent-id "Run one focused test." reason))
         (let ((intervention (plist-get (e-subagent-registry-get registry subagent-id)
                                        :last-intervention)))
           (should (eq (plist-get intervention :action) 'steer))
           (should (<= (string-width (plist-get intervention :reason)) 240)))
-        (e-board-runtime-drain-producers)
-        (let* ((binding (e-chat-service-binding parent "parent-1"))
-               (messages (e-board-messages
-                          (e-board-registry-board-source-board
-                           (e-chat-service-binding-board binding))))
+        (let* ((records (e-subagent-runner-test--records parent "parent-1"))
                (fact (car (last (cl-remove-if-not
-                                 (lambda (message)
-                                   (member 'intervention (e-board-message-tags message)))
-                                 messages)))))
-          (should (equal (plist-get (e-board-message-attributes fact) :subagent-id)
+                                 (lambda (record)
+                                   (member 'intervention
+                                           (plist-get record :tags)))
+                                 records)))))
+          (should (equal (plist-get (plist-get fact :attributes) :subagent-id)
                          subagent-id))
-          (should (equal (plist-get (e-board-message-attributes fact)
+          (should (equal (plist-get (plist-get fact :attributes)
                                     :parent-session-id)
                          "parent-1"))
-          (should (equal (plist-get (e-board-message-attributes fact) :action)
+          (should (equal (plist-get (plist-get fact :attributes) :action)
                          'steer)))
         ;; The child remains running until an explicit intervention changes it.
         (should (eq (plist-get (e-subagent-registry-get registry subagent-id) :status)
                     'running))
-        (e-subagent-interrupt registry subagent-id "No progress after steer.")
-        (should (eq (plist-get (e-subagent-registry-get registry subagent-id) :status)
-                    'cancelled))))))
+        (let ((terminal
+               (e-subagent-interrupt
+                registry
+                (e-subagent-runner-test--publication-target parent "parent-1")
+                subagent-id "No progress after steer.")))
+          (should (eq (plist-get terminal :status) 'cancelled)))
+        (should-not (gethash subagent-id
+                             (e-subagent-registry-records registry)))))))
 
 (ert-deftest e-subagent-runner-test-durable-report-precedes-local-settlement ()
   "A structured durable report is published once before the registry settles."
@@ -1162,52 +1104,37 @@ report is child-side and must not be on the parent surface."
                       :run-id "run-1" :task-key "review" :attempt 0
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (child-session-id (plist-get record :session-id))
+             (subagent-id (plist-get record :subagent-id))
              (settle (plist-get (car captured) :on-settle))
-             (board (e-board-registry-board-source-board
-                     (e-chat-service-binding-board
-                      (e-chat-service-ensure-ephemeral-binding parent "parent-1")))))
+             (live (gethash subagent-id
+                            (e-subagent-registry-records registry))))
+        (should live)
+        (should-not (plist-member live :publication-target))
+        (should-not (plist-member live :publication-function))
+        (should-not (plist-member live :parent-harness))
         (e-subagent-report registry child-session-id [] "reported")
         (should (eq (plist-get (e-subagent-registry-get registry
                                                         (plist-get record :subagent-id))
                                :status)
                     'running))
         (funcall settle 'done :summary "later final")
-        (let ((reports (delq nil (mapcar #'e-board-orchestration-fact-from-message
-                                         (e-board-messages board)))))
+        (should-not (gethash (plist-get record :subagent-id)
+                             (e-subagent-registry-records registry)))
+        (should (zerop (hash-table-count
+                        (e-subagent-registry-pending-admissions registry))))
+        (should-not (e-subagent-registry-order registry))
+        (should-not (e-subagent-registry-list registry))
+        (should-not (e-subagent-registry-work-handle
+                     registry (plist-get record :subagent-id)))
+        (let ((reports
+               (delq nil
+                     (mapcar #'e-board-orchestration-fact-from-record
+                             (e-subagent-runner-test--records
+                              parent "parent-1")))))
           (should (= (length reports) 1))
           (should (equal (plist-get (plist-get (car reports) :payload) :summary)
                          "reported")))))))
 
-(ert-deftest e-subagent-runner-test-durable-assignment-survives-registry-loss ()
-  "A child context resolves its report assignment from session metadata alone."
-  (e-subagent-runner-test--with-instances
-    (let* ((registry (e-subagent-registry-create))
-           (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
-           (captured (list nil)))
-      (e-harness-test-create-board-session parent :id "parent-1")
-      (let* ((record (e-subagent-runner-test--spawn
-                      registry parent "parent-1" :type :reviewer :prompt "go"
-                      :run-id "run-1" :task-key "review" :attempt 0
-                      :runner (e-subagent-runner-test--capturing-runner captured)))
-             (child (e-subagent-registry-child-harness registry
-                                                        (plist-get record :subagent-id)))
-             (session-id (plist-get record :session-id))
-             (session-metadata
-              (copy-tree
-               (plist-get
-                (e-session-local-state (e-harness-sessions child) session-id)
-                :metadata)))
-             (board (e-board-registry-board-source-board
-                     (e-chat-service-binding-board
-                      (e-chat-service-ensure-ephemeral-binding child session-id)))))
-        (should (e-board-orchestration-actions-report-from-context
-                 (list :harness child :session-id session-id
-                       :session-metadata session-metadata)
-                 :summary "durable" :outputs []))
-        (let ((report (e-board-orchestration-fact-from-message
-                       (cl-find-if (lambda (message)
-                                     (e-board-orchestration-fact-from-message message))
-                                   (e-board-messages board)))))
-          ;; The fact is directly readable without the process-local registry.
-          (should (equal (plist-get (plist-get report :payload) :task-key)
-                         "review")))))))
+(provide 'e-subagent-runner-test)
+
+;;; e-subagent-runner-test.el ends here

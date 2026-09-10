@@ -280,7 +280,7 @@ by this projection boundary."
   lifecycle-generation lifecycle-state readiness-work first-persistence-error
   continuation-owner-p
   sqlite-service board-id principal participant-id endpoint-token endpoint-generation
-  turn-port activity-subscription executing-turns)
+  turn-port activity-subscription pickup-subscription executing-turns)
 
 (cl-defstruct (e-chat-service-create-operation
                (:constructor e-chat-service--create-operation-create))
@@ -344,6 +344,20 @@ by this projection boundary."
    :author (copy-tree author t) :tags (copy-tree tags t)
    :attributes (copy-tree attributes t) :content content))
 
+(defun e-chat-service-publication-target (binding)
+  "Return BINDING's detached SQL Board publication address.
+The returned value retains only the live SQL service, durable Board id,
+and immutable transaction defaults.  The service may retain bounded live
+pickup/outcome callbacks, but the target does not retain BINDING, its harness,
+presentation subscribers, executing turns, or any Board aggregate."
+  (unless (and (e-chat-service-binding-p binding)
+               (e-chat-service--sql-binding-p binding))
+    (signal 'wrong-type-argument (list 'sqlite-chat-binding-p binding)))
+  (e-board-sqlite-publication-target-create
+   (e-chat-service-binding-sqlite-service binding)
+   (e-chat-service-binding-board-id binding)
+   :author (format "session:%s" (e-chat-service-binding-session-id binding))))
+
 (cl-defstruct (e-chat-service-subscription
                (:constructor e-chat-service--subscription-create))
   binding function active-p drain-scheduled state drain-timer
@@ -353,8 +367,9 @@ by this projection boundary."
 (defvar e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key)
   "Board-backed chat bindings, first by harness identity then session id.")
 
-(defvar e-chat-service--board-bindings (make-hash-table :test 'equal)
-  "Live chat bindings sharing each registered board identity.")
+(defvar e-chat-service--board-bindings
+  (make-hash-table :test 'eq :weakness 'key)
+  "Live chat bindings by runtime identity, then durable Board id.")
 
 (defvar e-chat-service--binding-works
   (make-hash-table :test 'eq :weakness 'key)
@@ -370,11 +385,70 @@ by this projection boundary."
       (puthash harness (make-hash-table :test 'equal)
                e-chat-service--pending-creations)))
 
-(defvar e-chat-service--continuation-reconciling (make-hash-table :test 'equal)
-  "Boards whose terminal continuation is being reconciled synchronously.")
+(defvar e-chat-service--continuation-reconciling
+  (make-hash-table :test 'eq :weakness 'key)
+  "Reconciliation markers by runtime identity, then durable Board id.")
 
-(defvar e-chat-service--continuation-admissions (make-hash-table :test 'equal)
-  "Request-scoped continuation admission works indexed by Board and key.")
+(defvar e-chat-service--continuation-admissions
+  (make-hash-table :test 'eq :weakness 'key)
+  "Continuation admission works by runtime identity, Board id, and key.")
+
+(defun e-chat-service--runtime-coordination-table
+    (registry runtime &optional create)
+  "Return REGISTRY's Board-keyed coordination table for RUNTIME.
+Create and register the table when CREATE is non-nil.  Runtime identity is
+compared with `eq'; equal Board ids in distinct databases never share live
+coordination."
+  (or (gethash runtime registry)
+      (when create
+        (let ((table (make-hash-table :test 'equal)))
+          (puthash runtime table registry)
+          table))))
+
+(defun e-chat-service--runtime-coordination-prune (registry runtime)
+  "Remove RUNTIME's empty inner coordination table from REGISTRY."
+  (when-let ((table (gethash runtime registry)))
+    (when (zerop (hash-table-count table))
+      (remhash runtime registry))))
+
+(defun e-chat-service--binding-runtime (binding)
+  "Return BINDING's authoritative SQLite runtime identity."
+  (e-board-sqlite-service-runtime
+   (e-chat-service-binding-sqlite-service binding)))
+
+(defun e-chat-service--board-bindings-for (binding)
+  "Return live bindings sharing BINDING's runtime and Board identity."
+  (when-let ((table
+              (e-chat-service--runtime-coordination-table
+               e-chat-service--board-bindings
+               (e-chat-service--binding-runtime binding))))
+    (gethash (e-chat-service-binding-board-id binding) table)))
+
+(defun e-chat-service--register-board-binding (binding)
+  "Register live BINDING under its runtime-scoped durable Board identity."
+  (let* ((runtime (e-chat-service--binding-runtime binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (table
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--board-bindings runtime t)))
+    (puthash board-id (cons binding (gethash board-id table)) table)
+    binding))
+
+(defun e-chat-service--unregister-board-binding (binding)
+  "Remove BINDING from its runtime-scoped live Board coordination."
+  (let* ((runtime (e-chat-service--binding-runtime binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (table
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--board-bindings runtime)))
+    (when table
+      (let ((remaining (delq binding (gethash board-id table))))
+        (if remaining
+            (puthash board-id remaining table)
+          (remhash board-id table))
+        (e-chat-service--runtime-coordination-prune
+         e-chat-service--board-bindings runtime)))
+    binding))
 
 (defun e-chat-service--publish-sqlite-continuation-claim
     (binding run-id publication-key status &optional error)
@@ -394,15 +468,20 @@ by this projection boundary."
 (defun e-chat-service--watch-sqlite-continuation-admission
     (binding run-id publication-key work)
   "Publish canonical settlement for continuation admission WORK."
-  (let* ((board-id (e-chat-service-binding-board-id binding))
+  (let* ((runtime (e-chat-service--binding-runtime binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (admissions
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--continuation-admissions runtime t))
          (admission-key (cons board-id publication-key)))
-    (puthash admission-key work e-chat-service--continuation-admissions)
+    (puthash admission-key work admissions)
     (e-work-on-settle
      work
      (lambda (settled)
-       (when (eq (gethash admission-key e-chat-service--continuation-admissions)
-                 settled)
-         (remhash admission-key e-chat-service--continuation-admissions))
+       (when (eq (gethash admission-key admissions) settled)
+         (remhash admission-key admissions)
+         (e-chat-service--runtime-coordination-prune
+          e-chat-service--continuation-admissions runtime))
        (let* ((status (e-work-status settled))
               (state (plist-get status :state)))
          (e-chat-service--publish-sqlite-continuation-claim
@@ -434,16 +513,22 @@ by this projection boundary."
 
 (defun e-chat-service--reconcile-sqlite-continuation (binding)
   "Reconcile terminal continuations through coordination-only BINDING."
-  (let ((board-id (e-chat-service-binding-board-id binding)))
-    (unless (gethash board-id e-chat-service--continuation-reconciling)
-      (puthash board-id t e-chat-service--continuation-reconciling)
+  (let* ((runtime (e-chat-service--binding-runtime binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (reconciling
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--continuation-reconciling runtime t)))
+    (unless (gethash board-id reconciling)
+      (puthash board-id t reconciling)
       (let ((query
              (e-board-sqlite-service-orchestration-runs-start
               (e-chat-service-binding-sqlite-service binding) board-id 32)))
         (e-work-on-settle
          query
          (lambda (settled)
-           (remhash board-id e-chat-service--continuation-reconciling)
+           (remhash board-id reconciling)
+           (e-chat-service--runtime-coordination-prune
+            e-chat-service--continuation-reconciling runtime)
            (when (eq (plist-get (e-work-status settled) :state) 'finished)
              (condition-case error
                  (dolist (projection
@@ -456,9 +541,13 @@ by this projection boundary."
                                          'published)))
                        (let* ((run-id (plist-get projection :run-id))
                               (key (plist-get continuation :publication-key))
-                              (admission-key (cons board-id key)))
-                         (unless (gethash admission-key
-                                          e-chat-service--continuation-admissions)
+                              (admission-key (cons board-id key))
+                              (admissions
+                               (e-chat-service--runtime-coordination-table
+                                e-chat-service--continuation-admissions
+                                runtime)))
+                         (unless (and admissions
+                                      (gethash admission-key admissions))
                            (e-chat-service--watch-sqlite-continuation-admission
                             binding run-id key
                             (e-chat-service-queue-session
@@ -620,6 +709,31 @@ session owner and live binding.  Read failures remain request-local."
          :payload (list :error (e-work-error-message reported-error)
                         :persistence-suspect (and owner-suspect-p t))))))
 
+(defun e-chat-service--cancel-executing-deliveries (binding)
+  "Cancel every live delivery outcome owned by retiring BINDING.
+The durable pickup remains SQLite-owned.  This releases request-owned producer
+callbacks immediately so closing a live controller cannot strand a task in
+`running'."
+  (when-let ((executing (e-chat-service-binding-executing-turns binding)))
+    (let (delivery-ids)
+      (maphash (lambda (delivery-id _turn-id)
+                 (push delivery-id delivery-ids))
+               executing)
+      (dolist (delivery-id delivery-ids)
+        (condition-case error
+            (e-board-sqlite-service-notify-delivery-outcome
+             (e-chat-service-binding-sqlite-service binding)
+             delivery-id 'cancelled
+             (list :reason 'binding-retired
+                   :session-id
+                   (e-chat-service-binding-session-id binding)))
+          (error
+           ;; Retirement owns cleanup and must notify the remaining delivery
+           ;; observers even when one request callback is defective.
+           (message "e-chat delivery retirement callback failed: %s"
+                    (e-work-error-message error)))))
+      (clrhash executing))))
+
 (defun e-chat-service--retire-binding (binding)
   "Retire SQL BINDING and release its process-local coordination."
   (when (and (e-chat-service-binding-p binding)
@@ -659,9 +773,11 @@ session owner and live binding.  Read failures remain request-local."
                    (e-chat-service-binding-activity-subscription binding)))
         (e-harness-attached-turn-port-stop-observing port subscription)
         (setf (e-chat-service-binding-activity-subscription binding) nil))
-      (when-let ((executing
-                  (e-chat-service-binding-executing-turns binding)))
-        (clrhash executing))
+      (when-let ((subscription
+                  (e-chat-service-binding-pickup-subscription binding)))
+        (e-board-sqlite-pickup-observation-cancel subscription)
+        (setf (e-chat-service-binding-pickup-subscription binding) nil))
+      (e-chat-service--cancel-executing-deliveries binding)
       (setf (e-chat-service-binding-readiness-work binding) nil)
       (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
         (when (timerp timer) (cancel-timer timer))
@@ -672,12 +788,7 @@ session owner and live binding.  Read failures remain request-local."
         (when (= (hash-table-count bindings) 0)
           (remhash harness e-chat-service--bindings)))
       (when board-id
-        (let ((remaining
-               (delq binding
-                     (gethash board-id e-chat-service--board-bindings))))
-          (if remaining
-              (puthash board-id remaining e-chat-service--board-bindings)
-            (remhash board-id e-chat-service--board-bindings))))
+        (e-chat-service--unregister-board-binding binding))
       binding)))
 
 (defun e-chat-service--discard-binding (binding)
@@ -735,13 +846,13 @@ An unopened durable association requires an asynchronous query and is not
 reconstructed for this process-local predicate."
   (and (e-chat-service-binding harness session-id) t))
 
-(defun e-chat-service--board-has-active-subscriber-p (board-id)
-  "Return non-nil when BOARD-ID has any live presentation subscriber."
+(defun e-chat-service--board-has-active-subscriber-p (binding)
+  "Return non-nil when BINDING's runtime Board has a live subscriber."
   (cl-some
    (lambda (binding)
      (cl-some #'e-chat-service-subscription-active-p
               (e-chat-service-binding-subscribers binding)))
-   (gethash board-id e-chat-service--board-bindings)))
+   (e-chat-service--board-bindings-for binding)))
 
 (defun e-chat-service--cancel-idle-close (binding)
   "Cancel BINDING's pending idle close, if any."
@@ -754,11 +865,10 @@ reconstructed for this process-local predicate."
 The SQLite Board itself has no application-owned close lifecycle."
   (unless (e-chat-service-binding-p binding)
     (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
-  (let ((board-id (e-chat-service-binding-board-id binding)))
-    (dolist (current (copy-sequence
-                      (gethash board-id e-chat-service--board-bindings)))
+  (let ((current-bindings
+         (copy-sequence (e-chat-service--board-bindings-for binding))))
+    (dolist (current current-bindings)
       (e-chat-service--retire-binding current))
-    (remhash board-id e-chat-service--board-bindings)
     nil))
 
 (defun e-chat-service--schedule-idle-close (binding)
@@ -774,16 +884,14 @@ The SQLite Board itself has no application-owned close lifecycle."
                       (or (e-chat-service-binding-lifecycle-generation binding)
                           0))
                (setf (e-chat-service-binding-idle-close-timer binding) nil)
-               (let ((board-id
-                      (e-chat-service-binding-board-id binding)))
-                 (if (not (e-chat-service--binding-live-p binding))
+               (if (not (e-chat-service--binding-live-p binding))
                      ;; An external close can win the race with this timer;
                      ;; run the same exact terminal cleanup instead of
                      ;; leaving a stale service catalog behind.
                      (e-chat-service--retire-binding binding)
                    (when (not (e-chat-service--board-has-active-subscriber-p
-                               board-id))
-                     (e-chat-service-close-board binding))))))))))
+                               binding))
+                     (e-chat-service-close-board binding)))))))))
 
 (defun e-chat-service--subscription-drain-callback
     (subscription binding-generation subscription-generation)
@@ -1095,6 +1203,10 @@ semantic interpretation responsibility."
             turn-id))
       (error
        (remhash delivery-id (e-chat-service-binding-executing-turns binding))
+       (e-board-sqlite-service-notify-delivery-outcome
+        (e-chat-service-binding-sqlite-service binding)
+        delivery-id 'failed
+        (list :error (e-work-error-message error)))
        (e-chat-service--sql-settle-pickup binding delivery-id 'fail)
        (e-chat-service--sql-note-failure binding error)
        nil))))
@@ -1118,9 +1230,30 @@ semantic interpretation responsibility."
                  (e-chat-service--sql-submit-claimed-pickup
                   binding (plist-get (plist-get status :result) :pickup))
                (remhash delivery-id executing)
+               (e-board-sqlite-service-notify-delivery-outcome
+                (e-chat-service-binding-sqlite-service binding)
+                delivery-id 'failed
+                (list :error (e-work-error-message
+                              (plist-get status :error))))
                (e-chat-service--sql-note-failure
                 binding (plist-get status :error) t)))))
         work))))
+
+(defun e-chat-service--sql-notify-turn-deliveries (binding event status)
+  "Settle BINDING's live deliveries for terminal harness EVENT as STATUS."
+  (let ((turn-id (plist-get event :turn-id))
+        (executing (e-chat-service-binding-executing-turns binding))
+        delivery-ids)
+    (maphash
+     (lambda (delivery-id executing-turn-id)
+       (when (equal executing-turn-id turn-id)
+         (push delivery-id delivery-ids)))
+     executing)
+    (dolist (delivery-id delivery-ids)
+      (remhash delivery-id executing)
+      (e-board-sqlite-service-notify-delivery-outcome
+       (e-chat-service-binding-sqlite-service binding)
+       delivery-id status event))))
 
 (defun e-chat-service--sql-context-curated-source-key (binding event)
   "Return EVENT's stable private source key for BINDING's curation row."
@@ -1175,8 +1308,12 @@ semantic interpretation responsibility."
       ('input-consumed
        (when-let* ((delivery-id
                     (plist-get (plist-get event :payload) :delivery-id)))
-         (remhash delivery-id
-                  (e-chat-service-binding-executing-turns binding))
+         ;; Retain only this live delivery-to-turn correlation until the
+         ;; canonical harness terminal event arrives.  The pickup is durably
+         ;; consumed now, but consumption is not execution completion.
+         (when-let* ((turn-id (plist-get event :turn-id)))
+           (puthash (copy-tree delivery-id t) turn-id
+                    (e-chat-service-binding-executing-turns binding)))
          (e-chat-service--sql-settle-pickup binding delivery-id 'consume)))
       ('turn-finished
        (let* ((turn-id (plist-get event :turn-id))
@@ -1199,6 +1336,7 @@ semantic interpretation responsibility."
                 (e-chat-service-binding-participant-id binding)
                 :source-turn-id turn-id :content output
                 :attributes (copy-tree (plist-get event :payload) t))))
+         (e-chat-service--sql-notify-turn-deliveries binding event 'done)
          (e-work-on-settle
           work
           (lambda (settled)
@@ -1217,6 +1355,8 @@ semantic interpretation responsibility."
                 (e-chat-service--sql-note-failure
                  binding (plist-get status :error) t)))))))
       ((or 'turn-failed 'turn-cancelled)
+       (e-chat-service--sql-notify-turn-deliveries
+        binding event (if (eq type 'turn-failed) 'failed 'cancelled))
        (e-chat-service--sql-notify-event
         binding (append (copy-tree event t)
                         (list :selected-participant-p t))))
@@ -1315,9 +1455,19 @@ semantic interpretation responsibility."
         (setf (e-chat-service-binding-turn-port binding) port)
         (puthash session-id binding
                  (e-chat-service--harness-bindings harness))
-        (puthash board-id
-                 (cons binding (gethash board-id e-chat-service--board-bindings))
-                 e-chat-service--board-bindings)
+        (e-chat-service--register-board-binding binding)
+        (setf (e-chat-service-binding-pickup-subscription binding)
+              (e-board-sqlite-service-observe-pickups
+               (e-chat-service-binding-sqlite-service binding)
+               board-id
+               (lambda (pickups)
+                 (when (e-chat-service--binding-live-p binding)
+                   (dolist (pickup pickups)
+                     (when (equal
+                            (plist-get pickup :participant-id)
+                            (e-chat-service-binding-participant-id binding))
+                       (e-chat-service--sql-deliver-pickup
+                        binding pickup)))))))
         (setq subscription
               (e-harness-attached-turn-port-observe-activity
                port (lambda (event)

@@ -52,8 +52,11 @@
                   bindings))
        e-chat-service--bindings)
       (maphash
-       (lambda (_board-id bindings)
-         (dolist (binding bindings) (cancel-binding binding)))
+       (lambda (_runtime boards)
+         (maphash
+          (lambda (_board-id bindings)
+            (dolist (binding bindings) (cancel-binding binding)))
+          boards))
        e-chat-service--board-bindings)))
   (dolist (function '(e-board-runtime--drain-deferred-hooks
                       e-board-runtime--drain-pickups
@@ -99,7 +102,8 @@
         e-board--post-storage-barrier-callbacks
         (make-hash-table :test 'eq :weakness 'key)
         e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key)
-        e-chat-service--board-bindings (make-hash-table :test 'equal)
+        e-chat-service--board-bindings
+        (make-hash-table :test 'eq :weakness 'key)
         e-board-runtime--admission-open-p t
         e-board-runtime--quiescence-current nil
         e-board-runtime--pending-pickup-head nil

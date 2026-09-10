@@ -77,14 +77,14 @@
 
 (cl-defun e-runtime-sqlite-open
     (directory &key load-sessions load-task-queue task-runner
-               task-producer-binding (task-queue-id "default") runtime-store
+               task-publication-target (task-queue-id "default") runtime-store
                offline)
   "Open one SQLite runtime rooted at DIRECTORY.
 
 The returned composition injects one shared physical runtime through separate
 session, Board, task, cron, voice, Goodnite, and raw-result owner ports.
-LOAD-TASK-QUEUE should be used only after TASK-RUNNER or TASK-PRODUCER-BINDING
-provides process-local execution authority.  RUNTIME-STORE may supply an
+LOAD-TASK-QUEUE should be used only after TASK-RUNNER or
+TASK-PUBLICATION-TARGET provides execution authority.  RUNTIME-STORE may supply an
 already-open transport prewarm handle; the composition borrows that handle and
 the caller remains its close owner.  OFFLINE selects blocking storage ports for
 the explicit stopped-runtime migrator; ordinary runtime composition always
@@ -137,7 +137,7 @@ uses enqueue-and-return Board storage."
                 task-queue
                 (e-task-queue-create
                  :id task-queue-id :storage task-storage
-                 :runner task-runner :producer-binding task-producer-binding
+                 :runner task-runner :publication-target task-publication-target
                  ;; A live composition is process-global, so its task queue is
                  ;; the one public queue eligible for =task:= waitable links.
                  :expose-await-references-p t)

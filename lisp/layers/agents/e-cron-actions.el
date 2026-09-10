@@ -22,7 +22,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-capabilities)
-(require 'e-board-runtime)
+(require 'e-board-sqlite-service)
 (require 'e-cron)
 (require 'e-layers)
 (require 'e-skills)
@@ -30,7 +30,7 @@
 (define-error 'e-cron-actions-invalid-action "Invalid cron action spec")
 
 (defconst e-cron-actions-instructions
-  "Use Cron Schedule actions to publish descriptive facts to an explicitly bound live board on a recurrence. Read e://cron/skills/cron for the action contract."
+  "Use Cron Schedule actions to publish descriptive facts to an explicitly configured SQLite Board target on a recurrence. Read e://cron/skills/cron for the action contract."
   "Compact Cron Schedule coordinator guidance.")
 
 (defconst e-cron-actions-skill
@@ -46,7 +46,7 @@
      ""
      "## Action (`action`)"
      ""
-     "- `(:publish (:content STRING :tags LIST :attributes PLIST))`: publish one observation-only fact through the configured runtime producer binding."
+     "- `(:publish (:content STRING :tags LIST :attributes PLIST))`: publish one observation-only fact through the configured SQLite target."
      ""
      "## Catch-up"
      ""
@@ -62,30 +62,34 @@
    "\n")
   "Detailed Cron Schedule action reference.")
 
-;; --- routing an action spec to one board producer ---------------------------
+;; --- routing an action spec to one SQL target -------------------------------
 
-(defvar e-cron-actions-producer-binding nil
-  "Explicit process-local producer binding used by cron action registration.")
+(defvar e-cron-actions-publication-target nil
+  "Explicit SQL Board target used by cron action registration.")
 
-(defun e-cron-actions-bind-producer (binding)
-  "Install current live board producer BINDING for later cron registrations."
-  (unless (e-board-runtime-producer-binding-live-p binding)
-    (signal 'e-board-runtime-producer-disabled (list 'cron 'missing-live-binding)))
-  (setq e-cron-actions-producer-binding binding))
+(defun e-cron-actions-configure-publication-target (target)
+  "Configure explicit SQL TARGET for later cron registrations."
+  (unless (e-board-sqlite-publication-target-valid-p target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p target)))
+  (setq e-cron-actions-publication-target target))
 
-(defun e-cron-actions--publish-action (binding spec)
-  "Return an engine action that publishes SPEC through BINDING."
+(defun e-cron-actions--publish-action (target spec)
+  "Return an engine action that publishes SPEC through SQL TARGET."
   (let ((content (plist-get spec :content))
         (tags (plist-get spec :tags))
         (attributes (plist-get spec :attributes)))
     (unless (and (stringp content) (not (string-empty-p (string-trim content))))
       (signal 'e-cron-actions-invalid-action (list :publish :content content)))
-    (lambda (_schedule)
-      (e-board-runtime-producer-publish-fact
-       binding :tags (append '(cron) (copy-tree tags))
-       :attributes (copy-tree attributes) :content content))))
+    (lambda (schedule)
+      (e-board-sqlite-publication-target-fact-start
+       target content
+       (list 'cron (e-cron-schedule-id schedule)
+             (float-time (e-cron-schedule-last-fire schedule)))
+       :tags (append '(cron) (copy-tree tags t))
+       :attributes (copy-tree attributes t)))))
 
-(defun e-cron-actions--build-action (binding spec)
+(defun e-cron-actions--build-action (target spec)
   "Return the engine action function for action SPEC.
 SPEC must be `(:publish (:content ... :tags ... :attributes ...))'."
   (cond
@@ -93,10 +97,10 @@ SPEC must be `(:publish (:content ... :tags ... :attributes ...))'."
    ((not (listp spec))
     (signal 'e-cron-actions-invalid-action (list spec)))
    ((plist-member spec :publish)
-    (e-cron-actions--publish-action binding (plist-get spec :publish)))
+    (e-cron-actions--publish-action target (plist-get spec :publish)))
    (t (signal 'e-cron-actions-invalid-action (list spec)))))
 
-(cl-defun e-cron-actions-register (&key id when action producer-binding
+(cl-defun e-cron-actions-register (&key id when action publication-target
                                         (catch-up 'skip) metadata (enabled t))
   "Register a routed schedule and return it.
 ACTION is a declarative action spec routed through
@@ -107,12 +111,12 @@ ACTION is a declarative action spec routed through
    :id id
    :when when
    :action (e-cron-actions--build-action
-            (let ((binding (or producer-binding
-                               e-cron-actions-producer-binding)))
-              (unless (e-board-runtime-producer-binding-live-p binding)
-                (signal 'e-board-runtime-producer-disabled
-                        (list id 'missing-live-binding)))
-              binding)
+            (let ((target (or publication-target
+                              e-cron-actions-publication-target)))
+              (unless (e-board-sqlite-publication-target-valid-p target)
+                (signal 'wrong-type-argument
+                        (list 'e-board-sqlite-publication-target-p target)))
+              target)
             action)
    :catch-up catch-up
    :metadata (plist-put (copy-sequence metadata) :action-spec action)

@@ -369,7 +369,7 @@ these are repository-controlled contracts.
 | F92A2-C14 | A detached session query reflects one SQLite snapshot plus mutations identified by a database boundary.  Emacs admission or acknowledgement timing never decides whether an in-flight mutation is overlaid.  Every committed record eligible for the requested visible page or selected provider-context path appears exactly once according to the database-issued boundary. | Session query adapter and worker snapshot/cursor contract. | F92A2-DP6 | Both commit-before-snapshot and snapshot-before-commit interleavings for page and provider-context queries. | Not applicable. | Query latency is observational. | Accepted | Passing for both database-snapshot interleavings; no application overlay remains. |
 | F92A2-C15 | Causally indivisible durable admission facts are committed in one SQLite transaction.  New-session root, Board association, initial participant, and initial input/routing may not rely on transport FIFO; otherwise a dependent operation begins only after explicit commit acknowledgement. | Chat/session admission application service and SQLite worker. | F92A2-DP6 | Atomic new-session admission rollback/replay and deliberately reordered transport tests. | Not applicable. | Transaction latency is observational. | Accepted | Passing in atomic rollback/replay and public first-input admission tests. |
 | F92A2-C16 | All public chat and Daily creation, opening, submission, observation, and continuation paths use the asynchronous SQL Board service exclusively.  No public or private chat operation branches to an aggregate or ephemeral Board API. | Chat application service and presentation shells. | F92A2-DP7A | SQL-backed chat unit/integration tests, absent-symbol scan, and new/existing Daily graphical paths. | Not applicable. | Public admission/query/render latency is observational. | Planned | SQL paths exist beside forbidden aggregate branches. |
-| F92A2-C17 | Every Board-producing consumer, including runs, subagents, cron, background sessions, annotations, and task execution, publishes through an explicit SQL target.  No producer resolves, retains, or publishes through a process-local Board or producer registry. | Consumer application services over the Board SQL service. | F92A2-DP7B | Per-consumer disposable-SQL publication/read-back tests and forbidden-reference scan. | Not applicable. | Per-consumer commit latency is observational. | Planned | Several consumers retain aggregate-only producer bindings. |
+| F92A2-C17 | Every Board-producing consumer, including runs, subagents, cron, background sessions, annotations, and task execution, publishes through an explicit SQL target.  No producer resolves, retains, or publishes through a process-local Board or producer registry. | Consumer application services over the Board SQL service. | F92A2-DP7B | Per-consumer disposable-SQL publication/read-back tests and forbidden-reference scan. | Not applicable. | Per-consumer commit latency is observational. | In-review | Production producers use immutable SQL publication targets; disposable-SQL read-back and forbidden-reference gates pass. |
 
 Table names, private indexes, page sizes, callback representation, and
 presentation timeouts remain implementation choices unless a later correctness
@@ -587,7 +587,7 @@ continuation exercise only the SQL service.  Focused SQL chat tests pass and a
 structural scan finds no chat reference or definition for an aggregate,
 registry, runtime attachment, or ephemeral Board/session API.
 
-** F92A2-DP7B: SQL-only Board producers (Planned)
+** F92A2-DP7B: SQL-only Board producers (In-review)
 
 DP7B establishes =F92A2-C17=.  Define one narrow SQL publication target: the
 Board SQL service, a durable Board identifier, and only immutable defaults
@@ -600,6 +600,35 @@ Gate: every producer test uses a disposable SQLite store, publishes through
 the public SQL service, and reads the canonical committed row back.  A
 structural scan finds no process-local Board lookup or producer binding in
 production or test code.
+
+Implementation evidence on the uncommitted review candidate: runs,
+orchestration actions, subagents, cron, background sessions, annotations, and
+task execution publish through opaque immutable SQL targets.  A task with no
+matching participant settles =unrouted=; a matched task remains =running= after
+append COMMIT and settles only from its canonical live delivery/turn outcome.
+Runtime-shared live pickup callbacks wake the matching chat controller without
+retaining pickup facts.  Live Board and continuation coordination is scoped by
+runtime identity plus Board identifier, so equal durable identifiers in two
+runtimes cannot share callbacks or lifecycle.  Retiring a controller settles
+its executing delivery observers as cancelled before removing the runtime-local
+maps; it cannot strand a task or callback.  Publication-target construction,
+operations, and result boundaries recursively detach mutable strings, vectors,
+hash tables, records, and lists.  Cron firing
+settlement composes with publication work, so a firing becomes =done= only
+after Board COMMIT and a rejected commit remains durably failed/retryable.
+Subagent publication belongs to request/runner closures and interventions take
+an explicit caller-owned SQL target.  The registry retains neither a parent
+harness nor a publication target, keeps only bounded executing coordination,
+and removes terminal records even when audit publication fails.
+
+The focused producer gate passed 133/133 with zero unexpected results; an
+additional correction-focused gate passed 90/90.  The public SQL chat
+regression gate passed 232/232 with zero unexpected results.  Compilation
+completes without malformed-function or unknown-function warnings in the
+changed producer paths.  The exact
+retired-reference scan finds no DP7B production consumer, while the engine
+definitions and aggregate-only engine tests remain explicit DP7C deletion
+work.
 
 ** F92A2-DP7C: Delete the alternate engine and storage facade (Planned)
 

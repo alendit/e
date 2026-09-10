@@ -82,7 +82,8 @@
            :lifecycle-state 'active :lifecycle-generation 0
            :subscribers nil :executing-turns (make-hash-table :test 'equal)))
          (e-chat-service--bindings (make-hash-table :test 'eq))
-         (e-chat-service--board-bindings (make-hash-table :test 'equal))
+         (e-chat-service--board-bindings
+          (make-hash-table :test 'eq :weakness 'key))
          buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
@@ -106,16 +107,14 @@
           (let ((bindings (make-hash-table :test 'equal)))
             (puthash "daily-killed" binding bindings)
             (puthash harness bindings e-chat-service--bindings)
-            (puthash "board-killed" (list binding)
-                     e-chat-service--board-bindings))
+            (e-chat-service--register-board-binding binding))
           (e-work-finish binding-work binding)
           (let ((deadline (+ (float-time) 0.5)))
             (while (and (gethash harness e-chat-service--bindings)
                         (< (float-time) deadline))
               (accept-process-output nil 0.01)))
           (should-not (gethash harness e-chat-service--bindings))
-          (should-not (gethash "board-killed"
-                               e-chat-service--board-bindings))
+          (should-not (e-chat-service--board-bindings-for binding))
           (should (eq (e-chat-service-binding-lifecycle-state binding)
                       'retired)))
       (when (buffer-live-p buffer)

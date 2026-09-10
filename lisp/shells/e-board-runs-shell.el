@@ -29,7 +29,7 @@
   "Name of the explicitly requested bounded raw run buffer.")
 
 (defvar-local e-board-runs-shell--target nil
-  "SQL binding or ephemeral Board whose durable runs this buffer displays.")
+  "Explicit SQLite publication target whose durable runs this buffer displays.")
 
 (defvar-local e-board-runs-shell--projections nil
   "Detached bounded run projections displayed by this buffer.")
@@ -69,9 +69,7 @@
 
 (defun e-board-runs-shell--target-id (target)
   "Return TARGET's durable Board identity without reconstructing a Board."
-  (if (e-board-orchestration-actions--sqlite-target-p target)
-      (e-chat-service-binding-board-id target)
-    (e-board-id (e-board-orchestration-actions--source-board target))))
+  (e-board-sqlite-publication-target-board-id target))
 
 (defun e-board-runs-shell--entry (target projection)
   "Return a `tabulated-list' entry for durable run PROJECTION."
@@ -131,35 +129,19 @@
   (when (derived-mode-p 'e-board-runs-shell-mode)
     (let* ((buffer (current-buffer))
            (target e-board-runs-shell--target)
-           (value (e-board-orchestration-actions-list-runs target)))
-      (if (not (e-work-handle-p value))
-          (progn
-            (setq e-board-runs-shell--projections (copy-tree value t))
-            (e-board-runs-shell--render))
-        (setq e-board-runs-shell--projections nil)
-        (e-board-runs-shell--render)
-        (e-work-on-settle
-         value
-         (lambda (settled)
-           (e-board-runs-shell--install-query-result
-            buffer target settled)))))))
+           (work (e-board-orchestration-actions-list-runs target)))
+      (setq e-board-runs-shell--projections nil)
+      (e-board-runs-shell--render)
+      (e-work-on-settle
+       work
+       (lambda (settled)
+         (e-board-runs-shell--install-query-result
+          buffer target settled))))))
 
 (defun e-board-runs-shell-refresh ()
   "Manually rebuild the durable run list."
   (interactive)
   (e-board-runs-shell--refresh))
-
-(defun e-board-runs-shell--refresh-buffers (board _run-id _projection)
-  "Refresh live run buffers subscribed to BOARD projection notifications."
-  (dolist (buffer (buffer-list))
-    (with-current-buffer buffer
-      (when (and (derived-mode-p 'e-board-runs-shell-mode)
-                 (not (e-board-orchestration-actions--sqlite-target-p
-                       e-board-runs-shell--target))
-                 (eq (e-board-orchestration-actions--source-board
-                      e-board-runs-shell--target)
-                     board))
-        (e-board-runs-shell--refresh)))))
 
 (defun e-board-runs-shell--refresh-registry-buffers (registry)
   "Refresh run buffers whose live admission labels use REGISTRY."
@@ -284,26 +266,24 @@ PROJECTION remains authoritative for durable run and terminal state."
               (e-board-runs-shell--format-summary
                target projection registry))
             workspace))))
-    (if (not (e-work-handle-p value))
-        (funcall show value)
-      (let ((buffer
-             (e-board-runs-shell--show-buffer
-              (if raw e-board-runs-shell-raw-buffer-name
-                e-board-runs-shell-detail-buffer-name)
-              (format "Loading Board run %s...\n" run-id) workspace)))
-        (e-work-on-settle
-         value
-         (lambda (settled)
-           (when (buffer-live-p buffer)
-             (let ((status (e-work-status settled)))
-               (if (eq (plist-get status :state) 'finished)
-                   (funcall show (plist-get status :result))
-                 (e-board-runs-shell--show-buffer
-                  (buffer-name buffer)
-                  (format "Unable to query Board run %s: %s\n"
-                          run-id
-                          (e-work-error-message (plist-get status :error)))
-                  workspace))))))))))
+    (let ((buffer
+           (e-board-runs-shell--show-buffer
+            (if raw e-board-runs-shell-raw-buffer-name
+              e-board-runs-shell-detail-buffer-name)
+            (format "Loading Board run %s...\n" run-id) workspace)))
+      (e-work-on-settle
+       value
+       (lambda (settled)
+         (when (buffer-live-p buffer)
+           (let ((status (e-work-status settled)))
+             (if (eq (plist-get status :state) 'finished)
+                 (funcall show (plist-get status :result))
+               (e-board-runs-shell--show-buffer
+                (buffer-name buffer)
+                (format "Unable to query Board run %s: %s\n"
+                        run-id
+                        (e-work-error-message (plist-get status :error)))
+                workspace)))))))))
 
 (defun e-board-runs-shell-show-details ()
   "Show the bounded durable projection for the run at point."
@@ -352,10 +332,11 @@ PROJECTION remains authoritative for durable run and terminal state."
 ;;;###autoload
 (cl-defun e-board-runs-list-buffer (&key target registry)
   "Open TARGET's bounded durable run list and return its buffer immediately.
-TARGET is either a SQLite chat binding or an explicit ephemeral Board."
+TARGET is an explicit SQLite publication target."
   (interactive)
-  (unless target
-    (user-error "A Board query target is required"))
+  (unless (e-board-sqlite-publication-target-valid-p target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p target)))
   (let ((buffer (get-buffer-create e-board-runs-shell-buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'e-board-runs-shell-mode)
@@ -364,8 +345,6 @@ TARGET is either a SQLite chat binding or an explicit ephemeral Board."
             e-board-runs-shell--registry registry
             e-board-runs-shell--projections nil)
       (e-board-runs-shell--refresh))
-    (add-hook 'e-board-orchestration-actions-projection-change-functions
-              #'e-board-runs-shell--refresh-buffers)
     (add-hook 'e-subagent-registry-change-functions
               #'e-board-runs-shell--refresh-registry-buffers)
     (when (called-interactively-p 'interactive)

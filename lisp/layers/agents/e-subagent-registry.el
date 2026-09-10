@@ -7,20 +7,20 @@
 
 ;;; Commentary:
 
-;; In-memory normalized registry for spawned subagents.  A record ties a child
-;; session to its parent through lineage fields, tracks a compact result, and
-;; carries an opaque cancel function so the parent can interrupt a running
-;; child.  A bounded pending-admission record prevents duplicate dispatch while
+;; Bounded process-local coordination for executing subagents.  A live record
+;; ties a child session to its parent, retains the handles required to steer or
+;; interrupt it, and disappears when execution reaches a terminal state.
+;; Durable lifecycle, results, and history belong to the parent Board in
+;; SQLite.  A bounded pending-admission record prevents duplicate dispatch while
 ;; durable child admission is in flight, without publishing that child as
-;; queued or running.  Once admitted, the registry is the process-local source
-;; of truth for subagent status; both direct-turn and queue schedules funnel
-;; their settle callbacks here.
+;; queued or running.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'e-board-runtime)
+
+(define-error 'e-subagent-registry-error "e subagent registry error")
 
 (defvar e-subagent-registry-change-functions nil
   "Functions run with a registry after any subagent record changes.
@@ -39,11 +39,6 @@ List buffers hook onto this to track live subagent status.")
 (defun e-subagent-registry--notify (registry)
   "Run change hooks for REGISTRY."
   (run-hook-with-args 'e-subagent-registry-change-functions registry))
-
-(defun e-subagent-registry--publish-change (record)
-  "Publish RECORD's normalized lifecycle through its injected callback."
-  (when-let ((publish (plist-get record :publication-function)))
-    (funcall publish record)))
 
 (defun e-subagent-registry--next-id (registry)
   "Return the next stable subagent id from REGISTRY."
@@ -114,23 +109,19 @@ list and publishes no Board lifecycle facts."
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
-              child-harness parent-harness publication-function publication-target
-              run-id task-key attempt
+              child-harness run-id task-key attempt
               subagent-id work-handle)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
 progresses.  CHILD-HARNESS is the live harness running the child, stored
 internally so steer/read reach the child session on its own harness."
-  (unless (functionp publication-function)
-    (signal 'wrong-type-argument
-            (list 'functionp :publication-function)))
   (when subagent-id
     (let ((reservation
            (gethash subagent-id
                     (e-subagent-registry-pending-admissions registry))))
       (unless (and reservation
                    (eq work-handle (plist-get reservation :work-handle)))
-        (signal 'e-board-runtime-error
+        (signal 'e-subagent-registry-error
                 (list "Subagent admission reservation changed" subagent-id)))))
   (let* ((subagent-id (or subagent-id
                           (e-subagent-registry--next-id registry)))
@@ -143,18 +134,13 @@ internally so steer/read reach the child session on its own harness."
                        :label label
                        :schedule schedule
                        :child-harness child-harness
-                       :parent-harness parent-harness
-                       :publication-function publication-function
-                       :publication-target publication-target
                        :run-id run-id
                        :task-key task-key
                        :attempt attempt
-                       :durable-terminal-published nil
                        :work-handle work-handle
                        :result-summary nil
                        :outputs nil
                        :reported nil
-                       :shutdown nil
                        :error nil
                        :cancel nil
                        :created-at (float-time)
@@ -171,22 +157,30 @@ internally so steer/read reach the child session on its own harness."
     (puthash subagent-id record (e-subagent-registry-records registry))
     (setf (e-subagent-registry-order registry)
           (append (e-subagent-registry-order registry) (list subagent-id)))
-    (e-subagent-registry--publish-change record)
     (e-subagent-registry--notify registry)
     (e-subagent-registry-normalize record)))
 
 (defun e-subagent-registry-update (registry subagent-id &rest fields)
   "Apply FIELDS to SUBAGENT-ID's record in REGISTRY and return normalized form."
-  (let ((record (e-subagent-registry--record registry subagent-id))
-        (status-changed (plist-member fields :status)))
+  (let ((record (e-subagent-registry--record registry subagent-id)))
     (while fields
       (let ((key (pop fields)))
         (when fields
           (plist-put record key (pop fields)))))
-    (when status-changed
-      (e-subagent-registry--publish-change record))
     (e-subagent-registry--notify registry)
     (e-subagent-registry-normalize record)))
+
+(defun e-subagent-registry-remove (registry subagent-id)
+  "Remove live SUBAGENT-ID coordination from REGISTRY and return its snapshot.
+Return nil when a competing terminal callback already removed the record."
+  (when-let* ((record (gethash subagent-id
+                               (e-subagent-registry-records registry))))
+    (let ((snapshot (e-subagent-registry-normalize record)))
+      (remhash subagent-id (e-subagent-registry-records registry))
+      (setf (e-subagent-registry-order registry)
+            (delete subagent-id (e-subagent-registry-order registry)))
+      (e-subagent-registry--notify registry)
+      snapshot)))
 
 (defun e-subagent-registry-record-progress (registry subagent-id event summary)
   "Record one bounded progress EVENT and SUMMARY for SUBAGENT-ID.
@@ -230,10 +224,6 @@ in the child session."
   "Return the live child harness stored for SUBAGENT-ID, or nil."
   (plist-get (e-subagent-registry--record registry subagent-id) :child-harness))
 
-(defun e-subagent-registry-parent-harness (registry subagent-id)
-  "Return the live parent harness stored for SUBAGENT-ID, or nil."
-  (plist-get (e-subagent-registry--record registry subagent-id) :parent-harness))
-
 (defun e-subagent-registry-work-handle (registry subagent-id)
   "Return the live `e-work' handle stored for SUBAGENT-ID, or nil.
 Returns nil for an unknown id rather than signalling, so a waitable resolver
@@ -272,18 +262,12 @@ they have no committed child registration or published lifecycle fact."
   "Return non-nil when SUBAGENT-ID has a child-reported structured result."
   (plist-get (e-subagent-registry--record registry subagent-id) :reported))
 
-(defun e-subagent-registry-shutdown-p (registry subagent-id)
-  "Return non-nil when SUBAGENT-ID was deliberately shut down.
-Shutdown is a terminal intent distinct from a transient failure; `resume'
-refuses a shut-down record."
-  (plist-get (e-subagent-registry--record registry subagent-id) :shutdown))
-
 (defun e-subagent-registry-status (registry subagent-id)
   "Return the status symbol for SUBAGENT-ID in REGISTRY."
   (plist-get (e-subagent-registry--record registry subagent-id) :status))
 
 (defun e-subagent-registry-list (registry &optional parent-session-id)
-  "Return normalized subagent records in REGISTRY, newest-first.
+  "Return normalized live subagent records in REGISTRY, newest-first.
 When PARENT-SESSION-ID is non-nil, return only that parent's direct children."
   (let (records)
     (dolist (subagent-id (e-subagent-registry-order registry))

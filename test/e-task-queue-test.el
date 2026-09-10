@@ -19,13 +19,16 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-chat-service)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-task-queue)
 (require 'e-runtime-store)
+(require 'e-session-sqlite)
 (require 'e-task-storage-sqlite)
-(require 'e-board-orchestration)
-(require 'e-board-orchestration-actions)
+(load (expand-file-name "e-board-producer-test-support.el"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defmacro e-task-queue-test--with-instances (&rest body)
   "Run BODY with isolated harness and harness-instance registries."
@@ -75,6 +78,14 @@ tests need a runner whose handle carries one."
           (cl-remove-if-not
            (lambda (r) (eq (plist-get r :status) 'running))
            (e-task-queue-list queue))))
+
+(defun e-task-queue-test--wait-until (predicate &optional timeout)
+  "Wait at this explicit test boundary until PREDICATE succeeds."
+  (let ((deadline (+ (float-time) (or timeout 5.0))) value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
 
 (ert-deftest e-task-queue-test-enqueue-returns-record ()
   "Enqueue returns a record and the task is admitted under the cap."
@@ -297,51 +308,182 @@ tests need a runner whose handle carries one."
             (funcall settle :status 'done)
             (should (> changes before))))))))
 
-(ert-deftest e-task-queue-test-default-runner-requires-board-binding ()
+(ert-deftest e-task-queue-test-default-runner-requires-sql-target ()
   "The bundled queue cannot fall back to a standalone harness session."
   (should-error (e-task-queue-enqueue (e-task-queue-create) :prompt "work")
-                :type 'e-board-runtime-producer-disabled))
+                :type 'e-task-queue-error))
 
-(ert-deftest e-task-queue-test-default-runner-records-unrouted-board-work ()
-  "The bundled queue cannot claim completion when no participant picks work up."
-  (let ((e-board--registry (make-hash-table :test 'equal))
-        (e-board--id-sequence 0)
-        (e-board-registry--boards (make-hash-table :test 'equal))
-        (e-board-registry--id-sequence 0)
-        (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
-        (e-board-runtime--producer-inputs (make-hash-table :test 'equal))
-        (e-board-runtime--producer-deliveries (make-hash-table :test 'equal))
-        (e-board-runtime--producer-turns (make-hash-table :test 'equal))
-        (e-board-runtime--producer-epoch 0)
-        (e-board-runtime--producer-head nil)
-        (e-board-runtime--producer-tail nil)
-        (e-board-runtime--producer-drain-scheduled nil)
-        (e-board-runtime--producer-scheduler (lambda (_callback)))
-        (e-board-runtime--admission-open-p t)
-        (e-board-runtime--unsettled-producer-count 0)
-        (e-board-runtime--unsettled-generation 0))
-    (let* ((board (e-board-registry-create :id "task-board"))
-           (binding (e-board-runtime-producer-bind 'tasks board))
-           (queue (e-task-queue-create :producer-binding binding))
-           (record (e-task-queue-enqueue queue :prompt "please work")))
-      (should (eq (plist-get record :status) 'running))
-      (should-not (plist-get record :session-id))
-      (e-board-runtime-drain-producers)
-      (e-board-runtime--drain-input-routing
-       board
-       (lambda ()
-         (e-board-drain-input-classifications
-          (e-board-registry-board-source-board board))))
-      (setq record (e-task-queue-get queue (plist-get record :task-id)))
-      (should (eq (plist-get record :status) 'unrouted))
+(ert-deftest e-task-queue-test-default-runner-zero-match-stays-unrouted ()
+  "A committed Board append without a pickup is visibly unrouted, not done."
+  (e-board-producer-test-with-target (target)
+    (let* ((queue (e-task-queue-create :publication-target target))
+           (task '(:task-id "task-unrouted" :prompt "please work"
+                   :summary "please work" :attempt-id "attempt-1"))
+           settlement
+           (runner-handle
+            (e-task-queue-default-runner
+             task queue (lambda (&rest result) (setq settlement result)))))
+      (should-not settlement)
+      (e-board-producer-test-await (plist-get runner-handle :publication))
+      (should (eq (plist-get settlement :status) 'unrouted))
       (should (string-match-p "no-matching-subscription"
-                              (plist-get record :error)))
-      (let ((message (car (e-board-messages
-                           (e-board-registry-board-source-board board)))))
-        (should (eq (e-board-message-kind message) 'input))
-        (should (eq (e-board-message-routing-state message) 'unrouted))
-        (should (equal (e-board-message-content message) "please work")))
-      (should (= (hash-table-count (e-board-registry-board-participants board)) 0)))))
+                              (plist-get settlement :error)))
+      (let ((message (car (e-board-producer-test-records target))))
+        (should (eq (plist-get message :kind) 'input))
+        (should (equal (plist-get message :content) "please work"))
+        (should (equal (plist-get message :tags) '(task-queue task)))))))
+
+(ert-deftest e-task-queue-test-default-runner-rejected-commit-fails-task ()
+  "A rejected Board commit fails its task instead of acknowledging execution."
+  (e-board-producer-test-with-target (_target service)
+    (let* ((missing-target
+            (e-board-sqlite-publication-target-create
+             service "missing-task-board" :author "task-test"))
+           (queue (e-task-queue-create :publication-target missing-target))
+           (task (e-task-queue-enqueue queue :prompt "cannot route"))
+           (task-id (plist-get task :task-id)))
+      (should
+       (e-task-queue-test--wait-until
+        (lambda ()
+          (eq (plist-get (e-task-queue-get queue task-id) :status) 'failed))))
+      (should
+       (string-match-p
+        "Unknown Board"
+        (plist-get (e-task-queue-get queue task-id) :error))))))
+
+(ert-deftest e-task-queue-test-default-runner-waits-for-delivery-outcome ()
+  "A matched task stays running past COMMIT and settles from its real turn."
+  (e-board-producer-test-with-target (target service board-id runtime)
+    (e-board-producer-test-admit-participant
+     service board-id "task-worker-session" "task-worker" '(:tags (task)))
+    (let* ((store-directory (make-temp-file "e-task-live-sql-" t))
+           (store
+            (e-session-sqlite-store-create
+             store-directory :runtime-store runtime :asynchronous t))
+           (harness
+            (e-harness-create
+             :sessions store
+             :backend
+             (e-backend-fake-create
+              :items '((:type assistant-message :content "task complete")
+                       (:type done :reason stop)))))
+           binding)
+      (unwind-protect
+          (progn
+            (setq binding
+                  (e-board-producer-test-await
+                   (e-chat-service-binding-start
+                    harness "task-worker-session")))
+            (let* ((queue
+                    (e-task-queue-create
+                     ;; TARGET and BINDING intentionally use separate service
+                     ;; values over the same runtime.  Live pickup wakeup is
+                     ;; transport-scoped, not dependent on object identity.
+                     :publication-target target))
+                   (task
+                    (e-task-queue-enqueue queue :prompt "please work"))
+                   (task-id (plist-get task :task-id)))
+              ;; COMMIT creates a pickup, but execution is still live work.
+              (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                          'running))
+              (should
+               (e-task-queue-test--wait-until
+                (lambda ()
+                  (not
+                   (eq (plist-get (e-task-queue-get queue task-id) :status)
+                       'running)))))
+              (let ((settled (e-task-queue-get queue task-id)))
+                (should (eq (plist-get settled :status) 'done))
+                (should
+                 (equal
+                  (plist-get
+                   (car
+                    (plist-get
+                     (plist-get (car (plist-get settled :outputs)) :value)
+                     :deliveries))
+                   :status)
+                  'done)))
+              (should
+               (= (hash-table-count
+                   (e-board-sqlite-service--delivery-observer-table
+                    (e-chat-service-binding-sqlite-service binding)))
+                  0))
+              (e-chat-service-close-board binding)
+              (should
+               (= (hash-table-count
+                   (e-board-sqlite-service--pickup-observer-table
+                    (e-chat-service-binding-sqlite-service binding)))
+                  0))
+              (setq binding nil)))
+        (when binding
+          (e-chat-service-close-board binding))
+        (ignore-errors (e-session-sqlite-store-close store))
+        (delete-directory store-directory t)))))
+
+(ert-deftest e-task-queue-test-controller-close-cancels-live-delivery-work ()
+  "Retiring a routed controller cannot strand its producer task running."
+  (e-board-producer-test-with-target (target service board-id runtime)
+    (e-board-producer-test-admit-participant
+     service board-id "task-close-session" "task-close-worker" '(:tags (task)))
+    (let* ((store-directory (make-temp-file "e-task-close-sql-" t))
+           (store
+            (e-session-sqlite-store-create
+             store-directory :runtime-store runtime :asynchronous t))
+           (harness
+            (e-harness-create
+             :sessions store
+             :backend
+             (e-backend-fake-create
+              :delay 2.0
+              :items '((:type assistant-message :content "too late")
+                       (:type done :reason stop)))))
+           binding)
+      (unwind-protect
+          (progn
+            (setq binding
+                  (e-board-producer-test-await
+                   (e-chat-service-binding-start
+                    harness "task-close-session")))
+            (let* ((queue (e-task-queue-create :publication-target target))
+                   (task (e-task-queue-enqueue queue :prompt "close during work"))
+                   (task-id (plist-get task :task-id))
+                   (observer-table
+                    (e-board-sqlite-service--delivery-observer-table service)))
+              (should
+               (e-task-queue-test--wait-until
+                (lambda ()
+                  (> (hash-table-count
+                      (e-chat-service-binding-executing-turns binding))
+                     0))))
+              (let (delivery-id)
+                (maphash
+                 (lambda (candidate _turn-id)
+                   (setq delivery-id candidate))
+                 (e-chat-service-binding-executing-turns binding))
+                ;; A defective observer must not prevent the task observer for
+                ;; the same canonical delivery from being settled on retire.
+                (e-board-sqlite-publication-target-observe-delivery-outcome
+                 target delivery-id
+                 (lambda (_status _payload)
+                   (error "defective retirement observer"))))
+              (should (> (hash-table-count observer-table) 0))
+              (e-chat-service-close-board binding)
+              (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                          'cancelled))
+              (should (zerop (hash-table-count observer-table)))
+              (should
+               (zerop
+                (hash-table-count
+                 (e-chat-service-binding-executing-turns binding))))
+              (should-not (e-chat-service-binding harness "task-close-session"))))
+        (when binding
+          (ignore-errors
+            (e-harness-attached-turn-port-abort
+             (e-chat-service-binding-turn-port binding)))
+          (when (e-chat-service--binding-live-p binding)
+            (e-chat-service-close-board binding)))
+        (ignore-errors (e-session-sqlite-store-close store))
+        (delete-directory store-directory t)))))
 
 (ert-deftest e-task-queue-test-synchronous-settle-clears-handle ()
   "A runner that settles inside its own call leaves no stale handle."
@@ -625,51 +767,3 @@ without one there is nothing to analyze, so the task terminates."
 (provide 'e-task-queue-test)
 
 ;;; e-task-queue-test.el ends here
-
-(defun e-task-queue-test--orchestration-manifest (board &optional attempt)
-  "Publish a one-task manifest selecting ATTEMPT to BOARD."
-  (e-board-orchestration-publish-fact
-   board
-   (list :version 1 :type 'manifest :idempotency-key "manifest"
-         :payload (list :run-id "run-1"
-                        :tasks (list (list :task-key "task" :required t
-                                           :accepted-attempt (or attempt 0)))
-                        :deadline '(:kind none)))))
-
-(ert-deftest e-task-queue-test-orchestration-bridge-is-idempotent ()
-  "One selected manifest attempt maps to one durable queue task and report."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let* ((board (e-board-create :id "queue-orchestration"))
-           (recorder (make-e-task-queue-test--recorder))
-           (queue (e-task-queue-create :runner (e-task-queue-test--fake-runner recorder))))
-      (e-task-queue-test--orchestration-manifest board)
-      (let* ((first (e-board-orchestration-actions-dispatch-queue-task
-                     queue board :run-id "run-1" :task-key "task" :attempt 0 :prompt "do"))
-             (again (e-board-orchestration-actions-dispatch-queue-task
-                     queue board :run-id "run-1" :task-key "task" :attempt 0 :prompt "do"))
-             (settle (plist-get (car (e-task-queue-test--recorder-calls recorder)) :settle)))
-        (should (equal (plist-get first :task-id) (plist-get again :task-id)))
-        (should-not (plist-member first :await-ref))
-        (should (equal (plist-get (plist-get first :metadata) :board-run-id) "run-1"))
-        (funcall settle :status 'done :outputs '((:kind text :value "ok")))
-        (let ((projection (e-board-orchestration-project-board board)))
-          (should (eq (plist-get projection :terminal-status) 'done))
-          (should (= (length (plist-get projection :reports)) 1)))))))
-
-(ert-deftest e-task-queue-test-orchestration-retry-uses-new-attempt ()
-  "Queue retry changes durable attempt metadata without changing the manifest."
-  (e-task-queue-test--with-instances
-    (e-task-queue-test--register-instance :chat-a t)
-    (let* ((board (e-board-create :id "queue-retry"))
-           (recorder (make-e-task-queue-test--recorder))
-           (queue (e-task-queue-create :max-retries 1
-                                       :runner (e-task-queue-test--fake-runner-with-session recorder))))
-      (e-task-queue-test--orchestration-manifest board)
-      (let* ((record (e-board-orchestration-actions-dispatch-queue-task
-                      queue board :run-id "run-1" :task-key "task" :attempt 0 :prompt "do"))
-             (first-settle (plist-get (car (e-task-queue-test--recorder-calls recorder)) :settle)))
-        (funcall first-settle :status 'failed :error "retry")
-        (let ((retried (e-task-queue-get queue (plist-get record :task-id))))
-          (should (eq (plist-get retried :status) 'running))
-          (should (= (plist-get (plist-get retried :metadata) :board-attempt) 1)))))))

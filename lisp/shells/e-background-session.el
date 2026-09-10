@@ -7,12 +7,8 @@
 
 ;;; Commentary:
 
-;; A background session wakes a long-lived agent session on a trigger -- a
-;; filesystem change under watched paths, or a light periodic schedule -- and
-;; submits a fixed prompt to that session.  It is the "loop" the agenda triage
-;; design calls for, deliberately built as a background *session* rather than a
-;; new core primitive: it reuses the ordinary harness turn machinery and submits
-;; a prompt the same way a human would.
+;; A background trigger publishes a fixed work request to a durable SQLite
+;; Board after a filesystem change or light periodic schedule.
 ;;
 ;; The trigger only submits a prompt.  It performs no domain mutation and never
 ;; accepts anything on the user's behalf; whatever the prompt drives (for
@@ -24,16 +20,16 @@
 ;;   - Busy-skip: a fire is dropped when the session already has a running turn,
 ;;     so the background loop never queues turns on top of itself.
 ;;
-;; The module depends only on the core harness, not on any UI shell, so a
-;; background session can run headless.  Callers supply the harness (typically a
-;; project-local chat harness so the session loads the right layers and tools).
+;; The module depends on no UI shell and can run headless.  Callers supply one
+;; detached publication target containing only a SQLite service and Board id.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
 (require 'filenotify)
-(require 'e-board-runtime)
+(require 'e-board-sqlite-service)
+(require 'e-session-identity)
 
 (defgroup e-background-session nil
   "File/schedule-triggered background agent sessions."
@@ -57,7 +53,7 @@ Each function is called with the trigger that fired.  Intended for observation
 Configuration fields are set at creation; runtime fields track live watches and
 timers and are managed by `e-background-session-start' / `-stop'."
   id
-  producer-binding
+  publication-target
   prompt
   paths
   schedule-seconds
@@ -83,29 +79,29 @@ timers and are managed by `e-background-session-start' / `-stop'."
   (hash-table-values e-background-session--triggers))
 
 (cl-defun e-background-session-register
-    (&key id producer-binding prompt paths schedule-seconds
+    (&key id publication-target prompt paths schedule-seconds
           debounce-seconds metadata)
   "Create and register a background trigger, returning it.
 
 ID is a unique key (an existing trigger with the same ID is stopped and
-replaced).  PRODUCER-BINDING is explicit process-local board authority; it is
-never reconstructed from a persisted board id.  PROMPT is the fixed fact text
-published on each fire.  PATHS is a list of files and/or
+replaced).  PUBLICATION-TARGET explicitly names the SQLite Board receiving
+each fire.  PROMPT is the fixed fact text published on each fire.  PATHS is a
+list of files and/or
 directories to watch for changes.  SCHEDULE-SECONDS, when non-nil, also fires on
 that periodic interval.  DEBOUNCE-SECONDS overrides
 `e-background-session-default-debounce-seconds'.  METADATA is published as
 bounded descriptive fact attributes."
   (unless id (user-error "Background trigger requires :id"))
-  (unless (e-board-runtime-producer-binding-live-p producer-binding)
-    (signal 'e-board-runtime-producer-disabled
-            (list id 'missing-live-binding)))
+  (unless (e-board-sqlite-publication-target-valid-p publication-target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p publication-target)))
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Background trigger requires a non-empty :prompt string"))
   (when-let ((existing (e-background-session-get id)))
     (e-background-session-stop existing))
   (let ((trigger (e-background-trigger--create
                   :id id
-                  :producer-binding producer-binding
+                  :publication-target publication-target
                   :prompt prompt
                   :paths paths
                   :schedule-seconds schedule-seconds
@@ -134,10 +130,11 @@ bounded descriptive fact attributes."
 
 (defun e-background-session-start (trigger)
   "Begin watching paths and scheduling for TRIGGER, then return it."
-  (unless (e-board-runtime-producer-binding-live-p
-           (e-background-trigger-producer-binding trigger))
-    (signal 'e-board-runtime-producer-disabled
-            (list (e-background-trigger-id trigger) 'missing-live-binding)))
+  (unless (e-board-sqlite-publication-target-valid-p
+           (e-background-trigger-publication-target trigger))
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p
+                  (e-background-trigger-publication-target trigger))))
   (e-background-session-stop trigger)
   ;; Enable before arming so a watch callback that fires during arming sees a
   ;; live trigger rather than being mistaken for our own teardown.
@@ -208,16 +205,18 @@ events into one fire."
   (e-background-trigger-prompt trigger))
 
 (defun e-background-session-fire (trigger)
-  "Publish TRIGGER's board work input and return its queued item."
+  "Publish TRIGGER's Board work and return its asynchronous work handle."
   (let ((item
-         (e-board-runtime-producer-publish-input
-          (e-background-trigger-producer-binding trigger)
+         (e-board-sqlite-publication-target-append-route-start
+          (e-background-trigger-publication-target trigger)
+          (e-background-session--resolve-prompt trigger)
+          (list 'background-trigger (e-background-trigger-id trigger)
+                (e-session-identity-generate-ulid))
           :tags (list 'background 'trigger (e-background-trigger-id trigger))
           :attributes
           (append (list :trigger-id (e-background-trigger-id trigger)
                         :paths (copy-tree (e-background-trigger-paths trigger)))
-                  (copy-tree (e-background-trigger-metadata trigger)))
-          :content (e-background-session--resolve-prompt trigger))))
+                  (copy-tree (e-background-trigger-metadata trigger))))))
     (run-hook-with-args 'e-background-session-fire-functions trigger)
     item))
 

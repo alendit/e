@@ -41,11 +41,16 @@
      ,@body))
 
 (defun e-subagents-shell-test--spawn (registry parent parent-session-id label)
-  "Spawn a non-settling reviewer child under PARENT with LABEL."
-  (e-subagent-spawn registry parent parent-session-id
-                    :source-turn-id "parent-turn"
-                    :type :reviewer :prompt "go" :label label
-                    :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+  "Install one bounded live child coordination record with LABEL.
+Shell presentation tests do not need durable Board admission or publication."
+  (let* ((registered
+          (e-subagent-registry-register
+           registry :type :reviewer :role 'reviewer
+           :session-id (e-session-generate-id)
+           :parent-session-id parent-session-id :label label :schedule 'direct
+           :child-harness parent))
+         (subagent-id (plist-get registered :subagent-id)))
+    (e-subagent-registry-update registry subagent-id :status 'running)))
 
 (ert-deftest e-subagents-shell-test-renders-children-scoped-to-parent ()
   "The list buffer renders one row per child of the parent session."
@@ -53,8 +58,6 @@
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
-      (e-harness-test-create-board-session parent :id "parent-1")
-      (e-harness-test-create-board-session parent :id "parent-2")
       (e-subagents-shell-test--spawn registry parent "parent-1" "child a")
       (e-subagents-shell-test--spawn registry parent "parent-2" "child b")
       (let ((buffer (e-subagents-list-buffer
@@ -75,7 +78,6 @@
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
-      (e-harness-test-create-board-session parent :id "parent-1")
       (let ((buffer (e-subagents-list-buffer
                      :registry registry :parent-session-id "parent-1")))
         (unwind-protect
@@ -140,7 +142,6 @@
     (let* ((registry (e-subagent-registry-create))
            (parent (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
-      (e-harness-test-create-board-session parent :id "parent-1")
       (let* ((recent (e-subagents-shell-test--spawn
                       registry parent "parent-1" "recent turn"))
              (older (e-subagents-shell-test--spawn

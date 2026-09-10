@@ -85,6 +85,60 @@
        (ignore-errors (e-session-sqlite-store-close ,store))
        (delete-directory directory t))))
 
+(ert-deftest e-board-sqlite-publication-target-is-opaque-and-mutation-isolated ()
+  "Target construction and the one public identity read use defensive copies."
+  (e-board-sqlite-service-test--with-fixture
+      (_store service board-id _session-id _participant-id)
+    (let* ((caller-board-id (copy-sequence board-id))
+           (nested-string (copy-sequence "original"))
+           (vector-string (copy-sequence "vector-original"))
+           (hash-string (copy-sequence "hash-original"))
+           (caller-hash (make-hash-table :test 'equal))
+           (_ (puthash "key" hash-string caller-hash))
+           (caller-tags (list 'producer (list 'nested 'original)))
+           (caller-attributes
+            (list :nested (list :value nested-string)
+                  :vector (vector vector-string)))
+           (target
+            (e-board-sqlite-publication-target-create
+             service caller-board-id :tags caller-tags
+             :attributes caller-attributes))
+           (hash-target
+            (e-board-sqlite-publication-target-create
+             service caller-board-id :attributes (list :table caller-hash)))
+           (returned-board-id
+            (e-board-sqlite-publication-target-board-id target)))
+      (aset caller-board-id 0 ?X)
+      (setcar caller-tags 'changed)
+      (aset nested-string 0 ?X)
+      (aset vector-string 0 ?X)
+      (aset hash-string 0 ?X)
+      (puthash "extra" "changed" caller-hash)
+      (aset returned-board-id 0 ?Y)
+      (should (equal (e-board-sqlite-publication-target-board-id target)
+                     board-id))
+      (let ((stored-hash
+             (plist-get
+              (e-board-sqlite-publication-target--attributes hash-target)
+              :table)))
+        (should (equal (gethash "key" stored-hash) "hash-original"))
+        (should-not (gethash "extra" stored-hash)))
+      (should-not
+       (fboundp 'e-board-sqlite-publication-target-tags))
+      (e-board-sqlite-service-test--await
+       (e-board-sqlite-publication-target-fact-start
+        target "immutable target" '(immutable-target 1)))
+      (let* ((page
+              (e-board-sqlite-service-test--await
+               (e-board-sqlite-publication-target-record-page-start
+                target :generation 1 :after 0 :limit 4)))
+             (record (plist-get (car (plist-get page :records)) :record)))
+        (should (equal (plist-get record :tags)
+                       '(producer (nested original))))
+        (should (equal (plist-get record :attributes)
+                       '(:nested (:value "original")
+                         :vector ["vector-original"])))))))
+
 (ert-deftest e-board-sqlite-service-append-route-returns-canonical-result-and-dedupes-old-source ()
   "SQLite assigns canonical append/routing identity and dedupes full history."
   (e-board-sqlite-service-test--with-fixture
@@ -852,12 +906,82 @@
                     (< (float-time) deadline))
           (sit-for 0.01)))
       (should-not (e-chat-service-binding harness session-id))
-      (should-not (gethash board-id e-chat-service--board-bindings))
+      (should-not (e-chat-service--board-bindings-for binding))
       (should (eq (e-chat-service-binding-lifecycle-state binding) 'retired))
       (should-not (e-chat-service-binding-idle-close-timer binding))
       (should-not (e-chat-service-binding-activity-subscription binding))
       (should-not (e-chat-service-subscription-sqlite-query-work subscription))
       (should-not (e-chat-service-subscription-drain-timer subscription)))))
+
+(ert-deftest e-chat-service-live-board-coordination-is-runtime-scoped ()
+  "Equal Board ids in two databases never share close or continuation state."
+  (let ((e-chat-service--bindings (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--board-bindings
+         (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--continuation-reconciling
+         (make-hash-table :test 'eq :weakness 'key))
+        (e-chat-service--continuation-admissions
+         (make-hash-table :test 'eq :weakness 'key))
+        (spec
+         (e-work-spec-create
+          :id "runtime-scoped-reconcile" :execution 'cooperative
+          :interactive-policy 'async :owner 'e-chat-service-runtime-scope-test
+          :runner (lambda (_handle _arguments _context) :deferred))))
+    (e-board-sqlite-service-test--with-fixture
+        (store-a service-a board-a session-a _participant-a)
+      (e-board-sqlite-service-test--with-fixture
+          (store-b service-b board-b session-b _participant-b)
+        (let* ((runtime-a (e-board-sqlite-service-runtime service-a))
+               (runtime-b (e-board-sqlite-service-runtime service-b))
+               (harness-a (e-harness-create :sessions store-a))
+               (harness-b (e-harness-create :sessions store-b))
+               (binding-a
+                (e-board-sqlite-service-test--await
+                 (e-chat-service-binding-start harness-a session-a)))
+               (binding-b
+                (e-board-sqlite-service-test--await
+                 (e-chat-service-binding-start harness-b session-b)))
+               reconciliation-works)
+          (unwind-protect
+              (progn
+                (should (equal board-a board-b))
+                (should-not (eq runtime-a runtime-b))
+                (should (equal (e-chat-service--board-bindings-for binding-a)
+                               (list binding-a)))
+                (should (equal (e-chat-service--board-bindings-for binding-b)
+                               (list binding-b)))
+                (cl-letf (((symbol-function
+                            'e-board-sqlite-service-orchestration-runs-start)
+                           (lambda (_service _board-id &optional _limit)
+                             (let ((work (e-work-start spec nil)))
+                               (push work reconciliation-works)
+                               work))))
+                  (e-chat-service--reconcile-sqlite-continuation binding-a)
+                  (e-chat-service--reconcile-sqlite-continuation binding-b)
+                  ;; A second request in one runtime is coalesced, while the
+                  ;; equal Board id in the other runtime remains independent.
+                  (e-chat-service--reconcile-sqlite-continuation binding-a)
+                  (should (= (length reconciliation-works) 2))
+                  (should (= (hash-table-count
+                              e-chat-service--continuation-reconciling)
+                             2))
+                  (e-chat-service-close-board binding-a)
+                  (should-not
+                   (e-chat-service--runtime-coordination-table
+                    e-chat-service--board-bindings runtime-a))
+                  (should (e-chat-service-binding harness-b session-b))
+                  (should (equal
+                           (e-chat-service--board-bindings-for binding-b)
+                           (list binding-b)))
+                  (dolist (work reconciliation-works)
+                    (e-work-finish work '(:records nil :truncated nil)))
+                  (should (zerop
+                           (hash-table-count
+                            e-chat-service--continuation-reconciling)))))
+            (when (e-chat-service--binding-live-p binding-a)
+              (e-chat-service-close-board binding-a))
+            (when (e-chat-service--binding-live-p binding-b)
+              (e-chat-service-close-board binding-b))))))))
 
 (ert-deftest e-board-sqlite-service-orchestration-uses-board-id-not-board-replica ()
   "SQL orchestration publishes and queries detached facts by Board identity."

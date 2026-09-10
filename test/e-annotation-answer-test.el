@@ -23,6 +23,10 @@
        "e-test-environment-support.el"
        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
+(load (expand-file-name
+       "e-board-producer-test-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defmacro e-annotation-answer-test--with-file (file-var &rest body)
   "Run BODY with a temp Org FILE-VAR carrying one open user-authored thread."
@@ -45,26 +49,11 @@
              ,@body)
          (delete-directory dir t)))))
 
-(cl-defmacro e-annotation-answer-test--with-board ((board binding) &body body)
-  "Run BODY with isolated producer authority BINDING on BOARD."
-  (declare (indent 1) (debug ((symbolp symbolp) body)))
-  `(let ((e-board--registry (make-hash-table :test 'equal))
-         (e-board--id-sequence 0)
-         (e-board-registry--boards (make-hash-table :test 'equal))
-         (e-board-registry--id-sequence 0)
-         (e-board-runtime--producer-bindings (make-hash-table :test 'equal))
-         (e-board-runtime--producer-epoch 0)
-         (e-board-runtime--producer-head nil)
-         (e-board-runtime--producer-tail nil)
-         (e-board-runtime--producer-drain-scheduled nil)
-         (e-board-runtime--producer-scheduler (lambda (_callback)))
-         (e-board-runtime--admission-open-p t)
-         (e-board-runtime--unsettled-producer-count 0)
-         (e-board-runtime--unsettled-generation 0)
-         (e-annotation-answer-producer-binding nil))
-     (let* ((,board (e-board-registry-create :id "annotation-board"))
-            (,binding (e-board-runtime-producer-bind
-                       'annotation-test ,board :tags '(documents))))
+(cl-defmacro e-annotation-answer-test--with-board ((target) &body body)
+  "Run BODY with one disposable SQLite publication TARGET."
+  (declare (indent 1) (debug ((symbolp) body)))
+  `(let ((e-annotation-answer-publication-target nil))
+     (e-board-producer-test-with-target (,target)
        ,@body)))
 
 (defconst e-annotation-answer-test--thread
@@ -90,17 +79,15 @@
 (ert-deftest e-annotation-answer-test-dispatch-publishes-when-actionable ()
   "Dispatch publishes the actionable prompt through a board producer."
   (e-annotation-answer-test--with-file file
-    (e-annotation-answer-test--with-board (_board binding)
-      (let ((record (e-annotation-answer-dispatch
-                     :file file :producer-binding binding)))
-        (should record)
-        (e-board-runtime-drain-producers)
+    (e-annotation-answer-test--with-board (target)
+      (let ((work (e-annotation-answer-dispatch
+                   :file file :publication-target target)))
+        (should (e-work-handle-p work))
+        (e-board-producer-test-await work)
         (should (string-match-p
                  "Why this?"
-                 (e-board-message-content
-                  (e-board-publication-message
-                   (e-board-runtime-producer-publication-publication
-                    record)))))))))
+                 (plist-get (car (e-board-producer-test-records target))
+                            :content)))))))
 
 (ert-deftest e-annotation-answer-test-dispatch-noop-without-actionable ()
   "Dispatch spawns nothing when no thread is actionable."
@@ -117,13 +104,16 @@
 (ert-deftest e-annotation-answer-test-sweep-publishes-actionable-files ()
   "The sweep publishes one fact per Org file with actionable threads."
   (e-annotation-answer-test--with-file file
-    (e-annotation-answer-test--with-board (_board binding)
+    (e-annotation-answer-test--with-board (target)
       (let ((result (e-annotation-answer-sweep
                      (list file "/tmp/not-org.txt")
-                     :producer-binding binding)))
+                     :publication-target target)))
         (should (equal (list file) (plist-get result :dispatched)))
         (should (member "/tmp/not-org.txt" (plist-get result :skipped)))
-        (should (= e-board-runtime--unsettled-producer-count 1))))))
+        (let ((records (e-board-producer-test-records target)))
+          (should (= (length records) 1))
+          (should (string-match-p "Why this?"
+                                  (plist-get (car records) :content))))))))
 
 (ert-deftest e-annotation-answer-test-sweep-honors-kill-switch ()
   "The sweep dispatches nothing when the kill switch is set."
@@ -150,49 +140,35 @@
 
 ;; --- board-only cutover -----------------------------------------------------
 
-(ert-deftest e-annotation-answer-test-dispatch-requires-producer-binding ()
-  "An actionable dispatch cannot escape through missing board authority."
+(ert-deftest e-annotation-answer-test-dispatch-requires-sql-target ()
+  "An actionable dispatch cannot escape through missing SQLite authority."
   (let ((file (make-temp-file "e-annotation-answer-" nil ".org")))
     (unwind-protect
         (cl-letf (((symbol-function 'e-annotation-answer--actionable)
                    (lambda (_file) (list e-annotation-answer-test--thread))))
           (should-error (e-annotation-answer-dispatch :file file)
-                        :type 'e-board-runtime-producer-disabled))
+                        :type 'wrong-type-argument))
       (delete-file file))))
 
 (ert-deftest e-annotation-answer-test-dispatch-publishes-board-input ()
   "An actionable dispatch publishes work and exposes zero-match routing."
-  (e-annotation-answer-test--with-board (board binding)
+  (e-annotation-answer-test--with-board (target)
     (let ((file (make-temp-file "e-annotation-answer-" nil ".org")))
       (unwind-protect
           (cl-letf (((symbol-function 'e-annotation-answer--actionable)
                      (lambda (_file) (list e-annotation-answer-test--thread))))
-            (let ((item (e-annotation-answer-dispatch
-                         :file file :producer-binding binding)))
-              (should (eq (e-board-runtime-producer-publication-state item)
-                          'queued))
-              (e-board-runtime-drain-producers)
-              (let ((message (e-board-publication-message
-                              (e-board-runtime-producer-publication-publication
-                               item))))
-                (should (eq (e-board-message-kind message) 'input))
-                (should (equal (e-board-message-tags message)
-                               '(documents annotation answer)))
+            (let ((work (e-annotation-answer-dispatch
+                         :file file :publication-target target)))
+              (e-board-producer-test-await work)
+              (let ((record (car (e-board-producer-test-records target))))
+                (should (eq (plist-get record :kind) 'input))
+                (should (equal (plist-get record :tags)
+                               '(annotation answer)))
                 (should (equal (plist-get
-                                (e-board-message-attributes message)
-                                :thread-count)
+                                (plist-get record :attributes) :thread-count)
                                1))
                 (should (string-match-p "Why this?"
-                                        (e-board-message-content message)))
-                (e-board-runtime--drain-input-routing
-                 board
-                 (lambda ()
-                   (e-board-drain-input-classifications
-                    (e-board-registry-board-source-board board))))
-                (should (eq (e-board-message-routing-state message) 'unrouted)))
-              (should (= (hash-table-count
-                          (e-board-registry-board-participants board))
-                         0))))
+                                        (plist-get record :content))))))
         (delete-file file)))))
 
 (ert-deftest e-annotation-answer-test-session-context-path-is-retired ()
@@ -201,18 +177,17 @@
    (e-annotation-answer-dispatch
     :file "/tmp/answer.org" :with-session-context t)))
 
-(ert-deftest e-annotation-answer-test-stale-binding-fences-sweep ()
-  "A retained annotation sweep binding cannot publish after restart."
-  (e-annotation-answer-test--with-board (_board binding)
-    (e-board-runtime-producer-disable binding)
+(ert-deftest e-annotation-answer-test-configured-target-publishes-sweep ()
+  "The configured default remains a detached SQLite publication target."
+  (e-annotation-answer-test--with-board (target)
+    (e-annotation-answer-configure-publication-target target)
     (let ((file (make-temp-file "e-annotation-answer-" nil ".org")))
       (unwind-protect
           (cl-letf (((symbol-function 'e-annotation-answer--actionable)
                      (lambda (_file) (list e-annotation-answer-test--thread))))
-            (should-error
-             (e-annotation-answer-sweep
-              (list file) :producer-binding binding)
-             :type 'e-board-runtime-producer-disabled))
+            (let ((result (e-annotation-answer-sweep (list file))))
+              (should (equal (plist-get result :dispatched) (list file)))
+              (should (= (length (e-board-producer-test-records target)) 1))))
         (delete-file file)))))
 
 (provide 'e-annotation-answer-test)

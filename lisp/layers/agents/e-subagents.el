@@ -41,7 +41,7 @@
   (string-join
    '("# Subagent work actions"
      ""
-     "Subagents delegate work to child sessions on purpose-built harness types. A child's whole transcript stays out of this session's context: you see a handle, a status, and a compact result. The e harness does not know about subagents."
+     "Subagents delegate work to child sessions on purpose-built harness types. A child's whole transcript stays out of this session's context: you see a handle and live execution status. Terminal results and history are Board facts queried from SQLite; the live registry releases the child when it settles. The e harness does not know about subagents."
      ""
      "## Choosing a type"
      ""
@@ -50,16 +50,15 @@
      "## Actions"
      ""
      "- `spawn`: input `(:type STRING :prompt STRING :seed-messages ARRAY :label STRING :schedule STRING)`. Creates a fresh child session on the type's harness, seeds it (prompt only by default; `:seed-messages` appends explicit context first), records lineage, and starts a non-blocking run. Returns a subagent record immediately. `:schedule` is `direct` (default) or `queue`."
-     "- `list`: returns compact records for the current session's direct children, newest-first."
+     "- `list`: returns compact live records for the current session's executing direct children, newest-first."
      "- `list-runs`: returns bounded durable run projections from this session's board."
      "- `run-status`: input `(:run-id STRING)`. Returns one bounded durable run projection with task states, reports, conflicts, deadline evidence, and continuation state."
-     "- `status`: input `(:subagent-id STRING)`. Returns one full record."
-     "- `read`: input `(:subagent-id STRING :raw BOOLEAN :limit INTEGER)`. Default returns the compact result summary plus structured outputs. With `:raw t`, returns a bounded transcript excerpt (last `:limit` messages, default 20) plus the child's `session://` URI, so you can pull detail on demand without the transcript entering your context."
+     "- `status`: input `(:subagent-id STRING)`. Returns one live execution record."
+     "- `read`: input `(:subagent-id STRING :raw BOOLEAN :limit INTEGER)`. While the child is live, default returns its compact reported summary plus structured outputs. With `:raw t`, returns a bounded transcript excerpt (last `:limit` messages, default 20) plus the child's `session://` URI, so you can pull detail on demand without the transcript entering your context."
      "- `steer`: input `(:subagent-id STRING :prompt STRING :reason STRING)`. Steers the child's running turn in place. `:reason` is bounded audit data and reaches the child only through `:prompt`."
      "- `send`: input `(:subagent-id STRING :prompt STRING)`. Queues a follow-up turn to the child."
-     "- `resume`: input `(:subagent-id STRING :prompt STRING)`. Recovers a child whose turn ended in `failed` or `cancelled` while its session stayed live (e.g. a transient backend error): starts one more turn on the existing child session, keeping its accumulated context instead of respawning. `:prompt` is optional and defaults to a minimal continue. Refuses a child that was deliberately `shutdown` -- respawn that instead."
-     "- `interrupt`: input `(:subagent-id STRING :reason STRING)`. Explicitly aborts the child's active turn, leaving the record inspectable. `:reason` is audit data only."
-     "- `shutdown`: input `(:subagent-id STRING :reason STRING)`. Explicitly interrupts if running and marks the record terminal. A shut-down child is not resumable. `:reason` is audit data only."
+     "- `interrupt`: input `(:subagent-id STRING :reason STRING)`. Explicitly aborts the child's active turn and retires its live record. `:reason` is audit data only."
+     "- `shutdown`: input `(:subagent-id STRING :reason STRING)`. Explicitly interrupts a running child and retires its live record. `:reason` is audit data only."
      "- `configure-type`: input `(:type STRING :enable-layers ARRAY :disable-layers ARRAY :layer-config ALIST)`. Turns individual capabilities on or off for a spawnable type's shared harness. `layer-config` maps a capability id to its option plist, the generic way to pass or overwrite a layer's configuration -- e.g. `((agents-std-context :skills-include (\"writing\")))` to allow only the `writing` skill, or `:skills-exclude` to deny a few. Because children of a type share one harness, this configures the type, not a single child; call it before spawning."
      "- `report` (child-side): input `(:outputs ARRAY :summary STRING)`. A child calls this to set a structured result that overrides its final message. `outputs` entries are `(:kind :value|:uri :label)`."
      ""
@@ -76,7 +75,7 @@
      ""
      "Do not poll a child's status across turns, and never sleep to wait. Use the `await` tool (a model-facing tool, not an action): reference each child as `subagent:SUBAGENT-ID`, e.g. `(await :refs [\"subagent:sub_000003\" \"subagent:sub_000004\"] :mode \"all\" :timeout 90)`. It blocks your turn -- not Emacs -- until the referenced children settle (`all`, default) or the first settles (`any`), or the timeout expires. Use `any` when useful parent work can consume the first result while other children continue; use `all` only when synthesis genuinely requires every result."
      ""
-     "A timeout is a supervision checkpoint, not a terminal error. Compare each pending child's progress sequence and age with the prior checkpoint. Re-await only when progress advanced or a declared long operation remains credible. When progress is unchanged, inspect with `status` or bounded `read :raw t`, then steer once with one concrete next action. If the post-steer checkpoint is still unchanged, explicitly `interrupt` and choose `resume` only for a transient failed or cancelled turn with useful context; otherwise spawn a fresh, narrower child. Time alone never authorizes cancellation. This is the fan-in step after a fan-out: spawn one child per non-overlapping unit, then await them in one call.")
+     "A timeout is a supervision checkpoint, not a terminal error. Compare each pending child's progress sequence and age with the prior checkpoint. Re-await only when progress advanced or a declared long operation remains credible. When progress is unchanged, inspect with `status` or bounded `read :raw t`, then steer once with one concrete next action. If the post-steer checkpoint is still unchanged, explicitly `interrupt` and spawn a fresh, narrower child only when the work is still required. Time alone never authorizes cancellation. This is the fan-in step after a fan-out: spawn one child per non-overlapping unit, then await them in one call.")
    "\n")
   "Skill body documenting the subagents action contract.")
 

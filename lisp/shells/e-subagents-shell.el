@@ -45,6 +45,9 @@ policy."
 (defvar-local e-subagents-shell--parent-session-id nil
   "Parent session id whose children the current list buffer shows.")
 
+(defvar-local e-subagents-shell--publication-target nil
+  "Explicit SQL target for intervention facts from this presentation.")
+
 (defvar-local e-subagents-shell--progress-checkpoints nil
   "Latest progress sequence and unchanged count keyed by subagent id.")
 
@@ -173,6 +176,13 @@ Bound to `e-subagent-registry-change-functions' so the list tracks live status."
   (or (tabulated-list-get-id)
       (user-error "No subagent on this line")))
 
+(defun e-subagents-shell--require-publication-target ()
+  "Return this buffer's explicit SQL publication target, or signal."
+  (unless (e-board-sqlite-publication-target-valid-p
+           e-subagents-shell--publication-target)
+    (user-error "This subagent view has no parent Board publication target"))
+  e-subagents-shell--publication-target)
+
 (defun e-subagents-shell-steer ()
   "Steer the child at point with a prompt and optional audit reason."
   (interactive)
@@ -181,7 +191,9 @@ Bound to `e-subagent-registry-change-functions' so the list tracks live status."
          (reason (read-string "Reason (optional): ")))
     (when (string-empty-p (string-trim prompt))
       (user-error "Steer prompt cannot be empty"))
-    (e-subagent-steer e-subagents-shell--registry subagent-id prompt
+    (e-subagent-steer e-subagents-shell--registry
+                      (e-subagents-shell--require-publication-target)
+                      subagent-id prompt
                       (unless (string-empty-p (string-trim reason)) reason))
     (e-subagents-shell--refresh)))
 
@@ -207,6 +219,7 @@ Bound to `e-subagent-registry-change-functions' so the list tracks live status."
   "Interrupt the subagent on the current row."
   (interactive)
   (e-subagent-interrupt e-subagents-shell--registry
+                        (e-subagents-shell--require-publication-target)
                         (e-subagents-shell--subagent-id-at-point))
   (e-subagents-shell--refresh))
 
@@ -214,6 +227,7 @@ Bound to `e-subagent-registry-change-functions' so the list tracks live status."
   "Shut down the subagent on the current row."
   (interactive)
   (e-subagent-shutdown e-subagents-shell--registry
+                       (e-subagents-shell--require-publication-target)
                        (e-subagents-shell--subagent-id-at-point))
   (e-subagents-shell--refresh))
 
@@ -270,10 +284,13 @@ live chat with the child."
   (e-subagents-shell--configure-modal-editing))
 
 ;;;###autoload
-(cl-defun e-subagents-list-buffer (&key registry parent-session-id)
+(cl-defun e-subagents-list-buffer
+    (&key registry parent-session-id publication-target)
   "Open the subagents list buffer and return it.
 REGISTRY defaults to `e-subagent-actions-default-registry'.  PARENT-SESSION-ID,
-when non-nil, scopes the list to that parent's direct children."
+when non-nil, scopes the list to that parent's direct children.
+PUBLICATION-TARGET is the explicit SQL destination required by intervention
+commands; read-only inspection remains available without it."
   (interactive)
   (let ((registry (or registry e-subagent-actions-default-registry))
         (buffer (get-buffer-create e-subagents-shell-buffer-name)))
@@ -282,6 +299,7 @@ when non-nil, scopes the list to that parent's direct children."
         (e-subagents-shell-mode))
       (setq e-subagents-shell--registry registry)
       (setq e-subagents-shell--parent-session-id parent-session-id)
+      (setq e-subagents-shell--publication-target publication-target)
       (setq e-subagents-shell--progress-checkpoints (make-hash-table :test 'equal))
       (setq tabulated-list-sort-key '("Last turn" . t))
       (e-subagents-shell--refresh))

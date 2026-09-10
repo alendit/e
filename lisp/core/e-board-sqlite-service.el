@@ -6,31 +6,396 @@
 ;;; Commentary:
 
 ;; Consumer-shaped asynchronous Board operations for ordinary SQLite
-;; composition.  The service retains only the runtime transport.  Canonical
+;; composition.  The service retains the runtime transport plus bounded live
+;; pickup subscribers and executing-delivery outcome callbacks.  Canonical
 ;; identities, order, routing, pickup state, and read cursors are returned by
 ;; the worker transaction and are never predicted or mirrored here.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'e-board-orchestration)
 (require 'e-board-storage)
 (require 'e-runtime-store)
 (require 'e-work)
 
+(cl-defstruct (e-board-sqlite-live-hub
+               (:constructor e-board-sqlite-live-hub--create))
+  "Process-local callbacks shared by services over one runtime transport."
+  (pickup-observers (make-hash-table :test 'equal))
+  (delivery-outcome-observers (make-hash-table :test 'equal)))
+
+(defvar e-board-sqlite-service--live-hubs
+  (make-hash-table :test 'eq :weakness 'key-and-value)
+  "Weak runtime-to-hub map for bounded live Board coordination.")
+
+(defun e-board-sqlite-service--detached-copy (value)
+  "Return a recursively detached copy of serializable VALUE.
+Unlike `copy-tree', this copies mutable leaves such as strings, vectors, and
+hash tables as well as cons structure.  Board application-service inputs are
+bounded acyclic values suitable for the runtime-store codec; objects outside
+that value language are immutable scalars and are returned unchanged."
+  (cond
+   ((stringp value) (copy-sequence value))
+   ((consp value)
+    (cons (e-board-sqlite-service--detached-copy (car value))
+          (e-board-sqlite-service--detached-copy (cdr value))))
+   ((hash-table-p value)
+    (let ((copy (make-hash-table :test (hash-table-test value)
+                                 :size (max 1 (hash-table-count value)))))
+      (maphash
+       (lambda (key entry)
+         (puthash (e-board-sqlite-service--detached-copy key)
+                  (e-board-sqlite-service--detached-copy entry)
+                  copy))
+       value)
+      copy))
+   ((recordp value)
+    (apply #'record
+           (aref value 0)
+           (cl-loop for index from 1 below (length value)
+                    collect
+                    (e-board-sqlite-service--detached-copy
+                     (aref value index)))))
+   ((vectorp value)
+    (apply #'vector
+           (mapcar #'e-board-sqlite-service--detached-copy
+                   (append value nil))))
+   ((bool-vector-p value) (copy-sequence value))
+   (t value)))
+
 (cl-defstruct (e-board-sqlite-service
                (:constructor e-board-sqlite-service--create))
-  runtime)
+  runtime
+  live-hub)
+
+(cl-defstruct (e-board-sqlite-publication-target
+               (:constructor e-board-sqlite-publication-target--create)
+               (:conc-name e-board-sqlite-publication-target--)
+               (:copier nil))
+  "A narrow immutable publication address for one durable Board.
+SERVICE and BOARD-ID name the SQL authority.  The remaining fields are copied
+defaults used only to form a requested transaction; the target contains no
+Board aggregate, registry membership, or durable-state mirror."
+  (service nil :read-only t)
+  (board-id nil :read-only t)
+  (author nil :read-only t)
+  (requester-actor nil :read-only t)
+  (tags nil :read-only t)
+  (attributes nil :read-only t)
+  (to nil :read-only t)
+  (mode nil :read-only t))
+
+(cl-defstruct (e-board-sqlite-delivery-observation
+               (:constructor e-board-sqlite-delivery-observation--create)
+               (:conc-name e-board-sqlite-delivery-observation--)
+               (:copier nil))
+  "One process-local callback awaiting a live delivery's terminal outcome."
+  service delivery-id callback active-p)
+
+(cl-defstruct (e-board-sqlite-pickup-observation
+               (:constructor e-board-sqlite-pickup-observation--create)
+               (:conc-name e-board-sqlite-pickup-observation--)
+               (:copier nil))
+  "One process-local subscriber for committed pickups on one live Board."
+  service board-id callback active-p)
 
 (cl-defstruct (e-board-sqlite-service-operation
                (:constructor e-board-sqlite-service--operation-create))
   service kind body owner-key work request settled)
 
 (defun e-board-sqlite-service-create (runtime)
-  "Return a stateless Board application service over RUNTIME."
+  "Return a Board application service over RUNTIME.
+The service owns only transport and process-local live coordination; SQLite
+owns every durable Board fact."
   (unless (e-runtime-store-p runtime)
     (signal 'wrong-type-argument (list 'e-runtime-store-p runtime)))
-  (e-board-sqlite-service--create :runtime runtime))
+  (let ((hub
+         (or (gethash runtime e-board-sqlite-service--live-hubs)
+             (let ((created (e-board-sqlite-live-hub--create)))
+               (puthash runtime created e-board-sqlite-service--live-hubs)
+               created))))
+    (e-board-sqlite-service--create :runtime runtime :live-hub hub)))
+
+(defun e-board-sqlite-service--pickup-observer-table (service)
+  "Return SERVICE's runtime-shared live pickup observer table."
+  (e-board-sqlite-live-hub-pickup-observers
+   (e-board-sqlite-service-live-hub service)))
+
+(defun e-board-sqlite-service--delivery-observer-table (service)
+  "Return SERVICE's runtime-shared live delivery observer table."
+  (e-board-sqlite-live-hub-delivery-outcome-observers
+   (e-board-sqlite-service-live-hub service)))
+
+(cl-defun e-board-sqlite-publication-target-create
+    (service board-id &key author requester-actor tags attributes to
+             (mode 'inject))
+  "Return an explicit SQL publication target for BOARD-ID on SERVICE.
+AUTHOR, REQUESTER-ACTOR, TAGS, ATTRIBUTES, TO, and MODE are immutable defaults
+for later transactions.  Callers must still supply a stable source key for
+each publication attempt."
+  (unless (e-board-sqlite-service-p service)
+    (signal 'wrong-type-argument (list 'e-board-sqlite-service-p service)))
+  (unless (and (stringp board-id) (not (string-empty-p board-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p board-id)))
+  (e-board-sqlite-publication-target--create
+   :service service
+   :board-id (e-board-sqlite-service--detached-copy board-id)
+   :author (e-board-sqlite-service--detached-copy author)
+   :requester-actor
+   (e-board-sqlite-service--detached-copy requester-actor)
+   :tags (e-board-sqlite-service--detached-copy tags)
+   :attributes (e-board-sqlite-service--detached-copy attributes)
+   :to (e-board-sqlite-service--detached-copy to) :mode mode))
+
+(defun e-board-sqlite-publication-target-valid-p (target)
+  "Return non-nil when TARGET names a usable SQL Board address."
+  (and (e-board-sqlite-publication-target-p target)
+       (e-board-sqlite-service-p
+        (e-board-sqlite-publication-target--service target))
+       (let ((board-id
+              (e-board-sqlite-publication-target--board-id target)))
+         (and (stringp board-id) (not (string-empty-p board-id))))))
+
+(defun e-board-sqlite-publication-target-board-id (target)
+  "Return a detached copy of TARGET's durable Board id."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service--detached-copy
+   (e-board-sqlite-publication-target--board-id target)))
+
+(defun e-board-sqlite-pickup-observation-cancel (observation)
+  "Cancel process-local pickup OBSERVATION and return non-nil when active."
+  (when (and (e-board-sqlite-pickup-observation-p observation)
+             (e-board-sqlite-pickup-observation--active-p observation))
+    (let* ((service (e-board-sqlite-pickup-observation--service observation))
+           (board-id (e-board-sqlite-pickup-observation--board-id observation))
+           (table (e-board-sqlite-service--pickup-observer-table service))
+           (remaining (delq observation (gethash board-id table))))
+      (setf (e-board-sqlite-pickup-observation--active-p observation) nil)
+      (if remaining
+          (puthash board-id remaining table)
+        (remhash board-id table))
+      t)))
+
+(defun e-board-sqlite-service-observe-pickups (service board-id callback)
+  "Observe committed pickup batches for BOARD-ID through SERVICE.
+CALLBACK receives a detached list of canonical pickup rows.  The observation
+is process-local subscriber coordination only; durable pickup facts remain in
+SQLite."
+  (unless (e-board-sqlite-service-p service)
+    (signal 'wrong-type-argument (list 'e-board-sqlite-service-p service)))
+  (unless (and (stringp board-id) (not (string-empty-p board-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p board-id)))
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (let* ((table (e-board-sqlite-service--pickup-observer-table service))
+         (key (copy-sequence board-id))
+         (observation
+          (e-board-sqlite-pickup-observation--create
+           :service service :board-id key :callback callback :active-p t)))
+    (puthash key (cons observation (gethash key table)) table)
+    observation))
+
+(defun e-board-sqlite-service--notify-pickups (service board-id pickups)
+  "Notify SERVICE's live BOARD-ID subscribers of canonical PICKUPS."
+  (let ((observations
+         (copy-sequence
+          (gethash board-id
+                   (e-board-sqlite-service--pickup-observer-table service))))
+        (detached (e-board-sqlite-service--detached-copy pickups)))
+    (dolist (observation observations)
+      (when (e-board-sqlite-pickup-observation--active-p observation)
+        (funcall (e-board-sqlite-pickup-observation--callback observation)
+                 (e-board-sqlite-service--detached-copy detached))))))
+
+(defun e-board-sqlite-service--publish-committed-pickups (work service)
+  "Publish WORK's committed pickup result to live SERVICE subscribers."
+  (let* ((status (e-work-status work))
+         (result (and (eq (plist-get status :state) 'finished)
+                      (plist-get status :result)))
+         (board-id (plist-get result :board-id))
+         (pickups (plist-get result :pickups)))
+    (when (and board-id pickups)
+      ;; Defer one event-loop turn.  Request-owned settlement callbacks must be
+      ;; able to install delivery-outcome observations before a fast live
+      ;; consumer can claim and finish the newly committed pickup.
+      (run-at-time
+       0 nil
+       (lambda ()
+         (e-board-sqlite-service--notify-pickups
+          service board-id pickups))))))
+
+(defun e-board-sqlite-delivery-observation-cancel (observation)
+  "Cancel process-local delivery OBSERVATION and return non-nil when active."
+  (when (and (e-board-sqlite-delivery-observation-p observation)
+             (e-board-sqlite-delivery-observation--active-p observation))
+    (let* ((service (e-board-sqlite-delivery-observation--service observation))
+           (delivery-id
+            (e-board-sqlite-delivery-observation--delivery-id observation))
+           (table (e-board-sqlite-service--delivery-observer-table service))
+           (remaining (delq observation (gethash delivery-id table))))
+      (setf (e-board-sqlite-delivery-observation--active-p observation) nil)
+      (if remaining
+          (puthash delivery-id remaining table)
+        (remhash delivery-id table))
+      t)))
+
+(defun e-board-sqlite-publication-target-observe-delivery-outcome
+    (target delivery-id callback)
+  "Observe DELIVERY-ID's live terminal outcome through TARGET.
+CALLBACK receives (STATUS PAYLOAD).  The observation is process-local executing
+coordination only; SQLite remains authoritative for durable pickup state."
+  (e-board-sqlite-publication-target--require target)
+  (unless delivery-id
+    (signal 'wrong-type-argument (list 'non-nil-delivery-id delivery-id)))
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (let* ((service (e-board-sqlite-publication-target--service target))
+         (table (e-board-sqlite-service--delivery-observer-table service))
+         (key (e-board-sqlite-service--detached-copy delivery-id))
+         (observation
+          (e-board-sqlite-delivery-observation--create
+           :service service :delivery-id key :callback callback :active-p t)))
+    (puthash key (cons observation (gethash key table)) table)
+    observation))
+
+(defun e-board-sqlite-service-notify-delivery-outcome
+    (service delivery-id status payload)
+  "Notify SERVICE observers of DELIVERY-ID's live STATUS and PAYLOAD once.
+This is the narrow bridge from the live chat controller's canonical turn event
+to request-owned producer work.  It stores no terminal outcome."
+  (unless (e-board-sqlite-service-p service)
+    (signal 'wrong-type-argument (list 'e-board-sqlite-service-p service)))
+  (let* ((table (e-board-sqlite-service--delivery-observer-table service))
+         (observations (gethash delivery-id table))
+         first-error)
+    (remhash delivery-id table)
+    (dolist (observation observations)
+      (when (e-board-sqlite-delivery-observation--active-p observation)
+        (setf (e-board-sqlite-delivery-observation--active-p observation) nil)
+        (condition-case error
+            (funcall
+             (e-board-sqlite-delivery-observation--callback observation)
+             status
+             (e-board-sqlite-service--detached-copy payload))
+          (error
+           ;; One request-owned callback must not prevent settlement of the
+           ;; other observers for the same canonical delivery.  Re-signal the
+           ;; first defect only after every observer has been released.
+           (unless first-error
+             (setq first-error error))))))
+    (when first-error
+      (signal (car first-error) (cdr first-error)))
+    (and observations t)))
+
+(defun e-board-sqlite-publication-target--require (target)
+  "Return TARGET after validating its SQL publication shape."
+  (unless (e-board-sqlite-publication-target-valid-p target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p target)))
+  target)
+
+(cl-defun e-board-sqlite-publication-target-append-route-start
+    (target content source-input-key
+            &key author requester-actor tags attributes to mode reference
+            created-at)
+  "Append and route CONTENT through TARGET using stable SOURCE-INPUT-KEY."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service-append-route-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target)
+   :author (or (e-board-sqlite-service--detached-copy author)
+               (e-board-sqlite-service--detached-copy
+                (e-board-sqlite-publication-target--author target)))
+   :requester-actor
+   (or (e-board-sqlite-service--detached-copy requester-actor)
+       (e-board-sqlite-service--detached-copy
+        (e-board-sqlite-publication-target--requester-actor target)))
+   :tags (append
+          (e-board-sqlite-service--detached-copy
+           (e-board-sqlite-publication-target--tags target))
+          (e-board-sqlite-service--detached-copy tags))
+   :attributes
+   (append
+    (e-board-sqlite-service--detached-copy
+     (e-board-sqlite-publication-target--attributes target))
+    (e-board-sqlite-service--detached-copy attributes))
+   :to (or (e-board-sqlite-service--detached-copy to)
+           (e-board-sqlite-service--detached-copy
+            (e-board-sqlite-publication-target--to target)))
+   :mode (or mode (e-board-sqlite-publication-target--mode target) 'inject)
+   :content (e-board-sqlite-service--detached-copy content)
+   :reference (e-board-sqlite-service--detached-copy reference)
+   :source-input-key (e-board-sqlite-service--detached-copy source-input-key)
+   :created-at created-at))
+
+(cl-defun e-board-sqlite-publication-target-record-append-start
+    (target record-kind source-kind source-key &rest record-fields)
+  "Append one canonical non-routed record through TARGET."
+  (e-board-sqlite-publication-target--require target)
+  (apply #'e-board-sqlite-service-record-append-start
+         (e-board-sqlite-publication-target--service target)
+         (e-board-sqlite-publication-target--board-id target)
+         record-kind source-kind
+         (e-board-sqlite-service--detached-copy source-key)
+         (e-board-sqlite-service--detached-copy record-fields)))
+
+(cl-defun e-board-sqlite-publication-target-fact-start
+    (target content source-fact-key &key author tags attributes reference)
+  "Append one observation-only fact through TARGET."
+  (e-board-sqlite-publication-target-record-append-start
+   target 'fact 'fact source-fact-key
+   :author (or (e-board-sqlite-service--detached-copy author)
+               (e-board-sqlite-service--detached-copy
+                (e-board-sqlite-publication-target--author target)))
+   :tags (append
+          (e-board-sqlite-service--detached-copy
+           (e-board-sqlite-publication-target--tags target))
+          (e-board-sqlite-service--detached-copy tags))
+   :attributes
+   (append
+    (e-board-sqlite-service--detached-copy
+     (e-board-sqlite-publication-target--attributes target))
+    (e-board-sqlite-service--detached-copy attributes))
+   :content (e-board-sqlite-service--detached-copy content)
+   :reference (e-board-sqlite-service--detached-copy reference)))
+
+(cl-defun e-board-sqlite-publication-target-orchestration-fact-start
+    (target fact &key author)
+  "Validate and append orchestration FACT through TARGET."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service-orchestration-fact-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target) fact
+   :author (or (e-board-sqlite-service--detached-copy author)
+               (e-board-sqlite-service--detached-copy
+                (e-board-sqlite-publication-target--author target)))))
+
+(defun e-board-sqlite-publication-target-orchestration-run-start
+    (target run-id &optional limit)
+  "Read TARGET's bounded durable RUN-ID fact set."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service-orchestration-run-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target) run-id limit))
+
+(defun e-board-sqlite-publication-target-orchestration-runs-start
+    (target &optional limit)
+  "Read facts for TARGET's newest bounded durable run set."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service-orchestration-runs-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target) limit))
+
+(defun e-board-sqlite-publication-target-record-page-start
+    (target &rest arguments)
+  "Read a bounded canonical record page from TARGET using ARGUMENTS."
+  (e-board-sqlite-publication-target--require target)
+  (apply #'e-board-sqlite-service-record-page-start
+         (e-board-sqlite-publication-target--service target)
+         (e-board-sqlite-publication-target--board-id target)
+         arguments))
 
 (defun e-board-sqlite-service--settle (operation request)
   "Settle OPERATION exactly once from terminal runtime REQUEST."
@@ -40,10 +405,13 @@
     (let ((work (e-board-sqlite-service-operation-work operation)))
       (if (eq (e-runtime-store-request--state request) 'committed)
           (e-work-finish
-           work (copy-tree (e-runtime-store-request--result request) t))
+           work
+           (e-board-sqlite-service--detached-copy
+            (e-runtime-store-request--result request)))
         (e-work-fail
          work
-         (or (copy-tree (e-runtime-store-request--error request) t)
+         (or (e-board-sqlite-service--detached-copy
+              (e-runtime-store-request--error request))
              '(e-board-storage-error "Board operation did not commit")))))))
 
 (defun e-board-sqlite-service--run (handle operation _context)
@@ -86,8 +454,9 @@
     (signal 'wrong-type-argument (list 'e-board-sqlite-service-p service)))
   (let* ((operation
           (e-board-sqlite-service--operation-create
-           :service service :kind kind :body (copy-tree body t)
-           :owner-key (copy-tree owner-key t)))
+           :service service :kind kind
+           :body (e-board-sqlite-service--detached-copy body)
+           :owner-key (e-board-sqlite-service--detached-copy owner-key)))
          (work
           (e-work-prepare
            e-board-sqlite-service--work-spec operation
@@ -98,6 +467,23 @@
     (setf (e-board-sqlite-service-operation-work operation) work)
     (e-work-start-prepared work :arguments operation)
     work))
+
+(cl-defun e-board-sqlite-service-board-create-start
+    (service board-id trusted-principal &optional root)
+  "Create BOARD-ID through SERVICE and immediately return request work.
+TRUSTED-PRINCIPAL owns the durable Board root.  ROOT defaults to the minimum
+canonical identity payload and is copied before crossing the SQL boundary."
+  (unless (and (stringp board-id) (not (string-empty-p board-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p board-id)))
+  (e-board-sqlite-service--start
+   service 'write
+   (list :op 'board-create :board-id board-id
+         :trusted-principal
+         (e-board-sqlite-service--detached-copy trusted-principal)
+         :root
+         (e-board-sqlite-service--detached-copy
+          (or root (list :board-id board-id))))
+   (cons 'board board-id)))
 
 (cl-defun e-board-sqlite-service-append-route-start
     (service board-id &key session-id author requester-actor tags attributes to
@@ -111,21 +497,32 @@
   (unless source-input-key
     (signal 'e-board-storage-error
             (list "Board append requires a stable source identity" board-id)))
-  (let ((signature
+  (let* ((signature
          (list :author author :requester-actor requester-actor
                :tags tags :attributes attributes :to to :mode mode
-               :content content :reference reference)))
-    (e-board-sqlite-service--start
-     service 'write
-     (list :op 'board-append-route :board-id board-id :session-id session-id
-           :author author :requester-actor requester-actor
-           :tags (copy-tree tags t) :attributes (copy-tree attributes t)
-           :to (copy-tree to t) :mode mode :content (copy-sequence content)
-           :reference (copy-tree reference t)
-           :source-input-key (copy-tree source-input-key t)
-           :source-hash (e-board-storage-signature-hash signature)
-           :created-at created-at)
-     (if board-id (cons 'board board-id) (cons 'session session-id)))))
+               :content content :reference reference))
+         (work
+          (e-board-sqlite-service--start
+           service 'write
+           (list :op 'board-append-route :board-id board-id :session-id session-id
+                 :author author :requester-actor requester-actor
+                 :tags (e-board-sqlite-service--detached-copy tags)
+                 :attributes
+                 (e-board-sqlite-service--detached-copy attributes)
+                 :to (e-board-sqlite-service--detached-copy to)
+                 :mode mode
+                 :content (e-board-sqlite-service--detached-copy content)
+                 :reference (e-board-sqlite-service--detached-copy reference)
+                 :source-input-key
+                 (e-board-sqlite-service--detached-copy source-input-key)
+                 :source-hash (e-board-storage-signature-hash signature)
+                 :created-at created-at)
+           (if board-id (cons 'board board-id) (cons 'session session-id)))))
+    (e-work-on-settle
+     work
+     (lambda (settled)
+       (e-board-sqlite-service--publish-committed-pickups settled service)))
+    work))
 
 (cl-defun e-board-sqlite-service-record-append-start
     (service board-id record-kind source-kind source-key &rest record-fields)
@@ -136,9 +533,10 @@
      service 'write
      (list :op 'board-record-append :board-id board-id
            :record-kind record-kind :source-kind source-kind
-           :source-key (copy-tree source-key t)
+           :source-key (e-board-sqlite-service--detached-copy source-key)
            :source-hash (e-board-storage-signature-hash signature)
-           :record-fields (copy-tree record-fields t))
+           :record-fields
+           (e-board-sqlite-service--detached-copy record-fields))
      (cons 'board board-id))))
 
 (cl-defun e-board-sqlite-service-orchestration-fact-start
@@ -194,14 +592,20 @@
      service 'write
      (list :op 'chat-session-input-admit :session-id session-id
            :board-id board-id :principal principal
-           :records (vconcat (copy-tree records t))
-           :query-delta (copy-tree query-delta t)
-           :participant (copy-tree participant t)
-           :author author :requester-actor (copy-tree requester-actor t)
-           :tags (copy-tree tags t) :attributes (copy-tree attributes t)
-           :to (copy-tree to t) :mode mode :content (copy-sequence content)
-           :reference (copy-tree reference t)
-           :source-input-key (copy-tree source-input-key t)
+           :records
+           (vconcat (e-board-sqlite-service--detached-copy records))
+           :query-delta (e-board-sqlite-service--detached-copy query-delta)
+           :participant (e-board-sqlite-service--detached-copy participant)
+           :author (e-board-sqlite-service--detached-copy author)
+           :requester-actor
+           (e-board-sqlite-service--detached-copy requester-actor)
+           :tags (e-board-sqlite-service--detached-copy tags)
+           :attributes (e-board-sqlite-service--detached-copy attributes)
+           :to (e-board-sqlite-service--detached-copy to) :mode mode
+           :content (e-board-sqlite-service--detached-copy content)
+           :reference (e-board-sqlite-service--detached-copy reference)
+           :source-input-key
+           (e-board-sqlite-service--detached-copy source-input-key)
            :source-hash (e-board-storage-signature-hash signature))
      (cons 'session session-id))))
 
@@ -212,9 +616,9 @@
    service 'write
    (list :op 'chat-session-owner-admit :session-id session-id
          :board-id board-id :principal principal
-         :records (vconcat (copy-tree records t))
-         :query-delta (copy-tree query-delta t)
-         :participant (copy-tree participant t))
+         :records (vconcat (e-board-sqlite-service--detached-copy records))
+         :query-delta (e-board-sqlite-service--detached-copy query-delta)
+         :participant (e-board-sqlite-service--detached-copy participant))
    (cons 'session session-id)))
 
 (cl-defun e-board-sqlite-service-admit-participant-start
@@ -228,10 +632,11 @@ the caller supplies no reconstructed Board or locally retained generation."
    (append
     (list :op 'session-board-participant-admit
           :session-id session-id :board-id board-id
-          :records (vconcat (copy-tree records t))
-          :query-delta (copy-tree query-delta t)
-          :participant (copy-tree participant t))
-    (when pickup (list :pickup (copy-tree pickup t))))
+          :records (vconcat (e-board-sqlite-service--detached-copy records))
+          :query-delta (e-board-sqlite-service--detached-copy query-delta)
+          :participant (e-board-sqlite-service--detached-copy participant))
+    (when pickup
+      (list :pickup (e-board-sqlite-service--detached-copy pickup))))
    (cons 'session session-id)))
 
 (defun e-board-sqlite-service-transition-pickup-start
@@ -240,8 +645,9 @@ the caller supplies no reconstructed Board or locally retained generation."
   (e-board-sqlite-service--start
    service 'write
    (list :op 'board-pickup-transition :board-id board-id
-         :delivery-id (copy-tree delivery-id t)
-         :transition transition :data (copy-tree data t))
+         :delivery-id (e-board-sqlite-service--detached-copy delivery-id)
+         :transition transition
+         :data (e-board-sqlite-service--detached-copy data))
    (cons 'board board-id)))
 
 (cl-defun e-board-sqlite-service-record-page-start
@@ -250,7 +656,8 @@ the caller supplies no reconstructed Board or locally retained generation."
   (e-board-sqlite-service--start
    service 'read
    (list :op 'board-record-page :board-id board-id :generation generation
-         :after after :limit limit :selector (copy-tree selector t)
+         :after after :limit limit
+         :selector (e-board-sqlite-service--detached-copy selector)
          :through through)))
 
 (cl-defun e-board-sqlite-service-visible-window-start

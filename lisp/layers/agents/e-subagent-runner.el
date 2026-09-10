@@ -59,10 +59,6 @@ an ordinary root session seeds its own lineage id."
   "Harnesses whose declaring instance's minimal layers/config were applied.
 Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
 
-(defvar e-subagent--producer-bindings (make-hash-table :test 'equal)
-  "Live ephemeral producer bindings keyed by parent harness/session identity.
-Ordinary SQLite uses the chat binding directly and is never entered here.")
-
 (defun e-subagent--live-chat-binding (harness session-id)
   "Return SESSION-ID's process-local chat binding or signal clearly."
   (or (e-chat-service-binding harness session-id)
@@ -76,55 +72,46 @@ Ordinary SQLite uses the chat binding directly and is never entered here.")
   '(:prompt-cache-default :prompt-cache-retention)
   "Prompt-cache policy options inherited by child sessions when unspecified.")
 
-(defun e-subagent--producer-target (parent-harness parent-session-id)
-  "Return the live SQL publication binding for the parent session."
+(defun e-subagent-publication-target (parent-harness parent-session-id)
+  "Return the explicit SQL target for PARENT-HARNESS's parent session."
   (let ((binding
          (e-subagent--live-chat-binding parent-harness parent-session-id)))
-    (unless (e-board-sqlite-service-p
-             (e-chat-service-binding-sqlite-service binding))
-      (signal 'e-board-runtime-producer-disabled
-              (list "Subagent parent requires SQL Board binding"
-                    parent-session-id)))
-    binding))
-
-(defun e-subagent--target-chat-binding (target)
-  "Return TARGET when it is a SQL chat binding, otherwise nil."
-  (and (e-chat-service-binding-p target)
-       (e-board-sqlite-service-p
-        (e-chat-service-binding-sqlite-service target))
-       target))
+    (e-board-sqlite-publication-target-create
+     (e-chat-service-binding-sqlite-service binding)
+     (e-chat-service-binding-board-id binding)
+     :author (format "producer:subagent:%s:%s"
+                     (e-chat-service-binding-board-id binding)
+                     parent-session-id)
+     :tags '(subagent))))
 
 (cl-defun e-subagent--publish-board-fact
     (target &key tags attributes content source-fact-key)
-  "Publish one bounded fact through SQL or ephemeral TARGET."
-  (if-let* ((binding (e-subagent--target-chat-binding target)))
-    (e-chat-service-board-fact-start
-       binding :tags tags :attributes attributes :content content
-       :source-fact-key source-fact-key)
-    (e-board-runtime-producer-publish-fact
-     target :tags tags :attributes attributes :content content)))
+  "Publish one bounded fact through explicit SQL TARGET."
+  (e-board-sqlite-publication-target-fact-start
+   target content source-fact-key
+   :tags (copy-tree tags t) :attributes (copy-tree attributes t)))
 
-(defun e-subagent--lifecycle-publication-function (target)
-  "Return the process-local lifecycle publisher for TARGET."
-  (lambda (record)
-    (e-subagent--publish-board-fact
-     target
-     :tags (list 'change (plist-get record :status))
-     :attributes (list :subagent-id (plist-get record :subagent-id)
-                       :status (plist-get record :status)
-                       :type (plist-get record :type)
-                       :parent-session-id (plist-get record :parent-session-id)
-                       :session-id (plist-get record :session-id))
-     :content (format "Subagent %s is %s"
-                      (plist-get record :subagent-id)
-                      (plist-get record :status))
-     :source-fact-key
-     ;; `subagent-id' is a process-local display identity whose sequence starts
-     ;; over after Emacs restarts.  Durable idempotency must follow the globally
-     ;; unique child session instead, or a restarted registry can collide with
-     ;; an earlier child's Board fact.
-     (list 'subagent-lifecycle (plist-get record :session-id)
-           (plist-get record :status)))))
+(defun e-subagent--publish-lifecycle (target record)
+  "Publish RECORD's lifecycle state through execution-owned TARGET.
+TARGET is retained only by the active runner closure.  The registry never owns
+publication capability or durable history."
+  (e-subagent--publish-board-fact
+   target
+   :tags (list 'change (plist-get record :status))
+   :attributes (list :subagent-id (plist-get record :subagent-id)
+                     :status (plist-get record :status)
+                     :type (plist-get record :type)
+                     :parent-session-id (plist-get record :parent-session-id)
+                     :session-id (plist-get record :session-id))
+   :content (format "Subagent %s is %s"
+                    (plist-get record :subagent-id)
+                    (plist-get record :status))
+   :source-fact-key
+   ;; `subagent-id' is a process-local display identity whose sequence starts
+   ;; over after Emacs restarts.  Durable idempotency follows the globally
+   ;; unique child session instead.
+   (list 'subagent-lifecycle (plist-get record :session-id)
+         (plist-get record :status))))
 
 (defcustom e-subagent-child-layer-ids '(subagents-child)
   "Layer ids always added to a spawned child harness.
@@ -176,9 +163,8 @@ Inherit the parent's project root so repository AGENTS.md files and
      (when assignment
        (list :board-run-id (plist-get assignment :run-id)
              :board-task-key (plist-get assignment :task-key)
-             :board-attempt (plist-get assignment :attempt)))))
+             :board-attempt (plist-get assignment :attempt))))))
 
-)
 (defun e-subagent--seed-child (child-harness child-session-id seed-messages)
   "Append SEED-MESSAGES to CHILD-SESSION-ID's own store in CHILD-HARNESS.
 Each seed is a backend-neutral message plist; the parent chooses exactly what to
@@ -348,50 +334,28 @@ finished result carries the compact summary and outputs."
           :task-key (plist-get record :task-key)
           :attempt (plist-get record :attempt))))
 
-(defun e-subagent--publish-terminal-report (registry subagent-id status args)
-  "Publish SUBAGENT-ID's terminal fact before its local registry settlement."
-  (let* ((record (e-subagent-registry--record registry subagent-id))
-         (assignment (e-subagent--durable-assignment record)))
-    (when (and assignment
-               (not (plist-get record :durable-terminal-published))
-               (not (plist-get record :durable-terminal-work)))
-      (let* ((target (plist-get record :publication-target))
-             (publication-target
-              (or (e-subagent--target-chat-binding target)
-                  (e-board-runtime-producer-binding-board target)))
-             (publication
-              (e-board-orchestration-actions-publish-terminal
-               publication-target assignment status
-               :summary (or (plist-get args :summary)
-                            (plist-get record :result-summary) "")
-               :outputs (or (plist-get args :outputs)
-                            (plist-get record :outputs) [])
-               :error (plist-get args :error)
-               :author (list :session-id (plist-get record :session-id)))))
-        (if (not (e-work-handle-p publication))
-            (plist-put record :durable-terminal-published t)
-          (plist-put record :durable-terminal-work publication)
-          (e-work-on-settle
-           publication
-           (lambda (settled)
-             (plist-put record :durable-terminal-work nil)
-             (pcase (plist-get (e-work-status settled) :state)
-               ('finished
-                (plist-put record :durable-terminal-published t))
-               ('failed
-                (plist-put record :durable-terminal-error
-                           (e-work-error-message
-                            (e-work-handle-error settled))))))))))))
+(defun e-subagent--publish-terminal-report (target record status)
+  "Publish RECORD's terminal orchestration fact through TARGET.
+SQLite source keys provide idempotency; no terminal publication state is
+retained in the live registry."
+  (when-let ((assignment (e-subagent--durable-assignment record)))
+    (e-board-orchestration-actions-publish-terminal
+     target assignment status
+     :summary (or (plist-get record :result-summary) "")
+     :outputs (or (plist-get record :outputs) [])
+     :error (plist-get record :error)
+     :author (list :session-id (plist-get record :session-id)))))
 
-(defun e-subagent--settle (registry subagent-id status &rest args)
+(defun e-subagent--settle (registry target subagent-id status &rest args)
   "Settle SUBAGENT-ID in REGISTRY to STATUS with ARGS.
 A child-reported structured result is authoritative: once reported, later
-chatter never overwrites the recorded summary or outputs.  A terminal record is
-never resurrected."
-  (when (memq (e-subagent-registry-status registry subagent-id)
-              '(queued running blocked))
-    (e-subagent--publish-terminal-report registry subagent-id status args)
-    (let* ((reported (e-subagent-registry-reported-p registry subagent-id))
+chatter never overwrites the recorded summary or outputs.  Publish the durable
+terminal facts, then remove all live execution coordination.  A competing late
+terminal callback is a no-op."
+  (when-let* ((record (gethash subagent-id
+                               (e-subagent-registry-records registry))))
+    (when (memq (plist-get record :status) '(queued running blocked))
+      (let* ((reported (plist-get record :reported))
            (finished-at (float-time))
            (fields (list :status status
                          :finished-at finished-at
@@ -404,20 +368,29 @@ never resurrected."
           (setq fields (plist-put fields :outputs (plist-get args :outputs)))))
       (when (plist-member args :error)
         (setq fields (plist-put fields :error (plist-get args :error))))
-      (apply #'e-subagent-registry-update registry subagent-id fields))))
+        (let ((terminal
+               (apply #'e-subagent-registry-update
+                      registry subagent-id fields)))
+          (unwind-protect
+              (progn
+                (e-subagent--publish-lifecycle target terminal)
+                (e-subagent--publish-terminal-report target terminal status)
+                terminal)
+            (e-subagent-registry-remove registry subagent-id)))))))
 
 (defun e-subagent--drive-turn
-    (registry subagent-id parent-harness parent-session-id source-turn-id
+    (registry publication-target subagent-id
+              parent-harness parent-session-id source-turn-id
               child-harness session-id prompt seed-messages runner
               &optional work-handle on-running)
   "Start one child turn for SUBAGENT-ID and wire its settle + work handle.
+PUBLICATION-TARGET is the execution-owned durable Board destination.
 Reuse WORK-HANDLE when admission prepared it, otherwise mint a fresh
 cooperative handle.  Mirror the record's terminal state onto the handle and
 settle the record from RUNNER's callback.  Store the handle and any `:cancel'
 function on the record.  ON-RUNNING runs after admission and registration,
 immediately before invoking RUNNER.  Return RUNNER's handle plist.  Shared by
-`e-subagent-spawn' (first turn) and `e-subagent-resume' (a later turn on an
-existing child session)."
+`e-subagent-spawn'."
   (let* ((runner (or runner #'e-subagent-direct-runner))
          ;; Prepare before enrollment: board ownership must be established
          ;; before runner entry, just as it is for model-facing tool work.
@@ -436,7 +409,9 @@ existing child session)."
     ;; Invoking the runner is the first point at which a provider turn may
     ;; start.  Admission has already committed and the record is registered;
     ;; publish the truthful running state immediately before that call.
-    (e-subagent-registry-update registry subagent-id :status 'running)
+    (let ((running
+           (e-subagent-registry-update registry subagent-id :status 'running)))
+      (e-subagent--publish-lifecycle publication-target running))
     (when on-running
       (funcall on-running (e-subagent-registry-get registry subagent-id)))
     (e-subagent--record-progress registry subagent-id work-handle 'turn-started)
@@ -448,7 +423,8 @@ existing child session)."
                             (lambda (status &rest args)
                               (e-subagent--settle-work-handle work-handle status args)
                               (apply #'e-subagent--settle
-                                     registry subagent-id status args))
+                                     registry publication-target
+                                     subagent-id status args))
                             (lambda (event)
                               (e-subagent--record-progress
                                registry subagent-id work-handle event)))
@@ -463,7 +439,8 @@ existing child session)."
                                ('cancelled 'turn-cancelled)))
                             (e-subagent--settle-work-handle work-handle status args)
                             (apply #'e-subagent--settle
-                                   registry subagent-id status args))))))
+                                   registry publication-target
+                                   subagent-id status args))))))
           (when (and (listp handle) (functionp (plist-get handle :cancel)))
             (e-subagent-registry-update registry subagent-id
                                         :cancel (plist-get handle :cancel)))
@@ -471,7 +448,7 @@ existing child session)."
       (error
        (e-subagent--settle-work-handle work-handle 'failed
                                        (list :error (e-work-error-message error)))
-       (e-subagent--settle registry subagent-id 'failed
+       (e-subagent--settle registry publication-target subagent-id 'failed
                            :error (e-work-error-message error))
        nil))))
 
@@ -511,7 +488,7 @@ its own terminal assignment without blocking spawn."
                     instance parent-harness parent-session-id lineage-id label assignment))
          (schedule (or schedule 'direct))
          (producer-target
-          (e-subagent--producer-target parent-harness parent-session-id))
+          (e-subagent-publication-target parent-harness parent-session-id))
          (admission-target
           parent-binding)
          (child-session-id (e-session-generate-id))
@@ -557,28 +534,29 @@ its own terminal assignment without blocking spawn."
              ('finished
               (condition-case error
                   (progn
-                    (e-subagent-registry-register
-                     registry
-                     :subagent-id subagent-id :work-handle work-handle
-                     :type type :role (e-harness-instance-kind instance)
-                     :session-id child-session-id
-                     :parent-session-id parent-session-id
-                     :label label :schedule schedule
-                     :child-harness child-harness
-                     :parent-harness parent-harness
-                     :publication-target producer-target
-                     :publication-function
-                     (e-subagent--lifecycle-publication-function producer-target)
-                     :run-id run-id :task-key task-key :attempt attempt)
+                    (setq admitted-result
+                          (e-subagent-registry-register
+                           registry
+                           :subagent-id subagent-id :work-handle work-handle
+                           :type type :role (e-harness-instance-kind instance)
+                           :session-id child-session-id
+                           :parent-session-id parent-session-id
+                           :label label :schedule schedule
+                           :child-harness child-harness
+                           :run-id run-id :task-key task-key :attempt attempt))
+                    (e-subagent--publish-lifecycle producer-target admitted-result)
                     (e-subagent--inherit-prompt-cache-policy
                      parent-harness parent-session-id
                      child-harness child-session-id)
                     (e-subagent--drive-turn
-                     registry subagent-id parent-harness parent-session-id
+                     registry producer-target subagent-id
+                     parent-harness parent-session-id
                      source-turn-id child-harness child-session-id prompt
                      seed-messages runner work-handle on-running)
-                    (setq admitted-result
-                          (e-subagent-registry-get registry subagent-id)))
+                    (when (gethash subagent-id
+                                   (e-subagent-registry-records registry))
+                      (setq admitted-result
+                            (e-subagent-registry-get registry subagent-id))))
                 (error
                  (if (gethash subagent-id
                               (e-subagent-registry-records registry))
@@ -587,7 +565,7 @@ its own terminal assignment without blocking spawn."
                         work-handle 'failed
                         (list :error (e-work-error-message error)))
                        (e-subagent--settle
-                        registry subagent-id 'failed
+                        registry producer-target subagent-id 'failed
                         :error (e-work-error-message error)))
                    (e-subagent-registry-forget-admission
                     registry subagent-id)
@@ -610,54 +588,6 @@ its own terminal assignment without blocking spawn."
                       (list :status 'failed
                             :error (plist-get work-status :error)))
             pending)))))
-
-(cl-defun e-subagent-resume
-    (registry subagent-id &optional prompt runner &key source-turn-id)
-  "Resume a settled-but-live SUBAGENT-ID with one new turn on its child session.
-The recovery path for a subagent whose turn ended in `failed' or `cancelled'
-while its child session and full transcript stayed live -- typically a
-transient backend error.  Rather than discard the child's accumulated context
-(what a fresh `e-subagent-spawn' would do), start one more turn on the existing
-session with PROMPT (default a minimal continue).
-
-Refuses a record that was explicitly `shutdown' (a deliberate terminal intent,
-unlike a failure), one already `running', or one whose child harness is gone.
-Transitions the record back to `running', clears the prior error and reported
-flag so the resumed turn's result can land, mints a fresh awaitable work
-handle, and re-arms the settle callback.  SOURCE-TURN-ID is the parent turn
-that initiated this resume.  Return the normalized record."
-  (unless (stringp source-turn-id)
-    (signal 'wrong-type-argument (list 'stringp :source-turn-id)))
-  (let* ((status (e-subagent-registry-status registry subagent-id))
-         (record (e-subagent-registry-get registry subagent-id))
-         (harness (e-subagent-registry-child-harness registry subagent-id))
-         (session-id (plist-get record :session-id))
-         (prompt (let ((value (and (stringp prompt) (string-trim prompt))))
-                   (if (and value (not (string-empty-p value)))
-                       value
-                     "Continue where you left off."))))
-    (unless (memq status '(failed cancelled))
-      (user-error "Subagent %s is %s, not resumable (only failed or cancelled)"
-                  subagent-id status))
-    (when (e-subagent-registry-shutdown-p registry subagent-id)
-      (user-error "Subagent %s was shut down; spawn a fresh child instead"
-                  subagent-id))
-    (unless harness
-      (user-error "Subagent %s has no live child harness" subagent-id))
-    ;; Re-open the record before driving so the next `--settle' sees a live
-    ;; record and advances it; clear terminal residue.
-    (e-subagent-registry-update registry subagent-id
-                                :status 'running
-                                :error nil
-                                :finished-at nil
-                                :reported nil)
-    (e-subagent--drive-turn
-     registry subagent-id
-     (e-subagent-registry-parent-harness registry subagent-id)
-     (plist-get record :parent-session-id)
-     source-turn-id
-     harness session-id prompt nil runner)
-    (e-subagent-registry-get registry subagent-id)))
 
 (defun e-subagent--normalize-type (value)
   "Return VALUE as a spawnable type keyword.
@@ -745,16 +675,15 @@ cannot overwrite it.  Return the normalized record, or nil when SESSION-ID is
 not a tracked child."
   (when-let* ((record (e-subagent-registry-find-by-session registry session-id))
               (subagent-id (plist-get record :subagent-id)))
-    (e-subagent--publish-terminal-report
-     registry subagent-id 'done (list :summary summary :outputs outputs))
     (e-subagent-registry-update
      registry subagent-id
      :reported t
      :outputs outputs
      :result-summary summary)))
 
-(defun e-subagent--record-intervention (registry subagent-id action reason)
-  "Record and publish one ACTION intervention for SUBAGENT-ID with REASON."
+(defun e-subagent--record-intervention
+    (registry publication-target subagent-id action reason)
+  "Record and publish one ACTION intervention through PUBLICATION-TARGET."
   (when (and reason (not (stringp reason)))
     (signal 'wrong-type-argument (list 'stringp reason)))
   (let* ((record (e-subagent-registry-get registry subagent-id))
@@ -764,8 +693,7 @@ not a tracked child."
          (intervention (list :action action :reason bounded-reason :at (float-time))))
     (e-subagent-registry-update registry subagent-id :last-intervention intervention)
     (e-subagent--publish-board-fact
-     (plist-get (e-subagent-registry--record registry subagent-id)
-                :publication-target)
+     publication-target
      :tags (list 'intervention action)
      :attributes (list :subagent-id subagent-id
                        :action action
@@ -780,58 +708,75 @@ not a tracked child."
            (plist-get intervention :at)))
     (e-subagent-registry-get registry subagent-id)))
 
-(defun e-subagent-interrupt (registry subagent-id &optional reason)
-  "Abort SUBAGENT-ID's active child turn, leaving the record inspectable.
-REASON is bounded audit data and never reaches the child.  Return the
-normalized record."
-  (when-let ((cancel (e-subagent-registry-cancel-function registry subagent-id)))
-    (funcall cancel))
-  (e-subagent--settle registry subagent-id 'cancelled)
-  (e-subagent--record-intervention registry subagent-id 'interrupt reason))
+(defun e-subagent--cancel-and-retire
+    (registry publication-target subagent-id action reason)
+  "Cancel SUBAGENT-ID, publish ACTION, and retire all live coordination.
+PUBLICATION-TARGET belongs to the caller's current action or presentation
+context; it is never rediscovered through registry-retained parent authority.
+Cancellation and local retirement run even when audit publication fails."
+  (let ((cancel (e-subagent-registry-cancel-function registry subagent-id))
+        snapshot)
+    (unwind-protect
+        (setq snapshot
+              (e-subagent--record-intervention
+               registry publication-target subagent-id action reason))
+      (when cancel
+        (funcall cancel))
+      (if-let* ((record
+                 (gethash subagent-id
+                          (e-subagent-registry-records registry))))
+          (progn
+            (e-subagent--settle-work-handle
+             (plist-get record :work-handle) 'cancelled nil)
+            (setq snapshot
+                  (e-subagent--settle
+                   registry publication-target subagent-id 'cancelled)))
+        (when snapshot
+          (setq snapshot (plist-put snapshot :status 'cancelled)))))
+    snapshot))
 
-(defun e-subagent-shutdown (registry subagent-id &optional reason)
-  "Interrupt SUBAGENT-ID and mark it terminally shut down.
-REASON is bounded audit data and never reaches the child.  Unlike a transient
-failure, shutdown is deliberate, so `e-subagent-resume' refuses it."
-  (when-let ((cancel (e-subagent-registry-cancel-function registry subagent-id)))
-    (funcall cancel))
-  (e-subagent--settle registry subagent-id 'cancelled)
-  (e-subagent-registry-update registry subagent-id :shutdown t)
-  (e-subagent--record-intervention registry subagent-id 'shutdown reason))
+(defun e-subagent-interrupt
+    (registry publication-target subagent-id &optional reason)
+  "Abort SUBAGENT-ID's active child turn and retire its live coordination.
+PUBLICATION-TARGET is the caller-owned SQL audit destination.  REASON is
+bounded audit data and never reaches the child."
+  (e-subagent--cancel-and-retire
+   registry publication-target subagent-id 'interrupt reason))
 
-(defun e-subagent-steer (registry subagent-id prompt &optional reason)
+(defun e-subagent-shutdown
+    (registry publication-target subagent-id &optional reason)
+  "Interrupt SUBAGENT-ID deliberately and retire its live coordination.
+PUBLICATION-TARGET is the caller-owned SQL audit destination.  REASON is
+bounded audit data and never reaches the child."
+  (e-subagent--cancel-and-retire
+   registry publication-target subagent-id 'shutdown reason))
+
+(defun e-subagent-steer
+    (registry publication-target subagent-id prompt &optional reason)
   "Steer SUBAGENT-ID's running child turn with PROMPT.
 Steers the active turn in place through the child harness so the parent can
-communicate mid-flight.  Return the normalized record."
+communicate mid-flight.  PUBLICATION-TARGET is the caller-owned SQL audit
+destination.  Return the normalized record."
   (let ((harness (e-subagent-registry-child-harness registry subagent-id))
         (session-id (plist-get (e-subagent-registry-get registry subagent-id)
                                :session-id)))
     (unless harness
       (user-error "Subagent %s has no live child harness" subagent-id))
     (e-chat-service-steer-session harness session-id prompt)
-    (e-subagent--record-intervention registry subagent-id 'steer reason)))
+    (e-subagent--record-intervention
+     registry publication-target subagent-id 'steer reason)))
 
 (defun e-subagent-send (registry subagent-id prompt)
   "Queue a follow-up PROMPT to SUBAGENT-ID's child session.
 Unlike `e-subagent-steer', this submits a follow-up turn rather than steering
-the active one, so it needs a running turn to queue behind.  A settled child
-has none, so guard status up front like `e-subagent-resume' rather than let
-the board-bound queue path reject it later: point a
-`failed' or `cancelled' child at resume, refuse a `done' or shut-down child, and
-require a live child harness.  Return the normalized record."
+the active one, so it needs a live running turn to queue behind.  Terminal
+children have already left the live registry.  Return the normalized record."
   (let ((status (e-subagent-registry-status registry subagent-id))
         (harness (e-subagent-registry-child-harness registry subagent-id))
         (session-id (plist-get (e-subagent-registry-get registry subagent-id)
                                :session-id)))
-    (when (memq status '(failed cancelled))
-      (user-error "Subagent %s is %s; use resume to start a new turn, not send"
-                  subagent-id status))
-    (when (eq status 'done)
-      (user-error "Subagent %s is done; spawn a fresh child instead of send"
-                  subagent-id))
-    (when (e-subagent-registry-shutdown-p registry subagent-id)
-      (user-error "Subagent %s was shut down; spawn a fresh child instead"
-                  subagent-id))
+    (unless (memq status '(queued running blocked))
+      (user-error "Subagent %s is not executing" subagent-id))
     (unless harness
       (user-error "Subagent %s has no live child harness" subagent-id))
     (e-chat-service-queue-session harness session-id prompt)

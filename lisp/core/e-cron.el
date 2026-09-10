@@ -47,6 +47,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-cron-storage)
+(require 'e-work)
 
 (defgroup e-cron nil
   "Cron-like schedule engine for e."
@@ -311,15 +312,17 @@ keep pushing the first fire forward."
                    (format "%s" (e-cron-schedule-id b))))))
 
 (defun e-cron--submit-settlement
-    (storage id firing-id expected-state state result)
+    (storage id firing-id expected-state state result &optional on-settle)
   "Enqueue one durable firing settlement and surface only its own failure."
   (e-cron-storage-submit
    storage 'write 'settle
    (list id firing-id expected-state state result)
-   (lambda (_settled error)
+   (lambda (settled error)
      (when error
        (message "Cron settlement failed for %s/%s: %s"
-                id firing-id (error-message-string error))))))
+                id firing-id (error-message-string error)))
+     (when on-settle
+       (funcall on-settle settled error)))))
 
 (defun e-cron--finish-registration (schedule durable error)
   "Apply detached DURABLE registration state to live SCHEDULE."
@@ -479,6 +482,31 @@ stale closure."
       (run-hook-with-args 'e-cron-fire-functions schedule)
       t)))
 
+(defun e-cron--settle-action-work
+    (schedule storage id firing-id active-key work)
+  "Settle durable FIRING-ID only after asynchronous action WORK settles."
+  (e-work-on-settle
+   work
+   (lambda (settled)
+     (let* ((status (e-work-status settled))
+            (state (plist-get status :state))
+            (terminal-state (if (eq state 'finished) 'done 'failed))
+            (result
+             (if (eq state 'finished)
+                 '(:completed t)
+               (let ((error
+                      (if (eq state 'failed)
+                          (e-work-error-message (plist-get status :error))
+                        "Cron Board publication was cancelled")))
+                 (message "Cron action failed for %s: %s" id error)
+                 (list :error error)))))
+       (e-cron--submit-settlement
+        storage id firing-id 'claimed terminal-state result
+        (lambda (_durable _error)
+          (remhash active-key e-cron--active-firings)))
+       (when (eq state 'finished)
+         (run-hook-with-args 'e-cron-fire-functions schedule))))))
+
 (defun e-cron--finish-claim
     (schedule owner-enabled owner-definition-revision firing-id now next
               claim error)
@@ -515,22 +543,29 @@ stale closure."
               (let ((active-key
                      (e-cron--active-firing-key storage id firing-id)))
                 (puthash active-key t e-cron--active-firings)
-                (unwind-protect
-                    (condition-case action-error
-                        (progn
-                          (funcall (e-cron-schedule-action schedule) schedule)
-                          (e-cron--submit-settlement
-                           storage id firing-id 'claimed 'done
-                           '(:completed t))
-                          (run-hook-with-args
-                           'e-cron-fire-functions schedule))
-                      (error
-                       (e-cron--submit-settlement
-                        storage id firing-id 'claimed 'failed
-                        (list :error (error-message-string action-error)))
-                       (message "Cron action failed for %s: %s"
-                                id (error-message-string action-error))))
-                  (remhash active-key e-cron--active-firings))))))
+                (condition-case action-error
+                    (let ((action-result
+                           (funcall (e-cron-schedule-action schedule)
+                                    schedule)))
+                      (if (e-work-handle-p action-result)
+                          (e-cron--settle-action-work
+                           schedule storage id firing-id active-key
+                           action-result)
+                        (e-cron--submit-settlement
+                         storage id firing-id 'claimed 'done
+                         '(:completed t)
+                         (lambda (_durable _error)
+                           (remhash active-key e-cron--active-firings)))
+                        (run-hook-with-args
+                         'e-cron-fire-functions schedule)))
+                  (error
+                   (e-cron--submit-settlement
+                    storage id firing-id 'claimed 'failed
+                    (list :error (error-message-string action-error))
+                    (lambda (_durable _error)
+                      (remhash active-key e-cron--active-firings)))
+                   (message "Cron action failed for %s: %s"
+                            id (error-message-string action-error))))))))
         (when (and (eq schedule (e-cron-get id))
                    (e-cron-schedule-enabled schedule))
           (e-cron--arm schedule))))))

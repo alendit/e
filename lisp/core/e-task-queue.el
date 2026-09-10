@@ -13,8 +13,8 @@
 ;; enqueue time.
 ;;
 ;; A custom runner remains an application-owned extension seam.  The bundled
-;; default runner requires explicit live producer authority and publishes one
-;; board fact; it never creates or prompts a harness session.
+;; default runner requires an explicit SQLite publication target and publishes
+;; one Board fact; it never creates or prompts a harness session.
 ;;
 ;; This module depends only on the core harness and the harness-instance
 ;; catalog, never on a UI shell, so the queue runs headless.
@@ -23,7 +23,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'e-board-runtime)
+(require 'e-board-sqlite-service)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-task-storage)
@@ -145,7 +145,7 @@ that scheduler startup was requested without implying durable replay."
   max-parallel
   default-harness-instance-id
   runner
-  producer-binding
+  publication-target
   dispatching
   paused-p
   max-retries
@@ -162,13 +162,14 @@ that scheduler startup was requested without implying durable replay."
   loaded-p)
 
 (cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
-                                    runner producer-binding max-retries directory
+                                    runner publication-target max-retries directory
                                     expose-await-references-p storage
                                     (id "default"))
   "Return a new task queue.
 MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, MAX-RETRIES, and RUNNER override the
-module defaults for this queue when non-nil.  Without RUNNER, PRODUCER-BINDING
-must name current process-local board authority and queued tasks publish facts.
+module defaults for this queue when non-nil.  Without RUNNER,
+PUBLICATION-TARGET must name the explicit SQLite Board receiving queued task
+facts.
 EXPOSE-AWAIT-REFERENCES-P is reserved for a queue whose task ids are registered
 with the global waitable resolver; private scheduler queues must leave it nil.
 DIRECTORY is retired and signals with migration guidance.  STORAGE is the only
@@ -186,7 +187,7 @@ durable port; omitting both creates an explicitly in-memory queue."
    :max-parallel max-parallel
    :default-harness-instance-id default-harness-instance-id
    :runner runner
-   :producer-binding producer-binding
+   :publication-target publication-target
    :max-retries max-retries
    :expose-await-references-p expose-await-references-p))
 
@@ -741,10 +742,10 @@ may already be running when this returns."
             e-task-queue-max-records)
     (signal 'e-task-queue-error (list "Task queue record limit reached")))
   (when (and (null (e-task-queue-runner queue))
-             (not (e-board-runtime-producer-binding-live-p
-                   (e-task-queue-producer-binding queue))))
-    (signal 'e-board-runtime-producer-disabled
-            (list 'task-queue 'missing-live-binding)))
+             (not (e-board-sqlite-publication-target-valid-p
+                   (e-task-queue-publication-target queue))))
+    (signal 'e-task-queue-error
+            (list "Default runner requires a SQLite publication target")))
   (let* ((task-id (if (e-task-queue-storage-backed-p queue)
                       (make-temp-name "tsk_")
                     (e-task-queue--next-id queue)))
@@ -979,42 +980,133 @@ Returns QUEUE."
 ;; --- default runner ---------------------------------------------------------
 
 (defun e-task-queue-default-runner (task harness on-settle)
-  "Publish TASK as board work through QUEUE-owned process authority.
+  "Publish TASK as Board work through QUEUE's explicit SQLite target.
 HARNESS is the queue sentinel carrying QUEUE for the default path.  Custom test
 and application runners retain the historical runner signature."
   (unless (e-task-queue-p harness)
     (signal 'e-task-queue-error (list "Default runner requires its queue")))
-  (let ((binding (e-task-queue-producer-binding harness)))
-    (unless (e-board-runtime-producer-binding-live-p binding)
-      (signal 'e-board-runtime-producer-disabled
-              (list (plist-get task :task-id) 'missing-live-binding)))
+  (let ((target (e-task-queue-publication-target harness)))
+    (unless (e-board-sqlite-publication-target-valid-p target)
+      (signal 'e-task-queue-error
+              (list "Default runner requires a SQLite publication target")))
     (let ((publication
-           (e-board-runtime-producer-publish-input
-            binding
+           (e-board-sqlite-publication-target-append-route-start
+            target
+            (plist-get task :prompt)
+            (list 'task-queue (e-task-queue-id harness)
+                  (plist-get task :task-id)
+                  (or (plist-get task :attempt-id)
+                      (plist-get task :retries) 0))
             :tags '(task-queue task)
             :attributes
             (list :task-id (plist-get task :task-id)
                   :task-attempt-id (plist-get task :attempt-id)
                   :summary (plist-get task :summary)
                   :metadata (copy-tree (plist-get task :metadata)))
-            :content (plist-get task :prompt)
-            :reference (format "task:%s" (plist-get task :task-id))
-            :on-settle
-            (lambda (&rest result)
-              (let ((status (plist-get result :status)))
-                (apply on-settle
-                       :status status
-                       :outputs
-                       (list (list :kind 'board-work
-                                   :value result))
-                       (when (eq status 'unrouted)
-                         (list :error
-                               (format "Board work unrouted: %s"
-                                       (plist-get result :reason))))))))))
+            :reference (format "task:%s" (plist-get task :task-id))))
+          observations
+          delivery-outcomes
+          pending-delivery-ids
+          canonical-publication
+          settled-p)
+      (cl-labels
+          ((cancel-observations
+            ()
+            (dolist (observation observations)
+              (e-board-sqlite-delivery-observation-cancel observation))
+            (setq observations nil))
+           (settle-once
+            (status &rest args)
+            (unless settled-p
+              (setq settled-p t)
+              (cancel-observations)
+              (apply on-settle :status status args)))
+           (delivery-settled
+            (delivery-id status payload)
+            (when (member delivery-id pending-delivery-ids)
+              (setq pending-delivery-ids
+                    (delete delivery-id pending-delivery-ids))
+              (push (list :delivery-id (copy-tree delivery-id t)
+                          :status status :payload (copy-tree payload t))
+                    delivery-outcomes)
+              (unless pending-delivery-ids
+                (let ((terminal-status
+                       (cond
+                        ((seq-some (lambda (outcome)
+                                     (eq (plist-get outcome :status) 'failed))
+                                   delivery-outcomes)
+                         'failed)
+                        ((seq-some (lambda (outcome)
+                                     (eq (plist-get outcome :status) 'cancelled))
+                                   delivery-outcomes)
+                         'cancelled)
+                        (t 'done))))
+                  (if (eq terminal-status 'done)
+                      (settle-once
+                       'done :outputs
+                       (list
+                        (list :kind 'board-work
+                              :value
+                              (list :publication
+                                    (copy-tree canonical-publication t)
+                                    :deliveries
+                                    (nreverse (copy-tree delivery-outcomes t))))))
+                    (settle-once
+                     terminal-status
+                     :error
+                     (or (seq-some
+                          (lambda (outcome)
+                            (when-let* ((error
+                                        (plist-get
+                                         (plist-get outcome :payload) :error)))
+                              (e-work-error-message error)))
+                          delivery-outcomes)
+                         (format "Board task delivery %s" terminal-status)))))))))
+      (e-work-on-settle
+       publication
+       (lambda (settled)
+         (let* ((status (e-work-status settled))
+                (state (plist-get status :state)))
+           (pcase state
+             ('finished
+              (setq canonical-publication
+                    (copy-tree (plist-get status :result) t))
+              (let* ((routing (plist-get canonical-publication :routing))
+                     (routing-state (plist-get routing :state))
+                     (pickups (append
+                               (plist-get canonical-publication :pickups) nil)))
+                (if (or (eq routing-state 'unrouted) (null pickups))
+                    (settle-once
+                     'unrouted
+                     :error
+                     (format "Board task was unrouted: %s"
+                             (or (plist-get routing :reason) 'no-pickup)))
+                  (setq pending-delivery-ids
+                        (mapcar (lambda (pickup)
+                                  (copy-tree
+                                   (plist-get pickup :delivery-id)))
+                                pickups))
+                  (dolist (delivery-id pending-delivery-ids)
+                    (let ((observed-id (copy-tree delivery-id t)))
+                      (push
+                       (e-board-sqlite-publication-target-observe-delivery-outcome
+                        target observed-id
+                        (lambda (delivery-status payload)
+                          (delivery-settled
+                           observed-id delivery-status payload)))
+                       observations))))))
+             ('cancelled (settle-once 'cancelled))
+             (_ (settle-once
+                 'failed
+                 :error (e-work-error-message
+                         (plist-get status :error))))))))
       (list :publication publication
             :cancel
             (lambda ()
-              (e-board-runtime-producer-cancel publication))))))
+              (cancel-observations)
+              (unless (memq (plist-get (e-work-status publication) :state)
+                            '(finished failed cancelled))
+                (e-work-cancel publication))))))))
 
 ;; --- persistence ------------------------------------------------------------
 
