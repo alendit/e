@@ -76,17 +76,16 @@ reading feature plans or examples.
 - =backend adapter= :: Provider-specific request, auth, retry, streaming, and
   response translation code behind the generic backend contract.
 
-- =board= :: A collaboration domain.  In ordinary SQLite composition, SQLite
-  owns durable Board identity, ordered messages/facts, participants, pickups,
-  routing, claims, and observation cursors.  Emacs has only a live coordinator
-  for subscribers, endpoint callbacks, timers, and executing delivery handles;
-  presentation owns any bounded visible page and cursor it requested.  The
-  coordinator does not reconstruct those durable facts into an =e-board=
-  object or use process-local identities to accept or reject committed rows.
-  The in-memory =e-board= engine remains a valid explicit ephemeral
-  implementation, not the ordinary SQLite runtime model.  A Board is not a
-  harness or UI; adapters perform delivery and publication outside domain
-  policy.
+- =board= :: A SQLite-owned collaboration domain.  SQLite is the sole Board
+  implementation and owns durable Board identity, ordered messages/facts,
+  participants, pickups, routing, claims, and observation cursors.  Emacs has
+  only live coordination for subscribers, endpoint callbacks, timers, and
+  executing delivery handles; presentation owns any bounded visible page and
+  cursor it requested.  Live coordination never reconstructs durable Board
+  facts into an aggregate or uses process-local identities to accept or reject
+  committed rows.  A Board is not a harness or UI; application services admit
+  SQL operations, and adapters perform delivery and presentation outside
+  durable policy.
 
 - =participant= :: A board-local logical recipient that may be attached to one
   live harness session.  Its identity and pending pickups survive a proven

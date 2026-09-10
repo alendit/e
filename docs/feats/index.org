@@ -62,19 +62,24 @@ now been explicitly upgraded to schema 6 with an independently verified schema
 pre-readiness submit counterexample, while Feature 92 stayed =In-review= and
 Addendum 2 returned to =In-progress=.
 
-The 2026-09-09 RDBMS-live-truth correction supersedes the bounded Board
-controller portion of Addendum 2 and is now =Done=.  Ordinary SQLite Board work
+The 2026-09-09 RDBMS-live-truth correction superseded the bounded Board
+controller portion of Addendum 2.  Ordinary SQLite Board work
 uses SQL-owned append/route/claim/change and orchestration operations with
 canonical returned rows; Emacs keeps only callbacks, timers, executing handles,
-request work, and presentation-owned pages/cursors.  Synchronous creation and
-generic Board APIs were removed or renamed as guarded ephemeral-only entry
-points.  The DP6 focused gate passes 346 expected tests with zero unexpected,
+request work, and presentation-owned pages/cursors.  Its exception for a
+guarded ephemeral engine is superseded by the 2026-09-10 DP7 clean cut: SQLite
+is the only Board implementation, and the aggregate, registry, runtime,
+polymorphic storage adapters, alternate chat paths, producer bindings,
+fixtures, and retired skips are being deleted without compatibility aliases or
+tombstones.  The earlier DP6 focused gate passed 346 expected tests with zero unexpected,
 and independent review reached =implementation-review-fixed-point=.  The exact
 public Org Canvas pre-readiness selector passes 1/1 in 4.421716 seconds: it
 submits before held admission/view work settles, observes three heartbeats,
 renders canonical results once, isolates a two-worker write failure to one
 owner, and then persists, queries, and renders a healthy sibling.  Feature 92
-remains =In-review= for its separate broader recovery/quarantine roadmap.
+remains =In-review=; Addendum 2 is =In-progress= until DP7A--DP7C pass the
+focused, full-suite, structural, and public graphical acceptance gates.  The
+separate broader recovery/quarantine roadmap remains future work.
 
 The final Addendum 2 cleanup removes the remaining production chat
 unloaded-index/checkpoint-loader lifecycle and aggregate-peek preview fallback.
