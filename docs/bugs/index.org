@@ -11,6 +11,7 @@ State values for coding agents:
 | Closed | e-chat-reattach-minor-mode-teardown-hang/ | Chat reattachment scans the stale transcript during mode teardown |
 | New    | board-timer-reentrant-durability-barrier/ | Board timer reenters a durable mutation barrier |
 | Closed | runtime-store-daily-participant-timeout/ | Daily fanout times out the runtime store |
+| Closed | invalid-context-curation-fails-turn/ | Invalid context curation fails the whole turn |
 | Closed | context-curation-stale-frame-labels/ | Consumed context frame labels remain visible |
 | Closed | e-chat-curation-counts-lack-source-stubs/ | Context curation counts lack useful source stubs |
 | Closed | e-chat-activity-order-and-hidden-summary/ | Chat activity appears below Thinking and summary reasoning is hidden |

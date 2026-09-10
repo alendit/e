@@ -1418,7 +1418,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
          (wire-item (plist-get replay :item))
          (corrective
           (cadr (plist-get item :provider-corrective-replay-items)))
-         (corrective-wire-item (plist-get corrective :item)))
+         (corrective-wire-item (plist-get corrective :item))
+         (invalid
+          (cadr (plist-get item :provider-invalid-replay-items)))
+         (invalid-wire-item (plist-get invalid :item)))
     (should (equal (plist-get replay :provider-id) 'openai))
     (should (equal (plist-get wire-item :type) "function_call_output"))
     (should (equal (plist-get wire-item :call_id) "curation-call"))
@@ -1430,7 +1433,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    "curation-call"))
     (should (equal
              (plist-get corrective-wire-item :output)
-             e-openai-decoder--context-curation-duplicate-correction))))
+             e-openai-decoder--context-curation-duplicate-correction))
+    (should (equal (plist-get invalid :provider-id) 'openai))
+    (should (equal (plist-get invalid-wire-item :type)
+                   "function_call_output"))
+    (should (equal (plist-get invalid-wire-item :call_id)
+                   "curation-call"))
+    (should (equal
+             (plist-get invalid-wire-item :output)
+             e-openai-decoder--context-curation-invalid-correction))))
 
 (ert-deftest e-openai-test-context-curation-v8-guidance-is-frame-scoped ()
   "Reserved carrier guidance states the complete per-frame invocation rule."

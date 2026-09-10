@@ -53,6 +53,10 @@
   "Curation was already handled for the currently presented labeled sources. Continue normally; call context-curate again only after new labeled sources are presented."
   "Fixed Responses output used for one duplicate-curation recovery.")
 
+(defconst e-openai-decoder--context-curation-invalid-correction
+  "Curation was rejected because its arguments are invalid for the currently presented labeled sources or exceed the bounded curation limits. Re-read the current labels and call context-curate again with valid, bounded arguments, or continue normally."
+  "Fixed Responses output returned for an invalid curation call.")
+
 (defun e-openai-decoder--context-curation-replay-bundle
     (arguments call-id output)
   "Return opaque Responses replay state for ARGUMENTS, CALL-ID, and OUTPUT."
@@ -94,6 +98,10 @@ provider identity.  Core binds its labels to the live frame at completion."
               (e-openai-decoder--context-curation-replay-bundle
                arguments call-id
                e-openai-decoder--context-curation-duplicate-correction))
+             (invalid-bundle
+              (e-openai-decoder--context-curation-replay-bundle
+               arguments call-id
+               e-openai-decoder--context-curation-invalid-correction))
              (output-replay (cadr normal-bundle)))
         ;; Retain the singular output field for existing consumers while the
         ;; plural field carries the complete call/output pair for full replay.
@@ -104,7 +112,10 @@ provider identity.  Core binds its labels to the live frame at completion."
                          normal-bundle))
         (setq effect
               (plist-put effect :provider-corrective-replay-items
-                         corrective-bundle))))
+                         corrective-bundle))
+        (setq effect
+              (plist-put effect :provider-invalid-replay-items
+                         invalid-bundle))))
     effect))
 
 (defun e-openai-decoder--sequence-list (value)

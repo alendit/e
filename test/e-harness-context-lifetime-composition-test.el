@@ -729,15 +729,17 @@
                 (should-not (e-session-local-entry-by-id reopened fork-id control-id)))))
         (delete-directory directory t)))))
 
-(ert-deftest e-harness-test-context-lifetime-preflights-before-assistant-append ()
-  "Completion-only curation failures do not append an assistant or consume its frame."
+(ert-deftest e-harness-test-invalid-curation-returns-provider-error-before-append ()
+  "Completion validation returns a tool-style error and the same turn recovers."
   (e-harness-test--with-empty-layer-registry
-             (dolist (case '((unknown-label . (:keep (2) :summaries nil))
+    (dolist (case '((unknown-label . (:keep (2) :summaries nil))
                     (oversized-record . (:keep (1) :summaries nil))))
       (let* ((request-count 0)
+             (requests nil)
              (source-value "PREFLIGHT-SOURCE")
              (captured-frame nil)
              (prepared-bytes nil)
+             (events nil)
              (backend
               (e-backend-create
                :name "context-lifetime-completion-preflight"
@@ -747,32 +749,42 @@
                  :reserved-effect-carrier context-curate-wire)
                :stream
                (cl-function
-                (lambda (&key on-item &allow-other-keys)
+                (lambda (&key options on-item &allow-other-keys)
                   (cl-incf request-count)
-                  (let ((arguments
-                         (if (eq (car case) 'oversized-record)
-                             (let ((text
-                                    (make-string
-                                     (1+ e-context-lifetime-curation-max-record-bytes)
-                                     ?x)))
-                               ;; Keep the size assertion in the test while
-                               ;; leaving canonical record construction to the
-                               ;; context-lifetime owner.
-                               (setq prepared-bytes
-                                     (string-bytes
-                                      (encode-coding-string text 'utf-8 t)))
-                               (list :keep nil
-                                     :summaries
-                                     (list (list :sources '(1)
-                                                 :text text))))
-                           (cdr case))))
-                    (funcall on-item
-                             (list :type 'context-curate
-                                   :arguments arguments)))
-                  (funcall on-item
-                           '(:type assistant-message
-                             :content "MUST-NOT-PERSIST"))
-                  (funcall on-item '(:type done :reason stop))))))
+                  (setq requests (append requests (list (copy-tree options))))
+                  (pcase request-count
+                    (1
+                     (let ((arguments
+                            (if (eq (car case) 'oversized-record)
+                                (let ((text
+                                       (make-string
+                                        (1+ e-context-lifetime-curation-max-record-bytes)
+                                        ?x)))
+                                  ;; Keep the size assertion in the test while
+                                  ;; leaving canonical record construction to
+                                  ;; the context-lifetime owner.
+                                  (setq prepared-bytes
+                                        (string-bytes
+                                         (encode-coding-string text 'utf-8 t)))
+                                  (list :keep nil
+                                        :summaries
+                                        (list (list :sources '(1)
+                                                    :text text))))
+                              (cdr case))))
+                       (funcall
+                        on-item
+                        (e-openai-decoder--context-curation-effect
+                         arguments "invalid-preflight-curation")))
+                     (funcall on-item
+                              '(:type assistant-message
+                                :content "MUST-NOT-PERSIST"))
+                     (funcall on-item '(:type done :reason stop)))
+                    (2
+                     (funcall on-item
+                              '(:type assistant-message
+                                :content "RECOVERED-ANSWER"))
+                     (funcall on-item '(:type done :reason stop)))
+                    (_ (error "Unexpected request %d" request-count)))))))
              (provider
               (e-context-provider-create
                :name 'completion-preflight-source
@@ -796,27 +808,49 @@
                      captured-frame)))
           (let ((e-context-lifetime-shadow-projection-enabled t))
             (e-harness-create-session harness :id "completion-preflight")
-            (should-error
-             (e-harness-test-prompt-batch
-              harness "completion-preflight" "trigger curation")
-             :type 'e-context-lifetime-invalid-record)))
-        (should (= request-count 1))
+            (e-harness-activity-subscribe
+             harness (lambda (event) (setq events (append events (list event))))
+             :session-id "completion-preflight")
+            (e-harness-test-prompt-batch
+             harness "completion-preflight" "trigger curation")))
+        (should (= request-count 2))
         (when (eq (car case) 'oversized-record)
           (should (> prepared-bytes
                      e-context-lifetime-curation-max-record-bytes)))
         (should (e-context-lifetime-frame-p captured-frame))
-        (should-not (e-context-lifetime-frame-consumed-p captured-frame))
-        (should (equal
-                 (plist-get
-                  (car (e-context-lifetime-frame-observations captured-frame))
-                  :body)
-                 (list :role 'system :content source-value)))
         (should-not (e-session-local-context-curations
                      (e-harness-sessions harness) "completion-preflight"))
-        (should-not
-         (seq-find (lambda (message)
-                     (eq (plist-get message :role) 'assistant))
-                   (e-harness-messages harness "completion-preflight")))))))
+        (should-not (seq-find (lambda (event)
+                                (eq (plist-get event :type) 'turn-failed))
+                              events))
+        (should
+         (eq (or (plist-get (nth 1 requests) :reserved-effect-carrier)
+                 (plist-get (plist-get (nth 1 requests)
+                                       :context-capabilities)
+                            :reserved-effect-carrier))
+             'context-curate-wire))
+        (let* ((correction-items
+                (plist-get (nth 1 requests) :provider-request-replay-items))
+               (correction-output
+                (seq-find
+                 (lambda (item)
+                   (equal (plist-get (plist-get item :item) :type)
+                          "function_call_output"))
+                 correction-items))
+               (assistant-messages
+                (seq-filter
+                 (lambda (message)
+                   (eq (plist-get message :role) 'assistant))
+                 (e-harness-messages harness "completion-preflight"))))
+          (should correction-output)
+          (should
+           (equal
+            (plist-get (plist-get correction-output :item) :output)
+            e-openai-decoder--context-curation-invalid-correction))
+          (should (equal (mapcar (lambda (message)
+                                   (plist-get message :content))
+                                 assistant-messages)
+                         '("RECOVERED-ANSWER"))))))))
 
 (ert-deftest e-harness-test-duplicate-curation-recovers-and-next-turn-is-usable ()
   "One duplicate correction settles normally and does not poison a fresh turn."

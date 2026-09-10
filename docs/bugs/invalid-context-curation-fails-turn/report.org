@@ -1,0 +1,25 @@
+#+title: Invalid Context Curation Fails the Whole Turn
+
+* Report
+
+A model-issued =context-curate= call with an invalid source label terminated an
+otherwise healthy chat turn:
+
+#+begin_example
+Turn failed: Invalid context lifetime record: curation-keep,
+:unknown-label, 9, 3
+#+end_example
+
+The same failure class was also observed when a requested curation package
+exceeded its bounded encoded size.
+
+* Expected behavior
+
+- An invalid =context-curate= argument is a rejected provider call, not a
+  terminal harness failure.
+- The provider receives a =function_call_output= explaining that the curation
+  was rejected and may retry against the still-live labeled frame or continue
+  normally in the same turn.
+- The invalid assistant response and curation are not persisted.
+- Structurally unacknowledgeable responses, such as an invalid curation followed
+  by an ordinary tool call in the same response, still fail atomically.

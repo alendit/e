@@ -2380,10 +2380,11 @@
                (plist-get correction :output)
                e-openai-decoder--context-curation-duplicate-correction)))))
 
-(ert-deftest e-loop-test-duplicate-curation-retains-frame-bound-validation ()
-  "A closed opportunity does not turn an invalid disposition into recovery."
+(ert-deftest e-loop-test-invalid-duplicate-curation-returns-error-to-provider ()
+  "An invalid disposition against a closed opportunity returns a correction."
   (let* ((request-count 0)
          (completion-count 0)
+         (requests nil)
          (events nil)
          (frame
           (e-context-lifetime-frame-create
@@ -2402,46 +2403,68 @@
            :name "strict-duplicate-curation"
            :stream
            (cl-function
-            (lambda (&key on-item &allow-other-keys)
+            (lambda (&key options on-item &allow-other-keys)
+              (setq requests (append requests (list (copy-tree options))))
               (setq request-count (1+ request-count))
-              (funcall on-item
-                       (e-openai-decoder--context-curation-effect
-                        (list :keep (list request-count)
-                              :summaries nil :erase nil)
-                        (format "strict-curation-%d" request-count)))
-              (funcall on-item '(:type done :reason stop)))))))
-    (should-error
-     (e-loop-run-turn-batch
-      :session-id "session-strict-duplicate"
-      :turn-id "turn-strict-duplicate"
-      :messages '((:role user :content "curate once"))
-      :backend backend
-      :tools (e-tools-registry-create)
-      :options '(:model "fake"
-                 :context-lifetime-enabled t
-                 :reserved-effect-carrier context-curate-wire)
-      :lifetime-frame frame
-      :on-response-complete
-      (lambda (payload)
-        (when (plist-get payload :curation-effects)
-          (setq completion-count (1+ completion-count))
-          (e-context-lifetime-frame-complete-for-consumer
-           (plist-get payload :frame)
-           "consumer-strict-duplicate"
-           (plist-get payload :response-entry-id))))
-      :on-event
-      (lambda (type payload)
-        (push (list :type type :payload payload) events))
-      :append-message #'ignore)
-     :type 'e-context-lifetime-invalid-record)
-    (should (= request-count 2))
+              (pcase request-count
+                ((or 1 2)
+                 (funcall on-item
+                          (e-openai-decoder--context-curation-effect
+                           (list :keep (list request-count)
+                                 :summaries nil :erase nil)
+                           (format "strict-curation-%d" request-count)))
+                 (funcall on-item '(:type done :reason stop)))
+                (3
+                 (funcall on-item
+                          '(:type assistant-message :content "recovered"))
+                 (funcall on-item '(:type done :reason stop)))
+                (_ (error "Unexpected request %d" request-count))))))))
+    (should
+     (equal
+      (e-loop-run-turn-batch
+       :session-id "session-strict-duplicate"
+       :turn-id "turn-strict-duplicate"
+       :messages '((:role user :content "curate once"))
+       :backend backend
+       :tools (e-tools-registry-create)
+       :options '(:model "fake"
+                  :context-lifetime-enabled t
+                  :reserved-effect-carrier context-curate-wire)
+       :lifetime-frame frame
+       :on-response-complete
+       (lambda (payload)
+         (when (plist-get payload :curation-effects)
+           (setq completion-count (1+ completion-count))
+           (e-context-lifetime-frame-complete-for-consumer
+            (plist-get payload :frame)
+            "consumer-strict-duplicate"
+            (plist-get payload :response-entry-id))))
+       :on-event
+       (lambda (type payload)
+         (push (list :type type :payload payload) events))
+       :append-message #'ignore)
+      '(:status done :reason stop :assistant-content "recovered")))
+    (should (= request-count 3))
     (should (= completion-count 1))
     (should-not
      (seq-find
       (lambda (event)
         (eq (plist-get event :type)
             'context-curation-duplicate-ignored))
-      events))))
+      events))
+    (let* ((body
+            (e-openai-codex-request-body
+             :messages nil :options (nth 2 requests) :tools nil))
+           (correction
+            (seq-find
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id) "strict-curation-2")))
+             (append (plist-get body :input) nil))))
+      (should correction)
+      (should (equal
+               (plist-get correction :output)
+               e-openai-decoder--context-curation-invalid-correction)))))
 
 (ert-deftest e-loop-test-curation-opportunity-is-scoped-to-each-new-frame ()
   "Two tool-created frames each admit one curation in the same turn."
@@ -3065,6 +3088,88 @@
     (should-not (seq-find (lambda (message)
                             (eq (plist-get message :role) 'assistant))
                           messages))))
+
+(ert-deftest e-loop-test-invalid-curation-returns-error-to-provider ()
+  "An invalid reserved curation gets one tool-style correction and continues."
+  (let* ((request-count 0)
+         (requests nil)
+         (completion-count 0)
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-invalid-retry"
+           :generation-id "generation-invalid-retry"
+           :consumer-request-id "consumer-invalid-retry"
+           :observations
+           '((:observation-id "observation-invalid-retry"
+              :kind "current-state"
+              :source-entry-ref "external:invalid-retry:1"
+              :source-fingerprint "invalid-retry"
+              :effective-delivery "request-local-replaceable"
+              :body (:content "canvas")))))
+         (backend
+          (e-backend-create
+           :name "invalid-curation-retry"
+           :stream
+           (cl-function
+            (lambda (&key options on-item &allow-other-keys)
+              (setq requests (append requests (list (copy-tree options))))
+              (setq request-count (1+ request-count))
+              (pcase request-count
+                (1
+                 (funcall on-item
+                          (e-openai-decoder--context-curation-effect
+                           '(:keep (9) :summaries nil :erase nil)
+                           "invalid-curation-call"))
+                 (funcall on-item '(:type done :reason stop)))
+                (2
+                 (funcall on-item
+                          '(:type assistant-message :content "recovered"))
+                 (funcall on-item '(:type done :reason stop)))
+                (_ (error "Unexpected request %d" request-count))))))))
+    (should
+     (equal
+      (e-loop-run-turn-batch
+       :session-id "session-invalid-retry"
+       :turn-id "turn-invalid-retry"
+       :messages '((:role user :content "curate"))
+       :backend backend
+       :tools (e-tools-registry-create)
+       :options '(:model "fake"
+                  :context-lifetime-enabled t
+                  :context-capabilities
+                  (:continuation none
+                   :observation-delivery request-local-replaceable
+                   :reserved-effect-carrier context-curate-wire))
+       :lifetime-frame frame
+       :on-response-preflight
+       (lambda (payload)
+         (when-let ((effect (car (plist-get payload :curation-effects))))
+           (e-context-lifetime-prepare-curation-disposition
+            frame (plist-get effect :arguments)
+            (plist-get payload :response-entry-id))))
+       :on-response-complete
+       (lambda (_payload)
+         (setq completion-count (1+ completion-count)))
+       :on-event #'ignore
+       :append-message #'ignore)
+      '(:status done :reason stop :assistant-content "recovered")))
+    (should (= request-count 2))
+    (should (= completion-count 1))
+    (should-not (e-context-lifetime-frame-consumed-p frame))
+    (let* ((body
+            (e-openai-codex-request-body
+             :messages nil :options (nth 1 requests) :tools nil))
+           (correction
+            (seq-find
+             (lambda (item)
+               (and (equal (plist-get item :type) "function_call_output")
+                    (equal (plist-get item :call_id)
+                           "invalid-curation-call")))
+             (append (plist-get body :input) nil))))
+      (should correction)
+      (should (equal
+               (plist-get correction :output)
+               e-openai-decoder--context-curation-invalid-correction)))))
 
 (ert-deftest e-loop-test-curation-before-later-tool-call-fails-atomically ()
   "A tool call after a valid curation is rejected before it is queued."

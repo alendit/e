@@ -1,0 +1,96 @@
+#+title: Invalid Context Curation Turn Failure Investigation
+
+* Finding
+
+The OpenAI adapter already represented =context-curate= as a reserved provider
+effect with an opaque function-call replay bundle.  The loop normalized its
+argument shape while streaming, but frame-bound label and encoded-size checks
+ran later in the harness response-preflight callback.  An
+=e-context-lifetime-invalid-record= from that callback escaped through the
+provider completion boundary, so the loop emitted =turn-failed= instead of
+acknowledging the rejected function call to the model.
+
+This was an error-classification defect.  Unknown labels and oversized
+curation records remain invalid and cause no context-lifetime mutation, but a
+provider can correct those semantic arguments inside the same turn.
+
+* Remediation implemented
+
+The OpenAI decoder now attaches a bounded invalid-call replay bundle alongside
+the existing success and duplicate-call bundles.  It contains the original
+opaque function call and a matching =function_call_output= that tells the model
+the curation was rejected, to re-read the current labels, and either retry with
+valid, bounded arguments or continue normally.
+
+The provider-neutral loop now distinguishes a rejected reserved curation from
+a provider or harness failure.  On argument normalization or response-preflight
+validation failure it:
+
+1. discards the response's semantic curation and normal acknowledgement;
+2. does not call response completion, persist assistant content, or consume the
+   frame;
+3. promotes only the adapter-provided invalid-call replay bundle; and
+4. starts the next provider request in the same turn.
+
+The same rule applies when the invalid call is a retry against the just-consumed
+frame.  Successful curation retains its preallocated response entry identity.
+
+The recovery is deliberately narrow.  Multiple curation calls in one response,
+or a curation followed by an ordinary tool call, remain structural protocol
+errors.  The loop cannot safely continue those shapes because it cannot omit
+the later call while still providing a complete provider acknowledgement
+sequence.
+
+* Validation
+
+- OpenAI curation mechanism suite: 10/10 passed.
+- Loop suite: 58/58 passed.
+- Composed context-lifetime, duplicate-curation, and invalid-curation suite:
+  17/17 passed.
+- Focused invalid, duplicate, and mixed-order loop cases: 5/5 passed.
+- =git diff --check=: passed.
+
+The composed regression covers both reported semantic failures: an unknown
+label and an oversized curation record.  For each case it proves that the
+invalid assistant response is not persisted, no =turn-failed= event is emitted,
+the next real OpenAI request contains the matching error output, the labeled
+frame remains available for the retry, and the same turn persists only the
+eventual recovered assistant answer.
+
+The running Emacs and canonical database were left unchanged.  This changes
+core loop behavior and requires a full Emacs restart; =e-dev-reload= does not
+apply it.
+
+* Required design self-check
+
+1. If work stopped here, a common correctable model mistake would no longer
+   destroy the user's turn, so the project is better off.
+2. This moves toward provider calls having explicit result semantics while
+   context-lifetime policy remains strict and atomic.
+3. The stable decision is that semantic call rejection is retryable.  The
+   provider wire representation remains local to the OpenAI adapter.
+4. Context lifetime owns validation, the loop owns turn continuation, and the
+   adapter owns OpenAI function-call encoding.  Each component retains one
+   reason to change.
+5. Coupling is reduced: the loop consumes an opaque correction bundle and does
+   not construct OpenAI wire objects.
+6. Core policy does not depend on an OpenAI request shape; the adapter supplies
+   the provider-specific replay value.
+7. Wire construction remains at the adapter boundary and durable append remains
+   outside validation.
+8. The change adds only request-scoped replay and rejection state.  It is
+   cleared on the next request and never becomes a durable mirror.
+9. Recovery adds one provider request only after an invalid model call.  The
+   happy path adds no request and no material work.
+10. No shared interface gains an unsupported operation.  Backends that expose
+    this reserved effect must provide its matching correction bundle.
+11. Durable session and context formats remain compatible.  The obsolete
+    turn-fatal semantic-error behavior is removed.
+12. No compatibility shim or legacy state was added; normal rejected-call
+    handling replaces the old failure path.
+13. Expected semantic validation errors return to the provider.  Structural
+    response errors and unexpected failures still surface through the existing
+    turn-failure boundary.
+14. Adapter tests prove the wire bundle, loop tests prove continuation and
+    structural rejection independently, and composed harness tests prove the
+    real validation and persistence boundary.
