@@ -70,11 +70,8 @@ delete PATH after its replacement write succeeds."
   "Nested async tool call rejected")
 (define-error 'e-tools-invalid-arguments
   "Tool arguments do not match the declared schema")
-(define-error 'e-tools-invalid-stated-purpose
-  "Tool stated purpose does not match the invocation-envelope contract"
-  'e-tools-invalid-arguments)
 (define-error 'e-tools-invalid-definition
-  "Tool definition is not compatible with the invocation envelope")
+  "Tool definition is not compatible with the declared tool schema contract")
 
 (defconst e-tools-nested-tool-default-budget 20
   "Default maximum number of nested tool calls per parent tool execution.")
@@ -277,12 +274,6 @@ BLOCKING-CLASS may be `cheap', `network', `process', `helper', `filesystem',
 WORK is the canonical `e-work-spec' lifecycle for the tool."
   (unless (e-work-spec-p work)
     (signal 'wrong-type-argument (list 'e-work-spec-p work)))
-  (when (e-tools--schema-property-present-p
-         (and (listp parameters) (plist-get parameters :properties))
-         "stated_purpose")
-    (signal 'e-tools-invalid-definition
-            (list (format "Tool %s declares reserved property stated_purpose"
-                          name))))
   (when blocking-class
     (setq metadata (plist-put metadata :blocking-class blocking-class)))
   (unless (gethash name (e-tools-registry-tools registry))
@@ -435,57 +426,6 @@ property whose schema is nil is still distinguishable from an absent one."
           (e-tools--copy-schema-value (cdr value))))
    (t value)))
 
-(defconst e-tools--stated-purpose-schema
-  '(:type "string"
-    :minLength 1
-    :maxLength 200
-    :pattern "^[^\\r\\n]*\\S[^\\r\\n]*$")
-  "JSON Schema for the reserved model-authored stated purpose field.")
-
-(defun e-tools--schema-properties-with-stated-purpose (properties)
-  "Return a detached PROPERTIES object with the reserved purpose schema."
-  (let ((copy (e-tools--copy-schema-value properties)))
-    (cond
-     ((hash-table-p copy)
-      (puthash "stated_purpose"
-               (e-tools--copy-schema-value e-tools--stated-purpose-schema)
-               copy)
-      copy)
-     ((e-tools--plist-p copy)
-      (plist-put copy
-                 :stated_purpose
-                 (e-tools--copy-schema-value e-tools--stated-purpose-schema)))
-     ((listp copy)
-      (append copy
-              (list (cons "stated_purpose"
-                          (e-tools--copy-schema-value
-                           e-tools--stated-purpose-schema)))))
-     (t
-      (signal 'e-tools-invalid-definition
-              (list "Tool schema properties must be an object"))))))
-
-(defun e-tools--schema-required-with-stated-purpose (required)
-  "Return REQUIRED with the reserved purpose property included."
-  (let ((items
-         (cond
-          ((null required) nil)
-          ((vectorp required) (append required nil))
-          ((listp required) (copy-sequence required))
-          (t
-           (signal 'e-tools-invalid-definition
-                   (list "Tool schema required must be an array")))))
-        present)
-    (dolist (item items)
-      (when (equal (e-tools--schema-property-name item) "stated_purpose")
-        (setq present t)))
-    (if present
-        (if (vectorp required) (vconcat items) items)
-      (if (vectorp required)
-          (vconcat items ["stated_purpose"])
-        (if required
-            (append items (list "stated_purpose"))
-          ["stated_purpose"])))))
-
 (defun e-tools--schema-type-p (value type)
   "Return non-nil when VALUE conforms to JSON Schema TYPE."
   (pcase type
@@ -563,31 +503,8 @@ and string length and pattern constraints before transcript persistence."
     (e-tools--validate-arguments arguments parameters)
     (plist-put call :arguments arguments)))
 
-(defun e-tools--stated-purpose-valid-p (arguments)
-  "Return non-nil when ARGUMENTS contains a valid stated purpose."
-  (and (e-tools--plist-p arguments)
-       (plist-member arguments :stated_purpose)
-       (let ((purpose (plist-get arguments :stated_purpose)))
-         (and (stringp purpose)
-              (<= (length purpose) 200)
-              (not (string-match-p "[\n\r]" purpose))
-              (not (string-empty-p (string-trim purpose)))))))
-
-(defun e-tools--extract-stated-purpose (call)
-  "Extract and remove the provider-only stated purpose from CALL."
-  (let* ((arguments (plist-get call :arguments))
-         (purpose (and (e-tools--plist-p arguments)
-                       (plist-get arguments :stated_purpose))))
-    (unless (e-tools--stated-purpose-valid-p arguments)
-      (signal 'e-tools-invalid-stated-purpose
-              (list "Tool stated_purpose must be a nonblank one-line string of at most 200 characters")))
-    (let ((clean-arguments (copy-sequence arguments)))
-      (cl-remf clean-arguments :stated_purpose)
-      (setq call (plist-put call :arguments clean-arguments))
-      (plist-put call :stated-purpose purpose))))
-
 (defun e-tools--prepare-call-arguments-with-context (call tool)
-  "Validate CALL and retain its prepared envelope when schema validation fails."
+  "Validate CALL and retain its prepared arguments when schema validation fails."
   (condition-case err
       (e-tools--prepare-call-arguments call tool)
     (e-tools-invalid-arguments
@@ -601,29 +518,15 @@ and string length and pattern constraints before transcript persistence."
      (signal (car err)
              (append (cdr err) (list :prepared-call call))))))
 
-(defun e-tools--call-without-stated-purpose (call tool)
-  "Return detached CALL with its envelope field removed and args coerced."
-  (let* ((copy (copy-tree call))
-         (arguments (copy-tree (plist-get copy :arguments)))
-         (parameters (plist-get tool :parameters)))
-    (when (e-tools--plist-p arguments)
-      (cl-remf arguments :stated_purpose)
-      (plist-put copy :arguments
-                 (e-tools--coerce-arguments arguments parameters)))
-    copy))
-
 (defun e-tools-prepare-call (registry call)
   "Return a validated, coerced copy of CALL from REGISTRY.
 Unknown tools are returned unchanged so normal missing-tool handling remains
-inside `e-tools-start'.  Known ordinary tools always extract the provider
-invocation envelope before operation validation."
+inside `e-tools-start'."
   (let* ((copy (copy-tree call))
          (tool (gethash (plist-get copy :name)
                         (e-tools-registry-tools registry))))
     (if tool
-        (progn
-          (setq copy (e-tools--extract-stated-purpose copy))
-          (e-tools--prepare-call-arguments-with-context copy tool))
+        (e-tools--prepare-call-arguments-with-context copy tool)
       copy)))
 
 (defun e-tools-project-call-for-rejection (registry call)
@@ -638,11 +541,6 @@ normal tool error, while rejected text cannot enter transcript or activity."
          (properties (and (listp parameters)
                           (plist-get parameters :properties)))
          (arguments (plist-get copy :arguments))
-         (purpose-invalid
-          (and tool
-               (not (or (and (plist-member copy :stated-purpose)
-                             (stringp (plist-get copy :stated-purpose)))
-                           (e-tools--stated-purpose-valid-p arguments)))))
          projected)
     (when (and tool (e-tools--plist-p arguments))
       (cl-loop for (key value) on arguments by #'cddr do
@@ -654,14 +552,7 @@ normal tool error, while rejected text cannot enter transcript or activity."
                                 t)
                             (e-tools-invalid-arguments nil)))
                  (setq projected (append projected (list key value))))))
-    (setq copy (plist-put copy :arguments projected))
-    (when purpose-invalid
-      (let ((metadata (copy-sequence (plist-get copy :metadata))))
-        (setq copy
-              (plist-put copy
-                         :metadata
-                         (plist-put metadata :purpose-status 'invalid)))))
-    copy))
+    (plist-put copy :arguments projected)))
 
 (defun e-tools--json-key (key)
   "Return stable JSON object key text for KEY."
@@ -892,7 +783,6 @@ strings."
                              e-tools-blocking-execute-rejected
                              e-tools-batch-execute-not-allowed
                              e-tools-nested-async-tool-rejected
-                             e-tools-invalid-stated-purpose
                              e-tools-invalid-arguments))
            (stringp (cadr err)))
       (cadr err)
@@ -926,21 +816,8 @@ strings."
     normalized))
 
 (defun e-tools--decorated-parameters (parameters)
-  "Return the provider-visible invocation-envelope schema for PARAMETERS."
-  (let* ((normalized (e-tools--normalize-parameters parameters))
-         (properties (plist-get normalized :properties)))
-    (when (e-tools--schema-property-present-p properties "stated_purpose")
-      (signal 'e-tools-invalid-definition
-              (list "Tool schema collides with stated_purpose")))
-    (setq normalized
-          (plist-put normalized
-                     :properties
-                     (e-tools--schema-properties-with-stated-purpose
-                      properties)))
-    (plist-put normalized
-               :required
-               (e-tools--schema-required-with-stated-purpose
-                (plist-get normalized :required)))))
+  "Return a detached provider-visible schema for PARAMETERS."
+  (e-tools--normalize-parameters parameters))
 
 (defun e-tools-definitions (registry)
   "Return backend-neutral tool definitions for REGISTRY."
@@ -1304,18 +1181,7 @@ handle after allocation and before its runner may execute."
           (when on-done
             (funcall on-done result))
           nil)
-      (if (eq (plist-get (plist-get call :metadata) :purpose-status)
-              'invalid)
-          (let ((result
-                 (e-tools--result
-                  call
-                  'error
-                  "Tool stated_purpose is invalid"
-                  '(:error e-tools-invalid-stated-purpose))))
-            (when on-done
-              (funcall on-done result))
-            nil)
-        (if (eq (plist-get (plist-get call :metadata) :argument-status)
+      (if (eq (plist-get (plist-get call :metadata) :argument-status)
                 'invalid)
             (let ((result
                    (e-tools--result
@@ -1480,7 +1346,7 @@ handle after allocation and before its runner may execute."
              nil)
             (error
              (finish-error err)
-              nil)))))))))
+              nil))))))))
 
 (provide 'e-tools)
 

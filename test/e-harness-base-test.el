@@ -51,15 +51,13 @@
            (e-resources-operations resources))))
 
 (defun e-harness-base-test--emit-receipt
-    (harness session-id turn-id call-id tool details-uri &optional purpose)
+    (harness session-id turn-id call-id tool details-uri)
   "Append one compact receipt-producing TOOL-FINISHED activity event."
   (let ((e-harness-activity-trusted-tool-details-uri details-uri))
     (e-harness-activity-emit-turn-event
      harness session-id turn-id 'tool-finished
      (list :tool-call (list :id call-id
                             :name tool
-                            :stated-purpose (or purpose
-                                               "Inspect the bounded result.")
                             :arguments '(:secret "must-not-project"))
            :result (list :tool-call-id call-id
                          :name tool
@@ -311,19 +309,18 @@
         (should (string-match-p "tmp://details/missing.json" content))))))
 
 (ert-deftest e-harness-base-test-receipt-provider-defaults-cover-wide-receipts ()
-  "Measured defaults retain a representative eight-item, long-purpose tail."
+  "Measured defaults retain a representative eight-item receipt tail."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :intrinsic-capabilities
                    (list (e-harness-base-context-capability-create))))
-         (session-id "receipt-defaults")
-         (purpose (make-string 200 ?p)))
+         (session-id "receipt-defaults"))
     (e-harness-create-session harness :id session-id)
     (dotimes (index e-harness-base-receipt-max-entries)
       (e-harness-base-test--emit-receipt
        harness session-id (format "wide-turn-%d" index)
        (format "wide-call-%d" index) "probe"
-       (format "tmp://details/wide-%d.json" index) purpose))
+       (format "tmp://details/wide-%d.json" index)))
     (let ((projection (e-harness-base-receipt-projection
                        harness session-id)))
       (should (= e-harness-base-receipt-max-entries 8))

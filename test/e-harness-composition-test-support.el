@@ -177,7 +177,7 @@ Return request options, persisted anchors, and the final context."
                      '(:type tool-call
                        :id "refresh-1"
                        :name "refresh-anchor"
-                       :arguments (:stated_purpose "Refresh the anchor.")))
+                       :arguments ()))
                     (funcall
                      on-item
                      '(:type provider-anchor-candidate

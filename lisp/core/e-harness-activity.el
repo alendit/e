@@ -236,25 +236,6 @@ result activity itself is no longer represented by a preview."
       (setq index (1+ index)))
     (substring text 0 index)))
 
-(defun e-harness-activity--tool-purpose-activity-fields (call)
-  "Return the safe stated-purpose fields for tool CALL.
-Invalid purpose text is never persisted; callers receive an explicit status
-instead so rejected calls remain distinguishable from calls without an
-envelope."
-  (let* ((metadata (and (listp call) (plist-get call :metadata)))
-         (purpose (and (listp call) (plist-get call :stated-purpose))))
-    (cond
-     ((eq (plist-get metadata :purpose-status) 'invalid)
-      '(:purpose-status invalid))
-     ((and (stringp purpose)
-           (not (string-empty-p (string-trim purpose)))
-           (not (string-match-p "[\n\r]" purpose))
-           (<= (length purpose) 200))
-      (list :stated-purpose (e-harness-activity--safe-activity-scalar purpose)))
-     ((and (listp call) (plist-member call :stated-purpose))
-      '(:purpose-status invalid))
-     (t nil))))
-
 (defun e-harness-activity--tool-call-identity-projection (call)
   "Return only stable identity fields from tool CALL."
   (when (listp call)
@@ -264,12 +245,9 @@ envelope."
 
 (defun e-harness-activity--tool-call-activity-projection (call)
   "Return the durable start projection of tool CALL.
-Only call identity and the validated stated-purpose envelope cross this
-boundary; operation arguments remain in the detached invocation-details
-artifact when that lifecycle is available."
-  (when (listp call)
-    (append (e-harness-activity--tool-call-identity-projection call)
-            (e-harness-activity--tool-purpose-activity-fields call))))
+Only call identity crosses this boundary; operation arguments remain in the
+detached invocation-details artifact when that lifecycle is available."
+  (e-harness-activity--tool-call-identity-projection call))
 
 (defun e-harness-activity--tool-relation-activity-fields (payload)
   "Return named causal fields retained from tool activity PAYLOAD."
@@ -303,12 +281,10 @@ URI copied into RESULT metadata is not sufficient to authorize a receipt."
          (name (or (plist-get call :name)
                    (plist-get result :name)))
          (receipt
-          (append
-           (list :tool-call-id (e-harness-activity--safe-activity-scalar id)
-                 :tool (e-harness-activity--safe-activity-scalar name)
-                 :status (e-harness-activity--safe-activity-scalar
-                          (plist-get result :status)))
-           (e-harness-activity--tool-purpose-activity-fields call))))
+          (list :tool-call-id (e-harness-activity--safe-activity-scalar id)
+                :tool (e-harness-activity--safe-activity-scalar name)
+                :status (e-harness-activity--safe-activity-scalar
+                         (plist-get result :status)))))
     (when (and (stringp details-uri)
                (not (string-empty-p details-uri)))
       (setq receipt

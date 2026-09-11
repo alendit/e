@@ -477,7 +477,7 @@
                     '(:type tool-call
                       :id "call-tool-result"
                       :name "inspect-result"
-                      :arguments (:stated_purpose "Inspect the raw result."
+                      :arguments (
                                   :target "raw")))
                    (funcall on-item '(:type done :reason tool-use)))
                   (2
@@ -1177,7 +1177,7 @@
                              '(:type tool-call
                                :id "call-steering"
                                :name "inspect-steering"
-                               :arguments (:stated_purpose "Inspect steering.")))
+                               :arguments ()))
                     (funcall on-item
                              '(:type provider-anchor-candidate
                                :provider-id fake

@@ -118,7 +118,6 @@
   (e-session-tmp-sqlite-test--with-harness
       (store harness resources directory)
     (let* ((call '(:id "call-1" :name "echo"
-                   :stated-purpose "Echo the complete value"
                    :arguments (:text "hello")))
            (result '(:tool-call-id "call-1" :name "echo" :status ok
                      :content "complete output" :metadata (:tokens 7)))

@@ -34,7 +34,6 @@
 (defun e-tool-invocation-details-test--call (&optional arguments)
   "Return a valid ordinary model-facing CALL with ARGUMENTS."
   (list :id "call/one" :name "echo"
-        :stated-purpose "Echo the supplied text"
         :arguments (or arguments '(:text "hello"))))
 
 (defun e-tool-invocation-details-test--result
@@ -152,12 +151,9 @@ ordinary tool implementation used by the test capability."
          (encoded (e-tool-invocation-details-encode document))
          (decoded (e-tool-invocation-details-decode encoded)))
     (should (string-match-p "\\\"version\\\":1" encoded))
-    (should (string-match-p "\\\"stated_purpose\\\"" encoded))
     (should (string-match-p "\\\"arguments\\\"" encoded))
     (should-not (string-match-p "received_arguments" encoded))
     (should (equal (plist-get decoded :version) 1))
-    (should (equal (plist-get decoded :stated-purpose)
-                   "Echo the supplied text"))
     (should (equal (plist-get (plist-get decoded :result) :status) "ok"))
     (should (equal (plist-get (plist-get decoded :result) :metadata)
                    '(:note "portable" :semantic t)))))
@@ -177,7 +173,6 @@ ordinary tool implementation used by the test capability."
          (decoded (e-tool-invocation-details-decode encoded)))
     (should (string-match-p "received_arguments" encoded))
     (should-not (string-match-p "\\\"arguments\\\"" encoded))
-    (should-not (string-match-p "stated_purpose" encoded))
     (should (equal (plist-get decoded :received-arguments) received))
     (should-not (plist-member decoded :arguments))))
 
@@ -187,11 +182,9 @@ ordinary tool implementation used by the test capability."
            (list
             '(:version 1 :tool-call-id "c" :tool "echo"
               :result (:status ok :content "x" :metadata nil))
-            '(:version 1 :tool-call-id "c" :tool "echo"
-              :stated-purpose "p" :arguments nil :received-arguments nil
+            '(:version 1 :tool-call-id "c" :tool "echo" :arguments nil :received-arguments nil
               :result (:status ok :content "x" :metadata nil))
-            '(:version 1 :tool-call-id "c" :tool "echo"
-              :stated-purpose "p" :arguments nil :result
+            '(:version 1 :tool-call-id "c" :tool "echo" :arguments nil :result
               (:status ok :content "x" :metadata nil) :unexpected t)))
     (should-error (e-tool-invocation-details-encode document)
                   :type 'e-tool-invocation-details-invalid)))
@@ -450,7 +443,7 @@ ordinary tool implementation used by the test capability."
           (e-tool-output-truncation-max-lines 1000))
       (e-tool-lifecycle-start-call
        (e-harness-tool-lifecycle harness "session-1" "turn-1")
-       '(:id "call-1" :name "echo" :stated-purpose "Echo text"
+       '(:id "call-1" :name "echo"
          :arguments (:text "0123456789abcdefghijklmnopqrstuvwxyz"))
        :on-done (lambda (value) (setq result value))
        :on-error (lambda (err) (setq failure err)))
@@ -475,51 +468,11 @@ ordinary tool implementation used by the test capability."
                        8))))
       (e-session-tmp-cleanup-harness harness))))
 
-(ert-deftest e-tool-invocation-details-test-loop-invalid-purpose-archives-operation-only-received-arguments ()
-  "Invalid stated purpose is rejected without dispatch or transcript leakage."
-  (let (handler-called)
-    (let* ((run
-            (e-tool-invocation-details-test--run-two-round-tool
-             '(:stated_purpose "INVALID-PURPOSE-SECRET\nsecond-line"
-               :text "visible")
-             :handler (lambda (_arguments)
-                        (setq handler-called t)
-                        "must-not-run")))
-           (harness (plist-get run :harness)))
-      (unwind-protect
-          (let* ((messages (e-harness-messages harness "session-1"))
-                 (activity
-                  (e-harness-session-activity-events harness "session-1"))
-                 (result (e-tool-invocation-details-test--tool-result harness))
-                 (metadata (plist-get result :metadata))
-                 (uri (plist-get metadata :invocation-details-uri)))
-            (should (= (plist-get run :request-count) 2))
-            (should-not handler-called)
-            (should (eq (plist-get result :status) 'error))
-            (should (eq (plist-get metadata :error)
-                        'e-tools-invalid-stated-purpose))
-            (should (stringp uri))
-            (let ((archived
-                   (e-tool-invocation-details-decode
-                    (e-tool-invocation-details-test--read-uri
-                     harness "session-1" uri))))
-              (should (equal (plist-get archived :received-arguments)
-                             '(:text "visible")))
-              (should-not (plist-member archived :arguments))
-              (should-not (plist-member archived :stated-purpose)))
-            (should-not (string-match-p
-                         (regexp-quote "INVALID-PURPOSE-SECRET")
-                         (prin1-to-string messages)))
-            (should-not (string-match-p
-                         (regexp-quote "INVALID-PURPOSE-SECRET")
-                         (prin1-to-string activity))))
-        (e-session-tmp-cleanup-harness harness)))))
-
 (ert-deftest e-tool-invocation-details-test-loop-structured-semantic-error-archives-executed-arguments ()
   "An executed structured tool error archives arguments and semantic details."
   (let* ((run
           (e-tool-invocation-details-test--run-two-round-tool
-           '(:stated_purpose "Validate this input"
+           '(
              :text "bad-input")
            :handler
            (lambda (_arguments)
@@ -546,8 +499,6 @@ ordinary tool implementation used by the test capability."
             (should (equal (plist-get archived :arguments)
                            '(:text "bad-input")))
             (should-not (plist-member archived :received-arguments))
-            (should (equal (plist-get archived :stated-purpose)
-                           "Validate this input"))
             (should (equal (plist-get archived-result :status) "error"))
             (should (equal (plist-get archived-content :code)
                            "semantic-error"))
@@ -601,7 +552,6 @@ ordinary tool implementation used by the test capability."
             (e-tool-lifecycle-start-call
              (e-harness-tool-lifecycle harness "session-1" "turn-1")
              '(:id "timeout-call" :name "stall"
-               :stated-purpose "Wait for timeout"
                :arguments (:text "timeout"))
              :on-done (lambda (value) (setq result value))
              :on-error (lambda (err) (setq failure err))))
@@ -627,8 +577,6 @@ ordinary tool implementation used by the test capability."
               (should (equal (plist-get archived :arguments)
                              '(:text "timeout")))
               (should-not (plist-member archived :received-arguments))
-              (should (equal (plist-get archived :stated-purpose)
-                             "Wait for timeout"))
               (should (equal (plist-get archived-result :status) "error"))
               (should (equal (plist-get (plist-get archived-result :metadata)
                                        :error)
@@ -654,7 +602,7 @@ ordinary tool implementation used by the test capability."
                '(:type tool-call
                  :id "abort-call"
                  :name "held-tool"
-                 :arguments (:stated_purpose "Hold this operation."
+                 :arguments (
                              :text "cancel-me")))
               (funcall on-item '(:type done :reason tool-use))
               (funcall on-done '(:status done))
@@ -728,8 +676,6 @@ ordinary tool implementation used by the test capability."
             (should (eq (plist-get tool-result :status) 'error))
             (should (equal (plist-get tool-result :content) "Cancelled"))
             (should (equal (plist-get archive :tool-call-id) "abort-call"))
-            (should (equal (plist-get archive :stated-purpose)
-                           "Hold this operation."))
             (should (equal (plist-get archive :arguments)
                            '(:text "cancel-me")))
             (should (equal (plist-get (plist-get archive :result) :content)
@@ -762,7 +708,7 @@ ordinary tool implementation used by the test capability."
                      '(:type tool-call
                        :id "outer-call"
                        :name "outer"
-                       :arguments (:stated_purpose "Run the outer operation."
+                       :arguments (
                                    :text "outer-input")))
                     (funcall on-item '(:type done :reason tool-use)))
                (funcall on-item
@@ -856,7 +802,7 @@ ordinary tool implementation used by the test capability."
                      '(:type tool-call
                        :id "invalid-operation-call"
                        :name "echo"
-                       :arguments (:stated_purpose "A valid purpose"
+                       :arguments (
                                    :text "visible"
                                    :secret "RECEIVED-ONLY")))
                     (funcall on-item '(:type done :reason tool-use)))
@@ -930,8 +876,6 @@ ordinary tool implementation used by the test capability."
                      (plist-get (plist-get archived :received-arguments) :secret)
                      "RECEIVED-ONLY"))
             (should-not (plist-member archived :arguments))
-            (should-not (plist-member (plist-get archived :received-arguments)
-                                      :stated_purpose))
             (should-not (string-match-p
                          (regexp-quote "RECEIVED-ONLY")
                          (prin1-to-string messages)))

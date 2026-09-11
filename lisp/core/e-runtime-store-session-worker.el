@@ -1307,8 +1307,6 @@ unselected branch rows and unrelated journal families are never returned."
                     (list :tool-call-id tool-call-id
                           :tool (plist-get receipt :tool)
                           :status (plist-get receipt :status)
-                          :stated-purpose (plist-get receipt :stated-purpose)
-                          :purpose-status (plist-get receipt :purpose-status)
                           :details-uri (plist-get receipt :details-uri)))
                    (receipt-bytes
                     (e-runtime-store-codec-measure-bounded

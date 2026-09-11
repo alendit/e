@@ -889,7 +889,7 @@ aggregate or mirror."
              stream '(:type tool-call
                        :id "daily-run-elisp"
                        :name "run_elisp"
-                       :arguments (:stated_purpose "Verify a harmless value."
+                       :arguments (
                                    :code "(concat (make-string 9000 ?x) \"-daily-large-tool-result\")"))
              0.02)
             (e-graphical-test-stream-finish stream 0.03 'tool-use)

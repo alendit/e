@@ -2039,7 +2039,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
                        '(:type tool-call
                          :id "call-1"
                          :name "held-tool"
-                         :arguments (:stated_purpose "Hold this tool call."
+                         :arguments (
                                      :text "hi")))
               (funcall on-item '(:type done :reason tool-use))
               (funcall on-done '(:status done))

@@ -75,7 +75,7 @@
       (should (equal (plist-get definition :description)
                      "Save one coarse, reusable process observation."))
       (should (equal (plist-get (plist-get definition :parameters) :required)
-                     ["signal" "note" "stated_purpose"]))
+                     ["signal" "note"]))
       (setq result
             (e-tools--execute-batch-with-context
              registry

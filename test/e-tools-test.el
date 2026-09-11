@@ -97,9 +97,8 @@
            (parameters (plist-get (car definitions) :parameters)))
       (should (equal (plist-get parameters :type) "object"))
       (should (hash-table-p (plist-get parameters :properties)))
-      (should (string-match-p
-               "\"stated_purpose\""
-               (json-encode definitions)))
+      (should-not (plist-get parameters :required))
+      (should (= (hash-table-count (plist-get parameters :properties)) 0))
       (should (equal (car definitions)
                      `(:type "function"
                        :name "noop"
@@ -107,8 +106,8 @@
                        :parameters ,parameters
                        :strict :json-false))))))
 
-(ert-deftest e-tools-test-definitions-decorate-stated-purpose-schema ()
-  "The material definition adds the required bounded purpose field centrally."
+(ert-deftest e-tools-test-definitions-preserve-declared-argument-schema ()
+  "Provider definitions expose only each tool's declared argument schema."
   (let ((registry (e-tools-registry-create))
         (strict-parameters
          '(:type "object"
@@ -131,38 +130,17 @@
                                                         (plist-get item :name))
                             :test #'equal))
            (empty-parameters (plist-get empty :parameters))
-           (strict-parameters* (plist-get strict :parameters))
-           (purpose (gethash "stated_purpose"
-                             (plist-get empty-parameters :properties))))
-      (should purpose)
-      (should (equal (plist-get purpose :type) "string"))
-      (should (= (plist-get purpose :minLength) 1))
-      (should (= (plist-get purpose :maxLength) 200))
-      (should (equal (plist-get empty-parameters :required)
-                     ["stated_purpose"]))
+           (strict-parameters* (plist-get strict :parameters)))
+      (should (hash-table-p (plist-get empty-parameters :properties)))
+      (should (= (hash-table-count (plist-get empty-parameters :properties)) 0))
+      (should-not (plist-get empty-parameters :required))
       (should (equal (plist-get strict-parameters* :additionalProperties)
                      :json-false))
-      (should (member "path" (append (plist-get strict-parameters* :required)
-                                      nil)))
-      (should (member "stated_purpose"
-                      (append (plist-get strict-parameters* :required) nil)))
-      (should-not (e-tools--schema-property-present-p
-                   (plist-get strict-parameters :properties)
-                   "stated_purpose")))))
+      (should (equal (plist-get strict-parameters* :required) ["path"]))
+      (should (equal strict-parameters* strict-parameters)))))
 
-(ert-deftest e-tools-test-register-rejects-stated-purpose-collision ()
-  "A tool cannot reserve the invocation-envelope property itself."
-  (let ((registry (e-tools-registry-create)))
-    (should-error
-     (e-tools-test-register
-      registry :name "collision" :description "Invalid."
-      :parameters '(:type "object"
-                    :properties (:stated_purpose (:type "string")))
-      :handler (lambda (_arguments) "never"))
-     :type 'e-tools-invalid-definition)))
-
-(ert-deftest e-tools-test-prepare-call-extracts-purpose-before-dispatch ()
-  "Provider envelope metadata is stripped before the handler sees arguments."
+(ert-deftest e-tools-test-prepare-call-validates-native-arguments ()
+  "Prepared calls validate and preserve only native operation arguments."
   (let ((registry (e-tools-registry-create))
         seen)
     (e-tools-test-register
@@ -177,74 +155,14 @@
     (let ((prepared
            (e-tools-prepare-call
             registry
-            '(:id "call-purpose" :name "inspect"
-              :arguments (:stated_purpose "  Inspect the input.  "
-                          :text "hello")))))
-      (should (equal (plist-get prepared :stated-purpose)
-                     "  Inspect the input.  "))
-      (should-not (plist-member (plist-get prepared :arguments)
-                                :stated_purpose))
+            '(:id "call-native" :name "inspect"
+              :arguments (:text "hello")))))
+      (should (equal (plist-get prepared :arguments) '(:text "hello")))
       (should (equal (plist-get (e-tools-test--execute-with-context
                                  registry prepared nil)
                                 :status)
                      'ok))
       (should (equal seen '(:text "hello"))))))
-
-(ert-deftest e-tools-test-rejection-preserves-valid-purpose-envelope ()
-  "Operation-schema rejection keeps a valid extracted purpose available."
-  (let ((registry (e-tools-registry-create)))
-    (e-tools-test-register
-     registry :name "inspect" :description "Inspect input."
-     :parameters '(:type "object" :properties (:text (:type "string")))
-     :handler (lambda (_arguments) "never"))
-    (let ((rejected
-           (condition-case err
-               (e-tools-prepare-call
-                registry
-                '(:id "call-invalid-argument" :name "inspect"
-                  :arguments (:stated_purpose "Valid purpose"
-                              :text 42)))
-             (e-tools-invalid-arguments
-              (e-tools-project-call-for-rejection
-               registry
-               (or (plist-get (cddr err) :prepared-call)
-                   '(:id "call-invalid-argument" :name "inspect"
-                     :arguments (:stated_purpose "Valid purpose"
-                                 :text 42))))))))
-      (should (equal (plist-get rejected :stated-purpose)
-                     "Valid purpose"))
-      (should (equal (plist-get rejected :arguments) nil))
-      (should-not (eq (plist-get (plist-get rejected :metadata)
-                      :purpose-status)
-                      'invalid)))))
-
-(ert-deftest e-tools-test-invalid-purpose-is-rejected-before-handler ()
-  "Invalid envelope values use the normal structured tool error path."
-  (let ((registry (e-tools-registry-create))
-        called)
-    (e-tools-test-register
-     registry :name "inspect" :description "Inspect input."
-     :parameters '(:type "object" :properties (:text (:type "string")))
-     :handler (lambda (_arguments)
-                (setq called t)
-                "never"))
-    (dolist (purpose '(nil "" "  " "line\nbreak" 1))
-      (should-error
-       (e-tools-prepare-call
-        registry
-        (list :id "call-invalid" :name "inspect"
-              :arguments (list :stated_purpose purpose :text "hello")))
-       :type 'e-tools-invalid-stated-purpose))
-    (let* ((rejected
-            (e-tools-project-call-for-rejection
-             registry
-             '(:id "call-invalid" :name "inspect"
-               :arguments (:stated_purpose "\n" :text "hello"))))
-           (result (e-tools-test--execute-with-context registry rejected nil)))
-      (should (eq (plist-get result :status) 'error))
-      (should (eq (plist-get (plist-get rejected :metadata) :purpose-status)
-                  'invalid))
-      (should-not called))))
 
 (ert-deftest e-tools-test-result-content-text-serializes-structured-content ()
   "Tool result content text is the provider-visible representation."
@@ -1000,22 +918,22 @@ signalling out of the loop."
        (e-tools-prepare-call
         registry
         '(:id "call-1" :name "compact"
-          :arguments (:stated_purpose "Validate compact input."
+          :arguments (
                       :signal "ok" :note "short" :count 1 :enabled t)))
        :arguments)
       '(:signal "ok" :note "short" :count 1 :enabled t)))
     (dolist (arguments
-             '((:stated_purpose "Validate compact input.")
-               (:stated_purpose "Validate compact input." :note "short")
-               (:stated_purpose "Validate compact input." :signal 1 :note "short")
-               (:stated_purpose "Validate compact input." :signal "bad" :note "short")
-               (:stated_purpose "Validate compact input." :signal "ok" :note "")
-               (:stated_purpose "Validate compact input." :signal "ok" :note "      ")
-               (:stated_purpose "Validate compact input." :signal "ok" :note "longer")
-               (:stated_purpose "Validate compact input." :signal "ok" :note "a\nb")
-               (:stated_purpose "Validate compact input." :signal "ok" :note "short" :count 1.5)
-               (:stated_purpose "Validate compact input." :signal "ok" :note "short" :enabled yes)
-               (:stated_purpose "Validate compact input." :signal "ok" :note "short" :extra t)))
+             '(()
+               ( :note "short")
+               ( :signal 1 :note "short")
+               ( :signal "bad" :note "short")
+               ( :signal "ok" :note "")
+               ( :signal "ok" :note "      ")
+               ( :signal "ok" :note "longer")
+               ( :signal "ok" :note "a\nb")
+               ( :signal "ok" :note "short" :count 1.5)
+               ( :signal "ok" :note "short" :enabled yes)
+               ( :signal "ok" :note "short" :extra t)))
       (should-error
        (e-tools-prepare-call
         registry (list :id "call-1" :name "compact" :arguments arguments))

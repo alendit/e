@@ -1864,7 +1864,7 @@ All other values remain exact, including identities, purpose, URI, and any
 future receipt fields.  Nil enum values remain nil so field presence is tested
 separately by the equality predicate."
   (let ((normalized (copy-tree receipt)))
-    (dolist (key '(:status :purpose-status :details-lifetime))
+    (dolist (key '(:status :details-lifetime))
       (when (plist-member normalized key)
         (let ((value (plist-get normalized key)))
           (when (and value (symbolp value))
@@ -5241,14 +5241,12 @@ replay, where those same values are strings."
   (let* ((receipt '(:tool-call-id "call-1"
                     :tool "tool-1"
                     :status ok
-                    :stated-purpose "Inspect the bounded result."
                     :details-uri "tmp://tool-invocations/s/c.json"
                     :details-lifetime session-tmp))
          (original (list :event-type 'tool-finished
                          :payload (list :receipt receipt)))
          (replayed-receipt '(:details-lifetime "session-tmp"
                              :details-uri "tmp://tool-invocations/s/c.json"
-                             :stated-purpose "Inspect the bounded result."
                              :status "ok"
                              :tool "tool-1"
                              :tool-call-id "call-1"))
@@ -5267,15 +5265,7 @@ replay, where those same values are strings."
                  (plist-put (copy-tree replayed-receipt)
                             :details-uri "tmp://tool-invocations/s/other.json"))
       (should-not (e-live-e2e--reopened-receipt-equal-p original wrong-uri)))
-    (let ((missing-purpose (copy-tree reopened)))
-      (cl-remf (plist-get missing-purpose :payload) :receipt)
-      (plist-put (plist-get missing-purpose :payload)
-                 :receipt
-                 (let ((copy (copy-tree replayed-receipt)))
-                   (cl-remf copy :stated-purpose)
-                   copy))
-      (should-not
-       (e-live-e2e--reopened-receipt-equal-p original missing-purpose)))))
+    ))
 
 (ert-deftest e-live-e2e-test-autonomous-erase-scenario-layers-provide-support ()
   "The configured bare factory exposes receipt/details owners from its layers."
@@ -5330,8 +5320,7 @@ replay, where those same values are strings."
                        (lambda (&rest _) t)))
               (e-harness-activity-emit-turn-event
                harness session-id "turn-1" 'tool-finished
-               '(:tool-call (:id "call-1" :name "probe"
-                            :stated-purpose "Inspect the bounded result.")
+               '(:tool-call (:id "call-1" :name "probe")
                  :result (:tool-call-id "call-1" :name "probe" :status ok
                          :content "ok")))
               (let* ((provider

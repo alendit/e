@@ -1242,7 +1242,6 @@ picker."
                 (e-tool-lifecycle-start-call
                  (e-harness-tool-lifecycle harness "small-session" "turn-1")
                  '(:id "call-small" :name "bash"
-                   :stated-purpose "Verify single-copy small output."
                    :arguments (:command "printf small"))
                  :on-request-start
                  (lambda (started)
@@ -1280,7 +1279,6 @@ picker."
           (e-tool-lifecycle-start-call
            (e-harness-tool-lifecycle harness "raw-session" "turn-1")
            '(:id "call-raw" :name "bash"
-             :stated-purpose "Verify exact raw-byte archival."
              :arguments (:command "printf '\300\301'"))
            :on-done (lambda (value) (setq result value)))
           (should (e-base-tools-test--wait-until (lambda () result) 2.0))
@@ -1334,7 +1332,6 @@ picker."
                    (e-harness-tool-lifecycle harness "session-1" "turn-1")
                    (list :id "call-1"
                          :name "bash"
-                         :stated-purpose "Verify bounded large-output streaming."
                          :arguments
                          (list :command
                                (format "head -c %d /dev/zero | tr '\\0' x; printf END"
@@ -1396,7 +1393,6 @@ picker."
                  (e-harness-tool-lifecycle harness "cancel-session" "turn-1")
                  '(:id "call-cancel"
                    :name "bash"
-                   :stated-purpose "Exercise staging cancellation."
                    :arguments (:command "printf partial; sleep 5"))))
           (should (e-tools-request-p request))
           (let ((output-file
@@ -1428,7 +1424,6 @@ picker."
                  (e-harness-tool-lifecycle harness "detach-session" "turn-1")
                  '(:id "call-detach"
                    :name "bash"
-                   :stated-purpose "Exercise detached output staging."
                    :arguments (:command "printf partial; sleep 5"
                                :wait_for 0))
                  :on-done (lambda (value) (setq result value))))

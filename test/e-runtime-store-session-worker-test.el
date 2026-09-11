@@ -474,8 +474,6 @@
                              (list :tool-call-id tool-call-id
                                    :tool "read"
                                    :status 'finished
-                                   :stated-purpose (format "purpose-%d" index)
-                                   :purpose-status 'satisfied
                                    :details-uri (format "tmp://detail-%d" index)
                                    :unrelated-large-copy "must-not-cross")))
                  :query-delta state))

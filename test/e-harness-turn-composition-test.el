@@ -1047,8 +1047,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                              (list :type 'tool-call
                                    :id "run-1"
                                    :name "run_elisp"
-                                   :arguments (list :stated_purpose
-                                                     "Run the requested code."
+                                   :arguments (list
                                                      :code code)))
                     (funcall on-item '(:type done :reason tool-use)))
                 (setq second-request-messages messages)

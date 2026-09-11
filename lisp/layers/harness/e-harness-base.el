@@ -88,10 +88,6 @@ Filtering is performed before any ordering, bounds, or count is derived."
      (list :tool-call-id (plist-get receipt :tool-call-id)
            :tool (plist-get receipt :tool)
            :status (plist-get receipt :status))
-     (when (plist-member receipt :stated-purpose)
-       (list :stated-purpose (plist-get receipt :stated-purpose)))
-     (when (plist-member receipt :purpose-status)
-       (list :purpose-status (plist-get receipt :purpose-status)))
      (when (stringp uri)
        (list :details-uri uri))
      (list :details (if available 'available 'unavailable)
@@ -105,12 +101,6 @@ Filtering is performed before any ordering, bounds, or count is derived."
                       (format "%s" (plist-get view :tool-call-id)))
                 (cons "tool" (format "%s" (plist-get view :tool)))
                 (cons "status" (format "%s" (plist-get view :status))))
-          (when (plist-member view :stated-purpose)
-            (list (cons "stated_purpose"
-                        (plist-get view :stated-purpose))))
-          (when (plist-member view :purpose-status)
-            (list (cons "purpose_status"
-                        (format "%s" (plist-get view :purpose-status)))))
           (when (plist-member view :details-uri)
             (list (cons "details_uri" (plist-get view :details-uri))))
           (list (cons "details" (format "%s" (plist-get view :details)))

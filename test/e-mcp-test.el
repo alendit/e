@@ -297,13 +297,7 @@
                        "[MCP fixture] Echo text."))
         (should (equal (plist-get definition :parameters)
                        '(:type "object"
-                         :properties (:text (:type "string")
-                                      :stated_purpose
-                                      (:type "string"
-                                       :minLength 1
-                                       :maxLength 200
-                                       :pattern "^[^\\r\\n]*\\S[^\\r\\n]*$"))
-                         :required ["stated_purpose"])))
+                         :properties (:text (:type "string")))))
         (should (equal (plist-get stored :metadata)
                        '(:kind mcp-tool
                          :server-id "fixture"

@@ -138,7 +138,6 @@
   (should (require 'e-tool-output-truncation nil t))
   (let* ((harness (e-tool-output-truncation-test--harness))
          (call '(:id "call-details" :name "echo"
-                 :stated-purpose "Keep the complete result available"
                  :arguments (:text "full")))
          (semantic-result '(:tool-call-id "call-details"
                             :name "echo"

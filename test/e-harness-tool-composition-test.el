@@ -129,7 +129,7 @@
                             events)))))
 
 (ert-deftest e-harness-test-tool-finished-activity-drops-unknown-metadata ()
-  "Invalid purpose status is durable without persisting invalid text."
+  "Unknown call and result metadata never enters the durable receipt."
   (let ((harness (e-harness-create
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
@@ -137,8 +137,7 @@
       (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'tool-finished
        '(:tool-call (:id "call-1" :name "probe"
-                    :stated-purpose "Bearer raw-secret"
-                    :metadata (:purpose-status invalid)
+                    :metadata (:authorization "Bearer call-auth")
                     :arguments (:query "raw-nested"))
          :result (:tool-call-id "call-1" :name "probe" :status ok
                   :content "raw-result-secret"
@@ -149,11 +148,9 @@
            (payload (plist-get event :payload))
            (receipt (plist-get payload :receipt))
            (serialized (prin1-to-string payload)))
-      (should (eq (plist-get receipt :purpose-status) 'invalid))
-      (should-not (plist-member receipt :stated-purpose))
       (should-not (plist-member payload :result))
       (should-not (string-match-p
-                   "raw-secret\\|raw-nested\\|raw-result-secret\\|raw-auth"
+                   "call-auth\\|raw-nested\\|raw-result-secret\\|raw-auth"
                    serialized)))))
 
 (ert-deftest e-harness-test-tool-finished-activity-rejects-mismatched-result ()
@@ -164,8 +161,7 @@
     (let ((e-harness-activity-trusted-tool-details-uri "tmp://trusted.json"))
       (e-harness-activity-emit-turn-event
        harness "session-1" "turn-1" 'tool-finished
-       '(:tool-call (:id "call-1" :name "probe"
-                    :stated-purpose "Inspect the bounded probe")
+       '(:tool-call (:id "call-1" :name "probe")
          :result (:tool-call-id "call-2" :name "other" :status ok
                   :content "raw-mismatched-result")) ))
     (let* ((payload (plist-get
@@ -183,8 +179,7 @@
     (e-harness-create-session harness :id "session-1")
     (e-harness-activity-emit-turn-event
      harness "session-1" "turn-1" 'tool-finished
-     '(:tool-call (:id "call-1" :name "probe"
-                  :stated-purpose "Inspect the bounded probe")
+     '(:tool-call (:id "call-1" :name "probe")
        :result (:tool-call-id "call-1" :name "probe" :status ok
                 :content "raw-untrusted-result"
                 :metadata (:invocation-details-uri
@@ -223,7 +218,6 @@
                    :backend (e-backend-fake-create :items nil)
                    :intrinsic-capabilities (list capability)))
          (call '(:id "call-1" :name "probe"
-                 :stated-purpose "Inspect the bounded probe"
                  :arguments nil))
          result
          failure)
@@ -250,15 +244,14 @@
       (should-not (plist-member (plist-get payload :result)
                                 :trusted-details-uri)))))
 
-(ert-deftest e-harness-test-tool-started-activity-retains-purpose-without-arguments ()
-  "Durable tool-started activity retains identity and stated purpose only."
+(ert-deftest e-harness-test-tool-started-activity-retains-identity-without-arguments ()
+  "Durable tool-started activity retains identity without arguments."
   (let ((harness (e-harness-create
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-activity-emit-turn-event
      harness "session-1" "turn-1" 'tool-started
      '(:id "call-1" :name "probe"
-       :stated-purpose "Inspect the bounded probe"
        :arguments (:query "raw-query")))
     (let* ((event (car (e-harness-session-activity-events
                         harness "session-1")))
@@ -266,8 +259,7 @@
            (serialized (prin1-to-string payload)))
       (should (equal payload
                      '(:id "call-1"
-                       :name "probe"
-                       :stated-purpose "Inspect the bounded probe")))
+                       :name "probe")))
       (should-not (string-match-p "raw-query" serialized)))))
 
 (ert-deftest e-harness-test-tool-receipt-survives-persistent-reopen-without-preview ()
@@ -283,14 +275,12 @@
           (e-harness-activity-emit-turn-event
            harness "session-1" "turn-1" 'tool-started
            '(:id "call-1" :name "bash"
-             :stated-purpose "Run the bounded command"
              :arguments (:command "raw-command-secret")))
           (let ((e-harness-activity-trusted-tool-details-uri
                  "tmp://tool-invocations/turn-1/call-1.json"))
             (e-harness-activity-emit-turn-event
              harness "session-1" "turn-1" 'tool-finished
              '(:tool-call (:id "call-1" :name "bash"
-                          :stated-purpose "Run the bounded command"
                           :arguments (:command "raw-command-secret"))
                :result (:tool-call-id "call-1"
                         :name "bash"
@@ -309,13 +299,11 @@
                  (serialized (prin1-to-string events)))
             (should (equal started-payload
                            '(:id "call-1"
-                             :name "bash"
-                             :stated-purpose "Run the bounded command")))
+                             :name "bash")))
             (should (equal receipt
                            '(:tool-call-id "call-1"
                              :tool "bash"
                              :status ok
-                             :stated-purpose "Run the bounded command"
                              :details-uri
                              "tmp://tool-invocations/turn-1/call-1.json"
                              :details-lifetime session-tmp)))
@@ -597,7 +585,7 @@ Return request options, persisted anchors, and the final context."
                      '(:type tool-call
                        :id "refresh-1"
                        :name "refresh-anchor"
-                       :arguments (:stated_purpose "Refresh the anchor.")))
+                       :arguments ()))
                     (funcall
                      on-item
                      '(:type provider-anchor-candidate
@@ -965,7 +953,7 @@ Return request options, persisted anchors, and the final context."
                                '(:type tool-call
                                  :id "call-1"
                                  :name "held-tool"
-                                 :arguments (:stated_purpose "Hold the request."
+                                 :arguments (
                                              :text "hi")))
                       (funcall on-item '(:type done :reason tool-use))
                       (funcall on-done '(:status done))
@@ -1084,7 +1072,7 @@ Return request options, persisted anchors, and the final context."
             (funcall
              (plist-get first-backend-callbacks :on-item)
              '(:type tool-call :id "call-1" :name "fast-tool"
-               :arguments (:stated_purpose "Prove callback ordering.")))
+               :arguments ()))
             (should tool-done)
             (setq trigger-tool-during-commit t)
             (funcall
@@ -1225,7 +1213,7 @@ Return request options, persisted anchors, and the final context."
                              '(:type tool-call
                                :id "call-1"
                                :name "echo"
-                               :arguments (:stated_purpose "Echo the text."
+                               :arguments (
                                            :text "raw")))
                     (funcall on-item '(:type done :reason tool-use)))
                 (funcall on-item
@@ -1254,13 +1242,7 @@ Return request options, persisted anchors, and the final context."
              :handler (lambda (tool-call context)
                         (should (eq (plist-get context :harness) harness))
                         (let ((prepared (copy-sequence tool-call)))
-                          (plist-put
-                           prepared
-                           :arguments
-                           (list :stated_purpose
-                                 (plist-get (plist-get tool-call :arguments)
-                                            :stated_purpose)
-                                 :text "prepared")))))
+                          (plist-put prepared :arguments '(:text "prepared")))))
             (e-hook-create
              :id "50-shape-result"
              :point :post-tool-call
@@ -1440,8 +1422,7 @@ Return request options, persisted anchors, and the final context."
                              (list :type 'tool-call
                                    :id "run-error"
                                    :name "run_elisp"
-                                   :arguments (list :stated_purpose
-                                                     "Run the requested code."
+                                   :arguments (list
                                                      :code code)))
                     (funcall on-item '(:type done :reason tool-use)))
                 (setq second-request-messages messages)

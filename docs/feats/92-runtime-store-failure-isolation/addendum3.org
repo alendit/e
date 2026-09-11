@@ -4,7 +4,7 @@
 
 * Status
 
-=Ready=.  The user accepted this corrective direction after read-only inspection
+=In-progress=.  The user accepted this corrective direction after read-only inspection
 of Daily run =daily:2026-09-11:20260911T110606091299000= and its owner session.
 Implementation must not claim acceptance until the provider-driven graphical
 Daily scenario below passes against disposable state and an independent review

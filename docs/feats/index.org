@@ -232,7 +232,7 @@ mandatory nonsemantic field, accepted a Slack success whose promised durable
 artifact did not exist, and later trusted a stale presentation snapshot over a
 successful apply/finalize result.  A direct whole-file rewrite removed the
 completion markers while idempotent finalize still returned success from
-historical commit evidence.  [[file:92-runtime-store-failure-isolation/addendum3.org][Addendum 3]] is =Ready= and reopens the
+historical commit evidence.  [[file:92-runtime-store-failure-isolation/addendum3.org][Addendum 3]] is =In-progress= and reopens the
 public acceptance boundary: it removes stated purpose without compatibility,
 makes terminal evidence valid before acceptance, moves Daily lifecycle truth to
 SQLite, makes materialization/finalization converge against current state, and

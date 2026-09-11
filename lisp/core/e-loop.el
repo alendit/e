@@ -25,6 +25,25 @@
 
 (define-error 'e-loop-backend-error "Backend returned an error")
 (define-error 'e-loop-empty-output "Backend returned no assistant output")
+(define-error 'e-loop-repeated-tool-failure
+  "The model repeated an identical failing tool call")
+
+(defconst e-loop-tool-failure-diagnostic-byte-limit 512
+  "Maximum normalized tool error bytes retained by the turn loop.")
+
+(defun e-loop--tool-failure-fingerprint (tool-call result)
+  "Return a bounded consecutive-failure fingerprint for TOOL-CALL and RESULT."
+  (when (eq (plist-get result :status) 'error)
+    (let* ((preview
+            (e-tools-result-content-preview
+             (plist-get result :content)
+             e-loop-tool-failure-diagnostic-byte-limit
+             16 3))
+           (text (string-trim
+                  (replace-regexp-in-string
+                   "[[:space:]]+" " " (plist-get preview :text)))))
+      (list :tool (plist-get tool-call :name)
+            :error text))))
 
 (defun e-loop--profile-enabled-p ()
   "Return non-nil when developer profiling is available and enabled."
@@ -386,6 +405,9 @@ schedules it behind the owning session's active commit barrier."
         ;; provider acknowledgement.  Hold that wire state only until the next
         ;; request captures it; each request receives its own options snapshot.
         (next-request-provider-replay-items nil)
+        ;; Only the immediately preceding model-facing tool failure matters.
+        ;; This is live turn coordination and is discarded at settlement.
+        (previous-tool-failure nil)
         (active-lifetime-frame lifetime-frame))
     (cl-labels
         ((dispatch-callback
@@ -1069,6 +1091,20 @@ schedules it behind the owning session's active commit barrier."
                          :type 'tool-finished
                          :payload (list :tool-call tool-call
                                         :result result))
+                        (let ((fingerprint
+                               (e-loop--tool-failure-fingerprint
+                                tool-call result)))
+                          (cond
+                           ((null fingerprint)
+                            (setq previous-tool-failure nil))
+                           ((equal fingerprint previous-tool-failure)
+                            (fail
+                             (list 'e-loop-repeated-tool-failure
+                                   :tool (plist-get fingerprint :tool)
+                                   :error (plist-get fingerprint :error))))
+                           (t
+                            (setq previous-tool-failure fingerprint))))
+                      (unless settled
                       (when (plist-get (plist-get result :metadata)
                                        :refresh-context)
                         (cond
@@ -1141,7 +1177,7 @@ schedules it behind the owning session's active commit barrier."
                       (setq next-request-causes
                             (append next-request-causes (list tool-call)))
                       (start-next-tool)
-                      (maybe-start-followup))))
+                      (maybe-start-followup)))))
                    (start-next-tool
                     ()
                     (when (and (not active-tool)
@@ -1166,32 +1202,6 @@ schedules it behind the owning session's active commit barrier."
                                         (e-tools-prepare-call
                                          tools
                                          execution-call)
-                                      (e-tools-invalid-stated-purpose
-                                       ;; Keep the provider protocol shape
-                                       ;; while dropping invalid envelope
-                                       ;; fields before transcript writes.
-                                       (let* ((tool
-                                               (gethash
-                                                (plist-get execution-call :name)
-                                                (e-tools-registry-tools tools)))
-                                              (archival
-                                               (e-tools--call-without-stated-purpose
-                                                execution-call tool))
-                                              (rejected
-                                               (e-tools-project-call-for-rejection
-                                                tools execution-call)))
-                                         (setq archival-call archival
-                                               archival-rejected-p t
-                                               archival-received-arguments
-                                               (e-tools--copy-schema-value
-                                                (plist-get archival :arguments)))
-                                         (plist-put
-                                          rejected
-                                          :metadata
-                                          (plist-put
-                                           (copy-sequence
-                                            (plist-get rejected :metadata))
-                                           :purpose-status 'invalid))))
                                       (e-tools-invalid-arguments
                                        ;; Keep provider protocol shape while
                                        ;; dropping undeclared rejected fields

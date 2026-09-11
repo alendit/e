@@ -27,7 +27,6 @@
        "turn-1"
        'tool-finished
        '(:tool-call (:id "call-1" :name "bash"
-                    :stated-purpose "Run the bounded command"
                     :arguments (:command "raw-command-secret"))
          :result (:tool-call-id "call-1"
                   :name "bash"
@@ -48,7 +47,6 @@
               '(:tool-call-id "call-1"
                 :tool "bash"
                 :status ok
-                :stated-purpose "Run the bounded command"
                 :details-uri
                 "tmp://tool-invocations/turn-1/call-1.json"
                 :details-lifetime session-tmp)))
@@ -840,7 +838,7 @@ an empty summary\"."
                          '(:type tool-call
                            :id "call-before-invalid-session"
                            :name "before-invalid-session"
-                           :arguments (:stated_purpose "Record the result.")))
+                           :arguments ()))
                 (funcall on-item
                          '(:type context-curate
                            :arguments (:keep (999)

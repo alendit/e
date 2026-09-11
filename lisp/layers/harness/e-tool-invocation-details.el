@@ -165,13 +165,6 @@ cycles and prevents a malformed handler value from recursing indefinitely."
   "Return non-nil when VALUE is an encoded empty object."
   (and (hash-table-p value) (= (hash-table-count value) 0)))
 
-(defun e-tool-invocation-details--valid-purpose-p (purpose)
-  "Return non-nil when PURPOSE satisfies the invocation envelope contract."
-  (and (stringp purpose)
-       (<= (length purpose) 200)
-       (not (string-match-p "[\n\r]" purpose))
-       (not (string-empty-p (string-trim purpose)))))
-
 (defun e-tool-invocation-details--valid-id-p (value)
   "Return non-nil when VALUE is a nonblank stable identifier."
   (and (stringp value) (not (string-empty-p value))))
@@ -223,11 +216,10 @@ cycles and prevents a malformed handler value from recursing indefinitely."
   (let* ((version (plist-get document :version))
          (call-id (plist-get document :tool-call-id))
          (tool (plist-get document :tool))
-         (purpose-p (plist-member document :stated-purpose))
          (arguments-p (plist-member document :arguments))
          (received-p (plist-member document :received-arguments))
          (result (plist-get document :result))
-         (allowed '(:version :tool-call-id :tool :stated-purpose :arguments
+         (allowed '(:version :tool-call-id :tool :arguments
                     :received-arguments :result)))
     (unless (and (numberp version)
                  (= version e-tool-invocation-details-version)
@@ -240,27 +232,13 @@ cycles and prevents a malformed handler value from recursing indefinitely."
         (unless (memq (pop keys) allowed)
           (signal 'e-tool-invocation-details-invalid (list document)))
         (pop keys)))
-    (when (= (+ (if purpose-p 1 0) (if arguments-p 1 0)
-                (if received-p 1 0))
-             0)
-      (signal 'e-tool-invocation-details-invalid (list document)))
-    (unless (or (and purpose-p arguments-p (not received-p)
-                 (e-tool-invocation-details--valid-purpose-p
-                  (plist-get document :stated-purpose)))
-                (and received-p (not arguments-p)
-                     (or (not purpose-p)
-                         (e-tool-invocation-details--valid-purpose-p
-                          (plist-get document :stated-purpose)))))
+    (unless (or (and arguments-p (not received-p))
+                (and received-p (not arguments-p)))
       (signal 'e-tool-invocation-details-invalid (list document)))
     (let ((wire
            (list (cons "version" version)
                  (cons "tool_call_id" call-id)
                  (cons "tool" tool))))
-      (when purpose-p
-        (setq wire
-              (append wire
-                      (list (cons "stated_purpose"
-                                  (plist-get document :stated-purpose))))))
       (let ((value (if arguments-p
                        (plist-get document :arguments)
                      (plist-get document :received-arguments))))
@@ -280,7 +258,7 @@ cycles and prevents a malformed handler value from recursing indefinitely."
   "Return strict Lisp DOCUMENT from parsed JSON PARSED."
   (unless (e-tool-invocation-details--plist-p parsed)
     (signal 'e-tool-invocation-details-invalid (list parsed)))
-  (let ((allowed '(:version :tool_call_id :tool :stated_purpose :arguments
+  (let ((allowed '(:version :tool_call_id :tool :arguments
                    :received_arguments :result))
         (keys parsed))
     (while keys
@@ -290,7 +268,6 @@ cycles and prevents a malformed handler value from recursing indefinitely."
   (let* ((version (plist-get parsed :version))
          (call-id (plist-get parsed :tool_call_id))
          (tool (plist-get parsed :tool))
-         (purpose-p (plist-member parsed :stated_purpose))
          (arguments-p (plist-member parsed :arguments))
          (received-p (plist-member parsed :received_arguments))
          (result (plist-get parsed :result)))
@@ -300,12 +277,8 @@ cycles and prevents a malformed handler value from recursing indefinitely."
                  (e-tool-invocation-details--valid-id-p tool)
                  (e-tool-invocation-details--plist-p result))
       (signal 'e-tool-invocation-details-invalid (list parsed)))
-    (unless (or (and purpose-p arguments-p (not received-p))
+    (unless (or (and arguments-p (not received-p))
                 (and received-p (not arguments-p)))
-      (signal 'e-tool-invocation-details-invalid (list parsed)))
-    (when (and purpose-p
-               (not (e-tool-invocation-details--valid-purpose-p
-                     (plist-get parsed :stated_purpose))))
       (signal 'e-tool-invocation-details-invalid (list parsed)))
     (let ((result-keys result)
           (content-encoding (plist-get result :content_encoding))
@@ -339,8 +312,6 @@ cycles and prevents a malformed handler value from recursing indefinitely."
                (plist-get result :content))
              :metadata (plist-get result :metadata)))
       (append (list :version version :tool-call-id call-id :tool tool)
-              (when purpose-p
-                (list :stated-purpose (plist-get parsed :stated_purpose)))
               (list (if arguments-p :arguments :received-arguments)
                     (if arguments-p
                         (plist-get parsed :arguments)
@@ -419,12 +390,6 @@ stable hash suffix so distinct provider identifiers cannot alias one artifact."
   (format "tool-invocations/%s/%s.json"
           (e-tool-invocation-details--safe-fragment turn-id "turn")
           (e-tool-invocation-details--safe-fragment call-id "call")))
-
-(defun e-tool-invocation-details--rejected-p (call result)
-  "Return non-nil when CALL/RESULT represents a rejected invocation."
-  (or (eq (plist-get (plist-get call :metadata) :purpose-status) 'invalid)
-      (eq (plist-get (plist-get result :metadata) :error)
-          'e-tools-invalid-stated-purpose)))
 
 (defconst e-tool-invocation-details--stream-chunk-bytes (* 64 1024)
   "Maximum source bytes held while streaming file-backed detail content.")
@@ -596,10 +561,7 @@ Return nil for invalid UTF-8.  FINAL-P makes an incomplete suffix invalid."
 (defun e-tool-invocation-details--document
     (call result &optional rejected-p received-arguments)
   "Build the portable invocation document for CALL and semantic RESULT."
-  (let* ((rejected (if (null rejected-p)
-                       (e-tool-invocation-details--rejected-p call result)
-                     rejected-p))
-         (purpose (plist-get call :stated-purpose))
+  (let* ((rejected (and rejected-p t))
          (document (list :version e-tool-invocation-details-version
                          :tool-call-id (plist-get call :id)
                          :tool (plist-get call :name)
@@ -607,20 +569,11 @@ Return nil for invalid UTF-8.  FINAL-P makes an incomplete suffix invalid."
     (unless (and (e-tool-invocation-details--valid-id-p (plist-get call :id))
                  (e-tool-invocation-details--valid-id-p (plist-get call :name)))
       (signal 'e-tool-invocation-details-invalid (list call)))
-    (if rejected
-        (progn
-          (when (e-tool-invocation-details--valid-purpose-p purpose)
-            (setq document
-                  (append document (list :stated-purpose purpose))))
-          (setq document
-                (append document
-                        (list :received-arguments received-arguments))))
-      (unless (e-tool-invocation-details--valid-purpose-p purpose)
-        (signal 'e-tool-invocation-details-invalid (list call)))
-      (setq document
-            (append document
-                    (list :stated-purpose purpose
-                          :arguments (plist-get call :arguments)))))
+    (setq document
+          (append document
+                  (list (if rejected :received-arguments :arguments)
+                        (if rejected received-arguments
+                          (plist-get call :arguments)))))
     document))
 
 (defun e-tool-invocation-details-write

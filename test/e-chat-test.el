@@ -1939,7 +1939,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                             :id "call-1"
                             :name "run_elisp"
                             :arguments
-                            (:stated_purpose "Compact the active session."
+                            (
                              :code "(e-actions-call 'session-compaction :compact '(:keep_recent_tokens 1))")))
                  (funcall on-item '(:type done :reason tool-use)))
                 (2

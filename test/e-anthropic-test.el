@@ -110,8 +110,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
       :description "Read a URI."
       :input_schema (:type "object"))])))
 
-(ert-deftest e-anthropic-test-request-body-retains-invocation-envelope-schema ()
-  "Messages carries the decorated operation schema without reinterpretation."
+(ert-deftest e-anthropic-test-request-body-retains-native-tool-schema ()
+  "Messages carries the native operation schema without reinterpretation."
   (let* ((body
           (e-anthropic-request-body
            :messages '((:role user :content "hello"))
@@ -121,10 +121,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
              :name "read"
              :description "Read a URI."
              :parameters (:type "object"
-                           :properties (:uri (:type "string")
-                                         :stated_purpose
-                                         (:type "string" :minLength 1 :maxLength 200))
-             :required ["uri" "stated_purpose"]
+                           :properties (:uri (:type "string"))
+             :required ["uri"]
              :additionalProperties :json-false)
              :strict :json-false))))
          (wire-tool (aref (plist-get body :tools) 0))
@@ -137,13 +135,13 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
            :false-object :json-false))
          (round-trip-tool (car (plist-get round-trip :tools))))
     (should (equal (plist-get (plist-get wire-tool :input_schema) :required)
-                   ["uri" "stated_purpose"]))
+                   ["uri"]))
     (should (eq (plist-get (plist-get wire-tool :input_schema)
                            :additionalProperties)
                 :json-false))
     (should (equal (plist-get (plist-get round-trip-tool :input_schema)
                              :required)
-                   '("uri" "stated_purpose")))
+                   '("uri")))
     (should (eq (plist-get (plist-get round-trip-tool :input_schema)
                            :additionalProperties)
                 :json-false))))

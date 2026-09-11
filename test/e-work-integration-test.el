@@ -55,7 +55,7 @@
                                 '(:type tool-call
                                   :id "work-call-1"
                                   :name "work_echo"
-                                  :arguments (:stated_purpose "Echo the work state."
+                                  :arguments (
                                               :text "state" :delay 0.5)))
                        (funcall on-item '(:type done :reason tool-use)))
                    (should (equal (mapcar (lambda (message)
