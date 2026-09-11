@@ -226,6 +226,18 @@ generated section and durable completion marker exactly once in a disposable
 Org file.  The investigation is recorded in
 [[file:../bugs/async-action-result-strands-daily-reconciliation/investigation.org][async action result strands Daily reconciliation]].
 
+The same canonical run then exposed a post-finalization counterexample.  Its
+main session issued 134 invalid model-tool calls because =stated_purpose= was a
+mandatory nonsemantic field, accepted a Slack success whose promised durable
+artifact did not exist, and later trusted a stale presentation snapshot over a
+successful apply/finalize result.  A direct whole-file rewrite removed the
+completion markers while idempotent finalize still returned success from
+historical commit evidence.  [[file:92-runtime-store-failure-isolation/addendum3.org][Addendum 3]] is =Ready= and reopens the
+public acceptance boundary: it removes stated purpose without compatibility,
+makes terminal evidence valid before acceptance, moves Daily lifecycle truth to
+SQLite, makes materialization/finalization converge against current state, and
+requires the exact graphical and canonical repair evidence before completion.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |

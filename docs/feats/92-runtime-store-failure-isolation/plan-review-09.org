@@ -1,0 +1,76 @@
+#+title: Addendum 3 implementation-plan review 09
+#+date: 2026-09-11
+
+* Review identity
+
+- Plan :: =addendum3.org=
+- Reviewed SHA-256 :: =90e973939f0940acb56f072fa29062e5d6d5efe95c9b741842ca3741aa7deb59=
+- Baseline :: =5d620101c7fec9d9f82442b0645970a51fe6b682=
+- Review mode :: rebaseline
+- Result :: =changes-requested=
+
+* Findings
+
+** F92A3-PR09-01 [P1] Daily lifecycle storage is not concrete enough to implement
+
+Contracts C05--C07 name SQL Board/domain facts, but the plan does not select the
+existing persistence seam, define the record shape, identify the bounded query,
+or state the transition/reduction rules.  An implementer could teach the generic
+orchestration reducer Daily semantics, add a new mirror, or continue treating
+Org metadata as authority while still claiming the prose.  Select plain Board
+fact records through =e-board-sqlite-publication-target-fact-start=, query them
+through a run-id-tagged bounded =record-page-start= selector, and define a pure
+Grimoire-owned reducer plus its legal transitions and payload bounds.
+
+** F92A3-PR09-02 [P1] Report admission lacks an executable ownership seam
+
+C04 correctly assigns artifact policy to Daily but does not explain how the
+generic child-side =subagents/:report= call reaches that policy before
+=:reported= is set.  Specify a spawn-time, process-local report-admission
+function retained only with the executing child record.  The generic subagent
+runner invokes it before accepting a report; Daily supplies the validator.
+Invalid output returns to the child as an action error and does not settle or
+publish terminal success.
+
+** F92A3-PR09-03 [P2] The error-loop guard needs an exact, narrow rule
+
+"Identical invalid attempts" is underspecified.  Limit the rule to consecutive
+model-facing tool failures with the same tool name and normalized error.  The
+first failure remains ordinary tool feedback.  The second consecutive identical
+failure terminates the turn with one bounded diagnostic.  A successful tool or
+a different failure resets the counter.  This is turn-local coordination, not a
+durable retry subsystem.
+
+** F92A3-PR09-04 [P1] Materialization acknowledgement ordering is missing
+
+C06 does not say when an apply can be acknowledged.  The Daily apply action must
+be asynchronous: validate and save the generated sections first, enqueue the
+immutable =applied= lifecycle fact carrying the exact section revision/value,
+and settle only after that fact commits.  A crash before the fact leaves a
+replayable idempotent materialization; a crash after the fact leaves SQLite with
+the exact expected value for comparison.  Reconciliation must await apply
+before invoking finalize.
+
+* Fixed-point criterion
+
+Address the four findings above and bind each scenario to named tests.  No
+additional architecture review is required before implementation after those
+changes; the package then has no acceptance-critical unknown.
+
+* Resolution
+
+Amended plan SHA-256:
+=1d98d37445549c1a009ddf7bd06612bada29ee570a0b35d42422f5fe3876faf5=.
+
+- F92A3-PR09-01 :: Resolved by the concrete tagged Board-fact record, exact
+  attribute selector, bound, reducer, transition, payload, and idempotency
+  contract.
+- F92A3-PR09-02 :: Resolved by the spawn-time process-local report-admission
+  function and explicit pre-=reported= ordering.
+- F92A3-PR09-03 :: Resolved by the exact consecutive-failure fingerprint,
+  reset, and second-failure termination rule.
+- F92A3-PR09-04 :: Resolved by the materialize-then-commit acknowledgement
+  ordering and mandatory await before finalization.
+
+Result: =implementation-plan-fixed-point=.  The amended plan has no remaining
+acceptance-critical unknown.

@@ -1,0 +1,279 @@
+#+title: Addendum 3: Trustworthy Daily Completion and Tool Invocation
+#+date: 2026-09-11
+#+startup: overview
+
+* Status
+
+=Ready=.  The user accepted this corrective direction after read-only inspection
+of Daily run =daily:2026-09-11:20260911T110606091299000= and its owner session.
+Implementation must not claim acceptance until the provider-driven graphical
+Daily scenario below passes against disposable state and an independent review
+finds no P0--P3 defect.
+
+This addendum supersedes Addendum 2's completion claims only where the live
+counterexample disproved them: mandatory model-authored tool purposes, terminal
+Daily report admission, Daily lifecycle authority, materialization/finalization
+idempotence, and the public graphical proof.  Addendum 2 remains authoritative
+for SQL-only Board state, bounded detached queries, enqueue-and-return writes,
+owner-local failure isolation, and the absence of durable Emacs replicas.
+
+* Behavioral trace
+
+- Goal ID :: =F92A3-TRUSTWORTHY-DAILY-COMPLETION=
+- Behavioral goal :: A terminal Daily Board run supplies its complete bounded
+  evidence directly to one continuation, validates successful gatherer output
+  before accepting it, applies generated sections through the Daily service,
+  and reports completion only when SQLite lifecycle state, the materialized Org
+  file, and its publication commit agree.  Ordinary tool calls never fail for
+  missing model-authored explanatory metadata.
+- Direct scenario :: Start a public graphical Daily against disposable SQLite
+  and a disposable Grimoire checkout.  Hold the worker while the buffer opens,
+  three independent heartbeats and composer input continue, then release it.
+  Seven gatherers settle, including one optional-source failure or empty result.
+  The sole continuation receives the bounded accepted projection without a
+  second Board query, calls one apply and one awaited finalize, and renders one
+  truthful terminal reply.  A deliberately stale canvas snapshot cannot cause
+  a direct lifecycle rewrite.  Restart private Emacs and verify the exact run
+  remains complete without replay, aggregate reconstruction, or duplicate
+  continuation.  A sibling session still persists and reads after one owner
+  fails.
+- Product authority :: User direction on 2026-09-11 after inspecting the failed
+  canonical Daily run.
+- Owning contract :: =F92A3-C01= through =F92A3-C10=.
+- Behavioral status :: Failing.  The inspected run eventually committed a
+  complete snapshot, but a later direct file write removed the visible
+  completion metadata while repeated finalize calls still returned success.
+
+* Glossary state
+
+The selected project glossary is [[../../references/runtime_concepts.org][runtime concepts]].
+Its scope fits harness, session, turn, action, tool, Board, and backend-adapter
+terms used here.  Daily run, generated section, materialization, and publication
+commit remain Grimoire-local terms defined in this addendum; they do not create
+new generic =e= runtime vocabulary.
+
+* Contract matrix
+
+| ID | Observable invariant | Semantic owner | Lifetime, bound, and recovery | Establishing package | Scenario | Evidence | Status |
+|----+----------------------+----------------+-------------------------------+----------------------+----------+----------+--------|
+| F92A3-C01 | Every model-facing tool executes from its typed arguments without a required =stated_purpose= field; no compatibility parser or reserved purpose field remains. | =e-tools= invocation boundary | No durable or process-local purpose state; existing tool identity, arguments, caller, and result remain bounded audit facts. | F92A3-DP1 | S-ACTION | Deterministic repository | Pending |
+| F92A3-C02 | An immediate capability action returns its value; pending work returns one generic =work:= reference consumable by top-level =await=. | =e-actions= and detached-work registry | Process-local only until settlement/expiry; no action-specific result registry or polling API. | F92A3-DP1 | S-ACTION | Deterministic repository | Accepted at =5d620101=; revalidated here |
+| F92A3-C03 | A terminal Board continuation receives the bounded detached terminal projection already queried by fan-in and performs no duplicate status query. | Board orchestration plus chat delivery | Request-scoped detached value bounded by the orchestration query; never installed as a Board mirror. | F92A3-DP2 | S-CONTINUATION | Deterministic repository | Accepted at =5d620101=; revalidated here |
+| F92A3-C04 | A Daily gatherer is accepted as successful only after its declared fragment and durable outputs satisfy the frozen artifact contract; an optional failure becomes a visible gap. | Grimoire Daily report admission | Validation occurs before terminal success publication; SQLite retains the accepted report/error and artifact identities. | F92A3-DP2 | S-REPORT | Deterministic repository | Pending |
+| F92A3-C05 | SQLite is authoritative for Daily run phase, applied generated-section revision, publication commit, finalization time, and failure/gap state. | Grimoire Daily application service over SQL Board/domain facts | Durable across restart; Org properties and Git history are evidence/materializations, not lifecycle authority. | F92A3-DP3 | S-LIFECYCLE | Deterministic repository | Pending |
+| F92A3-C06 | Apply materializes exactly one complete generated-section map while preserving user-owned sections byte-for-byte; interruption resumes from the persisted applied value without model reconstruction. | Grimoire Daily application service | The exact accepted section value or durable reference and revision survive until finalized; presentation retains no durable copy. | F92A3-DP3 | S-MATERIALIZE | Deterministic repository | Pending |
+| F92A3-C07 | Finalize returns success only when current materialization, SQLite lifecycle facts, and publication commit agree; retry is idempotent and repairs an exact owned-metadata loss or reports a concrete divergence. | Grimoire Daily finalization service | Durable transaction facts plus bounded file/commit comparison; no generic whole-file recovery write. | F92A3-DP3 | S-FINALIZE | Deterministic repository | Pending |
+| F92A3-C08 | Expected tool/action failures surface once at the owning boundary; identical invalid attempts do not create an unbounded provider loop, and process reporting uses only bounded query/current context. | Harness loop and process-reporting capability | Turn-local repetition guard; reporting facts are bounded session records. | F92A3-DP1 | S-FAILURE | Deterministic repository | Pending |
+| F92A3-C09 | The public graphical Daily path proves delayed open, heartbeats, composer input, terminal projection consumption, artifact validation, one apply/finalize, truthful rendering, failure isolation, and restart completion through production tools. | Graphical E2E composition | Disposable Emacs, SQLite, files, and Git repository only. | F92A3-DP4 | S-PUBLIC | Deterministic repository | Pending |
+| F92A3-C10 | The inspected 2026-09-11 Daily is repaired only after an exact precondition proves the worktree differs from its completed publication by the two owned metadata lines, followed by independent file/Git/SQLite read-back. | Explicit operator repair | One bounded canonical repair after repository behavior is accepted; no running Emacs mutation. | F92A3-DP4 | S-CANONICAL-REPAIR | Operator evidence | Pending |
+
+* Ownership and modularization
+
+- =e-tools= owns model-tool schema validation and execution.  Observability
+  adapters consume execution facts; they do not add required model arguments.
+- =e-actions= owns immediate-versus-detached result delivery.  Daily does not
+  introduce an action-specific await or polling surface.
+- SQL Board orchestration owns terminal fact collection; chat service owns one
+  continuation delivery carrying a detached consumer view.
+- Grimoire Daily owns artifact-contract validation, lifecycle transitions,
+  generated-section materialization, and Git publication.  Generic Board,
+  resource, presentation, and runtime-store code do not learn Daily policy.
+- Canvas/chat presentation owns snapshot rendering and revision display.  A
+  presentation snapshot never becomes lifecycle authority.
+
+** Concrete Daily lifecycle record seam
+
+Daily lifecycle uses existing canonical Board facts; it does not extend the
+generic orchestration vocabulary.  Grimoire appends facts through
+=e-board-sqlite-publication-target-fact-start= with tags =daily-lifecycle= and
+attributes containing =:daily-run-id= and =:daily-event=.  The record reference
+contains a versioned Daily-owned payload.  Grimoire queries one run through
+=e-board-sqlite-publication-target-record-page-start= with an exact
+=:daily-run-id= attribute selector, a 32-record limit, and a one-megabyte page
+bound already enforced by the Board worker.  Truncation or an invalid transition
+is a visible Daily error, never a partial projection.
+
+The pure Daily reducer accepts the monotone event sequence =started=,
+=materialized=, =published=, =finalized=, plus a terminal =failed= event.  Stable
+source keys are =("daily-lifecycle" RUN-ID EVENT REVISION)=.  =materialized=
+carries the complete normalized generated-section map and its SHA-256 revision;
+=published= carries that revision and the Git commit; =finalized= carries the
+same revision, commit, finalization time, snapshot status, and bounded gaps.
+Duplicate source keys are idempotent.  A different payload for the same key,
+an event whose predecessor is absent, or a revision/commit mismatch is a
+divergence error.  Org properties may display these values, but reads never use
+them to choose lifecycle state.
+
+** Report-admission seam
+
+=e-subagent-spawn= accepts an optional report-admission function and retains it
+only in the executing child registry record.  =subagents/:report= invokes that
+function before setting =:reported=.  The function receives the detached child
+assignment and proposed summary/outputs.  Daily supplies a closure over its
+frozen artifact contract; a valid report is returned unchanged, while an
+invalid report raises an action error back to the child and publishes no
+terminal success.  No validator is persisted, reconstructed, or exposed as a
+model-facing option.
+
+** Exact repetition rule
+
+The harness tracks only the immediately preceding model-facing tool failure in
+the active turn.  Its fingerprint is the tool name plus normalized bounded
+error.  The first failure is returned to the provider normally.  A second
+consecutive identical failure terminates the turn with one bounded diagnostic.
+Any successful tool or different failure resets the count.  Settlement discards
+the counter.
+
+** Apply acknowledgement ordering
+
+Daily =:apply= is an asynchronous action.  It validates the complete section
+map and preserves protected sections, saves the materialization, then enqueues
+the immutable =materialized= lifecycle fact containing the exact normalized map
+and revision.  The action settles only after that fact commits.  A retry before
+the fact exists reapplies the same map idempotently; a retry after it exists
+compares the current generated sections to SQLite's expected revision.  The
+continuation awaits the apply work reference before calling finalize.
+
+The implementation explicitly crosses two repositories but does not activate a
+whole-root physical-decomposition project.  Each changed responsibility already
+has a cohesive semantic owner.  Any source unit that would gain a second
+unrelated reason to change must be split at the smallest private boundary before
+acceptance; file size alone does not require extraction.
+
+* Delivery package plan
+
+** F92A3-DP1: Tool invocation and result integrity
+
+- Establishes :: =F92A3-C01=, =F92A3-C02=, =F92A3-C08=.
+- Useful outcome :: ordinary tools no longer fail for explanatory metadata,
+  pending actions have one consumable result, and repeated identical contract
+  errors terminate visibly rather than amplifying a turn.
+- Boundary :: =e-tools= schema/invocation, =e-actions= result handoff, harness
+  loop repetition policy, process-reporting's bounded session context.
+- Prerequisites :: accepted generic =work:= contract at =5d620101=.
+- State/recovery :: no new durable state; any repetition counter is turn-local
+  and discarded at settlement.
+- Evidence :: focused tool/action/loop/process-reporting suites; request-shape
+  tests for OpenAI and Anthropic; source/loaded-symbol absence scan for the
+  complete stated-purpose family.
+- Deferred :: Daily artifact and lifecycle policy remain unchanged until DP2
+  and DP3.
+- Split reason :: this is a complete generic runtime correction independent of
+  Grimoire and is a useful stopping point.
+
+** F92A3-DP2: Terminal evidence admission and delivery
+
+- Establishes :: =F92A3-C03= and =F92A3-C04=.
+- Useful outcome :: every Daily continuation begins with complete accepted
+  evidence, while a producer cannot claim success for a missing promised
+  artifact.
+- Boundary :: generic Board continuation-view delivery in =e=; Daily-owned
+  artifact-contract validation immediately before success reporting in
+  Grimoire.
+- Prerequisites :: DP1's reliable action boundary.
+- State/recovery :: accepted success/error remains one SQLite Board fact;
+  validation creates no catalog, mirror, or process-global cache.
+- Evidence :: owner tests for bounded continuation shape and report admission;
+  missing, unreadable, empty-valid, optional-error, required-error, and sibling
+  success partitions; no-run-status source scan.
+- Deferred :: applying and publishing the section map remains DP3.
+- Split reason :: terminal evidence is independently trustworthy even before
+  publication is redesigned.
+
+** F92A3-DP3: SQLite-authoritative Daily publication
+
+- Establishes :: =F92A3-C05=, =F92A3-C06=, =F92A3-C07=.
+- Useful outcome :: a Daily run has one durable lifecycle authority and an
+  idempotent materialization/publication service; presentation or direct file
+  metadata drift cannot produce false completion.
+- Boundary :: Grimoire Daily application service and its narrow SQL
+  command/query adapter.  Generic =e= persistence remains domain-agnostic.
+- Prerequisites :: accepted DP2 terminal evidence.
+- State/recovery :: persist domain lifecycle facts and the exact applied
+  generated-section value or stable durable reference.  Apply and finalize use
+  idempotency by run identity and generated revision.  User-owned sections are
+  outside the generated revision.  A crash partition is resolved by comparing
+  SQLite's expected revision with the materialized file and publication commit.
+- Evidence :: state-transition, apply-before-finalize, crash partition,
+  duplicate call, exact user-section preservation, exact metadata loss,
+  divergent-generated-content, restart, and no-aggregate tests.
+- Deferred :: no generalized workflow engine, cross-file transaction protocol,
+  or generic resource locking.
+- Combine reason :: lifecycle state, materialization, commit, and recovery form
+  one transactionally closed Daily publication responsibility; splitting them
+  would preserve the disproved multi-authority gap.
+
+** F92A3-DP4: Public proof and exact canonical repair
+
+- Establishes :: =F92A3-C09= and =F92A3-C10=.
+- Useful outcome :: the production graphical composition proves the complete
+  behavior, and the one known canonical artifact is brought back to the
+  accepted state without broad cleanup.
+- Boundary :: Grimoire graphical fixture, configured-source gate, and explicit
+  operator repair/read-back.
+- Prerequisites :: accepted DP1--DP3 and their focused checks.
+- State/recovery :: tests use disposable state.  Canonical repair requires an
+  exact two-line-difference precondition, a recoverable committed source, and
+  post-repair file/Git/SQLite verification while Emacs remains exited or
+  untouched.
+- Evidence :: provider-driven graphical Daily selector and complete graphical
+  suite; configured Grimoire source-load suite; complete =e= suite; exact
+  canonical read-back.
+- Deferred :: no live reload, no mutation of the canonical SQLite database, and
+  no unrelated Grimoire worktree cleanup.
+- Split reason :: expensive public proof and the separately authorized
+  canonical mutation occur only after mechanism acceptance.
+
+* Scenario portfolio
+
+- S-ACTION :: Invoke representative tools without =stated_purpose=; immediate
+  and pending actions return their defined values; two identical invalid calls
+  terminate with one visible bounded diagnostic.
+- S-CONTINUATION :: Publish terminal Board facts while reads are delayed, then
+  assert the sole continuation contains the detached view and never calls
+  =run-status=.
+- S-REPORT :: A missing declared optional artifact becomes one accepted terminal
+  gap; a missing required artifact blocks reconciliation; a valid empty artifact
+  remains successful.
+- S-LIFECYCLE :: Query the exact run before and after each transition and after
+  private Emacs restart; no Org property or Git scan decides its phase.
+- S-MATERIALIZE :: Apply a complete section value twice and preserve Today's
+  TODO byte-for-byte while durable history size does not change retained Emacs
+  state.
+- S-FINALIZE :: Interrupt around file save, publication commit, and lifecycle
+  acknowledgement; retry converges or reports divergence and never returns
+  false success.
+- S-FAILURE :: Fail reporting and one owner while an unrelated owner continues;
+  neither failure creates a provider retry storm or global store failure.
+- S-PUBLIC :: Execute the complete graphical direct scenario from the
+  behavioral trace with production provider-history handling.
+- S-CANONICAL-REPAIR :: Prove and repair only the two-line metadata divergence,
+  then read back the file, publication commit, and SQLite run identity.
+
+* Compatibility and removals
+
+There is no compatibility requirement for =stated_purpose=, opaque started
+receipts, duplicate =run-status= lookup, file-owned Daily lifecycle, direct
+whole-file recovery, or the removed synchronous session aggregate APIs.  Delete
+their implementations, instructions, tests, and aliases.  Offline migration may
+read old Daily properties only to seed missing SQLite lifecycle facts; ordinary
+runtime must never use them as authority afterward.
+
+* Explicit non-goals
+
+- No global file lock or generic managed-resource framework.
+- No application-side Board, session, or task replica.
+- No generalized workflow or distributed transaction engine.
+- No synchronous wait in interactive Emacs.
+- No full-history replay, catalog, checkpoint, or reconciliation scan.
+- No fork work, pathological exact-accounting expansion, or unrelated Grimoire
+  archive cleanup.
+
+* Acceptance
+
+The package is complete only when all contract rows are accepted, every package
+has passed focused evidence, the public provider-driven graphical scenario is
+passing, the exact source and loaded-symbol removal scans are clean, independent
+review reaches implementation fixed point, semantic commits exist for each
+accepted slice, and the canonical Daily repair has its exact read-back.  Running
+Emacs and the canonical SQLite database remain untouched during development.
