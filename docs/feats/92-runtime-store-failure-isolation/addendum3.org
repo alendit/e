@@ -63,7 +63,7 @@ new generic =e= runtime vocabulary.
 | F92A3-C05 | SQLite is authoritative for Daily run phase, applied generated-section revision, publication commit, finalization time, and failure/gap state. | Grimoire Daily application service over SQL Board/domain facts | Durable across restart; Org properties and Git history are evidence/materializations, not lifecycle authority. | F92A3-DP3 | S-LIFECYCLE | Deterministic repository | Pending |
 | F92A3-C06 | Apply materializes exactly one complete generated-section map while preserving user-owned sections byte-for-byte; interruption resumes from the persisted applied value without model reconstruction. | Grimoire Daily application service | The exact accepted section value or durable reference and revision survive until finalized; presentation retains no durable copy. | F92A3-DP3 | S-MATERIALIZE | Deterministic repository | Pending |
 | F92A3-C07 | Finalize returns success only when current materialization, SQLite lifecycle facts, and publication commit agree; retry is idempotent and repairs an exact owned-metadata loss or reports a concrete divergence. | Grimoire Daily finalization service | Durable transaction facts plus bounded file/commit comparison; no generic whole-file recovery write. | F92A3-DP3 | S-FINALIZE | Deterministic repository | Pending |
-| F92A3-C08 | Expected tool/action failures surface once at the owning boundary; identical invalid attempts do not create an unbounded provider loop, and process reporting uses only bounded query/current context. | Harness loop and process-reporting capability | Turn-local repetition guard; reporting facts are bounded session records. | F92A3-DP1 | S-FAILURE | Deterministic repository | Pending |
+| F92A3-C08 | Expected tool/action failures surface once at the owning boundary; identical invalid attempts do not create an unbounded provider loop, and process reporting uses only bounded query/current context. | Harness loop and process-reporting capability over the SQLite session adapter | Turn-local repetition guard; reporting facts remain canonical session records, with a relational v7 query projection maintained in the same transaction and rebuilt only by the explicit offline upgrade. | F92A3-DP1 | S-FAILURE | Deterministic repository | Pending |
 | F92A3-C09 | The public graphical Daily path proves delayed open, heartbeats, composer input, terminal projection consumption, artifact validation, one apply/finalize, truthful rendering, failure isolation, and restart completion through production tools. | Graphical E2E composition | Disposable Emacs, SQLite, files, and Git repository only. | F92A3-DP4 | S-PUBLIC | Deterministic repository | Pending |
 | F92A3-C10 | The inspected 2026-09-11 Daily is repaired only after an exact precondition proves the worktree differs from its completed publication by the two owned metadata lines, followed by independent file/Git/SQLite read-back. | Explicit operator repair | One bounded canonical repair after repository behavior is accepted; no running Emacs mutation. | F92A3-DP4 | S-CANONICAL-REPAIR | Operator evidence | Pending |
 
@@ -124,6 +124,63 @@ consecutive identical failure terminates the turn with one bounded diagnostic.
 Any successful tool or different failure resets the count.  Settlement discards
 the counter.
 
+** Process-report query projection and schema v7
+
+Process-report subtype and association are durable query facts, not values for
+an application-side scan to rediscover after reading an arbitrary journal
+page.  Schema v7 adds the derived relation
+=session_process_report_index(session_id, position, association_ordinal,
+report_type, marker_id, provider_request_id)=.  Its primary key is
+=(session_id, position, association_ordinal)= and its foreign key is
+=(session_id, position) REFERENCES session_records(session_id, position) ON
+DELETE CASCADE=.  Ordinal zero is the one required base row and has a SQL
+=NULL= marker id.  Marker, triage, and extraction records additionally receive
+one association row for each normalized distinct marker id, ordered
+lexicographically from ordinal one.  The maximum association count is 64;
+duplicates collapse before the bound is checked.  Request-shape base rows carry
+their exact provider request id.  Other report types carry neither association
+nor request identity.
+
+The projection has partial indexes on
+=(session_id, report_type, position DESC)= for base rows,
+=(session_id, marker_id, report_type, position DESC)= for association rows, and
+=(session_id, provider_request_id, report_type, position DESC)= for base rows
+with a request identity.  Consumer operations are: a newest marker page that
+returns each selected marker with its latest triage in one query; an exact
+canonical marker read; a bounded newest triage page for one marker; a bounded
+marker-associated extraction page; bounded exact request-shape lookup for the
+current request-id set; and an exact marker count.  Every semantic predicate is
+applied in SQL before =LIMIT=; none of these operations obtains a generic page
+and filters it in Emacs.  Page results carry an explicit cursor/truncation
+value.  Query results join to =session_records=, whose encoded record remains
+the sole canonical payload; the projection never becomes an Emacs mirror.
+
+The session append transaction derives and inserts these rows beside the
+canonical journal record.  An explicit offline upgrade first creates and fully
+verifies one backup outside the install transaction.  It then performs table
+creation, complete bounded population, projection parity verification, every
+required migration-row insert, and the schema-version update inside one
+=BEGIN IMMEDIATE= transaction immediately before one =COMMIT=.  Any pre-commit
+failure rolls back to the exact source image; a deliberately injected
+post-commit failure restores and verifies the backup before returning failure.
+It never rewrites canonical journal payload bytes.
+
+The supported graph is =v6 -> v7=, =v5 -> v6 -> v7=, and =v4 -> v5 -> v6 ->
+v7=.  The latter two retain each intermediate migration identity and checksum,
+use the same one verified backup, and install all stages atomically.  Fault
+tests cover each stage and both sides of the final commit.  Invoking the
+operator on a verified v7 store is an idempotent read-only no-op that creates no
+backup.  Ordinary startup rejects v4, v5, and v6 and performs no schema or data
+repair.  There is no hidden v6.1, runtime payload scan, compatibility branch,
+or silent schema mutation.
+
+Migration verification requires exactly one base row per canonical
+process-report record and exactly one association row per normalized distinct
+marker association, with no orphan row and no association beyond 64.  Malformed
+input fails with a bounded diagnostic containing only session id, journal
+position, report type, and violated bound/field; it never includes the report
+payload.
+
 ** Apply acknowledgement ordering
 
 Daily =:apply= is an asynchronous action.  It validates the complete section
@@ -149,13 +206,17 @@ acceptance; file size alone does not require extraction.
   pending actions have one consumable result, and repeated identical contract
   errors terminate visibly rather than amplifying a turn.
 - Boundary :: =e-tools= schema/invocation, =e-actions= result handoff, harness
-  loop repetition policy, process-reporting's bounded session context.
+  loop repetition policy, process-reporting's bounded session context, and the
+  session adapter's relational process-report query projection.
 - Prerequisites :: accepted generic =work:= contract at =5d620101=.
-- State/recovery :: no new durable state; any repetition counter is turn-local
-  and discarded at settlement.
+- State/recovery :: the repetition counter is turn-local and discarded at
+  settlement.  Canonical process reports remain session journal records; the
+  v7 relational query projection is transactionally derived and may be rebuilt
+  only by the explicit offline upgrader.
 - Evidence :: focused tool/action/loop/process-reporting suites; request-shape
-  tests for OpenAI and Anthropic; source/loaded-symbol absence scan for the
-  complete stated-purpose family.
+  tests for OpenAI and Anthropic; mixed-history and more-than-256-row query
+  tests; v6-to-v7 migration/rollback/read-back tests; source/loaded-symbol
+  absence scan for the complete stated-purpose family.
 - Deferred :: Daily artifact and lifecycle policy remain unchanged until DP2
   and DP3.
 - Split reason :: this is a complete generic runtime correction independent of
@@ -245,6 +306,15 @@ acceptance; file size alone does not require extraction.
   false success.
 - S-FAILURE :: Fail reporting and one owner while an unrelated owner continues;
   neither failure creates a provider retry storm or global store failure.
+  Reopen a migrated v6 fixture containing old marker, triage, extraction, and
+  request-shape rows behind more than 256 unrelated rows.  Assert that the old
+  triage status remains visible, the marker page is nonempty and correctly
+  cursor-paged despite unrelated rows, exact read returns bounded triage and
+  extraction associations, repeated terminal evidence is suppressed, exact
+  request-shape lookup succeeds, and cost-report marker count is correct.
+  Verify projection parity as one base row per canonical process report plus
+  one row per normalized distinct marker association.  All read-backs occur
+  without retaining a report aggregate.
 - S-PUBLIC :: Execute the complete graphical direct scenario from the
   behavioral trace with production provider-history handling.
 - S-CANONICAL-REPAIR :: Prove and repair only the two-line metadata divergence,
@@ -255,8 +325,11 @@ acceptance; file size alone does not require extraction.
 There is no compatibility requirement for =stated_purpose=, opaque started
 receipts, duplicate =run-status= lookup, file-owned Daily lifecycle, direct
 whole-file recovery, or the removed synchronous session aggregate APIs.  Delete
-their implementations, instructions, tests, and aliases.  Offline migration may
-read old Daily properties only to seed missing SQLite lifecycle facts; ordinary
+their implementations, instructions, tests, and aliases.  Compatibility for
+durable data is different from compatibility for obsolete APIs: the v6-to-v7
+offline migration preserves existing canonical process-report records while
+building their relational query projection.  Offline migration may also read
+old Daily properties only to seed missing SQLite lifecycle facts; ordinary
 runtime must never use them as authority afterward.
 
 * Explicit non-goals
