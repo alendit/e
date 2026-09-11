@@ -165,7 +165,8 @@ triage row; a marker with no triage is =open=.  This effective status is tested
 inside SQL before the outer marker page applies =LIMIT=.
 
 Opening an existing v7 store verifies the complete projection table shape,
-foreign key, exact index columns/order/partial predicates, and v7 migration
+foreign key including one shared FK id and ordered two-column sequence, exact
+index columns/order/partial predicates, and v7 migration
 identity/checksum before any schema initializer runs.  A missing or malformed
 projection or lineage row is rejected for explicit offline repair; ordinary
 startup never recreates it empty with =CREATE IF NOT EXISTS=.  Initializers run
@@ -179,12 +180,16 @@ recognized version 6 predecessor.  A fresh-v6 predecessor is
 =new-current-schema= with the SHA-256 of =feature92-schema-v6=.  A migrated-v6
 predecessor is =feature92-v5-to-v6-explicit-upgrade= with that checksum and
 requires one recognized version 5 provenance row with the SHA-256 of
-=feature92-schema-v5=.  A direct-v5 source is normalized inside the install
-transaction to version 5 identity =feature92-direct-v5-source=; a v4 source
-retains version 5 identity =feature92-v4-to-v5-explicit-upgrade=.  The original
-v4 or v5 image remains independently verifiable in the one backup.
-Verification rejects an absent version 5 predecessor for a migrated-v6 row and
-every other identity/checksum/predecessor combination.
+=feature92-schema-v5=.  Historical fresh-v5 stores carry identity
+=new-current-schema=; the upgrader recognizes that exact tuple and normalizes it
+inside the install transaction to =feature92-direct-v5-source=.  A legacy v5
+source with no migration row receives the same normalized identity.  This
+normalization is performed both when v5 is the input schema and when v6 already
+contains the former fresh-v5 predecessor.  A v4 source retains version 5
+identity =feature92-v4-to-v5-explicit-upgrade=.  The original v4 or v5 image
+remains independently verifiable in the one backup.  Verification rejects an
+absent version 5 predecessor for a migrated-v6 row and every other
+identity/checksum/predecessor combination.
 
 The session append transaction derives and inserts these rows beside the
 canonical journal record.  An explicit offline upgrade first creates and fully
