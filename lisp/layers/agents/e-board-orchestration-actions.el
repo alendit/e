@@ -51,8 +51,15 @@ The stable assignment key makes callback retries no-ops at the board boundary."
                                       :outputs (or outputs []) :error error
                                       :participant-session-id
                                       (plist-get author :session-id))))))
-    (e-board-sqlite-publication-target-orchestration-fact-start
-     target fact :author author)))
+    (let ((work
+           (e-board-sqlite-publication-target-orchestration-fact-start
+            target fact :author author)))
+      (e-work-on-settle
+       work
+       (lambda (settled)
+         (when (eq (plist-get (e-work-status settled) :state) 'finished)
+           (e-chat-service-reconcile-sqlite-continuation-target target))))
+      work)))
 
 (defconst e-board-orchestration-actions-run-limit 32
   "Maximum durable runs returned by one observation action.")

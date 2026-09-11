@@ -9,6 +9,12 @@ source_bootstrap_file=$e2e_dir/graphical/e-graphical-source-bootstrap.el
 daemon_bootstrap_file=$e2e_dir/graphical/e-graphical-daemon-bootstrap.el
 startup_bootstrap_file=$e2e_dir/graphical/e-graphical-startup-bootstrap.el
 
+if [[ -n ${E_GRAPHICAL_E2E_TEST_FILE:-} && -z ${E_GRAPHICAL_E2E_SELECTOR:-} ]]; then
+  # A custom file defines its own test namespace.  The built-in selector cannot
+  # safely guess it, so run every test loaded by that isolated entrypoint.
+  export E_GRAPHICAL_E2E_RUN_ALL=1
+fi
+
 cd "$project_dir"
 
 emacs_config_mode=${E_E2E_EMACS_CONFIG:-isolated}
@@ -161,10 +167,11 @@ if [[ $system_name == Darwin && ${E_GRAPHICAL_E2E_NATIVE_VISIBLE:-} != 1 ]]; the
         (e-graphical-test-runner-run-to-file \"$report_file\")))")
   cat "$report_file"
   convert_graphical_screenshots
-  if [[ $result == 0 ]]; then
-    test_status=0
+  if [[ $result =~ ^[0-9]+$ ]]; then
+    test_status=$result
   else
-    test_status=$?
+    echo "Graphical E2E runner returned an invalid exit code: $result" >&2
+    test_status=2
   fi
   cleanup_startup_fixture
   exit "$test_status"

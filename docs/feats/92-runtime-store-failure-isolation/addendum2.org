@@ -4,11 +4,12 @@
 
 * Status
 
-=Done=.  The 2026-09-10 clean cut supersedes the previously accepted
+=Done=.  The 2026-09-11 cross-repository consumer cutover completes the
+2026-09-10 clean cut, which supersedes the previously accepted
 exception for an explicit in-memory Board engine.  SQLite is the only Board
 implementation.  DP7 removed the aggregate, registry, runtime, polymorphic
 storage adapters, alternate chat paths, and process-local producer bindings
-after migrating every live consumer to the asynchronous SQL service.
+and migrated the configured Grimoire consumer to the asynchronous SQL service.
 
 This addendum rebaselines the remaining Feature 92 work around an RDBMS-first
 runtime boundary.  SQLite is the durable authority for identity, current state,
@@ -1571,3 +1572,75 @@ the isolated selector passes 1/1 with zero unexpected results.  The affected
 Feature 92/Daily matrix passes 348 tests (332 expected passes and 16 explicit
 legacy skips), the complete repository suite passes all 2,950 results (2,884
 expected passes and 66 explicit legacy skips), and byte compilation succeeds.
+
+* Cross-repository Board consumer cutover correction (2026-09-11)
+
+Deleting the alternate Board engine exposed a configured consumer outside this
+repository.  Normal startup eagerly loads Grimoire's Daily layer, which still
+required =e-board-registry= and retained branches through the deleted Board
+aggregate APIs.  The engine deletion was complete inside =e=, but the consumer
+cutover was not; this caused normal Doom startup to fail before the Daily UI
+could open.
+
+Grimoire Daily now obtains a detached SQL publication target from the live chat
+binding.  Manifest, attempt, failure, observation, and restart-recovery work use
+only bounded SQL queries and transactional publication.  The obsolete
+=E_UPDATE_SESSION= runtime property and the ephemeral Board fallback are gone;
+the similarly named offline repair path remains solely as explicit source-data
+migration.  Terminal publication settlement notifies the live continuation
+owner after commit.  If another terminal commit arrives while its bounded query
+is active, the chat service records one coalesced edge and performs exactly one
+follow-up query, so the final state cannot be missed and no Board aggregate is
+retained.
+
+The graphical runner also had a false-green mode: a custom test file without an
+explicit selector inherited the built-in namespace selector, ran zero tests,
+and returned success.  Custom files now default to all tests they load, and any
+zero-test run exits with a harness error.
+
+Acceptance evidence:
+
+- the private current Doom configuration starts from source and passes 4/4,
+  including the configured Grimoire layer;
+- Grimoire's eight focused suites pass 146/146;
+- the Grimoire graphical Daily suite passes 3/3, including public entrypoint
+  owner identity, delayed SQLite failure isolation, and restart recovery with
+  one visible continuation;
+- the complete =e= suite passes 2,516/2,516 with zero unexpected results; and
+- source and generated-bytecode scans find no retired Board module or API in
+  ordinary Grimoire runtime code.  Obsolete native caches for the deleted Board
+  modules and former Daily implementation were removed; they are generated and
+  recoverable.
+
+All acceptance runs used private Emacs processes and disposable databases.  The
+running Emacs and canonical user database were not contacted.
+
+** Architecture self-check
+
+1. This package leaves a bootable configured consumer and closes a false-green
+   E2E path, so stopping here is independently useful.
+2. It completes the SQLite-authoritative direction by deleting the final live
+   aggregate consumer instead of recreating the engine.
+3. Durable ownership and commit semantics are stable.  Query coalescing is a
+   small process-local scheduling choice and remains local to chat service.
+4. SQLite owns Board facts, Grimoire owns Daily policy, chat service owns live
+   continuation coordination, and the graphical runner owns test selection.
+5. Coupling decreases: Grimoire depends on one detached, consumer-shaped SQL
+   target instead of registry, aggregate, and storage variants.
+6. Domain policy does not depend on worker transport or presentation details.
+7. Durable writes and reads remain behind SQL application services; UI code
+   owns no persistence side effects.
+8. Added process state is one per-Board running/rerun marker, retained only
+   while a bounded continuation query is live.
+9. Startup performs no new domain SQL; Daily history size does not affect local
+   retained state.
+10. The publication target is one real SQL contract and has no implementation
+    that weakens it with unsupported operations.
+11. No runtime compatibility requirement exists for the alternate engine, so
+    its Grimoire branches and property handling were removed.
+12. Dead aggregate helpers, registry loading, fallback tests, and stale mocks
+    were removed now.
+13. Expected query failures remain request-local; failed writes remain
+    owner-local; unexpected consumer or zero-test errors surface visibly.
+14. Focused SQL tests prove commit-triggered reconciliation and coalesced rerun;
+    graphical and current-config tests prove the public and configured paths.

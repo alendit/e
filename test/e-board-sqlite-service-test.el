@@ -539,8 +539,8 @@
                        "e-board-sqlite-controller-from-state"))
       (should-not (string-match-p (regexp-quote retired) text)))))
 
-(ert-deftest e-chat-service-sqlite-continuation-owner-never-reenters-ephemeral-board ()
-  "Making a live SQL binding continuation owner stays on detached SQL queries."
+(ert-deftest e-chat-service-sqlite-continuation-owner-uses-bounded-sql-reconciliation ()
+  "Making a live SQL binding continuation owner starts one SQL reconciliation."
   (e-board-sqlite-service-test--with-fixture
       (store _service board-id session-id _participant-id)
     (let ((harness (e-harness-create :sessions store)) binding)
@@ -549,12 +549,13 @@
             (setq binding
                   (e-board-sqlite-service-test--await
                    (e-chat-service-binding-start harness session-id)))
-            (cl-letf (((symbol-function
-                        'e-chat-service-reconcile-board-continuation)
-                       (lambda (&rest _)
-                         (error "SQL continuation used ephemeral Board"))))
-              (e-board-sqlite-service-test--await
-               (e-chat-service-binding-start harness session-id nil t)))
+            (let ((reconciliations 0))
+              (cl-letf (((symbol-function
+                          'e-chat-service--reconcile-sqlite-continuation)
+                         (lambda (_binding) (cl-incf reconciliations))))
+                (e-board-sqlite-service-test--await
+                 (e-chat-service-binding-start harness session-id nil t)))
+              (should (= reconciliations 1)))
             (should (equal (e-chat-service-binding-board-id binding) board-id))
             (should (e-chat-service-binding-continuation-owner-p binding)))
         (when binding (e-chat-service--retire-binding binding))))))
@@ -957,6 +958,14 @@
                   (should (= (hash-table-count
                               e-chat-service--continuation-reconciling)
                              2))
+                  ;; The second runtime-A request records a durable edge while
+                  ;; its first query is active.  Settling that query launches
+                  ;; exactly one follow-up query rather than losing the edge.
+                  (e-work-finish (car (last reconciliation-works))
+                                 '(:records nil :truncated nil))
+                  (should (= (length reconciliation-works) 3))
+                  (e-work-finish (car reconciliation-works)
+                                 '(:records nil :truncated nil))
                   (e-chat-service-close-board binding-a)
                   (should-not
                    (e-chat-service--runtime-coordination-table
@@ -966,7 +975,9 @@
                            (e-chat-service--board-bindings-for binding-b)
                            (list binding-b)))
                   (dolist (work reconciliation-works)
-                    (e-work-finish work '(:records nil :truncated nil)))
+                    (unless (memq (plist-get (e-work-status work) :state)
+                                  '(finished failed cancelled))
+                      (e-work-finish work '(:records nil :truncated nil))))
                   (should (zerop
                            (hash-table-count
                             e-chat-service--continuation-reconciling)))))

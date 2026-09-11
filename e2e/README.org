@@ -85,6 +85,10 @@ Set =E_GRAPHICAL_E2E_SELECTOR= to run one ERT selector.  The scenarios cover:
 5. the focused composer shows model/context fill and updates from settled
    provider usage after a turn.
 
+When =E_GRAPHICAL_E2E_TEST_FILE= names a custom test entrypoint and no selector
+is supplied, the runner executes every test loaded by that file.  A selector
+that matches zero tests is an error, never a successful E2E run.
+
 ** Screenshot traces
 
 Set =E_GRAPHICAL_E2E_SCREENSHOT_DIR= to retain ordered screenshots and exact

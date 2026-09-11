@@ -34,10 +34,15 @@
 (ert-deftest e-board-orchestration-actions-test-terminal-publishes-one-sql-fact ()
   "Terminal publication commits exactly one canonical orchestration fact."
   (e-board-producer-test-with-target (target)
-    (e-board-producer-test-await
-     (e-board-orchestration-actions-publish-terminal
-      target '(:run-id "run-1" :task-key "task" :attempt 0) 'done
-      :summary "done" :outputs []))
+    (let (reconciled)
+      (cl-letf (((symbol-function
+                  'e-chat-service-reconcile-sqlite-continuation-target)
+                 (lambda (candidate) (setq reconciled candidate))))
+        (e-board-producer-test-await
+         (e-board-orchestration-actions-publish-terminal
+          target '(:run-id "run-1" :task-key "task" :attempt 0) 'done
+          :summary "done" :outputs [])))
+      (should (eq reconciled target)))
     (let* ((records (e-board-producer-test-records target))
            (fact (e-board-orchestration-fact-from-record (car records))))
       (should (= (length records) 1))

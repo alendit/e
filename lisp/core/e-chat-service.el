@@ -518,52 +518,77 @@ coordination."
          (reconciling
           (e-chat-service--runtime-coordination-table
            e-chat-service--continuation-reconciling runtime t)))
-    (unless (gethash board-id reconciling)
-      (puthash board-id t reconciling)
+    (if (gethash board-id reconciling)
+        ;; A terminal commit landed after the active query was submitted.  One
+        ;; rerun is sufficient to observe every coalesced commit because the
+        ;; query reads the durable Board facts again after this query settles.
+        (puthash board-id 'rerun reconciling)
+      (puthash board-id 'running reconciling)
       (let ((query
              (e-board-sqlite-service-orchestration-runs-start
               (e-chat-service-binding-sqlite-service binding) board-id 32)))
         (e-work-on-settle
          query
          (lambda (settled)
-           (remhash board-id reconciling)
-           (e-chat-service--runtime-coordination-prune
-            e-chat-service--continuation-reconciling runtime)
-           (when (eq (plist-get (e-work-status settled) :state) 'finished)
-             (condition-case error
-                 (dolist (projection
-                          (e-chat-service--sqlite-orchestration-projections
-                           (e-work-handle-result settled)))
-                   (let ((continuation (plist-get projection :continuation)))
-                     (when (and (plist-get projection :terminal-status)
-                                continuation
-                                (not (eq (plist-get continuation :state)
-                                         'published)))
-                       (let* ((run-id (plist-get projection :run-id))
-                              (key (plist-get continuation :publication-key))
-                              (admission-key (cons board-id key))
-                              (admissions
-                               (e-chat-service--runtime-coordination-table
-                                e-chat-service--continuation-admissions
-                                runtime)))
-                         (unless (and admissions
-                                      (gethash admission-key admissions))
-                           (e-chat-service--watch-sqlite-continuation-admission
-                            binding run-id key
-                            (e-chat-service-queue-session
-                             (e-chat-service-binding-harness binding)
-                             (e-chat-service-binding-session-id binding)
-                             (plist-get continuation :prompt)
-                             :metadata (list :board-run-id run-id
-                                             :board-continuation-key key)
-                             :source-input-key
-                             (list "orchestration-continuation" key 0))))))))
-               (error
-                (e-chat-service--sql-note-failure binding error))))))))))
+           (let ((rerun-p (eq (gethash board-id reconciling) 'rerun)))
+             (remhash board-id reconciling)
+             (e-chat-service--runtime-coordination-prune
+              e-chat-service--continuation-reconciling runtime)
+             (when (eq (plist-get (e-work-status settled) :state) 'finished)
+               (condition-case error
+                   (dolist (projection
+                            (e-chat-service--sqlite-orchestration-projections
+                             (e-work-handle-result settled)))
+                     (let ((continuation (plist-get projection :continuation)))
+                       (when (and (plist-get projection :terminal-status)
+                                  continuation
+                                  (not (eq (plist-get continuation :state)
+                                           'published)))
+                         (let* ((run-id (plist-get projection :run-id))
+                                (key (plist-get continuation :publication-key))
+                                (admission-key (cons board-id key))
+                                (admissions
+                                 (e-chat-service--runtime-coordination-table
+                                  e-chat-service--continuation-admissions
+                                  runtime)))
+                           (unless (and admissions
+                                        (gethash admission-key admissions))
+                             (e-chat-service--watch-sqlite-continuation-admission
+                              binding run-id key
+                              (e-chat-service-queue-session
+                               (e-chat-service-binding-harness binding)
+                               (e-chat-service-binding-session-id binding)
+                               (plist-get continuation :prompt)
+                               :metadata (list :board-run-id run-id
+                                               :board-continuation-key key)
+                               :source-input-key
+                               (list "orchestration-continuation" key 0))))))))
+                 (error
+                  (e-chat-service--sql-note-failure binding error))))
+             (when (and rerun-p (e-chat-service--binding-live-p binding))
+               (e-chat-service--reconcile-sqlite-continuation binding)))))))))
 
 (defun e-chat-service--reconcile-binding-continuation (binding)
   "Reconcile continuations through BINDING's SQL service."
   (e-chat-service--reconcile-sqlite-continuation binding))
+
+(defun e-chat-service-reconcile-sqlite-continuation-target (target)
+  "Reconcile TARGET's terminal runs through its live continuation owner.
+
+TARGET is a detached SQL publication address.  This lookup retains no Board
+or session aggregate: it only locates an already-live binding for the same
+runtime and durable Board id, then starts a bounded SQLite reconciliation."
+  (e-board-sqlite-publication-target--require target)
+  (let* ((service (e-board-sqlite-publication-target--service target))
+         (runtime (e-board-sqlite-service-runtime service))
+         (board-id (e-board-sqlite-publication-target--board-id target))
+         (table
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--board-bindings runtime)))
+    (dolist (binding (and table (copy-sequence (gethash board-id table))))
+      (when (and (e-chat-service--binding-live-p binding)
+                 (e-chat-service-binding-continuation-owner-p binding))
+        (e-chat-service--reconcile-binding-continuation binding)))))
 
 (defun e-chat-service--harness-bindings (harness)
   "Return the session binding table owned by HARNESS."

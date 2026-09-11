@@ -35,6 +35,7 @@
 (defun e-graphical-test-runner-run (&optional selector)
   "Run graphical ERT SELECTOR and return (:exit CODE :output REPORT)."
   (let ((selector (or selector
+                      (and (getenv "E_GRAPHICAL_E2E_RUN_ALL") t)
                       (getenv "E_GRAPHICAL_E2E_SELECTOR")
                       "^e-\\(?:chat\\|window-surface\\|workspace\\)-behavior-test-"))
         (e-graphical-test-runner--output
@@ -79,12 +80,19 @@
                     ;; pay SVG serialization cost only after behavior settles.
                     (when (fboundp 'e-graphical-test-render-pending-screenshots)
                       (e-graphical-test-render-pending-screenshots))
-                    (let* ((unexpected
+                    (let* ((total (ert-stats-total stats))
+                           (unexpected
                             (ert-stats-completed-unexpected stats))
-                           (exit (if (zerop unexpected) 0 1)))
+                           (exit (cond
+                                  ((zerop total) 2)
+                                  ((zerop unexpected) 0)
+                                  (t 1))))
                       (e-graphical-test-runner--print
                        "Graphical E2E complete: %d tests, %d unexpected.\n"
-                       (ert-stats-total stats) unexpected)
+                       total unexpected)
+                      (when (zerop total)
+                        (e-graphical-test-runner--print
+                         "Graphical E2E failed: selector matched no tests.\n"))
                       (list :exit exit
                             :output
                             (with-current-buffer
