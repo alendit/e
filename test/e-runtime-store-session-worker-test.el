@@ -535,6 +535,17 @@
                        :id "activity" :timestamp "2026-09-06T00:00:04Z"
                        :event-type progress :payload (:text "unrelated"))
              :query-delta state))
+      (setq state (copy-tree state))
+      (plist-put state :journal-position 6)
+      (plist-put state :updated-at "2026-09-06T00:00:05Z")
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "visible"
+             :record '(:type "message-display" :session-id "visible"
+                       :id "m2" :delta-id "hide-m2"
+                       :timestamp "2026-09-06T00:00:05Z"
+                       :display "hidden")
+             :query-delta state))
       (let* ((page (e-runtime-store-call
                     runtime 'read
                     '(:op session-visible-message-page
@@ -546,9 +557,159 @@
         (should (equal (mapcar (lambda (message) (plist-get message :content))
                                messages)
                        '("message-1" "message-2")))
+        (should (equal (plist-get (cadr messages) :display) "hidden"))
         (should (plist-get page :truncated))
         (should (= (length messages) 2))
         (should-not (plist-member page :records))))))
+
+(ert-deftest e-runtime-store-session-worker-context-path-applies-latest-display ()
+  "Provider context applies the latest disposition without replay or N+1 reads."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let ((state (e-runtime-store-session-worker-test--state "display")))
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "display"
+             :record '(:type "session" :session-id "display" :id "display-root"
+                       :timestamp "2026-09-06T00:00:00Z")
+             :query-delta state))
+      (setq state (copy-tree state))
+      (plist-put state :journal-position 2)
+      (plist-put state :updated-at "2026-09-06T00:00:01Z")
+      (plist-put state :last-message-at "2026-09-06T00:00:01Z")
+      (plist-put state :message-count 1)
+      (plist-put state :current-head-id "message")
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "display"
+             :record '(:type "message" :session-id "display" :id "message"
+                       :parent-id "display-root"
+                       :timestamp "2026-09-06T00:00:01Z"
+                       :message (:id "message" :role assistant :content "reply"))
+             :query-delta state))
+      (setq state (copy-tree state))
+      (plist-put state :journal-position 3)
+      (plist-put state :updated-at "2026-09-06T00:00:02Z")
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "display"
+             :record '(:type "message-display" :session-id "display"
+                       :id "message" :delta-id "hide"
+                       :timestamp "2026-09-06T00:00:02Z"
+                       :display "hidden")
+             :query-delta state))
+      (should
+       (equal
+        (plist-get
+         (car (plist-get
+               (e-runtime-store-call
+                runtime 'read
+                '(:op session-context-path :session-id "display"))
+               :messages))
+         :display)
+        "hidden"))
+      (setq state (copy-tree state))
+      (plist-put state :journal-position 4)
+      (plist-put state :updated-at "2026-09-06T00:00:03Z")
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "display"
+             :record '(:type "message-display" :session-id "display"
+                       :id "message" :delta-id "show"
+                       :timestamp "2026-09-06T00:00:03Z")
+             :query-delta state))
+      (should-not
+       (plist-member
+        (car (plist-get
+              (e-runtime-store-call
+               runtime 'read
+               '(:op session-context-path :session-id "display"))
+              :messages))
+        :display)))))
+
+(ert-deftest e-runtime-store-session-worker-failure-inspection-is-bounded-and-detached ()
+  "Failure navigation queries only typed recent rows and one exact turn."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let ((state (e-runtime-store-session-worker-test--state "inspect")))
+      (plist-put state :name "Inspection session")
+      (plist-put state :metadata '(:project-root "/tmp/project"))
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "inspect"
+             :record '(:type "session" :session-id "inspect" :id "root"
+                       :timestamp "2026-09-06T00:00:00Z")
+             :query-delta state))
+      (cl-labels
+          ((append-record (position record)
+             (setq state (copy-tree state t))
+             (plist-put state :journal-position position)
+             (plist-put state :updated-at (plist-get record :timestamp))
+             (plist-put state :current-head-id (plist-get record :id))
+             (when (equal (plist-get record :type) "message")
+               (plist-put state :message-count
+                          (1+ (plist-get state :message-count)))
+               (plist-put state :last-message-at (plist-get record :timestamp)))
+             (e-runtime-store-call
+              runtime 'write
+              (list :op 'session-append :session-id "inspect"
+                    :record record :query-delta state))))
+        (append-record
+         2 '(:type "message" :session-id "inspect" :id "message-1"
+             :parent-id "root" :timestamp "2026-09-06T00:00:01Z"
+             :message (:id "message-1" :role user :content "broken"
+                       :turn-id "turn-1")))
+        (append-record
+         3 '(:type "activity-event" :session-id "inspect" :id "event-1"
+             :parent-id "message-1" :timestamp "2026-09-06T00:00:02Z"
+             :semantic-event
+             (:id "event-1" :turn-id "turn-1"
+              :event-type provider-request-started
+              :created-at "2026-09-06T00:00:02Z")))
+        (append-record
+         4 '(:type "activity-event" :session-id "inspect" :id "event-2"
+             :parent-id "event-1" :timestamp "2026-09-06T00:00:03Z"
+             :semantic-event
+             (:id "event-2" :turn-id "turn-1" :event-type turn-failed
+              :created-at "2026-09-06T00:00:03Z"
+              :payload (:error "provider failed" :details (:status 520)))))
+        (append-record
+         5 '(:type "message" :session-id "inspect" :id "message-other"
+             :parent-id "event-2" :timestamp "2026-09-06T00:00:04Z"
+             :message (:id "message-other" :role user :content "other"
+                       :turn-id "turn-2"))))
+      (let* ((page (e-runtime-store-call
+                    runtime 'read
+                    '(:op session-recent-failures :limit 1)))
+             (failure (car (plist-get page :failures)))
+             (detail (e-runtime-store-call
+                      runtime 'read
+                      '(:op session-turn-inspection
+                        :session-id "inspect" :turn-id "turn-1"))))
+        (should (= (length (plist-get page :failures)) 1))
+        (should (equal (plist-get failure :session-id) "inspect"))
+        (should (equal (plist-get failure :turn-id) "turn-1"))
+        (should (equal (plist-get failure :error) "provider failed"))
+        (should (equal (plist-get failure :details) '(:status 520)))
+        (should (equal (plist-get failure :session-title)
+                       "Inspection session"))
+        (should (plist-get detail :present))
+        (should (equal (plist-get (plist-get detail :session) :metadata)
+                       '(:project-root "/tmp/project")))
+        (should (equal (mapcar (lambda (message) (plist-get message :id))
+                               (plist-get detail :messages))
+                       '("message-1")))
+        (should (equal (mapcar (lambda (event) (plist-get event :id))
+                               (plist-get detail :events))
+                       '("event-1" "event-2")))
+        (setf (plist-get failure :error) "mutated")
+        (should (equal
+                 (plist-get
+                  (car (plist-get
+                        (e-runtime-store-call
+                         runtime 'read
+                         '(:op session-recent-failures :limit 1))
+                        :failures))
+                  :error)
+                 "provider failed"))))))
 
 (ert-deftest e-runtime-store-session-worker-content-uses-consumer-byte-bounds ()
   "Message content is bounded by its query, not the scalar-row ABI."

@@ -1003,6 +1003,10 @@ session root, Board association, and owner participant."
   (format "*e-chat:%s*"
           (or (plist-get metadata :name)
               (plist-get metadata :title)
+              (when-let* ((summary (plist-get metadata :summary)))
+                (if (> (length summary) 25)
+                    (concat (substring summary 0 25) "...")
+                  summary))
               (e-chat--short-session-id session-id))))
 
 (defun e-chat--session-buffer-name-fast (session-id)
@@ -1072,6 +1076,10 @@ context insertions from the chat buffer the user is looking at."
     (rename-buffer
      (format "*e-chat:%s*"
              (or (plist-get state :name)
+                 (when-let* ((summary (plist-get state :summary)))
+                   (if (> (length summary) 25)
+                       (concat (substring summary 0 25) "...")
+                     summary))
                  (e-chat--short-session-id e-chat-session-id)))
      t)
     (when-let ((composer (e-chat-surface-composer-buffer)))
@@ -1137,6 +1145,10 @@ context insertions from the chat buffer the user is looking at."
   "Return the current attached session title, or nil."
   (and e-chat-session-id
        (or (plist-get e-chat-session-metadata :name)
+           (when-let* ((summary (plist-get e-chat-session-metadata :summary)))
+             (if (> (length summary) 25)
+                 (concat (substring summary 0 25) "...")
+               summary))
            (plist-get e-chat-session-metadata :title))))
 
 (defun e-chat--title-block-text ()
@@ -1297,6 +1309,15 @@ or transient state individually."
                            :turn-options options))
     options))
 
+(defun e-chat--optimistic-output-mode (mode)
+  "Record MODE in this surface's bounded detached presentation metadata."
+  (let* ((metadata (copy-tree e-chat-session-metadata t))
+         (all (copy-tree (plist-get metadata :capability-state) t))
+         (owner-key (e-session-metadata-owner-key 'chat-output-mode)))
+    (setq all (plist-put all owner-key (and mode (list :mode mode))))
+    (setq-local e-chat-session-metadata
+                (plist-put metadata :capability-state all))))
+
 (defun e-chat--merge-options (base overrides)
   "Return presentation option plist BASE with detached OVERRIDES applied."
   (let ((options (copy-tree base t))
@@ -1385,9 +1406,29 @@ operation.  The facade retains only durable transcript and shell composition."
                (e-chat-surface-restore-output-tail-windows
                 output-tail-windows))
              (when (and assistant-p
+                        (stringp (plist-get message :id)))
+               ;; The unread indicator needs only the newest visible response
+               ;; identity.  Retain that bounded presentation scalar; SQLite
+               ;; remains authoritative and the next chat-view query replaces
+               ;; it.
+               (setq-local
+                e-chat-session-metadata
+                (plist-put (copy-tree e-chat-session-metadata t)
+                           :latest-assistant-marker
+                           (plist-get message :id))))
+             (when (and assistant-p
                         (e-chat-event-selected-participant-p event))
                (e-chat-overview-mark-selected-session-read))
-             (when (eq (plist-get message :role) 'user)
+             (when (member (plist-get message :role) '(user "user"))
+               ;; Keep only the visible scalar needed by this surface.  The
+               ;; canonical summary remains SQLite-owned; this optimistic
+               ;; copy is replaced by the next bounded session query.
+               (unless (or (plist-get e-chat-session-metadata :summary)
+                           (not (stringp (plist-get message :content))))
+                 (setq-local
+                  e-chat-session-metadata
+                  (plist-put (copy-tree e-chat-session-metadata t)
+                             :summary (plist-get message :content))))
                (e-chat--refresh-session-display)))))
         ((eq activity-result :message-updated)
          ;; Activity has already refreshed its semantic details.  Transcript
@@ -1626,9 +1667,8 @@ call `e-chat-new' or `e-chat-resume'."
    (or harness (e-chat--default-harness)) id nil metadata))
 
 (cl-defun e-chat-submit-session
-    (harness session-id prompt &key references delay metadata)
+    (harness session-id prompt &key references metadata)
   "Submit PROMPT with REFERENCES and METADATA to HARNESS SESSION-ID."
-  (ignore delay)
   (e-chat-service-submit-session
    harness session-id prompt
    :references references
@@ -1697,14 +1737,9 @@ call `e-chat-new' or `e-chat-resume'."
               :harness e-chat-harness
               :source 'point)))))
 
-(defun e-chat--latest-failed-turn-target (harness)
-  "Return newest failed turn target from HARNESS, or nil."
-  (car (e-context-inspection-recent-failures
-        :harness harness
-        :limit 1)))
-
-(defun e-chat--inspect-error-target (harness session-id turn-id)
-  "Return an inspect-error target for HARNESS SESSION-ID TURN-ID."
+(defun e-chat--inspect-error-target (session-id turn-id)
+  "Return an immediate inspect-error target for SESSION-ID TURN-ID.
+Nil means the caller must query SQLite for the newest failure."
   (cond
    ((and session-id turn-id)
     (list :session-id session-id :turn-id turn-id :source 'explicit))
@@ -1715,8 +1750,7 @@ call `e-chat-new' or `e-chat-resume'."
     (signal 'e-context-inspection-invalid
             (list "e-inspect-error requires session-id with turn-id")))
    (t
-    (or (e-chat--failed-turn-target-at-point)
-        (e-chat--latest-failed-turn-target harness)))))
+    (e-chat--failed-turn-target-at-point))))
 
 (defun e-chat--inspect-error-title (detail)
   "Return an investigation session title for failure DETAIL."
@@ -1769,45 +1803,105 @@ call `e-chat-new' or `e-chat-resume'."
           :label (format "Failed turn %s/%s" session-id turn-id)
           :body prompt)))
 
+(defun e-chat--inspect-error-open-from-detail (harness detail)
+  "Open a new investigation chat in HARNESS from detached DETAIL."
+  (let* ((source-session-id
+          (plist-get (plist-get detail :session) :id))
+         (source-turn-id (plist-get (plist-get detail :turn) :id))
+         (title (e-chat--inspect-error-title detail))
+         (metadata (list :name title
+                         :source 'e-inspect-error
+                         :source-session-id source-session-id
+                         :source-turn-id source-turn-id))
+         (new-session-id (e-session-generate-id))
+         (prompt (e-chat--inspect-error-prompt detail))
+         (reference (e-chat--inspect-error-reference detail prompt)))
+    (e-chat-surface-pop-to-buffer
+     (e-chat-open :harness harness :session-id new-session-id
+                  :new-session t))
+    (e-chat-submit-session
+     harness new-session-id prompt
+     :references (list reference)
+     :metadata metadata)
+    new-session-id))
+
+(defun e-chat--inspect-error-run (parent arguments _context)
+  "Run asynchronous error inspection for PARENT from ARGUMENTS."
+  (let ((harness (plist-get arguments :harness))
+        (target (plist-get arguments :target))
+        current-child)
+    (setf (e-work-handle-cancel-function parent)
+          (lambda (_handle)
+            (when (e-work-handle-p current-child)
+              (e-work-cancel current-child))))
+    (cl-labels
+        ((parent-live-p ()
+           (not (e-request-terminal-p (e-work-handle-lifecycle parent))))
+         (settle-failure (settled)
+           (when (parent-live-p)
+             (pcase (plist-get (e-work-status settled) :state)
+               ('failed (e-work-fail parent (e-work-handle-error settled)))
+               ('cancelled (e-work-cancel parent)))))
+         (inspect-target (resolved)
+           (when (parent-live-p)
+             (if (not resolved)
+                 (e-work-fail
+                  parent
+                  (list 'e-context-inspection-invalid
+                        "No failed e turns found"))
+               (let ((source-harness (or (plist-get resolved :harness)
+                                         harness)))
+                 (setq current-child
+                       (e-context-inspection-failure-detail-start
+                        :harness source-harness
+                        :session-id (plist-get resolved :session-id)
+                        :turn-id (plist-get resolved :turn-id)))
+                 (e-work-on-settle
+                  current-child
+                  (lambda (settled)
+                    (if (eq (plist-get (e-work-status settled) :state)
+                            'finished)
+                        (when (parent-live-p)
+                          (condition-case err
+                              (e-work-finish
+                               parent
+                               (e-chat--inspect-error-open-from-detail
+                                source-harness
+                                (e-work-handle-result settled)))
+                            ((error quit) (e-work-fail parent err))))
+                      (settle-failure settled))))))))
+         (settle-target-query (settled)
+           (if (eq (plist-get (e-work-status settled) :state) 'finished)
+               (inspect-target (car (e-work-handle-result settled)))
+             (settle-failure settled))))
+      (if target
+          (inspect-target target)
+        (setq current-child
+              (e-context-inspection-recent-failures-start
+               :harness harness :limit 1))
+        (e-work-on-settle current-child #'settle-target-query)))
+    :deferred))
+
+(defconst e-chat--inspect-error-work-spec
+  (e-work-spec-create
+   :id "chat-inspect-error"
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'e-chat
+   :runner #'e-chat--inspect-error-run)
+  "Async public failed-turn inspection operation.")
+
 ;;;###autoload
 (cl-defun e-inspect-error (&key session-id turn-id harness)
-  "Start a new chat session to inspect a failed e turn.
+  "Start asynchronous work opening a chat to inspect a failed e turn.
 Interactive use prefers a failed turn at point in chat buffers, otherwise the
 newest failed turn from the default chat harness.  SESSION-ID, TURN-ID, and
 HARNESS are internal test seams."
   (interactive)
   (let* ((harness (or harness (e-chat--default-harness)))
-         (target (e-chat--inspect-error-target harness session-id turn-id)))
-    (unless target
-      (user-error "No failed e turns found"))
-    (let* ((source-session-id (plist-get target :session-id))
-           (source-turn-id (plist-get target :turn-id))
-           (source-harness (or (plist-get target :harness) harness))
-           (detail (e-context-inspection-failure-detail
-                    :harness source-harness
-                    :session-id source-session-id
-                    :turn-id source-turn-id))
-           (title (e-chat--inspect-error-title detail))
-           (metadata (list :name title
-                           :source 'e-inspect-error
-                           :source-session-id source-session-id
-                           :source-turn-id source-turn-id))
-           (new-session-id (e-session-generate-id))
-           (prompt (e-chat--inspect-error-prompt detail))
-           (reference (e-chat--inspect-error-reference detail prompt)))
-      ;; Open and register the creation callback before the first input is
-      ;; admitted.  That callback installs the canonical SQL subscription
-      ;; before append settlement starts the provider-owned live turn.
-      (e-chat-surface-pop-to-buffer
-       (e-chat-open :harness source-harness :session-id new-session-id
-                    :new-session t))
-      (e-chat-submit-session
-       source-harness
-       new-session-id
-       prompt
-       :references (list reference)
-       :metadata metadata)
-      new-session-id)))
+         (target (e-chat--inspect-error-target session-id turn-id)))
+    (e-work-start e-chat--inspect-error-work-spec
+                  (list :harness harness :target target))))
 
 (defun e-chat-open-session (harness session-id &optional display instance-id)
   "Open HARNESS SESSION-ID and display it when DISPLAY is non-nil."
@@ -2565,14 +2659,20 @@ the transcript matches the new mode immediately."
      (list (and (not (string-empty-p choice)) (intern choice)))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-chat-output-mode-session-set e-chat-harness e-chat-session-id mode)
-  (e-chat-transcript-rerender-assistant-blocks)
-  (e-chat-surface-set-status "idle" t)
-  (message "Set e chat output mode to %s"
-           (or mode
-               (format "default (%s)"
-                       (e-chat-output-mode-resolve
-                        e-chat-harness e-chat-session-id)))))
+  (let ((work (e-chat-output-mode-session-set
+               e-chat-harness e-chat-session-id mode)))
+    ;; Rendering needs the user's chosen mode immediately, while SQLite owns
+    ;; the durable value and settles independently.
+    (e-chat--optimistic-output-mode mode)
+    (e-chat-transcript-rerender-assistant-blocks)
+    (e-chat-surface-set-status "idle" t)
+    (message "Set e chat output mode to %s"
+             (or mode
+                 (format "default (%s)"
+                         (e-chat-output-mode-resolve
+                          e-chat-harness e-chat-session-id nil
+                          e-chat-session-metadata))))
+    work))
 
 ;;;###autoload
 (defun e-chat-show-context ()

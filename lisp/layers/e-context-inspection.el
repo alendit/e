@@ -18,7 +18,9 @@
 (require 'e-harness)
 (require 'e-resources)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-tools)
+(require 'e-work)
 (require 'subr-x)
 
 (define-error 'e-context-inspection-invalid
@@ -46,15 +48,15 @@
      ((or (eq value t) (eq value :json-false)) value)
      (t (signal 'wrong-type-argument (list 'booleanp key))))))
 
-(defun e-context-inspection--argument-nonnegative-integer
+(defun e-context-inspection--argument-positive-integer
     (arguments key &optional default)
-  "Return optional non-negative integer KEY from ARGUMENTS, or DEFAULT."
+  "Return optional positive integer KEY from ARGUMENTS, or DEFAULT."
   (let ((value (plist-get arguments key)))
     (cond
      ((null value) default)
-     ((and (integerp value) (>= value 0)) value)
-     ((and (numberp value) (>= value 0)) (floor value))
-     (t (signal 'wrong-type-argument (list 'natnump key))))))
+     ((and (integerp value) (> value 0)) value)
+     ((and (numberp value) (>= value 1)) (floor value))
+     (t (signal 'wrong-type-argument (list 'positive-integer-p key))))))
 
 (defun e-context-inspection--tool-context-value (key)
   "Return KEY from `e-tools-current-context', or nil."
@@ -101,11 +103,6 @@
       content
     (prin1-to-string content)))
 
-(defun e-context-inspection--session-title (harness session-id)
-  "Return display title for SESSION-ID in HARNESS."
-  (or (ignore-errors (e-harness-session-title harness session-id))
-      session-id))
-
 (defun e-context-inspection--session-project-root (session)
   "Return project root metadata from SESSION when present."
   (or (plist-get (plist-get session :metadata) :project-root)
@@ -124,49 +121,6 @@
   (or (plist-get event :created-at)
       (plist-get event :timestamp)
       ""))
-
-(defun e-context-inspection--failure-entry (harness session-id event)
-  "Return a compact failure plist for SESSION-ID EVENT."
-  (let ((payload (plist-get event :payload)))
-    (list :session-id session-id
-          :turn-id (plist-get event :turn-id)
-          :created-at (e-context-inspection--event-created-at event)
-          :event-id (plist-get event :id)
-          :error (plist-get payload :error)
-          :details (plist-get payload :details)
-          :session-title (e-context-inspection--session-title
-                          harness session-id))))
-
-(defun e-context-inspection--sort-failures-newest-first (failures)
-  "Return FAILURES sorted by created-at descending."
-  (sort failures
-        (lambda (left right)
-          (let ((left-time (or (plist-get left :created-at) ""))
-                (right-time (or (plist-get right :created-at) "")))
-            (if (string= left-time right-time)
-                (string> (or (plist-get left :event-id) "")
-                         (or (plist-get right :event-id) ""))
-              (string> left-time right-time))))))
-
-(defun e-context-inspection--session-ids (harness)
-  "Return known session ids for HARNESS."
-  (mapcar (lambda (session)
-            (plist-get session :id))
-          (e-harness-session-list harness)))
-
-(defun e-context-inspection--turn-events (store session-id turn-id)
-  "Return activity events for SESSION-ID TURN-ID from STORE."
-  (cl-remove-if-not
-   (lambda (event)
-     (e-context-inspection--turn-entry-p event turn-id))
-   (e-session-local-activity-events store session-id)))
-
-(defun e-context-inspection--turn-messages (store session-id turn-id)
-  "Return messages for SESSION-ID TURN-ID from STORE."
-  (cl-remove-if-not
-   (lambda (message)
-     (e-context-inspection--turn-entry-p message turn-id))
-   (e-session-local-messages store session-id)))
 
 (defun e-context-inspection--terminal-failure-event (events)
   "Return the terminal failure event from EVENTS, or nil."
@@ -207,26 +161,50 @@
                collect (list :event event
                              :tool-call (plist-get event :payload))))))
 
-(cl-defun e-context-inspection-recent-failures (&key harness limit)
-  "Return recent failed turns from HARNESS, newest first.
-The result is read-only session-store evidence suitable for agent inspection."
+(defconst e-context-inspection--mapped-work-spec
+  (e-work-spec-create
+   :id "context-inspection-query"
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'context-inspection
+   :runner
+   (lambda (parent arguments _context)
+     (let ((child (plist-get arguments :child))
+           (mapper (plist-get arguments :mapper)))
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle) (e-work-cancel child)))
+       (e-work-on-settle
+        child
+        (lambda (settled)
+          (pcase (plist-get (e-work-status settled) :state)
+            ('finished
+             (condition-case err
+                 (e-work-finish parent
+                                (funcall mapper
+                                         (e-work-handle-result settled)))
+               ((error quit) (e-work-fail parent err))))
+            ('failed (e-work-fail parent (e-work-handle-error settled)))
+            ('cancelled (e-work-cancel parent)))))
+       :deferred)))
+  "Work contract for mapping one detached inspection query.")
+
+(defun e-context-inspection--map-work (child mapper)
+  "Return request-scoped work mapping CHILD through MAPPER."
+  (e-work-start e-context-inspection--mapped-work-spec
+                (list :child child :mapper mapper)))
+
+(cl-defun e-context-inspection-recent-failures-start (&key harness limit)
+  "Start a bounded newest-first failed-turn query for HARNESS."
   (let* ((harness (e-context-inspection--require-harness
                    (or harness (e-context-inspection--current-harness))))
-         (limit (or limit e-context-inspection-default-failure-limit))
-         (store (e-harness-sessions harness))
-         failures)
-    (dolist (session-id (e-context-inspection--session-ids harness))
-      (when session-id
-        (dolist (event (e-session-local-activity-events store session-id))
-          (when (e-context-inspection--turn-failed-event-p event)
-            (push (e-context-inspection--failure-entry
-                   harness session-id event)
-                  failures)))))
-    (let ((sorted (e-context-inspection--sort-failures-newest-first
-                   failures)))
-      (if limit
-          (cl-subseq sorted 0 (min limit (length sorted)))
-        sorted))))
+         (limit (or limit e-context-inspection-default-failure-limit)))
+    (unless (and (integerp limit) (> limit 0) (<= limit 32))
+      (signal 'e-context-inspection-invalid
+              (list "Failure query limit must be between 1 and 32" limit)))
+    (e-context-inspection--map-work
+     (e-session-async-recent-failures (e-harness-sessions harness)
+                                      :limit limit)
+     (lambda (page) (copy-tree (plist-get page :failures) t)))))
 
 (cl-defun e-context-inspection-raw-provider-preview
     (&key harness session-id turn-id)
@@ -239,9 +217,50 @@ v1 reports an explicit unavailable shape."
         :preview nil
         :source "unavailable"))
 
-(cl-defun e-context-inspection-failure-detail
+(defun e-context-inspection--failure-detail-from-query
+    (harness session-id turn-id result)
+  "Return failed-turn detail from detached RESULT for HARNESS."
+  (unless (plist-get result :present)
+    (signal 'e-context-inspection-invalid
+            (list (format "Unknown session `%s`" session-id))))
+  (let* ((session (plist-get result :session))
+         (events (plist-get result :events))
+         (messages (plist-get result :messages))
+         (terminal (e-context-inspection--terminal-failure-event events)))
+    (unless terminal
+      (signal 'e-context-inspection-invalid
+              (list (format "Turn `%s` in session `%s` has no terminal failure%s"
+                            turn-id session-id
+                            (if (plist-get result :truncated)
+                                " in the bounded inspection window"
+                              "")))))
+    (let ((raw-preview (e-context-inspection-raw-provider-preview
+                        :harness harness
+                        :session-id session-id
+                        :turn-id turn-id)))
+      (list :session (list :id session-id
+                           :title (or (plist-get session :name)
+                                      (plist-get session :summary)
+                                      session-id)
+                           :project-root
+                           (e-context-inspection--session-project-root session)
+                           :metadata (copy-tree
+                                      (plist-get session :metadata) t))
+            :turn (list :id turn-id
+                        :created-at
+                        (or (plist-get (car messages) :created-at)
+                            (e-context-inspection--event-created-at
+                             (car events))))
+            :events (copy-tree events t)
+            :messages (copy-tree messages t)
+            :tool-calls (e-context-inspection--tool-calls messages events)
+            :terminal-error (copy-tree (plist-get terminal :payload) t)
+            :diagnostics (list :raw-provider-preview raw-preview)
+            :truncated (and (plist-get result :truncated) t)))))
+
+(cl-defun e-context-inspection-failure-detail-start
     (&key harness session-id turn-id)
-  "Return a failed turn timeline for SESSION-ID TURN-ID in HARNESS."
+  "Start a bounded failed-turn timeline query for SESSION-ID TURN-ID."
   (let* ((harness (e-context-inspection--require-harness
                    (or harness (e-context-inspection--current-harness))))
          (session-id (e-context-inspection--require-session-id
@@ -249,45 +268,13 @@ v1 reports an explicit unavailable shape."
                           (e-context-inspection--current-session-id))))
          (turn-id (e-context-inspection--require-turn-id
                    (or turn-id
-                       (e-context-inspection--current-turn-id))))
-         (store (e-harness-sessions harness))
-         (session (e-session-local-state store session-id))
-         (events (and session
-                      (e-context-inspection--turn-events
-                       store session-id turn-id)))
-         (terminal (and events
-                        (e-context-inspection--terminal-failure-event
-                         events))))
-    (unless session
-      (signal 'e-context-inspection-invalid
-              (list (format "Unknown session `%s`" session-id))))
-    (unless terminal
-      (signal 'e-context-inspection-invalid
-              (list (format "Turn `%s` in session `%s` has no terminal failure"
-                            turn-id session-id))))
-    (let* ((messages (e-context-inspection--turn-messages
-                      store session-id turn-id))
-           (raw-preview (e-context-inspection-raw-provider-preview
-                         :harness harness
-                         :session-id session-id
-                         :turn-id turn-id)))
-      (list :session (list :id session-id
-                           :title (e-context-inspection--session-title
-                                   harness session-id)
-                           :project-root
-                           (e-context-inspection--session-project-root
-                            session)
-                           :metadata (plist-get session :metadata))
-            :turn (list :id turn-id
-                        :created-at
-                        (or (plist-get (car messages) :created-at)
-                            (e-context-inspection--event-created-at
-                             (car events))))
-            :events events
-            :messages messages
-            :tool-calls (e-context-inspection--tool-calls messages events)
-            :terminal-error (plist-get terminal :payload)
-            :diagnostics (list :raw-provider-preview raw-preview)))))
+                       (e-context-inspection--current-turn-id)))))
+    (e-context-inspection--map-work
+     (e-session-async-turn-inspection
+      (e-harness-sessions harness) session-id turn-id)
+     (lambda (result)
+       (e-context-inspection--failure-detail-from-query
+        harness session-id turn-id result)))))
 
 (defun e-context-inspection--turn-options-without-tools (harness session-id)
   "Return HARNESS SESSION-ID turn options without tool definitions."
@@ -392,6 +379,33 @@ exported.  This is the default context e sends before the first user prompt."
           :message-count (length (plist-get context :messages))
           :bytes (string-bytes content))))
 
+(defun e-context-inspection--async-action (handler &rest properties)
+  "Return an async-capable inspection action for HANDLER and PROPERTIES."
+  (apply
+   #'e-action-create
+   :work
+   (e-work-spec-create
+    :id "context-inspection-action"
+    :execution 'cooperative
+    :interactive-policy 'async
+    :owner 'context-inspection
+    :runner
+    (lambda (parent arguments context)
+      (let ((child (funcall handler arguments context)))
+        (unless (e-work-handle-p child)
+          (signal 'wrong-type-argument (list 'e-work-handle-p child)))
+        (setf (e-work-handle-cancel-function parent)
+              (lambda (_handle) (e-work-cancel child)))
+        (e-work-on-settle
+         child
+         (lambda (settled)
+           (pcase (plist-get (e-work-status settled) :state)
+             ('finished (e-work-finish parent (e-work-handle-result settled)))
+             ('failed (e-work-fail parent (e-work-handle-error settled)))
+             ('cancelled (e-work-cancel parent)))))
+        :deferred)))
+   properties))
+
 
 (defun e-context-inspection--actions ()
   "Return context-inspection action plist."
@@ -429,22 +443,21 @@ exported.  This is the default context e sends before the first user prompt."
                                :include_metadata (:type "boolean"))
                   :required []))
 	   :recent-failures
-	   (e-action-cheap-create
-	    :owner 'context-inspection
-	    :runner (lambda (arguments context)
-	              (e-context-inspection-recent-failures
+	   (e-context-inspection--async-action
+	    (lambda (arguments context)
+	              (e-context-inspection-recent-failures-start
 	               :harness (plist-get context :harness)
-	               :limit (e-context-inspection--argument-nonnegative-integer
+	               :limit (e-context-inspection--argument-positive-integer
 	                       arguments :limit)))
 	    :description "List recent failed e turns from the current harness session store."
 	    :parameters '(:type "object"
-                  :properties (:limit (:type "integer" :minimum 0))
+	                  :properties (:limit (:type "integer" :minimum 1
+	                                             :maximum 32))
                   :required []))
 	   :failure-detail
-	   (e-action-cheap-create
-	    :owner 'context-inspection
-	    :runner (lambda (arguments context)
-	              (e-context-inspection-failure-detail
+	   (e-context-inspection--async-action
+	    (lambda (arguments context)
+	              (e-context-inspection-failure-detail-start
 	               :harness (plist-get context :harness)
 	               :session-id (or (e-context-inspection--argument-string
 	                                arguments :session_id)

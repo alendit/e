@@ -185,8 +185,8 @@ interpret its fields."
            (if (equal tag "vector") (vconcat decoded) decoded)))
         (_ (e-board-orchestration--invalid :wire-tag tag))))))
 
-(defun e-board-orchestration--legacy-enum (value allowed field)
-  "Normalize legacy JSON VALUE against ALLOWED symbols for FIELD."
+(defun e-board-orchestration--wire-enum (value allowed field)
+  "Normalize JSON wire VALUE against ALLOWED symbols for FIELD."
   (let ((normalized
          (if (stringp value)
              (cl-find value allowed :key #'symbol-name :test #'string=)
@@ -194,81 +194,6 @@ interpret its fields."
     (unless (memq normalized allowed)
       (e-board-orchestration--invalid field value))
     normalized))
-
-(defun e-board-orchestration--legacy-object-array (value)
-  "Restore legacy JSON VALUE produced from a list of plists.
-Emacs' JSON encoder represents such lists as objects with duplicate keys and
-places each original plist tail in the corresponding property value."
-  (let ((items (if (vectorp value) (append value nil) value)))
-    (cond
-     ((null items) nil)
-     ((cl-every #'listp items) (copy-tree items))
-     (t
-      (cl-labels
-          ((restore-tail
-            (tail)
-            (let ((tail (if (vectorp tail) (append tail nil) tail))
-                  result)
-              (while tail
-                (let* ((raw-key (pop tail))
-                       (key (if (stringp raw-key)
-                                (intern (concat ":" raw-key))
-                              raw-key))
-                       (item (pop tail)))
-                  (when (and (eq key :kind) (stringp item))
-                    (setq item (intern item)))
-                  (when (eq key :outputs)
-                    (setq item (restore-array item)))
-                  (setq result (append result (list key item)))))
-              result))
-           (restore-array
-            (array)
-            (let ((array (if (vectorp array) (append array nil) array))
-                  result)
-              (while array
-                (let ((key (pop array))
-                      (tail (pop array)))
-                  (unless (keywordp key)
-                    (e-board-orchestration--invalid
-                     :legacy-object-array value))
-                  (setq tail (if (vectorp tail) (append tail nil) tail))
-                  (unless tail
-                    (e-board-orchestration--invalid
-                     :legacy-object-array value))
-                  (let ((first (pop tail)))
-                    (when (and (eq key :kind) (stringp first))
-                      (setq first (intern first)))
-                    (push (cons key (cons first (restore-tail tail))) result))))
-              (nreverse result))))
-        (restore-array items))))))
-
-(defun e-board-orchestration--legacy-payload (type payload)
-  "Normalize pre-wire orchestration PAYLOAD of TYPE after JSON replay."
-  (let ((payload (copy-tree payload)))
-    (pcase type
-      ('manifest
-       (plist-put payload :tasks
-                  (e-board-orchestration--legacy-object-array
-                   (plist-get payload :tasks)))
-       (when-let ((deadline (plist-get payload :deadline)))
-         (plist-put deadline :kind
-                    (e-board-orchestration--legacy-enum
-                     (plist-get deadline :kind) '(none at) :deadline-kind))))
-      ('continuation-claim
-       (plist-put payload :status
-                  (e-board-orchestration--legacy-enum
-                   (plist-get payload :status) '(pending published failed)
-                   :continuation-status)))
-      ((or 'task-attempt 'terminal-report)
-       (plist-put payload :status
-                  (e-board-orchestration--legacy-enum
-                   (plist-get payload :status)
-                   '(queued running done failed cancelled) :status))
-       (when (eq type 'terminal-report)
-         (plist-put payload :outputs
-                    (e-board-orchestration--legacy-object-array
-                     (plist-get payload :outputs))))))
-    payload))
 
 (defun e-board-orchestration-continuation-claim-key (publication-key status)
   "Return the immutable durable claim key for PUBLICATION-KEY at STATUS."
@@ -397,21 +322,17 @@ safe to store in a board envelope and contains no runtime state."
              (memq 'orchestration (plist-get record :tags)))
     (let* ((attributes (plist-get record :attributes))
            (wire-version (plist-get attributes :orchestration-wire-version))
-           (type (e-board-orchestration--legacy-enum
+           (type (e-board-orchestration--wire-enum
                   (plist-get attributes :orchestration-type)
                   e-board-orchestration--fact-types :type))
            (payload
-            (if wire-version
-                (progn
-                  (unless (and (integerp wire-version)
-                               (= wire-version
-                                  e-board-orchestration-wire-version))
-                    (e-board-orchestration--invalid
-                     :wire-version wire-version))
-                  (e-board-orchestration--wire-decode
-                   (plist-get attributes :orchestration-payload)))
-              (e-board-orchestration--legacy-payload
-               type (plist-get attributes :orchestration-payload)))))
+            (progn
+              (unless (and (integerp wire-version)
+                           (= wire-version
+                              e-board-orchestration-wire-version))
+                (e-board-orchestration--invalid :wire-version wire-version))
+              (e-board-orchestration--wire-decode
+               (plist-get attributes :orchestration-payload)))))
       (e-board-orchestration-validate-fact
        (list :version (plist-get attributes :orchestration-version)
              :type type :payload payload

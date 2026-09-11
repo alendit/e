@@ -337,6 +337,12 @@ window callbacks loadable before the composition root is evaluated."
     (if (and e-chat-harness e-chat-session-id)
         (let* ((title (or (plist-get e-chat-session-metadata :name)
                           (plist-get e-chat-session-metadata :title)
+                          (when-let* ((summary
+                                       (plist-get e-chat-session-metadata
+                                                  :summary)))
+                            (if (> (length summary) 25)
+                                (concat (substring summary 0 25) "...")
+                              summary))
                           e-chat-session-id))
                (options
                 (append

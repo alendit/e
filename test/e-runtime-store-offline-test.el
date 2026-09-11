@@ -96,16 +96,6 @@
    (e-runtime-store-offline-test--record
     session-id "messages-cleared" "clear" 16)
    (e-runtime-store-offline-test--record
-    session-id "board-message" "board-message" 17
-    :message '(:id "board-message" :kind output))
-   (e-runtime-store-offline-test--record
-    session-id "board-messages-cleared" "board-clear" 18)
-   (e-runtime-store-offline-test--record
-    session-id "board-session-state" "board-state" 19
-    :board-state '(:board-id "board" :principal "principal"
-                   :association-role "participant"
-                   :routing-policy (:mode "safe")))
-   (e-runtime-store-offline-test--record
     session-id "current-branch" "branch" 20 :branch-id "feature")
    (e-runtime-store-offline-test--record
     session-id "session-info" "info-metadata" 21
@@ -624,8 +614,8 @@ compatibility stage before the v6 session cutover."
   (let* ((session-id "offline-rootless")
          (record
           (e-runtime-store-offline-test--record
-           session-id "board-message" "board-message" 0
-           :message '(:id "board-message" :kind "input" :author "client")))
+           session-id "retired-legacy-note" "legacy-note" 0
+           :value '(:author "client" :content "historical")))
          (fixture (e-runtime-store-offline-test--make-v5
                    (list record) nil nil))
          (directory (nth 0 fixture))
@@ -649,7 +639,7 @@ compatibility stage before the v6 session cutover."
                                   "SELECT record_type FROM session_records WHERE session_id=? AND position=1"
                                   (vector session-id)))
                             0)
-                           "board-message")))
+                           "retired-legacy-note")))
               (sqlite-close database))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))

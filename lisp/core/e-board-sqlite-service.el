@@ -16,8 +16,11 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-board-orchestration)
-(require 'e-board-storage)
+(require 'e-board-sqlite-contract)
 (require 'e-runtime-store)
+(require 'e-session)
+(require 'e-session-board-policy)
+(require 'e-session-query)
 (require 'e-work)
 
 (cl-defstruct (e-board-sqlite-live-hub
@@ -117,6 +120,56 @@ owns every durable Board fact."
                (puthash runtime created e-board-sqlite-service--live-hubs)
                created))))
     (e-board-sqlite-service--create :runtime runtime :live-hub hub)))
+
+(cl-defun e-board-sqlite-service-session-admission
+    (&key id metadata principal board-id association-role routing-policy)
+  "Return root records and an SQL query delta for one Board-associated session.
+
+The session journal contains only the session root.  The Board association is
+installed directly into the relational current row in the same SQLite
+transaction, so ordinary session replay never becomes a second Board store."
+  (let* ((role (and association-role
+                    (if (symbolp association-role)
+                        (symbol-name association-role)
+                      association-role)))
+         (session (e-session-admission-records :id id :metadata metadata))
+         (session-id (plist-get session :id)))
+    (unless (and (stringp board-id) (not (string-empty-p board-id))
+                 (stringp principal) (not (string-empty-p principal)))
+      (signal 'e-board-sqlite-error
+              (list "Invalid Board association identity"
+                    session-id board-id principal)))
+    (when (and role (not (member role '("owner" "participant"))))
+      (signal 'e-board-sqlite-error
+              (list "Invalid Board association role" role)))
+    (when (and routing-policy
+               (not (e-session-board-routing-policy-valid-p routing-policy)))
+      (signal 'e-session-board-routing-invalid
+              (list "Invalid Board routing policy" routing-policy)))
+    (let* ((association
+            (append
+             (list :board-id (copy-sequence board-id)
+                   :principal (copy-sequence principal))
+             (when role (list :association-role role))
+             (when routing-policy
+               (list :routing-policy
+                     (e-session-board-routing-policy-normalize
+                      routing-policy)))))
+           (records (plist-get session :admission-records))
+           (root (copy-tree (car records) t))
+           (query-delta nil))
+      (plist-put root :journal-position 1)
+      (setq query-delta (e-session-query-derive (list root)))
+      (dolist (key '(:board-id :principal :association-role :routing-policy))
+        (plist-put query-delta key
+                   (e-board-sqlite-service--detached-copy
+                    (plist-get association key))))
+      (e-session-query-state-validate query-delta)
+      (append session
+              (list :association
+                    (e-board-sqlite-service--detached-copy association)
+                    :query-delta
+                    (e-board-sqlite-service--detached-copy query-delta))))))
 
 (defun e-board-sqlite-service--pickup-observer-table (service)
   "Return SERVICE's runtime-shared live pickup observer table."
@@ -412,7 +465,7 @@ to request-owned producer work.  It stores no terminal outcome."
          work
          (or (e-board-sqlite-service--detached-copy
               (e-runtime-store-request--error request))
-             '(e-board-storage-error "Board operation did not commit")))))))
+             '(e-board-sqlite-error "Board operation did not commit")))))))
 
 (defun e-board-sqlite-service--run (handle operation _context)
   "Submit OPERATION without waiting for worker open or acknowledgement."
@@ -495,7 +548,7 @@ canonical identity payload and is copied before crossing the SQL boundary."
   (unless (and (stringp content) (not (string-empty-p content)))
     (user-error "Prompt must not be empty"))
   (unless source-input-key
-    (signal 'e-board-storage-error
+    (signal 'e-board-sqlite-error
             (list "Board append requires a stable source identity" board-id)))
   (let* ((signature
          (list :author author :requester-actor requester-actor
@@ -515,7 +568,7 @@ canonical identity payload and is copied before crossing the SQL boundary."
                  :reference (e-board-sqlite-service--detached-copy reference)
                  :source-input-key
                  (e-board-sqlite-service--detached-copy source-input-key)
-                 :source-hash (e-board-storage-signature-hash signature)
+                 :source-hash (e-board-sqlite-signature-hash signature)
                  :created-at created-at)
            (if board-id (cons 'board board-id) (cons 'session session-id)))))
     (e-work-on-settle
@@ -534,7 +587,7 @@ canonical identity payload and is copied before crossing the SQL boundary."
      (list :op 'board-record-append :board-id board-id
            :record-kind record-kind :source-kind source-kind
            :source-key (e-board-sqlite-service--detached-copy source-key)
-           :source-hash (e-board-storage-signature-hash signature)
+           :source-hash (e-board-sqlite-signature-hash signature)
            :record-fields
            (e-board-sqlite-service--detached-copy record-fields))
      (cons 'board board-id))))
@@ -606,7 +659,7 @@ canonical identity payload and is copied before crossing the SQL boundary."
            :reference (e-board-sqlite-service--detached-copy reference)
            :source-input-key
            (e-board-sqlite-service--detached-copy source-input-key)
-           :source-hash (e-board-storage-signature-hash signature))
+           :source-hash (e-board-sqlite-signature-hash signature))
      (cons 'session session-id))))
 
 (defun e-board-sqlite-service-admit-session-owner-start

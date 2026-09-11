@@ -19,6 +19,7 @@
 (require 'e-layer)
 (require 'e-mcp)
 (require 'e-request)
+(require 'e-session-async)
 (require 'e-tools)
 (require 'e-work)
 (load (expand-file-name
@@ -983,6 +984,45 @@ echoed back on `tools/list' and `tools/call'."
          (e-harness-enable-layer-id ,harness-var 'fixture-mcp)
          ,@body))))
 
+(cl-defmacro e-mcp-test--with-progressive-sql-harness
+    ((harness-var store-var stall-var) &rest body)
+  "Run BODY with a disposable SQL HARNESS-VAR and worker STALL-VAR."
+  (declare (indent 1))
+  `(let* ((directory (make-temp-file "e-mcp-sql-" t))
+          (,stall-var (make-temp-file "e-mcp-stall-" t))
+          (process-environment
+           (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" ,stall-var)
+                 process-environment))
+          (,store-var (e-session-persistent-store-create directory))
+          (,harness-var
+           (e-harness-create :backend (e-backend-fake-create :items nil)
+                             :sessions ,store-var)))
+     (unwind-protect
+         (let ((e-layer--registry (make-hash-table :test 'eq)))
+           (e-layer-register
+            (e-layer-spec-create
+             :id 'fixture-mcp :name "Fixture MCP"
+             :factory
+             (lambda ()
+               (e-layer-create
+                :id 'fixture-mcp :name "Fixture MCP"
+                :capabilities
+                (list (e-capability-with-mcp-create
+                       :id 'fixture-mcp :name "Fixture MCP"
+                       :mcp-servers (list (e-mcp-test--server))))))))
+           (e-harness-enable-layer-id ,harness-var 'fixture-mcp)
+           ,@body)
+       (ignore-errors (e-session-storage-close ,store-var))
+       (ignore-errors (delete-directory directory t))
+       (ignore-errors (delete-directory ,stall-var t)))))
+
+(defun e-mcp-test--wait-for-file (file)
+  "Wait up to two seconds for disposable worker marker FILE."
+  (let ((deadline (+ (float-time) 2.0)))
+    (while (and (not (file-exists-p file)) (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    (should (file-exists-p file))))
+
 (defun e-mcp-test--wait-for-catalog (servers)
   "Wait until SERVERS have a cached MCP catalog."
   (let ((deadline (+ (float-time) 1)))
@@ -1099,6 +1139,87 @@ echoed back on `tools/list' and `tools/call'."
       (should (member "mcp__fixture__echo" names))
       (should-not (member "mcp__fixture__ping" names)))))
 
+(ert-deftest e-mcp-test-public-activate-waits-for-sql-commit ()
+  "Public mcp_activate settles only after its delayed SQL mutation commits."
+  (e-mcp-test--with-transport (e-mcp-test--progressive-transport)
+    (e-mcp-test--with-progressive-sql-harness (harness store stall)
+      (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+      (e-work-with-batch-await
+        (e-work-await-batch
+         (e-harness-create-session harness :id "sql-activate") :timeout 5.0))
+      (e-harness-tools harness "sql-activate")
+      (e-mcp-test--wait-for-catalog (list (e-mcp-test--server)))
+      (write-region "hold" nil
+                    (expand-file-name "session-command.hold" stall)
+                    nil 'silent)
+      (let ((done nil) result)
+        (e-tools-start
+         (e-harness-tools harness "sql-activate")
+         '(:id "activate-held" :name "mcp_activate"
+           :arguments (:server "fixture" :tools ["echo"]))
+         :context (list :harness harness :session-id "sql-activate")
+         :on-done (lambda (value) (setq result value done t))
+         :on-error (lambda (error) (setq result error done 'failed)))
+        (e-mcp-test--wait-for-file
+         (expand-file-name "session-command.ready" stall))
+        (should-not done)
+        (write-region "release" nil
+                      (expand-file-name "session-command.release" stall)
+                      nil 'silent)
+        (let ((deadline (+ (float-time) 5.0)))
+          (while (and (not done) (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (should (eq done t))
+        (should (eq (plist-get result :status) 'ok))
+        (let ((metadata
+               (e-work-with-batch-await
+                 (e-work-await-batch
+                  (e-session-async-session-metadata store "sql-activate")
+                  :timeout 5.0))))
+          (should
+           (equal
+            (e-mcp-capability--active-state-to-set
+             (e-session-metadata-capability-state-value
+              (plist-get metadata :metadata) 'mcp))
+            '(("fixture" "echo")))))))))
+
+(ert-deftest e-mcp-test-public-activate-surfaces-sql-failure ()
+  "Public mcp_activate reports a failed SQL mutation to the model caller."
+  (e-mcp-test--with-transport (e-mcp-test--progressive-transport)
+    (e-mcp-test--with-progressive-sql-harness (harness store stall)
+      (ignore stall)
+      (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+      (e-work-with-batch-await
+        (e-work-await-batch
+         (e-harness-create-session harness :id "sql-rejected") :timeout 5.0))
+      (e-harness-tools harness "sql-rejected")
+      (e-mcp-test--wait-for-catalog (list (e-mcp-test--server)))
+      (e-session-storage-close store)
+      ;; Removing only this disposable store root makes the lazy worker
+      ;; restart fail before it can acknowledge the activation mutation.
+      (delete-directory directory t)
+      (let ((settled nil) result)
+        (e-tools-start
+         (e-harness-tools harness "sql-rejected")
+         '(:id "activate-rejected" :name "mcp_activate"
+           :arguments (:server "fixture" :tools ["echo"]))
+         :context (list :harness harness :session-id "sql-rejected")
+         :on-done (lambda (value) (setq result value settled 'finished))
+         :on-error (lambda (error) (setq result error settled 'failed)))
+        (let ((deadline (+ (float-time) 2.0)))
+          (while (and (not settled) (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        ;; Persistence rejection is an expected tool-domain failure: the
+        ;; public tool protocol reports it as a structured error result so the
+        ;; model can observe it, rather than aborting the enclosing turn as an
+        ;; Emacs infrastructure error.
+        (should (eq settled 'finished))
+        (should (eq (plist-get result :status) 'error))
+        (should (string-match-p
+                 "runtime store\\|session persistence\\|worker"
+                 (e-tools-result-content-text
+                  (plist-get result :content))))))))
+
 (ert-deftest e-mcp-test-activate-without-tools-activates-whole-server ()
   "mcp_activate with no tool list activates every tool on the server."
   (e-mcp-test--with-progressive-harness harness
@@ -1122,26 +1243,48 @@ echoed back on `tools/list' and `tools/call'."
                          #'string<)
                    '("mcp__fixture__echo" "mcp__fixture__ping")))))
 
-(ert-deftest e-mcp-test-active-set-persists-through-replay ()
-  "Active MCP tool choices keep their runtime shape after session replay."
+(ert-deftest e-mcp-test-active-set-persists-through-sqlite-reopen ()
+  "Active MCP tool choices retain their runtime shape after SQLite reopen."
   (let* ((directory (make-temp-file "e-mcp-active-" t))
          (store (e-session-persistent-store-create directory))
          (harness (e-harness-create :backend (e-backend-fake-create :items nil)
                                     :sessions store)))
     (unwind-protect
         (progn
-          (e-harness-create-session harness :id "s1")
-          (e-mcp-capability--activate harness "s1" "fixture" '("echo"))
+          (e-work-with-batch-await
+            (e-work-await-batch
+             (e-harness-create-session harness :id "s1") :timeout 5.0))
+          (e-work-with-batch-await
+            (e-work-await-batch
+             (e-mcp-capability--activate
+              harness "s1" "fixture" '("echo"))
+             :timeout 5.0))
           (e-session-storage-close store)
           (let* ((loaded-store (e-session-persistent-store-create directory))
                  (loaded-harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :sessions loaded-store)))
+                   :sessions loaded-store))
+                 (metadata
+                  (e-work-with-batch-await
+                    (e-work-await-batch
+                     (e-session-async-session-metadata loaded-store "s1")
+                     :timeout 5.0))))
             (unwind-protect
-                (should
-                 (equal (e-mcp-capability--active-set loaded-harness "s1")
-                        '(("fixture" "echo"))))
+                (progn
+                  (should
+                   (equal
+                    (e-mcp-capability--active-state-to-set
+                     (e-session-metadata-capability-state-value
+                      (plist-get metadata :metadata) 'mcp))
+                    '(("fixture" "echo"))))
+                  (puthash "s1"
+                           (list :id "test-turn"
+                                 :session-query-state metadata)
+                           (e-harness-active-turns loaded-harness))
+                  (should
+                   (equal (e-mcp-capability--active-set loaded-harness "s1")
+                          '(("fixture" "echo")))))
               (e-session-storage-close loaded-store))))
       (delete-directory directory t))))
 

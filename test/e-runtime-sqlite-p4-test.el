@@ -6,10 +6,15 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-backend)
+(require 'e-board-sqlite-service)
+(require 'e-chat-service)
 (require 'e-default-harnesses)
+(require 'e-harness)
 (require 'e-runtime-migration)
 (require 'e-runtime-store-offline)
 (require 'e-session-query)
+(require 'e-work)
 
 (defun e-runtime-sqlite-p4-test--mode (file)
   "Return FILE permission bits."
@@ -20,6 +25,11 @@
   (when-let* ((request (e-runtime-store--open-control-request store)))
     (e-runtime-store-await store request 5.0))
   store)
+
+(defun e-runtime-sqlite-p4-test--await-work (work)
+  "Observe request-scoped WORK from this explicit offline test boundary."
+  (e-work-with-batch-await
+    (e-work-await-batch work :timeout 5.0)))
 
 (defun e-runtime-sqlite-p4-test--query-delta (records)
   "Derive a v6 final query row for translated RECORDS in order."
@@ -61,7 +71,17 @@
    (expand-file-name (format "sessions/sessions/%s.jsonl" session-id) root)
    (concat
     (mapconcat (lambda (record)
-                 (json-encode (e-session-codec-record-for-json record)))
+                 ;; The current session codec deliberately rejects these
+                 ;; retired Board families.  Only this explicit offline
+                 ;; fixture writes their historical JSON spelling so the
+                 ;; migration boundary can prove that it extracts them into
+                 ;; Board SQL without reinstalling them in the v6 journal.
+                 (json-encode
+                  (if (member (plist-get record :type)
+                              '("board-message" "board-messages-cleared"
+                                "board-session-state"))
+                      (copy-tree record t)
+                    (e-session-codec-record-for-json record))))
                records "\n")
     "\n")))
 
@@ -141,6 +161,426 @@
      "tmp exact")
     root))
 
+(ert-deftest e-runtime-sqlite-p4-offline-migration-upgrades-pre-wire-board-fact ()
+  "Only the stopped-v5 migration boundary decodes pre-wire Board facts."
+  (let* ((message
+          '(:id "manifest-record" :kind fact :record-type fact
+            :tags (orchestration)
+            :attributes
+            (:orchestration-version 1 :orchestration-type "manifest"
+             :orchestration-idempotency-key "manifest-1"
+             :orchestration-payload
+             (:run-id "run-1"
+              :tasks (:task-key ("required" "required" t
+                                 "accepted-attempt" 0))
+              :deadline (:kind "none")))))
+         (normalized
+          (e-runtime-migration--normalize-board-orchestration-message
+           message))
+         (record (plist-put normalized :record-kind 'fact))
+         (fact (e-board-orchestration-fact-from-record record)))
+    (should (= (plist-get (plist-get normalized :attributes)
+                          :orchestration-wire-version)
+               e-board-orchestration-wire-version))
+    (should (eq (plist-get fact :type) 'manifest))
+    (should (equal (plist-get (plist-get fact :payload) :tasks)
+                   '((:task-key "required" :required t
+                      :accepted-attempt 0))))))
+
+(ert-deftest e-runtime-sqlite-p4-offline-migration-preserves-board-journal-order ()
+  "Legacy Board migration applies clears and preserves surviving append order."
+  (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (target (concat source "-board-order"))
+         (session-id "legacy-board-source")
+         (e-runtime-sqlite--live-composition nil)
+         runtime harness binding)
+    (unwind-protect
+        (progn
+          (e-runtime-sqlite-p4-test--write-session-records
+           source session-id
+           `((:type "session" :session-id ,session-id :id "legacy-board-root"
+              :created-at "2026-08-07T10:13:40Z"
+              :updated-at "2026-08-07T10:13:48Z" :metadata nil)
+             (:type "board-session-state" :session-id ,session-id
+              :board-state (:board-id "legacy-ordered-board"
+                            :principal ,(concat "chat:" session-id)))
+             (:type "board-message" :session-id ,session-id
+              :message (:id "z-old" :kind "output" :content "discarded"))
+             (:type "board-messages-cleared" :session-id ,session-id
+              :id "clear-1" :timestamp "2026-08-07T10:13:44Z")
+             (:type "board-message" :session-id ,session-id
+              :message (:id "a-new" :kind "output" :content "first"))
+             (:type "board-message" :session-id ,session-id
+              :message (:id "msg_10" :kind "output" :content "second"))
+             (:type "board-message" :session-id ,session-id
+              :message (:id "msg_1" :kind "output" :content "third"))
+             (:type "board-message" :session-id ,session-id
+              :message
+              (:id "manifest-record" :kind "fact" :tags (orchestration)
+               :attributes
+               (:orchestration-version 1 :orchestration-type "manifest"
+                :orchestration-idempotency-key "manifest-1"
+                :orchestration-payload
+                (:run-id "run-1"
+                 :tasks (:task-key ("required" "required" t
+                                    "accepted-attempt" 0))
+                 :deadline (:kind "none")))))
+             (:type "board-message" :session-id ,session-id
+              :message (:id "msg_10" :kind "output" :content "second"))))
+          (e-runtime-migration-run source target)
+          (setq runtime (e-runtime-sqlite-open target))
+          (let* ((store (e-runtime-sqlite-runtime-store runtime))
+                 (_ready (e-runtime-sqlite-p4-test--wait-ready store))
+                 (session-store (e-runtime-sqlite-session-store runtime))
+                 (session-state
+                  (e-runtime-sqlite-p4-test--v6-query-state
+                   runtime session-id))
+                 (_harness
+                  (setq harness
+                        (e-harness-create
+                         :sessions session-store
+                         :backend (e-backend-fake-create :items nil))))
+                 (root-page-work
+                  (e-chat-service-root-session-page-start harness :limit 8))
+                 (_root-page-ready
+                  (e-runtime-sqlite-p4-test--await-work root-page-work))
+                 (root-page
+                  (e-chat-service-root-session-page-value root-page-work))
+                 (root-session
+                  (seq-find
+                   (lambda (row) (equal (plist-get row :id) session-id))
+                   (plist-get root-page :rows)))
+                 (board
+                  (e-runtime-store-call
+                   store 'read
+                   '(:op board-get :board-id "legacy-ordered-board")))
+                 (page
+                  (e-runtime-store-call
+                   store 'read
+                   (list :op 'board-record-page
+                         :board-id "legacy-ordered-board"
+                         :generation (plist-get board :generation)
+                         :after 0 :limit 8)))
+                 (visible
+                  (e-runtime-store-call
+                   store 'read
+                   (list :op 'board-visible-window
+                         :board-id "legacy-ordered-board"
+                         :generation (plist-get board :generation)
+                         :limit 8)))
+                 (outputs
+                  (e-runtime-store-call
+                   store 'read
+                   (list :op 'board-record-page
+                         :board-id "legacy-ordered-board"
+                         :generation (plist-get board :generation)
+                         :after 0 :limit 8
+                         :selector '(:kinds (output)))))
+                 (run
+                  (e-runtime-store-call
+                   store 'read
+                   (list :op 'board-orchestration-run
+                         :board-id "legacy-ordered-board"
+                         :run-id "run-1" :limit 8)))
+                 (entries (plist-get page :records))
+                 (records (mapcar (lambda (entry) (plist-get entry :record))
+                                  entries)))
+            (should (equal (plist-get session-state :association-role)
+                           "owner"))
+            (should root-session)
+            (should (equal
+                     (plist-get (plist-get root-session :association)
+                                :association-role)
+                     "owner"))
+            (setq binding
+                  (e-runtime-sqlite-p4-test--await-work
+                   (e-chat-service-binding-start harness session-id)))
+            (should (equal (e-chat-service-binding-session-id binding)
+                           session-id))
+            ;; Historical Board envelopes did not carry their Board identity;
+            ;; the owning session association supplies it during migration.
+            (should (equal (mapcar (lambda (record) (plist-get record :id))
+                                   records)
+                           '("a-new" "msg_10" "msg_1" "manifest-record")))
+            (should
+             (equal
+              (mapcar (lambda (entry)
+                        (plist-get (plist-get entry :record) :id))
+                      (plist-get visible :records))
+              '("a-new" "msg_10" "msg_1")))
+            (should
+             (equal
+              (mapcar (lambda (entry)
+                        (plist-get (plist-get entry :record) :id))
+                      (plist-get outputs :records))
+              '("a-new" "msg_10" "msg_1")))
+            (should
+             (equal
+              (mapcar (lambda (entry)
+                        (plist-get (plist-get entry :record) :id))
+                      (plist-get run :records))
+              '("manifest-record")))
+            (should (equal (mapcar (lambda (record)
+                                     (plist-get record :source-session-id))
+                                   records)
+                           (make-list 4 session-id)))
+            (should (equal
+                     (mapcar
+                      (lambda (entry)
+                        (plist-get (plist-get (plist-get entry :source) :key)
+                                   :session-id))
+                      entries)
+                     (make-list 4 session-id)))
+            (should-not (seq-find
+                         (lambda (record)
+                           (equal (plist-get record :id) "z-old"))
+                         records))))
+      (when binding (ignore-errors (e-chat-service--retire-binding binding)))
+      (when runtime (ignore-errors (e-runtime-sqlite-close runtime)))
+      (dolist (directory (list source target))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-migrated-board-reopens-and-routes ()
+  "Migrated owner and explicit child associations route after reopen."
+  (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (target (concat source "-board-reopen"))
+         (owner-session-id "legacy-board-owner")
+         (child-session-id "legacy-board-child")
+         (board-id "legacy-board-reopen-board")
+         (child-participant-id "legacy-child-participant")
+         (e-runtime-sqlite--live-composition nil)
+         runtime harness binding)
+    (unwind-protect
+        (progn
+          (e-runtime-sqlite-p4-test--write-session-records
+           source owner-session-id
+           `((:type "session" :session-id ,owner-session-id
+              :id "legacy-board-owner-root"
+              :created-at "2026-08-07T10:13:40Z"
+              :updated-at "2026-08-07T10:13:48Z" :metadata nil)
+             (:type "board-session-state" :session-id ,owner-session-id
+              :board-state (:board-id ,board-id :principal "shared-principal"
+                            :association-role "owner"))))
+          (e-runtime-sqlite-p4-test--write-session-records
+           source child-session-id
+           `((:type "session" :session-id ,child-session-id
+              :id "legacy-board-child-root"
+              :created-at "2026-08-07T10:13:41Z"
+              :updated-at "2026-08-07T10:13:49Z" :metadata nil)
+             (:type "board-session-state" :session-id ,child-session-id
+              :board-state
+              (:board-id ,board-id :principal "shared-principal"
+               :association-role "participant"
+               :routing-policy
+               (:participant-id ,child-participant-id
+                :pickup-selector (:tags (child))
+                :observer-selector (:tags (child))
+                :default-tags (child) :default-to nil)))))
+          (e-runtime-migration-run source target)
+          (setq runtime (e-runtime-sqlite-open target))
+          (let* ((store (e-runtime-sqlite-runtime-store runtime))
+                 (_ready (e-runtime-sqlite-p4-test--wait-ready store))
+                 (session-store (e-runtime-sqlite-session-store runtime))
+                 (association
+                  (e-runtime-sqlite-p4-test--v6-query-state
+                   runtime child-session-id))
+                 (policy (plist-get association :routing-policy))
+                 (participant-id (plist-get policy :participant-id))
+                 (board
+                  (e-runtime-store-call
+                   store 'read (list :op 'board-get :board-id board-id)))
+                 (participants
+                  (e-runtime-store-call
+                   store 'read
+                   (list :op 'board-participant-list :board-id board-id
+                         :generation (plist-get board :generation) :limit 8))))
+            (should (e-session-board-routing-policy-valid-p policy))
+            (should (equal participant-id child-participant-id))
+            (should (= (length participants) 2))
+            (should (member participant-id
+                            (mapcar (lambda (row) (plist-get row :id))
+                                    participants)))
+            (setq harness
+                  (e-harness-create
+                   :sessions session-store
+                   :backend
+                   (e-backend-fake-create
+                    :items '((:type assistant-message :content "migrated reply")
+                             (:type done :reason stop)))))
+            (setq binding
+                  (e-runtime-sqlite-p4-test--await-work
+                   (e-chat-service-binding-start harness child-session-id)))
+            (should (equal (e-chat-service-binding-participant-id binding)
+                           participant-id))
+            (let ((publication
+                   (e-runtime-sqlite-p4-test--await-work
+                    (e-board-sqlite-service-append-route-start
+                     (e-chat-service-binding-sqlite-service binding)
+                     board-id :session-id child-session-id
+                     :author "migration-test"
+                     :requester-actor "migration-test"
+                     :content "publish after migration"
+                     :tags '(child)
+                     :source-input-key '(migration-reopen 1)))))
+              (should (eq (plist-get (plist-get publication :routing) :state)
+                          'routed))
+              (should (equal
+                       (plist-get (plist-get publication :routing)
+                                  :participant-ids)
+                       (list participant-id))))))
+      (when binding (ignore-errors (e-chat-service--retire-binding binding)))
+      (when runtime (ignore-errors (e-runtime-sqlite-close runtime)))
+      (dolist (directory (list source target))
+        (when (file-directory-p directory) (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-offline-migration-rejects-board-orphans ()
+  "Malformed, orphaned, and rootless Board journals name their source session."
+  (dolist
+      (case
+       `(("orphan-board-source"
+          ((:type "board-message" :session-id "orphan-board-source"
+            :message (:id "orphan" :kind "output" :content "orphan"))))
+         ("malformed-board-source"
+          ((:type "board-session-state" :session-id "malformed-board-source"
+            :board-state (:board-id "malformed-board"
+                          :principal "legacy-owner"
+                          :association-role "owner"))
+           (:type "board-message" :session-id "malformed-board-source"
+            :message (:kind "output" :content "missing identity"))))
+         ("invalid-kind-board-source"
+          ((:type "board-session-state" :session-id "invalid-kind-board-source"
+            :board-state (:board-id "invalid-kind-board"
+                          :principal "legacy-owner"
+                          :association-role "owner"))
+           (:type "board-message" :session-id "invalid-kind-board-source"
+            :message (:id "invalid-kind" :kind "message"
+                      :content "not a current semantic kind"))))
+         ("incomplete-policy-board-source"
+          ((:type "board-session-state"
+            :session-id "incomplete-policy-board-source"
+            :board-state
+            (:board-id "incomplete-policy-board"
+             :principal "legacy-owner"
+             :association-role "owner"
+             :routing-policy (:participant-id "partial")))))
+         ("ambiguous-roleless-board-source"
+          ((:type "board-session-state"
+            :session-id "ambiguous-roleless-board-source"
+            :board-state
+            (:board-id "ambiguous-roleless-board"
+             :principal "not-a-canonical-chat-principal"))))
+         ("missing-root-board-source"
+          ((:type "board-session-state" :session-id "missing-root-board-source"
+            :board-state (:board-id "missing-root-board"
+                          :principal "legacy-owner"
+                          :association-role "participant"
+                          :routing-policy
+                          (:participant-id "missing-root-participant"
+                           :pickup-selector (:tags (main))
+                           :observer-selector (:tags (main))
+                           :default-tags (main) :default-to nil)))
+           (:type "board-message" :session-id "missing-root-board-source"
+            :message (:id "unrooted" :kind "output" :content "unrooted"))))))
+    (let* ((session-id (car case))
+           (source (e-runtime-sqlite-p4-test--legacy-fixture))
+           (target (concat source "-invalid-board"))
+           (root
+            `(:type "session" :session-id ,session-id
+              :id ,(concat session-id "-root")
+              :created-at "2026-08-07T10:13:40Z"
+              :updated-at "2026-08-07T10:13:48Z" :metadata nil))
+           failure)
+      (unwind-protect
+          (progn
+            (e-runtime-sqlite-p4-test--write-session-records
+             source session-id (cons root (cadr case)))
+            (condition-case err
+                (e-runtime-migration-run source target)
+              (e-runtime-migration-conflict (setq failure err)))
+            (should failure)
+            (should (member session-id (cdr failure)))
+            (should (< (length (error-message-string failure)) 512))
+            (should-not (file-exists-p target)))
+        (dolist (directory (list source target))
+          (when (file-directory-p directory)
+            (delete-directory directory t)))))))
+
+(ert-deftest e-runtime-sqlite-p4-offline-migration-rejects-invented-child-policy ()
+  "An explicit child without durable routing policy aborts the whole import."
+  (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (target (concat source "-missing-child-policy"))
+         (owner-session-id "legacy-policy-owner")
+         (child-session-id "legacy-policy-child")
+         (board-id "legacy-policy-board")
+         failure)
+    (unwind-protect
+        (progn
+          (e-runtime-sqlite-p4-test--write-session-records
+           source owner-session-id
+           `((:type "session" :session-id ,owner-session-id
+              :id "legacy-policy-owner-root")
+             (:type "board-session-state" :session-id ,owner-session-id
+              :board-state (:board-id ,board-id :principal "shared-principal"
+                            :association-role "owner"))))
+          (e-runtime-sqlite-p4-test--write-session-records
+           source child-session-id
+           `((:type "session" :session-id ,child-session-id
+              :id "legacy-policy-child-root")
+             (:type "board-session-state" :session-id ,child-session-id
+              :board-state (:board-id ,board-id :principal "shared-principal"
+                            :association-role "participant"))))
+          (condition-case err
+              (e-runtime-migration-run source target)
+            (e-runtime-migration-conflict (setq failure err)))
+          (should failure)
+          (should (member child-session-id (cdr failure)))
+          (should (< (length (error-message-string failure)) 512))
+          (should-not (file-exists-p target)))
+      (dolist (directory (list source target))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
+
+(ert-deftest e-runtime-sqlite-p4-offline-migration-rejects-child-principal-mismatch ()
+  "A child principal unequal to its Board root aborts the whole import."
+  (let* ((source (e-runtime-sqlite-p4-test--legacy-fixture))
+         (target (concat source "-child-principal-mismatch"))
+         (owner-session-id "legacy-principal-owner")
+         (child-session-id "legacy-principal-child")
+         (board-id "legacy-principal-board")
+         failure)
+    (unwind-protect
+        (progn
+          (e-runtime-sqlite-p4-test--write-session-records
+           source owner-session-id
+           `((:type "session" :session-id ,owner-session-id
+              :id "legacy-principal-owner-root")
+             (:type "board-session-state" :session-id ,owner-session-id
+              :board-state (:board-id ,board-id :principal "root-principal"
+                            :association-role "owner"))))
+          (e-runtime-sqlite-p4-test--write-session-records
+           source child-session-id
+           `((:type "session" :session-id ,child-session-id
+              :id "legacy-principal-child-root")
+             (:type "board-session-state" :session-id ,child-session-id
+              :board-state
+              (:board-id ,board-id :principal "different-principal"
+               :association-role "participant"
+               :routing-policy
+               (:participant-id "legacy-principal-child-participant"
+                :pickup-selector (:tags (child))
+                :observer-selector (:tags (child))
+                :default-tags (child) :default-to nil)))))
+          (condition-case err
+              (e-runtime-migration-run source target)
+            (e-runtime-migration-conflict (setq failure err)))
+          (should failure)
+          (should (member child-session-id (cdr failure)))
+          (should (< (length (error-message-string failure)) 512))
+          (should-not (file-exists-p target)))
+      (dolist (directory (list source target))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
+
 (ert-deftest e-runtime-sqlite-p4-s9-invalid-legacy-input-never-installs ()
   "Missing, incomplete, conflicting, or unmapped input leaves no target."
   (let* ((missing (make-temp-file "e-runtime-p4-missing-" t))
@@ -149,6 +589,7 @@
          (incomplete-target (concat incomplete "-target"))
          (conflict (e-runtime-sqlite-p4-test--legacy-fixture))
          (conflict-target (concat conflict "-target"))
+         conflict-failure
          (unmapped (e-runtime-sqlite-p4-test--legacy-fixture))
          (unmapped-target (concat unmapped "-target")))
     (unwind-protect
@@ -179,8 +620,13 @@
              (:type "board-session-state" :session-id "board-b"
               :board-state (:board-id "shared-board" :principal "bob"
                             :association-role "owner"))))
-          (should-error (e-runtime-migration-run conflict conflict-target)
-                        :type 'e-runtime-migration-conflict)
+          (condition-case err
+              (e-runtime-migration-run conflict conflict-target)
+            (e-runtime-migration-conflict
+             (setq conflict-failure err)))
+          (should conflict-failure)
+          (should (member "board-b" (cdr conflict-failure)))
+          (should (< (length (error-message-string conflict-failure)) 512))
           (should-not (file-exists-p conflict-target))
           (e-runtime-sqlite-p4-test--write
            (expand-file-name "task-queue/unmapped.cache" unmapped) "state")
@@ -521,8 +967,12 @@
          (target (concat source "-rootless-installed"))
          (session-id "20260807T101346-90ba4ce0f030")
          (original
-          `((:type "board-message" :session-id ,session-id
-             :message (:id "board-1" :kind "input"
+          `((:type "board-session-state" :session-id ,session-id
+             :board-state (:board-id "legacy-rootless-board"
+                           :principal "legacy-owner"
+                           :association-role "owner"))
+            (:type "board-message" :session-id ,session-id
+             :message (:id "board-1" :kind "input" :record-type "message"
                        :created-at 1786097627.224162
                        :content "preserved board input"))
             (:type "message" :session-id ,session-id :id "message-1"
@@ -551,15 +1001,40 @@
                             store session-id))
                  (state (e-runtime-sqlite-p4-test--v6-query-state
                          (e-default-runtime) session-id)))
-            (should (= (length physical) (1+ (length original))))
+            ;; Retired Board rows are extracted into Board SQL and are absent
+            ;; from the ordinary v6 session journal.
+            (should (= (length physical) 2))
             (should (equal (plist-get (car physical) :type) "session"))
             (should (equal (plist-get (car physical) :id) "legacy-root-id"))
             (should (equal (plist-get state :created-at)
                            "2026-08-07T10:13:47Z"))
             (should (= (plist-get state :message-count) 1))
-            (should (equal (plist-get (plist-get (nth 2 physical) :message)
+            (should (equal (plist-get state :board-id)
+                           "legacy-rootless-board"))
+            (should (equal (plist-get state :association-role) "owner"))
+            (should (equal (plist-get (plist-get (nth 1 physical) :message)
                                       :content)
-                     "preserved session input")))
+                           "preserved session input"))
+            (let* ((runtime (e-default-runtime))
+                   (runtime-store (e-runtime-sqlite-runtime-store runtime))
+                   (board
+                    (e-runtime-store-call
+                     runtime-store 'read
+                     '(:op board-get :board-id "legacy-rootless-board")))
+                   (page
+                    (e-runtime-store-call
+                     runtime-store 'read
+                     (list :op 'board-record-page
+                           :board-id "legacy-rootless-board"
+                           :generation (plist-get board :generation)
+                           :after 0 :limit 8))))
+              (should board)
+              (should (= (length (plist-get page :records)) 1))
+              (should (equal
+                       (plist-get
+                        (plist-get (car (plist-get page :records)) :record)
+                        :content)
+                       "preserved board input"))))
           (e-default-runtime-close)
           (setq e-default--runtime nil e-default--chat-sessions nil)
           (let* ((runtime (e-default-runtime))
@@ -571,7 +1046,7 @@
                        1))
             (should (equal (plist-get
                             (plist-get
-                             (nth 2 (e-runtime-sqlite-p4-test--v6-record-values
+                             (nth 1 (e-runtime-sqlite-p4-test--v6-record-values
                                      store session-id))
                              :message)
                             :content)

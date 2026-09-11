@@ -7,7 +7,6 @@
 
 (require 'ert)
 (require 'e-board-sqlite-service)
-(require 'e-board-storage-sqlite)
 (require 'e-backend)
 (require 'e-chat-service)
 (require 'e-chat)
@@ -31,7 +30,7 @@
                 :observer-selector '(:tags (main))
                 :default-tags '(main) :default-to nil))
          (session
-          (e-session-board-admission-records
+          (e-board-sqlite-service-session-admission
            :id session-id :metadata (list :name session-id)
            :principal (format "chat:%s" session-id)
            :board-id board-id :association-role "owner"
@@ -45,7 +44,7 @@
                copy))
            (plist-get session :admission-records))))
     (list :records records
-          :query-delta (e-session-query-derive records)
+          :query-delta (plist-get session :query-delta)
           :policy policy)))
 
 (cl-defmacro e-board-sqlite-service-test--with-fixture
@@ -59,28 +58,23 @@
           (,store (e-session-sqlite-store-create directory))
           (runtime (e-session-storage-runtime-store ,store))
           (,service (e-board-sqlite-service-create runtime))
-          (storage (e-board-storage-sqlite-create runtime))
           (admission
            (e-board-sqlite-service-test--admission
             ,session-id ,board-id ,participant-id)))
      (unwind-protect
          (progn
-           (e-board-storage-create-board
-            storage ,board-id (format "chat:%s" ,session-id)
-            (list :board-id ,board-id))
-           (e-runtime-store-call
-            runtime 'write
-            (list :op 'session-append-batch :session-id ,session-id
-                  :records (vconcat (plist-get admission :records))
-                  :query-delta (plist-get admission :query-delta)))
-           (e-board-storage-put-participant
-            storage ,board-id 1
-            (list :id ,participant-id :author "e-chat"
-                  :principal (format "chat:%s" ,session-id)
-                  :controller (format "chat:%s" ,session-id)
-                  :role 'owner :state 'active
-                  :subscription-id "pickup-main"
-                  :publication-pending nil))
+           (e-board-sqlite-service-test--await
+            (e-board-sqlite-service-admit-session-owner-start
+             ,service ,session-id ,board-id
+             (format "chat:%s" ,session-id)
+             (plist-get admission :records)
+             (plist-get admission :query-delta)
+             (list :id ,participant-id :author "e-chat"
+                   :principal (format "chat:%s" ,session-id)
+                   :controller (format "chat:%s" ,session-id)
+                   :role 'owner :state 'active
+                   :subscription-id "pickup-main"
+                   :publication-pending nil)))
            ,@body)
        (ignore-errors (e-session-sqlite-store-close ,store))
        (delete-directory directory t))))
@@ -403,7 +397,7 @@
         (delete-directory stall-directory t)))))
 
 (ert-deftest e-chat-service-sqlite-existing-session-submits-without-board-reconstruction ()
-  "Ordinary SQLite chat composes a live port without reconstructing `e-board'."
+  "Ordinary SQLite chat composes a live port without an aggregate replica."
   (e-board-sqlite-service-test--with-fixture
       (store _service board-id session-id participant-id)
     (let* ((harness
@@ -491,14 +485,12 @@
                   :observer-selector '(:tags (main))
                   :default-tags '(main) :default-to nil))
            (session
-            (e-session-board-admission-records
+            (e-board-sqlite-service-session-admission
              :id session-id :metadata '(:name "Public Board participant")
              :principal principal :board-id board-id
              :association-role "participant" :routing-policy policy))
            (records (plist-get session :admission-records))
-           (query-delta
-            (e-session-query-derive
-             (e-chat-service--annotate-admission-records records)))
+           (query-delta (plist-get session :query-delta))
            (harness (e-harness-create :sessions store))
            buffer readiness)
       (e-board-sqlite-service-test--await
@@ -1021,7 +1013,7 @@
                     :observer-selector '(:tags (main))
                     :default-tags '(main) :default-to participant-id))
              (session
-              (e-session-board-admission-records
+              (e-board-sqlite-service-session-admission
                :id session-id :metadata nil :principal principal
                :board-id board-id :association-role "participant"
                :routing-policy policy))
@@ -1032,7 +1024,7 @@
         (e-board-sqlite-service-test--await
          (e-board-sqlite-service-admit-participant-start
           service session-id board-id records
-          (e-session-query-derive records)
+          (plist-get session :query-delta)
           (list :id participant-id :author "e-chat"
                 :principal principal :controller principal
                 :role 'participant :state 'active

@@ -29,6 +29,10 @@
   "Maximum rows returned by one session query page.")
 (defconst e-runtime-store-session-worker-record-page-row-limit 256
   "Maximum records returned by one bounded forward page.")
+(defconst e-runtime-store-session-worker-failure-scan-row-limit 1024
+  "Maximum recent activity rows inspected for failure navigation.")
+(defconst e-runtime-store-session-worker-turn-inspection-row-limit 512
+  "Maximum recent message/activity rows inspected for one failed turn.")
 (defconst e-runtime-store-session-worker-visible-message-row-limit 64
   "Maximum messages returned by one visible chat window read.")
 (defconst e-runtime-store-session-worker-context-path-row-limit 4096
@@ -159,7 +163,33 @@ could not identify the row it just returned."
          (e-runtime-store-codec-decode (base64-decode-string text)))
       (error
        (e-runtime-store-session-worker--error
-        "Session physical value cannot be decoded" field (car err))))))
+       "Session physical value cannot be decoded" field (car err))))))
+
+(defun e-runtime-store-session-worker--message-with-display
+    (message encoded-disposition)
+  "Return detached MESSAGE with its latest ENCODED-DISPOSITION applied.
+
+The disposition row is selected in the same set query as the bounded message
+consumer.  A nil payload means no disposition was ever recorded."
+  (let ((result (e-runtime-store-session-worker--detach-query-content message)))
+    (when encoded-disposition
+      (let* ((record
+              (condition-case err
+                  (e-runtime-store-codec-decode
+                   (base64-decode-string encoded-disposition))
+                (error
+                 (e-runtime-store-session-worker--error
+                  "Session message disposition cannot be decoded" (car err)))))
+             (display (plist-get record :display)))
+        (unless (and (equal (plist-get record :type) "message-display")
+                     (equal (plist-get record :id) (plist-get result :id))
+                     (or (null display) (stringp display) (symbolp display)))
+          (e-runtime-store-session-worker--error
+           "Session message disposition has an invalid shape" record))
+        (if display
+            (plist-put result :display display)
+          (cl-remf result :display))))
+    result))
 
 (defun e-runtime-store-session-worker--record-columns (record)
   "Return typed physical columns for canonical RECORD.
@@ -661,6 +691,8 @@ that position before its row is written."
       (list :session-id (plist-get state :session-id)
             :name (plist-get state :name)
             :summary (plist-get state :summary)
+            :latest-assistant-marker
+            (plist-get state :latest-assistant-marker)
             :metadata (e-session-query--copy-value
                        (plist-get state :metadata))
             :created-at (plist-get state :created-at)
@@ -968,8 +1000,142 @@ that position before its row is written."
                          (plist-get last-record :position))
               :limit limit :byte-count bytes
               :byte-limit e-runtime-store-session-worker-page-byte-limit
-              :high-water (e-runtime-store-session-worker--position
+          :high-water (e-runtime-store-session-worker--position
                            database session-id))))))
+
+(defun e-runtime-store-session-worker--activity-event (record)
+  "Return RECORD's detached semantic activity event, or nil.
+
+Current relational commands store the event envelope directly on the
+`activity-event' record.  Offline-migrated v5 rows may additionally carry the
+former nested `:semantic-event' spelling.  Normalize both at this bounded read
+boundary; neither shape is installed as process-local session state."
+  (when (equal (plist-get record :type) "activity-event")
+    (let ((event
+           (or (when-let* ((nested (plist-get record :semantic-event)))
+                 (e-session-query--copy-value nested))
+               (list :id (plist-get record :id)
+                     :parent-id (plist-get record :parent-id)
+                     :turn-id (plist-get record :turn-id)
+                     :event-type (plist-get record :event-type)
+                     :payload (e-session-query--copy-value
+                               (plist-get record :payload))
+                     :created-at (plist-get record :timestamp)))))
+      (when-let* ((event-type (plist-get event :event-type)))
+        (when (stringp event-type)
+          (plist-put event :event-type (intern event-type))))
+      (when (eq (plist-get event :event-type) 'hook-audit)
+        (when-let* ((payload (plist-get event :payload)))
+          (dolist (key '(:owner :outcome :truth-status))
+            (when-let* ((value (plist-get payload key)))
+              (when (stringp value)
+                (plist-put payload key (intern value)))))))
+      event)))
+
+(defun e-runtime-store-session-worker--recent-failures (database body)
+  "Return a bounded newest-first failed-turn page from DATABASE."
+  (let* ((limit (e-runtime-store-session-worker--limit
+                 (plist-get body :limit) 32))
+         (rows
+          (sqlite-select
+           database
+           (concat
+            "SELECT r.session_id,r.position,r.record_type,r.record_id,"
+            "r.record_identity,r.parent_id,r.timestamp,LENGTH(r.payload),"
+            "r.payload,q.name,q.summary "
+            "FROM session_records r JOIN session_query_state q "
+            "ON q.session_id=r.session_id "
+            "WHERE r.record_type='activity-event' "
+            "ORDER BY COALESCE(r.timestamp,'') DESC,r.session_id DESC,"
+            "r.position DESC LIMIT ?")
+           (vector e-runtime-store-session-worker-failure-scan-row-limit)))
+         failures)
+    (catch 'full
+      (dolist (row rows)
+        (let* ((session-id
+                (e-runtime-store-session-worker--column row 0))
+               (record
+                (e-runtime-store-session-worker--decode-record-row
+                 (seq-subseq row 1 9)))
+               (event
+                (e-runtime-store-session-worker--activity-event
+                 (plist-get record :value))))
+          (when (and event (eq (plist-get event :event-type) 'turn-failed))
+            (let ((payload (plist-get event :payload)))
+              (push
+               (list :session-id session-id
+                     :turn-id (plist-get event :turn-id)
+                     :created-at (plist-get event :created-at)
+                     :event-id (plist-get event :id)
+                     :error (plist-get payload :error)
+                     :details (e-session-query--copy-value
+                               (plist-get payload :details))
+                     :session-title
+                     (or (e-runtime-store-session-worker--column row 9)
+                         (e-runtime-store-session-worker--column row 10)
+                         session-id))
+               failures))
+            (when (>= (length failures) limit) (throw 'full nil))))))
+    (list :failures (nreverse failures)
+          :limit limit
+          :scanned (length rows)
+          :scan-limit e-runtime-store-session-worker-failure-scan-row-limit)))
+
+(defun e-runtime-store-session-worker--turn-inspection (database body)
+  "Return one bounded failed-turn timeline from DATABASE."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (turn-id (e-runtime-store-session-worker--session-id
+                   (plist-get body :turn-id)))
+         (state (e-runtime-store-session-worker--query-state
+                 database (list :session-id session-id)))
+         (rows
+          (and state
+               (sqlite-select
+                database
+                (concat
+                 "SELECT position,record_type,record_id,record_identity,"
+                 "parent_id,timestamp,LENGTH(payload),payload "
+                 "FROM session_records WHERE session_id=? "
+                 "AND record_type IN ('message','activity-event') "
+                 "ORDER BY position DESC LIMIT ?")
+                (vector
+                 session-id
+                 (1+ e-runtime-store-session-worker-turn-inspection-row-limit)))))
+         (truncated
+          (and rows
+               (> (length rows)
+                  e-runtime-store-session-worker-turn-inspection-row-limit)))
+         messages events)
+    (dolist (row (if truncated (butlast rows) rows))
+      (let* ((record
+              (e-runtime-store-session-worker--decode-record-row row))
+             (value (plist-get record :value))
+             (record-type (plist-get record :record-type)))
+        (cond
+         ((equal record-type "message")
+          (when-let* ((message (plist-get value :message))
+                      ((equal (plist-get message :turn-id) turn-id)))
+            (push (e-session-query--copy-value message) messages)))
+         ((equal record-type "activity-event")
+          (when-let* ((event
+                       (e-runtime-store-session-worker--activity-event value))
+                      ((equal (plist-get event :turn-id) turn-id)))
+            (push (e-session-query--copy-value event) events))))))
+    (list
+     :present (and state t)
+     :session
+     (and state
+          (list :id session-id
+                :name (plist-get state :name)
+                :summary (plist-get state :summary)
+                :metadata (e-session-query--copy-value
+                           (plist-get state :metadata))))
+     :turn-id turn-id
+     :events events
+     :messages messages
+     :truncated truncated
+     :row-limit e-runtime-store-session-worker-turn-inspection-row-limit)))
 
 (defun e-runtime-store-session-worker--visible-message-page (database body)
   "Read the newest bounded message window for one chat session.
@@ -988,17 +1154,25 @@ returned in presentation order (oldest to newest within the window)."
           (sqlite-select
            database
            (concat
-            "SELECT position,record_type,record_id,record_identity,parent_id,timestamp,LENGTH(payload),payload "
-            "FROM session_records WHERE session_id=? AND record_type='message' "
-            "ORDER BY position DESC LIMIT ?")
+            "SELECT m.position,m.record_type,m.record_id,m.record_identity,m.parent_id,m.timestamp,LENGTH(m.payload),m.payload,"
+            "(SELECT d.payload FROM session_records d "
+            " WHERE d.session_id=m.session_id AND d.record_type='message-display' "
+            " AND d.record_id=m.record_id ORDER BY d.position DESC LIMIT 1) "
+            "FROM session_records m WHERE m.session_id=? AND m.record_type='message' "
+            "ORDER BY m.position DESC LIMIT ?")
            (vector session-id (1+ limit))))
          (truncated (> (length rows) limit))
          (messages nil)
          (bytes 0))
     (catch 'visible-page-full
       (dolist (row (if truncated (cl-subseq rows 0 limit) rows))
-        (let* ((record (e-runtime-store-session-worker--decode-record-row row))
-               (message (plist-get (plist-get record :value) :message))
+        (let* ((record
+                (e-runtime-store-session-worker--decode-record-row
+                 (cl-subseq row 0 8)))
+               (message
+                (e-runtime-store-session-worker--message-with-display
+                 (plist-get (plist-get record :value) :message)
+                 (e-runtime-store-session-worker--column row 8)))
                (message-bytes
                 (e-runtime-store-codec-measure-bounded
                  message e-runtime-store-session-worker-page-byte-limit)))
@@ -1016,8 +1190,7 @@ returned in presentation order (oldest to newest within the window)."
             (e-runtime-store-session-worker--error
              "Session visible message exceeds page byte bound" message-bytes))
           (setq bytes (+ bytes message-bytes))
-          (push (e-runtime-store-session-worker--detach-query-content message)
-                messages))))
+          (push message messages))))
     (list :session-id session-id
           ;; SQL visits newest first; PUSH restores presentation order, so do
           ;; not reverse this list a second time.
@@ -1070,10 +1243,15 @@ unselected branch rows and unrelated journal families are never returned."
               "SELECT r.position,r.record_id,r.parent_id,r.record_type,r.payload,s.depth+1 "
               "FROM session_records r JOIN selected s ON r.record_id=s.parent_id "
               "WHERE r.session_id=? AND s.depth<?) "
-              "SELECT position,record_id,parent_id,record_type,payload,depth "
+              "SELECT position,record_id,parent_id,record_type,payload,depth,"
+              "(SELECT d.payload FROM session_records d "
+              " WHERE d.session_id=? AND d.record_type='message-display' "
+              " AND d.record_id=selected.record_id "
+              " ORDER BY d.position DESC LIMIT 1) "
               "FROM selected ORDER BY depth DESC")
              (vector session-id head-id session-id
-                     e-runtime-store-session-worker-context-path-row-limit))))
+                     e-runtime-store-session-worker-context-path-row-limit
+                     session-id))))
          (truncated
           (and rows
                (= (length rows)
@@ -1099,7 +1277,9 @@ unselected branch rows and unrelated journal families are never returned."
                 (e-runtime-store-session-worker--column row 4)))))
         (when record-id (puthash record-id path-index path-ids))
         (push (list :path-index path-index :record-type record-type
-                    :record record)
+                    :record record
+                    :display-payload
+                    (e-runtime-store-session-worker--column row 6))
               entries)))
     (setq entries (nreverse entries))
     ;; Receipt context is part of this consumer-shaped selected-path query.
@@ -1162,7 +1342,10 @@ unselected branch rows and unrelated journal families are never returned."
                (path-index (plist-get entry :path-index)))
           (when (equal record-id boundary) (setq inside t))
           (when (and inside (equal record-type "message"))
-            (let* ((message (plist-get record :message))
+            (let* ((message
+                    (e-runtime-store-session-worker--message-with-display
+                     (plist-get record :message)
+                     (plist-get entry :display-payload)))
                    (message-bytes
                     (e-runtime-store-codec-measure-bounded
                      message
@@ -1174,9 +1357,7 @@ unselected branch rows and unrelated journal families are never returned."
                  session-id
                  e-runtime-store-session-worker-context-path-byte-limit))
               (setq bytes (+ bytes message-bytes))
-              (push (e-runtime-store-session-worker--detach-query-content
-                     message)
-                    messages)
+              (push message messages)
               (push path-index message-path-indexes)))
           (when (and inside
                      (member record-type
@@ -1263,6 +1444,10 @@ unselected branch rows and unrelated journal families are never returned."
        (e-runtime-store-session-worker--id-page database body))
       ((or 'session-record-page 'session-history-page)
        (e-runtime-store-session-worker--record-page database body))
+      ('session-recent-failures
+       (e-runtime-store-session-worker--recent-failures database body))
+      ('session-turn-inspection
+       (e-runtime-store-session-worker--turn-inspection database body))
       ((or 'session-visible-message-page 'session-visible-messages)
        (e-runtime-store-session-worker--visible-message-page database body))
       ('session-context-path

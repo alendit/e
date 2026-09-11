@@ -5,39 +5,33 @@
 
 ;;; Commentary:
 
-;; Direct mechanism tests for the extracted board-routing policy owner.  The
-;; first historical test also exercises the aggregate's public admission seam;
-;; it uses no aggregate-private or foreign policy implementation symbols.
+;; Direct mechanism tests for the extracted board-routing policy owner.  These
+;; tests exercise the pure policy boundary without constructing a session
+;; or Board aggregate.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'ert)
-(require 'json)
-(require 'e-session-aggregate)
-(require 'e-session-codec)
+(require 'e-runtime-store-codec)
 (require 'e-session-board-policy)
 
-(ert-deftest e-session-aggregate-test-board-routing-policy-budget-is-pre-encoding-and-bounded ()
+(ert-deftest e-session-board-policy-test-budget-is-pre-encoding-and-bounded ()
   "Routing admission rejects exact overages before encoding or mutation."
-  (let* ((store (e-session-store-create))
-         (session-id "routing-budget")
-         (policy '(:participant-id "p"
+  (let* ((policy '(:participant-id "p"
                    :pickup-selector (:tags (private)
                                     :attributes (:marker "123456789"))
                    :observer-selector (:tags (private))
                    :default-tags (private)
                    :default-to nil)))
-    (e-session-aggregate-create store :id session-id)
-    (e-session-aggregate-declare-board-state
-     store session-id "chat:routing-budget" "budget-board" "owner")
     (let ((e-session-board-policy--byte-budget 11)
           encoded
-          (original-json-encode (symbol-function 'json-encode)))
-      (cl-letf (((symbol-function 'json-encode)
+          (original-encode
+           (symbol-function 'e-runtime-store-codec-encode)))
+      (cl-letf (((symbol-function 'e-runtime-store-codec-encode)
                  (lambda (value)
                    (setq encoded t)
-                   (funcall original-json-encode value))))
+                   (funcall original-encode value))))
         (should (e-session-board-policy--value-budget-valid-p
                  "123456789"))
         (let ((e-session-board-policy--byte-budget 10))
@@ -45,11 +39,7 @@
            (e-session-board-policy--value-budget-valid-p
             "123456789")))
         (let ((e-session-board-policy--byte-budget 10))
-          (should-error
-           (e-session-aggregate-declare-board-state
-            store session-id "chat:routing-budget" "budget-board" "owner"
-            policy)
-           :type 'error))
+          (should-not (e-session-board-routing-policy-valid-p policy)))
         (should-not encoded)))
     (let ((e-session-board-policy--node-budget 3))
       (should (e-session-board-policy--value-budget-valid-p '(a)))
@@ -62,7 +52,7 @@
         (should-not
          (e-session-board-policy--value-budget-valid-p deep))))))
 
-(ert-deftest e-session-aggregate-test-board-routing-policy-public-budget-bounds-collections ()
+(ert-deftest e-session-board-policy-test-public-budget-bounds-collections ()
   "Public policy validation bounds hostile tags and vectors before field scans."
   (let* ((node-limit e-session-board-policy--node-budget)
          (huge-tags (make-list (* 4 node-limit) "tag"))
@@ -86,17 +76,17 @@
     (dolist (policy policies)
       (let ((json-called nil)
             (e-session-board-policy--budget-visit-count 0))
-        (cl-letf (((symbol-function 'json-encode)
+        (cl-letf (((symbol-function 'e-runtime-store-codec-encode)
                    (lambda (&rest _)
                      (setq json-called t)
-                     (error "unexpected JSON encoding"))))
+                     (error "unexpected durable encoding"))))
           (should-not
            (e-session-board-routing-policy-valid-p policy)))
         (should (<= e-session-board-policy--budget-visit-count
                     (1+ node-limit)))
         (should-not json-called)))))
 
-(ert-deftest e-session-aggregate-test-board-routing-policy-encoded-budget-covers-scalars-and-depth ()
+(ert-deftest e-session-board-policy-test-encoded-budget-covers-scalars-and-depth ()
   "The full reversible policy has an exact encoded boundary and safe depth."
   (let* ((policy '(:participant-id "p"
                    :pickup-selector
@@ -107,11 +97,11 @@
                    :observer-selector (:tags (private))
                    :default-tags (private)
                    :default-to nil))
-         (encoded (e-session-codec-board-routing-policy-for-json policy))
-         (encoded-bytes (e-session-board-policy--json-byte-size
-                         encoded)))
+         (encoded-bytes
+          (e-runtime-store-codec-measure-bounded
+           policy most-positive-fixnum)))
     (should (= encoded-bytes
-               (string-bytes (json-encode encoded))))
+               (string-bytes (e-runtime-store-codec-encode policy))))
     (let ((e-session-board-policy--byte-budget encoded-bytes))
       (should (e-session-board-routing-policy-valid-p policy)))
     (let ((e-session-board-policy--byte-budget
@@ -129,7 +119,7 @@
                (make-string e-session-board-policy--byte-budget
                             ?0)))))
     (let ((deep 'x))
-      (dotimes (_ 300)
+      (dotimes (_ 24)
         (setq deep (list :nested deep)))
       (should (e-session-board-policy--value-budget-valid-p deep))
       (let* ((deep-policy (e-session-board-routing-policy-copy-value policy))
@@ -140,6 +130,18 @@
         (plist-put (plist-get deep-policy :pickup-selector)
                    :attributes attributes)
         (should (e-session-board-routing-policy-valid-p deep-policy))))
+    (let ((pathological-depth 'x))
+      (dotimes (_ 5000)
+        (setq pathological-depth (list :nested pathological-depth)))
+      ;; The current durable codec accepts deep finite values, so admission is
+      ;; governed by the explicit structural-node budget rather than by an
+      ;; accidental recursion limit from the retired JSON wire measurer.
+      (let* ((deep-policy (e-session-board-routing-policy-copy-value policy))
+             (attributes
+              (plist-get (plist-get deep-policy :pickup-selector)
+                         :attributes)))
+        (plist-put attributes :deep pathological-depth)
+        (should-not (e-session-board-routing-policy-valid-p deep-policy))))
     (let ((wide (make-vector
                  (1+ e-session-board-policy--node-budget)
                  nil)))

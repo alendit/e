@@ -483,10 +483,10 @@ the turn settles or the popup buffer dies."
     (setf (e-chat-starter-state-subscription state) subscription)
     subscription))
 
-(cl-defun e-chat-starter--start (question &key harness display delay)
+(cl-defun e-chat-starter--start (question &key harness display)
   "Start a one-shot starter QUESTION.
 HARNESS defaults to the chat default harness.  When DISPLAY is non-nil, show the
-popup buffer.  DELAY is forwarded to the chat session submit path for tests."
+popup buffer."
   (let* ((harness (or harness (e-chat-default-harness)))
          (reference (e-chat-starter--capture-source))
          (session-id (e-session-generate-id))
@@ -529,8 +529,7 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
      harness
      session-id
      (e-chat-starter--format-prompt question reference)
-     :references (list reference)
-     :delay delay)
+     :references (list reference))
     (when display
       (setf (e-chat-starter-state-popup-window state)
             (e-chat-starter--display-buffer buffer)))

@@ -254,34 +254,6 @@
 
 
 
-(ert-deftest e-chat-test-render-session-skips-hidden-messages ()
-  "A message flagged `:display' `hidden' is invisible in the clean transcript.
-A superseded first attempt stays in the store for audit but the shell shows
-only the visible reply while retaining a durable-to-rendered projection."
-  (let ((buffer (e-chat-test--buffer nil "chat-hidden-render")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-render"
-           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
-                 :content "visible answer"))
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-render"
-           (list :id "m-hidden" :role 'assistant :turn-id "turn-1"
-                 :content "superseded first attempt" :display 'hidden))
-          (e-chat-test--seed-board-log-from-private-fixture
-           e-chat-harness e-chat-session-id)
-          (e-chat-clear)
-          (e-chat-transcript-render-session)
-          (let* ((visible-id (e-chat-transcript--message-block-id "m-visible"))
-                 (hidden-id (e-chat-transcript--message-block-id "m-hidden")))
-            (should visible-id)
-            (should hidden-id)
-            (should (e-chat-transcript--live-block-record visible-id))
-            (should-not (e-chat-transcript--live-block-record hidden-id))
-            (should (e-chat-test--message-display-hidden-p "m-hidden"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 
 
@@ -1082,72 +1054,6 @@ transcript."
 
 
 
-(ert-deftest e-chat-test-replayed-provider-activity-restores-summary ()
-  "Replayed provider boundary events restore settled summary plus expansion."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer nil))
-    (unwind-protect
-        (progn
-          (e-harness-create-session harness :id "chat-provider-replay")
-          (e-session-append-message
-           store "chat-provider-replay"
-           '(:role user :content "inspect" :turn-id "turn-1"))
-          (e-session-append-activity-event
-           store "chat-provider-replay" "turn-1" 'turn-started nil)
-          (e-session-append-activity-event
-           store "chat-provider-replay" "turn-1" 'provider-request-started
-           '(:status started))
-          (e-session-append-activity-event
-           store "chat-provider-replay" "turn-1" 'provider-request-finished
-           '(:status done))
-          (e-session-append-activity-event
-           store "chat-provider-replay" "turn-1" 'tool-started
-           '(:type tool-call :id "call-1" :name "buffer-read"))
-          (e-session-append-activity-event
-           store "chat-provider-replay" "turn-1" 'tool-finished
-           '(:tool-call (:type tool-call :id "call-1" :name "buffer-read")
-             :result (:status ok :content "scratch contents")))
-          (e-session-append-activity-event
-           store "chat-provider-replay" "turn-1" 'turn-finished nil)
-          (e-session-append-message
-           store "chat-provider-replay"
-           '(:role assistant :content "Final answer." :turn-id "turn-1"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "chat-provider-replay")
-          (setq buffer (e-chat-open :harness harness
-                                    :session-id "chat-provider-replay"))
-          (with-current-buffer buffer
-            (let ((content (buffer-string)))
-              (should (string-match-p
-                       "Turn took [0-9]+min [0-9]+sec, 1 tool call\\."
-                       content))
-              (should-not (string-match-p "Thought for" content)))
-            (e-chat-test--focus-block-containing "Turn took")
-            (call-interactively #'e-chat-response-navigation-activate)
-            (let ((content (buffer-string)))
-              (should (string-match-p "Thought for [0-9]+min [0-9]+sec"
-                                      content))
-              (should (string-match-p "1 tool call" content)))
-            (let* ((display (e-chat-activity-turn-display "turn-1"))
-                   (summary (e-chat-test--focused-block))
-                   (summary-id (plist-get summary :block-id))
-                   (child-kinds
-                    (mapcar
-                     (lambda (block-id)
-                       (plist-get (gethash block-id e-chat-transcript--block-registry)
-                                  :kind))
-                     (plist-get (gethash summary-id
-                                        e-chat-transcript--block-registry)
-                                :children))))
-              (should (= (plist-get display :round-count) 1))
-              (should (equal (plist-get display :round-statuses) '(done)))
-              (should (= (plist-get display :tool-count) 1))
-              (should (equal child-kinds
-                             '(activity-thought activity-tool-batch))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 
 
@@ -1427,92 +1333,11 @@ transcript."
 
 
 
-(ert-deftest e-chat-test-replayed-failed-turn-expands-inline ()
-  "Replayed turn-failed activity renders as a compact expandable block."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer nil))
-    (unwind-protect
-        (progn
-          (e-harness-create-session harness :id "chat-failed-replay")
-          (e-session-append-message
-           store "chat-failed-replay"
-           '(:role user :content "too much context" :turn-id "turn-1"))
-          (e-session-append-activity-event
-           store "chat-failed-replay" "turn-1" 'turn-failed
-           '(:error "OpenAI request failed: (error http 400)"
-             :details (:type "response.failed"
-                       :response
-                       (:error
-                        (:code "context_length_exceeded"
-                         :message
-                         "Your input exceeds the context window.")))))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "chat-failed-replay")
-          (setq buffer (e-chat-open :harness harness
-                                    :session-id "chat-failed-replay"))
-          (with-current-buffer buffer
-            (let ((content (buffer-string)))
-              (should (string-match-p "too much context" content))
-              (should (string-match-p
-                       "Turn failed: OpenAI request failed: (error http 400)"
-                       content))
-              (should-not (string-match-p "context_length_exceeded" content)))
-            (e-chat-test--focus-block-containing "Turn failed")
-            (e-chat-response-navigation-activate)
-            (let ((content (buffer-string))
-                  (block (e-chat-test--focused-block)))
-              (should e-chat-block-view-mode)
-              (should-not e-chat-response-navigation-mode)
-              (should (plist-get block :details-visible-p))
-              (should-not (get-buffer e-chat-details-buffer-name))
-              (should (string-match-p "context_length_exceeded" content)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
 
 
 
 
 
-(ert-deftest e-chat-test-replayed-failed-provider-start-settles-thinking ()
-  "Replay settles provider-started plus turn-failed into a failed thought."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer nil))
-    (unwind-protect
-        (progn
-          (e-harness-create-session harness :id "chat-failed-thinking-replay")
-          (e-session-append-message
-           store "chat-failed-thinking-replay"
-           '(:role user :content "fail" :turn-id "turn-1"))
-          (e-session-append-activity-event
-           store "chat-failed-thinking-replay" "turn-1" 'turn-started nil)
-          (e-session-append-activity-event
-           store "chat-failed-thinking-replay" "turn-1"
-           'provider-request-started
-           '(:status started))
-          (e-session-append-activity-event
-           store "chat-failed-thinking-replay" "turn-1" 'turn-failed
-           '(:error "provider failed"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "chat-failed-thinking-replay")
-          (setq buffer (e-chat-open
-                        :harness harness
-                        :session-id "chat-failed-thinking-replay"))
-          (with-current-buffer buffer
-            (let ((display (e-chat-activity-turn-display "turn-1")))
-              (should (equal (plist-get display :round-statuses) '(failed)))
-              (should (string-match-p
-                       "Thought failed after [0-9]+min [0-9]+sec"
-                       (plist-get display :expanded-text))))
-            (let ((content (buffer-string)))
-              (should (string-match-p "Turn failed: provider failed" content))
-              (should-not (string-match-p "Thinking\\.\\.\\." content)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 
 
@@ -1561,56 +1386,6 @@ transcript."
 
 
 
-(ert-deftest e-chat-test-replayed-run-elisp-action-name-renders ()
-  "Replaying a run_elisp tool with a nested action names the action in-buffer."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer nil))
-    (unwind-protect
-        (progn
-          (e-harness-create-session harness :id "chat-run-elisp-replay")
-          (e-session-append-message
-           store "chat-run-elisp-replay"
-           '(:role user :content "run it" :turn-id "turn-1"))
-          (e-session-append-activity-event
-           store "chat-run-elisp-replay" "turn-1" 'turn-started nil)
-          (e-session-append-activity-event
-           store "chat-run-elisp-replay" "turn-1" 'provider-request-started
-           '(:status started))
-          (e-session-append-activity-event
-           store "chat-run-elisp-replay" "turn-1" 'tool-started
-           '(:type tool-call :id "call-1" :name "run_elisp"))
-          (e-session-append-activity-event
-           store "chat-run-elisp-replay" "turn-1" 'action-started
-           '(:parent-tool-call-id "call-1"
-             :capability-id "elisp-job"
-             :action :run-batch
-             :status started))
-          (e-session-append-activity-event
-           store "chat-run-elisp-replay" "turn-1" 'tool-finished
-           '(:tool-call (:type tool-call :id "call-1" :name "run_elisp")
-             :result (:status ok :content "done")))
-          (e-session-append-activity-event
-           store "chat-run-elisp-replay" "turn-1" 'provider-request-finished
-           '(:status done))
-          (e-session-append-activity-event
-           store "chat-run-elisp-replay" "turn-1" 'turn-finished nil)
-          (e-session-append-message
-           store "chat-run-elisp-replay"
-           '(:role assistant :content "Final answer." :turn-id "turn-1"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "chat-run-elisp-replay")
-          (setq buffer (e-chat-open :harness harness
-                                    :session-id "chat-run-elisp-replay"))
-          (with-current-buffer buffer
-            (let* ((display (e-chat-activity-turn-display "turn-1"))
-                   (item (car (plist-get display :tool-items))))
-              (should (string-match-p
-                       "run_elisp (elisp-job/run-batch)"
-                       (or (plist-get item :name) ""))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 (provide 'e-chat-transcript-test)
 
 ;;; e-chat-transcript-test.el ends here

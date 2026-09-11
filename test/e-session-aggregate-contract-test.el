@@ -90,22 +90,6 @@ assertion remains valid when the composed test files share one Emacs process."
                         :id)
              "message-3"))))
 
-(ert-deftest e-session-aggregate-contract-board-values-are-detached ()
-  "Board semantic values are detached at the aggregate boundary."
-  (let ((store (e-session-store-create))
-        (value (list :nested (list :id "board-value"))))
-    (e-session-aggregate-create store :id "board-session")
-    (e-session-aggregate-append-board-message
-     store "board-session" value)
-    (plist-put (plist-get value :nested) :id "mutated")
-    (should (equal
-             (plist-get (plist-get
-                         (car (e-session-aggregate-board-messages
-                               store "board-session"))
-                         :nested)
-                        :id)
-             "board-value"))))
-
 (ert-deftest e-session-aggregate-contract-replay-reset-is-semantic ()
   "Replay reset and index installation stay inside the aggregate owner."
   (let ((store (e-session-store-create)))
@@ -123,7 +107,7 @@ assertion remains valid when the composed test files share one Emacs process."
                7))))
 
 (ert-deftest e-session-aggregate-contract-stage-is-isolated-until-published ()
-  "A staged mutation cannot alter the live session or private board journal."
+  "A staged mutation cannot alter the live session before publication."
   (let ((store (e-session-store-create))
         (table (make-hash-table :test 'equal)))
     (puthash "key" ["old"] table)
@@ -132,8 +116,6 @@ assertion remains valid when the composed test files share one Emacs process."
      store "staged" '(:id "old" :role user :content "old"))
     (e-session-aggregate-append-activity-event
      store "staged" "turn" 'exact (list :map table))
-    (e-session-aggregate-append-board-message
-     store "staged" '(:id "board-old" :content "old"))
     (let ((stage
            (e-session-aggregate-stage-session-mutation store "staged")))
       (puthash
@@ -153,14 +135,9 @@ assertion remains valid when the composed test files share one Emacs process."
                ["old"]))
       (e-session-aggregate-append-message
        stage "staged" '(:id "new" :role assistant :content "new"))
-      (e-session-aggregate-clear-board-messages stage "staged")
       (should (= (length (e-session-aggregate-messages store "staged")) 1))
-      (should (= (length
-                  (e-session-aggregate-board-messages store "staged"))
-                 1))
       (e-session-aggregate-publish-staged-session store stage "staged")
-      (should (= (length (e-session-aggregate-messages store "staged")) 2))
-      (should-not (e-session-aggregate-board-messages store "staged")))))
+      (should (= (length (e-session-aggregate-messages store "staged")) 2)))))
 
 (provide 'e-session-aggregate-contract-test)
 

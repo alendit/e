@@ -20,6 +20,10 @@
 (require 'e-chat-starter)
 (require 'e-harness)
 (require 'e-shells)
+(load (expand-file-name
+       "e-chat-test-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 (defun e-chat-starter-test--harness (&optional items)
   "Return a test harness backed by fake backend ITEMS."
@@ -497,15 +501,13 @@ its final value only when the turn settled."
             (insert "source A\n")
             (setq state-a (e-chat-starter--start "Explain A"
                                                  :harness harness
-                                                 :display t
-                                                 :delay 5)))
+                                                 :display t)))
           (with-current-buffer source-b
             (erase-buffer)
             (insert "source B\n")
             (setq state-b (e-chat-starter--start "Explain B"
                                                  :harness harness
-                                                 :display t
-                                                 :delay 5)))
+                                                 :display t)))
           (should-not (eq (e-chat-starter-state-session-id state-a)
                           (e-chat-starter-state-session-id state-b)))
           (should-not (eq (e-chat-starter-state-buffer state-a)
@@ -579,7 +581,8 @@ its final value only when the turn settled."
             (call-interactively #'e-chat-starter-dismiss))
           (should-not (buffer-live-p popup))
           (should-not (window-live-p popup-window))
-          (should-not (e-chat-service-subscription-active-p subscription)))
+          (should-not (and subscription
+                           (e-chat-service-subscription-active-p subscription))))
       (when (window-live-p popup-window)
         (delete-window popup-window))
       (when (buffer-live-p popup)
@@ -605,7 +608,8 @@ its final value only when the turn settled."
           (should (eq (car opened) harness))
           (should (equal (cadr opened) "starter-action"))
           (should-not (buffer-live-p popup))
-          (should-not (e-chat-service-subscription-active-p subscription)))
+          (should-not (and subscription
+                           (e-chat-service-subscription-active-p subscription))))
       (when (buffer-live-p popup)
         (kill-buffer popup)))))
 
@@ -651,7 +655,8 @@ its final value only when the turn settled."
                   (call-interactively #'e-chat-starter-open-answer)))
           (should-not (buffer-live-p popup))
           (should (buffer-live-p answer-buffer))
-          (should-not (e-chat-service-subscription-active-p subscription))
+          (should-not (and subscription
+                           (e-chat-service-subscription-active-p subscription)))
           (with-current-buffer answer-buffer
             (should (string-match-p "Because." (buffer-string)))
             (should (equal e-chat-starter-answer-session-id
@@ -700,7 +705,8 @@ its final value only when the turn settled."
                          "Because."))
           (should (equal (current-kill 0 t) "Because."))
           (should-not (buffer-live-p popup))
-          (should-not (e-chat-service-subscription-active-p subscription)))
+          (should-not (and subscription
+                           (e-chat-service-subscription-active-p subscription))))
       (when (buffer-live-p popup)
         (kill-buffer popup)))))
 

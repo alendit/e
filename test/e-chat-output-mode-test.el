@@ -22,6 +22,10 @@
 (require 'e-chat-output-mode)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-session-async)
+(load (expand-file-name "e-chat-test-support.el"
+                       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
 
 ;;;; Mode resolution
 
@@ -55,14 +59,31 @@
   "A per-session override wins over global config resolution."
   (let ((e-capability-config '((chat-output-mode :mode markdown)))
         (harness (e-harness-create :backend (e-backend-create :name "noop"))))
-    (e-harness-create-session harness :id "session-1")
+    (e-chat-test--create-session (e-harness-sessions harness) :id "session-1")
     (should (eq (e-chat-output-mode-resolve harness "session-1") 'markdown))
-    (e-chat-output-mode-session-set harness "session-1" 'org)
-    (should (eq (e-chat-output-mode-session-get harness "session-1") 'org))
-    (should (eq (e-chat-output-mode-resolve harness "session-1") 'org))
-    (e-chat-output-mode-session-set harness "session-1" nil)
-    (should (null (e-chat-output-mode-session-get harness "session-1")))
-    (should (eq (e-chat-output-mode-resolve harness "session-1") 'markdown))))
+    (e-chat-test--await
+     (e-chat-output-mode-session-set harness "session-1" 'org))
+    (let* ((row (e-chat-test--await
+                 (e-session-async-session-metadata
+                  (e-harness-sessions harness) "session-1")))
+           (metadata (plist-get row :metadata)))
+      (should (eq (e-chat-output-mode-session-get
+                   harness "session-1" metadata)
+                  'org))
+      (should (eq (e-chat-output-mode-resolve
+                   harness "session-1" nil metadata)
+                  'org)))
+    (e-chat-test--await
+     (e-chat-output-mode-session-set harness "session-1" nil))
+    (let* ((row (e-chat-test--await
+                 (e-session-async-session-metadata
+                  (e-harness-sessions harness) "session-1")))
+           (metadata (plist-get row :metadata)))
+      (should (null (e-chat-output-mode-session-get
+                     harness "session-1" metadata)))
+      (should (eq (e-chat-output-mode-resolve
+                   harness "session-1" nil metadata)
+                  'markdown)))))
 
 (ert-deftest e-chat-output-mode-test-async-resolution-uses-detached-metadata ()
   "Async output-mode resolution never reconstructs a session aggregate."
@@ -80,7 +101,6 @@
 (ert-deftest e-chat-output-mode-test-session-set-rejects-unknown ()
   "Setting an unknown per-session mode signals an error."
   (let ((harness (e-harness-create :backend (e-backend-create :name "noop"))))
-    (e-harness-create-session harness :id "session-1")
     (should-error
      (e-chat-output-mode-session-set harness "session-1" 'diagonal))))
 

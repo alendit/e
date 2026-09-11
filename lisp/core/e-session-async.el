@@ -305,6 +305,17 @@ are typed SQLite predicates, not filters over an Emacs-owned transcript."
         (setq body (append body (list (car entry) (cdr entry))))))
     (e-session-async--start-read store body)))
 
+(cl-defun e-session-async-recent-failures (store &key (limit 10))
+  "Return immediately with one bounded newest-first failed-turn query."
+  (e-session-async--start-read
+   store (list :op 'session-recent-failures :limit limit)))
+
+(defun e-session-async-turn-inspection (store session-id turn-id)
+  "Return immediately with one bounded detached failed-turn timeline."
+  (e-session-async--start-read
+   store (list :op 'session-turn-inspection
+               :session-id session-id :turn-id turn-id)))
+
 (defun e-session-async-header (store session-id)
   "Return immediately with SESSION-ID's bounded journal header work."
   (e-session-async--start-read
@@ -487,12 +498,8 @@ same SQLite transaction as the journal record.  Concurrent submissions make no
 ordering promise; an acknowledgement followed by a later submission establishes
 happens-before, and an explicitly dependent group belongs in one transaction."
   (ignore write-index)
-  (if (eq tag 'board-message)
-      ;; Current Board publication uses the Board storage service; retaining
-      ;; the former session-aggregate copy would create a second authority.
-      (e-session-async-unsupported-command session-id tag)
-    (e-session-async--submit-relational-command
-     store session-id tag arguments :before-submit before-submit)))
+  (e-session-async--submit-relational-command
+   store session-id tag arguments :before-submit before-submit))
 
 (defun e-session-async-unsupported-command (session-id name)
   "Return a terminal typed work for unsupported asynchronous command NAME."

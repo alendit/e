@@ -64,8 +64,7 @@ limit so an extreme bignum cannot make validation itself unbounded."
     "process-report" "branch-summary" "compaction" "provider-anchor"
     "context-generation" "context-promotion" "context-frame"
     "context-frame-settlement" "context-erasure" "context-curation-package"
-    "messages-cleared" "board-message" "board-messages-cleared"
-    "board-session-state" "current-branch" "session-info"
+    "messages-cleared" "current-branch" "session-info"
     "session-deleted")
   "Every durable session record family understood by this derivation seam.
 
@@ -258,54 +257,6 @@ large arbitrary plist merely because its first few fields look familiar."
            (plist-get metadata :subagent-role)
            (plist-get metadata :task-queue-task-id))))
 
-(defun e-session-query--association (session)
-  "Return SESSION's possible Board association value."
-  (cond
-   ((plist-member session :board-session-state)
-    (plist-get session :board-session-state))
-   ((plist-member session :board-state)
-    (plist-get session :board-state))
-   (t nil)))
-
-(defun e-session-query--association-valid-p (association)
-  "Return non-nil when ASSOCIATION has a bounded Board shape."
-  (and (proper-list-p association)
-       (let ((tail association)
-             (seen nil)
-             (valid t))
-         (while (and valid tail)
-           (let ((key (pop tail)))
-             (setq valid
-                   (and (keywordp key)
-                        (memq key '(:board-id :principal :association-role
-                                    :routing-policy))
-                        (not (memq key seen))
-                        (consp tail)))
-             (push key seen)
-             (when valid (pop tail))))
-         (and valid
-              (stringp (plist-get association :board-id))
-              (e-session-query--string-p (plist-get association :board-id))
-              (stringp (plist-get association :principal))
-              (e-session-query--string-p (plist-get association :principal))
-              (e-session-query--string-p
-               (plist-get association :association-role))
-              (e-session-query--bounded-value-p
-               (plist-get association :routing-policy))))))
-
-(defun e-session-query--association-fields (association)
-  "Return the named Board association columns from ASSOCIATION."
-  (when association
-    (unless (e-session-query--association-valid-p association)
-      (signal 'e-session-query-record-error
-              (list "Invalid Board/session association" association))))
-  (list :board-id (plist-get association :board-id)
-        :principal (plist-get association :principal)
-        :association-role (e-session-query--copy-value
-                           (plist-get association :association-role))
-        :routing-policy (e-session-query--copy-value
-                         (plist-get association :routing-policy))))
-
 (defun e-session-query-state-from-session (session)
   "Return a detached row-shaped current state derived from SESSION.
 
@@ -317,7 +268,6 @@ boundary later."
   (unless (and (listp session) (stringp (plist-get session :id)))
     (signal 'e-session-query-error (list "Session lacks an identity" session)))
   (let* ((metadata (e-session-query--copy-value (plist-get session :metadata)))
-         (association (e-session-query--association session))
          ;; This is a derived aggregate field, not a license to scan the
          ;; durable transcript.  The later adapter can therefore materialize
          ;; the row without loading `:messages'.
@@ -346,14 +296,13 @@ boundary later."
                                                     :context-generations))))
                              (record (plist-get entry :context-record)))
                    (plist-get record :id))
+                 :board-id nil :principal nil :association-role nil
+                 :routing-policy nil
                  :root-p (e-session-query--root-p metadata)
-                 :board-output-sequence
-                 (or (plist-get session :board-output-sequence) 0)
-                 :board-activity-sequence
-                 (or (plist-get session :board-activity-sequence) 0)
+                 :board-output-sequence 0
+                 :board-activity-sequence 0
                  :journal-position
-                 (or (plist-get session :journal-position) 0))
-           (e-session-query--association-fields association))))
+                 (or (plist-get session :journal-position) 0)))))
     (e-session-query-state-validate state)
     state))
 
@@ -463,8 +412,8 @@ boundary later."
   "Update STATE's timestamp/order and optionally its aggregate head.
 
 Only records that become session aggregate entries advance `:current-head-id'.
-Display and Board journal records still touch recency but do not become the
-session's parent-chain head, matching aggregate replay semantics."
+Display-only records still touch recency without becoming the session's
+parent-chain head."
   (let ((timestamp (e-session-query--record-time
                     record (plist-get state :updated-at))))
     (plist-put state :updated-at timestamp)
@@ -596,7 +545,7 @@ bounded in-flight context composition."
   (when (plist-member record key)
     (unless (and (integerp value) (>= value 0))
       (signal 'e-session-query-record-error
-              (list "Invalid Board sequence" key value record)))
+              (list "Invalid session sequence" key value record)))
     (plist-put state key (max (or (plist-get state key) 0) value))))
 
 (defun e-session-query--message-role (message)
@@ -711,8 +660,6 @@ when the application command emits no durable record."
           ((or "process-report" "branch-summary" "compaction"
                "provider-anchor" "context-curation-package")
            (e-session-query--touch next record t))
-          ("board-message"
-           (e-session-query--touch next record nil))
           ((or "context-generation" "context-promotion")
            ;; Version-1 context history is readable but aggregate replay
            ;; intentionally ignores it; newer owned records touch recency.
@@ -726,25 +673,11 @@ when the application command emits no durable record."
            (plist-put next :summary nil)
            (plist-put next :last-message-at nil)
            (plist-put next :latest-assistant-marker nil)
-           ;; Aggregate replay clears message/activity lists but keeps Board
-           ;; sequence watermarks and the current context-generation identity.
-           ;; The latter owns curation records independently of the visible
-           ;; transcript and cannot be discarded by a message reset.
+           ;; The current context generation owns curation records independently
+           ;; of the visible transcript and cannot be discarded by a message
+           ;; reset.
            (plist-put next :current-head-id (plist-get next :root-event-id))
            (e-session-query--touch next record t))
-          ("board-messages-cleared"
-           (e-session-query--touch next record nil))
-          ("board-session-state"
-           (let ((association (plist-get record :board-state)))
-             (unless (e-session-query--association-valid-p association)
-               (signal 'e-session-query-record-error
-                       (list "Invalid Board/session association" record)))
-             (let ((fields (e-session-query--association-fields association)))
-               (while fields
-                 (plist-put next (pop fields) (pop fields)))))
-           ;; The aggregate keeps Board sequence watermarks from message and
-           ;; activity entries; this association record only changes identity.
-           (e-session-query--touch next record nil))
           ("current-branch"
            (plist-put next :current-branch (plist-get record :branch-id))
            (e-session-query--touch next record t))

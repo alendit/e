@@ -76,7 +76,7 @@
            '((action . "send-message") (text . "hello")))
           (pcase (car case)
             ('failed
-             (e-work-fail work '(e-board-storage-error "write rejected")))
+             (e-work-fail work '(e-board-sqlite-error "write rejected")))
             ('cancelled (e-work-cancel work)))
           (should scheduled)
           (should (eq (plist-get e-modernchat--first-admission-failure

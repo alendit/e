@@ -13,54 +13,6 @@
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
 
-(ert-deftest e-chat-test-resume-preview-renders-only-tail-messages ()
-  "Resume previews render a small transcript tail for responsive selection."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
-         (origin (get-buffer-create "chat-resume-preview-tail-origin"))
-         (e-chat-resume-preview-message-limit 2))
-    (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "preview-tail"
-                            :metadata '(:name "Tail preview"))
-          (dotimes (index 6)
-            (e-session-append-message
-             store
-             "preview-tail"
-             (list :id (format "msg-%d" index)
-                   :role (if (cl-evenp index) 'user 'assistant)
-                   :content (format "preview message %d" index))))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "preview-tail")
-          (let* ((sessions (e-harness-session-list harness))
-                 (candidates
-                  (mapcar (lambda (session)
-                            (list :harness harness
-                                  :session session
-                                  :session-id (plist-get session :id)))
-                          sessions))
-                 (labels
-                  (mapcar #'e-chat-overview-session-candidate-label
-                          candidates))
-                 (state (e-chat-overview--resume-preview-state
-                         candidates labels)))
-            (switch-to-buffer origin)
-            (funcall state 'preview (car labels))
-            (let ((preview (get-buffer
-                            (e-chat-overview-resume-preview-buffer-name))))
-              (should preview)
-              (with-current-buffer preview
-                (let ((text (buffer-string)))
-                  (should-not (string-match-p "preview message 0" text))
-                  (should-not (string-match-p "preview message 3" text))
-                  (should (string-match-p "preview message 4" text))
-                  (should (string-match-p "preview message 5" text)))))
-            (funcall state 'exit nil)))
-      (e-chat-test--kill-chat-buffers)
-      (when (buffer-live-p origin)
-        (kill-buffer origin)))))
 
 
 
@@ -113,24 +65,24 @@
 
 (ert-deftest e-chat-test-overview-open-session-marks-session-read ()
   "Opening from overview records the selected session read marker."
-  (let* ((directory (make-temp-file "e-chat-overview-" t))
-         (store (e-session-persistent-store-create directory))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          (e-chat-overview--read-markers (make-hash-table :test #'eq)))
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "read-me"
                             :metadata '(:name "Read Me"))
-          (e-session-append-message
-           store "read-me"
-           '(:id "assistant-read" :role assistant :content "answer"))
+          (e-chat-test--await
+           (e-session-append-message
+            store "read-me"
+            '(:id "assistant-read" :role assistant :content "answer")))
           (let ((buffer (get-buffer-create "*e-chat-overview-test*")))
             (unwind-protect
                 (with-current-buffer buffer
                   (e-chat-overview-mode)
-                  (e-chat-overview-render harness)
+                  (e-chat-test--await (e-chat-overview-render harness))
                   (goto-char (point-min))
                   (let ((chat-buffer (e-chat-overview-open-session)))
                     (with-current-buffer chat-buffer
@@ -139,18 +91,13 @@
                                   (e-chat-overview--read-marker
                                    "read-me" harness)
                                   "assistant-read"))
-                    (should-not
-                     (plist-member
-                      (plist-get (e-session-local-state store "read-me") :metadata)
-                      :e-chat-read-markers))
-                    (e-chat-overview-render harness)
+                    (e-chat-test--await (e-chat-overview-render harness))
                     (should-not (string-match-p
                                  "! Read Me"
                                  (buffer-string)))))
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))))
-      (e-chat-test--kill-chat-buffers)
-      (delete-directory directory t))))
+      (e-chat-test--kill-chat-buffers))))
 
 
 
@@ -234,12 +181,11 @@
                 :session '(:id "prompted" :message-count 1
                            :messages ((:role user :content "prompt")))
                 :session-id "prompted")))
-    (cl-letf (((symbol-function 'e-chat-overview--session-candidates)
-               (lambda () (list empty assistant-only prompted))))
-      (should (equal (mapcar (lambda (candidate)
-                               (plist-get candidate :session-id))
-                             (e-chat-overview-active-session-candidates))
-                     '("prompted"))))))
+    (should (equal (mapcar (lambda (candidate)
+                             (plist-get candidate :session-id))
+                           (e-chat-overview-active-session-candidates
+                            (list empty assistant-only prompted)))
+                   '("prompted")))))
 
 
 
@@ -273,10 +219,9 @@
 
 (ert-deftest e-chat-test-workspace-unread-indicator-follows-chat-affinity ()
   "Workspace unread markers follow chat buffer workspace affinity."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (store (e-harness-sessions harness))
          (workspace (make-e-workspace-token
                      :backend 'single
                      :id 'target
@@ -287,21 +232,22 @@
                            :id 'other
                            :name "other"
                            :frame (selected-frame)))
-         (buffer (generate-new-buffer " *e-chat-workspace-unread-test*")))
+         buffer)
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "workspace-unread"
                             :metadata '(:name "Workspace unread"))
-          (e-session-append-message
-           store "workspace-unread"
-           '(:id "msg-1" :role user :content "prompt"))
-          (e-session-append-message
-           store "workspace-unread"
-           '(:id "msg-2" :role assistant :content "response"))
+          (e-chat-test--await
+           (e-session-append-message
+            store "workspace-unread"
+            '(:id "msg-1" :role user :content "prompt")))
+          (e-chat-test--await
+           (e-session-append-message
+            store "workspace-unread"
+            '(:id "msg-2" :role assistant :content "response")))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "workspace-unread"))
           (with-current-buffer buffer
-            (e-chat-mode)
-            (setq-local e-chat-harness harness)
-            (setq-local e-chat-session-id "workspace-unread")
             (e-buffer-set-workspace buffer workspace))
           ;; Build after the surface has joined its workspace.  The first
           ;; public query performs the same lazy rebuild in normal use, while
@@ -324,7 +270,8 @@
                         'e-chat-workspace-unread-face)))
           (e-chat-overview-mark-session-read
            harness
-           (e-chat-overview--session-for-id harness "workspace-unread"))
+           (list :id "workspace-unread"
+                 :latest-assistant-marker "msg-2"))
           (should-not (e-chat-workspace-unread-p workspace))
           (should-not (e-chat-workspace-unread-indicator workspace)))
       (when (buffer-live-p buffer)
@@ -335,18 +282,6 @@
 
 
 
-(ert-deftest e-chat-test-session-id-lookup-does-not-list-session-catalog ()
-  "Unread lookup resolves one session without listing and sorting its catalog."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create :sessions store :enabled-layer-ids nil)))
-    (dotimes (index 512)
-      (e-session-create store :id (format "catalog-%03d" index)))
-    (cl-letf (((symbol-function 'e-harness-session-list)
-               (lambda (&rest _args) (error "catalog scan"))))
-      (should (equal (plist-get
-                      (e-chat-overview--session-for-id harness "catalog-511")
-                      :id)
-                     "catalog-511")))))
 (provide 'e-chat-overview-test)
 
 ;;; e-chat-overview-test.el ends here

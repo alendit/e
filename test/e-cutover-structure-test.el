@@ -7,7 +7,6 @@
 
 (require 'cl-lib)
 (require 'ert)
-(require 'e-board-runtime)
 (require 'e-harness)
 (require 'subr-x)
 
@@ -46,10 +45,6 @@
     "e-harness-state"
     "e-harness-active-turns")
   "Private live-session symbols forbidden in public shells and producers.")
-
-(defconst e-cutover-structure-test--board-runtime-owner-prefixes
-  '("e-harness-turn-state" "e-harness-activity")
-  "Owner APIs that the board adapter must reach only through its turn port.")
 
 (defun e-cutover-structure-test--manifest-entries (policy)
   "Return retirement manifest entries having POLICY."
@@ -116,17 +111,6 @@
   (should-not
    (e-cutover-structure-test--symbol-hits
     '("lisp/layers/chat/e-chat-session.el"))))
-
-(ert-deftest e-cutover-structure-test-board-runtime-uses-attached-turn-port ()
-  "Board routing does not reach turn-state or activity owner APIs directly."
-  (let ((source (e-cutover-structure-test--source
-                 "lisp/core/e-board-runtime.el")))
-    (dolist (prefix e-cutover-structure-test--board-runtime-owner-prefixes)
-      (should-not
-       (string-match-p
-        (concat "\\_<" (regexp-quote prefix)
-                "\\(?:-[[:alnum:]_]+\\)*\\_>")
-        source)))))
 
 (provide 'e-cutover-structure-test)
 

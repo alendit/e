@@ -53,6 +53,15 @@
     (should (equal (plist-get (plist-get decoded :message) :id) "message-1"))
     (should (plist-member decoded :message))))
 
+(ert-deftest e-session-codec-test-current-runtime-rejects-retired-board-records ()
+  "Ordinary session encoding and decoding reject every retired Board family."
+  (dolist (type e-session-codec-retired-board-record-types)
+    (let ((record (list :type type :session-id "retired" :id "record")))
+      (should-error (e-session-codec-record-for-json record)
+                    :type 'e-session-codec-error)
+      (should-error (e-session-codec-decode-record record)
+                    :type 'e-session-codec-error))))
+
 (provide 'e-session-codec-test)
 
 ;;; e-session-codec-test.el ends here

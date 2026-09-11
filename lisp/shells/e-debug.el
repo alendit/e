@@ -23,6 +23,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
+(require 'e-work)
 
 (declare-function posframe-hide "ext:posframe")
 (declare-function posframe-show "ext:posframe")
@@ -79,6 +80,9 @@ A fractional value is interpreted relative to the selected frame height."
 
 (defvar e-debug--notification-session-id nil
   "Session id currently subscribed for debug completion notifications.")
+
+(defvar e-debug--notification-binding-work nil
+  "Request-scoped binding work for the pending debug notification observer.")
 
 (defvar e-debug--last-focused-buffer nil
   "Most recent non-debug buffer selected before using the debug shell.")
@@ -243,12 +247,6 @@ A fractional value is interpreted relative to the selected frame height."
       (list :harness harness
             :source 'default-chat)))))
 
-(defun e-debug--recent-failure-target (harness)
-  "Return the newest recent failure target from HARNESS."
-  (when harness
-    (car (ignore-errors
-           (e-context-inspection-recent-failures :harness harness :limit 1)))))
-
 (defun e-debug--source-reference-location (reference)
   "Return a compact location string for SOURCE REFERENCE."
   (when reference
@@ -260,11 +258,10 @@ A fractional value is interpreted relative to the selected frame height."
 (cl-defun e-debug--capture
     (&key question inspection-harness inspection-session-id source-reference)
   "Capture prompt and references for `e-debug-here'."
+  (ignore inspection-harness)
   (let* ((question (e-debug--normalize-question question))
          (cursor-location (or (e-debug--source-reference-location source-reference)
                               (e-debug--cursor-location)))
-         (recent-failure (unless inspection-session-id
-                           (e-debug--recent-failure-target inspection-harness)))
          (prompt-text (if cursor-location
                           (format "Cursor: %s\n\n%s" cursor-location question)
                         question)))
@@ -272,10 +269,7 @@ A fractional value is interpreted relative to the selected frame height."
           :references nil
           :metadata (list :source 'e-debug-here
                           :inspection-session-id
-                          (or inspection-session-id
-                              (plist-get recent-failure :session-id))
-                          :inspection-turn-id
-                          (plist-get recent-failure :turn-id)))))
+                          inspection-session-id))))
 
 (defun e-debug--ensure-session (&optional harness)
   "Return the process-local standing debug session id.
@@ -290,7 +284,10 @@ read durable sessions merely to rediscover an earlier debug identity."
               e-debug--session-project-root
               (plist-get metadata :project-root))
         (e-chat-service-create-session-start
-         :harness harness :id session-id :metadata metadata)))
+         :harness harness :id session-id :metadata metadata)
+        ;; Start owner admission without awaiting worker open or commit.  The
+        ;; public buffer open below shares this request-scoped binding work.
+        (e-chat-service-binding-start harness session-id nil t)))
     (prog1 e-debug--session-id
       (when e-debug--session-id
         (e-debug--ensure-session-project-root harness e-debug--session-id)))))
@@ -523,19 +520,50 @@ reload so package-specific workspace behavior can live in user config."
     (when-let ((status (e-debug--notification-status event)))
       (message "*e-debug*: %s" status))))
 
+(defun e-debug--notification-binding-settled
+    (harness session-id binding-work settled)
+  "Install HARNESS SESSION-ID's observer after BINDING-WORK SETTLED."
+  (when (and (eq harness e-debug--notification-harness)
+             (equal session-id e-debug--notification-session-id)
+             (eq binding-work e-debug--notification-binding-work))
+    (setq e-debug--notification-binding-work nil)
+    (when (eq (plist-get (e-work-status settled) :state) 'finished)
+      (setq e-debug--notification-subscription
+            (e-chat-service-subscribe
+             harness session-id #'e-debug--handle-notification-event)))))
+
 (defun e-debug--ensure-notification-subscription (harness session-id)
-  "Subscribe to terminal events for HARNESS SESSION-ID debug notifications."
+  "Arrange terminal-event notification subscription for HARNESS SESSION-ID.
+
+The subscription is installed only after the SQL binding is ready.  This
+function never waits for worker open, reads, or owner-admission commit."
   (unless (and (eq e-debug--notification-harness harness)
                (equal e-debug--notification-session-id session-id)
-               e-debug--notification-subscription)
-    (when (and e-debug--notification-harness
-               e-debug--notification-subscription)
+               (or (and e-debug--notification-subscription
+                        (e-chat-service-subscription-active-p
+                         e-debug--notification-subscription))
+                   (and (e-work-handle-p e-debug--notification-binding-work)
+                        (not (memq
+                              (plist-get
+                               (e-work-status
+                                e-debug--notification-binding-work)
+                               :state)
+                              '(finished failed cancelled))))))
+    (when e-debug--notification-subscription
       (e-chat-service-unsubscribe e-debug--notification-subscription))
-    (setq e-debug--notification-harness harness)
-    (setq e-debug--notification-session-id session-id)
-    (setq e-debug--notification-subscription
-          (e-chat-service-subscribe
-           harness session-id #'e-debug--handle-notification-event))))
+    (setq e-debug--notification-harness harness
+          e-debug--notification-session-id session-id
+          e-debug--notification-subscription nil)
+    (let ((binding-work
+           (e-chat-service-binding-start harness session-id nil t)))
+      (setq e-debug--notification-binding-work binding-work)
+      (e-work-on-settle
+       binding-work
+       (lambda (settled)
+         (e-debug--notification-binding-settled
+          harness session-id binding-work settled)))))
+  (or e-debug--notification-subscription
+      e-debug--notification-binding-work))
 
 ;;;###autoload
 (defun e-debug ()

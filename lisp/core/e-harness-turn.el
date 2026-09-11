@@ -1598,14 +1598,33 @@ provider or loop failure."
 DISPLAY is a display disposition symbol (e.g. `hidden'); nil restores the
 default visible state.  Persists the change through the session store and emits
 a `message-updated' turn event so a live shell can drop or restore the block.
-Returns the updated message, or nil when no such message exists."
-  (when-let ((message (e-session-set-message-display
-                       (e-harness-sessions harness)
-                       session-id message-id display)))
-    (e-harness-activity-emit-turn-event
-     harness session-id (plist-get message :turn-id)
-     'message-updated (list :message message))
-    message))
+For asynchronous SQLite, return the admitted work and emit only after its
+commit acknowledgement.  For a local test store, return the updated message."
+  (let ((result (e-session-set-message-display
+                 (e-harness-sessions harness)
+                 session-id message-id display)))
+    (if (not (e-work-handle-p result))
+        (when result
+          (e-harness-activity-emit-turn-event
+           harness session-id (plist-get result :turn-id)
+           'message-updated (list :message result))
+          result)
+      (let ((entry (gethash session-id (e-harness-active-turns harness))))
+        (when entry
+          (push result (plist-get entry :persistence-works)))
+        (e-work-on-settle
+         result
+         (lambda (work)
+           (when entry
+             (plist-put entry :persistence-works
+                        (delq work (plist-get entry :persistence-works))))
+           (let ((status (e-work-status work)))
+             (when (eq (plist-get status :state) 'finished)
+               (e-harness-activity-emit-turn-event
+                harness session-id nil 'message-updated
+                (list :message
+                      (list :id message-id :display display))))))))
+      result)))
 
 (defun e-harness-turn--append-user-message
     (harness session-id turn-id prompt &optional metadata)

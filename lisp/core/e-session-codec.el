@@ -59,9 +59,13 @@ empty plist as nil and never mutates its input."
     (mapcar #'e-session-codec-index-value-from-json value))
    (t value)))
 
-(defconst e-session-codec--routing-attributes-tag
-  "e-routing-attributes-v1"
-  "Tag used to preserve Lisp selector attribute types across JSON.")
+(defconst e-session-codec-retired-board-record-types
+  '("board-message" "board-messages-cleared" "board-session-state")
+  "Board record families rejected by the ordinary session codec.
+
+Legacy decoding for offline migration is owned exclusively by
+`e-runtime-migration'; these record families must never become reachable
+through the current session runtime.")
 
 (defun e-session-codec--keyword-plist-p (value)
   "Return non-nil when VALUE is a proper keyword plist."
@@ -125,215 +129,6 @@ empty plist as nil and never mutates its input."
                (push current results))))))))
     (car results)))
 
-(defun e-session-codec--wire-attribute-value (value)
-  "Return reversible JSON-shaped VALUE for selector attributes."
-  ;; Keep this traversal iterative.  Routing attributes are user-controlled
-  ;; durable data, and a deeply nested but valid selector must not exhaust the
-  ;; evaluator merely while crossing the JSON boundary.
-  (let ((pending (list (list :value value)))
-        (results nil)
-        (visiting (make-hash-table :test 'eq)))
-    (while pending
-      (let ((task (pop pending)))
-        (pcase (car task)
-          (:leave
-           (remhash (cadr task) visiting))
-          (:plist-pair
-           (push (vector (cadr task) (pop results)) results))
-          (:assemble
-           (let ((kind (cadr task))
-                 (count (caddr task))
-                 items)
-             (dotimes (_ count)
-               (push (pop results) items))
-             (setq items (vconcat items))
-             (push (pcase kind
-                     ('vector (vector "vector" items))
-                     ('list (vector "list" items))
-                     ('plist (vector "plist" items))
-                     ('cons (vector "cons" items)))
-                   results)))
-          (:value
-           (let ((current (cadr task)))
-             (cond
-              ((or (null current) (eq current t) (numberp current))
-               (push current results))
-              ((stringp current)
-               (push (copy-sequence current) results))
-              ((symbolp current)
-               (push (vector "symbol" (symbol-name current)) results))
-              ((or (vectorp current) (consp current))
-               (when (gethash current visiting)
-                 (signal 'e-session-codec-error
-                         (list "Cyclic selector attribute value" current)))
-               (puthash current t visiting)
-               (push (list :leave current) pending)
-               (cond
-                ((vectorp current)
-                 (push (list :assemble 'vector (length current)) pending)
-                 (let ((index (1- (length current))))
-                   (while (>= index 0)
-                     (push (list :value (aref current index)) pending)
-                     (setq index (1- index)))))
-                ((e-session-codec--keyword-plist-p current)
-                 (let ((tail current)
-                       pairs)
-                   (while tail
-                     (push (cons (pop tail) (pop tail)) pairs))
-                   (push (list :assemble 'plist (length pairs)) pending)
-                   (dolist (pair pairs)
-                     (push (list :plist-pair (car pair)) pending)
-                     (push (list :value (cdr pair)) pending))))
-                ((proper-list-p current)
-                 (push (list :assemble 'list (length current)) pending)
-                 (dolist (item (reverse current))
-                   (push (list :value item) pending)))
-                (t
-                 (push (list :assemble 'cons 2) pending)
-                 (push (list :value (cdr current)) pending)
-                 (push (list :value (car current)) pending))))
-              (t
-               (signal 'e-session-codec-error
-                       (list "Unsupported selector attribute value" current)))))))))
-    (car results)))
-
-(defun e-session-codec--encoded-attribute-p (value)
-  "Return non-nil when VALUE has the durable attribute tag."
-  (let ((items (cond ((vectorp value) (append value nil))
-                     ((proper-list-p value) value))))
-    (and (= (length items) 2)
-         (equal (car items) e-session-codec--routing-attributes-tag))))
-
-(defun e-session-codec--unwire-attribute-value (value)
-  "Decode one reversible selector attribute VALUE."
-  (cond
-   ((or (null value) (eq value t) (numberp value) (stringp value))
-    (e-session-codec--copy-value value))
-   ((and (proper-list-p value) (= (length value) 2)
-         (stringp (car value)))
-    (pcase (car value)
-      ("symbol"
-       (unless (stringp (cadr value))
-         (signal 'e-session-codec-error (list "Invalid selector symbol" value)))
-       (intern (cadr value)))
-      ("vector"
-       (vconcat (mapcar #'e-session-codec--unwire-attribute-value
-                        (append (cadr value) nil))))
-      ("list"
-       (mapcar #'e-session-codec--unwire-attribute-value
-               (append (cadr value) nil)))
-      ("cons"
-       (let ((items (append (cadr value) nil)))
-         (unless (= (length items) 2)
-           (signal 'e-session-codec-error (list "Invalid selector cons" value)))
-         (cons (e-session-codec--unwire-attribute-value (car items))
-               (e-session-codec--unwire-attribute-value (cadr items)))))
-      ("plist"
-       (let (result)
-         (dolist (pair (append (cadr value) nil))
-           (let ((items (append pair nil)))
-             ;; JSON arrays carry plist keys as strings.  The original
-             ;; selector codec intentionally restored those keys to keyword
-             ;; symbols before exposing the policy to the domain owner.
-             (when (and (= (length items) 2) (stringp (car items)))
-               (setcar items
-                       (intern (concat ":"
-                                       (string-remove-prefix ":"
-                                                             (car items))))))
-             (unless (and (= (length items) 2) (keywordp (car items)))
-               (signal 'e-session-codec-error
-                       (list "Invalid selector plist pair" pair)))
-             (setq result
-                   (plist-put result (car items)
-                              (e-session-codec--unwire-attribute-value
-                               (cadr items))))))
-         result))
-      (_
-       (signal 'e-session-codec-error
-               (list "Unknown selector attribute tag" (car value))))))
-   ((vectorp value)
-    (vconcat (mapcar #'e-session-codec--unwire-attribute-value value)))
-   ((consp value)
-    (cons (e-session-codec--unwire-attribute-value (car value))
-          (e-session-codec--unwire-attribute-value (cdr value))))
-   (t
-    (signal 'e-session-codec-error
-            (list "Unsupported encoded selector value" value)))))
-
-(defun e-session-codec--board-routing-selector-for-json (selector)
-  "Return SELECTOR with its attribute values reversibly encoded."
-  (let ((result (e-session-codec--copy-value selector)))
-    (when (and (e-session-codec--keyword-plist-p result)
-               (plist-member result :attributes)
-               (not (e-session-codec--encoded-attribute-p
-                     (plist-get result :attributes))))
-      (plist-put result :attributes
-                 (vector e-session-codec--routing-attributes-tag
-                         (e-session-codec--wire-attribute-value
-                          (plist-get result :attributes)))))
-    result))
-
-(defun e-session-codec--board-routing-selector-from-json (selector)
-  "Return detached SELECTOR after decoding persisted attributes."
-  (if (e-session-codec--keyword-plist-p selector)
-      (let ((result (e-session-codec--copy-value selector)))
-        (when (and (plist-member result :attributes)
-                   (e-session-codec--encoded-attribute-p
-                    (plist-get result :attributes)))
-          (let ((items (append (plist-get result :attributes) nil)))
-            (plist-put result :attributes
-                       (e-session-codec--unwire-attribute-value
-                        (cadr items)))))
-        result)
-    selector))
-
-(defun e-session-codec-board-routing-policy-for-json (policy)
-  "Return POLICY suitable for JSON persistence."
-  (when policy
-    (let ((result (e-session-codec--copy-value policy)))
-      (dolist (key '(:pickup-selector :observer-selector))
-        (when (plist-member result key)
-          (plist-put result key
-                     (e-session-codec--board-routing-selector-for-json
-                      (plist-get result key)))))
-      result)))
-
-(defun e-session-codec--board-routing-policy-from-json (policy)
-  "Return detached POLICY after decoding persisted attributes."
-  (when policy
-    (if (e-session-codec--keyword-plist-p policy)
-        (let ((result (e-session-codec--copy-value policy)))
-          (dolist (key '(:pickup-selector :observer-selector))
-            (when (plist-member result key)
-              (plist-put result key
-                         (e-session-codec--board-routing-selector-from-json
-                          (plist-get result key)))))
-          result)
-      policy)))
-
-(defun e-session-codec-board-association-for-json (association)
-  "Return ASSOCIATION with routing attributes encoded for JSON."
-  (when association
-    (let ((result (e-session-codec--copy-value association)))
-      (when (plist-member result :routing-policy)
-        (plist-put result :routing-policy
-                   (e-session-codec-board-routing-policy-for-json
-                    (plist-get result :routing-policy))))
-      result)))
-
-(defun e-session-codec-board-association-from-json (association)
-  "Return detached ASSOCIATION after decoding persisted attributes."
-  (when association
-    (let ((association (e-session-codec-index-value-from-json association)))
-      (if (e-session-codec--keyword-plist-p association)
-          (let ((result (e-session-codec--copy-value association)))
-          (when (plist-member result :routing-policy)
-            (plist-put result :routing-policy
-                       (e-session-codec--board-routing-policy-from-json
-                        (plist-get result :routing-policy))))
-            result)
-        association))))
-
 (defun e-session-codec--context-value-for-json (value)
   "Return context VALUE with semantic sequences encoded as JSON arrays."
   (cond
@@ -361,7 +156,6 @@ empty plist as nil and never mutates its input."
 (defun e-session-codec--record-value-for-json (key value)
   "Encode RECORD VALUE at semantic KEY."
   (pcase key
-    (:board-state (e-session-codec-board-association-for-json value))
     ((or :context-record :promotion :erasure)
      (and value (e-session-codec--context-record-for-json value)))
     (_ (e-session-codec--copy-value value))))
@@ -370,6 +164,11 @@ empty plist as nil and never mutates its input."
   "Return detached semantic RECORD in the existing JSONL representation."
   (if (not (e-session-codec--keyword-plist-p record))
       record
+    (when (member (plist-get record :type)
+                  e-session-codec-retired-board-record-types)
+      (signal 'e-session-codec-error
+              (list "Retired Board record is unavailable in session runtime"
+                    (plist-get record :type))))
     ;; Copy the complete value before replacing nested fields.  The storage
     ;; queue may retain this record until a later timer/flush, while callers
     ;; are allowed to mutate the detached value returned by the facade.
@@ -384,7 +183,7 @@ empty plist as nil and never mutates its input."
       copy)))
 
 (defun e-session-codec-index-entry-for-json (entry)
-  "Return catalog ENTRY with board routing attributes encoded."
+  "Return detached catalog ENTRY in the existing JSON representation."
   (e-session-codec-record-for-json entry))
 
 (defun e-session-codec-record-for-entry (session-id entry &optional parent-id)
@@ -408,8 +207,6 @@ entry's own parent."
        (append (list :type "activity-event" :session-id session-id
                      :id id :parent-id parent-id
                      :turn-id (plist-get entry :turn-id)
-                     :board-activity-sequence
-                     (plist-get entry :board-activity-sequence)
                      :timestamp timestamp
                      :event-type (plist-get entry :event-type)
                      :payload (copy-tree (plist-get entry :payload)))
@@ -534,24 +331,6 @@ entry's own parent."
         (plist-put event :payload payload)))
     event))
 
-(defun e-session-codec--normalize-board-message (message)
-  "Return durable board MESSAGE normalized after JSON replay."
-  (let ((message (copy-sequence message)))
-    (dolist (field '(:kind :mode :activity-kind :routing-state
-                     :unrouted-reason :record-type :outcome :failure-policy))
-      (when-let ((value (plist-get message field)))
-        (when (stringp value)
-          (plist-put message field (intern value)))))
-    (when (plist-member message :tags)
-      (plist-put message :tags
-                 (mapcar (lambda (tag) (if (stringp tag) (intern tag) tag))
-                         (plist-get message :tags))))
-    (when-let ((attributes (plist-get message :attributes)))
-      (when-let ((status (plist-get attributes :status)))
-        (when (stringp status)
-          (plist-put attributes :status (intern status)))))
-    message))
-
 (defun e-session-codec--message-with-created-at (message timestamp)
   "Return normalized MESSAGE with TIMESTAMP when creation time is missing."
   (let ((normalized (e-session-codec--normalize-message message)))
@@ -635,7 +414,6 @@ entry's own parent."
 (defun e-session-codec--decode-record-value (key value)
   "Decode one physical RECORD VALUE at semantic KEY."
   (pcase key
-    (:board-state (e-session-codec-board-association-from-json value))
     ((or :context-record :promotion :erasure)
      (and value
           (e-session-codec--context-value-from-json value)))
@@ -666,6 +444,11 @@ reader accepts either list or vector sequences."
   "Return detached semantic RECORD decoded from its JSONL spelling."
   (unless (e-session-codec--keyword-plist-p record)
     (signal 'e-session-codec-error (list "Record is not a plist" record)))
+  (when (member (plist-get record :type)
+                e-session-codec-retired-board-record-types)
+    (signal 'e-session-codec-error
+            (list "Retired Board record is unavailable in session runtime"
+                  (plist-get record :type))))
   (let ((copy (e-session-codec--copy-value record))
         (tail record))
     (while tail
@@ -680,10 +463,6 @@ reader accepts either list or vector sequences."
                   (e-session-codec--message-with-created-at
                    (plist-get copy :message)
                    (plist-get copy :timestamp))))
-      ("board-message"
-       (plist-put copy :message
-                  (e-session-codec--normalize-board-message
-                   (plist-get copy :message))))
       ("activity-event"
        (let ((event (e-session-codec--normalize-activity-event
                      (list :id (plist-get copy :id)
@@ -692,7 +471,7 @@ reader accepts either list or vector sequences."
                            :event-type (plist-get copy :event-type)
                            :payload (plist-get copy :payload)
                            :created-at (plist-get copy :timestamp)))))
-         (dolist (key '(:checkpoint-retain :board-activity-sequence))
+         (dolist (key '(:checkpoint-retain))
            (when (plist-member copy key)
              (plist-put event key (plist-get copy key))))
          (plist-put copy :semantic-event event)))
@@ -718,12 +497,7 @@ reader accepts either list or vector sequences."
       ("session-info"
        (when (plist-member copy :turn-options)
          (plist-put copy :turn-options
-                    (copy-tree (plist-get copy :turn-options)))))
-      ("board-session-state"
-       (when (plist-member copy :board-state)
-         (plist-put copy :board-state
-                    (e-session-codec-board-association-from-json
-                     (plist-get copy :board-state))))))
+                    (copy-tree (plist-get copy :turn-options))))))
     copy))
 
 (defun e-session-codec-replay-record (record)

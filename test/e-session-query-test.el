@@ -66,29 +66,22 @@
          (nested-vector (vector nested-list))
          (metadata (list :name "name" :nested nested-vector))
          (options (vector (list :model "model")))
-         (policy (vector (list :mode "safe")))
-         (association (list :board-id "board" :principal "principal"
-                            :association-role "participant"
-                            :routing-policy policy))
          (session (list :id "detached" :metadata metadata :name "name"
                         :summary "summary" :created-at "created"
                         :updated-at "updated" :message-count 1
                         :last-message-at "message-time"
                         :latest-assistant-marker "assistant"
                         :current-branch "main" :turn-options options
-                        :current-head-id "head" :root-event-id "root"
-                        :board-session-state association))
+                        :current-head-id "head" :root-event-id "root"))
          (state (e-session-query-state-from-session session)))
     (plist-put nested-list :value "mutated-list")
     (aset nested-vector 0 (list :value "mutated-vector"))
     (aset options 0 (list :model "mutated-options"))
-    (aset policy 0 (list :mode "mutated-policy"))
     (should (equal (plist-get (plist-get state :metadata) :nested)
                    (vector (list :value "before"))))
     (should (equal (plist-get state :turn-options)
                    (vector (list :model "model"))))
-    (should (equal (aref (plist-get state :routing-policy) 0)
-                   (list :mode "safe")))))
+    (should-not (plist-get state :routing-policy))))
 
 (ert-deftest e-session-query-test-practical-value-bounds ()
   "Depth, total nodes, width, and total scalar bytes are bounded."
@@ -225,6 +218,16 @@
             (list :type "session")))
    :type 'e-session-query-record-error))
 
+(ert-deftest e-session-query-test-current-runtime-rejects-retired-board-records ()
+  "Current row derivation never interprets retired Board journal records."
+  (let ((state (e-session-query-test--state)))
+    (dolist (type '("board-message" "board-messages-cleared"
+                    "board-session-state"))
+      (should-error
+       (e-session-query-state-apply-record
+        state (e-session-query-test--record type "retired"))
+       :type 'e-session-query-record-error))))
+
 (ert-deftest e-session-query-test-replays-every-durable-family-semantically ()
   "Every supported journal family has an explicit bounded-row replay rule."
   (let* ((expected-families
@@ -232,8 +235,7 @@
             "process-report" "branch-summary" "compaction" "provider-anchor"
             "context-generation" "context-promotion" "context-frame"
             "context-frame-settlement" "context-erasure"
-            "context-curation-package" "messages-cleared" "board-message"
-            "board-messages-cleared" "board-session-state" "current-branch"
+            "context-curation-package" "messages-cleared" "current-branch"
             "session-info" "session-deleted"))
          (root
           (e-session-query-test--record-at
@@ -374,37 +376,6 @@
       (should (= (plist-get state :board-output-sequence) 5))
       (should (= (plist-get state :board-activity-sequence) 8))
       (should (equal (plist-get state :current-head-id) "clear"))
-      ;; Board journal records touch recency only, and association publishes
-      ;; the four named Board/session fields without changing watermarks.
-      (setq state
-            (e-session-query-state-apply-record
-             state
-             (e-session-query-test--record-at
-              "board-message" "board-message" "2026-09-06T00:00:17Z"
-              :message '(:id "board-message" :kind output))))
-      (should (equal (plist-get state :current-head-id) "clear"))
-      (setq state
-            (e-session-query-state-apply-record
-             state
-             (e-session-query-test--record-at
-              "board-messages-cleared" "board-clear"
-              "2026-09-06T00:00:18Z")))
-      (should (equal (plist-get state :current-head-id) "clear"))
-      (setq state
-            (e-session-query-state-apply-record
-             state
-             (e-session-query-test--record-at
-              "board-session-state" "board-state"
-              "2026-09-06T00:00:19Z"
-              :board-state '(:board-id "board" :principal "principal"
-                             :association-role "participant"
-                             :routing-policy (:mode "safe")))))
-      (should (equal (list (plist-get state :board-id)
-                           (plist-get state :principal)
-                           (plist-get state :association-role)
-                           (plist-get state :routing-policy))
-                     '("board" "principal" "participant" (:mode "safe"))))
-      (should (equal (plist-get state :current-head-id) "clear"))
       (setq state
             (e-session-query-state-apply-record
              state
@@ -498,7 +469,6 @@
            :name "Equivalent"
            :metadata '(:name "Equivalent" :model "initial")
            :turn-options '(:model "gpt") :current-branch "main"
-           :board-output-sequence 1 :board-activity-sequence 2
            :journal-position 17
            :created-at root-time :updated-at root-time))
          (records
@@ -513,16 +483,14 @@
             "message" "assistant-message" "2026-09-06T01:00:02Z"
             :parent-id "user-message"
             :message '(:id "assistant-message" :role assistant
-                       :content "Answer" :created-at "2026-09-06T01:00:02Z"
-                       :board-output-sequence 4))
+                       :content "Answer" :created-at "2026-09-06T01:00:02Z"))
            (e-session-query-test--record-at
             "activity-event" "activity" "2026-09-06T01:00:03Z"
             :parent-id "assistant-message" :turn-id "turn"
             :event-type 'tool-finished :payload '(:tool-call-id "call")
             :semantic-event
             '(:id "activity" :turn-id "turn" :event-type tool-finished
-              :payload (:tool-call-id "call"))
-            :board-activity-sequence 6)
+              :payload (:tool-call-id "call")))
            (e-session-query-test--record-at
             "message-display" "user-message" "2026-09-06T01:00:04Z"
             :display "hidden")
@@ -610,16 +578,6 @@
            (list
             (e-session-query-test--record-at
              "messages-cleared" "clear" "2026-09-06T01:00:16Z")
-            (e-session-query-test--record-at
-             "board-message" "board-message" "2026-09-06T01:00:17Z"
-             :message '(:id "board-message" :kind output :content "Board"))
-            (e-session-query-test--record-at
-             "board-messages-cleared" "board-clear"
-             "2026-09-06T01:00:18Z")
-            (e-session-query-test--record-at
-             "board-session-state" "board-state" "2026-09-06T01:00:19Z"
-             :board-state '(:board-id "board" :principal "principal"
-                            :association-role "participant"))
             (e-session-query-test--record-at
              "current-branch" "branch" "2026-09-06T01:00:20Z"
              :branch-id "feature")

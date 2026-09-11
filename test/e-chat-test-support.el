@@ -16,7 +16,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-bayesian-reasoning)
-(require 'e-board-storage-sqlite)
+(require 'e-board-sqlite-service)
 (require 'e-chat)
 (require 'e-chat-session)
 (require 'e-context-inspection)
@@ -62,11 +62,32 @@ one authoritative runtime database, notably parent and subagent harnesses.")
 (defvar e-chat-test-support--opened-sessions (make-hash-table :test 'eq)
   "Session ids first created through each disposable SQLite harness.")
 
+(defvar e-chat-test-support--sql-fixture-active-p nil
+  "Non-nil while an SQL-backed public chat test is executing.
+
+The support file is loaded into shared broad-suite processes.  Keeping this
+state dynamically scoped prevents its constructor advice from silently
+changing unrelated session, harness, resource, and transport tests that run
+later in the same Emacs.")
+
+(defun e-chat-test-support--sql-test-p (test)
+  "Return non-nil when ERT TEST exercises a public SQL chat surface."
+  (let ((name (symbol-name (ert-test-name test))))
+    (string-match-p
+     (concat "\\`\\(?:e-chat-\\|e-modernchat-\\|e-canvas-\\|"
+             "e-org-canvas-\\|e-provider-continuation-\\|"
+             "e-debug-test-\\|"
+             "e-subagent-runner-test-\\|"
+             "e-ui-work-integration-test-chat-\\|"
+             "e-runtime-store-recovery-graphical-\\)")
+     name)))
+
 (defun e-chat-test-support--sqlite-harness (operation &rest arguments)
   "Call harness constructor OPERATION with a disposable SQLite store.
 Only presentation tests that omit an explicit store are adapted.  The public
 chat API itself continues to reject non-SQL stores."
-  (if (plist-member arguments :sessions)
+  (if (or (not e-chat-test-support--sql-fixture-active-p)
+          (plist-member arguments :sessions))
       (apply operation arguments)
     (let* ((fixture
             (or (and e-chat-test-support-share-sqlite-store
@@ -89,7 +110,9 @@ chat API itself continues to reject non-SQL stores."
 
 (defun e-chat-test-support--open-sql-session (operation &rest arguments)
   "Call public chat OPERATION, creating a disposable session on first open."
-  (let* ((harness (plist-get arguments :harness))
+  (if (not e-chat-test-support--sql-fixture-active-p)
+      (apply operation arguments)
+    (let* ((harness (plist-get arguments :harness))
          (session-id (plist-get arguments :session-id))
          (sessions (and harness
                         (gethash harness
@@ -123,7 +146,7 @@ chat API itself continues to reject non-SQL stores."
       (error
        (when (or explicit-new-p create-p)
          (remhash session-id sessions))
-       (signal (car error) (cdr error))))))
+       (signal (car error) (cdr error)))))))
 
 (defun e-chat-test-support--close-sqlite-fixtures ()
   "Release every disposable public-chat SQLite fixture."
@@ -171,8 +194,12 @@ chat API itself continues to reject non-SQL stores."
 
 (defun e-chat-test-support--run-test (operation &rest arguments)
   "Call ERT OPERATION with ARGUMENTS and close SQL presentation fixtures."
-  (unwind-protect (apply operation arguments)
-    (e-chat-test-support--close-sqlite-fixtures)))
+  (let ((e-chat-test-support--sql-fixture-active-p
+         (e-chat-test-support--sql-test-p (car arguments))))
+    (if e-chat-test-support--sql-fixture-active-p
+        (unwind-protect (apply operation arguments)
+          (e-chat-test-support--close-sqlite-fixtures))
+      (apply operation arguments))))
 
 (advice-add 'e-harness-create :around #'e-chat-test-support--sqlite-harness)
 (advice-add 'e-chat-open :around #'e-chat-test-support--open-sql-session)
@@ -213,35 +240,60 @@ tests, matching how the buffer behaves when shown to a user."
 
 
 (defun e-chat-test--create-session (store &rest arguments)
-  "Create one board-native test session in STORE from ARGUMENTS."
-  (let* ((created (apply #'e-session-create store arguments))
-         ;; Persistent v6 creation returns request-scoped work.  This helper is
-         ;; an explicit test boundary, so observe that work before seeding the
-         ;; related Board fixture; production callers remain enqueue-return.
-         (session
-          (if (e-work-handle-p created)
-              (e-work-with-batch-await
-                (e-work-await-batch created :timeout 5.0))
-            created))
-         (session-id (plist-get session :id))
+  "Create one test session in STORE from ID and METADATA ARGUMENTS.
+SQLite fixtures use the production atomic owner admission.  Local-store tests
+create an ordinary detached session and do not synthesize a second Board."
+  (let* ((session-id (or (plist-get arguments :id)
+                         (e-session-generate-id)))
+         (metadata (plist-get arguments :metadata))
          (principal (format "chat:%s" session-id))
          (board-id (format "test-board:%s" session-id)))
-    ;; Current durable sessions and Boards have independent authoritative
-    ;; owners.  A board-native fixture must therefore seed both roots rather
-    ;; than relying on the retired session-journal Board proxy.
-    (when (e-session-storage-sqlite-p store)
-      (let ((storage
-             (e-board-storage-sqlite-create
-              (e-session-storage-runtime-store store))))
-        (unless (e-board-storage-board storage board-id)
-          (e-board-storage-create-board storage board-id principal))))
-    (let ((board-state
-           (e-session-declare-board-state
-            store session-id principal board-id)))
-      (when (e-work-handle-p board-state)
-        (e-work-with-batch-await
-          (e-work-await-batch board-state :timeout 5.0))))
-    session))
+    (prog1
+        (if (e-session-storage-sqlite-p store)
+            (let* ((service
+                (e-board-sqlite-service-create
+                 (e-session-storage-runtime-store store)))
+               (participant-id (format "test-owner:%s" session-id))
+               (policy (list :participant-id participant-id
+                             :pickup-selector '(:tags (main))
+                             :observer-selector '(:tags (main))
+                             :default-tags '(main) :default-to nil))
+               (session
+          (e-board-sqlite-service-session-admission
+                 :id session-id :metadata metadata
+                 :principal principal :board-id board-id
+                 :association-role 'owner :routing-policy policy))
+               (records (plist-get session :admission-records))
+               (query-delta (plist-get session :query-delta))
+               (participant
+                (list :id participant-id :author "e-chat-test"
+                      :principal principal :controller principal
+                      :role 'owner :state 'active
+                      :subscription-id (concat "sub_" participant-id)
+                      :publication-pending nil))
+               (work
+                (e-board-sqlite-service-admit-session-owner-start
+                 service session-id board-id principal records query-delta
+                 participant)))
+              (e-work-with-batch-await
+                (e-work-await-batch work :timeout 5.0))
+              session)
+          (let ((created
+                 (e-session-create store :id session-id :metadata metadata)))
+            (if (e-work-handle-p created)
+                (e-work-with-batch-await
+                  (e-work-await-batch created :timeout 5.0))
+              created)))
+      ;; The e-chat-open advice only synthesizes sessions not admitted by the
+      ;; fixture itself.  Record explicit SQL admission without reconstructing
+      ;; any session state.
+      (maphash
+       (lambda (harness _tracked)
+         (when (eq (e-harness-sessions harness) store)
+           (puthash session-id t
+                    (gethash harness
+                             e-chat-test-support--opened-sessions))))
+       e-chat-test-support--sqlite-harnesses))))
 
 
 
@@ -264,7 +316,25 @@ tests, matching how the buffer behaves when shown to a user."
       (accept-process-output nil 0.01))
     value))
 
+(defun e-chat-test--finished-work (result)
+  "Return a request-scoped work handle already settled with RESULT."
+  (let ((work
+         (e-work-prepare
+          (e-work-spec-create
+           :id "e-chat-test-finished-work" :execution 'cooperative
+           :interactive-policy 'async :owner 'e-chat-test
+           :runner (lambda (&rest _arguments) :deferred))
+          nil)))
+    (e-work-start-prepared work :arguments nil)
+    (e-work-finish work result)
+    work))
 
+(defun e-chat-test--await (value)
+  "Observe asynchronous VALUE at this explicit test boundary."
+  (if (e-work-handle-p value)
+      (e-work-with-batch-await
+        (e-work-await-batch value :timeout 5.0))
+    value))
 
 (defun e-chat-test--dispatch-observed-event (event)
   "Deliver board-observed EVENT through the current chat subscription."
@@ -380,8 +450,17 @@ semantic block projection and its displayed text instead of that overlay."
 
 (defun e-chat-test--focus-block-containing (text)
   "Enter response navigation at rendered block containing TEXT."
-  (goto-char (point-min))
-  (search-forward text)
+  (let (position)
+    (goto-char (point-min))
+    ;; The same prompt can appear in the bounded title projection.  Select the
+    ;; occurrence owned by a semantic transcript block, not matching chrome.
+    (while (and (not position) (search-forward text nil t))
+      (let ((candidate (match-beginning 0)))
+        (when (e-chat-transcript-block-at-point candidate)
+          (setq position candidate))))
+    (unless position
+      (ert-fail (format "No transcript block contains %S" text)))
+    (goto-char position))
   (call-interactively #'e-chat-enter-response-navigation)
   (e-chat-test--focused-block))
 

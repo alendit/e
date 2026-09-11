@@ -2,8 +2,7 @@
 
 (require 'ert)
 (require 'json)
-(require 'e-board)
-(require 'e-board-orchestration-engine)
+(require 'e-board-orchestration)
 
 (defun e-board-orchestration-test--fact (type key payload)
   (list :version 1 :type type :idempotency-key key :payload payload))
@@ -33,47 +32,29 @@
      'terminal-report "many" (list :run-id "run-1" :task-key "task" :attempt 0
                                    :status 'done :outputs (make-list 33 '(:kind file)))))))
 
-(ert-deftest e-board-orchestration-test-publication-is-idempotent ()
-  "The board source key makes retrying one durable fact a no-op."
-  (let ((e-board--registry (make-hash-table :test 'equal))
-        (board (e-board-create :id "orchestration-test")))
-    (let ((fact (e-board-orchestration-test--manifest)))
-      (should (eq (e-board-publication-status
-                   (e-board-orchestration-publish-fact board fact)) 'posted))
-      (should (eq (e-board-publication-status
-                   (e-board-orchestration-publish-fact board fact)) 'duplicate))
-      (should (= (length (e-board-messages board)) 1)))))
-
 (ert-deftest e-board-orchestration-test-wire-roundtrip-preserves-lisp-shapes ()
   "JSON replay preserves enums, task arrays, and opaque output values."
-  (let* ((e-board--registry (make-hash-table :test 'equal))
-         (source (e-board-create :id "wire-source"))
-         (restored (e-board-create :id "wire-restored"))
-         (fact
+  (let* ((fact
           (e-board-orchestration-test--fact
            'terminal-report "report-1"
            '(:run-id "run-1" :task-key "task" :attempt 0 :status done
              :summary "done"
              :outputs ((:kind artifact :uri "file" :value (:state ready))))))
-         (expected (e-board-orchestration-validate-fact fact)))
-    (e-board-orchestration-publish-fact source fact)
-    (let* ((attributes (e-board-message-attributes (car (e-board-messages source))))
+         (expected (e-board-orchestration-validate-fact fact))
+         (fields (e-board-orchestration-fact-record-fields fact)))
+    (let* ((attributes (plist-get fields :attributes))
            (replayed
             (json-parse-string (json-encode attributes)
                                :object-type 'plist :array-type 'list
                                :null-object nil :false-object :json-false)))
-      (e-board-post-fact restored :tags '(orchestration) :attributes replayed
-                         :source-fact-key '("wire" "report-1" 0))
-      (should (equal (e-board-orchestration-fact-from-message
-                      (car (e-board-messages restored)))
+      (should (equal (e-board-orchestration-fact-from-record
+                      (list :record-kind 'fact :tags '(orchestration)
+                            :attributes replayed))
                      expected)))))
 
 (ert-deftest e-board-orchestration-test-manifest-descriptor-survives-wire-replay ()
   "Application recovery inputs remain opaque and durable across JSON replay."
-  (let* ((e-board--registry (make-hash-table :test 'equal))
-         (source (e-board-create :id "descriptor-source"))
-         (restored (e-board-create :id "descriptor-restored"))
-         (descriptor '(:date "2026-09-01" :mode populate
+  (let* ((descriptor '(:date "2026-09-01" :mode populate
                        :path "daily/2026-09-01.org"
                        :window (:started-at "2026-09-01T09:39:10Z")))
          (fact (e-board-orchestration-test--fact
@@ -81,20 +62,21 @@
                 (list :run-id "run-1"
                       :tasks '((:task-key "task" :required t :accepted-attempt 0))
                       :deadline '(:kind none)
-                      :descriptor descriptor))))
-    (e-board-orchestration-publish-fact source fact)
-    (let* ((attributes (e-board-message-attributes (car (e-board-messages source))))
+                      :descriptor descriptor)))
+         (fields (e-board-orchestration-fact-record-fields fact)))
+    (let* ((attributes (plist-get fields :attributes))
            (replayed
             (json-parse-string (json-encode attributes)
                                :object-type 'plist :array-type 'list
                                :null-object nil :false-object :json-false)))
-      (e-board-post-fact restored :tags '(orchestration) :attributes replayed
-                         :source-fact-key '("wire" "manifest-descriptor" 0))
       (should
        (equal
         (plist-get
-         (plist-get (e-board-orchestration-run-projection restored "run-1")
-                    :manifest)
+         (plist-get
+          (e-board-orchestration-reduce
+           (list (list :record-kind 'fact :tags '(orchestration)
+                       :attributes replayed)))
+          :manifest)
          :descriptor)
         descriptor)))))
 
@@ -120,40 +102,17 @@
          (payload (plist-get (e-board-orchestration-validate-fact fact) :payload)))
     (should-not (plist-member payload :date))))
 
-(ert-deftest e-board-orchestration-test-legacy-json-facts-replay ()
-  "Pre-wire duplicate-key JSON objects restore into a run projection."
-  (let ((e-board--registry (make-hash-table :test 'equal))
-        (board (e-board-create :id "legacy-wire")))
-    (e-board-post-fact
-     board :tags '(orchestration)
-     :source-fact-key '("legacy" "manifest-1" 0)
-     :attributes
-     '(:orchestration-version 1 :orchestration-type "manifest"
+(ert-deftest e-board-orchestration-test-live-codec-rejects-pre-wire-facts ()
+  "Ordinary Board reads do not retain the stopped-v5 compatibility decoder."
+  (should-error
+   (e-board-orchestration-fact-from-record
+    '(:record-kind fact :tags (orchestration)
+      :attributes
+      (:orchestration-version 1 :orchestration-type "manifest"
        :orchestration-idempotency-key "manifest-1"
        :orchestration-payload
-       (:run-id "run-1"
-        :tasks (:task-key ("required" "required" t "accepted-attempt" 0)
-                :task-key ("optional" "required" nil "accepted-attempt" 0))
-        :deadline (:kind "none"))))
-    (e-board-post-fact
-     board :tags '(orchestration)
-     :source-fact-key '("legacy" "report-1" 0)
-     :attributes
-     '(:orchestration-version 1 :orchestration-type "terminal-report"
-       :orchestration-idempotency-key "report-1"
-       :orchestration-payload
-       (:run-id "run-1" :task-key "required" :attempt 0 :status "done"
-        :summary "done"
-        :outputs (:kind ("artifact" "uri" "file" "outputs"
-                         (:kind ("artifact" "uri" "nested")))))))
-    (let* ((projection
-            (e-board-orchestration-run-projection board "run-1"))
-           (report (car (plist-get projection :reports))))
-      (should (eq (plist-get projection :terminal-status) 'done))
-      (should (= (length (plist-get projection :tasks)) 2))
-      (should (equal (plist-get report :outputs)
-                     '((:kind artifact :uri "file"
-                        :outputs ((:kind artifact :uri "nested")))))))))
+       (:run-id "run-1" :tasks nil :deadline (:kind "none")))))
+   :type 'e-board-orchestration-invalid-fact))
 
 (ert-deftest e-board-orchestration-test-required-and-optional-completion ()
   "Optional work cannot block a successful required group."
@@ -223,42 +182,28 @@
     (should (eq (plist-get task :state) 'pending))
     (should-not (plist-get projection :terminal-status))))
 
-(ert-deftest e-board-orchestration-test-run-projection-waits-for-restoration ()
-  "A run is not missing until its board journal has replayed."
-  (let ((e-board--registry (make-hash-table :test 'equal))
-        (e-board-orchestration--restoration-states (make-hash-table :test 'equal))
-        (board (e-board-create :id "restoring-run")))
-    (e-board-orchestration-mark-restoring board)
-    (should (eq (plist-get (e-board-orchestration-run-projection board "run-1") :state)
-                'not-restored-yet))
-    (e-board-orchestration-mark-restored board)
-    (should (eq (plist-get (e-board-orchestration-run-projection board "run-1") :state)
-                'missing))))
-
 (ert-deftest e-board-orchestration-test-replay-keeps-one-continuation-publication ()
   "Duplicate report replay retains the manifest publication key and acknowledgement."
-  (let ((e-board--registry (make-hash-table :test 'equal))
-        (board (e-board-create :id "continuation-replay")))
-    (e-board-orchestration-publish-fact
-     board
-     (e-board-orchestration-test--fact
-      'manifest "manifest-1"
-      '(:run-id "run-1"
-        :tasks ((:task-key "task" :required t :accepted-attempt 0))
-        :continuation (:session-id "coordinator" :prompt "reconcile"
-                       :publication-key "publication-1"))))
-    (let ((report (e-board-orchestration-test--fact
-                   'terminal-report "report-1"
-                   '(:run-id "run-1" :task-key "task" :attempt 0 :status done
-                     :summary "done" :outputs []))))
-      (e-board-orchestration-publish-fact board report)
-      (e-board-orchestration-publish-fact board report))
-    (e-board-orchestration-publish-fact
-     board
-     (e-board-orchestration-test--fact
-      'continuation-claim "publication-1:published"
-      '(:run-id "run-1" :publication-key "publication-1" :status published)))
-    (let ((projection (e-board-orchestration-run-projection board "run-1")))
+  (let* ((manifest
+          (e-board-orchestration-test--fact
+           'manifest "manifest-1"
+           '(:run-id "run-1"
+             :tasks ((:task-key "task" :required t :accepted-attempt 0))
+             :continuation (:session-id "coordinator" :prompt "reconcile"
+                            :publication-key "publication-1"))))
+         (report
+          (e-board-orchestration-test--fact
+           'terminal-report "report-1"
+           '(:run-id "run-1" :task-key "task" :attempt 0 :status done
+             :summary "done" :outputs [])))
+         (claim
+          (e-board-orchestration-test--fact
+           'continuation-claim "publication-1:published"
+           '(:run-id "run-1" :publication-key "publication-1"
+             :status published)))
+         (projection
+          (e-board-orchestration-reduce
+           (list manifest report report claim))))
       (should (eq (plist-get projection :terminal-status) 'done))
       (should (eq (plist-get (plist-get projection :continuation) :state) 'published))
-      (should (= (length (plist-get projection :reports)) 1)))))
+      (should (= (length (plist-get projection :reports)) 1))))

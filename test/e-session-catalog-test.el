@@ -102,7 +102,6 @@
           :provider-anchors nil
           :branch-summaries nil
           :process-reports nil
-          :board-session-state nil
           :turn-options nil)))
 
 (defun e-session-catalog-test--linear-session (count)
@@ -160,7 +159,6 @@
           :context-promotions nil
           :context-curation-packages nil
           :latest-token-usage-event nil
-          :board-session-state nil
           :turn-options nil)))
 
 (ert-deftest e-session-catalog-test-duplicate-ids-preserve-first-match ()
@@ -179,8 +177,8 @@
                    (e-session-catalog-checkpoint-manifest with-duplicate)))
     (should (equal (e-session-catalog--checkpoint-records baseline)
                    (e-session-catalog--checkpoint-records with-duplicate)))
-    (should (equal (e-session-catalog-checkpoint-json baseline nil 17)
-                   (e-session-catalog-checkpoint-json with-duplicate nil 17))))
+    (should (equal (e-session-catalog-checkpoint-json baseline 17)
+                   (e-session-catalog-checkpoint-json with-duplicate 17))))
   (let* ((session (e-session-catalog-test--session))
          (cross-field-first
           (e-session-catalog-test--entry
@@ -343,26 +341,6 @@
     (should (equal (mapcar (lambda (entry) (plist-get entry :id)) path)
                    '("message-2" "compaction-1" "generation-1"
                      "promotion-1" "curation-1" "response-1")))))
-
-(ert-deftest e-session-catalog-test-checkpoint-manifest-bounds-board-messages ()
-  "Checkpoint manifests retain recent board messages and durable facts."
-  (let* ((session (e-session-catalog-test--session))
-         (messages
-          (append
-           (mapcar (lambda (index)
-                     (list :id (format "fact-%d" index) :kind 'fact))
-                   (number-sequence 0 259))
-           (mapcar (lambda (index)
-                     (list :id (format "message-%d" index) :kind 'activity))
-                   (number-sequence 0 299))))
-         (manifest (e-session-catalog-checkpoint-manifest session messages))
-         (ids (mapcar (lambda (item) (plist-get item :id))
-                      (append (plist-get manifest :board-message-identities)
-                              nil))))
-    (should (= (length ids) 512))
-    (should (member "fact-4" ids))
-    (should (member "fact-259" ids))
-    (should (member "message-299" ids))))
 
 (ert-deftest e-session-catalog-test-context-state-retains-generation-owners ()
   "Context projections retain the active generation and curation owners."

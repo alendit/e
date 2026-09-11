@@ -23,12 +23,10 @@
 (require 'subr-x)
 
 (cl-defun e-chat-session-submit
-    (harness session-id prompt &key delay references metadata)
+    (harness session-id prompt &key references metadata)
   "Submit PROMPT to SESSION-ID through its board binding.
-DELAY is accepted for source compatibility; board publication is immediate.
 REFERENCES are ordered source references from the composer.
 METADATA is caller-provided turn metadata.  Return admission work."
-  (ignore delay)
   (e-chat-service-submit-session
    harness session-id prompt :references references
    :metadata metadata))

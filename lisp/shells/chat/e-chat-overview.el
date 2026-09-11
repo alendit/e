@@ -150,7 +150,7 @@ depends on the facade."
 
 (defun e-chat-overview--board-session-p (session)
   "Return non-nil when SESSION carries board-native identity."
-  (or (plist-get (plist-get session :board-session-state) :board-id)
+  (or (plist-get (plist-get session :association) :board-id)
       (plist-get session :board-id)))
 
 (defun e-chat-overview--short-session-id (session-id)
@@ -417,12 +417,10 @@ assigned to their presentation owner after settlement."
   "Return the stored read marker for SESSION-ID in HARNESS."
   (when-let* ((target-harness (or harness
                                   e-chat-overview--harness
-                                  (e-chat-overview--default-harness)))
-              (session (e-chat-overview--session-for-id
-                        target-harness
-                        session-id)))
-    (e-chat-overview--session-read-marker
-     target-harness session instance-id)))
+                                  (e-chat-overview--default-harness))))
+    (gethash
+     (cons session-id (e-chat-overview--read-marker-key instance-id))
+     (e-chat-overview--read-marker-table target-harness))))
 
 (defun e-chat-overview--set-read-marker
     (session-id marker &optional harness instance-id)
@@ -478,10 +476,12 @@ assigned to their presentation owner after settlement."
            (not (e-chat-transcript-preview-p))
            e-chat-harness
            e-chat-session-id
-           (when-let ((session (ignore-errors
-                                 (e-chat-overview--session-for-id
-                                  e-chat-harness
-                                  e-chat-session-id))))
+           (when-let* ((marker
+                        (plist-get e-chat-session-metadata
+                                   :latest-assistant-marker))
+                       (session
+                        (list :id e-chat-session-id
+                              :latest-assistant-marker marker)))
              (e-chat-overview--session-unread-p
               e-chat-harness
               session
@@ -1081,7 +1081,18 @@ surface; the overview owner never opens a chat buffer itself."
         (inhibit-read-only t))
     (setq-local e-chat-overview--harness harness
                 e-chat-overview--displayed-candidates
-                (copy-tree candidates t)
+                (mapcar
+                 (lambda (candidate)
+                   ;; Query rows are detached values, while their harness and
+                   ;; instance are live presentation authorities.  Copy only
+                   ;; the row data; copying the containing structs breaks
+                   ;; identity-scoped lookup and routes the row nowhere.
+                   (list :instance (plist-get candidate :instance)
+                         :instance-id (plist-get candidate :instance-id)
+                         :harness (plist-get candidate :harness)
+                         :session (copy-tree (plist-get candidate :session) t)
+                         :session-id (plist-get candidate :session-id)))
+                 candidates)
                 e-chat-overview--page-loaded-p t)
     (erase-buffer)
     (if candidates
@@ -1441,7 +1452,11 @@ facade remains responsible only for deciding when a selected turn settles."
                    e-chat-session-id)
           (let ((was-unread (e-chat-overview--buffer-unread-p candidate)))
             (e-chat-overview--mark-session-read
-             e-chat-harness e-chat-session-id
+             e-chat-harness
+             (list :id e-chat-session-id
+                   :latest-assistant-marker
+                   (plist-get e-chat-session-metadata
+                              :latest-assistant-marker))
              (and (boundp 'e-chat-harness-instance-id)
                   e-chat-harness-instance-id))
             (when was-unread

@@ -113,15 +113,14 @@ result owned by the caller."
 (defun e-chat-output-mode-session-set (harness session-id mode)
   "Set the per-session output MODE override for SESSION-ID.
 A nil MODE clears the override, falling back to configured resolution.  Signal
-on an unknown non-nil MODE."
+on an unknown non-nil MODE.  Return the asynchronous persistence work."
   (when (and mode (not (e-chat-output-mode--mode-value-p mode)))
     (error "Unknown output mode `%s'; known modes: %s"
            mode
            (mapconcat #'symbol-name e-chat-output-mode-values ", ")))
   (e-session-set-capability-state
    (e-harness-sessions harness) session-id 'chat-output-mode
-   (and mode (list :mode mode)))
-  mode)
+   (and mode (list :mode mode))))
 
 (cl-defun e-chat-output-mode-context-provider
     (&key harness session-id _turn-id _context-purpose)

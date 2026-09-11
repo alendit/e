@@ -70,16 +70,33 @@ request work, and presentation-owned pages/cursors.  Its exception for a
 guarded ephemeral engine is superseded by the 2026-09-10 DP7 clean cut: SQLite
 is the only Board implementation, and the aggregate, registry, runtime,
 polymorphic storage adapters, alternate chat paths, producer bindings,
-fixtures, and retired skips are being deleted without compatibility aliases or
+fixtures, and retired skips are deleted without compatibility aliases or
 tombstones.  The earlier DP6 focused gate passed 346 expected tests with zero unexpected,
 and independent review reached =implementation-review-fixed-point=.  The exact
-public Org Canvas pre-readiness selector passes 1/1 in 4.421716 seconds: it
+public Org Canvas pre-readiness selector passes 1/1 in 5.589244 seconds: it
 submits before held admission/view work settles, observes three heartbeats,
 renders canonical results once, isolates a two-worker write failure to one
-owner, and then persists, queries, and renders a healthy sibling.  Feature 92
-remains =In-review=; Addendum 2 is =In-progress= until DP7A--DP7C pass the
-focused, full-suite, structural, and public graphical acceptance gates.  The
-separate broader recovery/quarantine roadmap remains future work.
+owner, and then persists, queries, and renders a healthy sibling.  The
+kill-before-readiness selector passes 1/1 and proves that a late durable
+admission cannot strand an unreferenced process-local binding.  The DP7
+structural gate passes 8/8, clean byte compilation succeeds, and the corrected
+complete exact-source suite passes 2,516/2,516 with zero unexpected results and
+zero skips.  Retired Board records are rejected by ordinary session codecs and
+queries and decoded only by explicit offline migration, which preserves each
+source session's surviving append order and source identity, imports validated
+semantic kinds and complete routing participants, infers missing policy only
+for explicit or canonical roleless roots, and requires every association
+principal to equal its Board root.  Malformed, orphaned, incomplete-policy,
+principal-conflicting, or rootless Board journals never install the staging
+store.  Canonical roleless roots normalize to durable role =owner= and remain
+visible in the public root-session page and reopen path.  A migrated owner plus
+policy-bearing child reopens and routes a publish to the child participant.
+Public MCP activation settles after its SQL mutation,
+and context inspection advertises the same 1--32 limit it enforces.  The
+independent delayed-worker new-chat selector also passes 1/1 in 1.081317
+seconds, and kill-before-readiness passes 1/1 in 0.317498 seconds.
+Addendum 2 is therefore =Done=.  Feature 92 remains =In-review= because
+the separate broader recovery/quarantine roadmap remains future work.
 
 The final Addendum 2 cleanup removes the remaining production chat
 unloaded-index/checkpoint-loader lifecycle and aggregate-peek preview fallback.

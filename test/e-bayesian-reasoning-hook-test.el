@@ -20,6 +20,9 @@
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-backend)
 (require 'e-session)
+(require 'e-session-async)
+(require 'e-session-sqlite)
+(require 'e-work)
 
 (defun e-bayesian-reasoning-hook-test--append-message
     (harness session-id turn-id message)
@@ -611,7 +614,9 @@ unchanged."
 
 (ert-deftest e-bayesian-reasoning-hook-test-attachment-repair-regression ()
   "An opaque citation cannot turn a source-backed answer into `I don't know'."
-  (let* ((e-harness-test--follow-up-publisher
+  (let* ((directory (make-temp-file "e-bayesian-attachment-sql-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (e-harness-test--follow-up-publisher
           #'e-bayesian-reasoning-hook-test--queue-follow-up)
          (calls 0)
          (request-messages nil)
@@ -644,62 +649,102 @@ unchanged."
               (funcall on-item '(:type done :reason stop))
               (funcall on-done '(:status done))
               (e-backend-request-create)))))
-         (harness (e-harness-create :backend backend)))
-    (e-harness-activate-capability harness (e-chat-session-capability-create))
-    (e-harness-activate-capability
-     harness (e-bayesian-reasoning-capability-create))
-    (e-harness-create-session harness :id "session-1")
-    (with-temp-buffer
-      (rename-buffer "e-claim-repair-regression-source" t)
-      (insert
-       "Release 266 uses native PageRank in Hyper. Later work targets external execution.")
-      (e-chat-session-attach-context
-       harness "session-1"
-       (list :uri (concat "buffer://" (buffer-name))
-             :label "graph analytics spec"
-             :buffer-name (buffer-name)))
-      (e-harness-test-prompt-batch
-       harness "session-1" "What does the graph analytics spec propose?")
-      (let ((deadline (+ (float-time) 1)))
-        (while (and (< calls 2) (< (float-time) deadline))
-          (accept-process-output nil 0.01)))
-      (should (= calls 2))
-      (let* ((messages (e-harness-messages harness "session-1"))
-             (assistants
-              (seq-filter
-               (lambda (message)
-                 (eq (plist-get message :role) 'assistant))
-               messages))
-             (repair-prompt
-              (seq-find
-               (lambda (message)
-                 (eq (e-bayesian-reasoning--message-input-origin message)
-                     'harness))
-               messages))
-             (original (car assistants))
-             (replacement (cadr assistants))
-             (first-request (car (last request-messages)))
-             (source-message
-              (seq-find
-               (lambda (message)
-                 (and (eq (plist-get message :role) 'system)
-                      (string-match-p "<attachment"
-                                      (plist-get message :content))))
-               first-request)))
-        (should source-message)
-        (should (string-match-p "evidence=\"src:[0-9A-F]\\{16\\}\""
-                                (plist-get source-message :content)))
-        (should (string-match-p "src:[0-9A-F]\\{16\\}"
-                                (plist-get repair-prompt :content)))
-        (should-not (e-harness-message-hidden-p original))
-        (should (e-harness-message-hidden-p replacement))
-        (let* ((audits
-                (e-harness-turn-hook-audits
-                 harness "session-1" (plist-get original :turn-id)
-                 'bayesian-reasoning))
-               (payload (plist-get (car (last audits)) :payload)))
-          (should (eq (plist-get payload :outcome)
-                      'correction-unresolved)))))))
+         (harness (e-harness-create :backend backend :sessions store)))
+    (unwind-protect
+        (progn
+          (e-harness-activate-capability harness (e-chat-session-capability-create))
+          (e-harness-activate-capability
+           harness (e-bayesian-reasoning-capability-create))
+          (e-work-with-batch-await
+            (e-work-await-batch
+             (e-harness-create-session harness :id "session-1") :timeout 5.0))
+          (with-temp-buffer
+            (rename-buffer "e-claim-repair-regression-source" t)
+            (insert
+             "Release 266 uses native PageRank in Hyper. Later work targets external execution.")
+            (e-chat-session-attach-context
+             harness "session-1"
+             (list :uri (concat "buffer://" (buffer-name))
+                   :label "graph analytics spec"
+                   :buffer-name (buffer-name))
+             :current-attachments nil)
+            ;; Observe the attachment commit at an explicit test boundary.
+            ;; The provider turn itself consumes the same detached metadata
+            ;; row and never reads a process-local durable aggregate.
+            (e-work-with-batch-await
+              (e-work-await-batch
+               (e-session-async-session-metadata store "session-1")
+               :timeout 5.0))
+            (e-harness-test-prompt-batch
+             harness "session-1" "What does the graph analytics spec propose?")
+            (let ((deadline (+ (float-time) 1)))
+              (while (and (< calls 2) (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (should (= calls 2))
+            (let* ((entry (e-harness-wait-batch harness "session-1" 5.0))
+                   (pending
+                    (seq-filter
+                     #'e-work-handle-p
+                     (copy-sequence (plist-get entry :persistence-works)))))
+              ;; The interactive turn remains enqueue-and-return.  This
+              ;; regression is an explicit batch boundary and observes every
+              ;; write admitted by its terminal hook before issuing the
+              ;; detached read below.
+              (dolist (work pending)
+                (e-work-with-batch-await
+                  (e-work-await-batch work :timeout 5.0))))
+            (let* ((path
+                    (e-work-with-batch-await
+                      (e-work-await-batch
+                       (e-session-async-context-path store "session-1")
+                       :timeout 5.0)))
+                   (messages (plist-get path :messages))
+                   (assistants
+                    (seq-filter
+                     (lambda (message)
+                       (eq (plist-get message :role) 'assistant))
+                     messages))
+                   (repair-prompt
+                    (seq-find
+                     (lambda (message)
+                       (eq (e-bayesian-reasoning--message-input-origin message)
+                           'harness))
+                     messages))
+                   (original (car assistants))
+                   (replacement (cadr assistants))
+                   (first-request (car (last request-messages)))
+                   (source-message
+                    (seq-find
+                     (lambda (message)
+                       (and (eq (plist-get message :role) 'system)
+                            (string-match-p "<attachment"
+                                            (plist-get message :content))))
+                     first-request)))
+              (should source-message)
+              (should (string-match-p "evidence=\"src:[0-9A-F]\\{16\\}\""
+                                      (plist-get source-message :content)))
+              (should (string-match-p "src:[0-9A-F]\\{16\\}"
+                                      (plist-get repair-prompt :content)))
+              (should-not (e-harness-message-hidden-p original))
+              (should (e-harness-message-hidden-p replacement))
+              (let* ((inspection
+                      (e-work-with-batch-await
+                        (e-work-await-batch
+                         (e-session-async-turn-inspection
+                          store "session-1" (plist-get original :turn-id))
+                         :timeout 5.0)))
+                     (audits
+                      (seq-filter
+                       (lambda (event)
+                         (and (eq (plist-get event :event-type) 'hook-audit)
+                              (eq (plist-get (plist-get event :payload) :owner)
+                                  'bayesian-reasoning)))
+                       (plist-get inspection :events)))
+                     (payload (plist-get (car (last audits)) :payload)))
+                (should (eq (plist-get payload :outcome)
+                            'correction-unresolved))))))
+      (e-session-storage-close store)
+      (delete-directory directory t))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-hook-noop-on-clean-turn ()
   "A trivial turn queues no follow-up."

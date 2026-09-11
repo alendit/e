@@ -21,7 +21,7 @@
 (require 'e-harness)
 (require 'e-ui-work)
 (load (expand-file-name
-       "../e2e/e-board-e2e-support.el"
+       "../e2e/e-chat-sql-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
 (defun e-ui-work-integration--drain (buffer &rest args)
@@ -31,9 +31,9 @@
 
 (ert-deftest e-ui-work-integration-test-chat-settled-turn-leaves-no-pending-ui-work ()
   "A settled chat turn cancels intervals and drains finite UI work."
-  (let* ((harness (e-harness-create
+  (let* ((harness (e-chat-sql-e2e-make-harness
                    :backend (e-backend-fake-create :items nil)))
-         (session-id (e-board-e2e-create-session
+         (session-id (e-chat-sql-e2e-create-session
                       harness :id "ui-work-e2e"))
          (turn-id "ui-work-turn")
          (buffer (e-chat-open :harness harness
@@ -114,7 +114,8 @@
             (should-not (e-ui-work-pending buffer)))))
       (set-window-configuration window-configuration)
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))
+      (e-chat-sql-e2e-reset))))
 
 (provide 'e-ui-work-integration-test)
 

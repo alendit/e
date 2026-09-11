@@ -559,7 +559,11 @@
       (unwind-protect
           (should-error (e-runtime-store-test--wait-ready contender)
                         :type 'e-runtime-store-owner-active)
-        (ignore-errors (e-runtime-store-close contender))))
+        ;; The contender never became a durable owner.  Retire its failed
+        ;; transport locally instead of enqueueing a graceful close to a
+        ;; worker that rejected open; that close can only wait for timeout and
+        ;; race the real owner's fixture teardown.
+        (ignore-errors (e-runtime-store-shutdown contender))))
     (should (file-exists-p
              (expand-file-name "store.sqlite3.owner" directory)))
     (should (e-runtime-store-live-p store))))

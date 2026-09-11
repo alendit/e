@@ -6,14 +6,14 @@
 ;;; Commentary:
 
 ;; Pure bounded validation, copying, normalization, and wire-size policy for
-;; durable board-routing values.  Aggregate association state remains in the
-;; session aggregate; this owner has no session mutation state.
+;; durable board-routing values.  Association state remains authoritative in
+;; SQLite; this owner has no session mutation state.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'e-board-selector)
-(require 'e-session-codec)
+(require 'e-runtime-store-codec)
 (require 'subr-x)
 
 (defun e-session-board-policy--keyword-plist-p (value)
@@ -46,9 +46,9 @@
   "Maximum structural nodes admitted by a board routing policy.
 
 This is a domain budget for the declarative policy, not a nesting-depth cap.
-It is deliberately independent of `e-board' so session replay can account for
-the same bounded policy before encoding or mutation.  The representative
-board policies are far below this ceiling.")
+It is deliberately independent of any Board controller so offline decoding
+can account for the same bounded policy before encoding.  Representative
+policies are far below this ceiling.")
 
 (defconst e-session-board-policy--byte-budget (* 64 1024)
   "Maximum UTF-8 bytes accounted for by a board routing policy.
@@ -204,266 +204,17 @@ accepting an executable selector predicate by accident."
            (t (setq valid nil))))))
     valid))
 
-(defun e-session-board-policy--json-string-byte-size (value)
-  "Return exact `json-encode' byte length for string VALUE without encoding it.
-
-Multibyte Unicode, including U+2028 and U+2029, passes through unchanged.
-JSON punctuation and controls use Emacs's short or six-byte escapes.  Raw
-unibyte non-ASCII bytes use the double-backslash octal spelling emitted by
-Emacs's legacy JSON encoder."
-  (let ((bytes (+ 2 (string-bytes value)))
-        (unibyte-p (not (multibyte-string-p value)))
-        (index 0)
-        (length (length value)))
-    (while (< index length)
-      (let ((character (aref value index)))
-        (setq bytes
-              (+ bytes
-                 (cond
-                  ((or (= character ?\") (= character ?\\)) 1)
-                  ((memq character '(8 9 10 12 13)) 1)
-                  ((< character 32) 5)
-                  ((and unibyte-p (>= character 128)) 4)
-                  (t 0)))))
-      (setq index (1+ index)))
-    bytes))
-
-(defun e-session-board-policy--json-scalar-byte-size (value)
-  "Return exact JSON bytes for scalar VALUE without a payload-sized string."
-  (cond
-   ((null value) 4)
-   ((eq value t) 4)
-   ((eq value json-false) 5)
-   ((numberp value) (string-bytes (number-to-string value)))
-   ((stringp value) (e-session-board-policy--json-string-byte-size value))
-   ((symbolp value)
-    (let ((bytes
-           (e-session-board-policy--json-string-byte-size
-            (symbol-name value))))
-      ;; `json-encode' omits the leading colon of keyword spellings.
-      (if (keywordp value) (1- bytes) bytes)))
-   (t
-    (signal 'e-session-board-routing-invalid
-            (list "Unsupported routing scalar" value)))))
-
-(defun e-session-board-policy--json-byte-size (value)
-  "Return the canonical UTF-8 JSON byte size of finite VALUE.
-Container traversal is iterative so a policy below the structural node budget
-cannot overflow the Lisp evaluator merely while measuring its representation.
-Scalar values use Emacs's canonical JSON escaping; unsupported dotted pairs
-signal `e-session-board-routing-invalid'."
-  (let ((pending (list (list :value value)))
-        (visiting (make-hash-table :test 'eq))
-        (leave-marker (make-symbol "routing-json-leave"))
-        (bytes 0))
-    (while pending
-      (let ((task (pop pending)))
-        (if (eq (car task) leave-marker)
-            (remhash (cdr task) visiting)
-          (let ((current (cadr task)))
-            (cond
-             ((or (null current) (eq current t) (numberp current)
-                  (stringp current) (symbolp current))
-              (setq bytes
-                    (+ bytes
-                       (e-session-board-policy--json-scalar-byte-size
-                        current))))
-             ((or (vectorp current) (consp current))
-              (when (gethash current visiting)
-                (signal 'e-session-board-routing-invalid
-                        (list "Cyclic routing value" current)))
-              (puthash current t visiting)
-              (push (cons leave-marker current) pending)
-              (cond
-               ((vectorp current)
-                (let ((count (length current))
-                      (index (1- (length current))))
-                  (setq bytes (+ bytes 2 (max 0 (1- count))))
-                  (while (>= index 0)
-                    (push (list :value (aref current index)) pending)
-                    (setq index (1- index)))))
-               ((e-session-board-policy--keyword-plist-p current)
-                (let ((tail current)
-                      (count 0))
-                  (while tail
-                    (setq count (1+ count))
-                    (push (list :value (pop tail)) pending)
-                    (push (list :value (pop tail)) pending))
-                  (setq bytes (+ bytes 2 count (max 0 (1- count))))))
-               ((proper-list-p current)
-                (let ((count (length current)))
-                  (setq bytes (+ bytes 2 (max 0 (1- count))))
-                  (dolist (item (reverse current))
-                    (push (list :value item) pending))))
-               (t
-                (signal 'e-session-board-routing-invalid
-                        (list "Unsupported dotted routing value" current)))))
-             (t
-              (signal 'e-session-board-routing-invalid
-                      (list "Unsupported routing value" current))))))))
-    bytes))
-
 (defun e-session-board-policy--json-value-valid-p (value &optional budgeted-p)
-  "Return non-nil when VALUE is finite and encodable as JSON."
+  "Return non-nil when VALUE is finite and durably encodable."
   (and (or budgeted-p
            (e-session-board-policy--value-budget-valid-p value))
        (e-session-board-policy--json-value-p value)
        (condition-case nil
            (progn
-             ;; Measure the canonical spelling without encoding the whole
-             ;; value.  Direct scalar counting retains exact Emacs escaping
-             ;; while containers are traversed iteratively.
-             (e-session-board-policy--json-byte-size value)
+             (e-runtime-store-codec-measure-bounded
+              value e-session-board-policy--byte-budget)
              t)
          (error nil))))
-
-(defun e-session-board-policy--encoded-attribute-p (value)
-  "Return non-nil when VALUE already has the durable attribute wrapper."
-  (cond
-   ((vectorp value)
-    (and (= (length value) 2)
-         (equal (aref value 0) e-session-codec--routing-attributes-tag)))
-   ((consp value)
-    (and (consp (cdr value))
-         (null (cddr value))
-         (equal (car value) e-session-codec--routing-attributes-tag)))))
-
-(defun e-session-board-policy--wire-attribute-json-byte-size (value)
-  "Return exact JSON bytes of VALUE's virtual durable attribute encoding.
-
-This follows `e-session-codec--wire-attribute-value' without constructing its
-payload-sized vector tree.  The caller has already established the routing
-node bound, but the active identity set still rejects an invariant cycle."
-  (let ((pending (list (list :value value)))
-        (visiting (make-hash-table :test 'eq))
-        (leave-marker (make-symbol "routing-wire-leave"))
-        (bytes 0))
-    (while pending
-      (let ((task (pop pending)))
-        (if (eq (car task) leave-marker)
-            (remhash (cdr task) visiting)
-          (let ((current (cadr task)))
-            (cond
-             ((or (null current) (eq current t) (numberp current)
-                  (stringp current))
-              (setq bytes
-                    (+ bytes
-                       (e-session-board-policy--json-scalar-byte-size
-                        current))))
-             ((symbolp current)
-              ;; ["symbol", SYMBOL-NAME]
-              (setq bytes
-                    (+ bytes 3
-                       (e-session-board-policy--json-string-byte-size "symbol")
-                       (e-session-board-policy--json-string-byte-size
-                        (symbol-name current)))))
-             ((or (vectorp current) (consp current))
-              (when (gethash current visiting)
-                (signal 'e-session-board-routing-invalid
-                        (list "Cyclic routing attribute" current)))
-              (puthash current t visiting)
-              (push (cons leave-marker current) pending)
-              (cond
-               ((vectorp current)
-                ;; ["vector", [ITEM...]]
-                (let ((count (length current)))
-                  (setq bytes
-                        (+ bytes 5
-                           (e-session-board-policy--json-string-byte-size
-                            "vector")
-                           (max 0 (1- count))))
-                  (dotimes (index count)
-                    (push (list :value (aref current index)) pending))))
-               ((e-session-board-policy--keyword-plist-p current)
-                ;; ["plist", [[KEY, VALUE]...]]
-                (let ((tail current)
-                      (count 0))
-                  (while tail
-                    (let ((key (pop tail))
-                          (entry (pop tail)))
-                      (setq count (1+ count)
-                            bytes (+ bytes 3
-                                     (e-session-board-policy--json-scalar-byte-size
-                                      key)))
-                      (push (list :value entry) pending)))
-                  (setq bytes
-                        (+ bytes 5
-                           (e-session-board-policy--json-string-byte-size
-                            "plist")
-                           (max 0 (1- count))))))
-               ((proper-list-p current)
-                ;; ["list", [ITEM...]]
-                (let ((tail current)
-                      (count 0))
-                  (while tail
-                    (setq count (1+ count))
-                    (push (list :value (pop tail)) pending))
-                  (setq bytes
-                        (+ bytes 5
-                           (e-session-board-policy--json-string-byte-size
-                            "list")
-                           (max 0 (1- count))))))
-               (t
-                ;; ["cons", [CAR, CDR]]
-                (setq bytes
-                      (+ bytes 6
-                         (e-session-board-policy--json-string-byte-size
-                          "cons")))
-                (push (list :value (car current)) pending)
-                (push (list :value (cdr current)) pending))))
-             (t
-              (signal 'e-session-board-routing-invalid
-                      (list "Unsupported routing attribute" current))))))))
-    bytes))
-
-(defun e-session-board-policy--wire-selector-json-byte-size (selector)
-  "Return exact durable JSON bytes for already-validated SELECTOR."
-  (if (null selector)
-      (e-session-board-policy--json-byte-size nil)
-    (let ((tail selector)
-          (count 0)
-          (bytes 2))
-      (while tail
-        (let ((key (pop tail))
-              (value (pop tail)))
-          (setq count (1+ count)
-                bytes (+ bytes 1
-                         (e-session-board-policy--json-scalar-byte-size key)))
-          (setq bytes
-                (+ bytes
-                   (if (and (eq key :attributes)
-                            (not (e-session-board-policy--encoded-attribute-p
-                                  value)))
-                       ;; [ROUTING-TAG, WIRE-ATTRIBUTE]
-                       (+ 3
-                          (e-session-board-policy--json-string-byte-size
-                           e-session-codec--routing-attributes-tag)
-                          (e-session-board-policy--wire-attribute-json-byte-size
-                           value))
-                     (e-session-board-policy--json-byte-size value))))))
-      (+ bytes (max 0 (1- count))))))
-
-(defun e-session-board-policy-wire-json-byte-size (policy)
-  "Return exact durable JSON bytes for validated routing POLICY.
-
-The measurement walks caller state and accounts for the codec's tagged
-selector attributes without constructing a canonical policy copy."
-  (let ((tail policy)
-        (count 0)
-        (bytes 2))
-    (while tail
-      (let ((key (pop tail))
-            (value (pop tail)))
-        (setq count (1+ count)
-              bytes (+ bytes 1
-                       (e-session-board-policy--json-scalar-byte-size key)))
-        (setq bytes
-              (+ bytes
-                 (if (memq key '(:pickup-selector :observer-selector))
-                     (e-session-board-policy--wire-selector-json-byte-size
-                      value)
-                   (e-session-board-policy--json-byte-size value))))))
-    (+ bytes (max 0 (1- count)))))
 
 (defun e-session-board-policy--tag-list-valid-p (value)
   "Return non-nil when VALUE is a list of declarative tag atoms."
@@ -535,13 +286,14 @@ selector attributes without constructing a canonical policy copy."
          (and valid
               (= (length seen) (length e-session-board-policy--keys))
               (e-session-board-policy--json-value-p policy)
-              ;; Attribute selectors are tagged reversibly for persistence;
-              ;; measure that exact virtual wire form without materializing a
-              ;; second caller-sized policy before admission.
+              ;; The runtime-store codec owns the only current durable wire
+              ;; representation.  Its bounded measurer rejects an overage
+              ;; without constructing an encoded copy.
               (condition-case nil
-                  (<=
-                   (e-session-board-policy-wire-json-byte-size policy)
-                   e-session-board-policy--byte-budget)
+                  (progn
+                    (e-runtime-store-codec-measure-bounded
+                     policy e-session-board-policy--byte-budget)
+                    t)
                 (error nil))))))
 
 (defun e-session-board-policy--normalize-selector (selector)

@@ -17,23 +17,11 @@
 This is intentionally a test fixture variable; production attachment ports
 are explicit values and never consult a process-global callback.")
 
-(cl-defun e-harness-test-create-board-session
-    (harness &key id metadata board-id principal)
-  "Create a board-native test session on HARNESS and return its session value.
-ID and METADATA match `e-harness-create-session'.  BOARD-ID and PRINCIPAL may
-pin an already-created board's durable identity.  The ordinary path exercises
-the same board/session creation service used by presentation shells."
-  (if board-id
-      (let* ((session
-              (e-harness-create-session harness :id id :metadata metadata))
-             (session-id (plist-get session :id)))
-        (e-session-declare-board-state
-         (e-harness-sessions harness) session-id principal board-id)
-        (e-session-local-state (e-harness-sessions harness) session-id))
-    ;; This helper is for core unit tests whose subject is live harness
-    ;; execution rather than the public chat application service.  Public
-    ;; Canvas/chat fixtures use disposable SQLite stores directly.
-    (e-harness-create-session harness :id id :metadata metadata)))
+(cl-defun e-harness-test-create-session (harness &key id metadata)
+  "Create a core test session on HARNESS and return its session value.
+Public Board/chat tests use disposable SQLite through the application service;
+this helper exists only for harness tests whose subject is live execution."
+  (e-harness-create-session harness :id id :metadata metadata))
 
 (defun e-harness-test--session-tokens (harness)
   "Return the synthetic token table for HARNESS."
@@ -52,52 +40,34 @@ sentinel."
     (puthash session-id token tokens)
     token))
 
-(defun e-harness-test--production-attachment (harness session-id)
-  "Return the current board attachment for HARNESS SESSION-ID, if loaded."
-  (when (and (boundp 'e-board-runtime--endpoint-attachments)
-             (fboundp 'e-board-runtime--session-key)
-             (fboundp 'e-board-runtime--current-attachment-p)
-             (fboundp 'e-board-runtime-attachment-turn-port))
-    (when-let ((attachment
-                (gethash (e-board-runtime--session-key harness session-id)
-                         e-board-runtime--endpoint-attachments)))
-      (and (e-board-runtime--current-attachment-p attachment)
-           attachment))))
-
 (defun e-harness-test--port-token (harness session-id &optional metadata)
-  "Return the current production or synthetic token for HARNESS SESSION-ID."
-  (if-let ((attachment (e-harness-test--production-attachment
-                        harness session-id)))
-      (e-board-runtime-attachment-endpoint-token attachment)
-    (e-harness-test--synthetic-token
-     harness session-id (plist-get metadata :board-endpoint-token))))
+  "Return the synthetic test token for HARNESS SESSION-ID."
+  (e-harness-test--synthetic-token
+   harness session-id (plist-get metadata :board-endpoint-token)))
 
 (defun e-harness-test--attached-turn-port (harness session-id &optional metadata)
   "Return a fresh explicit test port for HARNESS SESSION-ID.
 The port authorizes only the token registered by this test fixture.  Its
 continuation publisher is test-local and can be dynamically replaced without
 mutating any production callback slot."
-  (if-let ((attachment (e-harness-test--production-attachment
-                        harness session-id)))
-      (e-board-runtime-attachment-turn-port attachment)
-    (let ((token (e-harness-test--synthetic-token
-                  harness session-id (plist-get metadata :board-endpoint-token))))
-      (e-harness-attached-turn-port-create
-       :harness harness
-       :session-id session-id
-       :attachment-token token
-       :authorizer
-       (lambda (candidate-harness candidate-session-id candidate-token)
-         (and (eq candidate-harness harness)
-              (equal candidate-session-id session-id)
-              (equal candidate-token token)))
-       :follow-up-publisher
-       (lambda (candidate-harness candidate-session-id prompt &rest args)
-         (if e-harness-test--follow-up-publisher
-             (apply e-harness-test--follow-up-publisher
-                    candidate-harness candidate-session-id prompt args)
-           (apply #'e-harness-attached-turn-follow-up
-                  candidate-harness candidate-session-id prompt args)))))))
+  (let ((token (e-harness-test--synthetic-token
+                harness session-id (plist-get metadata :board-endpoint-token))))
+    (e-harness-attached-turn-port-create
+     :harness harness
+     :session-id session-id
+     :attachment-token token
+     :authorizer
+     (lambda (candidate-harness candidate-session-id candidate-token)
+       (and (eq candidate-harness harness)
+            (equal candidate-session-id session-id)
+            (equal candidate-token token)))
+     :follow-up-publisher
+     (lambda (candidate-harness candidate-session-id prompt &rest args)
+       (if e-harness-test--follow-up-publisher
+           (apply e-harness-test--follow-up-publisher
+                  candidate-harness candidate-session-id prompt args)
+         (apply #'e-harness-attached-turn-follow-up
+                candidate-harness candidate-session-id prompt args))))))
 
 (cl-defun e-harness-test-prompt-async
     (harness session-id prompt &key delay metadata)

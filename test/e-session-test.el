@@ -19,7 +19,6 @@
 (require 'e-session-storage)
 (require 'e-session-legacy)
 (require 'e-context-lifetime)
-(require 'e-board)
 (require 'e-sqlite-test-store-support
          (expand-file-name
           "e-sqlite-test-store-support.el"
@@ -69,10 +68,7 @@
   (let* ((directory (make-temp-file "e-session-rootless-" t))
          (session-id "20260807T101346-90ba4ce0f030")
          (records
-          `((:type "board-message" :session-id ,session-id
-             :message (:id "board-1" :kind "input"
-                       :created-at 1786097627.224162 :content "board exact"))
-            (:type "message" :session-id ,session-id :id "message-1"
+          `((:type "message" :session-id ,session-id :id "message-1"
              :parent-id "root-from-history"
              :timestamp "2026-08-07T10:13:48Z"
              :message (:id "message-1" :parent-id "root-from-history"
@@ -94,14 +90,14 @@
             (should (equal (plist-get root :session-id) session-id))
             (should (equal (plist-get root :id) "root-from-history"))
             (should (equal (plist-get root :created-at)
-                           "2026-08-07T10:13:47Z"))
+                           "2026-08-07T10:13:48Z"))
             (should (equal (plist-get root :updated-at)
-                           "2026-08-07T10:13:47Z")))
+                           "2026-08-07T10:13:48Z")))
           (let ((store (e-session-test--replay-legacy-copy
                         directory session-id)))
             (should (equal
                      (plist-get (e-session-local-state store session-id) :created-at)
-                     "2026-08-07T10:13:47Z"))
+                     "2026-08-07T10:13:48Z"))
             (should (equal
                      (plist-get (car (e-session-local-messages store session-id))
                                 :content)
@@ -143,9 +139,7 @@
             :updated-at "2026-08-13T07:54:15Z"
             :metadata (:project-root "/tmp/exact/") :name "Exact"))
          (records
-          `((:type "board-message" :session-id ,session-id
-             :message (:id "board-1" :kind "input" :content "exact"))
-            (:type "message" :session-id ,session-id :id "message-1"
+          `((:type "message" :session-id ,session-id :id "message-1"
              :parent-id "checkpoint-root"
              :timestamp "2026-08-13T07:54:15Z"
              :message (:id "message-1" :parent-id "checkpoint-root"
@@ -289,204 +283,6 @@ stand in for the pure curation preparation path."
                       :source-ref (format "external:tool:%s" suffix)
                       :source-fingerprint (format "fingerprint-%s" suffix)
                       :tool-call-id (format "tool-call-%s" suffix))))))
-
-(defun e-session-test--routing-policy (&optional participant-id)
-  "Return one valid detached board routing policy fixture."
-  (list :participant-id (or participant-id "participant-private")
-        :pickup-selector
-        '(:kind input :tags (private)
-          :attributes (:symbol car :string "car"
-                       :nested (car "car" (:inner car))
-                       :vector [car "car"]))
-        :observer-selector
-        '(:subject-participant-id "participant-private"
-          :attributes (:symbol car :string "car"
-                       :nested (car "car" (:inner car))
-                       :vector [car "car"]))
-        :default-tags '(private)
-        :default-to "participant-private"))
-
-(ert-deftest e-session-test-board-routing-policy-round-trips-and-detaches ()
-  "A complete routing policy survives index/checkpoint and caller mutation."
-  (let* ((store (e-session-store-create))
-         (session-id "routing-policy")
-         (policy (e-session-test--routing-policy))
-         (expected (e-session-board-routing-policy-copy-value policy))
-         (returned nil))
-    (e-session-create store :id session-id)
-    (setq returned
-          (e-session-declare-board-state
-           store session-id "chat:routing-policy" "board-routing"
-           "participant" policy))
-    (setcar (plist-get policy :default-tags) 'caller-mutated)
-    (setf (aref (plist-get policy :participant-id) 0) ?X)
-    (should (equal (e-session-board-routing-policy
-                    (e-session-local-state store session-id))
-                   expected))
-    (should (equal (plist-get (plist-get returned :routing-policy)
-                              :participant-id)
-                   "participant-private"))
-    (let* ((indexed (car (e-session-list store)))
-           (indexed-state (plist-get indexed :board-state))
-           (manifest (e-session-checkpoint-manifest store session-id))
-           (manifest-state (plist-get manifest :board-state)))
-      (should (equal (plist-get indexed-state :routing-policy) expected))
-      (should (equal (plist-get manifest-state :routing-policy) expected))
-      (setf (aref (plist-get (plist-get manifest-state :routing-policy)
-                             :participant-id)
-                  0)
-            ?Y))
-    (should (equal (plist-get (e-session-board-association
-                               (e-session-local-state store session-id))
-                              :routing-policy)
-                   expected))))
-
-(ert-deftest e-session-test-board-routing-policy-persistence-round-trips ()
-  "A policy is restored from JSONL and its index without compatibility shims."
-  (let ((directory (make-temp-file "e-session-routing-policy-" t)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (session-id "persistent-routing")
-               (policy (e-session-test--routing-policy "participant-persist")))
-          (e-session-create store :id session-id)
-          (e-session-declare-board-state
-           store session-id "chat:persistent-routing" "board-persist"
-           "participant" policy)
-          (e-session-flush-write-queue store)
-          (let ((restored
-                 (e-session-local-state
-                  (e-session-persistent-store-create directory) session-id)))
-            (should (equal (e-session-board-routing-policy restored) policy))
-            (let* ((pickup (plist-get (e-session-board-routing-policy restored)
-                                      :pickup-selector))
-                   (attributes (plist-get pickup :attributes)))
-              (should (eq (plist-get attributes :symbol) 'car))
-              (should (equal (plist-get attributes :string) "car"))
-              (should (eq (car (plist-get attributes :nested)) 'car))
-              (should (equal (cadr (plist-get attributes :nested)) "car"))
-              (should (vectorp (plist-get attributes :vector)))
-              (should (eq (aref (plist-get attributes :vector) 0) 'car))
-              (should (equal (aref (plist-get attributes :vector) 1) "car")))
-            (should (equal (plist-get (e-session-board-association restored)
-                                      :association-role)
-                           "participant"))))
-      (delete-directory directory t))))
-
-(ert-deftest e-session-test-board-routing-policy-invalid-is-atomic ()
-  "Partial, executable, and unknown policy values do not mutate association."
-  (let* ((store (e-session-store-create))
-         (session-id "routing-invalid"))
-    (e-session-create store :id session-id)
-    (e-session-declare-board-state
-     store session-id "chat:routing-invalid" "board-invalid" "owner")
-    (let ((before (copy-tree (e-session-board-association
-                              (e-session-local-state store session-id)))))
-      (dolist (policy
-               (list
-                '(:participant-id "p" :pickup-selector (:tags (private))
-                  :observer-selector (:tags (private)) :default-tags (private))
-                '(:participant-id "p" :pickup-selector
-                  (:tags (private) :predicate (lambda (_message) t))
-                  :observer-selector (:tags (private)) :default-tags (private)
-                  :default-to nil)
-                '(:participant-id "p" :pickup-selector (:tags (private))
-                  :observer-selector (:tags (private)) :default-tags (private)
-                  :default-to nil :unknown t)))
-        (should-error
-         (e-session-declare-board-state
-          store session-id "chat:routing-invalid" "board-invalid" "owner"
-          policy)))
-      (should (equal (e-session-board-association
-                      (e-session-local-state store session-id))
-                     before)))
-      ;; Names that happen to be callable remain data when they are used as
-      ;; declarative selector atoms; executable objects/forms do not.
-      (let ((data-symbol-policy
-             '(:participant-id "p"
-               :pickup-selector (:kind car :tags (car mapcar)
-                                 :attributes (:marker car))
-               :observer-selector (:kind mapcar :tags (length))
-               :default-tags (car mapcar)
-               :default-to nil)))
-        (should (e-session-board-routing-policy-valid-p data-symbol-policy)))
-      (let ((function-form-policy
-             '(:participant-id "p"
-               :pickup-selector (:kind input :tags (private)
-                                 :attributes (:marker (lambda () t)))
-               :observer-selector (:tags (private))
-               :default-tags (private)
-               :default-to nil)))
-        (should-not
-         (e-session-board-routing-policy-valid-p function-form-policy)))))
-
-(ert-deftest e-session-test-board-routing-policy-attributes-reject-before-mutation ()
-  "Invalid attribute clauses fail before queue, JSON, or association changes."
-  (let* ((directory (make-temp-file "e-session-routing-attributes-" t))
-         (store (e-session-persistent-index-store-create directory))
-         (session-id "routing-attributes")
-         (base-policy (e-session-test--routing-policy "attribute-participant"))
-         (invalid-attributes
-          (list [car "car"]
-                '(car "car")
-                '(:kind "ordinary" :odd)
-                '((:kind . "ordinary") ("kind" . "bad"))))
-         persisted)
-    (unwind-protect
-        (progn
-          (e-session-create store :id session-id)
-          (e-session-declare-board-state
-           store session-id "chat:routing-attributes"
-           "attribute-board" "participant" base-policy)
-          (let ((association-before
-                 (copy-tree
-                  (e-session-board-association
-                   (e-session-local-state store session-id))))
-                (durability-before
-                 (e-session-storage-durability-status store)))
-            (dolist (attributes invalid-attributes)
-              (let ((policy (copy-tree base-policy)))
-                (plist-put
-                 (plist-get policy :pickup-selector)
-                 :attributes attributes)
-                (should-not (e-board-selector-attributes-valid-p attributes))
-                (let ((json-called nil))
-                  (cl-letf (((symbol-function 'json-encode)
-                             (lambda (&rest _)
-                               (setq json-called t)
-                               (error "unexpected JSON encoding")))
-                            ((symbol-function 'e-session-storage-commit-mutation)
-                             (lambda (&rest _)
-                               (setq persisted t)
-                               (error "unexpected persistence"))))
-                    (should-error
-                     (e-session-declare-board-state
-                      store session-id "chat:routing-attributes"
-                      "attribute-board" "participant" policy)))
-                  (should-not json-called))
-              (should (equal
-                       (e-session-board-association
-                        (e-session-local-state store session-id))
-                       association-before))
-              (should (equal (e-session-storage-durability-status store)
-                             durability-before)))
-            (should-not persisted)))
-      (ignore-errors (e-session-flush-write-queue store))
-      (delete-directory directory t)))))
-
-(ert-deftest e-session-test-board-routing-policy-owner-legacy-remains-readable ()
-  "Role-bearing legacy owner state retains its established readable shape."
-  (let ((store (e-session-store-create)))
-    (e-session-create store :id "legacy-owner")
-    (e-session-declare-board-state
-     store "legacy-owner" "chat:legacy-owner" "legacy-board" "owner")
-    (let ((association (e-session-board-association
-                        (e-session-local-state store "legacy-owner"))))
-      (should (equal association
-                     '(:board-id "legacy-board"
-                       :principal "chat:legacy-owner"
-                       :association-role "owner")))
-      (should-not (e-session-board-routing-policy
-                   (e-session-local-state store "legacy-owner"))))))
 
 (ert-deftest e-session-test-standalone-context-erasure-replay-is-rejected ()
   "Version-1 erasure is valid only inside the atomic curation package."
@@ -1345,90 +1141,6 @@ stand in for the pure curation preparation path."
               :frames))))
       (delete-directory directory t))))
 
-(ert-deftest e-session-test-board-log-deduplicates-and-clear-survives-replay ()
-  "Board log identity and reset boundaries remain durable across reopen."
-  (let ((directory (make-temp-file "e-session-board-log-" t)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (first '(:id "board-1" :kind output :content "old"))
-               (second '(:id "board-2" :kind output :content "new")))
-          (e-session-create store :id "board-session")
-          (e-session-append-board-message store "board-session" first)
-          (e-session-append-board-message store "board-session" first)
-          (should (= (length (e-session-local-board-messages
-                              store "board-session"))
-                     1))
-          (e-session-clear-board-messages store "board-session")
-          (e-session-append-board-message store "board-session" second)
-          (e-session-flush-write-queue store)
-          (let ((reopened (e-session-persistent-store-create directory)))
-            (let ((messages (e-session-local-board-messages
-                             reopened "board-session")))
-              (should (= (length messages) 1))
-              (should (equal (plist-get (car messages) :id) "board-2"))
-              (should (equal (plist-get (car messages) :content) "new")))
-            (e-session-append-board-message reopened "board-session" second)
-            (should (= (length (e-session-local-board-messages
-                                reopened "board-session"))
-                       1))))
-      (delete-directory directory t))))
-
-(ert-deftest e-session-test-board-log-rejects-divergent-typed-envelope-retries ()
-  "A typed journal retry must exactly match the envelope it already appended."
-  (let ((store (e-session-store-create))
-        (first '(:id "chain" :record-type processing-chain
-                 :root-message-id "root" :created-at "fixed"))
-        (divergent '(:id "chain" :record-type processing-chain
-                     :root-message-id "other" :created-at "fixed")))
-    (e-session-create store :id "board-session")
-    (e-session-append-board-message store "board-session" first)
-    (e-session-append-board-message store "board-session" first)
-    (should-error
-     (e-session-append-board-message store "board-session" divergent)
-     :type 'e-session-board-message-conflict)
-    (should (equal (e-session-local-board-messages store "board-session")
-                   (list first)))))
-
-(ert-deftest e-session-test-processing-journal-rejects-cross-record-reentrancy-in-order ()
-  "The live ledger and replay retain the same durable processing order."
-  (let ((directory (make-temp-file "e-session-processing-order-" t))
-        reentrant-error)
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (session-id "board-session"))
-          (e-session-create store :id session-id)
-          (let ((board
-                 (e-board-create
-                  :id "board"
-                  :processing-record-notification-function
-                  (lambda (callback-board record _type)
-                    (e-session-append-board-message
-                     store session-id
-                     (e-board-processing-record-envelope record))
-                    (condition-case error
-                        (e-board-record-processing-chain
-                         callback-board :id "nested" :root-message-id "root"
-                         :candidate-message-id "nested" :caused-by-message-id "root"
-                         :processor-history nil :processing-depth 0)
-                      (e-board-id-conflict
-                       (setq reentrant-error error)))))))
-            (e-board-record-processing-chain
-             board :id "outer" :root-message-id "root"
-             :candidate-message-id "outer" :caused-by-message-id "root"
-             :processor-history nil :processing-depth 0)
-            (should reentrant-error)
-            (should (equal (mapcar #'e-board-processing-chain-id
-                                   (e-board-list-processing-chains board))
-                           '("outer")))
-            (let* ((reopened (e-session-persistent-store-create directory))
-                   (restored (e-board-create :id "restored" :register nil)))
-              (dolist (envelope (e-session-local-board-messages reopened session-id))
-                (e-board-import-processing-record restored envelope))
-              (should (equal (mapcar #'e-board-processing-chain-id
-                                     (e-board-list-processing-chains restored))
-                             '("outer"))))))
-      (delete-directory directory t))))
-
 (ert-deftest e-session-test-admitted-callback-defers-past-commit-barrier ()
   "An admitted callback retains FIFO order without weakening facade rejection."
   (let ((directory (make-temp-file "e-session-callback-barrier-" t))
@@ -1471,100 +1183,6 @@ stand in for the pure curation preparation path."
                    '("stored"))))
       (delete-directory directory t))))
 
-(ert-deftest e-session-test-board-journal-is-private-from-generic-session-view ()
-  "Generic session mutation cannot alter the private board journal or its index."
-  (let ((store (e-session-store-create))
-        (message '(:id "board-1" :kind output :content "retained")))
-    (e-session-create store :id "board-session")
-    (e-session-append-board-message store "board-session" message)
-    (let ((session (e-session-local-state store "board-session")))
-      (should-not (plist-member session :board-messages))
-      (should-not (plist-member session :board-message-id-index))
-      (plist-put session :board-messages
-                 (list '(:id "board-1" :kind output :content "mutated")))
-      (plist-put session :board-message-id-index (make-hash-table :test 'equal)))
-    (e-session-append-board-message store "board-session" message)
-    (should (equal (e-session-local-board-messages store "board-session")
-                   (list message)))))
-
-(ert-deftest e-session-test-board-log-rejects-cyclic-envelope-values ()
-  "Board journals reject cyclic cons, vector, and hash table envelope values."
-  (let ((store (e-session-store-create)))
-    (e-session-create store :id "board-session")
-    (dolist (value
-             (list (let ((cycle (list nil)))
-                     (setcar cycle cycle)
-                     cycle)
-                   (let ((cycle (vector nil)))
-                     (aset cycle 0 cycle)
-                     cycle)
-                   (let ((cycle (make-hash-table :test 'eq)))
-                     (puthash :self cycle cycle)
-                     cycle)))
-      (should-error
-       (e-session-append-board-message
-        store "board-session" (list :id "cycle" :value value))
-       :type 'e-session-board-message-cycle))
-    (should-not (e-session-local-board-messages store "board-session"))))
-
-(ert-deftest e-session-test-board-messages-loads-an-indexed-session ()
-  (ert-skip "Retired indexed aggregate restoration scenario")
-  "Board message access loads an unloaded indexed session before reading it."
-  (let ((directory (make-temp-file "e-session-board-indexed-access-" t)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (session-id "board-session"))
-          (e-session-create store :id session-id)
-          (e-session-append-board-message
-           store session-id '(:id "message-1" :kind output))
-          (e-session-flush-write-queue store)
-          (let ((indexed (e-session-persistent-index-store-create directory)))
-            (should-not (plist-get (e-session-aggregate-peek-session indexed session-id)
-                                   :loaded))
-            (should (equal (mapcar (lambda (message) (plist-get message :id))
-                                   (e-session-local-board-messages indexed session-id))
-                           '("message-1")))
-            (should (plist-get (e-session-aggregate-peek-session indexed session-id)
-                               :loaded))))
-      (delete-directory directory t))))
-
-(ert-deftest e-session-test-board-log-freezes-input-and-returned-envelopes ()
-  "Board journal state remains private across input and return-value mutation."
-  (let* ((directory (make-temp-file "e-session-board-freeze-" t))
-         (store (e-session-persistent-index-store-create directory))
-         (id (copy-sequence "frozen"))
-         (value (copy-sequence "top-level"))
-         (nested-value (copy-sequence "original"))
-         (nested (list nested-value))
-         (envelope (list :id id :value value :attributes (list :nested nested))))
-    (unwind-protect
-        (progn
-          (e-session-create store :id "board-session")
-          (let ((returned (e-session-append-board-message
-                           store "board-session" envelope)))
-            (aset id 0 ?x)
-            (aset value 0 ?x)
-            (aset nested-value 0 ?x)
-            (aset (plist-get returned :id) 0 ?x)
-            (aset (plist-get returned :value) 0 ?x)
-            (aset (car (plist-get (plist-get returned :attributes) :nested))
-                  0 ?x))
-          (let ((message (car (e-session-local-board-messages store "board-session"))))
-            (should (equal (plist-get message :id) "frozen"))
-            (should (equal (plist-get message :value) "top-level"))
-            (should (equal (plist-get (plist-get message :attributes) :nested)
-                           '("original"))))
-          (e-session-flush-write-queue store)
-          (let ((message (car (e-session-local-board-messages
-                               (e-session-persistent-store-create directory)
-                               "board-session"))))
-            (should (equal (plist-get message :id) "frozen"))
-            (should (equal (plist-get message :value) "top-level"))
-            (should (equal (plist-get (plist-get message :attributes) :nested)
-                           '("original")))))
-      (ignore-errors (e-session-flush-write-queue store))
-      (delete-directory directory t))))
-
 (ert-deftest e-session-test-checkpoint-manifest-deep-freezes-all-values ()
   "Manifest mutation cannot alter generic session state or retained entry IDs."
   (let* ((store (e-session-store-create))
@@ -1597,125 +1215,6 @@ stand in for the pure curation preparation path."
       (should (string-prefix-p "01"
                                (plist-get (car (e-session-local-messages store session-id))
                                           :id))))))
-
-(ert-deftest e-session-test-board-log-rejects-invalid-record-types ()
-  "Only absent and supported processing record types enter the board journal."
-  (let ((store (e-session-store-create)))
-    (e-session-create store :id "board-session")
-    (e-session-append-board-message store "board-session" '(:id "message"))
-    (dolist (record-type '("" 0 :json-false unknown "unknown"))
-      (should-error
-       (e-session-append-board-message
-        store "board-session" (list :id "message" :record-type record-type))
-       :type 'e-session-board-message-invalid-record-type))
-    (should (equal (mapcar #'e-session-aggregate-board-message-identity
-                           (e-session-local-board-messages store "board-session"))
-                   '((board-message . "message"))))))
-
-(ert-deftest e-session-test-checkpoint-manifest-detaches-board-identities ()
-  "Checkpoint manifest mutation cannot change the private board journal."
-  (let* ((store (e-session-store-create))
-         (session-id "board-session")
-         (board-id (copy-sequence "board-1"))
-         (principal (copy-sequence "principal-1"))
-         (message-id (copy-sequence "record-1")))
-    (e-session-create store :id session-id)
-    (e-session-declare-board-state store session-id principal board-id)
-    (e-session-append-board-message
-     store session-id
-     (list :id message-id :record-type 'processing-chain))
-    (let* ((manifest (e-session-checkpoint-manifest store session-id))
-           (identity (aref (plist-get manifest :board-message-identities) 0))
-           (state (plist-get manifest :board-state)))
-      (aset (plist-get identity :id) 0 ?x)
-      (aset (plist-get state :board-id) 0 ?x)
-      (aset (plist-get state :principal) 0 ?x))
-    (should (equal (plist-get (car (e-session-local-board-messages store session-id)) :id)
-                   "record-1"))
-    (should (equal (plist-get (plist-get (e-session-local-state store session-id)
-                                          :board-session-state)
-                              :board-id)
-                   "board-1"))
-    (should (equal (plist-get (plist-get (e-session-local-state store session-id)
-                                          :board-session-state)
-                              :principal)
-                   "principal-1"))))
-
-(ert-deftest e-session-test-board-log-canonicalizes-processing-record-types ()
-  "String and symbol processing record types share one durable identity."
-  (let ((store (e-session-store-create))
-        (symbol-envelope '(:id "record-1" :record-type processing-chain))
-        (string-envelope '(:id "record-1" :record-type "processing-chain")))
-    (e-session-create store :id "board-session")
-    (e-session-append-board-message store "board-session" symbol-envelope)
-    (e-session-append-board-message store "board-session" string-envelope)
-    (let ((messages (e-session-local-board-messages store "board-session")))
-      (should (= (length messages) 1))
-      (should (eq (plist-get (car messages) :record-type)
-                  'processing-chain)))))
-
-(ert-deftest e-session-test-board-log-replay-deduplicates-identical-typed-envelope ()
-  "Restart ignores repeated typed board envelopes with equal durable values."
-  (let ((directory (make-temp-file "e-session-board-replay-duplicate-" t)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (session-id "board-session")
-               (message '(:id "chain" :record-type processing-chain
-                          :root-message-id "root" :created-at "fixed"))
-               (record (list :type "board-message" :session-id session-id
-                             :message message)))
-          (e-session-create store :id session-id)
-          (e-session-append-board-message store session-id message)
-          (e-session-storage-commit-mutation store session-id record)
-          (let ((messages (e-session-local-board-messages
-                           (e-session-persistent-store-create directory) session-id)))
-            (should (= (length messages) 1))
-            (should (equal (plist-get (car messages) :id) "chain"))
-            (should (eq (plist-get (car messages) :record-type)
-                        'processing-chain))))
-      (delete-directory directory t))))
-
-(ert-deftest e-session-test-board-log-replay-rejects-divergent-typed-envelope ()
-  "Restart rejects repeated typed board envelopes with divergent durable values."
-  (let ((directory (make-temp-file "e-session-board-replay-conflict-" t)))
-    (unwind-protect
-        (let* ((store (e-session-persistent-store-create directory))
-               (session-id "board-session")
-               (message '(:id "chain" :record-type processing-chain
-                          :root-message-id "root" :created-at "fixed"))
-               (divergent '(:id "chain" :record-type processing-chain
-                            :root-message-id "other" :created-at "fixed")))
-          (e-session-create store :id session-id)
-          (e-session-append-board-message store session-id message)
-          (e-session-storage-commit-mutation
-           store session-id
-           (list :type "board-message" :session-id session-id
-                 :message divergent))
-          (should-error
-           (e-session-local-board-messages
-            (e-session-persistent-store-create directory) session-id)
-           :type 'e-session-board-message-conflict))
-      (delete-directory directory t))))
-
-(ert-deftest e-session-test-board-log-keeps-colliding-record-kinds-across-restart ()
-  "Board messages and processing records share raw ids without journal loss."
-  (let ((directory (make-temp-file "e-session-board-collision-" t)))
-    (unwind-protect
-        (let ((store (e-session-persistent-store-create directory)))
-          (e-session-create store :id "board-session")
-          (dolist (envelope '((:id "shared" :kind output)
-                              (:id "shared" :record-type processing-chain)
-                              (:id "shared" :record-type processing-result)))
-            (e-session-append-board-message store "board-session" envelope))
-          (e-session-flush-write-queue store)
-          (let ((reopened (e-session-persistent-store-create directory)))
-            (should (equal
-                     (mapcar #'e-session-aggregate-board-message-identity
-                             (e-session-local-board-messages reopened "board-session"))
-                     '((board-message . "shared")
-                       (processing-chain . "shared")
-                       (processing-result . "shared"))))))
-      (delete-directory directory t))))
 
 (ert-deftest e-session-test-append-message-preserves-order ()
   "Messages are returned in insertion order."
@@ -1754,63 +1253,6 @@ stand in for the pure curation preparation path."
              (plist-get (car (e-session-list store))
                         :latest-assistant-marker)
               "assistant-2"))))
-
-(ert-deftest e-session-test-append-assistant-allocates-board-output-sequence ()
-  "New assistant entries receive a stable session-local board output sequence."
-  (let ((store (e-session-store-create)))
-    (e-session-create store :id "output-sequence")
-    (e-session-append-message store "output-sequence" '(:role user :content "one"))
-    (let ((first (e-session-append-message
-                  store "output-sequence" '(:role assistant :content "two")))
-          (second (e-session-append-message
-                   store "output-sequence" '(:role assistant :content "three"))))
-      (should (= (plist-get first :board-output-sequence) 1))
-      (should (= (plist-get second :board-output-sequence) 2)))))
-
-(ert-deftest e-session-test-board-output-sequence-continues-after-replay ()
-  "Reopened sessions allocate past stored assistant output identities."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create store :id "output-replay")
-          (e-session-append-message
-           store "output-replay" '(:role assistant :content "first"))
-          (e-session-flush-write-queue store)
-          (let* ((reopened (e-session-persistent-store-create directory))
-                 (message (e-session-append-message
-                           reopened "output-replay"
-                           '(:role assistant :content "second"))))
-            (should (= (plist-get message :board-output-sequence) 2))))
-      (delete-directory directory t))))
-
-(ert-deftest e-session-test-append-activity-allocates-board-activity-sequence ()
-  "Durable activity entries receive one stable session-local publication sequence."
-  (let ((store (e-session-store-create)))
-    (e-session-create store :id "activity-sequence")
-    (let ((first (e-session-append-activity-event
-                  store "activity-sequence" "turn" 'tool-started nil))
-          (second (e-session-append-activity-event
-                   store "activity-sequence" "turn" 'tool-finished nil)))
-      (should (= (plist-get first :board-activity-sequence) 1))
-      (should (= (plist-get second :board-activity-sequence) 2)))))
-
-(ert-deftest e-session-test-board-activity-sequence-continues-after-replay ()
-  "Reopened sessions retain their durable activity publication high watermark."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create store :id "activity-replay")
-          (e-session-append-activity-event
-           store "activity-replay" "turn" 'tool-started nil)
-          (e-session-flush-write-queue store)
-          (let* ((reopened (e-session-persistent-store-create directory))
-                 (event (e-session-append-activity-event
-                         reopened "activity-replay" "turn" 'tool-finished nil)))
-            (should (= (plist-get event :board-activity-sequence) 2))))
-      (delete-directory directory t))))
-
 
 (ert-deftest e-session-test-ulid-generation-is-ordered-and-opaque ()
   "Generated durable entry ids are ULID strings ordered by creation."
@@ -1965,71 +1407,6 @@ stand in for the pure curation preparation path."
 
 
 
-(ert-deftest e-session-test-load-session-start-replays-in-chunks ()
-  "Chunked persistent session loading returns before replay completion."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-store-create directory))
-         (session (e-session-create store :id "chunked-session"))
-         (session-id (plist-get session :id)))
-    (unwind-protect
-        (progn
-          (dotimes (index 8)
-            (e-session-append-message
-             store session-id
-             (list :id (format "msg-%d" index)
-                   :role 'user
-                   :content (format "chunked message %d with enough bytes"
-                                    index))))
-          ;; Leave a deterministic suffix beyond the latest checkpoint so the
-          ;; cooperative current-store reader must issue several bounded pages.
-          (dotimes (offset 4)
-            (let* ((index (+ 8 offset))
-                   (id (format "msg-%d" index))
-                   (parent-id (format "msg-%d" (1- index))))
-              (e-session-storage-commit-mutation
-               store session-id
-               (list :type "message" :session-id session-id
-                     :id id :parent-id parent-id
-                     :timestamp "2026-09-02T00:00:00Z"
-                     :message
-                     (list :id id :parent-id parent-id :role 'user
-                           :content (format
-                                     "chunked message %d with enough bytes"
-                                     index))))))
-          (let ((loaded (e-session-persistent-index-store-create directory))
-                result
-                failure
-                progress
-                request)
-            (setq request
-                  (e-session-load-session-start
-                   loaded session-id
-                   :chunk-bytes 2
-                   :on-progress (lambda (payload)
-                                  (push payload progress))
-                   :on-done (lambda (session)
-                              (setq result session))
-                   :on-error (lambda (err)
-                               (setq failure err))))
-            (should (e-request-lifecycle-p request))
-            (should (eq (e-request-lifecycle-state request) 'started))
-            (should-not result)
-            (let ((deadline (+ (float-time) 5)))
-              (while (and (not result) (not failure) (< (float-time) deadline))
-                (accept-process-output nil 0.01)))
-            (should-not failure)
-            (should (eq (e-request-lifecycle-state request) 'finished))
-            (should (plist-get result :loaded))
-            (should (< 1 (length progress)))
-            (should (equal (mapcar (lambda (message)
-                                     (plist-get message :content))
-                                   (e-session-local-messages loaded session-id))
-                           (mapcar (lambda (index)
-                                     (format
-                                      "chunked message %d with enough bytes"
-                                      index))
-                                   (number-sequence 0 11))))))
-      (delete-directory directory t))))
 
 (ert-deftest e-session-test-load-requires-explicit-resume-checkpoint ()
   "Normal session load never falls back to a full checkpoint-less replay."
@@ -2099,59 +1476,7 @@ stand in for the pure curation preparation path."
       (delete-directory directory t))))
 
 
-(ert-deftest e-session-test-index-store-lists-without-loading-transcripts ()
-  (ert-skip "Retired Emacs-owned catalog/stub scenario")
-  "Indexed SQLite stores list sessions without replaying record pages."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-store-create directory))
-         (session-id (plist-get (e-session-create store :id "session-1") :id)))
-    (unwind-protect
-        (progn
-          (e-session-append-message
-           store session-id '(:id "msg-1" :role user :content "indexed hello"))
-          (e-session-append-message
-           store session-id '(:id "msg-2" :role tool :content (:payload "large")))
-          (cl-letf (((symbol-function 'e-session-load-session)
-                     (lambda (&rest _args)
-                       (error "index store replayed session records"))))
-              (let* ((indexed (e-session-persistent-index-store-create directory))
-                     (sessions (e-session-list indexed))
-                     (session (car sessions)))
-                (should (equal (plist-get session :id) session-id))
-                (should (equal (plist-get session :summary) "indexed hello"))
-                (should (= (plist-get session :message-count) 2))
-                (should-not (plist-get session :loaded))))
-          (let ((indexed (e-session-persistent-index-store-create directory)))
-            (should (equal (mapcar (lambda (message) (plist-get message :id))
-                                   (e-session-local-messages indexed session-id))
-                           '("msg-1" "msg-2")))))
-      (delete-directory directory t))))
 
-(ert-deftest e-session-test-index-store-display-title-avoids-transcript-load ()
-  (ert-skip "Retired Emacs-owned catalog/stub scenario")
-  "Display titles for indexed sessions use metadata without transcript replay."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-store-create directory))
-         (session-id (plist-get
-                      (e-session-create store
-                                        :id "session-1"
-                                        :metadata '(:name "Indexed title"))
-                      :id)))
-    (unwind-protect
-        (progn
-          (e-session-append-message
-           store session-id
-           '(:id "msg-1" :role user :content "indexed hello"))
-          (let ((loaded nil))
-            (cl-letf (((symbol-function 'e-session-load-session)
-                       (lambda (&rest _args)
-                         (setq loaded t)
-                         (error "display title loaded transcript"))))
-              (let ((indexed (e-session-persistent-index-store-create directory)))
-                (should (equal (e-session-display-title indexed session-id)
-                               "Indexed title"))
-                (should-not loaded)))))
-      (delete-directory directory t))))
 
 (ert-deftest e-session-test-index-store-loads-object-shaped-index ()
   "A legacy-only index receives a targeted offline-migration error."
@@ -3027,30 +2352,6 @@ stand in for the pure curation preparation path."
                            '(tool-started)))))
       (delete-directory directory t))))
 
-(ert-deftest e-session-test-list-sessions-sorted-with-display-metadata ()
-  "Session list returns recent sessions with current durable references."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create store :id "older")
-          (e-session-append-message
-           store "older" '(:id "old-msg" :role user :content "older prompt"))
-          (e-session-create store :id "newer")
-          (e-session-append-message
-           store "newer" '(:id "new-msg" :role user :content "newer prompt"))
-          (e-session-rename store "newer" "Explicit title")
-          (let ((sessions (e-session-list store)))
-            (should (equal (mapcar (lambda (session) (plist-get session :id))
-                                   sessions)
-                           '("newer" "older")))
-            (should (equal (plist-get (car sessions) :title)
-                           "Explicit title"))
-            (should (equal (plist-get (cadr sessions) :title)
-                           "older prompt"))
-            (should (= (plist-get (car sessions) :message-count) 1))
-            (should-not (plist-get (car sessions) :file))))
-      (delete-directory directory t))))
 
 (ert-deftest e-session-test-list-roots-excludes-worker-sessions ()
   "Root listing omits subagent and task-queue sessions without deleting them."
@@ -3065,58 +2366,7 @@ stand in for the pure curation preparation path."
                    '("root")))
     (should (= (length (e-session-list store)) 3))))
 
-(ert-deftest e-session-test-index-store-list-roots-excludes-worker-sessions ()
-  (ert-skip "Retired Emacs-owned catalog/stub scenario")
-  "Root listing classifies unloaded indexed sessions from durable metadata."
-  (let* ((directory (make-temp-file "e-session-index-roots-" t))
-         (store (e-session-persistent-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create store :id "root")
-          (e-session-create store :id "subagent"
-                            :metadata '(:parent-session-id "root"
-                                        :subagent-role "tool-user"))
-          (e-session-create store :id "task"
-                            :metadata '(:task-queue-task-id "tsk_000001"))
-          (let ((indexed (e-session-persistent-index-store-create directory)))
-            (should (equal (mapcar (lambda (session)
-                                     (plist-get session :id))
-                                   (e-session-list-roots indexed))
-                           '("root")))
-            (should (= (length (e-session-list indexed)) 3))))
-      (delete-directory directory t))))
 
-(ert-deftest e-session-test-refresh-index-metadata-repairs-unloaded-stubs ()
-  (ert-skip "Retired unloaded-stub reconciliation scenario")
-  "Index refresh repairs stale unloaded metadata without replacing sessions."
-  (let* ((directory (make-temp-file "e-session-refresh-index-" t))
-         (writer (e-session-persistent-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create writer :id "root")
-          (e-session-create writer :id "worker"
-                            :metadata '(:parent-session-id "root"
-                                        :subagent-role "tool-user"))
-          (let* ((store (e-session-persistent-index-store-create directory))
-                 (worker (e-session-aggregate-peek-session store "worker")))
-            ;; Reproduce a store retained across reload from code that did not
-            ;; hydrate metadata into unloaded index stubs.
-            (plist-put worker :metadata nil)
-            (should (equal (mapcar (lambda (session)
-                                     (plist-get session :id))
-                                   (e-session-list-roots store))
-                           '("worker" "root")))
-            (e-session-refresh-index-metadata store)
-            (should (eq (e-session-aggregate-peek-session store "worker") worker))
-            (should-not (plist-get worker :loaded))
-            (should (equal (plist-get (plist-get worker :metadata)
-                                      :parent-session-id)
-                           "root"))
-            (should (equal (mapcar (lambda (session)
-                                     (plist-get session :id))
-                                   (e-session-list-roots store))
-                           '("root")))))
-      (delete-directory directory t))))
 
 
 (ert-deftest e-session-test-fork-snapshots-messages-and-leaves-source-untouched ()
@@ -3339,71 +2589,8 @@ stand in for the pure curation preparation path."
                 (car (plist-get projection :promotions)))
                '((:id "fact-selected" :value "first divergence")))))))
 
-(ert-deftest e-session-aggregate-test-persistent-replay-refreshes-derived-fields-once-per-session ()
-  "Persistent replay preserves all appended messages and their summary."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-index-store-create directory))
-         (session-id (plist-get (e-session-create store :id "session-1") :id)))
-    (unwind-protect
-        (progn
-          (dotimes (index 40)
-            (e-session-append-message
-             store
-             session-id
-             (list :id (format "msg-%d" index)
-                   :role (if (cl-evenp index) 'user 'tool)
-                   :content (list :payload (make-string 1000 ?x)))))
-          (let ((loaded (e-session-persistent-store-create directory)))
-            (should (= (length (e-session-local-messages loaded session-id)) 40))
-            (should (equal (plist-get (e-session-local-state loaded session-id) :summary)
-                           (plist-get (e-session-local-state store session-id) :summary)))))
-      (delete-directory directory t))))
 
-(ert-deftest e-session-aggregate-test-persistent-replay-preserves-message-timestamp ()
-  "Persistent replay restores each message's journal timestamp."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-index-store-create directory))
-         (session-id "session-1"))
-    (unwind-protect
-        (let* ((created (e-session-create store :id session-id))
-               (message (e-session-append-message
-                         store session-id
-                         '(:id "msg-1" :role user :content "hello")))
-               (created-at (plist-get message :created-at)))
-          (let ((loaded (e-session-persistent-store-create directory)))
-            (should (equal (plist-get
-                            (car (e-session-local-messages loaded session-id))
-                            :created-at)
-                           created-at))
-            (should (equal (plist-get created :id) session-id))))
-      (delete-directory directory t))))
 
-(ert-deftest e-session-aggregate-test-list-sessions-sorted-by-last-message ()
-  (ert-skip "Retired catalog projection ordering scenario")
-  "Session list order follows last message time, not metadata touches."
-  (let* ((directory (make-temp-file "e-session-" t))
-         (store (e-session-persistent-index-store-create directory)))
-    (unwind-protect
-        (progn
-          (e-session-create store :id "older")
-          (e-session-append-message
-           store "older" '(:id "old-msg" :role user :content "older prompt"))
-          ;; Durable timestamps have second precision.  Keep the two message
-          ;; times distinct without reaching into an owner-private clock.
-          (sleep-for 1.1)
-          (e-session-create store :id "newer")
-          (e-session-append-message
-           store "newer" '(:id "new-msg" :role user :content "newer prompt"))
-          (e-session-rename store "older" "Touched older title")
-          (let ((ids (mapcar (lambda (session) (plist-get session :id))
-                             (e-session-list store))))
-            (should (equal ids '("newer" "older"))))
-          (should
-           (equal
-            (mapcar (lambda (entry) (plist-get entry :id))
-                    (e-session-storage-read-catalog-projection store))
-            '("newer" "older"))))
-      (delete-directory directory t))))
 
 (provide 'e-session-test)
 

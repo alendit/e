@@ -20,7 +20,6 @@
 (require 'e-session-aggregate)
 (require 'e-session-codec)
 (require 'e-session-catalog)
-(require 'e-session-board-policy)
 (require 'e-session-identity)
 (require 'e-session-metadata)
 (require 'e-session-provider-anchor)
@@ -77,41 +76,30 @@ the storage owner's state representation."
 
 (defun e-session--index-entry-session (store entry)
   "Return an unloaded semantic session stub from catalog ENTRY."
-  (let ((id (plist-get entry :id))
-        (association (e-session-aggregate-projected-board-association entry)))
+  (let ((id (plist-get entry :id)))
     (when id
-      (let ((session
-             (list :id id
-                   :metadata
-                   (e-session-metadata-normalize-for-replay
-                    (plist-get entry :metadata))
-                   :session-events nil :messages nil :activity-events nil
-                   :branch-summaries nil :current-branch nil :compactions nil
-                   :provider-anchors nil :process-reports nil
-                   :context-generations nil :context-promotions nil
-                   :context-curation-packages nil :turn-options nil
-                   :created-at (plist-get entry :created-at)
-                   :updated-at (plist-get entry :updated-at)
-                   :updated-seq (or (plist-get entry :updated-seq) 0)
-                   :name (plist-get entry :name)
-                   :summary (plist-get entry :summary)
-                   :message-count (or (plist-get entry :message-count) 0)
-                   :last-message-at (plist-get entry :last-message-at)
-                   :latest-assistant-marker
-                   (plist-get entry :latest-assistant-marker)
-                   :board-id (plist-get entry :board-id)
-                   :principal (plist-get entry :principal)
-                   :file (or (plist-get entry :file)
-                             (e-session-storage-session-reference store id))
-                   :loaded nil)))
-        ;; A present malformed association is significant: retaining the
-        ;; bounded marker makes root pickers fail closed instead of treating a
-        ;; partially populated legacy flat projection as an ordinary root.
-        ;; The canonical all-null flat projection remains absent and therefore
-        ;; is intentionally not installed on the stub.
-        (when association
-          (plist-put session :board-session-state association))
-        (e-session-aggregate-initialize-list-state session)))))
+      (e-session-aggregate-initialize-list-state
+       (list :id id
+             :metadata
+             (e-session-metadata-normalize-for-replay
+              (plist-get entry :metadata))
+             :session-events nil :messages nil :activity-events nil
+             :branch-summaries nil :current-branch nil :compactions nil
+             :provider-anchors nil :process-reports nil
+             :context-generations nil :context-promotions nil
+             :context-curation-packages nil :turn-options nil
+             :created-at (plist-get entry :created-at)
+             :updated-at (plist-get entry :updated-at)
+             :updated-seq (or (plist-get entry :updated-seq) 0)
+             :name (plist-get entry :name)
+             :summary (plist-get entry :summary)
+             :message-count (or (plist-get entry :message-count) 0)
+             :last-message-at (plist-get entry :last-message-at)
+             :latest-assistant-marker
+             (plist-get entry :latest-assistant-marker)
+             :file (or (plist-get entry :file)
+                       (e-session-storage-session-reference store id))
+             :loaded nil)))))
 
 (defun e-session--normalize-index-json-entry (entry)
   "Return physical index ENTRY in semantic detached form."
@@ -122,18 +110,8 @@ the storage owner's state representation."
           (let* ((key (pop tail))
                  (value (pop tail)))
             (plist-put result key
-                       (if (eq key :board-state)
-                           ;; Keep physical JSON null distinct from an empty
-                           ;; object until the aggregate classifies the index
-                           ;; projection.  Both parse as nil under plist object
-                           ;; semantics, while the historical index contract
-                           ;; treats null as absence and {} as malformed state.
-                           (if (e-session-codec-json-null-p value)
-                               value
-                             (e-session-codec-board-association-from-json
-                              value))
-                         (e-session-codec-index-value-from-json value)))))
-      result))))
+                       (e-session-codec-index-value-from-json value)))))
+      result)))
 
 (defun e-session--index-entries (value)
   "Return normalized catalog entries from physical index VALUE."
@@ -248,10 +226,7 @@ the next mutation or explicit finalize barrier."
           :metadata (copy-tree (plist-get session :metadata))
           :name (plist-get session :name)
           :turn-options (copy-tree (plist-get session :turn-options))
-          :current-branch (plist-get session :current-branch)
-          :board-output-sequence (or (plist-get session :board-output-sequence) 0)
-          :board-activity-sequence
-          (or (plist-get session :board-activity-sequence) 0))))
+          :current-branch (plist-get session :current-branch))))
 
 (defun e-session--persist-record (store session-id record &optional write-index)
   "Preflight and append semantic RECORD, then optionally refresh the index."
@@ -411,35 +386,12 @@ session application boundary, not a generic transaction builder."
   "Return the newest semantic session event for SESSION-ID."
   (car (last (e-session-aggregate-session-events store session-id))))
 
-(defun e-session--board-state-record (store session-id)
-  "Return the aggregate's current board association record."
-  (let* ((session (e-session-aggregate-get-live store session-id))
-         (state (e-session-aggregate-board-association session)))
-    (when state
-      (list :type "board-session-state" :session-id session-id
-            :timestamp (e-session--timestamp)
-            :board-state state
-            :board-id (plist-get state :board-id)
-            :principal (plist-get state :principal)
-            :association-role (plist-get state :association-role)
-            :board-output-sequence
-            (or (plist-get session :board-output-sequence) 0)
-            :board-activity-sequence
-            (or (plist-get session :board-activity-sequence) 0)))))
-
-(defun e-session--persist-board-state (store session-id)
-  "Persist the aggregate's current board association projection."
-  (let ((record (e-session--board-state-record store session-id)))
-    (when record
-      (e-session--persist-record store session-id record))))
-
 (defun e-session--checkpoint-json (store session-id)
   "Return catalog-produced exact checkpoint value for SESSION-ID."
   (let* ((session (e-session-aggregate-get-live store session-id))
          (offset (plist-get (e-session-storage-session-header store session-id)
                             :byte-size)))
-    (e-session-catalog-checkpoint-value
-     session (e-session-aggregate-board-messages store session-id) offset)))
+    (e-session-catalog-checkpoint-value session offset)))
 
 (defun e-session--write-session-checkpoint-now (store session-id)
   "Atomically persist SESSION-ID's current bounded checkpoint."
@@ -642,108 +594,25 @@ Ordinary v6 SQLite consumers must use detached asynchronous queries."
            (e-session-aggregate-abort-created store (plist-get session :id))
            (signal (car err) (cdr err))))))))
 
-(cl-defun e-session-create-board-admission
-    (store &key id metadata principal board-id association-role routing-policy)
-  "Prepare a board-backed session admission without publishing it."
-  (let* ((session (e-session-aggregate-create-board-admission
-                   store :id (or id (e-session-generate-id)) :metadata metadata
-                   :principal principal :board-id board-id
-                   :association-role association-role
-                   :routing-policy routing-policy))
-         (session-id (plist-get session :id))
-         (records (mapcar #'e-session-codec-record-for-json
-                          (plist-get session :admission-records))))
-    (when (e-session--persistent-p store)
-      (e-session-storage-validate-admission-for-store store session-id records)
-      (dolist (record records) (json-encode record)))
-    (plist-put session :admission-records records)
-    session))
+(cl-defun e-session-admission-records (&key id metadata)
+  "Return detached canonical root records for one new session.
 
-(cl-defun e-session-board-admission-records
-    (&key id metadata principal board-id association-role routing-policy)
-  "Return detached canonical root and Board-association records.
-
-This v6 constructor creates no aggregate, catalog entry, reservation, or other
-process-wide durable mirror.  SQLite admission of the returned records is the
-only durable identity boundary."
+This constructor creates no aggregate, catalog entry, reservation, or other
+process-wide durable mirror.  A caller that owns a cross-domain association
+must publish that fact in its own durable store rather than encoding it as a
+session-journal record."
   (let* ((session-id (or id (e-session-generate-id)))
          (timestamp (e-session--timestamp))
-         (metadata (e-session-metadata-normalize-for-replay metadata))
-         (role
-          (and association-role
-               (if (symbolp association-role)
-                   (symbol-name association-role)
-                 association-role))))
-    (unless (and (stringp session-id) (not (string-empty-p session-id))
-                 (stringp board-id) (not (string-empty-p board-id))
-                 (stringp principal) (not (string-empty-p principal)))
-      (signal 'e-session-error
-              (list "Invalid board admission identity"
-                    session-id board-id principal)))
-    (when (and role (not (member role '("owner" "participant"))))
-      (signal 'e-session-error (list "Invalid board association role" role)))
-    (when (and routing-policy
-               (not (e-session-board-routing-policy-valid-p routing-policy)))
-      (signal 'e-session-board-routing-invalid
-              (list "Invalid board routing policy" routing-policy)))
-    (let* ((root-id (e-session-generate-ulid))
-           (board-state
-            (append
-             (list :board-id (copy-sequence board-id)
-                   :principal (copy-sequence principal))
-             (when role (list :association-role role))
-             (when routing-policy
-               (list :routing-policy
-                     (e-session-board-routing-policy-normalize
-                      routing-policy)))))
-           (records
-            (list
-             (list :type "session" :session-id session-id :id root-id
-                   :timestamp timestamp :created-at timestamp
-                   :updated-at timestamp :metadata metadata)
-             (list :type "board-session-state" :session-id session-id
-                   :board-state board-state :board-id board-id
-                   :principal principal :board-output-sequence 0
-                   :board-activity-sequence 0))))
-      (list :id session-id :metadata (copy-tree metadata t)
-            :board-session-state (copy-tree board-state t)
-            :admission-records records))))
-
-(defun e-session-commit-board-admission (store session-id)
-  "Publish a prepared board admission as one storage transaction."
-  (let* ((session (e-session-aggregate-get-live store session-id))
-         (records (plist-get session :admission-records)))
-    (if (not (e-session-storage-sqlite-p store))
-        (condition-case err
-            (pcase-let
-                ((`(,index-projection ,checkpoint-projection-operation)
-                  (e-session--refresh-projections store)))
-              (e-session-storage-publish-admission
-               store session-id records nil)
-              (e-session-aggregate-commit-board-admission store session-id)
-              (e-session-storage-publish-projections
-               store index-projection checkpoint-projection-operation)
-              session)
-          (error
-           (e-session-storage-abort-session store session-id)
-           (e-session-aggregate-abort-created store session-id)
-           (signal (car err) (cdr err))))
-      (e-session--call-with-commit-barrier
-       store session-id
-       (lambda ()
-         (condition-case err
-             (e-session-storage-publish-admission
-              store session-id records nil)
-           (error
-            (e-session-storage-abort-session store session-id)
-            (e-session-aggregate-abort-created store session-id)
-            (signal (car err) (cdr err))))
-         ;; Primary admission is now authoritative.  Removing the private
-         ;; reservation and rebuilding projections cannot turn it into a
-         ;; reported uncommitted failure.
-         (e-session-aggregate-commit-board-admission store session-id)
-         (e-session--write-index-after-primary store)
-         session)))))
+         (metadata (e-session-metadata-normalize-for-replay metadata)))
+    (unless (and (stringp session-id) (not (string-empty-p session-id)))
+      (signal 'e-session-error (list "Invalid session admission identity"
+                                    session-id)))
+    (list :id session-id :metadata (copy-tree metadata t)
+          :admission-records
+          (list (list :type "session" :session-id session-id
+                      :id (e-session-generate-ulid)
+                      :timestamp timestamp :created-at timestamp
+                      :updated-at timestamp :metadata metadata)))))
 
 (defun e-session-abort-created (store session-id)
   "Abort a not-yet-admitted session and its owned storage work."
@@ -1129,59 +998,6 @@ only durable identity boundary."
        (e-session-aggregate-rename aggregate session-id name))
      :write-index t)))
 
-(defun e-session-append-board-message (store session-id message)
-  "Append one immutable board envelope."
-  (if (e-session-async-enabled-p store)
-      (e-session-async-submit-command store session-id 'board-message
-                                      (list :message message) :write-index t)
-    (e-session--ensure-local-state store session-id)
-    (e-session--commit-session-mutation
-     store session-id
-     (lambda (aggregate)
-       (e-session-aggregate-append-board-message
-        aggregate session-id message))
-     (lambda (_aggregate result)
-       (list :type "board-message" :session-id session-id
-             :timestamp (e-session--timestamp) :message result))
-     :write-index t)))
-
-(defun e-session-clear-board-messages (store session-id)
-  "Clear the independent board journal."
-  (if (e-session-async-enabled-p store)
-      (e-session-async-submit-command store session-id 'board-messages-clear nil
-                                      :write-index t)
-    (e-session--ensure-local-state store session-id)
-    (e-session--commit-session-mutation
-     store session-id
-     (lambda (aggregate)
-       (e-session-aggregate-clear-board-messages aggregate session-id))
-     (lambda (_aggregate _result)
-       (list :type "board-messages-cleared" :session-id session-id
-             :id (e-session-generate-ulid) :timestamp (e-session--timestamp)))
-     :write-index t)))
-
-(defun e-session-declare-board-state
-    (store session-id principal board-id &optional association-role routing-policy)
-  "Set and persist board identity and routing policy."
-  (if (e-session-async-enabled-p store)
-      (e-session-async-submit-command
-       store session-id 'board-state
-       (list :principal principal :board-id board-id
-             :association-role association-role :routing-policy routing-policy)
-       :write-index t)
-    (e-session--ensure-local-state store session-id)
-    (let ((state
-           (e-session--commit-session-mutation
-            store session-id
-            (lambda (aggregate)
-              (e-session-aggregate-declare-board-state
-               aggregate session-id principal board-id association-role
-               routing-policy))
-            (lambda (aggregate _result)
-              (e-session--board-state-record aggregate session-id))
-            :write-index t)))
-      (copy-tree state))))
-
 (cl-defun e-session-fork (store session-id &key at metadata name)
   "Fork SESSION-ID and publish the new aggregate through storage."
   (if (e-session-async-enabled-p store)
@@ -1197,8 +1013,6 @@ only durable identity boundary."
               (e-session--persist-record store fork-id
                                          (e-session--root-record-from-store
                                           store fork-id) nil)
-              (when (e-session-aggregate-board-association fork)
-                (e-session--persist-board-state store fork-id))
               (dolist (entry (cdr path))
                 (e-session--persist-entry store fork-id entry nil))
               (e-session--write-index store)
@@ -1226,8 +1040,6 @@ only durable identity boundary."
                (setq records
                      (append
                       (list (e-session--root-record-from-store stage fork-id))
-                      (when (e-session-aggregate-board-association fork)
-                        (list (e-session--board-state-record stage fork-id)))
                       (mapcar
                        (lambda (entry)
                          (e-session-codec-record-for-entry fork-id entry))
@@ -1474,29 +1286,6 @@ it is not a durable SQLite read API."
    (e-session-aggregate-current-path store session-id)
    anchor provider-id model fingerprints))
 
-(defun e-session-board-association (session)
-  "Return normalized board association from semantic SESSION."
-  (e-session-aggregate-board-association session))
-
-(defun e-session-board-association-invalid-p (association)
-  "Return non-nil for malformed board ASSOCIATION."
-  (e-session-aggregate-board-association-invalid-p association))
-
-(defun e-session-board-routing-policy (session)
-  "Return detached board routing policy from SESSION."
-  (e-session-aggregate-board-routing-policy session))
-
-(defun e-session-board-association-policy-present-p (association)
-  "Return non-nil when ASSOCIATION carries routing policy."
-  (e-session-aggregate-board-association-policy-present-p association))
-
-(defun e-session-local-board-messages (store session-id)
-  "Return detached board envelopes for SESSION-ID."
-  ;; Board state is kept outside the generic session projection, but reading
-  ;; it still has the facade's normal lazy-replay semantics for index stubs.
-  (e-session--ensure-local-state store session-id)
-  (e-session-aggregate-board-messages store session-id))
-
 (defun e-session-generate-id ()
   "Return a new durable session id."
   (e-session-identity-generate-id))
@@ -1552,8 +1341,7 @@ never touches durable files or another session's aggregate state."
 (defun e-session-checkpoint-manifest (store session-id)
   "Return semantic bounded checkpoint manifest for SESSION-ID."
   (e-session-catalog-checkpoint-manifest
-   (e-session--ensure-local-state store session-id)
-   (e-session-aggregate-board-messages store session-id)))
+   (e-session--ensure-local-state store session-id)))
 
 (defun e-session-refresh-index-metadata (store)
   "Refresh unloaded session metadata from the physical index."

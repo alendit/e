@@ -6,8 +6,8 @@
 ;;; Commentary:
 
 ;; The catalog is a value-oriented policy owner.  It selects bounded resume
-;; state and produces index/checkpoint projections from explicit session and
-;; board values.  It does not open files, mutate an aggregate, or call the
+;; state and produces index/checkpoint projections from explicit session
+;; values.  It does not open files, mutate an aggregate, or call the
 ;; storage adapter.  The application root performs those side effects.
 
 ;;; Code:
@@ -49,14 +49,6 @@ can leak through a checkpoint or index boundary."
 
 (defcustom e-session-checkpoint-marked-activity-event-limit 16
   "Maximum marked activity entries retained in a resume checkpoint."
-  :type 'integer :group 'e-session)
-
-(defcustom e-session-checkpoint-board-message-limit 256
-  "Maximum recent board messages retained in a resume checkpoint."
-  :type 'integer :group 'e-session)
-
-(defcustom e-session-checkpoint-board-fact-limit 256
-  "Maximum recent board facts retained in a resume checkpoint."
   :type 'integer :group 'e-session)
 
 (defcustom e-session-checkpoint-process-report-limit 32
@@ -231,22 +223,6 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
   "Return SESSION's resumable current-path suffix."
   (e-session-catalog--analysis-suffix
    (or analysis (e-session-catalog--analysis-build session))))
-
-(defun e-session-catalog--board-messages (messages)
-  "Select the bounded board resume union from MESSAGES."
-  (let* ((recent (e-session-catalog--tail
-                  messages e-session-checkpoint-board-message-limit))
-         (facts (e-session-catalog--tail
-                 (cl-remove-if-not
-                  (lambda (message)
-                    (let ((kind (plist-get message :kind)))
-                      (or (eq kind 'fact) (equal kind "fact"))))
-                  messages)
-                 e-session-checkpoint-board-fact-limit))
-         (selected (make-hash-table :test 'eq)))
-    (dolist (message recent) (puthash message t selected))
-    (dolist (message facts) (puthash message t selected))
-    (cl-remove-if-not (lambda (message) (gethash message selected)) messages)))
 
 (defun e-session-catalog--context-components (entry)
   "Return context components carried by semantic ENTRY."
@@ -428,30 +404,20 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
         :metadata (copy-tree (plist-get session :metadata))
         :name (plist-get session :name)
         :turn-options (copy-tree (plist-get session :turn-options))
-        :current-branch (plist-get session :current-branch)
-        :board-output-sequence (or (plist-get session :board-output-sequence) 0)
-        :board-activity-sequence (or (plist-get session :board-activity-sequence) 0)))
+        :current-branch (plist-get session :current-branch)))
 
-(defun e-session-catalog-checkpoint-manifest (session &optional board-messages)
-  "Return semantic resume manifest for SESSION and BOARD-MESSAGES."
+(defun e-session-catalog-checkpoint-manifest (session)
+  "Return semantic resume manifest for SESSION."
   (let* ((analysis (e-session-catalog--analysis-build session))
          (context (e-session-catalog--context-state analysis))
          (entries (e-session-catalog--retained-entries
-                   session analysis context))
-         (board (e-session-catalog--board-messages (or board-messages nil))))
+                   session analysis context)))
     (e-session-catalog--copy-value
      (list :session-id (plist-get session :id)
            :root (e-session-catalog--root session)
-           :board-state (plist-get session :board-session-state)
            :context-lifetime context
-           :entry-ids (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries))
-           :board-message-identities
-           (vconcat
-            (mapcar (lambda (message)
-                      (list :record-type
-                            (or (plist-get message :record-type) 'board-message)
-                            :id (plist-get message :id)))
-                    board))))))
+           :entry-ids
+           (vconcat (mapcar (lambda (entry) (plist-get entry :id)) entries))))))
 
 (defun e-session-catalog--checkpoint-entry-record (session-id entry parent-id)
   "Return replay record for ENTRY reparented to PARENT-ID."
@@ -470,7 +436,7 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
                   :timestamp (plist-get entry :created-at))))
     record))
 
-(defun e-session-catalog--checkpoint-records (session &optional board-messages)
+(defun e-session-catalog--checkpoint-records (session)
   "Return canonical replay records for SESSION's resume projection."
   (let* ((analysis (e-session-catalog--analysis-build session))
          (context (e-session-catalog--context-state analysis))
@@ -482,38 +448,24 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
                                       :timestamp (plist-get root :created-at))
                                 root)))
          (parent-id (plist-get root :id)))
-    (when-let ((state (plist-get session :board-session-state)))
-      (push (list :type "board-session-state" :session-id session-id
-                  :timestamp (plist-get root :updated-at)
-                  :board-state (copy-tree state)
-                  :board-id (plist-get state :board-id)
-                  :principal (plist-get state :principal)
-                  :board-output-sequence (plist-get root :board-output-sequence)
-                  :board-activity-sequence (plist-get root :board-activity-sequence))
-            records))
-    (dolist (message (e-session-catalog--board-messages (or board-messages nil)))
-      (push (list :type "board-message" :session-id session-id
-                  :message (copy-tree message)) records))
     (dolist (entry retained)
       (push (e-session-catalog--checkpoint-entry-record session-id entry parent-id)
             records)
       (setq parent-id (plist-get entry :id)))
     (e-session-catalog--copy-value (nreverse records))))
 
-(defun e-session-catalog-checkpoint-value (session board-messages offset)
+(defun e-session-catalog-checkpoint-value (session offset)
   "Return exact semantic checkpoint value for SESSION at journal OFFSET."
   (e-session-catalog--copy-value
    (list :version e-session-checkpoint-version
          :session-id (plist-get session :id)
          :journal-byte-offset offset
-         :records (vconcat (e-session-catalog--checkpoint-records
-                            session board-messages))
-         :writer-high-watermarks nil)))
+         :records (vconcat (e-session-catalog--checkpoint-records session)))))
 
-(defun e-session-catalog-checkpoint-json (session board-messages offset)
+(defun e-session-catalog-checkpoint-json (session offset)
   "Return JSON-ready checkpoint value for SESSION at journal OFFSET."
   (let ((checkpoint
-         (e-session-catalog-checkpoint-value session board-messages offset)))
+         (e-session-catalog-checkpoint-value session offset)))
     (plist-put
      checkpoint :records
      (vconcat (mapcar #'e-session-codec-record-for-json
@@ -521,10 +473,8 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
 
 (defun e-session-catalog-index-entry (session &optional file)
   "Return the detached catalog projection for SESSION."
-  (let ((state (plist-get session :board-session-state)))
-    (e-session-catalog--copy-value
-     (append
-      (list :id (plist-get session :id)
+  (e-session-catalog--copy-value
+   (list :id (plist-get session :id)
             :name (plist-get session :name)
             :summary (plist-get session :summary)
             :metadata (plist-get session :metadata)
@@ -537,12 +487,8 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
             :updated-seq (plist-get session :updated-seq)
             :last-message-at (plist-get session :last-message-at)
             :latest-assistant-marker (plist-get session :latest-assistant-marker)
-            :board-id (plist-get state :board-id)
-            :principal (plist-get state :principal)
             :file file
-            :loaded (plist-get session :loaded))
-      (when (plist-member session :board-session-state)
-        (list :board-state state))))))
+            :loaded (plist-get session :loaded))))
 
 (defun e-session-catalog-sort-index-entries (entries)
   "Return detached catalog ENTRIES in newest-message-first order.

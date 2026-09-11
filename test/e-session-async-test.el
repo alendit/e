@@ -25,13 +25,42 @@
 (defun e-session-async-test--wait-finished (work)
   "Wait at this explicit test boundary and return WORK's result."
   (let ((status (e-session-async-test--wait work)))
-    (should (eq (plist-get status :state) 'finished))
+    (ert-info ((format "work status: %S" status))
+      (should (eq (plist-get status :state) 'finished)))
     (plist-get status :result)))
 
 (defun e-session-async-test--close (store)
   "Close isolated STORE without touching a running Emacs."
   (when store
     (ignore-errors (e-session-sqlite-store-close store))))
+
+(defun e-session-async-test--admit-owner (store session-id board-id metadata)
+  "Admit SESSION-ID as BOARD-ID's owner in disposable SQLite STORE."
+  (let* ((principal (format "chat:%s" session-id))
+         (participant-id (format "owner:%s" session-id))
+         (session
+          (e-board-sqlite-service-session-admission
+           :id session-id :metadata metadata :principal principal
+           :board-id board-id :association-role 'owner
+           :routing-policy
+           (list :participant-id participant-id
+                 :pickup-selector '(:tags (main))
+                 :observer-selector '(:tags (main))
+                 :default-tags '(main) :default-to nil)))
+         (records (plist-get session :admission-records))
+         (participant
+          (list :id participant-id :author "e-session-async-test"
+                :principal principal :controller principal
+                :role 'owner :state 'active
+                :subscription-id (concat "sub_" participant-id)
+                :publication-pending nil)))
+    (e-session-async-test--wait-finished
+     (e-board-sqlite-service-admit-session-owner-start
+      (e-board-sqlite-service-create
+       (e-session-storage-runtime-store store))
+      session-id board-id principal records
+      (plist-get session :query-delta)
+      participant))))
 
 (ert-deftest e-session-async-rdbms-public-enable-is-idempotent ()
   "The public enable seam idempotently installs the session service."
@@ -86,13 +115,8 @@
     (unwind-protect
         (progn
           (dolist (id '("daily-old" "daily-new"))
-            (e-session-async-test--wait-finished
-             (e-session-create
-              store :id id :metadata (list :name id)))
-            (e-session-async-test--wait-finished
-             (e-session-declare-board-state
-              store id (format "chat:%s" id) (format "board:%s" id)
-              "owner")))
+            (e-session-async-test--admit-owner
+             store id (format "board:%s" id) (list :name id)))
           (let* ((work
                   (e-chat-service-root-session-page-start harness :limit 1))
                  (_ (e-session-async-test--wait-finished work))
@@ -315,12 +339,29 @@
           (e-session-async-test--wait-finished
            (e-session-append-provider-anchor
             store "facades" 'openai :model "model"))
-          (e-session-async-test--wait-finished
-           (e-session-declare-board-state
-            store "facades" "principal" "board" "owner"))
+          (let* ((principal "principal")
+                 (board-id "board")
+                 (participant-id "owner:facades")
+                 (session
+                  (e-board-sqlite-service-session-admission
+                   :id "facades-owner" :principal principal
+                   :board-id board-id :association-role 'owner))
+                 (records (plist-get session :admission-records)))
+            (e-session-async-test--wait-finished
+             (e-board-sqlite-service-admit-session-owner-start
+              (e-board-sqlite-service-create
+               (e-session-storage-runtime-store store))
+              "facades-owner" board-id principal records
+              (plist-get session :query-delta)
+              (list :id participant-id :author "e-session-async-test"
+                    :principal principal :controller principal
+                    :role 'owner :state 'active
+                    :subscription-id (concat "sub_" participant-id)
+                    :publication-pending nil))))
           (let ((association
                  (e-session-async-test--wait-finished
-                  (e-session-async-board-association store "facades"))))
+                  (e-session-async-board-association
+                   store "facades-owner"))))
             (should (equal (plist-get association :board-id) "board")))
           (e-session-async-test--wait-finished
            (e-session-clear-messages store "facades"))

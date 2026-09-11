@@ -913,7 +913,6 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
 
 (ert-deftest e-harness-test-steer-active-turn-drains-in-same-turn ()
   "Pending steering input is sampled as a user message in the same turn."
-  (require 'e-board-runtime)
   (let* ((calls nil)
          (finishers nil)
          (backend (e-backend-create

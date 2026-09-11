@@ -35,57 +35,6 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-loaded-session-reprojection-does-not-tail-scrollback ()
-  "Session replay does not tail a transcript physically showing scrollback."
-  (let* ((history (mapconcat (lambda (number)
-                               (format "settled history line %d" number))
-                             (number-sequence 1 300)
-                             "\n"))
-         (buffer (e-chat-test--buffer nil "chat-loaded-scrollback"))
-         transcript-window
-         composer-window)
-    (unwind-protect
-        (progn
-          (setq transcript-window (display-buffer buffer))
-          (with-current-buffer buffer
-            (let ((store (e-chat-service-session-store e-chat-harness)))
-              (e-session-append-message
-               store e-chat-session-id
-               '(:id "msg-1" :role user :content "loaded question"))
-              (e-session-append-message
-               store e-chat-session-id
-               `(:id "msg-2" :role assistant :content ,history))
-              (e-chat-test--seed-board-log-from-private-fixture
-               e-chat-harness e-chat-session-id))
-            (e-chat-attach-buffer
-             buffer e-chat-harness e-chat-session-id
-             e-chat-harness-instance-id)
-            (setq composer-window
-                  (e-chat-surface-display-composer transcript-window t))
-            (set-buffer buffer)
-            (e-chat-surface-show-latest-output transcript-window)
-            (should (e-chat-surface-window-follows-output-p transcript-window))
-            ;; `scroll-other-window' and host restoration can move the paired
-            ;; transcript while leaving its composer selected.  The stored
-            ;; live-output flag is intentionally not consulted by a full
-            ;; projection replacement; the physical pre-replay viewport is
-            ;; the complete fact that operation needs.
-            (set-window-point transcript-window (point-min))
-            (set-window-start transcript-window (point-min))
-            (redisplay t)
-            (should (eq (selected-window) composer-window))
-            (should (= (window-point transcript-window) (point-min)))
-            (e-chat-attach-buffer
-             buffer e-chat-harness e-chat-session-id
-             e-chat-harness-instance-id)
-            (should (< (window-point transcript-window) (point-max)))
-            (should (= (window-start transcript-window) (point-min)))))
-      (when (window-live-p composer-window)
-        (delete-window composer-window))
-      (when (window-live-p transcript-window)
-        (delete-window transcript-window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-response-navigation-details-shows-intermittent-events ()
   "Details buffer shows intermittent reasoning before metadata."
@@ -126,41 +75,6 @@
         (kill-buffer buffer))
       (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
 
-(ert-deftest e-chat-test-open-loaded-session-renders-initial-tail ()
-  "Opening a large loaded session renders a tail plus omitted-history marker."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
-         (e-chat-session-replay-message-limit 2)
-         buffer)
-    (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "loaded-tail"
-                            :metadata '(:name "Loaded tail"))
-          (dolist (message
-                   '((:id "msg-1" :role user :content "first prompt")
-                     (:id "msg-2" :role assistant :content "first response")
-                     (:id "msg-3" :role user :content "middle prompt")
-                     (:id "msg-4" :role user :content "last prompt")
-                     (:id "msg-5" :role assistant :content "last response")))
-            (e-session-append-message store "loaded-tail" message))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "loaded-tail")
-          (setq buffer (e-chat-open-session harness "loaded-tail"))
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              ;; A loaded session renders directly; the observable contract
-              ;; is that no asynchronous loading placeholder remains.
-              (should-not (string-match-p "Loading transcript" text))
-              (should (string-match-p
-                       "3 earlier transcript messages omitted" text))
-              (should-not (string-match-p "first prompt" text))
-              (should-not (string-match-p "middle prompt" text))
-              (should (string-match-p "last prompt" text))
-              (should (string-match-p "last response" text)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-turns-and-responses-have-stable-separators ()
   "Rendered turns use explicit separator text outside navigable blocks."
@@ -240,77 +154,7 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-navigation-reveal-hidden-shows-and-focuses ()
-  "Pressing `h' in navigation mode reveals hidden messages as focusable blocks.
-The superseded first attempt and the machine-authored corrective prompt are
-hidden from the clean transcript, but the ESC inspection mode must expose them
-on demand so the user can audit what the calibration follow-up removed."
-  (let ((buffer (e-chat-test--buffer nil "chat-hidden-reveal")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-reveal"
-           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
-                 :content "revised answer"))
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-reveal"
-           (list :id "m-first" :role 'assistant :turn-id "turn-1"
-                 :content "superseded first attempt" :display 'hidden))
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-reveal"
-           (list :id "m-prompt" :role 'user :turn-id "turn-1"
-                 :content "machine corrective prompt"
-                 :metadata '(:display hidden)))
-          (e-chat-test--seed-board-log-from-private-fixture
-           e-chat-harness e-chat-session-id)
-          (e-chat-clear)
-          (e-chat-transcript-render-session)
-          (should (e-chat-test--message-display-hidden-p "m-first"))
-          (should (e-chat-test--message-display-hidden-p "m-prompt"))
-          (e-chat-test--focus-block-containing "revised answer")
-          (should-not (e-chat-transcript-reveal-hidden-p))
-          (call-interactively
-           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
-          (should (e-chat-transcript-reveal-hidden-p))
-          (should (string-match-p "superseded first attempt" (buffer-string)))
-          (should (string-match-p "machine corrective prompt" (buffer-string)))
-          ;; A revealed hidden message is a real navigable block.
-          (e-chat-test--focus-block-containing "superseded first attempt")
-          (should (eq (plist-get (e-chat-test--focused-block) :kind)
-                      'hidden))
-          (should e-chat-response-navigation-mode))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-navigation-reveal-hidden-toggles-off ()
-  "Pressing `h' twice hides the revealed messages again.
-Reveal is a temporary inspection affordance; toggling it off restores the clean
-one-answer transcript."
-  (let ((buffer (e-chat-test--buffer nil "chat-hidden-reveal-off")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-off"
-           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
-                 :content "revised answer"))
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-off"
-           (list :id "m-first" :role 'assistant :turn-id "turn-1"
-                 :content "superseded first attempt" :display 'hidden))
-          (e-chat-test--seed-board-log-from-private-fixture
-           e-chat-harness e-chat-session-id)
-          (e-chat-clear)
-          (e-chat-transcript-render-session)
-          (e-chat-test--focus-block-containing "revised answer")
-          (call-interactively
-           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
-          (should (string-match-p "superseded first attempt" (buffer-string)))
-          (call-interactively
-           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
-          (should-not (e-chat-transcript-reveal-hidden-p))
-          (should (e-chat-test--message-display-hidden-p "m-first")))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-assistant-markdown-renders-with-text-properties ()
   "Assistant messages keep Markdown text and use markdown-mode faces."
@@ -427,10 +271,10 @@ one-answer transcript."
   (let ((buffer (e-chat-test--buffer nil "chat-org-output")))
     (unwind-protect
         (with-current-buffer buffer
-          (e-chat-output-mode-session-set
-           e-chat-harness e-chat-session-id 'org)
+          (e-chat-test--await (e-chat-set-output-mode 'org))
           (should (eq (e-chat-output-mode-resolve
-                       e-chat-harness e-chat-session-id)
+                       e-chat-harness e-chat-session-id nil
+                       e-chat-session-metadata)
                       'org))
           (e-chat-transcript-insert-entry
            "Assistant"
@@ -460,8 +304,7 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
         opened-buffer)
     (unwind-protect
         (with-current-buffer buffer
-          (e-chat-output-mode-session-set
-           e-chat-harness e-chat-session-id 'org)
+          (e-chat-test--await (e-chat-set-output-mode 'org))
           (e-chat-transcript-insert-entry
            "Assistant"
            "See [[session://e/sessions/session-1/messages][discussion]].")
@@ -684,39 +527,6 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-replay-render-never-reads-private-transcript-indexes ()
-  "Opening durable history renders only the board-derived projection."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
-         buffer)
-    (unwind-protect
-        (progn
-          (e-harness-create-session harness :id "board-only-render")
-          (e-session-append-message
-           store "board-only-render"
-           '(:id "private-user" :role user :content "board prompt"))
-          (e-session-append-message
-           store "board-only-render"
-           '(:id "private-output" :role assistant :content "board answer"))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "board-only-render")
-          (setq buffer (e-chat-open :harness harness
-                                    :session-id "board-only-render"))
-          (cl-letf (((symbol-function 'e-harness-messages)
-                     (lambda (&rest _) (error "private transcript read")))
-                    ((symbol-function 'e-session-local-messages)
-                     (lambda (&rest _) (error "private message index read")))
-                    ((symbol-function 'e-session-local-activity-events)
-                     (lambda (&rest _) (error "private activity index read"))))
-            (with-current-buffer buffer
-              (e-chat-clear)
-              (e-chat-transcript-render-session)
-              (should (string-match-p "board prompt" (buffer-string)))
-              (should (string-match-p "board answer" (buffer-string))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-add-context-clears-target-block-view-mode ()
   "Context insertion into a chat target exits stale block view state."
@@ -774,90 +584,54 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-inspect-error-targets-newest-failure-outside-block ()
-  "e-inspect-error falls back to the newest persisted failed turn."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
+  "e-inspect-error seeds a new SQL chat from the selected newest failure."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (buffer (generate-new-buffer " *e-chat-newest-failure-test*"))
          prompt)
-    (e-harness-create-session harness :id "older-session")
-    (e-session-append-message
-     store "older-session"
-     '(:id "older-msg" :role user :content "older" :turn-id "older-turn"))
-    (e-session-append-activity-event
-     store "older-session" "older-turn" 'turn-failed
-     '(:error "older failure"))
-    (e-harness-create-session harness :id "newer-session")
-    (e-session-append-message
-     store "newer-session"
-     '(:id "newer-msg" :role user :content "newer" :turn-id "newer-turn"))
-    (e-session-append-activity-event
-     store "newer-session" "newer-turn" 'turn-failed
-     '(:error "newer failure"))
-    (cl-letf (((symbol-function 'e-chat-open-session)
-               (lambda (&rest _args) nil))
-              ((symbol-function 'e-chat-submit-session)
-               (lambda (_harness _session-id submitted-prompt &rest _args)
-                 (setq prompt submitted-prompt))))
-      (e-inspect-error :harness harness)
-      (should (string-match-p "newer-session" prompt))
-      (should (string-match-p "newer-turn" prompt)))))
-
-(ert-deftest e-chat-test-open-loaded-session-replay-remains-bounded ()
-  "Loaded-session replay never backfills omitted transcript history."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
-         (e-chat-session-replay-message-limit 2)
-         buffer)
     (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "loaded-bounded"
-                            :metadata '(:name "Loaded bounded"))
-          (dolist (message
-                   '((:id "msg-1" :role user :content "first prompt")
-                     (:id "msg-2" :role assistant :content "first response")
-                     (:id "msg-3" :role user :content "middle prompt")
-                     (:id "msg-4" :role user :content "last prompt")
-                     (:id "msg-5" :role assistant :content "last response")))
-            (e-session-append-message store "loaded-bounded" message))
-          (e-chat-test--seed-board-log-from-private-fixture
-           harness "loaded-bounded")
-          (setq buffer (e-chat-open-session harness "loaded-bounded"))
-          (with-current-buffer (e-chat-test--composer buffer)
-            (goto-char (point-max))
-            (insert "next")
-            (should (equal (e-chat-composer-text) "next")))
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should (string-match-p
-                       "3 earlier transcript messages omitted" text))
-              (should-not (string-match-p "first prompt" text))))
-          ;; Drain any deferred presentation work.  Omitted history must not
-          ;; reappear after the initial paint has returned.
-          (with-current-buffer buffer
-            (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer (current-buffer)))
-            (let ((text (buffer-string)))
-              (should (string-match-p
-                       "3 earlier transcript messages omitted" text))
-              (should-not (string-match-p "first prompt" text))
-              (should-not (string-match-p "first response" text))
-              (should-not (string-match-p "middle prompt" text))
-              (should (string-match-p "last prompt" text))
-              (should (string-match-p "last response" text))
-              (should (equal (e-chat-test--composer-text-for buffer) "next")))
-            (e-chat-transcript-rerender)
-            (let ((text (buffer-string)))
-              (should (string-match-p
-                       "3 earlier transcript messages omitted" text))
-              (should-not (string-match-p "first prompt" text))
-              (should-not (string-match-p "middle prompt" text))
-              (should (string-match-p "last response" text))
-              (should (equal (e-chat-test--composer-text-for buffer) "next")))))
+        (cl-letf (((symbol-function 'e-chat--inspect-error-target)
+                   (lambda (_session-id _turn-id) nil))
+                  ((symbol-function 'e-context-inspection-recent-failures-start)
+                   (lambda (&rest arguments)
+                     (should (eq (plist-get arguments :harness) harness))
+                     (should (= (plist-get arguments :limit) 1))
+                     (e-chat-test--finished-work
+                      (list (list :session-id "newer-session"
+                                  :turn-id "newer-turn"
+                                  :harness harness
+                                  :source 'recent)))))
+                  ((symbol-function 'e-context-inspection-failure-detail-start)
+                   (lambda (&rest arguments)
+                     (should (eq (plist-get arguments :harness) harness))
+                     (should (equal (plist-get arguments :session-id)
+                                    "newer-session"))
+                     (should (equal (plist-get arguments :turn-id)
+                                    "newer-turn"))
+                     (e-chat-test--finished-work
+                      '(:session (:id "newer-session" :title "newer")
+                        :turn (:id "newer-turn"
+                               :created-at "2026-09-11T00:00:00Z")
+                        :events nil :messages nil :tool-calls nil
+                        :terminal-error (:error "newer failure")
+                        :diagnostics nil))))
+                  ((symbol-function 'e-session-generate-id)
+                   (lambda () "inspection-session"))
+                  ((symbol-function 'e-chat-open)
+                   (lambda (&rest _arguments) buffer))
+                  ((symbol-function 'e-chat-surface-pop-to-buffer)
+                   #'identity)
+                  ((symbol-function 'e-chat-submit-session)
+                   (lambda (_harness _session-id submitted-prompt &rest _args)
+                     (setq prompt submitted-prompt)
+                     (e-chat-test--finished-work :submitted))))
+          (let ((work (e-inspect-error :harness harness)))
+            (should (eq (plist-get (e-work-status work) :state) 'finished))
+            (should (string-match-p "newer-session" prompt))
+            (should (string-match-p "newer-turn" prompt))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
 
 (provide 'e-chat-transcript-composition-test)
 

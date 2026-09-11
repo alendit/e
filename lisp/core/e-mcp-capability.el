@@ -326,15 +326,18 @@ Nil or empty TOOL-NAMES means \"all tools\"."
 
 (defun e-mcp-capability--activate (harness session-id server-id tool-names)
   "Promote TOOL-NAMES of SERVER-ID into HARNESS SESSION-ID active set.
-TOOL-NAMES nil or empty activates the whole server.  Returns the merged value."
+TOOL-NAMES nil or empty activates the whole server.  An asynchronous store
+returns the admitted durability work; a local test store returns MERGED."
   (let* ((store (e-harness-sessions harness))
          (active (copy-alist (e-mcp-capability--active-set harness session-id)))
          (existing (cdr (assoc server-id active)))
          (merged (e-mcp-capability--merge-active-tools existing (append tool-names nil))))
     (setf (alist-get server-id active nil nil #'equal) merged)
-    (e-session-set-capability-state
-     store session-id 'mcp (e-mcp-capability--active-set-to-state active))
-    merged))
+    (let ((result
+           (e-session-set-capability-state
+            store session-id 'mcp
+            (e-mcp-capability--active-set-to-state active))))
+      (if (e-work-handle-p result) result merged))))
 
 ;;; Tier 1 — schema text and on-demand resources
 
@@ -477,11 +480,6 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
     :required ["server"])
   "Schema for the always-present mcp_activate meta-tool.")
 
-(defun e-mcp-capability--catalog-for-server (server-id)
-  "Return (SERVER . CATALOG) for SERVER-ID from remembered servers, or nil."
-  (when-let ((server (e-mcp-client-known-server server-id)))
-    (cons server (e-mcp-list-tools (list server)))))
-
 (defun e-mcp-capability--catalog-for-server-cached (server-id)
   "Return cached (SERVER . CATALOG) for SERVER-ID, or nil."
   (when-let ((server (e-mcp-client-known-server server-id)))
@@ -497,12 +495,11 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
        (lambda (tool) (member (e-mcp-tool-name tool) names))
        catalog))))
 
-(defun e-mcp-capability--activate-result (arguments server catalog invoke-result context)
+(defun e-mcp-capability--activate-result (arguments catalog invoke-result context)
   "Return the model-facing mcp_activate result for ARGUMENTS and CATALOG."
   (let* ((call (plist-get context :tool-call))
          (harness (plist-get context :harness))
          (session-id (plist-get context :session-id))
-         (server-id (e-mcp-server-id server))
          (requested (plist-get arguments :tools))
          (selected (e-mcp-capability--select-tools catalog requested))
          (schema-text (string-join
@@ -510,8 +507,6 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
                        "\n\n"))
          (sections (list schema-text)))
     (when (and harness session-id)
-      (e-mcp-capability--activate harness session-id server-id
-                       (mapcar #'e-mcp-tool-name selected))
       (push "Activated for this session; the tools above are now callable."
             sections))
     (when invoke-result
@@ -524,24 +519,6 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
       (if call
           (e-tools-result-create call 'ok content (list :kind 'mcp-activate))
         content))))
-
-(defun e-mcp-capability--activate-handler (arguments)
-  "Handle an mcp_activate call described by ARGUMENTS."
-  (let* ((server-id (plist-get arguments :server))
-         (invoke (plist-get arguments :invoke))
-         (server+catalog (and server-id (e-mcp-capability--catalog-for-server server-id))))
-    (unless server+catalog
-      (signal 'e-mcp-protocol-error
-              (list (format "Unknown MCP server: %s" server-id))))
-    (let* ((server (car server+catalog))
-           (catalog (cdr server+catalog))
-           (invoke-result
-            (when invoke
-              (e-mcp-call-tool (list server) server-id
-                               (plist-get invoke :tool)
-                               (plist-get invoke :arguments)))))
-      (e-mcp-capability--activate-result
-       arguments server catalog invoke-result (e-tools-current-context)))))
 
 (defun e-mcp-capability--activate-work ()
   "Return a Work spec for mcp_activate."
@@ -559,6 +536,7 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
             (invoke (plist-get arguments :invoke))
             (server (and server-id (e-mcp-client-known-server server-id)))
             child-request
+            activation-work
             timer)
        (unless server
          (signal 'e-mcp-protocol-error
@@ -578,12 +556,39 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
             (fail (condition)
               (unless (terminal-p)
                 (e-work-fail handle condition)))
-            (finish (catalog &optional invoke-result)
+            (finish-result (catalog &optional invoke-result)
               (unless (terminal-p)
                 (e-work-finish
                  handle
                  (e-mcp-capability--activate-result
-                  arguments server catalog invoke-result context))))
+                  arguments catalog invoke-result context))))
+            (activation-settled (settled catalog invoke-result)
+              (setq activation-work nil)
+              (let ((status (e-work-status settled)))
+                (pcase (plist-get status :state)
+                  ('finished (finish-result catalog invoke-result))
+                  ('failed (fail (plist-get status :error)))
+                  ('cancelled
+                   (unless (terminal-p) (e-work-cancel handle))))))
+            (activate-and-finish (catalog &optional invoke-result)
+              (let ((harness (plist-get context :harness))
+                    (session-id (plist-get context :session-id)))
+                (if (not (and harness session-id))
+                    (finish-result catalog invoke-result)
+                  (let ((activation
+                         (e-mcp-capability--activate
+                          harness session-id server-id
+                          (mapcar #'e-mcp-tool-name
+                                  (e-mcp-capability--select-tools
+                                   catalog (plist-get arguments :tools))))))
+                    (if (not (e-work-handle-p activation))
+                        (finish-result catalog invoke-result)
+                      (setq activation-work activation)
+                      (e-work-on-settle
+                       activation
+                       (lambda (settled)
+                         (activation-settled
+                          settled catalog invoke-result))))))))
             (start-invoke (catalog)
               (if invoke
                   (remember
@@ -592,12 +597,12 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
                     (plist-get invoke :tool)
                     (plist-get invoke :arguments)
                     :on-done (lambda (mcp-result)
-                               (finish catalog mcp-result))
+                               (activate-and-finish catalog mcp-result))
                     :on-error #'fail
                     :on-event (lambda (type payload)
                                 (e-mcp-capability--work-progress handle type payload)))
                    'activate-invoke)
-                (finish catalog))))
+                (activate-and-finish catalog))))
          (e-work-add-cleanup handle #'cleanup)
          (setf (e-work-handle-cancel-function handle)
                (lambda (_handle)
@@ -605,6 +610,11 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
                    (cancel-timer timer))
                  (when child-request
                    (e-tools-cancel-request child-request))
+                 (when (and (e-work-handle-p activation-work)
+                            (not (memq (plist-get (e-work-status activation-work)
+                                                  :state)
+                                       '(finished failed cancelled))))
+                   (e-work-cancel activation-work))
                  t))
          (if-let ((server+catalog (e-mcp-capability--catalog-for-server-cached server-id)))
              (setq timer

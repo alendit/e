@@ -6,8 +6,9 @@
 ;;; Commentary:
 
 ;; Offline operator application service.  It inventories a copied legacy tree,
-;; decodes each retired owner representation, imports through owner-shaped
-;; ports into a private new store, compares a deterministic semantic manifest,
+;; decodes each retired owner representation, imports through the current
+;; owner APIs or explicit SQL operations into a private new store, compares a
+;; deterministic semantic manifest,
 ;; and only then renames the complete directory into place.  Ordinary runtime
 ;; startup never calls this module.
 
@@ -16,7 +17,8 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
-(require 'e-board-storage)
+(require 'e-board-orchestration)
+(require 'e-board-sqlite-contract)
 (require 'e-cron-legacy)
 (require 'e-cron-storage)
 (require 'e-goodnite-demand-legacy)
@@ -165,51 +167,457 @@
             (string< (plist-get left :queue-id)
                      (plist-get right :queue-id))))))
 
+(defun e-runtime-migration--legacy-board-object-array (value)
+  "Decode pre-wire Board VALUE containing an array of plists.
+This compatibility parser belongs exclusively to the stopped-v5 migration
+boundary; ordinary Board reads require the current tagged wire format."
+  (let ((items (if (vectorp value) (append value nil) value)))
+    (cond
+     ((null items) nil)
+     ((cl-every #'listp items) (copy-tree items))
+     (t
+      (cl-labels
+          ((restore-tail
+            (tail)
+            (let ((tail (if (vectorp tail) (append tail nil) tail))
+                  result)
+              (while tail
+                (let* ((raw-key (pop tail))
+                       (key (if (stringp raw-key)
+                                (intern (concat ":" raw-key))
+                              raw-key))
+                       (item (pop tail)))
+                  (when (and (eq key :kind) (stringp item))
+                    (setq item (intern item)))
+                  (when (eq key :outputs)
+                    (setq item (restore-array item)))
+                  (setq result (append result (list key item)))))
+              result))
+           (restore-array
+            (array)
+            (let ((array (if (vectorp array) (append array nil) array))
+                  result)
+              (while array
+                (let ((key (pop array))
+                      (tail (pop array)))
+                  (unless (keywordp key)
+                    (signal 'e-runtime-migration-error
+                            (list "Malformed legacy Board object array"
+                                  value)))
+                  (setq tail (if (vectorp tail) (append tail nil) tail))
+                  (unless tail
+                    (signal 'e-runtime-migration-error
+                            (list "Malformed legacy Board object array"
+                                  value)))
+                  (let ((first (pop tail)))
+                    (when (and (eq key :kind) (stringp first))
+                      (setq first (intern first)))
+                    (push (cons key (cons first (restore-tail tail))) result))))
+              (nreverse result))))
+        (restore-array items))))))
+
+(defun e-runtime-migration--legacy-board-enum (value)
+  "Return pre-wire Board enum VALUE as a symbol."
+  (if (stringp value) (intern value) value))
+
+(defun e-runtime-migration--legacy-board-orchestration-payload (type payload)
+  "Decode pre-wire orchestration PAYLOAD of TYPE for offline migration."
+  (let ((payload (copy-tree payload)))
+    (pcase type
+      ('manifest
+       (plist-put payload :tasks
+                  (e-runtime-migration--legacy-board-object-array
+                   (plist-get payload :tasks)))
+       (when-let ((deadline (plist-get payload :deadline)))
+         (plist-put deadline :kind
+                    (e-runtime-migration--legacy-board-enum
+                     (plist-get deadline :kind)))))
+      ('continuation-claim
+       (plist-put payload :status
+                  (e-runtime-migration--legacy-board-enum
+                   (plist-get payload :status))))
+      ((or 'task-attempt 'terminal-report)
+       (plist-put payload :status
+                  (e-runtime-migration--legacy-board-enum
+                   (plist-get payload :status)))
+       (when (eq type 'terminal-report)
+         (plist-put payload :outputs
+                    (e-runtime-migration--legacy-board-object-array
+                     (plist-get payload :outputs))))))
+    payload))
+
+(defun e-runtime-migration--normalize-board-orchestration-message (message)
+  "Upgrade pre-wire orchestration MESSAGE to the current Board wire format."
+  (let* ((attributes (plist-get message :attributes))
+         (type-value (plist-get attributes :orchestration-type)))
+    (if (and (memq 'orchestration (plist-get message :tags))
+             type-value
+             (null (plist-get attributes :orchestration-wire-version)))
+        (let* ((type (e-runtime-migration--legacy-board-enum type-value))
+               (fact
+                (list
+                 :version (plist-get attributes :orchestration-version)
+                 :type type
+                 :payload
+                 (e-runtime-migration--legacy-board-orchestration-payload
+                  type (plist-get attributes :orchestration-payload))
+                 :idempotency-key
+                 (plist-get attributes :orchestration-idempotency-key)))
+               (fields (e-board-orchestration-fact-record-fields fact)))
+          (plist-put (copy-tree message) :attributes
+                     (plist-get fields :attributes)))
+      message)))
+
+(defconst e-runtime-migration--legacy-board-session-record-types
+  '("board-message" "board-messages-cleared" "board-session-state")
+  "Retired Board record families accepted only at this offline boundary.")
+
+(defun e-runtime-migration--legacy-board-attribute-value (value)
+  "Decode one legacy routing attribute VALUE."
+  (let ((items (and (or (vectorp value) (proper-list-p value))
+                    (append value nil))))
+    (if (not (and (= (length items) 2) (stringp (car items))))
+        (copy-tree value t)
+      (pcase (car items)
+        ("symbol" (intern (cadr items)))
+        ("vector"
+         (vconcat (mapcar #'e-runtime-migration--legacy-board-attribute-value
+                          (append (cadr items) nil))))
+        ("list"
+         (mapcar #'e-runtime-migration--legacy-board-attribute-value
+                 (append (cadr items) nil)))
+        ("cons"
+         (let ((pair (append (cadr items) nil)))
+           (unless (= (length pair) 2)
+             (signal 'e-runtime-migration-error
+                     (list "Malformed legacy Board selector cons" value)))
+           (cons (e-runtime-migration--legacy-board-attribute-value
+                  (car pair))
+                 (e-runtime-migration--legacy-board-attribute-value
+                  (cadr pair)))))
+        ("plist"
+         (let (result)
+           (dolist (pair (append (cadr items) nil))
+             (let* ((pair (append pair nil))
+                    (key (car pair)))
+               (unless (and (= (length pair) 2) (stringp key))
+                 (signal 'e-runtime-migration-error
+                         (list "Malformed legacy Board selector plist" value)))
+               (setq result
+                     (plist-put
+                      result
+                      (intern (concat ":" (string-remove-prefix ":" key)))
+                      (e-runtime-migration--legacy-board-attribute-value
+                       (cadr pair))))))
+           result))
+        (_ (copy-tree value t))))))
+
+(defun e-runtime-migration--legacy-board-selector (selector)
+  "Decode legacy typed attributes in Board routing SELECTOR."
+  (let ((copy (copy-tree selector t)))
+    (when-let* ((encoded (plist-get copy :attributes))
+                (items (and (or (vectorp encoded) (proper-list-p encoded))
+                            (append encoded nil))))
+      (when (and (= (length items) 2)
+                 (equal (car items) "e-routing-attributes-v1"))
+        (plist-put copy :attributes
+                   (e-runtime-migration--legacy-board-attribute-value
+                    (cadr items)))))
+    copy))
+
+(defun e-runtime-migration--legacy-board-conflict
+    (reason session-id &optional record-id)
+  "Signal a bounded legacy Board conflict for SESSION-ID.
+REASON is a fixed operator-facing string.  RECORD-ID, when present, is the
+small stable identity of the affected record; the legacy payload is never
+included in the condition data."
+  (signal 'e-runtime-migration-conflict
+          (append (list reason :session-id session-id)
+                  (when record-id (list :record-id record-id)))))
+
+(defun e-runtime-migration--legacy-board-plist-p (value)
+  "Return non-nil when VALUE is a proper keyword plist."
+  (and (proper-list-p value)
+       (cl-evenp (length value))
+       (cl-loop for (key _value) on value by #'cddr always (keywordp key))))
+
+(defun e-runtime-migration--legacy-board-record-session-valid-p
+    (record session-id)
+  "Return non-nil when legacy Board RECORD belongs to SESSION-ID."
+  (and (e-runtime-migration--legacy-board-plist-p record)
+       (equal (plist-get record :session-id) session-id)))
+
+(defun e-runtime-migration--legacy-board-default-routing-policy
+    (session-id board-id)
+  "Return a complete deterministic routing policy for legacy SESSION-ID.
+BOARD-ID is included in the derived participant identity so distinct Board
+associations cannot collide merely because legacy session names were reused."
+  (let ((participant-id
+         (concat
+          "ptc_"
+          (substring
+           (secure-hash
+            'sha256
+            (format "legacy-board-participant:%s:%s" board-id session-id))
+           0 32))))
+    (list :participant-id participant-id
+          :pickup-selector '(:tags (main))
+          :observer-selector '(:tags (main))
+          :default-tags '(main)
+          :default-to nil)))
+
+(defun e-runtime-migration--legacy-board-canonical-root-p
+    (session-id principal role)
+  "Return non-nil when legacy association identity proves a canonical root.
+Historical owners were explicit.  Before the role field existed, only the
+canonical chat principal tied the association unambiguously to its session."
+  (or (equal role "owner")
+      (and (null role)
+           (equal principal (concat "chat:" session-id)))))
+
+(defun e-runtime-migration--legacy-board-state (record session-id)
+  "Return RECORD's validated detached Board association for SESSION-ID."
+  (unless (e-runtime-migration--legacy-board-record-session-valid-p
+           record session-id)
+    (e-runtime-migration--legacy-board-conflict
+     "Malformed legacy Board association record" session-id))
+  (let* ((raw-state (or (plist-get record :board-state) record))
+         (state (and (e-runtime-migration--legacy-board-plist-p raw-state)
+                     (copy-tree raw-state t)))
+         (board-id (and state (plist-get state :board-id)))
+         (principal (and state (plist-get state :principal)))
+         (role (and state (plist-get state :association-role)))
+         (policy (and state (plist-get state :routing-policy))))
+    (unless (and (stringp board-id) (not (string-empty-p board-id))
+                 (stringp principal) (not (string-empty-p principal)))
+      (e-runtime-migration--legacy-board-conflict
+       "Malformed legacy Board association identity" session-id))
+    (when (and role (symbolp role))
+      (setq role (symbol-name role)))
+    (unless (member role '(nil "owner" "participant"))
+      (e-runtime-migration--legacy-board-conflict
+       "Malformed legacy Board association role" session-id))
+    (unless policy
+      (unless (e-runtime-migration--legacy-board-canonical-root-p
+               session-id principal role)
+        (e-runtime-migration--legacy-board-conflict
+         "Legacy Board association lacks routing policy" session-id))
+      (setq policy
+            (e-runtime-migration--legacy-board-default-routing-policy
+             session-id board-id)))
+    ;; Before association roles were persisted, a roleless association was the
+    ;; session's Board root.  Board import already maps that historical shape
+    ;; to an owner participant; keep the durable session query row identical so
+    ;; root-session navigation cannot silently omit the migrated session.
+    (unless role
+      (setq role "owner"))
+    (condition-case err
+        (progn
+          (dolist (key '(:pickup-selector :observer-selector))
+            (when (plist-member policy key)
+              (plist-put policy key
+                         (e-runtime-migration--legacy-board-selector
+                          (plist-get policy key)))))
+          (unless (e-session-board-routing-policy-valid-p policy)
+            (e-runtime-migration--legacy-board-conflict
+             "Malformed legacy Board routing policy" session-id)))
+      (e-runtime-migration-conflict
+       (signal (car err) (cdr err)))
+      (error
+       (e-runtime-migration--legacy-board-conflict
+        "Malformed legacy Board routing policy" session-id)))
+    (plist-put state :routing-policy
+               (e-session-board-routing-policy-normalize policy))
+    (plist-put state :association-role role)
+    state))
+
+(defun e-runtime-migration--legacy-board-association
+    (records &optional session-id)
+  "Return the latest decoded Board association in legacy RECORDS.
+SESSION-ID names the owning source journal in bounded conflict diagnostics."
+  (let (association)
+    (dolist (record records)
+      (when (equal (plist-get record :type) "board-session-state")
+        (let* ((owner-id (or session-id (plist-get record :session-id)))
+               (state
+                (e-runtime-migration--legacy-board-state record owner-id)))
+          (when (and association
+                     (or (not (equal (plist-get association :board-id)
+                                     (plist-get state :board-id)))
+                         (not (equal (plist-get association :principal)
+                                     (plist-get state :principal)))))
+            (e-runtime-migration--legacy-board-conflict
+             "Conflicting legacy Board association" owner-id))
+          (setq association state))))
+    association))
+
+(defun e-runtime-migration--normalize-board-message (message)
+  "Return legacy Board MESSAGE in current semantic value spelling."
+  (let ((message (copy-tree message t)))
+    (dolist (field '(:kind :mode :activity-kind :routing-state
+                     :unrouted-reason :record-type :outcome :failure-policy))
+      (when-let* ((value (plist-get message field)))
+        (when (stringp value) (plist-put message field (intern value)))))
+    (when (plist-member message :tags)
+      (plist-put message :tags
+                 (mapcar (lambda (tag) (if (stringp tag) (intern tag) tag))
+                         (plist-get message :tags))))
+    (when-let* ((attributes (plist-get message :attributes))
+                (status (plist-get attributes :status)))
+      (when (stringp status) (plist-put attributes :status (intern status))))
+    message))
+
+(defun e-runtime-migration--legacy-board-session-records
+    (session-id records association)
+  "Return SESSION-ID's surviving legacy Board RECORDS in append order.
+ASSOCIATION supplies the durable Board identity.  A clear record discards all
+earlier Board messages in this source session.  Duplicate message identities
+retain the first equal envelope after the last clear."
+  (let ((board-id (and association (plist-get association :board-id)))
+        (seen (make-hash-table :test 'equal))
+        survivors
+        (position 0))
+    (dolist (record records)
+      (setq position (1+ position))
+      (pcase (plist-get record :type)
+        ((or "board-message" "board-messages-cleared" "board-session-state")
+         (unless (e-runtime-migration--legacy-board-record-session-valid-p
+                  record session-id)
+           (e-runtime-migration--legacy-board-conflict
+            "Malformed legacy Board journal record" session-id)))
+        (_ nil))
+      (pcase (plist-get record :type)
+        ("board-messages-cleared"
+         (let ((clear-id (plist-get record :id)))
+           (unless (and (stringp clear-id) (not (string-empty-p clear-id)))
+             (e-runtime-migration--legacy-board-conflict
+              "Malformed legacy Board clear record" session-id)))
+         (clrhash seen)
+         (setq survivors nil))
+        ("board-message"
+         (unless association
+           (e-runtime-migration--legacy-board-conflict
+            "Orphan legacy Board message" session-id))
+         (let* ((raw-message (plist-get record :message))
+                (raw-id (and (e-runtime-migration--legacy-board-plist-p
+                              raw-message)
+                             (plist-get raw-message :id))))
+           (unless (and (stringp raw-id) (not (string-empty-p raw-id)))
+             (e-runtime-migration--legacy-board-conflict
+              "Malformed legacy Board message" session-id))
+           (let* ((message
+                   (condition-case nil
+                       (e-runtime-migration--normalize-board-orchestration-message
+                        (e-runtime-migration--normalize-board-message raw-message))
+                     (error
+                      (e-runtime-migration--legacy-board-conflict
+                       "Malformed legacy Board message" session-id raw-id))))
+                  (kind (plist-get message :kind))
+                  (embedded-board-id (plist-get message :board-id))
+                  (prior (gethash raw-id seen)))
+             (unless (memq kind '(input output activity fact))
+               (e-runtime-migration--legacy-board-conflict
+                "Malformed legacy Board message kind" session-id raw-id))
+             (when (and embedded-board-id
+                        (not (equal embedded-board-id board-id)))
+               (e-runtime-migration--legacy-board-conflict
+                "Legacy Board message association conflicts" session-id raw-id))
+             (setq message (plist-put message :board-id board-id))
+             (setq message (plist-put message :record-kind kind))
+             (if prior
+                 (unless (equal prior message)
+                   (e-runtime-migration--legacy-board-conflict
+                    "Conflicting legacy Board message" session-id raw-id))
+               (puthash raw-id message seen)
+               (push (list :board-id board-id
+                           :source-session-id session-id
+                           :source-position position
+                           :message message)
+                     survivors)))))
+        (_ nil)))
+    (nreverse survivors)))
+
 (defun e-runtime-migration--board-input (sessions)
-  "Extract and canonically deduplicate Board facts from SESSIONS."
-  (let ((roots (make-hash-table :test 'equal))
-        (records (make-hash-table :test 'equal)))
+  "Extract legacy Board roots and surviving records from SESSIONS.
+Each source session is reconstructed in physical append order.  Cross-session
+deduplication retains the first surviving equal message for a Board without
+sorting Board or message identities."
+  (let ((roots-by-id (make-hash-table :test 'equal))
+        (records-by-id (make-hash-table :test 'equal))
+        (participant-owners (make-hash-table :test 'equal))
+        roots records associations)
     (dolist (session sessions)
-      (dolist (record (cdr session))
-        (pcase (plist-get record :type)
-          ("board-session-state"
-           (let* ((state (or (plist-get record :board-state) record))
-                  (role (plist-get state :association-role))
-                  (board-id (or (plist-get state :board-id)
-                                (plist-get record :board-id)))
-                  (principal (or (plist-get state :principal)
-                                 (plist-get record :principal))))
-             (when (and board-id principal
-                        (not (equal role "participant")))
-               (let ((prior (gethash board-id roots))
-                     (root (list :board-id board-id :principal principal)))
-                 (when (and prior (not (equal prior root)))
-                   (signal 'e-runtime-migration-conflict
-                           (list "Conflicting Board root" board-id prior root)))
-                 (puthash board-id root roots)))))
-          ("board-message"
-           (let* ((message (copy-tree (plist-get record :message)))
-                  (board-id (or (plist-get message :board-id)
-                                (plist-get record :board-id)))
-                  (id (and message (plist-get message :id)))
-                  (key (and board-id id (cons board-id id)))
-                  (prior (and key (gethash key records))))
-             (when key
-               (when (and prior (not (equal prior message)))
-                 (signal 'e-runtime-migration-conflict
-                         (list "Conflicting Board record" board-id id)))
-               (puthash key message records)))))))
-    (list
-     :roots (sort (hash-table-values roots)
-                  (lambda (a b) (string< (plist-get a :board-id)
-                                         (plist-get b :board-id))))
-     :records
-     (sort (hash-table-values records)
-           (lambda (a b)
-             (string< (format "%s/%s" (plist-get a :board-id)
-                                      (plist-get a :id))
-                      (format "%s/%s" (plist-get b :board-id)
-                                      (plist-get b :id))))))))
+      (let* ((session-id (car session))
+             (source-records (cdr session))
+             (association
+              (e-runtime-migration--legacy-board-association
+               source-records session-id))
+             (has-board-record
+              (seq-some
+               (lambda (record)
+                 (member (plist-get record :type)
+                         e-runtime-migration--legacy-board-session-record-types))
+               source-records)))
+        (when (and has-board-record (null association))
+          (e-runtime-migration--legacy-board-conflict
+           "Legacy Board journal has no association" session-id))
+        (when association
+          (let* ((board-id (plist-get association :board-id))
+                 (principal (plist-get association :principal))
+                 (role (plist-get association :association-role))
+                 (participant-id
+                  (plist-get (plist-get association :routing-policy)
+                             :participant-id))
+                 (participant-key (cons board-id participant-id))
+                 (prior-participant-owner
+                  (gethash participant-key participant-owners))
+                 (prior-root (gethash board-id roots-by-id)))
+            (when prior-participant-owner
+              (e-runtime-migration--legacy-board-conflict
+               "Duplicate legacy Board participant identity" session-id
+               participant-id))
+            (puthash participant-key session-id participant-owners)
+            (push (list :session-id session-id :board-id board-id
+                        :association (copy-tree association t))
+                  associations)
+            (unless (equal role "participant")
+              (if prior-root
+                  (unless (equal (plist-get prior-root :principal) principal)
+                    (e-runtime-migration--legacy-board-conflict
+                     "Conflicting legacy Board root" session-id))
+                (let ((root (list :board-id board-id :principal principal
+                                  :source-session-id session-id)))
+                  (puthash board-id root roots-by-id)
+                  (push root roots))))
+            (dolist (entry
+                     (e-runtime-migration--legacy-board-session-records
+                      session-id source-records association))
+              (let* ((message (plist-get entry :message))
+                     (record-id (plist-get message :id))
+                     (key (cons board-id record-id))
+                     (prior (gethash key records-by-id)))
+                (if prior
+                    (unless (equal (plist-get prior :message) message)
+                      (e-runtime-migration--legacy-board-conflict
+                       "Conflicting legacy Board message" session-id record-id))
+                  (puthash key entry records-by-id)
+                  (push entry records))))))))
+    (dolist (association associations)
+      (let* ((board-id (plist-get association :board-id))
+             (session-id (plist-get association :session-id))
+             (state (plist-get association :association))
+             (root (gethash board-id roots-by-id)))
+        (unless root
+          (e-runtime-migration--legacy-board-conflict
+           "Legacy Board association has no Board root" session-id))
+        (unless (equal (plist-get state :principal)
+                       (plist-get root :principal))
+          (e-runtime-migration--legacy-board-conflict
+           "Legacy Board association principal conflicts with Board root"
+           session-id))))
+    (list :roots (nreverse roots)
+          :associations (nreverse associations)
+          :records (nreverse records))))
 
 (defun e-runtime-migration--decode (source)
   "Decode and validate every accepted legacy owner below SOURCE."
@@ -260,7 +668,16 @@ they are never published into the v6 store."
     (dolist (entry (plist-get decoded :sessions))
       (when (cdr entry)
         (let* ((session-id (car entry))
-               (records (cdr entry))
+               (source-records (cdr entry))
+               (association
+                (e-runtime-migration--legacy-board-association
+                 source-records session-id))
+               (records
+                (cl-remove-if
+                 (lambda (record)
+                   (member (plist-get record :type)
+                           e-runtime-migration--legacy-board-session-record-types))
+                 source-records))
                ;; The v6 row uses the durable append position as its stable
                ;; cursor.  Legacy JSONL has no physical position field, so
                ;; supply it only to the detached derivation input and leave
@@ -277,38 +694,92 @@ they are never published into the v6 store."
                      (plist-put copy :journal-position position)))
                  records))
                (query-delta (e-session-query-derive replay-records)))
+          (when association
+            (dolist (key '(:board-id :principal :association-role
+                           :routing-policy))
+              (plist-put query-delta key (copy-tree (plist-get association key) t)))
+            (e-session-query-state-validate query-delta))
           (unless query-delta
             (signal 'e-runtime-migration-error
                     (list "Session journal produced no query state"
                           session-id)))
           (e-session-storage-commit-mutation-batch-with-query-delta
-           store session-id records query-delta))
-        (setq count (+ count (length (cdr entry))))))
+           store session-id records query-delta)
+          (setq count (+ count (length records))))))
     count))
 
 (defun e-runtime-migration--import-boards (runtime decoded)
-  "Import canonical Board roots and message facts from DECODED."
-  (let ((storage (e-runtime-sqlite-board-storage runtime))
+  "Import Board roots, participants, and ordered message facts from DECODED."
+  (let ((store (e-runtime-sqlite-runtime-store runtime))
         (state (make-hash-table :test 'equal))
+        (participant-count 0)
         (count 0))
     (dolist (root (plist-get (plist-get decoded :boards) :roots))
-      (let ((created (e-board-storage-create-board
-                      storage (plist-get root :board-id)
-                      (plist-get root :principal) root)))
+      (let ((created
+             (e-runtime-store-call
+              store 'write
+              (list :op 'board-create :board-id (plist-get root :board-id)
+                    :trusted-principal (plist-get root :principal)
+                    :root root))))
         (puthash (plist-get root :board-id) created state)))
-    (dolist (message (plist-get (plist-get decoded :boards) :records))
-      (let* ((board-id (plist-get message :board-id))
+    (dolist (entry (plist-get (plist-get decoded :boards) :associations))
+      (let* ((session-id (plist-get entry :session-id))
+             (board-id (plist-get entry :board-id))
+             (association (plist-get entry :association))
+             (policy (plist-get association :routing-policy))
+             (participant-id (plist-get policy :participant-id))
+             (principal (plist-get association :principal))
+             (role (if (equal (plist-get association :association-role)
+                              "participant")
+                       'participant
+                     'owner))
+             (participant
+              (list :id participant-id :author "e-runtime-migration"
+                    :principal principal :controller principal :role role
+                    :state 'active
+                    :subscription-id (concat "sub_" participant-id)
+                    :publication-pending nil
+                    :source-session-id session-id)))
+        (unless (gethash board-id state)
+          (e-runtime-migration--legacy-board-conflict
+           "Legacy Board participant has no imported Board root" session-id))
+        (let ((updated
+               (e-runtime-store-call
+                store 'write
+                (list :op 'board-participant-put :board-id board-id
+                      :participant participant))))
+          (puthash board-id updated state))
+        (setq participant-count (1+ participant-count))))
+    (dolist (entry (plist-get (plist-get decoded :boards) :records))
+      (let* ((board-id (plist-get entry :board-id))
+             (source-session-id (plist-get entry :source-session-id))
+             (source-position (plist-get entry :source-position))
+             (message (copy-tree (plist-get entry :message) t))
              (root (gethash board-id state)))
-        (when root
-          (setq message (plist-put (copy-tree message) :record-kind
-                                   (or (plist-get message :record-type)
-                                       'message)))
-          (setq root
-                (e-board-storage-publish-record
-                 storage board-id (plist-get root :generation) message nil))
-          (puthash board-id root state)
-          (setq count (1+ count)))))
-    (list :roots (hash-table-count state) :records count)))
+        (unless root
+          (e-runtime-migration--legacy-board-conflict
+           "Legacy Board message has no imported Board root"
+           source-session-id (plist-get message :id)))
+        (plist-put message :source-session-id source-session-id)
+        (setq message
+              (plist-put message :record-kind (plist-get message :kind)))
+        (setq root
+              (e-runtime-store-call
+               store 'write
+               (list :op 'board-record-put :board-id board-id
+                     :generation (plist-get root :generation)
+                     :record message
+                     :source
+                     (list :kind 'legacy-session
+                           :key (list :session-id source-session-id
+                                      :position source-position)
+                           :hash (e-runtime-migration--canonical-hash
+                                  message)))))
+        (puthash board-id root state)
+        (setq count (1+ count))))
+    (list :roots (hash-table-count state)
+          :participants participant-count
+          :records count)))
 
 (defun e-runtime-migration--import-tasks (runtime queues)
   "Import legacy task QUEUES as separate durable owner projections."
@@ -477,7 +948,7 @@ directory to TARGET.  SOURCE is never written."
     (set-file-modes work #o700)
     (unwind-protect
         (progn
-          (setq runtime (e-runtime-sqlite-open work :offline t))
+          (setq runtime (e-runtime-sqlite-open work))
           (let* ((session-records
                   (e-runtime-migration--import-sessions runtime decoded)))
             (let ((imported

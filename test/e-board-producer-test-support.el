@@ -36,7 +36,7 @@
                        :observer-selector (copy-tree selector t)
                        :default-tags nil :default-to nil))
          (session
-          (e-session-board-admission-records
+          (e-board-sqlite-service-session-admission
            :id session-id :metadata nil :principal principal
            :board-id board-id :association-role "participant"
            :routing-policy policy))
@@ -46,7 +46,7 @@
       (plist-put record :journal-position (cl-incf position)))
     (e-board-producer-test-await
      (e-board-sqlite-service-admit-participant-start
-      service session-id board-id records (e-session-query-derive records)
+      service session-id board-id records (plist-get session :query-delta)
       (list :id participant-id :author "producer-test"
             :principal principal :controller principal
             :role 'participant :state 'active

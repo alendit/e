@@ -5,7 +5,7 @@
 
 ;;; Commentary:
 
-;; Owns the live session aggregate, identity/path semantics, board journal,
+;; Owns the live session aggregate, identity/path semantics,
 ;; provider-neutral metadata, and semantic mutations.  Persistence is an
 ;; application-service concern: this module has no dependency on the catalog
 ;; or storage adapter.  It consumes the pure codec only for one canonical
@@ -16,11 +16,9 @@
 (require 'cl-lib)
 (require 'e-context-lifetime)
 (require 'e-session-codec)
-(require 'e-session-board-policy)
 (require 'e-session-identity)
 (require 'e-session-metadata)
 (require 'e-session-provider-anchor)
-(require 'e-board)
 (require 'seq)
 (require 'subr-x)
 
@@ -30,9 +28,6 @@
 (define-error 'e-session-duplicate "Session already exists")
 (define-error 'e-session-checkpoint-missing "Session resume checkpoint does not exist" 'e-session-missing)
 (define-error 'e-session-checkpoint-invalid "Session resume checkpoint is invalid")
-(define-error 'e-session-board-message-conflict "Conflicting board message envelope")
-(define-error 'e-session-board-message-cycle "Cyclic board message envelope")
-(define-error 'e-session-board-message-invalid-record-type "Invalid board message record type")
 (define-error 'e-session-error "Session error")
 (define-error 'e-session-command-too-large
   "Session command producer exceeds its domain limit" 'e-session-error)
@@ -66,17 +61,12 @@
 (cl-defstruct (e-session-store (:constructor e-session-store-create))
   (sessions (make-hash-table :test 'equal))
   (entry-indexes (make-hash-table :test 'equal))
-  (board-journals (make-hash-table :test 'equal))
   directory
   sessions-directory
   index-file
   persistent
   write-mode
   (sequence 0))
-
-(cl-defstruct (e-session-board-journal
-               (:constructor e-session-aggregate--board-journal-create))
-  messages tail (id-index (make-hash-table :test 'equal)))
 
 (cl-defstruct (e-session-aggregate-command
                (:constructor e-session-aggregate-command--create))
@@ -98,8 +88,8 @@ a second session projection."
 (defconst e-session-aggregate-command-tags
   '(create append-message append-activity context-curation-response
     message-display process-report branch-summary compaction provider-anchor
-    context-generation context-curation-package clear-messages
-    board-message board-state board-messages-clear delete session-info)
+    context-generation context-curation-package clear-messages delete
+    session-info)
   "Closed durable command tags implemented by the C07 session grammar.")
 
 (defun e-session-aggregate--bounded-domain-string-p (value limit)
@@ -393,53 +383,7 @@ remains with the session application service because it owns admission."
                   (e-session-aggregate--context-curation-package-shape-p
                    (plist-get arguments :package)))
        (signal 'e-session-error (list "Invalid context-curation package"))))
-    ('board-message
-     (let ((message (plist-get arguments :message)))
-       (unless (and (plist-member arguments :message)
-                    (e-session-aggregate-keyword-plist-shape-p message)
-                    (e-session-aggregate--proper-list-length-at-most-p
-                     message 32)
-                    (e-session-aggregate--bounded-domain-string-p
-                     (plist-get message :id) 128)
-                    (e-session-aggregate--proper-list-length-at-most-p
-                     (plist-get message :tags) 32)
-                    (or (null (plist-get message :attributes))
-                        (and (e-session-aggregate-keyword-plist-shape-p
-                              (plist-get message :attributes))
-                             (e-session-aggregate--proper-list-length-at-most-p
-                              (plist-get message :attributes) 32))))
-         (signal 'e-session-error (list "Invalid board-message command")))
-       (dolist (field '(:kind :mode :activity-kind :routing-state
-                        :unrouted-reason :record-type :outcome
-                        :failure-policy))
-         (let ((value (plist-get message field)))
-           (unless (or (null value)
-                       (e-session-aggregate--bounded-domain-identity-p value 128))
-             (signal 'e-session-error
-                     (list "Board category exceeds 128 bytes" field)))))
-       (dolist (tag-value (plist-get message :tags))
-         (unless (e-session-aggregate--bounded-domain-identity-p tag-value 128)
-           (signal 'e-session-error
-                   (list "Board tag exceeds 128 bytes"))))
-       (when-let* ((attributes (plist-get message :attributes))
-                   (status (plist-get attributes :status)))
-         (unless (e-session-aggregate--bounded-domain-identity-p status 128)
-           (signal 'e-session-error
-                   (list "Board status exceeds 128 bytes"))))
-       (e-session-aggregate--canonical-board-record-type
-        (plist-get message :record-type))))
-    ('board-state
-     (unless (and (stringp (plist-get arguments :principal))
-                  (<= (string-bytes (plist-get arguments :principal)) 128)
-                  (stringp (plist-get arguments :board-id))
-                  (<= (string-bytes (plist-get arguments :board-id)) 128)
-                  (member (plist-get arguments :association-role)
-                          '(nil "owner" "participant"))
-                  (or (null (plist-get arguments :routing-policy))
-                      (e-session-board-routing-policy-valid-p
-                       (plist-get arguments :routing-policy))))
-       (signal 'e-session-error (list "Invalid board-state command"))))
-    ((or 'clear-messages 'board-messages-clear 'delete)
+    ((or 'clear-messages 'delete)
      (when arguments
        (signal 'e-session-error (list "Control command takes no arguments" tag))))
     ('session-info
@@ -572,7 +516,6 @@ aggregate's hash tables and sequence fields directly.  Physical storage state
 and its queues are intentionally unaffected."
   (clrhash (e-session-store-sessions store))
   (clrhash (e-session-store-entry-indexes store))
-  (clrhash (e-session-store-board-journals store))
   (setf (e-session-store-sequence store) 0)
   store)
 
@@ -580,7 +523,6 @@ and its queues are intentionally unaffected."
   "Remove one SESSION-ID's loaded state and replay indexes from STORE."
   (remhash session-id (e-session-store-sessions store))
   (remhash session-id (e-session-store-entry-indexes store))
-  (remhash session-id (e-session-store-board-journals store))
   session-id)
 
 (defun e-session-aggregate-session-present-p (store session-id)
@@ -622,7 +564,7 @@ application service."
     (unless (plist-get session :loaded)
       (dolist (field '(:metadata :updated-at :updated-seq :name :summary
                        :message-count :last-message-at
-                       :latest-assistant-marker :board-session-state :file))
+                       :latest-assistant-marker :file))
         (when (plist-member replacement field)
           (plist-put session field (plist-get replacement field)))))
     session))
@@ -1055,11 +997,6 @@ and RECORD supplies persisted identity fields during replay."
   "Restore replayed SESSION field ordering and derived metadata."
   (dolist (field e-session-aggregate--replay-list-fields)
     (plist-put session field (nreverse (plist-get session field))))
-  (let ((journal (e-session-aggregate--board-journal store (plist-get session :id))))
-    ;; Board replay appends through the journal tail, so its physical order is
-    ;; already forward (unlike the prepend-based aggregate lists above).
-    (setf (e-session-board-journal-tail journal)
-          (e-session-aggregate--list-tail (e-session-board-journal-messages journal))))
   (e-session-aggregate-initialize-list-state session)
   (cl-remf session :entry-count)
   (plist-put session :loaded t)
@@ -1086,132 +1023,25 @@ and RECORD supplies persisted identity fields during replay."
         (setq marker (e-session-aggregate--message-assistant-marker message))))
     marker))
 
-(defconst e-session-aggregate--invalid-board-association
-  '(:invalid-board-association t)
-  "Bounded internal marker for a present malformed board association.")
-
-(defun e-session-aggregate--board-association-keys-valid-p (association)
-  "Return non-nil when ASSOCIATION contains only its bounded unique keys."
-  (let ((tail association)
-        seen
-        (valid t))
-    (while (and valid tail)
-      (let ((key (pop tail)))
-        (setq valid (and (memq key '(:board-id :principal :association-role
-                                     :routing-policy))
-                         (not (memq key seen))))
-        (push key seen)
-        (pop tail)))
-    valid))
-
-(defun e-session-aggregate--valid-board-association-p (association)
-  "Return non-nil when ASSOCIATION has the complete durable board shape."
-  (and (e-session-aggregate-keyword-plist-shape-p association)
-       (e-session-aggregate--board-association-keys-valid-p association)
-       (stringp (plist-get association :board-id))
-       (stringp (plist-get association :principal))
-       (or (not (plist-member association :association-role))
-           (member (plist-get association :association-role)
-                   '("owner" "participant")))
-       (or (not (plist-member association :routing-policy))
-           (e-session-board-routing-policy-valid-p
-            (plist-get association :routing-policy)))))
-
-(defun e-session-aggregate--normalize-board-association (association)
-  "Return a bounded normalized representation of present ASSOCIATION."
-  (if (e-session-aggregate--valid-board-association-p association)
-      (let ((normalized (copy-tree association)))
-        (when (plist-member normalized :routing-policy)
-          (plist-put normalized :routing-policy
-                     (e-session-board-routing-policy-normalize
-                      (plist-get normalized :routing-policy))))
-        normalized)
-    (copy-tree e-session-aggregate--invalid-board-association)))
-
-(defun e-session-aggregate-board-routing-policy (session)
-  "Return SESSION's detached complete routing policy, or nil when absent."
-  (when-let ((association (e-session-aggregate-board-association session)))
-    (unless (e-session-aggregate-board-association-invalid-p association)
-      (when (plist-member association :routing-policy)
-        (e-session-board-routing-policy-copy-value
-         (plist-get association :routing-policy))))))
-
-(defun e-session-aggregate-board-association-policy-present-p (association)
-  "Return non-nil when ASSOCIATION explicitly carries a routing policy."
-  (and (not (e-session-aggregate-board-association-invalid-p association))
-       (plist-member association :routing-policy)))
-
-(defun e-session-aggregate-projected-board-association (projection)
-  "Return normalized board association from persisted PROJECTION.
-The nested representation is authoritative when its key is present.  Flat
-identity mirrors reconstruct only the canonical legacy shape in its absence."
-  (if (plist-member projection :board-state)
-      (let ((state (plist-get projection :board-state))
-            (board-id (plist-get projection :board-id))
-            (principal (plist-get projection :principal))
-            (json-null-p (e-session-codec-json-null-p
-                          (plist-get projection :board-state))))
-        ;; Historical indexes projected all three keys as JSON null for an
-        ;; ordinary non-board session.  Preserve only that exact absence shape;
-        ;; omitted or non-null flat mirrors make a null nested value malformed.
-        (if (and (plist-member projection :board-id)
-                 (plist-member projection :principal)
-                 json-null-p
-                 (or (null board-id)
-                     (e-session-codec-json-null-p board-id))
-                 (or (null principal)
-                     (e-session-codec-json-null-p principal)))
-            nil
-          (e-session-aggregate--normalize-board-association
-           (if json-null-p nil state))))
-    (let ((board-id (plist-get projection :board-id))
-          (principal (plist-get projection :principal)))
-      (if (and (null board-id) (null principal))
-          nil
-        (e-session-aggregate--normalize-board-association
-         (list :board-id board-id :principal principal))))))
-
-(defun e-session-aggregate-board-association (session)
-  "Return SESSION's normalized whole board association, or nil when absent."
-  (cond
-   ((plist-member session :board-session-state)
-    (e-session-aggregate--normalize-board-association
-     (plist-get session :board-session-state)))
-   ((plist-member session :board-state)
-    (e-session-aggregate--normalize-board-association
-     (plist-get session :board-state)))
-   (t nil)))
-
-(defun e-session-aggregate-board-association-invalid-p (association)
-  "Return non-nil when ASSOCIATION is the bounded malformed-state marker."
-  (equal association e-session-aggregate--invalid-board-association))
-
 (defun e-session-aggregate--session-index-entry (store session)
   "Return public index metadata for SESSION in STORE."
   (e-session-aggregate--refresh-file-field store session)
-  (let* ((state (e-session-aggregate-board-association session))
-         (entry
-          (list :id (plist-get session :id)
-                :name (plist-get session :name)
-                :summary (plist-get session :summary)
-                :metadata (plist-get session :metadata)
-                :title (e-session-aggregate--display-title-for-session session)
-                :message-count (or (plist-get session :message-count) 0)
-                :created-at (plist-get session :created-at)
-                :updated-at (plist-get session :updated-at)
-                :updated-seq (plist-get session :updated-seq)
-                :last-message-at (or (plist-get session :last-message-at)
-                                     (e-session-aggregate--last-message-at session))
-                :latest-assistant-marker
-                (or (plist-get session :latest-assistant-marker)
-                    (e-session-aggregate--latest-assistant-marker session))
-                :board-id (plist-get state :board-id)
-                :principal (plist-get state :principal)
-                :file (plist-get session :file)
-                :loaded (plist-get session :loaded))))
-    (when (plist-member session :board-session-state)
-      (setq entry (plist-put entry :board-state state)))
-    entry))
+  (list :id (plist-get session :id)
+        :name (plist-get session :name)
+        :summary (plist-get session :summary)
+        :metadata (plist-get session :metadata)
+        :title (e-session-aggregate--display-title-for-session session)
+        :message-count (or (plist-get session :message-count) 0)
+        :created-at (plist-get session :created-at)
+        :updated-at (plist-get session :updated-at)
+        :updated-seq (plist-get session :updated-seq)
+        :last-message-at (or (plist-get session :last-message-at)
+                             (e-session-aggregate--last-message-at session))
+        :latest-assistant-marker
+        (or (plist-get session :latest-assistant-marker)
+            (e-session-aggregate--latest-assistant-marker session))
+        :file (plist-get session :file)
+        :loaded (plist-get session :loaded)))
 
 (defun e-session-aggregate--normalize-turn-options (options)
   "Return canonical session turn OPTIONS."
@@ -1276,8 +1106,6 @@ been accepted."
                         :metadata metadata
                         :session-events nil
                         :messages nil
-                        :board-output-sequence 0
-                        :board-activity-sequence 0
                         :activity-events nil
                         :branch-summaries nil
                         :current-branch nil
@@ -1307,94 +1135,6 @@ been accepted."
     (e-session-aggregate--index-session-entries store session)
     session))
 
-(cl-defun e-session-aggregate-create-board-admission
-    (store &key id metadata principal board-id association-role routing-policy)
-  "Reserve one board participant session before durable publication.
-Validate the complete board association and all durable records before placing
-the private reservation in STORE.  The owner must call
-`e-session-aggregate-commit-board-admission' after runtime attachment
-succeeds, or `e-session-aggregate-abort-created' on failure.  No journal,
-queue, controller outbox,
-or index entry is published by this function."
-  (let ((session
-         (e-session-aggregate-create store :id id :metadata metadata
-                           :defer-persistence t)))
-    (condition-case error
-        (progn
-          (unless (and (stringp board-id) (not (string-empty-p board-id))
-                       (stringp principal) (not (string-empty-p principal)))
-            (signal 'e-session-error
-                    (list "Invalid board admission identity"
-                          board-id principal)))
-          (when (and association-role
-                     (not (member association-role '("owner" "participant"
-                                                     owner participant))))
-            (signal 'e-session-error
-                    (list "Invalid board association role" association-role)))
-          (when (and routing-policy
-                     (not (e-session-board-routing-policy-valid-p
-                           routing-policy)))
-            (signal 'e-session-board-routing-invalid
-                    (list "Invalid board routing policy" routing-policy)))
-          (let ((board-state (list :board-id (copy-sequence board-id)
-                                   :principal (copy-sequence principal))))
-            (when association-role
-              (plist-put board-state :association-role
-                         (if (symbolp association-role)
-                             (symbol-name association-role)
-                           association-role)))
-            (when routing-policy
-              (plist-put
-               board-state :routing-policy
-               (e-session-board-routing-policy-normalize routing-policy)))
-            (plist-put session :board-session-state board-state)
-            (let* ((session-id (plist-get session :id))
-                   (state-record
-                    (list :type "board-session-state"
-                          :session-id session-id
-                          :board-state board-state
-                          :board-id board-id
-                          :principal principal
-                          :board-output-sequence
-                          (or (plist-get session :board-output-sequence) 0)
-                          :board-activity-sequence
-                          (or (plist-get session :board-activity-sequence) 0)))
-                   (records
-                    (list
-                     (list :type "session"
-                           :session-id session-id
-                           :id (e-session-aggregate--root-event-id session)
-                           :timestamp (plist-get session :created-at)
-                           :created-at (plist-get session :created-at)
-                           :updated-at (plist-get session :updated-at)
-                           :metadata (plist-get session :metadata))
-                     state-record)))
-              (plist-put session :admission-records records)
-              (e-session-aggregate--index-session-entries store session)
-              session)))
-      (error
-       (ignore-errors
-         (e-session-aggregate-abort-created store (plist-get session :id)))
-       (signal (car error) (cdr error))))))
-
-
-(defun e-session-aggregate-commit-board-admission (store session-id)
-  "Complete one previously reserved board admission in the aggregate.
-The returned session retains its detached semantic admission records for the
-application service to submit as one storage transaction.  No physical write
-or queue mutation occurs here."
-  (let* ((session (e-session-aggregate-get-live store session-id))
-         (records (and (plist-get session :admission-pending)
-                       (plist-get session :admission-records))))
-    (unless (and (plist-get session :admission-pending)
-                 (listp records) (= (length records) 2))
-      (signal 'e-session-error
-              (list "Session has no pending board admission" session-id)))
-    (cl-remf session :admission-pending)
-    (cl-remf session :admission-records)
-    (e-session-aggregate--index-session-entries store session)
-    session))
-
 (defun e-session-aggregate-abort-created (store session-id)
   "Remove a newly created SESSION-ID after an owning service failure.
 
@@ -1402,24 +1142,12 @@ This is intentionally limited to application-service rollback: callers must
   only use it for a session that has just been created and has not been exposed
 as a restorable participant.  It removes the in-memory/index/journal state and
 any queued direct-store writes, rather than appending a user-visible tombstone
-  for an object that never completed admission."
+for an object that never completed admission."
   (when-let* ((session (gethash session-id (e-session-store-sessions store)))
               (_ (plist-get session :loaded)))
     (remhash session-id (e-session-store-entry-indexes store))
-    (remhash session-id (e-session-store-board-journals store))
     (remhash session-id (e-session-store-sessions store))
     t))
-
-(defun e-session-aggregate--board-journal (store session-id)
-  "Return STORE's private board journal for SESSION-ID."
-  (or (gethash session-id (e-session-store-board-journals store))
-      (puthash session-id
-               (e-session-aggregate--board-journal-create)
-               (e-session-store-board-journals store))))
-
-(defun e-session-aggregate--clear-board-journal (store session-id)
-  "Remove STORE's private board journal for SESSION-ID."
-  (remhash session-id (e-session-store-board-journals store)))
 
 (defun e-session-aggregate--detach-value (value cycle-error)
   "Return aggregate VALUE detached from mutable input.
@@ -1496,16 +1224,11 @@ evaluator while crossing an aggregate ownership boundary."
                (push current results))))))))
     (car results)))
 
-(defun e-session-aggregate--freeze-board-value (value)
-  "Return VALUE detached from mutable board-journal input.
-Signal `e-session-board-message-cycle' when VALUE is cyclic."
-  (e-session-aggregate--detach-value value 'e-session-board-message-cycle))
-
 (defun e-session-aggregate-stage-session-mutation (store &optional session-id)
   "Return an isolated aggregate stage derived from STORE.
 
-When SESSION-ID is non-nil, copy that session and its private board journal
-into the stage.  Other sessions are deliberately absent.  The application
+When SESSION-ID is non-nil, copy that session into the stage.  Other sessions
+are deliberately absent.  The application
 service may perform one semantic mutation on the stage while STORE remains the
 committed live aggregate.  A nil SESSION-ID creates an empty stage for a new
 session.  This boundary owns no persistence or event-loop work."
@@ -1524,22 +1247,7 @@ session.  This boundary owns no persistence or event-loop work."
         ;; Rebuild those aliases after detaching the semantic value.
         (e-session-aggregate-initialize-list-state session)
         (puthash session-id session (e-session-store-sessions stage))
-        (e-session-aggregate--index-session-entries stage session))
-      (let ((source-journal
-             (gethash session-id
-                      (e-session-store-board-journals store))))
-        (when source-journal
-        (let* ((messages
-                (e-session-aggregate--freeze-board-value
-                 (e-session-board-journal-messages source-journal)))
-               (journal
-                (e-session-aggregate--board-journal-create
-                 :messages messages :tail (and messages (last messages)))))
-          (dolist (message messages)
-            (puthash (e-session-aggregate-board-message-identity message)
-                     message (e-session-board-journal-id-index journal)))
-          (puthash session-id journal
-                   (e-session-store-board-journals stage))))))
+        (e-session-aggregate--index-session-entries stage session)))
     stage))
 
 (defun e-session-aggregate-publish-staged-session
@@ -1558,174 +1266,7 @@ different session committed reentrantly cannot create a sequence collision."
     (plist-put session :updated-seq (e-session-store-sequence store))
     (puthash session-id session (e-session-store-sessions store))
     (e-session-aggregate--index-session-entries store session)
-    (let ((journal
-           (gethash session-id (e-session-store-board-journals stage))))
-      (if journal
-          (puthash session-id journal (e-session-store-board-journals store))
-        (remhash session-id (e-session-store-board-journals store))))
     session))
-
-(defun e-session-aggregate-board-messages (store session-id)
-  "Return SESSION-ID's durable board envelopes in board order."
-  (e-session-aggregate-get-live store session-id)
-  (e-session-aggregate--freeze-board-value
-   (e-session-board-journal-messages
-    (e-session-aggregate--board-journal store session-id))))
-
-(defun e-session-aggregate--canonical-board-record-type (record-type)
-  "Return supported RECORD-TYPE in the board journal's representation.
-Nil means an ordinary board message."
-  (pcase record-type
-    (`nil nil)
-    ((or 'processing-chain "processing-chain") 'processing-chain)
-    ((or 'processing-result "processing-result") 'processing-result)
-    (_
-     (signal 'e-session-board-message-invalid-record-type
-             (list record-type)))))
-
-(defun e-session-aggregate--normalize-board-message (message)
-  "Normalize durable board MESSAGE after input or JSONL replay."
-  (dolist (field '(:kind :mode :activity-kind :routing-state
-                   :unrouted-reason :record-type :outcome :failure-policy))
-    (when-let ((value (plist-get message field)))
-      (when (stringp value)
-        (plist-put message field (intern value)))))
-  ;; Keep the historical detached representation: callers can rely on the
-  ;; tags slot being present even when the envelope carried no tags.
-  (plist-put message :tags
-             (mapcar (lambda (tag)
-                       (if (stringp tag) (intern tag) tag))
-                     (plist-get message :tags)))
-  (when-let ((attributes (plist-get message :attributes)))
-    (when-let ((status (plist-get attributes :status)))
-      (when (stringp status)
-        (plist-put attributes :status (intern status)))))
-  message)
-
-(defun e-session-aggregate--normalize-owned-board-message (message)
-  "Normalize sealed MESSAGE with only schema-bounded spine wrappers.
-
-Large content and nested producer leaves remain shared with the command by
-identity.  The copied top-level, tags, and attributes spines are bounded by
-the async admission schema and belong to D."
-  (let ((normalized (copy-sequence message)))
-    (when-let* ((attributes (plist-get normalized :attributes)))
-      (plist-put normalized :attributes (copy-sequence attributes)))
-    (e-session-aggregate--normalize-board-message normalized)))
-
-(defun e-session-aggregate--copy-owned-board-state (state)
-  "Copy bounded STATE spines while retaining its frozen producer leaves."
-  (when state
-    (let ((copy (copy-sequence state)))
-      (when (plist-member copy :routing-policy)
-        (plist-put copy :routing-policy
-                   (e-session-board-routing-policy-normalize-owned
-                    (plist-get copy :routing-policy))))
-      copy)))
-
-(defun e-session-aggregate-board-message-identity (message)
-  "Return the durable journal identity for board MESSAGE.
-Processing records have a record type, while ordinary board messages occupy the
-untyped board-message namespace.  The pair prevents equal raw ids from
-silently replacing records from another namespace."
-  (cons (or (e-session-aggregate--canonical-board-record-type
-             (plist-get message :record-type))
-            'board-message)
-        (plist-get message :id)))
-
-(defun e-session-aggregate--existing-board-message (journal message)
-  "Return MESSAGE's retained duplicate, or signal for a typed conflict."
-  (let* ((identity (e-session-aggregate-board-message-identity message))
-         (existing (and journal
-                        (gethash identity
-                                 (e-session-board-journal-id-index journal)))))
-    (when (and existing
-               (plist-get message :record-type)
-               (not (equal existing message)))
-      (signal 'e-session-board-message-conflict
-              (list identity existing message)))
-    existing))
-
-(defun e-session-aggregate-append-board-message (store session-id message)
-  "Append one immutable board MESSAGE envelope to SESSION-ID's board log."
-  (e-session-aggregate-get-live store session-id)
-  (let* ((journal (e-session-aggregate--board-journal store session-id))
-         (message (e-session-aggregate--freeze-board-value message))
-         (record-type
-          (e-session-aggregate--canonical-board-record-type
-           (plist-get message :record-type)))
-         (_ (when record-type
-              (plist-put message :record-type record-type)))
-         (existing (e-session-aggregate--existing-board-message journal message)))
-    (unless existing
-      (puthash (e-session-aggregate-board-message-identity message) message
-               (e-session-board-journal-id-index journal))
-      (let ((cell (list message)))
-        (if-let ((tail (e-session-board-journal-tail journal)))
-            (setcdr tail cell)
-          (setf (e-session-board-journal-messages journal) cell))
-        (setf (e-session-board-journal-tail journal) cell))
-      (let ((session (e-session-aggregate-get-live store session-id)))
-        (e-session-aggregate--touch store session (e-session-aggregate--timestamp)))
-      ;; The application service persists this detached envelope.
-      nil)
-    (e-session-aggregate--freeze-board-value (or existing message))))
-
-(defun e-session-aggregate-clear-board-messages (store session-id)
-  "Clear SESSION-ID's durable board log and derived identity index."
-  (let ((journal (e-session-aggregate--board-journal store session-id))
-        (session (e-session-aggregate-get-live store session-id)))
-    (setf (e-session-board-journal-messages journal) nil
-          (e-session-board-journal-tail journal) nil
-          (e-session-board-journal-id-index journal) (make-hash-table :test 'equal))
-    (e-session-aggregate--touch store session (e-session-aggregate--timestamp))
-    nil))
-
-(defun e-session-aggregate-declare-board-state
-    (store session-id principal board-id &optional association-role
-           routing-policy)
-  "Persist SESSION-ID's board identity, role, and ROUTING-POLICY.
-ASSOCIATION-ROLE is either `owner' or `participant'.  Nil omits the role for
-replay-compatible callers that create the legacy board identity shape.
-ROUTING-POLICY, when non-nil, must contain every key in
-`e-session-aggregate--board-routing-policy-keys'; a present policy is never
-partially
-persisted."
-  (unless (member association-role '(nil "owner" "participant"))
-    (error "Invalid board association role: %S" association-role))
-  (unless (and (stringp session-id) (stringp principal) (stringp board-id))
-    (error "Board association identity must be strings: %S %S %S"
-           session-id principal board-id))
-  (when (and routing-policy
-             (not (e-session-board-routing-policy-valid-p routing-policy)))
-    (error "Invalid board routing policy: %S" routing-policy))
-  (let* ((session (e-session-aggregate-get-live store session-id))
-         (had-state (plist-member session :board-session-state))
-         (old-state (plist-get session :board-session-state))
-         (board-state (list :board-id (copy-sequence board-id)
-                            :principal (copy-sequence principal))))
-    (when association-role
-      (setq board-state
-            (plist-put board-state :association-role association-role)))
-    (when routing-policy
-      (setq board-state
-            (plist-put
-             board-state :routing-policy
-                     (e-session-board-routing-policy-normalize routing-policy))))
-    (let ((record
-           (list :type "board-session-state" :session-id session-id
-                 :board-state board-state :board-id board-id
-                 :principal principal
-                 :board-output-sequence
-                 (or (plist-get session :board-output-sequence) 0)
-                 :board-activity-sequence
-                 (or (plist-get session :board-activity-sequence) 0))))
-      (ignore had-state old-state record)
-      (plist-put session :board-session-state (copy-tree board-state))
-      ;; Durable publication is coordinated by the application service after
-      ;; this semantic transition succeeds.
-      (copy-tree board-state))))
-
 (defun e-session-aggregate--fork-message-seed (message)
   "Return MESSAGE stripped of source-session identity for fork replay.
 The fork rebuilds a fresh linear parent chain, so durable identity fields
@@ -1818,9 +1359,7 @@ fork's session name (otherwise it inherits the source name)."
   (e-session-aggregate-peek-session store session-id))
 
 (defun e-session-aggregate-get (store session-id)
-  "Return SESSION-ID's mutable generic session state from STORE.
-Board journal state is owned privately by STORE and is available only through
-its dedicated board journal accessors."
+  "Return SESSION-ID's mutable generic session state from STORE."
   (e-session-aggregate-get-live store session-id))
 
 (defun e-session-aggregate-messages (store session-id)
@@ -2240,15 +1779,6 @@ New code should prefer the narrower typed metadata helpers."
                     (e-session-aggregate--message-with-created-at
                      message timestamp)
                     timestamp)))
-    (when (and (eq (plist-get message :role) 'assistant)
-               (not (plist-member message :board-output-sequence)))
-      (let ((sequence
-             (1+ (or (plist-get session :board-output-sequence)
-                     (cl-loop for entry in (plist-get session :messages)
-                              maximize (or (plist-get entry :board-output-sequence) 0))
-                     0))))
-        (setq message (plist-put message :board-output-sequence sequence))
-        (plist-put session :board-output-sequence sequence)))
     (e-session-aggregate--append-list-item session :messages message)
     (e-session-aggregate--index-entry store session-id message)
     (e-session-aggregate--touch store session timestamp)
@@ -2300,14 +1830,6 @@ activity events continue to mint their own ids."
                                :payload (copy-tree payload)
                                :created-at timestamp))
                  timestamp)))
-    (unless (plist-member event :board-activity-sequence)
-      (let ((sequence
-             (1+ (or (plist-get session :board-activity-sequence)
-                     (cl-loop for entry in (plist-get session :activity-events)
-                              maximize (or (plist-get entry :board-activity-sequence) 0))
-                     0))))
-        (setq event (plist-put event :board-activity-sequence sequence))
-        (plist-put session :board-activity-sequence sequence)))
     (e-session-aggregate--append-list-item session :activity-events event)
     (e-session-aggregate--update-activity-derived-fields session event)
     (e-session-aggregate--index-entry store session-id event)
@@ -3355,7 +2877,6 @@ RECORD must already be detached by `e-session-codec-decode-record'."
                                 (e-session-store-sessions store)))))
     (pcase type
       ("session"
-       (e-session-aggregate--clear-board-journal store session-id)
        (let* ((metadata
                (e-session-metadata-validate
                 (e-session-metadata-normalize-for-replay
@@ -3368,10 +2889,6 @@ RECORD must already be detached by `e-session-codec-decode-record'."
                      :metadata metadata
                      :session-events nil
                      :messages nil
-                     :board-output-sequence
-                     (or (plist-get record :board-output-sequence) 0)
-                     :board-activity-sequence
-                     (or (plist-get record :board-activity-sequence) 0)
                      :activity-events nil
                      :branch-summaries nil
                      :current-branch (plist-get record :current-branch)
@@ -3404,39 +2921,6 @@ RECORD must already be detached by `e-session-codec-decode-record'."
            (e-session-aggregate--message-with-created-at
             (plist-get record :message) timestamp)
            timestamp record))
-         (when-let ((sequence
-                     (plist-get (car (plist-get session :messages))
-                                :board-output-sequence)))
-           (plist-put session :board-output-sequence
-                      (max (or (plist-get session :board-output-sequence) 0)
-                           sequence)))
-         (e-session-aggregate--touch store session timestamp)))
-      ("board-message"
-       (when session
-         (let* ((journal (e-session-aggregate--board-journal store session-id))
-                (message
-                 (e-session-aggregate--normalize-board-message
-                  (e-session-aggregate--freeze-board-value
-                   (copy-tree (plist-get record :message)))))
-                (existing
-                 (e-session-aggregate--existing-board-message journal message)))
-           (unless existing
-             (puthash (e-session-aggregate-board-message-identity message)
-                      message (e-session-board-journal-id-index journal))
-             (let ((cell (list message)))
-               (if-let ((tail (e-session-board-journal-tail journal)))
-                   (setcdr tail cell)
-                 (setf (e-session-board-journal-messages journal) cell))
-               (setf (e-session-board-journal-tail journal) cell))))
-         (e-session-aggregate--touch store session timestamp)))
-      ("board-session-state"
-       (when session
-         (plist-put session :board-session-state
-                   (e-session-aggregate-projected-board-association record))
-         (e-session-aggregate--touch store session timestamp)))
-      ("board-messages-cleared"
-       (when session
-         (e-session-aggregate--clear-board-journal store session-id)
          (e-session-aggregate--touch store session timestamp)))
       ("message-display"
        (when session
@@ -3468,15 +2952,8 @@ RECORD must already be detached by `e-session-codec-decode-record'."
            (when (plist-member record :checkpoint-retain)
              (plist-put event :checkpoint-retain
                         (plist-get record :checkpoint-retain)))
-           (when (plist-member record :board-activity-sequence)
-             (plist-put event :board-activity-sequence
-                        (plist-get record :board-activity-sequence)))
            (e-session-aggregate--prepend-replayed-item
             session :activity-events event)
-           (when-let ((sequence (plist-get event :board-activity-sequence)))
-             (plist-put session :board-activity-sequence
-                        (max (or (plist-get session :board-activity-sequence) 0)
-                             sequence)))
            (e-session-aggregate--update-activity-derived-fields session event)))
        (when session
          (e-session-aggregate--touch store session timestamp)))
@@ -3641,10 +3118,6 @@ indexes, head identity, and incremental derived fields in bounded work."
                      :branch-summaries nil :compactions nil :provider-anchors nil
                      :process-reports nil :context-generations nil
                      :context-promotions nil :context-curation-packages nil
-                     :board-output-sequence
-                     (or (plist-get record :board-output-sequence) 0)
-                     :board-activity-sequence
-                     (or (plist-get record :board-activity-sequence) 0)
                      :current-branch (plist-get record :current-branch)
                      :created-at (or (plist-get record :created-at) timestamp)
                      :updated-at (or (plist-get record :updated-at) timestamp)
@@ -3673,10 +3146,6 @@ indexes, head identity, and incremental derived fields in bounded work."
                  timestamp record)))
            (e-session-aggregate--append-list-item session :messages entry)
            (e-session-aggregate--committed-apply-fault 'after-list-state)
-           (when-let* ((sequence (plist-get entry :board-output-sequence)))
-             (plist-put session :board-output-sequence
-                        (max (or (plist-get session :board-output-sequence) 0)
-                             sequence)))
            (e-session-aggregate--touch store session timestamp)
            (e-session-aggregate--update-message-derived-fields-on-append
             store session entry)
@@ -3699,15 +3168,8 @@ indexes, head identity, and incremental derived fields in bounded work."
            (when (plist-member record :checkpoint-retain)
              (plist-put entry :checkpoint-retain
                         (plist-get record :checkpoint-retain)))
-           (when (plist-member record :board-activity-sequence)
-             (plist-put entry :board-activity-sequence
-                        (plist-get record :board-activity-sequence)))
            (e-session-aggregate--append-list-item session :activity-events entry)
            (e-session-aggregate--committed-apply-fault 'after-list-state)
-           (when-let* ((sequence (plist-get entry :board-activity-sequence)))
-             (plist-put session :board-activity-sequence
-                        (max (or (plist-get session :board-activity-sequence) 0)
-                             sequence)))
            (e-session-aggregate--update-activity-derived-fields session entry)
            (e-session-aggregate--touch store session timestamp)
            (e-session-aggregate--committed-apply-fault 'after-derived)
@@ -3824,46 +3286,9 @@ indexes, head identity, and incremental derived fields in bounded work."
            (e-session-aggregate--committed-apply-fault 'after-derived)
            (e-session-aggregate--index-entry store session-id event)
            (e-session-aggregate--committed-apply-fault 'after-index))))
-      ("board-message"
-       (when session
-         (let* ((journal (e-session-aggregate--board-journal store session-id))
-                (message (plist-get record :message))
-                (existing
-                 (e-session-aggregate--existing-board-message journal message)))
-           (unless existing
-             (puthash (e-session-aggregate-board-message-identity message)
-                      message (e-session-board-journal-id-index journal))
-             (let ((cell (list message)))
-               (if-let* ((tail (e-session-board-journal-tail journal)))
-                   (setcdr tail cell)
-                 (setf (e-session-board-journal-messages journal) cell))
-               (setf (e-session-board-journal-tail journal) cell)))
-           (e-session-aggregate--committed-apply-fault 'after-list-state)
-           (e-session-aggregate--touch store session timestamp)
-           (e-session-aggregate--committed-apply-fault 'after-derived))))
-      ("board-messages-cleared"
-       (when session
-         (e-session-aggregate--clear-board-journal store session-id)
-         (e-session-aggregate--committed-apply-fault 'after-list-state)
-         (e-session-aggregate--touch store session timestamp)
-         (e-session-aggregate--committed-apply-fault 'after-derived)))
-      ("board-session-state"
-       (when session
-         (let ((state (plist-get record :board-state)))
-           ;; This path consumes only aggregate-produced acknowledged deltas;
-           ;; replay uses the separate projection normalizer.  Retain the
-           ;; already-frozen leaves instead of allocating a second policy.
-           (unless (e-session-aggregate--valid-board-association-p state)
-             (signal 'e-session-error
-                     (list "Invalid committed board association" state)))
-           (plist-put session :board-session-state state))
-         (e-session-aggregate--committed-apply-fault 'after-list-state)
-         (e-session-aggregate--touch store session timestamp)
-         (e-session-aggregate--committed-apply-fault 'after-derived)))
       ("session-deleted"
        (remhash session-id (e-session-store-sessions store))
        (remhash session-id (e-session-store-entry-indexes store))
-       (remhash session-id (e-session-store-board-journals store))
        (e-session-aggregate--committed-apply-fault 'after-list-state)
        (e-session-aggregate--committed-apply-fault 'after-derived)
        (e-session-aggregate--committed-apply-fault 'after-index))
@@ -3918,7 +3343,6 @@ This is the active C07 post-ACK aggregate boundary."
   (let* ((session-id (plist-get record :session-id))
          (sessions (e-session-store-sessions store))
          (indexes (e-session-store-entry-indexes store))
-         (journals (e-session-store-board-journals store))
          (old-session (and session-id (gethash session-id sessions)))
          ;; Plist mutation changes existing cons cells.  A shallow spine copy
          ;; restores every field reference; append-only tail cdrs are journaled
@@ -3938,22 +3362,6 @@ This is the active C07 post-ACK aggregate boundary."
          (record-id (plist-get record :id))
          (old-index-entry (and old-index record-id
                                (gethash record-id old-index)))
-         (old-journal (and session-id (gethash session-id journals)))
-         (old-journal-messages
-          (and old-journal (e-session-board-journal-messages old-journal)))
-         (old-journal-tail
-          (and old-journal (e-session-board-journal-tail old-journal)))
-         (old-journal-tail-cdr (and old-journal-tail (cdr old-journal-tail)))
-         (old-journal-index
-          (and old-journal (e-session-board-journal-id-index old-journal)))
-         (board-message (and (equal (plist-get record :type) "board-message")
-                             (plist-get record :message)))
-         (board-identity
-          (and board-message
-               (e-session-aggregate-board-message-identity board-message)))
-         (old-board-entry
-          (and old-journal-index board-identity
-               (gethash board-identity old-journal-index)))
          (old-message
           (and (equal (plist-get record :type) "message-display")
                old-session
@@ -3989,21 +3397,6 @@ This is the active C07 post-ACK aggregate boundary."
                     (puthash record-id old-index-entry old-index)
                   (remhash record-id old-index))))
           (remhash session-id indexes))
-        (if old-journal
-            (progn
-              (when old-journal-tail
-                (setcdr old-journal-tail old-journal-tail-cdr))
-              (setf (e-session-board-journal-messages old-journal)
-                    old-journal-messages
-                    (e-session-board-journal-tail old-journal) old-journal-tail
-                    (e-session-board-journal-id-index old-journal)
-                    old-journal-index)
-              (when board-identity
-                (if old-board-entry
-                    (puthash board-identity old-board-entry old-journal-index)
-                  (remhash board-identity old-journal-index)))
-              (puthash session-id old-journal journals))
-          (remhash session-id journals))
         (when old-message
           (setcar old-message (car old-message-spine))
           (setcdr old-message (cdr old-message-spine)))
@@ -4127,8 +3520,7 @@ with the sealed command."
                      :timestamp command-time
                      :created-at command-time :updated-at command-time
                      :metadata metadata :name (plist-get metadata :name)
-                     :turn-options nil :current-branch nil
-                     :board-output-sequence 0 :board-activity-sequence 0)
+                     :turn-options nil :current-branch nil)
                result-kind 'session)))
       ('append-message
        (let* ((message
@@ -4137,10 +3529,6 @@ with the sealed command."
               (entry
                 (e-session-aggregate--command-entry
                 session 'message message delta-id command-time)))
-         (when (and (eq (plist-get entry :role) 'assistant)
-                    (not (plist-member entry :board-output-sequence)))
-           (plist-put entry :board-output-sequence
-                      (1+ (or (plist-get session :board-output-sequence) 0))))
          (setq record
                (list :type "message" :session-id session-id
                      :request-id request-id :delta-id delta-id
@@ -4169,10 +3557,7 @@ with the sealed command."
                  (list :turn-id (plist-get arguments :turn-id)
                        :event-type event-type :payload payload))
                 delta-id command-time entry-id))
-              (sequence
-               (or (plist-get entry :board-activity-sequence)
-                   (1+ (or (plist-get session :board-activity-sequence) 0)))))
-         (plist-put entry :board-activity-sequence sequence)
+              )
          (setq record
                (append
                 (list :type "activity-event" :session-id session-id
@@ -4180,7 +3565,6 @@ with the sealed command."
                       :id (plist-get entry :id)
                       :parent-id (plist-get entry :parent-id)
                       :turn-id (plist-get entry :turn-id)
-                      :board-activity-sequence sequence
                       :timestamp (plist-get entry :created-at)
                       :event-type event-type :payload payload)
                 (when (plist-get entry :checkpoint-retain)
@@ -4341,52 +3725,6 @@ with the sealed command."
                    :parent-id (e-session-aggregate--root-event-id session)
                    :timestamp command-time)
              result-kind 'entry result-id delta-id))
-      ('board-message
-       (let* ((message
-               (e-session-aggregate--normalize-owned-board-message
-                (plist-get arguments :message)))
-              (_type (e-session-aggregate--canonical-board-record-type
-                      (plist-get message :record-type))))
-         (let* ((journal (gethash session-id
-                                  (e-session-store-board-journals store)))
-                (existing
-                 (e-session-aggregate--existing-board-message journal message))
-                (identity
-                 (e-session-aggregate-board-message-identity message)))
-           (setq record
-                 (unless existing
-                   (list :type "board-message" :session-id session-id
-                         :request-id request-id :delta-id delta-id
-                         :id delta-id :timestamp command-time :message message))
-                 result-kind 'board-message
-                 result-id identity))))
-      ('board-messages-clear
-       (setq record
-             (list :type "board-messages-cleared" :session-id session-id
-                   :request-id request-id :delta-id delta-id
-                   :id delta-id :timestamp command-time)
-             result-kind 'nil-result))
-      ('board-state
-       (let ((state (list :board-id (plist-get arguments :board-id)
-                          :principal (plist-get arguments :principal))))
-         (when-let* ((role (plist-get arguments :association-role)))
-           (setq state (plist-put state :association-role role)))
-         (when-let* ((policy (plist-get arguments :routing-policy)))
-           (setq state
-                 (plist-put state :routing-policy
-                            (e-session-board-routing-policy-normalize-owned
-                             policy))))
-         (setq record
-               (list :type "board-session-state" :session-id session-id
-                     :request-id request-id :delta-id delta-id :id delta-id
-                     :timestamp command-time :board-state state
-                     :board-id (plist-get state :board-id)
-                     :principal (plist-get state :principal)
-                     :board-output-sequence
-                     (or (plist-get session :board-output-sequence) 0)
-                     :board-activity-sequence
-                     (or (plist-get session :board-activity-sequence) 0))
-               result-kind 'board-state)))
       ('delete
        ;; This domain-only delta is never sent as a session record; it gives
        ;; transactional live retirement the same rollback boundary as appends.
@@ -4448,8 +3786,8 @@ with the sealed command."
                         :timestamp command-time)
                   bounded-fields))))))
     (unless (or record (memq result-kind
-                             '(nil-result board-message
-                               curation-package-existing true-result)))
+                             '(nil-result curation-package-existing
+                               true-result)))
       (signal 'e-session-error
               (list "Session command produced no durable delta" tag)))
     ;; The public result is resolved after ACK from authoritative live state.
@@ -4479,18 +3817,6 @@ with the sealed command."
        (e-session-aggregate--public-command-entry
         (e-session-aggregate--message-by-id
          store session-id (plist-get delta :result-id))))
-      ('board-message
-       (let* ((journal (gethash session-id
-                                (e-session-store-board-journals store)))
-              (retained
-               (and journal
-                    (gethash (plist-get delta :result-id)
-                             (e-session-board-journal-id-index journal)))))
-         (and retained (copy-sequence retained))))
-      ('board-state
-       (e-session-aggregate--copy-owned-board-state
-        (plist-get (e-session-aggregate-get-live store session-id)
-                   :board-session-state)))
       ('curation-package
        (let* ((record (plist-get delta :record))
               (id (plist-get delta :result-id))

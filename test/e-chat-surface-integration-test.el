@@ -16,7 +16,6 @@
 (require 'cl-lib)
 (require 'ert)
 (require 'e-backend)
-(require 'e-board-runtime)
 (require 'e-chat)
 (require 'e-chat-session)
 (require 'e-harness)
@@ -26,16 +25,9 @@
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
 (load (expand-file-name
-       "../e2e/e-board-e2e-support.el"
-       (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
-(load (expand-file-name
        "e-test-environment-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
-(declare-function e-board-e2e-reset-runtime "e-board-e2e-support")
-(declare-function e-board-e2e-drain-session "e-board-e2e-support")
-(declare-function e-board-e2e-wait-batch "e-board-e2e-support")
-(declare-function e-board-e2e-wait-until "e-board-e2e-support")
 (declare-function evil-mode "evil-core")
 (declare-function evil-insert-state "evil-states")
 (declare-function evil-local-mode "evil-core")
@@ -47,7 +39,6 @@
 
 (ert-deftest e-chat-surface-integration-test-composer-submits-below-transcript ()
   "A displayed chat keeps input in its pane and responses in its transcript."
-  (e-board-e2e-reset-runtime)
   (let* ((backend (e-backend-fake-create
                    :items '((:type assistant-message :content "surface answer")
                             (:type done :reason stop))))
@@ -87,13 +78,8 @@
                 (goto-char (point-max))
                 (insert "surface prompt")
                 (e-chat-submit))
-              (e-board-e2e-drain-session harness session-id)
-              (should (equal (plist-get
-                              (e-board-e2e-wait-batch harness session-id 1.0)
-                              :status)
-                             'done))
               (should
-               (e-board-e2e-wait-until
+               (e-chat-test--wait-until
                 (lambda ()
                   (with-current-buffer buffer
                     (string-match-p "surface answer" (buffer-string))))
@@ -115,11 +101,7 @@
         (kill-buffer buffer))
       (set-window-configuration window-configuration)
       (e-chat-test--kill-chat-buffers)
-      ;; This test exercises the process-global Board runtime and may leave
-      ;; zero-delay observer/input callbacks queued when the old window
-      ;; configuration is restored.  Model process teardown only after that
-      ;; restoration so later owner tests cannot inherit those callbacks.
-      (e-board-e2e-reset-runtime))))
+      (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-surface-integration-test-evil-escape-routes-transcript-commands ()
   "One real Evil Escape moves input focus to transcript navigation commands."
@@ -139,7 +121,6 @@
         (progn
           (evil-mode 1)
           (e-chat-startup)
-          (e-board-e2e-reset-runtime)
           (setq buffer (e-chat-open :harness harness :session-id session-id))
           (switch-to-buffer buffer)
           (e-chat-surface-after-display-buffer buffer)
@@ -155,13 +136,8 @@
                 (goto-char (point-max))
                 (insert "evil prompt")
                 (e-chat-submit))
-              (e-board-e2e-drain-session harness session-id)
-              (should (equal (plist-get
-                              (e-board-e2e-wait-batch harness session-id 1.0)
-                              :status)
-                             'done))
               (should
-               (e-board-e2e-wait-until
+               (e-chat-test--wait-until
                 (lambda ()
                   (with-current-buffer buffer
                     (string-match-p "evil answer" (buffer-string))))
@@ -213,19 +189,9 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-surface-integration-test-new-chat-is-board-native ()
-  "The real fresh-chat command creates only board-native persistent state."
-  (let* ((e-board--registry (make-hash-table :test 'equal))
-         (e-board-registry--boards (make-hash-table :test 'equal))
-         (e-board-registry--unsettled-pickup-count 0)
-         (e-board-registry--unsettled-effect-count 0)
-         (e-board-registry--unsettled-routing-count 0)
-         (e-board-registry--unsettled-generation 0)
-         (e-board-runtime--attachments (make-hash-table :test 'equal))
-         (e-board-runtime--session-attachments (make-hash-table :test 'equal))
-         (e-board-runtime--endpoint-attachments (make-hash-table :test 'equal))
-         (e-board-runtime--admission-open-p t)
-         (e-harness-registry--instances (make-hash-table :test 'equal))
+(ert-deftest e-chat-surface-integration-test-new-chat-is-sql-native ()
+  "The real fresh-chat command creates one SQL-backed live binding."
+  (let* ((e-harness-registry--instances (make-hash-table :test 'equal))
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
@@ -233,7 +199,6 @@
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          buffer)
-    (e-board-e2e-reset-runtime)
     (e-harness-activate-capability
      harness (e-chat-session-capability-create))
     (e-harness-registry-register :chat-e2e harness)
@@ -242,16 +207,24 @@
           (setq buffer (e-chat-new))
           (should (buffer-live-p buffer))
           (with-current-buffer buffer
-            (let* ((board (e-board-registry-get e-chat-board-id))
-                   (session (e-session-local-state (e-harness-sessions harness)
-                                           e-chat-session-id))
-                   (state (plist-get session :board-session-state)))
+            (when (e-work-handle-p e-chat--session-readiness-work)
+              (e-work-with-batch-await
+                (e-work-await-batch e-chat--session-readiness-work
+                                    :timeout 5.0)))
+            (let* ((binding
+                    (e-chat-service-binding harness e-chat-session-id))
+                   (board
+                    (e-work-with-batch-await
+                      (e-work-await-batch
+                       (e-board-sqlite-service-board-get-start
+                        (e-chat-service-binding-sqlite-service binding)
+                        e-chat-board-id)
+                       :timeout 5.0))))
               (should (equal e-chat-harness harness))
-              (should (eq (e-board-registry-board-state board) 'active))
-              (should (equal (plist-get state :board-id) e-chat-board-id))
-              (should (equal (plist-get state :principal)
-                             (e-board-registry-board-principal board)))
-              (should (equal (plist-get state :association-role) "owner")))))
+              (should (e-chat-service-binding-p binding))
+              (should (equal (plist-get board :board-id) e-chat-board-id))
+              (should (equal (plist-get board :trusted-principal)
+                             (format "chat:%s" e-chat-session-id))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -313,57 +286,6 @@
 
 
 
-(ert-deftest e-chat-test-loaded-session-reprojection-restores-following-tail ()
-  "Async session replay keeps an activated transcript at its new output tail."
-  (let* ((history (mapconcat (lambda (number)
-                               (format "loaded history line %d" number))
-                             (number-sequence 1 300)
-                             "\n"))
-         (buffer (e-chat-test--buffer nil "chat-loaded-following-tail"))
-         transcript-window
-         composer-window
-         loading-tail)
-    (unwind-protect
-        (progn
-          (setq transcript-window (display-buffer buffer))
-          (with-current-buffer buffer
-            (let ((store (e-chat-service-session-store e-chat-harness)))
-              (e-session-append-message
-               store e-chat-session-id
-               '(:id "msg-1" :role user :content "loaded question"))
-              (e-session-append-message
-               store e-chat-session-id
-               `(:id "msg-2" :role assistant :content ,history))
-              (e-chat-test--seed-board-log-from-private-fixture
-               e-chat-harness e-chat-session-id))
-            ;; Restart first displays and activates a short loading projection.
-            (let ((inhibit-read-only t))
-              (e-chat-clear t)
-              (e-chat-transcript-render-session-loading
-               '(:summary "loaded question")))
-            (setq composer-window
-                  (e-chat-surface-display-composer transcript-window t))
-            (set-buffer buffer)
-            (e-chat-surface-after-display-buffer buffer)
-            (setq loading-tail (point-max))
-            (should (= (window-point transcript-window) loading-tail))
-            (should (e-chat-surface-window-follows-output-p transcript-window))
-            ;; Load completion clears that projection and inserts the actual
-            ;; transcript without crossing another display/focus boundary.
-            (e-chat-attach-buffer
-             buffer e-chat-harness e-chat-session-id
-             e-chat-harness-instance-id)
-            (should (> (point-max) loading-tail))
-            (should (= (window-point transcript-window) (point-max)))
-            (should (>= (window-end transcript-window t) (point-max)))
-            (should (eq (selected-window) composer-window))))
-      (set-frame-parameter nil 'e-chat-selected-surface nil)
-      (when (window-live-p composer-window)
-        (delete-window composer-window))
-      (when (window-live-p transcript-window)
-        (delete-window transcript-window))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 
 

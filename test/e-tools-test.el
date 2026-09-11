@@ -17,7 +17,6 @@
 (require 'e-tools)
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-work)
-(require 'e-board)
 
 (defun e-tools-test--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
@@ -85,46 +84,6 @@
              (plist-get (e-tools-request-metadata request) :work-handle)))
     (should (e-tools-test--wait-until (lambda () result)))
     (should (equal (plist-get result :content) "hi"))))
-
-(ert-deftest e-tools-test-board-enrollment-defers-terminal-result-to-exact-effect ()
-  "A board-enrolled cheap tool cannot settle its call before the effect drain."
-  (let ((registry (e-tools-registry-create))
-        (effects nil)
-        (routers nil)
-        (callbacks (make-hash-table :test 'equal))
-        result)
-    (e-tools-test-register
-     registry :name "board_echo" :description "Return through the board."
-     :work (e-work-spec-create
-            :id "board_echo" :execution 'cheap :interactive-policy 'cheap
-            :runner (lambda (arguments _context) (plist-get arguments :text))))
-    (let ((board (e-board-create
-                  :id "board-tools"
-                  :register nil
-                  :effect-scheduler (lambda (effect) (push effect effects))
-                  :terminal-classification-scheduler
-                  (lambda (drain) (push drain routers))
-                  :invocation-effect-dispatcher
-                  (lambda (_board target state payload)
-                    (funcall (gethash target callbacks) state payload)))))
-      (e-tools-start
-       registry '(:id "call-1" :name "board_echo" :arguments (:text "done"))
-       :context
-       (list :board-enroll-work
-             (lambda (handle callback)
-               (puthash "turn-1/call-1" callback callbacks)
-               (e-board-enroll-invocation-work
-                board handle "turn-1/call-1" "turn-1/call-1")))
-       :on-done (lambda (value) (setq result value)))
-      (should-not result)
-      (should (= (length routers) 1))
-      (funcall (pop routers))
-      (should (= (length effects) 1))
-      (funcall (pop effects))
-      (should (equal (plist-get result :content) "done"))
-       (should (eq (e-board-invocation-state
-                    (e-board-invocation board "turn-1/call-1"))
-                  'committed)))))
 
 (ert-deftest e-tools-test-definitions-are-backend-neutral-function-tools ()
   "Registered tools expose backend-neutral function definitions."

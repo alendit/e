@@ -7,12 +7,13 @@
 
 ;; This is the sole ordinary composition root for Feature 87 after P4 cutover.
 ;; It opens one runtime-store worker, lends that physical runtime to every
-;; owner-shaped adapter, and owns the only close.  It contains no domain policy.
+;; remaining owner-shaped adapter, and owns the only close.  Board consumers
+;; use the shared SQLite transport directly through `e-board-sqlite-service'.
+;; This composition contains no domain policy.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'e-board-storage-sqlite)
 (require 'e-cron)
 (require 'e-cron-storage-sqlite)
 (require 'e-goodnite-resources)
@@ -35,7 +36,7 @@
 (cl-defstruct (e-runtime-sqlite
                (:constructor e-runtime-sqlite--create)
                (:conc-name e-runtime-sqlite--))
-  directory runtime-store session-store board-storage task-storage task-queue
+  directory runtime-store session-store task-storage task-queue
   cron-storage voice-storage goodnite-storage raw-results-storage
   (owns-runtime-store t) closed)
 
@@ -46,10 +47,6 @@
 (defun e-runtime-sqlite-session-store (runtime)
   "Return RUNTIME's session adapter."
   (e-runtime-sqlite--session-store runtime))
-
-(defun e-runtime-sqlite-board-storage (runtime)
-  "Return RUNTIME's Board storage port."
-  (e-runtime-sqlite--board-storage runtime))
 
 (defun e-runtime-sqlite-task-queue (runtime)
   "Return RUNTIME's task queue."
@@ -77,18 +74,16 @@
 
 (cl-defun e-runtime-sqlite-open
     (directory &key load-sessions load-task-queue task-runner
-               task-publication-target (task-queue-id "default") runtime-store
-               offline)
+               task-publication-target (task-queue-id "default") runtime-store)
   "Open one SQLite runtime rooted at DIRECTORY.
 
-The returned composition injects one shared physical runtime through separate
-session, Board, task, cron, voice, Goodnite, and raw-result owner ports.
+The returned composition injects one shared physical runtime through the
+remaining session, task, cron, voice, Goodnite, and raw-result owner adapters.
+Board application services use `e-runtime-sqlite-runtime-store' directly.
 LOAD-TASK-QUEUE should be used only after TASK-RUNNER or
 TASK-PUBLICATION-TARGET provides execution authority.  RUNTIME-STORE may supply an
 already-open transport prewarm handle; the composition borrows that handle and
-the caller remains its close owner.  OFFLINE selects blocking storage ports for
-the explicit stopped-runtime migrator; ordinary runtime composition always
-uses enqueue-and-return Board storage."
+the caller remains its close owner."
   (when e-runtime-sqlite--live-composition
     (signal 'e-runtime-sqlite-live-composition
             (list "Close the active SQLite runtime before opening another")))
@@ -96,7 +91,7 @@ uses enqueue-and-return Board storage."
          (reservation (list 'opening directory))
          (provided-runtime-store runtime-store)
          (owns-runtime-store (null provided-runtime-store))
-         runtime-store session-store board-storage task-storage task-queue
+         runtime-store session-store task-storage task-queue
          cron-storage voice-storage goodnite-storage raw-storage composition)
     ;; Reserve ownership before opening or mutating any store.  Reentrant timer
     ;; callbacks and separate-directory opens therefore cannot replace globals.
@@ -128,10 +123,6 @@ uses enqueue-and-return Board storage."
                 (e-session-sqlite-store-create
                  directory :load-all load-sessions
                  :runtime-store runtime-store)
-                board-storage
-                (if offline
-                    (e-board-storage-sqlite-create runtime-store)
-                  (e-board-storage-sqlite-create-async runtime-store))
                 task-storage
                 (e-task-storage-sqlite-create runtime-store)
                 task-queue
@@ -158,7 +149,7 @@ uses enqueue-and-return Board storage."
           (setq composition
                 (e-runtime-sqlite--create
                  :directory directory :runtime-store runtime-store
-                 :session-store session-store :board-storage board-storage
+                 :session-store session-store
                  :task-storage task-storage :task-queue task-queue
                  :cron-storage cron-storage :voice-storage voice-storage
                  :goodnite-storage goodnite-storage

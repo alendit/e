@@ -101,9 +101,13 @@
                    :id 'held-board :when '(:every 60) :enabled nil
                    :publication-target target
                    :action '(:publish (:content "held SQL")))))
-            ;; This ordered read waits for asynchronous registration only at
-            ;; the explicit test boundary.
-            (e-cron-storage-cadence storage 'held-board)
+            ;; Fire only after the asynchronous registration callback has
+            ;; admitted this schedule.  A separate read completing does not
+            ;; imply that an independently submitted write committed first.
+            (should
+             (e-cron-actions-test--wait-for
+              (lambda ()
+                (e-cron-schedule-storage-ready-p schedule))))
             (write-region
              "hold" nil
              (expand-file-name "board-record-append.hold" stall-directory)
@@ -158,7 +162,10 @@
                    :id 'failed-board :when '(:every 60) :enabled nil
                    :publication-target missing-target
                    :action '(:publish (:content "must fail")))))
-            (e-cron-storage-cadence storage 'failed-board)
+            (should
+             (e-cron-actions-test--wait-for
+              (lambda ()
+                (e-cron-schedule-storage-ready-p schedule))))
             (write-region
              "hold" nil
              (expand-file-name "board-record-append.hold" stall-directory)

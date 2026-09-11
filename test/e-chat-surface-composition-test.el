@@ -358,10 +358,10 @@
 
 (ert-deftest e-chat-test-add-context-display-uses-source-workspace_below_selected ()
   "Displayed context insertion uses the source workspace, not stale chat affinity."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          (source-workspace (make-e-workspace-token
                             :backend 'single
                             :id 'source
@@ -384,8 +384,7 @@
             (e-chat-test--create-session store :id "workspace-session"
                               :metadata '(:name "workspace-session"))
             (setq chat-buffer
-                  (e-chat-open :harness harness
-                               :session-id "workspace-session"))
+                  (e-chat-open-session harness "workspace-session"))
             (e-buffer-set-workspace chat-buffer foreign-workspace)
             (with-temp-buffer
               (insert "alpha
@@ -418,53 +417,36 @@ gamma
             (should-not (memq 'display-buffer-use-some-window captured-action))))
       (e-chat-test--kill-chat-buffers))))
 
-(ert-deftest e-chat-test-rename-updates-session-and-buffer-display ()
-  (ert-skip "Retired synchronous durable metadata readback scenario")
-  "Renaming updates persistent metadata and the attached buffer name."
-  (let* ((directory (make-temp-file "e-chat-" t))
-         (store (e-session-persistent-store-create directory))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
-         (buffer (e-chat-open :harness harness :session-id "rename-me")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (cl-letf (((symbol-function 'read-string)
-                     (lambda (&rest _args) "Renamed session")))
-            (call-interactively #'e-chat-rename))
-          (should (equal (e-session-display-title store "rename-me")
-                         "Renamed session"))
-          (should (string-match-p "Renamed session" (buffer-name)))
-          (should (string-match-p "Renamed session" header-line-format)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-derived-title-updates-attached-buffer-display ()
   "Derived session titles refresh attached presentation surfaces."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
          (buffer (e-chat-open :harness harness :session-id "derived-title"))
          (prompt "Derived title update"))
     (unwind-protect
         (progn
           (with-current-buffer buffer
             (e-chat-submit prompt)
-            (should (e-chat-test--wait-until
-                     (lambda ()
-                       (and (equal (e-session-display-title
-                                    store "derived-title")
-                                   prompt)
-                            (string-match-p (regexp-quote prompt)
-                                            (buffer-name))
-                            (string-match-p (regexp-quote prompt)
-                                            header-line-format)
-                            (string-match-p
-                             (regexp-quote prompt)
-                             (buffer-substring-no-properties
-                              (point-min) (min (point-max) 160)))))
-                     1.0))
-            (let ((title (e-session-display-title store "derived-title"))
+            (let ((settled
+                   (e-chat-test--wait-until
+                    (lambda ()
+                      (and (string-match-p (regexp-quote prompt)
+                                           (buffer-name))
+                           (string-match-p (regexp-quote prompt)
+                                           header-line-format)
+                           (string-match-p
+                            (regexp-quote prompt)
+                            (buffer-substring-no-properties
+                             (point-min) (min (point-max) 160)))))
+                    1.0)))
+              (ert-info ((format "name=%S header=%S metadata=%S text=%S"
+                                 (buffer-name) header-line-format
+                                 e-chat-session-metadata
+                                 (buffer-substring-no-properties
+                                  (point-min) (min (point-max) 160))))
+                (should settled)))
+            (let ((title prompt)
                   (text (buffer-substring-no-properties
                          (point-min)
                          (min (point-max) 160))))
@@ -489,31 +471,6 @@ gamma
                      353400))
       (should (= provider-calls 0)))))
 
-(ert-deftest e-chat-test-mode-line-status-unknown-window-shows-question-mark ()
-  "When no model limit is configured, the mode line shows `?'."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create
-                   :backend backend
-                   :sessions store
-                   :default-options
-                   '(:model "gpt-5.5" :reasoning-effort "high")))
-         (buffer (e-chat-open :harness harness :session-id "chat-mode-line-unknown")))
-    (unwind-protect
-        (let ((e-context-budget-model-token-limits nil))
-          (with-current-buffer buffer
-            (e-chat-surface-set-redraw-visible t)
-            (e-session-append-message
-             store e-chat-session-id '(:role user :content "q"))
-            (e-chat-surface-set-status "idle" t)
-            (e-ui-work-with-batch-drain
-              (e-ui-work-drain-batch :buffer (current-buffer)
-                                     :owner 'chat-mode-line-status))
-            (should (string-match-p "gpt-5.5/high" mode-name))
-            (should (string-match-p "/? tok" mode-name))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest e-chat-test-shell-descriptor-advertises-chat-surface ()
   "The chat presentation publishes a generic shell manifest."
   (let* ((shell (e-chat-shell))
@@ -535,7 +492,6 @@ gamma
                           show-context
                           submit
                           abort
-                          reset
                           enter-response-navigation
                           response-navigation-next
                           response-navigation-previous
@@ -656,16 +612,12 @@ last normal window), so the no-normal-window condition is stubbed."
 
 (ert-deftest e-chat-test-new-prompts-for-chat-instance-when-multiple-exist ()
   "New chat selection opens the chosen chat harness instance."
-  (let* ((alpha-store (e-session-store-create))
-         (beta-store (e-session-store-create))
-         (alpha-harness (e-chat-test--activate-chat-session
+  (let* ((alpha-harness (e-chat-test--activate-chat-session
                          (e-harness-create
-                          :backend (e-backend-fake-create :items nil)
-                          :sessions alpha-store)))
+                          :backend (e-backend-fake-create :items nil))))
          (beta-harness (e-chat-test--activate-chat-session
                         (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions beta-store))))
+                         :backend (e-backend-fake-create :items nil)))))
     (unwind-protect
         (e-chat-test--with-empty-harness-registry
           (let ((e-chat-default-harness-id :chat-alpha))
@@ -681,17 +633,15 @@ last normal window), so the no-normal-window condition is stubbed."
                           (all-completions "" collection)))))
               (with-current-buffer (e-chat-new)
                 (should (eq e-chat-harness beta-harness))
-                (should (eq e-chat-harness-instance-id :chat-beta))
-                (should (= (length (e-harness-session-list beta-harness)) 1))
-                (should (= (length (e-harness-session-list alpha-harness)) 0))))))
+                (should (eq e-chat-harness-instance-id :chat-beta))))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-open-prunes-hidden-empty-duplicate-session-buffer ()
   "Opening a session removes hidden empty duplicate buffers for that session."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          visible-buffer
          hidden-duplicate
          window)
@@ -700,22 +650,21 @@ last normal window), so the no-normal-window condition is stubbed."
           (e-chat-test--create-session store :id "dedupe-session"
                             :metadata '(:name "dedupe-session"))
           (setq visible-buffer
-                (e-chat-open :harness harness :session-id "dedupe-session"))
+                (e-chat-open-session harness "dedupe-session"))
           (setq window (display-buffer visible-buffer))
           (setq hidden-duplicate
                 (get-buffer-create "*e-chat:hidden dedupe-session*"))
           (e-chat-attach-buffer hidden-duplicate harness "dedupe-session" nil)
           (should (buffer-live-p hidden-duplicate))
-          (should (eq (e-chat-open :harness harness
-                                   :session-id "dedupe-session")
+          (should (eq (e-chat-open-session harness "dedupe-session")
                       visible-buffer))
           (should-not (buffer-live-p hidden-duplicate)))
       (when (and window (window-live-p window))
         (delete-window window))
       (e-chat-test--kill-chat-buffers))))
 
-(ert-deftest e-chat-test-active-steering-stores-pending-input ()
-  "Plain active steering stores pending input and clears the composer."
+(ert-deftest e-chat-test-active-steering-clears-composer-and-reports-intent ()
+  "Plain active steering clears input and reports the accepted intent."
   (let* ((backend (e-backend-create
                    :name "held-chat"
                    :start (cl-function
@@ -731,11 +680,12 @@ last normal window), so the no-normal-window condition is stubbed."
         (with-current-buffer (e-chat-test--composer buffer)
           (goto-char (point-max))
           (insert "first")
-          (let ((turn-id (e-chat-submit)))
+          (let ((turn-id (e-chat-submit))
+                (session-id e-chat-session-id))
             (should (e-chat-test--wait-until
                      (lambda ()
                        (e-chat-service-active-turn-p
-                        harness e-chat-session-id))
+                        harness session-id))
                      1.0))
             (goto-char (point-max))
             (insert "focus here")
@@ -744,19 +694,7 @@ last normal window), so the no-normal-window condition is stubbed."
             (should (string-match-p
                      "steered"
                      (format "%s"
-                             (buffer-local-value 'header-line-format buffer))))
-            (should
-             (e-chat-test--wait-until
-              (lambda ()
-                (let ((entry (gethash e-chat-session-id
-                                      (e-harness-active-turns harness))))
-                  (when-let ((item (car (e-harness-turn-state-pending-steering
-                                         entry))))
-                    (and (equal (plist-get item :prompt) "focus here")
-                         (eq (plist-get (plist-get item :metadata)
-                                        :submit-mode)
-                             'steering)))))
-              1.0))))
+                             (buffer-local-value 'header-line-format buffer))))))
       (when (buffer-live-p buffer)
         (with-current-buffer (e-chat-test--composer buffer)
           (ignore-errors

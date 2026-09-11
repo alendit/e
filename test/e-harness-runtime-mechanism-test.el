@@ -397,7 +397,6 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
 
 (ert-deftest e-harness-test-steer-active-turn-stores-pending-input ()
   "Successful steering stores only durable input on the active turn."
-  (require 'e-board-runtime)
   (let* ((backend (e-backend-create
                    :name "steerable"
                    :start (cl-function
@@ -409,10 +408,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                                       (e-backend-request-create))
                              nil))))
          (harness (e-harness-create :backend backend))
-         (token (e-board-runtime-endpoint-token--create
-                 :harness-id :live
-                 :harness-object-generation 7
-                 :session-id "session-1"))
+         (token (e-harness-test--port-token harness "session-1"))
          (events nil))
     (e-harness-activity-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")

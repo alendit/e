@@ -19,18 +19,7 @@ export E_E2E_EMACS_CONFIG=current
 export E_CURRENT_CONFIG_E2E_STATE_DIR=$state_dir
 export E_RUNTIME_STATE_DIRECTORY=$state_dir
 
-case ${E_CURRENT_CONFIG_E2E_MODE:-compatibility} in
-  compatibility)
-    selector='^e-current-config-e2e-test-'
-    ;;
-  live-basic)
-    selector='^e-current-config-live-e2e-test-'
-    ;;
-  *)
-    echo "E_CURRENT_CONFIG_E2E_MODE must be compatibility or live-basic." >&2
-    exit 2
-    ;;
-esac
+selector='^e-current-config-e2e-test-'
 
 emacs_command=(emacs)
 if [[ -n ${E_E2E_EMACS_INIT_DIRECTORY:-} ]]; then

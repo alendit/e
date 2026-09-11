@@ -358,34 +358,6 @@ The returned plist contains `:record', `:query-delta', and `:result'."
                    :parent-id (plist-get state :root-event-id)
                    :timestamp timestamp)
              result (list :id delta-id :type 'messages-cleared)))
-      ('board-messages-clear
-       (setq record
-             (list :type "board-messages-cleared" :session-id session-id
-                   :request-id request-id :delta-id delta-id :id delta-id
-                   :timestamp timestamp)
-             result nil))
-      ('board-state
-       (let ((association
-              (append
-               (list :board-id (plist-get arguments :board-id)
-                     :principal (plist-get arguments :principal))
-               (when-let* ((role (plist-get arguments :association-role)))
-                 (list :association-role role))
-               (when-let* ((policy (plist-get arguments :routing-policy)))
-                 (list :routing-policy
-                       (e-session-board-routing-policy-normalize-owned
-                        policy))))))
-         (setq record
-               (list :type "board-session-state" :session-id session-id
-                     :request-id request-id :delta-id delta-id :id delta-id
-                     :timestamp timestamp :board-state association
-                     :board-id (plist-get association :board-id)
-                     :principal (plist-get association :principal)
-                     :board-output-sequence
-                     (plist-get state :board-output-sequence)
-                     :board-activity-sequence
-                     (plist-get state :board-activity-sequence))
-               result (copy-tree association t))))
       ('delete
        (setq record
              (list :type "session-deleted" :session-id session-id

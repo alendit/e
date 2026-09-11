@@ -862,15 +862,15 @@ test covers only the chat presentation subscription's redundant callbacks."
                           :turn-id "turn-1"
                           :created-at 10
                           :payload (list :message
-                                         (list :role 'user
+                                         (list :id "dup-message"
+                                               :role 'user
                                                :content "dup prompt"))))
-          (should (= (e-chat-test--count-occurrences
-                      "dup prompt"
-                      (buffer-string))
-                     1))
-          (should (= (e-chat-test--count-occurrences
-                      "dup prompt" (buffer-string))
-                     1)))
+          ;; The optimistic session summary may also display the prompt in the
+          ;; transcript heading.  Assert projection identity rather than raw
+          ;; text count: one durable message id maps to one rendered block.
+          (should (equal (gethash "dup-message"
+                                  e-chat-transcript--message-block-index)
+                         (car (last e-chat-transcript--block-order)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1879,18 +1879,14 @@ test covers only the chat presentation subscription's redundant callbacks."
                      :frame (selected-frame)))
          (buffer (generate-new-buffer " *e-chat-focus-read-test*")))
     (unwind-protect
-        (cl-letf (((symbol-function 'e-chat-overview--session-for-id)
-                   (lambda (candidate-harness candidate-session-id
-                            &optional _instance-id)
-                     (and (eq candidate-harness harness)
-                          (equal candidate-session-id "focus-read")
-                          session))))
+        (progn
           (should (e-chat-overview-session-unread-p
                    harness session))
           (with-current-buffer buffer
             (e-chat-mode)
             (setq-local e-chat-harness harness)
             (setq-local e-chat-session-id "focus-read")
+            (setq-local e-chat-session-metadata session)
             (e-buffer-set-workspace buffer workspace)
             ;; Build the overview projection after the session and workspace
             ;; have been populated; the first call is intentionally made
@@ -1987,6 +1983,70 @@ test covers only the chat presentation subscription's redundant callbacks."
                                      (buffer-string))
                      (string-match-p "done" (buffer-string))))
               2.0))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-inspect-error-queries-before-opening-investigation ()
+  "Public error inspection is async and opens only from detached SQL detail."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (child
+          (e-work-prepare
+           (e-work-spec-create
+            :id "held-inspection" :execution 'cooperative
+            :interactive-policy 'async :owner 'e-chat-test
+            :runner (lambda (&rest _arguments) :deferred))
+           nil))
+         (buffer (generate-new-buffer " *e-inspect-error-test*"))
+         opened submitted popped)
+    (e-work-start-prepared child :arguments nil)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-context-inspection-failure-detail-start)
+                   (lambda (&rest arguments)
+                     (should (eq (plist-get arguments :harness) harness))
+                     (should (equal (plist-get arguments :session-id)
+                                    "failed-session"))
+                     (should (equal (plist-get arguments :turn-id)
+                                    "failed-turn"))
+                     child))
+                  ((symbol-function 'e-session-generate-id)
+                   (lambda () "inspection-session"))
+                  ((symbol-function 'e-chat-open)
+                   (lambda (&rest arguments)
+                     (setq opened arguments)
+                     buffer))
+                  ((symbol-function 'e-chat-surface-pop-to-buffer)
+                   (lambda (seen-buffer)
+                     (setq popped seen-buffer)))
+                  ((symbol-function 'e-chat-submit-session)
+                   (lambda (&rest arguments)
+                     (setq submitted arguments)
+                     (e-chat-test--finished-work :submitted)))
+                  ((symbol-function 'e-runtime-store-call)
+                   (lambda (&rest _arguments)
+                     (error "e-inspect-error reached synchronous storage"))))
+          (let ((work (e-inspect-error
+                       :harness harness
+                       :session-id "failed-session"
+                       :turn-id "failed-turn")))
+            (should (e-work-handle-p work))
+            (should (eq (plist-get (e-work-status work) :state) 'started))
+            (should-not opened)
+            (e-work-finish
+             child
+             '(:session (:id "failed-session" :name "Failed"
+                         :metadata (:project-root "/tmp/project"))
+               :turn (:id "failed-turn")
+               :terminal-error (:error "provider failed")
+               :events nil :messages nil :tool-calls nil :diagnostics nil))
+            (should (eq (plist-get (e-work-status work) :state) 'finished))
+            (should (equal (e-work-handle-result work) "inspection-session"))
+            (should (equal (plist-get opened :session-id)
+                           "inspection-session"))
+            (should (plist-get opened :new-session))
+            (should (eq popped buffer))
+            (should (eq (nth 0 submitted) harness))
+            (should (equal (nth 1 submitted) "inspection-session"))
+            (should (string-match-p "provider failed" (nth 2 submitted)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

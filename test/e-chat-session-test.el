@@ -236,25 +236,34 @@
       (should (e-chat-session-test--wait-until
                (lambda ()
                  (e-chat-service-active-turn-p harness "session-1"))))
-      (should-error
-       (e-chat-session-steer harness "session-1" "")
-       :type 'user-error)
-      (let ((admission
-             (e-chat-session-steer
-              harness "session-1" "focus here"
-              :metadata '(:source chat-composer))))
-        (should (e-work-handle-p admission))
-        (e-chat-session-test--await admission))
-      (should
-       (e-chat-session-test--wait-until
-        (lambda ()
-          (e-harness-turn-state-pending-steering
-           (gethash "session-1" (e-harness-active-turns harness))))))
-      (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
-             (item (car (plist-get entry :pending-steering-input))))
-        (should (equal (plist-get item :prompt) "focus here"))
-        (should (equal (plist-get (plist-get item :metadata) :source)
-                       'chat-composer)))
+      (let (events)
+        (e-chat-service-subscribe
+         harness "session-1"
+         (lambda (event) (push event events)))
+        (should-error
+         (e-chat-session-steer harness "session-1" "")
+         :type 'user-error)
+        (let ((admission
+               (e-chat-session-steer
+                harness "session-1" "focus here"
+                :metadata '(:source chat-composer))))
+          (should (e-work-handle-p admission))
+          (e-chat-session-test--await admission))
+        ;; Steering intent is a transient live-controller fact.  Observe it
+        ;; through the public chat subscription instead of racing the harness
+        ;; owner's internal pending-input queue, which may drain immediately.
+        (should
+         (e-chat-session-test--wait-until
+          (lambda ()
+            (seq-find
+             (lambda (event)
+               (and (eq (plist-get event :type) 'turn-steered)
+                    (equal
+                     (plist-get
+                      (plist-get (plist-get event :payload) :metadata)
+                      :source)
+                     'chat-composer)))
+             events)))))
       (e-chat-session-abort harness "session-1")
       (should
        (e-chat-session-test--wait-until

@@ -1494,7 +1494,7 @@ semantic interpretation responsibility."
          (session
           (or (e-chat-service-create-operation-admission pending)
               (let ((value
-                     (e-session-board-admission-records
+                     (e-board-sqlite-service-session-admission
                       :id session-id
                       :metadata
                       (e-chat-service-create-operation-metadata pending)
@@ -1508,9 +1508,7 @@ semantic interpretation responsibility."
     (list
      :session-id session-id :principal principal :board-id board-id
      :records records
-     :query-delta
-     (e-session-query-derive
-      (e-chat-service--annotate-admission-records records))
+     :query-delta (plist-get session :query-delta)
      :participant
      (list :id participant-id :author "e-chat"
            :principal principal :controller principal
@@ -1538,7 +1536,7 @@ semantic interpretation responsibility."
                        :metadata
                        (copy-tree
                         (e-chat-service-create-operation-metadata pending) t)
-                       :board-session-state (copy-tree association t)))
+                       :association (copy-tree association t)))
               (e-work-fail
                (e-chat-service-create-operation-work pending)
                (list 'e-session-error
@@ -1628,7 +1626,7 @@ semantic interpretation responsibility."
     (if (eq (plist-get status :state) 'finished)
         (let ((association
                (plist-get (plist-get status :result)
-                          :board-session-state)))
+                          :association)))
           (if association
               (e-chat-service--start-bind-controller operation association)
             (e-chat-service--finish-bind-operation
@@ -1812,7 +1810,7 @@ controller has been built."
                          (equal board-id (plist-get association :board-id)))
               (signal 'e-session-missing
                       (list (e-chat-service-open-operation-session-id operation)
-                            'board-session-state)))
+                            'board-association)))
             (when (and (e-chat-service-binding-p target)
                        (not (equal (e-chat-service-binding-principal target)
                                    (plist-get association :principal))))
@@ -1949,16 +1947,14 @@ controller has been built."
            participant-id pickup-selector observer-selector default-tags
            (e-chat-service-participant-operation-default-to operation)))
          (session
-          (e-session-board-admission-records
+          (e-board-sqlite-service-session-admission
            :id session-id
            :metadata (e-chat-service-participant-operation-metadata operation)
            :principal principal :board-id board-id
            :association-role e-chat-service--board-role-participant
            :routing-policy routing-policy))
          (records (plist-get session :admission-records))
-         (query-delta
-          (e-session-query-derive
-           (e-chat-service--annotate-admission-records records)))
+         (query-delta (plist-get session :query-delta))
          (participant
           (list :id participant-id :author "e-chat" :principal principal
                 :controller principal :role 'participant :state 'active
@@ -2239,7 +2235,7 @@ association rows are admitted by one transaction; no aggregate is created."
                         :metadata
                         (copy-tree
                          (e-chat-service-create-operation-metadata pending) t)
-                        :board-session-state
+                        :association
                         (copy-tree association t)))))
              (when (and current
                         (eq (plist-get result :status) 'posted))
@@ -2303,8 +2299,10 @@ SOURCE-INPUT-KEY lets durable callers retry one queued input exactly once."
 
 (defun e-chat-service--binding-active-turn (binding)
   "Return BINDING's live harness turn, if one is running."
-  (e-harness-attached-turn-port-active-turn
-   (e-chat-service-binding-turn-port binding)))
+  (let ((turn
+         (e-harness-attached-turn-port-active-turn
+          (e-chat-service-binding-turn-port binding))))
+    (and (eq (plist-get turn :status) 'running) turn)))
 
 (defun e-chat-service-active-turn (harness session-id)
   "Return SESSION-ID's running turn using presentation-facing identity.
@@ -2359,7 +2357,7 @@ the harness context owner directly."
           :turn-options (copy-tree (plist-get row :turn-options) t)
           :board-id board-id
           :principal principal
-          :board-session-state association
+          :association association
           :journal-position (plist-get row :journal-position))))
 
 (cl-defun e-chat-service-root-session-page-start
@@ -2398,9 +2396,9 @@ bounded in-process mapping and never waits for storage."
 
 (defun e-chat-service--root-session-p (session)
   "Return non-nil when detached SQL summary SESSION is a chat Board owner."
-  (let ((state (e-session-board-association session)))
-    (and state
-         (not (e-session-board-association-invalid-p state))
+  (let ((state (plist-get session :association)))
+    (and (stringp (plist-get session :board-id))
+         (stringp (plist-get session :principal))
          (equal (plist-get state :association-role)
                 e-chat-service--board-role-root))))
 

@@ -22,8 +22,6 @@
               buffer-file-name))))
     (add-to-list 'load-path directory)
     (add-to-list 'load-path (expand-file-name ".." directory))))
-(require 'e-board)
-(require 'e-board-e2e-support)
 (require 'e-chat)
 (require 'e-chat-service)
 (require 'e-default-harnesses)
@@ -595,7 +593,6 @@ aggregate or mirror."
   ;; Startup transport prewarming has its own pre-init fixture and selector.
   ;; This scenario owns a disposable runtime so its delay/failure controls can
   ;; never touch the process default or a user's canonical database.
-  (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-runtime-store-org-canvas-" t))
          (canvas-directory (make-temp-file "e-org-canvas-daily-" t))
          (stall-directory (make-temp-file "e-runtime-store-stall-" t))
@@ -1348,7 +1345,6 @@ aggregate or mirror."
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-killed-open-retires-late-binding ()
   "A chat killed before SQL readiness leaves no process-local binding."
-  (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-runtime-store-killed-open-" t))
          (stall-directory (make-temp-file "e-runtime-store-killed-stall-" t))
          (process-environment
@@ -1424,7 +1420,6 @@ aggregate or mirror."
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-public-new-chat-survives-delayed-worker ()
   "Public new-chat UI remains usable and ordered while SQLite is delayed."
-  (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-runtime-store-new-chat-" t))
          (stall-directory (make-temp-file "e-runtime-store-stall-" t))
          (process-environment
@@ -1817,7 +1812,6 @@ aggregate or mirror."
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-public-v5-upgrade-opens-chat ()
   "A real v5 refusal, offline upgrade, and fresh public chat work end to end."
-  (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-runtime-store-v5-public-" t))
          (backup (expand-file-name "operator/pre-v5.sqlite3" directory))
          old-runtime sessions runtime stream harness transcript)
@@ -1937,7 +1931,6 @@ aggregate or mirror."
 
 (ert-deftest e-runtime-store-recovery-graphical-s92-daily-query-window-is-bounded ()
   "Existing Daily opens before held v6 reads and renders one visible window."
-  (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-runtime-store-daily-query-" t))
          (stall-directory (make-temp-file "e-runtime-store-daily-query-stall-" t))
          (process-environment
@@ -2131,7 +2124,6 @@ aggregate or mirror."
 
 (ert-deftest e-runtime-store-recovery-graphical-f92a2-dp6-public-pre-readiness-turn ()
   "A public Org Canvas turn crosses held SQLite admission without blocking UI."
-  (e-board-e2e-reset-runtime)
   (let* ((directory (make-temp-file "e-f92a2-dp6-store-" t))
          (canvas-directory (make-temp-file "e-f92a2-dp6-canvas-" t))
          (stall-directory (make-temp-file "e-f92a2-dp6-stall-" t))

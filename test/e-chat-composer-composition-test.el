@@ -215,34 +215,6 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-composer-input-collapses-revealed-hidden ()
-  "Returning to the composer collapses revealed hidden messages.
-The default reading view is the clean transcript, so leaving inspection mode
-must drop any revealed hidden blocks."
-  (let ((buffer (e-chat-test--buffer nil "chat-hidden-reveal-composer")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-composer"
-           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
-                 :content "revised answer"))
-          (e-session-append-message
-           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-composer"
-           (list :id "m-first" :role 'assistant :turn-id "turn-1"
-                 :content "superseded first attempt" :display 'hidden))
-          (e-chat-test--seed-board-log-from-private-fixture
-           e-chat-harness e-chat-session-id)
-          (e-chat-clear)
-          (e-chat-transcript-render-session)
-          (e-chat-test--focus-block-containing "revised answer")
-          (call-interactively
-           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
-          (should (string-match-p "superseded first attempt" (buffer-string)))
-          (call-interactively #'e-chat-response-navigation-insert)
-          (should-not (e-chat-transcript-reveal-hidden-p))
-          (should (e-chat-test--message-display-hidden-p "m-first")))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submit-immediately-clears-composer-and-renders-user-turn ()
   "Submitting clears the composer while board observation shows the user turn."
@@ -290,7 +262,7 @@ must drop any revealed hidden blocks."
                 (cancelled (e-chat-test--pending-admission)))
             (e-chat--watch-admission buffer failed 'submit)
             (e-chat--watch-admission buffer cancelled 'queue)
-            (e-work-fail failed '(e-board-storage-error "admission failed"))
+            (e-work-fail failed '(e-board-sqlite-error "admission failed"))
             (e-work-cancel cancelled)
             (should (= (cl-count 'turn-failed events
                                  :key (lambda (event)
@@ -371,8 +343,8 @@ must drop any revealed hidden blocks."
                                  &key references metadata)
                           (setq queued
                                 (list session-id prompt references metadata))
-                          (e-chat-service--finished-admission-work
-                           session-id "queue-id")))))
+                          (e-chat-test--finished-work
+                           (list :session-id session-id :id "queue-id"))))))
               (e-chat-submit '(4)))
             (should (equal (car queued) e-chat-session-id))
             (should (string-match-p
@@ -941,8 +913,9 @@ must drop any revealed hidden blocks."
             (cl-letf (((symbol-function 'e-chat-service-steer-session)
                        (lambda (_harness session-id prompt &key metadata)
                          (setq steered (list session-id prompt metadata))
-                         (e-chat-service--finished-admission-work
-                          session-id :accepted))))
+                         (e-chat-test--finished-work
+                          (list :session-id session-id
+                                :status :accepted)))))
               (e-chat-submit))
             (should (equal (car steered) e-chat-session-id))
             (should (string-match-p

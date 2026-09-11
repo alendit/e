@@ -34,8 +34,10 @@
       (should (equal (plist-get event :payload) '(:name "read")))
       (should (equal (plist-get event :activity-entry-id)
                      (plist-get activity :id)))
-      (should (= (plist-get event :board-activity-sequence)
-                 (plist-get activity :board-activity-sequence))))))
+      ;; Ordinary session activity has no Board replay sequence.  Board
+      ;; publication ordering is a relational SQLite-service concern.
+      (should-not (plist-member event :board-activity-sequence))
+      (should-not (plist-member activity :board-activity-sequence)))))
 
 (ert-deftest e-harness-test-async-activity-enqueue-does-not-read-session-tail ()
   "Async activity admission does not reconstruct a durable session tail."

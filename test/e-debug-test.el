@@ -19,11 +19,32 @@
 (require 'e-context-inspection)
 (require 'e-debug)
 (require 'e-harness)
+(load (expand-file-name "e-chat-test-support.el"
+                        (file-name-directory
+                         (or load-file-name buffer-file-name))) nil nil t)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
 (require 'e-shells)
+
+(defun e-debug-test--await (work)
+  "Return request-scoped WORK's result at the explicit test boundary."
+  (e-work-with-batch-await
+    (e-work-await-batch work :timeout 5.0)))
+
+(defun e-debug-test--session-rows (harness)
+  "Return HARNESS's detached bounded root-session rows."
+  (plist-get
+   (e-debug-test--await
+    (e-session-async-query-page
+     (e-harness-sessions harness) :limit 16 :root-p t))
+   :rows))
+
+(defun e-debug-test--settle-session (harness session-id)
+  "Settle SESSION-ID's request-scoped SQL binding in HARNESS."
+  (e-debug-test--await
+   (e-chat-service-binding-start harness session-id nil t)))
 
 (defmacro e-debug-test--with-empty-harness-registry (&rest body)
   "Run BODY with an isolated harness registry."
@@ -38,20 +59,21 @@
   "The debug resolver reuses the same standing session."
   (e-debug-test--with-empty-harness-registry
     (let ((harness (e-harness-create
-                    :backend (e-backend-fake-create :items nil)
-                    :sessions (e-session-store-create)))
+                    :backend (e-backend-fake-create :items nil)))
           (e-debug--session-id nil))
       (cl-letf (((symbol-function 'e-debug--default-harness)
                  (lambda () harness)))
         (let ((first (e-debug--ensure-session))
               (second (e-debug--ensure-session)))
+          (e-debug-test--settle-session harness first)
           (should (equal second first))
-          (should (= (length (e-harness-session-list harness)) 1))
+          (should (= (length (e-debug-test--session-rows harness)) 1))
           (should (equal (plist-get
-                          (plist-get (e-session-local-state
-                                      (e-harness-sessions harness)
-                                      first)
-                                     :metadata)
+                          (plist-get
+                           (e-debug-test--await
+                            (e-session-async-session-metadata
+                             (e-harness-sessions harness) first))
+                           :metadata)
                           :source)
                          'e-debug)))))))
 
@@ -59,16 +81,17 @@
   "A lost process-local identity creates anew without catalog reconstruction."
   (e-debug-test--with-empty-harness-registry
     (let ((harness (e-harness-create
-                    :backend (e-backend-fake-create :items nil)
-                    :sessions (e-session-store-create)))
+                    :backend (e-backend-fake-create :items nil)))
           (e-debug--session-id nil))
       (cl-letf (((symbol-function 'e-debug--default-harness)
                  (lambda () harness)))
         (let ((created (e-debug--ensure-session)))
+          (e-debug-test--settle-session harness created)
           (setq e-debug--session-id nil)
           (let ((replacement (e-debug--ensure-session)))
+            (e-debug-test--settle-session harness replacement)
             (should-not (equal replacement created))
-            (should (= (length (e-harness-session-list harness)) 2))))))))
+            (should (= (length (e-debug-test--session-rows harness)) 2))))))))
 
 (ert-deftest e-debug-test-ensure-session-uses-last-focused-buffer-project-root ()
   "The standing debug session roots itself in the last focused buffer's project."
@@ -77,8 +100,7 @@
          (nested (expand-file-name "src/" project))
          (source-buffer (generate-new-buffer " *e-debug-source*"))
          (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions (e-session-store-create)))
+                   :backend (e-backend-fake-create :items nil)))
          (e-debug--session-id nil)
          (e-debug--last-focused-buffer source-buffer)
          session-id
@@ -91,7 +113,11 @@
             (setq default-directory nested))
           (let ((default-directory home))
             (setq session-id (e-debug--ensure-session harness)))
-          (setq session (e-session-local-state (e-harness-sessions harness) session-id))
+          (e-debug-test--settle-session harness session-id)
+          (setq session
+                (e-debug-test--await
+                 (e-session-async-session-metadata
+                  (e-harness-sessions harness) session-id)))
           (should (equal (plist-get (plist-get session :metadata) :project-root)
                          (file-name-as-directory project))))
       (when (buffer-live-p source-buffer)
@@ -103,8 +129,7 @@
   "The `e-debug' command opens the standing debug session through chat UI."
   (e-debug-test--with-empty-harness-registry
     (let ((harness (e-harness-create
-                    :backend (e-backend-fake-create :items nil)
-                    :sessions (e-session-store-create)))
+                    :backend (e-backend-fake-create :items nil)))
           shown-buffer
           (e-debug--session-id nil))
       (cl-letf (((symbol-function 'e-debug--default-harness)
@@ -391,7 +416,7 @@
            (e-debug--session-id "debug-session")
            hidden
            deleted)
-      (e-harness-test-create-board-session harness :id "debug-session"
+      (e-harness-test-create-session harness :id "debug-session"
                                 :metadata '(:source e-debug))
       (unwind-protect
           (cl-letf (((symbol-function 'selected-frame)
@@ -426,8 +451,7 @@
   "Reopening e-debug after dismissal reuses the standing session buffer."
   (e-debug-test--with-empty-harness-registry
     (let ((harness (e-harness-create
-                    :backend (e-backend-fake-create :items nil)
-                    :sessions (e-session-store-create)))
+                    :backend (e-backend-fake-create :items nil)))
           (e-debug-display-strategy 'popup)
           (e-debug--session-id nil)
           hidden
@@ -458,23 +482,23 @@
           (should (eq hidden first-buffer))
           (should (eq deleted 'debug-popup-frame))
           (should (eq second-buffer first-buffer))
-          (should (= (length (e-harness-session-list harness)) 1))
+          (should (= (length (e-debug-test--session-rows harness)) 1))
           (with-current-buffer second-buffer
             (should e-debug-popup-mode)))))))
 
 (ert-deftest e-debug-test-background-turn-finished-notifies-after-popup-dismissal ()
   "A completed debug turn reports in the echo area when the popup is hidden."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
          messages
          (e-debug--popup-buffer nil)
          (e-debug--popup-frame nil)
          (e-debug--notification-harness nil)
          (e-debug--notification-subscription nil))
-    (e-harness-test-create-board-session harness :id "debug-session"
-                              :metadata '(:source e-debug))
+    (e-chat-test--create-session
+     (e-harness-sessions harness) :id "debug-session"
+     :metadata '(:source e-debug))
+    (e-debug-test--settle-session harness "debug-session")
     (cl-letf (((symbol-function 'message)
                (lambda (format-string &rest args)
                  (push (apply #'format format-string args) messages))))
@@ -486,17 +510,17 @@
 
 (ert-deftest e-debug-test-background-turn-failed-notifies-error-after-popup-dismissal ()
   "A failed debug turn reports the compact error when the popup is hidden."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
          messages
          (e-debug--popup-buffer nil)
          (e-debug--popup-frame nil)
          (e-debug--notification-harness nil)
          (e-debug--notification-subscription nil))
-    (e-harness-test-create-board-session harness :id "debug-session"
-                              :metadata '(:source e-debug))
+    (e-chat-test--create-session
+     (e-harness-sessions harness) :id "debug-session"
+     :metadata '(:source e-debug))
+    (e-debug-test--settle-session harness "debug-session")
     (cl-letf (((symbol-function 'message)
                (lambda (format-string &rest args)
                  (push (apply #'format format-string args) messages))))
@@ -527,17 +551,19 @@
 
 (ert-deftest e-debug-test-notification-subscription-updates-for-new-session ()
   "Notification subscriptions follow a changed debug session id on one harness."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
          (e-debug--notification-harness nil)
          (e-debug--notification-subscription nil)
          (e-debug--notification-session-id nil))
-    (e-harness-test-create-board-session harness :id "debug-session-1"
-                              :metadata '(:source e-debug))
-    (e-harness-test-create-board-session harness :id "debug-session-2"
-                              :metadata '(:source e-debug))
+    (e-chat-test--create-session
+     (e-harness-sessions harness) :id "debug-session-1"
+     :metadata '(:source e-debug))
+    (e-chat-test--create-session
+     (e-harness-sessions harness) :id "debug-session-2"
+     :metadata '(:source e-debug))
+    (e-debug-test--settle-session harness "debug-session-1")
+    (e-debug-test--settle-session harness "debug-session-2")
     (e-debug--ensure-notification-subscription harness "debug-session-1")
     (let ((first e-debug--notification-subscription))
       (e-debug--ensure-notification-subscription harness "debug-session-2")
@@ -615,7 +641,7 @@
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store)))
-    (e-harness-test-create-board-session harness :id "failed-session"
+    (e-harness-test-create-session harness :id "failed-session"
                               :metadata '(:project-root "/tmp/project/"))
     (e-session-append-message
      store "failed-session"
@@ -645,10 +671,8 @@
 
 (ert-deftest e-debug-test-here-submits-to-standing-session ()
   "`e-debug-here' submits the assembled prompt to the standing debug session."
-  (let* ((debug-store (e-session-store-create))
-         (debug-harness (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions debug-store))
+  (let* ((debug-harness (e-harness-create
+                         :backend (e-backend-fake-create :items nil)))
          (inspection-harness (e-harness-create
                               :backend (e-backend-fake-create :items nil)
                               :sessions (e-session-store-create)))
@@ -684,15 +708,14 @@
 (ert-deftest e-debug-test-here-carries-chat-session-identity-without-failure ()
   "`e-debug-here' records the inspected chat session even without failures."
   (let* ((debug-harness (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions (e-session-store-create)))
+                         :backend (e-backend-fake-create :items nil)))
          (chat-harness (e-harness-create
-                        :backend (e-backend-fake-create :items nil)
-                        :sessions (e-session-store-create)))
+                        :backend (e-backend-fake-create :items nil)))
          submitted
          (e-debug--session-id nil))
-    (e-harness-test-create-board-session chat-harness :id "plain-session"
-                              :metadata '(:project-root "/tmp/project/"))
+    (e-chat-test--create-session
+     (e-harness-sessions chat-harness) :id "plain-session"
+     :metadata '(:project-root "/tmp/project/"))
     (cl-letf (((symbol-function 'e-debug--default-harness)
                (lambda () debug-harness))
               ((symbol-function 'e-chat-submit-session)

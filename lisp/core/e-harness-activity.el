@@ -19,6 +19,7 @@
 (require 'e-session-async)
 (require 'e-telemetry)
 (require 'e-tools)
+(require 'e-work)
 (require 'seq)
 (require 'subr-x)
 
@@ -528,9 +529,21 @@ fields outside that error contract."
        ;; already identified by its turn/type payload, and the Board adapter
        ;; owns a bounded attachment-local publication sequence until a later
        ;; detached query observes SQLite's durable identity.
-       (if (e-work-handle-p event)
-           nil
-         event)))))
+       (if (not (e-work-handle-p event))
+           event
+         ;; Durable activity remains enqueue-and-return, but the executing
+         ;; turn owns its bounded in-flight writes until they settle.  This
+         ;; lets cancellation and explicit batch boundaries observe the work
+         ;; without turning the activity stream into a synchronous barrier.
+         (when-let* ((entry (gethash session-id
+                                     (e-harness-active-turns harness))))
+           (push event (plist-get entry :persistence-works))
+           (e-work-on-settle
+            event
+            (lambda (work)
+              (plist-put entry :persistence-works
+                         (delq work (plist-get entry :persistence-works))))))
+         nil)))))
 
 (defun e-harness-activity--flush-reasoning-stream
     (harness session-id turn-id)

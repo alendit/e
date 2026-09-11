@@ -43,7 +43,7 @@
   'e-runtime-store-worker-error)
 
 (require 'e-runtime-store-session-worker)
-(require 'e-board-storage-sqlite-worker)
+(require 'e-board-sqlite-worker)
 (require 'e-cron-storage-sqlite-worker)
 (require 'e-goodnite-storage-sqlite-worker)
 (require 'e-raw-results-storage-sqlite-worker)
@@ -215,7 +215,7 @@ Each domain worker owns its own physical mapping; this function only keeps
 the generic worker's current composition order in one reusable seam for the
 normal worker and the stopped-store upgrader."
   (e-runtime-store-session-worker-initialize database)
-  (e-board-storage-sqlite-worker-initialize database)
+  (e-board-sqlite-worker-initialize database)
   (e-task-storage-sqlite-worker-initialize database)
   (e-cron-storage-sqlite-worker-initialize database)
   (e-voice-storage-sqlite-worker-initialize database)
@@ -494,7 +494,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
                     (list "Child admission requires participant role"
                           (plist-get participant :role)))))
          (participant-result
-          (e-board-storage-sqlite-worker-write
+          (e-board-sqlite-worker-write
            e-runtime-store-worker--database
            (list :op 'board-participant-put
                  :board-id (plist-get body :board-id)
@@ -503,7 +503,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
          (pickup (plist-get body :pickup))
          (pickup-result
           (when pickup
-            (e-board-storage-sqlite-worker-write
+            (e-board-sqlite-worker-write
              e-runtime-store-worker--database
              (list :op 'board-pickup-session-admit
                    :board-id (plist-get body :board-id)
@@ -547,7 +547,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
                             (e-runtime-store-worker--column existing 2)))
           (signal 'e-runtime-store-board-conflict
                   (list "Chat admission identity conflicts" session-id)))
-      (e-board-storage-sqlite-worker-write
+      (e-board-sqlite-worker-write
        e-runtime-store-worker--database
        (list :op 'board-create :board-id board-id
              :trusted-principal principal :root (list :board-id board-id)))
@@ -558,7 +558,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
                    :records (plist-get body :records)
                    :query-delta (plist-get body :query-delta))))
       (setq participant-result
-            (e-board-storage-sqlite-worker-write
+            (e-board-sqlite-worker-write
              e-runtime-store-worker--database
              (list :op 'board-participant-put :board-id board-id
                    :generation 1 :participant
@@ -588,7 +588,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
     (let* ((append-body (copy-sequence body))
            (_ (setq append-body (plist-put append-body :op 'board-append-route)))
            (append-result
-            (e-board-storage-sqlite-worker-write
+            (e-board-sqlite-worker-write
              e-runtime-store-worker--database append-body))
            (policy
             (plist-get (plist-get owner-result :association)
@@ -727,7 +727,7 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
          'board-pickup-transition 'board-participant-put
          'board-participant-delete 'board-participant-publish
          'board-replay-progress-put 'board-pickup-session-admit)
-     (e-board-storage-sqlite-worker-write
+     (e-board-sqlite-worker-write
       e-runtime-store-worker--database body))
     ((or 'task-queue-open 'task-enqueue 'task-claim 'task-runnable-claim
          'task-transition
@@ -883,10 +883,12 @@ acknowledgement prefix."
              (list :session-id session-id
                    :name (plist-get metadata :name)
                    :summary (plist-get metadata :summary)
+                   :latest-assistant-marker
+                   (plist-get metadata :latest-assistant-marker)
                    :turn-options
                    (copy-tree (plist-get metadata :turn-options) t))))
            (window
-            (e-board-storage-sqlite-worker-read
+            (e-board-sqlite-worker-read
              e-runtime-store-worker--database
              (list :op 'board-visible-window :board-id board-id :limit limit)))
            (messages
@@ -975,6 +977,7 @@ acknowledgement prefix."
          'session-query-page 'session-state-page 'session-id-page
          'session-recent-page 'session-root-page
          'session-record-page 'session-history-page
+         'session-recent-failures 'session-turn-inspection
          'session-visible-message-page 'session-visible-messages
          'session-context-path
          'session-header)
@@ -996,7 +999,7 @@ acknowledgement prefix."
          'board-routing-get
          'board-pickup-list 'board-participant-list
          'board-replay-progress-get)
-     (e-board-storage-sqlite-worker-read
+     (e-board-sqlite-worker-read
       e-runtime-store-worker--database body))
     ((or 'task-snapshot 'task-queue-status)
      (e-task-storage-sqlite-worker-read

@@ -21,17 +21,28 @@
 (defvar e-sqlite-test-store-support--stores (make-hash-table :test 'equal)
   "Disposable standalone session store lists keyed by canonical directory.")
 
+(defvar e-sqlite-test-store-support--active-p nil
+  "Non-nil while a test that explicitly requested this fixture is running.
+
+This support file is loaded into the shared broad-suite Emacs.  Its constructor
+advice must therefore be dynamically scoped to the older semantic suites that
+require the blocking aggregate fixture; otherwise unrelated tests silently
+receive a different public-store contract based only on test execution order.")
+
+(defun e-sqlite-test-store-support--fixture-test-p (test)
+  "Return non-nil when ERT TEST explicitly uses this semantic fixture."
+  (let ((name (symbol-name (ert-test-name test))))
+    (string-match-p
+     (concat "\\`\\(?:e-compaction-\\|e-dev-test-\\|"
+             "e-harness-base-\\|e-harness-test-\\|e-hook-audit-\\|"
+             "e-process-reporting-\\|e-session-test-\\)")
+     name)))
+
 (defun e-sqlite-test-store-support--cancel-project-timers ()
-  "Cancel deferred e callbacks before their disposable stores are closed.
-Semantic tests often leave presentation/Board drains pending after their final
-assertion.  Running those callbacks in the following ERT case would mutate the
-following case's dynamically isolated aggregate counters."
-  (if (fboundp 'e-board-e2e--cancel-runtime-timers)
-      (e-board-e2e--cancel-runtime-timers)
-    (dolist (function '(e-chat-service--subscription-drain-callback
-                        e-chat-service--observer-drain-callback
-                        e-board-runtime--drain-deferred-hooks))
-      (cancel-function-timers function))))
+  "Cancel deferred chat callbacks before disposable stores are closed."
+  (dolist (function '(e-chat-service--subscription-drain-callback
+                      e-chat-service--observer-drain-callback))
+    (cancel-function-timers function)))
 
 (defun e-sqlite-test-store-support--directory (directory)
   "Return canonical DIRECTORY used by standalone session fixtures."
@@ -44,29 +55,31 @@ following case's dynamically isolated aggregate counters."
 
 LOAD-ALL selects eager replay for a second semantic facade over the same
 test-owned runtime worker."
-  (let* ((key (e-sqlite-test-store-support--directory directory))
-         (stores (gethash key e-sqlite-test-store-support--stores))
-         (live-store
-          (cl-find-if
-           (lambda (candidate)
-             (let ((runtime (e-session-storage-runtime-store candidate)))
-               (and runtime (not (e-runtime-store--closed runtime)))))
-           stores))
-         (store
-          (if live-store
-              (e-session-sqlite-store-create
-               directory :load-all load-all
-               :runtime-store
-               (e-session-storage-runtime-store live-store))
-            ;; These older aggregate semantics tests explicitly request their
-            ;; blocking batch fixture.  Do not call the public constructor:
-            ;; ordinary v6 constructors are intentionally asynchronous and
-            ;; refuse aggregate reconstruction.
-            (progn
-              (ignore operation arguments)
-              (e-session-sqlite-store-create directory :load-all load-all)))))
-    (puthash key (cons store stores) e-sqlite-test-store-support--stores)
-    store))
+  (if (not e-sqlite-test-store-support--active-p)
+      (apply operation directory arguments)
+    (let* ((key (e-sqlite-test-store-support--directory directory))
+           (stores (gethash key e-sqlite-test-store-support--stores))
+           (live-store
+            (cl-find-if
+             (lambda (candidate)
+               (let ((runtime (e-session-storage-runtime-store candidate)))
+                 (and runtime (not (e-runtime-store--closed runtime)))))
+             stores))
+           (store
+            (if live-store
+                (e-session-sqlite-store-create
+                 directory :load-all load-all
+                 :runtime-store
+                 (e-session-storage-runtime-store live-store))
+              ;; These older aggregate semantics tests explicitly request their
+              ;; blocking batch fixture.  Do not call the public constructor:
+              ;; ordinary v6 constructors are intentionally asynchronous and
+              ;; refuse aggregate reconstruction.
+              (progn
+                (ignore operation arguments)
+                (e-session-sqlite-store-create directory :load-all load-all)))))
+      (puthash key (cons store stores) e-sqlite-test-store-support--stores)
+      store)))
 
 (defun e-sqlite-test-store-support--close-all ()
   "Close every test-owned standalone SQLite session store."
@@ -79,8 +92,12 @@ test-owned runtime worker."
 
 (defun e-sqlite-test-store-support--run-test (operation &rest arguments)
   "Call ERT OPERATION with ARGUMENTS and release disposable stores."
-  (unwind-protect (apply operation arguments)
-    (e-sqlite-test-store-support--close-all)))
+  (let ((e-sqlite-test-store-support--active-p
+         (e-sqlite-test-store-support--fixture-test-p (car arguments))))
+    (if e-sqlite-test-store-support--active-p
+        (unwind-protect (apply operation arguments)
+          (e-sqlite-test-store-support--close-all))
+      (apply operation arguments))))
 
 (advice-add 'e-session-persistent-store-create :around
             (apply-partially #'e-sqlite-test-store-support--open t))

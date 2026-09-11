@@ -62,11 +62,10 @@
          (e-dev-profile--enabled nil)
          (e-dev-profile--current-file nil)
          (e-dev-profile--latest-file nil)
-         (store (e-session-store-create))
          (backend (e-backend-fake-create
                    :items '((:type assistant-message :content "answer")
                             (:type done :reason stop))))
-         (harness (e-harness-create :backend backend :sessions store))
+         (harness (e-harness-create :backend backend))
          (buffer (e-chat-open :harness harness
                               :session-id "chat-submit-profile")))
     (unwind-protect

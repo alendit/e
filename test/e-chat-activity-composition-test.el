@@ -77,7 +77,7 @@
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-activity-composition-test-summary-only-replay-keeps-aggregates ()
-  "A retained Board summary alone preserves provider aggregate details."
+  "A retained turn summary alone preserves provider aggregate details."
   (let ((buffer (e-chat-test--buffer nil "chat-summary-only-replay")))
     (unwind-protect
         (with-current-buffer buffer
@@ -100,25 +100,32 @@
 
 (ert-deftest e-chat-test-replayed-stale-provider-activity-stays-off-tail ()
   "Replayed non-terminal provider activity is hidden when the turn is not active."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
+         (store (e-harness-sessions harness))
          (buffer nil))
     (unwind-protect
         (progn
           (e-chat-test--create-session
            store :id "chat-provider-stale-replay")
-          (e-session-append-message
-           store "chat-provider-stale-replay"
-           '(:role user :content "inspect" :turn-id "turn-1"))
-          (e-session-append-activity-event
-           store "chat-provider-stale-replay" "turn-1" 'turn-started nil)
-          (e-session-append-activity-event
-           store "chat-provider-stale-replay" "turn-1" 'provider-request-started
-           '(:status started))
+          (e-chat-test--await
+           (e-board-sqlite-service-append-route-start
+            (e-board-sqlite-service-create
+             (e-session-storage-runtime-store store))
+            "test-board:chat-provider-stale-replay"
+            :session-id "chat-provider-stale-replay"
+            :author "chat:chat-provider-stale-replay"
+            :requester-actor "chat:chat-provider-stale-replay"
+            :tags '(main) :mode 'inject :content "inspect"
+            :source-input-key "stale-replay:input"))
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-provider-stale-replay"))
           (with-current-buffer buffer
+            (e-chat-activity-replay-events
+             "turn-1"
+             '((:event-type turn-started :created-at 0)
+               (:event-type provider-request-started
+                :created-at 0 :payload (:status started))))
             (e-ui-work-with-batch-drain
               (e-ui-work-drain-batch :buffer (current-buffer)))
             (let ((content (buffer-string)))
@@ -419,36 +426,35 @@ the orphaned region and appeared to vanish."
 
 (ert-deftest e-chat-test-token-usage-events-update-mode-line-without-transcript ()
   "Token usage events update status without rendering system transcript blocks."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
                    :backend backend
-                   :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness :session-id "chat-token-usage-event")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-surface-set-redraw-visible t)
-          (e-session-append-activity-event
-           store
-           e-chat-session-id
-           "turn-1"
-           'token-usage
-           '(:input-tokens 54581
-             :cached-input-tokens 30720
-             :output-tokens 154
-             :reasoning-output-tokens 0
-             :total-tokens 54735))
-          (e-chat-render-event
-           (e-events-make :type 'token-usage
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :payload '(:input-tokens 54581
-                                     :cached-input-tokens 30720
-                                     :output-tokens 154
-                                     :reasoning-output-tokens 0
-                                     :total-tokens 54735)))
+          (e-chat-test--mark-active-turn "turn-1")
+          (let ((payload '(:input-tokens 54581
+                           :cached-input-tokens 30720
+                           :output-tokens 154
+                           :reasoning-output-tokens 0
+                           :total-tokens 54735)))
+            ;; Provider usage is bounded executing-turn coordination.  The
+            ;; harness installs this exact shape before publishing the live
+            ;; event; presentation reads it without reconstructing a session.
+            (plist-put
+             (e-harness-executing-session-state
+              e-chat-harness e-chat-session-id)
+             :latest-token-usage-event
+             (list :turn-id "turn-1" :event-type 'token-usage
+                   :payload (copy-tree payload t)))
+            (e-chat-render-event
+             (e-events-make :type 'token-usage
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload payload)))
           (e-ui-work-with-batch-drain
             (e-ui-work-drain-batch :buffer (current-buffer)
                                    :owner 'chat-mode-line-status))

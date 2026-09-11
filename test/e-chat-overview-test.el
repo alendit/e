@@ -18,7 +18,7 @@
   (should (e-chat-overview-board-session-p
            '(:id "board" :board-id "board-1")))
   (should (e-chat-overview-board-session-p
-           '(:id "nested" :board-session-state (:board-id "board-2"))))
+           '(:id "nested" :association (:board-id "board-2"))))
   (should-not (e-chat-overview-board-session-p '(:id "plain"))))
 
 (ert-deftest e-chat-overview-owner-labels-session-candidates ()

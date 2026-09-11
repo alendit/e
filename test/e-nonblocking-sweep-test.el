@@ -37,10 +37,8 @@
     ("lisp/core/e-runtime-store-offline.el" "process-file" 1)
     ;; The runtime client waits cooperatively for typed worker responses; all
     ;; SQLite work itself remains in the subordinate process.
-    ;; The third occurrence is the explicit eager-store loop.  The sixth is
-    ;; the offline migration-only catalog rebuild, which loads and unloads one
-    ;; session at a time.  Interactive resume continues to use
-    ;; `e-session-load-session-start'.
+    ;; These occurrences belong to explicit operator/test boundaries.  The
+    ;; interactive SQLite runtime uses detached bounded queries.
     ("lisp/core/e-session.el" "e-session-load-session" 6)
     ("lisp/core/e-tools.el" "accept-process-output" 1)
     ("lisp/core/e-ui-work.el" "accept-process-output" 1)
@@ -58,7 +56,6 @@
     ("lisp/layers/harness/e-session-tmp-resources.el" "process-file" 1)
     ("lisp/layers/web/e-web-tools.el" "accept-process-output" 2)
     ("lisp/layers/web/e-web-tools.el" "url-retrieve-synchronously" 1)
-    ("lisp/shells/chat/e-chat-composer.el" "accept-process-output" 1)
     ("lisp/shells/chat/e-chat-composer.el" "process-file" 2))
   "Audited blocking primitive counts for Feature 40.")
 
@@ -131,8 +128,7 @@
   "Audited callback start slots kept only at backend/lifecycle boundaries.")
 
 (defconst e-nonblocking-sweep-test--sync-storage-boundary-files
-  '("lisp/core/e-board-storage-sqlite.el"
-    "lisp/core/e-cron-storage-sqlite.el"
+  '("lisp/core/e-cron-storage-sqlite.el"
     "lisp/core/e-goodnite-storage-sqlite.el"
     "lisp/core/e-raw-results-storage-sqlite.el"
     "lisp/core/e-runtime-store.el"

@@ -54,65 +54,6 @@
           (should (string-match-p "last prompt" text))
           (should (string-match-p "last response" text)))))))
 
-(ert-deftest e-chat-test-resume-preview-for-index-session-avoids-transcript-load ()
-  (ert-skip "Retired indexed-session stub preview scenario")
-  "Resume previews render metadata when a persistent transcript is not loaded."
-  (let* ((directory (make-temp-file "e-chat-" t))
-         (store (e-session-persistent-store-create directory))
-         (session-id (plist-get
-                      (e-chat-test--create-session store
-                                        :id "indexed-preview"
-                                        :metadata '(:name "Indexed preview"))
-                      :id))
-         (backend (e-backend-fake-create :items nil))
-         indexed-store)
-    (unwind-protect
-        (progn
-          (e-session-append-message
-           store session-id
-           '(:id "msg-1" :role user :content "indexed preview hello"))
-          (e-session-storage-close store)
-          (setq store nil
-                indexed-store
-                (e-session-persistent-index-store-create directory))
-          (let* ((indexed-store indexed-store)
-                 (harness (e-chat-test--activate-chat-session
-                           (e-harness-create :backend backend
-                                             :sessions indexed-store)))
-                 (session (car (e-harness-session-list harness)))
-                 (loaded nil))
-            (should-not (plist-get session :loaded))
-            (cl-letf (((symbol-function 'e-session-load-session)
-                       (lambda (&rest _args)
-                         (setq loaded t)
-                         (error "preview loaded transcript"))))
-              (let ((preview (e-chat-overview-render-resume-preview harness session)))
-                (should-not loaded)
-                (with-current-buffer preview
-                  (let ((text (buffer-string)))
-                    (should buffer-read-only)
-                    (should (equal e-chat-session-id "indexed-preview"))
-                    (should-not (string-match-p
-                                 (regexp-quote (e-chat-composer-glyph))
-                                 text))
-                    (should (string-match-p "Indexed preview" text))
-                    (should (string-match-p "indexed preview hello" text)))))
-              (let ((preview (e-chat-overview-render-resume-preview harness session)))
-                (should-not loaded)
-                (with-current-buffer preview
-                  (let ((text (buffer-string)))
-                    (should buffer-read-only)
-                    (should (equal e-chat-session-id "indexed-preview"))
-                    (should-not (string-match-p
-                                 (regexp-quote (e-chat-composer-glyph))
-                                 text))
-                    (should (string-match-p "Indexed preview" text))))))))
-      (e-chat-test--kill-chat-buffers)
-      (when store
-        (e-session-storage-close store))
-      (when indexed-store
-        (e-session-storage-close indexed-store))
-      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-overview-mode-disables-undo ()
   "Overview mode disables undo so repeated re-renders do not accrue history."
@@ -124,67 +65,7 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-resume-selects-existing-session ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Resuming uses completing-read over persisted sessions and renders transcript."
-  (let* ((directory (make-temp-file "e-chat-" t))
-         (store (e-session-persistent-store-create directory))
-         (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store))))
-    (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "resume-me")
-          (e-session-append-message
-           store "resume-me" '(:id "msg-1" :role user :content "saved hello"))
-          (cl-letf (((symbol-function 'completing-read)
-                     (lambda (_prompt collection &rest _args)
-                       (car collection))))
-            (e-chat-test--with-empty-harness-registry
-              (let ((e-chat-default-harness-id :chat-test))
-                (e-harness-registry-register :chat-test harness)
-                (with-current-buffer (e-chat-resume)
-                  (should (equal e-chat-session-id "resume-me"))
-                  (should (string-match-p "saved hello" (buffer-string))))))))
-      (e-chat-test--kill-chat-buffers)
-      (delete-directory directory t))))
 
-(ert-deftest e-chat-test-resume-selects-session-across-chat-instances ()
-  (ert-skip "Retired synchronous persistent-session picker scenario")
-  "Resume candidates include sessions from every configured chat instance."
-  (let* ((alpha-store (e-session-store-create))
-         (beta-store (e-session-store-create))
-         (alpha-harness (e-chat-test--activate-chat-session
-                         (e-harness-create
-                          :backend (e-backend-fake-create :items nil)
-                          :sessions alpha-store)))
-         (beta-harness (e-chat-test--activate-chat-session
-                        (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions beta-store))))
-    (unwind-protect
-        (e-chat-test--with-empty-harness-registry
-          (let ((e-chat-default-harness-id :chat-alpha))
-            (e-chat-test--register-chat-instance
-             :chat-alpha "Alpha Target" alpha-harness t)
-            (e-chat-test--register-chat-instance
-             :chat-beta "Beta Target" beta-harness)
-            (e-chat-test--create-session alpha-store :id "alpha-session"
-                              :metadata '(:name "Alpha Session"))
-            (e-chat-test--create-session beta-store :id "beta-session"
-                              :metadata '(:name "Beta Session"))
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (cl-find-if
-                          (lambda (candidate)
-                            (string-match-p "Beta Target.*Beta Session"
-                                            candidate))
-                          (all-completions "" collection)))))
-              (with-current-buffer (e-chat-resume)
-                (should (eq e-chat-harness beta-harness))
-                (should (eq e-chat-harness-instance-id :chat-beta))
-                (should (equal e-chat-session-id "beta-session"))))))
-      (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-resume-reader-uses-consult-preview-when-available ()
   "Resume selection uses Consult preview state when Consult is available."
@@ -282,22 +163,23 @@
 
 (ert-deftest e-chat-test-overview-compacts-multiline-session-summary ()
   "Overview rows do not expand raw prompt context into the sidebar."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          (buffer (get-buffer-create "*e-chat-overview-test*")))
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "messy-summary")
-          (e-session-append-message
-           store "messy-summary"
-           '(:id "messy-user"
-             :role user
-             :content "<reference id=\"source\" label=\"very-long-reference-name\">Ask about sidebar</reference>\n\nReferences:\n[source] plan.org"))
+          (e-chat-test--await
+           (e-session-append-message
+            store "messy-summary"
+            '(:id "messy-user"
+              :role user
+              :content "<reference id=\"source\" label=\"very-long-reference-name\">Ask about sidebar</reference>\n\nReferences:\n[source] plan.org")))
           (with-current-buffer buffer
             (e-chat-overview-mode)
-            (e-chat-overview-render harness)
+            (e-chat-test--await (e-chat-overview-render harness))
             (let ((text (buffer-string)))
               (should (string-match-p "Ask about sidebar" text))
               (should-not (string-match-p "<reference" text))
@@ -307,30 +189,32 @@
 
 (ert-deftest e-chat-test-overview-styles-session-row-regions ()
   "Overview rows style title, metadata, and summary as distinct regions."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          (buffer (get-buffer-create "*e-chat-overview-style-test*")))
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "styled-session"
                             :metadata '(:name "Styled Session"))
-          (e-session-append-message
-           store "styled-session"
-           '(:id "styled-user"
-             :role user
-             :content "summary line"
-             :created-at "2026-05-26T21:24:00Z"))
-          (e-session-append-message
-           store "styled-session"
-           '(:id "styled-assistant"
-             :role assistant
-             :content "answer"
-             :created-at "2026-05-26T21:25:42Z"))
+          (e-chat-test--await
+           (e-session-append-message
+            store "styled-session"
+            '(:id "styled-user"
+              :role user
+              :content "summary line"
+              :created-at "2026-05-26T21:24:00Z")))
+          (e-chat-test--await
+           (e-session-append-message
+            store "styled-session"
+            '(:id "styled-assistant"
+              :role assistant
+              :content "answer"
+              :created-at "2026-05-26T21:25:42Z")))
           (with-current-buffer buffer
             (e-chat-overview-mode)
-            (e-chat-overview-render harness)
+            (e-chat-test--await (e-chat-overview-render harness))
             (let ((text (buffer-string)))
               (should (string-match-p "\n\n\\'" text))
               (goto-char (point-min))
@@ -355,23 +239,24 @@
 
 (ert-deftest e-chat-test-overview-hides-summary-when-title-is-derived ()
   "Overview rows do not repeat summaries that already produced the title."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          (buffer (get-buffer-create "*e-chat-overview-duplicate-test*")))
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "derived-title")
-          (e-session-append-message
-           store "derived-title"
-           '(:id "derived-user"
-             :role user
-             :content "this prompt is long enough to become a truncated derived title"
-             :created-at "2026-05-26T21:25:42Z"))
+          (e-chat-test--await
+           (e-session-append-message
+            store "derived-title"
+            '(:id "derived-user"
+              :role user
+              :content "this prompt is long enough to become a truncated derived title"
+              :created-at "2026-05-26T21:25:42Z")))
           (with-current-buffer buffer
             (e-chat-overview-mode)
-            (e-chat-overview-render harness)
+            (e-chat-test--await (e-chat-overview-render harness))
             (let ((text (buffer-string)))
               (should (string-match-p "this prompt is long enoug..." text))
               (should-not (string-match-p "truncated derived title" text)))))
@@ -380,30 +265,32 @@
 
 (ert-deftest e-chat-test-overview-j-k-move-by-session-and-preview ()
   "Overview j/k navigation targets whole session rows and opens a preview."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          (buffer (get-buffer-create "*e-chat-overview-nav-test*")))
     (unwind-protect
         (progn
           (e-chat-test--create-session store :id "older")
-          (e-session-append-message
-           store "older"
-           '(:id "older-user"
-             :role user
-             :content "older prompt"
-             :created-at "2026-05-26T21:24:00Z"))
+          (e-chat-test--await
+           (e-session-append-message
+            store "older"
+            '(:id "older-user"
+              :role user
+              :content "older prompt"
+              :created-at "2026-05-26T21:24:00Z")))
           (e-chat-test--create-session store :id "newer")
-          (e-session-append-message
-           store "newer"
-           '(:id "newer-user"
-             :role user
-             :content "newer prompt"
-             :created-at "2026-05-26T21:25:00Z"))
+          (e-chat-test--await
+           (e-session-append-message
+            store "newer"
+            '(:id "newer-user"
+              :role user
+              :content "newer prompt"
+              :created-at "2026-05-26T21:25:00Z")))
           (with-current-buffer buffer
             (e-chat-overview-mode)
-            (e-chat-overview-render harness)
+            (e-chat-test--await (e-chat-overview-render harness))
             (goto-char (point-min))
             (should (equal (e-chat-overview-session-id-at-point) "newer"))
             (e-chat-overview-next-session)
@@ -424,16 +311,14 @@
 
 (ert-deftest e-chat-test-overview-renders-and-opens-owning-chat-instance ()
   "Overview rows carry owning instance metadata when session ids collide."
-  (let* ((alpha-store (e-session-store-create))
-         (beta-store (e-session-store-create))
-         (alpha-harness (e-chat-test--activate-chat-session
+  (let* ((alpha-harness (e-chat-test--activate-chat-session
                          (e-harness-create
-                          :backend (e-backend-fake-create :items nil)
-                          :sessions alpha-store)))
+                          :backend (e-backend-fake-create :items nil))))
+         (alpha-store (e-harness-sessions alpha-harness))
          (beta-harness (e-chat-test--activate-chat-session
                         (e-harness-create
-                         :backend (e-backend-fake-create :items nil)
-                         :sessions beta-store)))
+                         :backend (e-backend-fake-create :items nil))))
+         (beta-store (e-harness-sessions beta-harness))
          (buffer (get-buffer-create "*e-chat-overview-instances-test*")))
     (unwind-protect
         (e-chat-test--with-empty-harness-registry
@@ -448,7 +333,7 @@
                               :metadata '(:name "Beta Session"))
             (with-current-buffer buffer
               (e-chat-overview-mode)
-              (e-chat-overview-render)
+              (e-chat-test--await (e-chat-overview-render))
               (let ((text (buffer-string)))
                 (should (string-match-p "Alpha Target" text))
                 (should (string-match-p "Beta Target" text)))
@@ -465,10 +350,10 @@
 
 (ert-deftest e-chat-test-sidebar-toggle-opens-and-closes-overview ()
   "The planned sidebar toggle command toggles the overview side window."
-  (let* ((store (e-session-store-create))
-         (backend (e-backend-fake-create :items nil))
+  (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
+                   (e-harness-create :backend backend)))
+         (store (e-harness-sessions harness))
          (e-chat-overview-buffer-name "*e-chat-overview-toggle-test*")
          opened-buffer)
     (unwind-protect
@@ -481,6 +366,9 @@
             (e-chat-sidebar-toggle)
             (setq opened-buffer (get-buffer e-chat-overview-buffer-name))
             (should (buffer-live-p opened-buffer))
+            (with-current-buffer opened-buffer
+              (when (e-work-handle-p e-chat-overview--page-work)
+                (e-chat-test--await e-chat-overview--page-work)))
             (should (get-buffer-window opened-buffer t))
             (should (eq (window-buffer (selected-window)) opened-buffer))
             (e-chat-sidebar-toggle)
@@ -530,8 +418,8 @@
                                  :session-id "beta-session"
                                  :instance-id :beta)))
          spec preview-text opened)
-    (cl-letf (((symbol-function 'e-chat-overview-active-session-candidates)
-               (lambda () candidates))
+    (cl-letf (((symbol-function 'e-chat-session-candidates-start)
+               (lambda () (e-chat-test--finished-work candidates)))
               ((symbol-function 'e-chat-service-active-turn-p)
                (lambda (_harness session-id)
                  (equal session-id "alpha-session")))
@@ -632,54 +520,6 @@
                  (e-chat-overview-active-session-line candidate status-cache)))))
     (should (= calls 1))))
 
-(ert-deftest e-chat-test-active-session-preview-avoids-unloaded-index-session-load ()
-  (ert-skip "Retired indexed-session stub preview scenario")
-  "Active-session preview renders metadata for unloaded index sessions."
-  (let* ((directory (make-temp-file "e-chat-active-" t))
-         (store (e-session-persistent-store-create directory))
-         (e-chat-session-summary-preview-max-chars 6)
-         loaded
-         indexed-store)
-    (unwind-protect
-        (progn
-          (e-chat-test--create-session store :id "unloaded-active"
-                            :metadata '(:name "Unloaded active"))
-          (e-session-append-message
-           store "unloaded-active"
-           '(:id "msg-1" :role user :content "last prompt"))
-          (e-session-append-message
-           store "unloaded-active"
-           '(:id "msg-2" :role assistant :content "last response"))
-          (e-session-storage-close store)
-          (setq store nil
-                indexed-store
-                (e-session-persistent-index-store-create directory))
-          (let* ((indexed-store indexed-store)
-                 (harness (e-harness-create
-                           :backend (e-backend-fake-create :items nil)
-                           :sessions indexed-store))
-                 (session (car (e-harness-session-list harness)))
-                 (candidate
-                  (list :harness harness
-                        :session session
-                        :session-id "unloaded-active")))
-            (should-not (plist-get session :loaded))
-            (cl-letf (((symbol-function 'e-session-load-session)
-                       (lambda (&rest _args)
-                         (setq loaded t)
-                         (error "preview loaded transcript"))))
-              (with-temp-buffer
-                (e-chat-overview-active-session-preview candidate (current-buffer))
-                (let ((text (buffer-string)))
-                  (should-not loaded)
-                  (should (string-match-p "last p…" text))
-                  (should-not (string-match-p "last prompt" text))
-                  (should-not (string-match-p "last response" text)))))))
-      (when store
-        (e-session-storage-close store))
-      (when indexed-store
-        (e-session-storage-close indexed-store))
-      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()
   "Showing a session in the active-session preview records its latest response."
@@ -710,10 +550,15 @@
                  (plist-get candidate :session)))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
-  "The active sessions command reports an empty session list."
-  (cl-letf (((symbol-function 'e-chat-overview-active-session-candidates)
-             (lambda () nil)))
-    (should-error (e-chat-active-sessions) :type 'user-error)))
+  "The async active sessions command reports an empty session list."
+  (let (notice)
+    (cl-letf (((symbol-function 'e-chat-session-candidates-start)
+               (lambda () (e-chat-test--finished-work nil)))
+              ((symbol-function 'message)
+               (lambda (format-string &rest arguments)
+                 (setq notice (apply #'format format-string arguments)))))
+      (should (e-work-handle-p (e-chat-active-sessions)))
+      (should (equal notice "No e chat sessions to show")))))
 
 ;;; e-chat-presentation-integration-test--end
 

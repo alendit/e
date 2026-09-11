@@ -41,16 +41,16 @@
 (require 'e-session)
 (require 'e-tools)
 (load (expand-file-name
-       "e-board-e2e-support.el"
+       "e-chat-sql-e2e-support.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 
-(declare-function e-board-e2e-create-session "e-board-e2e-support"
+(declare-function e-chat-sql-e2e-create-session "e-chat-sql-e2e-support"
                   (harness &rest arguments))
-(declare-function e-board-e2e-prompt-async "e-board-e2e-support"
+(declare-function e-chat-sql-e2e-prompt-async "e-chat-sql-e2e-support"
                   (harness session-id prompt))
-(declare-function e-board-e2e-prompt-batch "e-board-e2e-support"
+(declare-function e-chat-sql-e2e-prompt-batch "e-chat-sql-e2e-support"
                   (harness session-id prompt &optional timeout))
-(declare-function e-board-e2e-reset-runtime "e-board-e2e-support" ())
+(declare-function e-chat-sql-e2e-reset "e-chat-sql-e2e-support" ())
 
 (defconst e-live-e2e--harness-id :chat-default
   "Registry id of the default chat harness exercised by live e2e tests.")
@@ -1713,7 +1713,7 @@ finalization, including when the original condition is re-signalled."
     (when (<= remaining 0)
       (signal 'e-live-e2e-scenario-timeout (list :deadline deadline)))
     (condition-case caught
-        (e-board-e2e-prompt-batch harness session-id prompt remaining)
+        (e-chat-sql-e2e-prompt-batch harness session-id prompt remaining)
       (error
        (let ((entry (gethash session-id (e-harness-active-turns harness))))
          (if (and (>= (float-time) deadline)
@@ -3698,7 +3698,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                (lambda (&optional _)
                  (prog1 (car clock)
                    (setq clock (cdr clock)))))
-              ((symbol-function 'e-board-e2e-prompt-batch)
+              ((symbol-function 'e-chat-sql-e2e-prompt-batch)
                (lambda (&rest _)
                  (error "E2E turn did not settle within 10.0 seconds"))))
       (condition-case caught
@@ -4004,7 +4004,7 @@ is updated through BODY so an outer finalizer can observe later events."
                         (e-session-store-create)))
               (,harness (e-live-e2e--make-harness ,store))
               (,session-id
-               (e-board-e2e-create-session
+               (e-chat-sql-e2e-create-session
                 ,harness :metadata (list :project-root ,root)))
               (,events nil)
               ,@(when events-var
@@ -4282,7 +4282,7 @@ evidence record on every terminal path."
   "A first live prompt returns a concrete assistant message."
   (e-live-e2e--with-harness (harness session-id)
     (let* ((nonce (e-live-e2e--nonce))
-           (result (e-board-e2e-prompt-batch
+           (result (e-chat-sql-e2e-prompt-batch
                     harness session-id
                     (format "Reply with exactly this token and no extra words: %s"
                             nonce))))
@@ -4300,7 +4300,7 @@ long-reasoning request into a retry loop."
   (e-live-e2e--with-harness (harness session-id)
     (let* ((nonce (e-live-e2e--nonce))
            (result
-            (e-board-e2e-prompt-batch
+            (e-chat-sql-e2e-prompt-batch
              harness session-id
              (format "Reply with exactly this token and no extra words: %s"
                      nonce)))
@@ -4352,7 +4352,7 @@ provider turn to settle without an implicit local deadline."
                :content (format "Recorded historical item %d." index))))
       (let* ((nonce (e-live-e2e--nonce))
              (result
-              (e-board-e2e-prompt-batch
+              (e-chat-sql-e2e-prompt-batch
                harness session-id
                (format "Reply with exactly this token and no extra words: %s"
                        nonce)
@@ -4376,11 +4376,11 @@ provider turn to settle without an implicit local deadline."
   "A follow-up live prompt can use earlier transcript context."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-board-e2e-prompt-batch
+      (e-chat-sql-e2e-prompt-batch
        harness session-id
        (format "Remember this validation token for the next message: %s. Reply OK."
                nonce))
-      (let ((result (e-board-e2e-prompt-batch
+      (let ((result (e-chat-sql-e2e-prompt-batch
                      harness session-id
                      "Reply with only the validation token I asked you to remember.")))
         (should (e-live-e2e--contains-p
@@ -4391,7 +4391,7 @@ provider turn to settle without an implicit local deadline."
   "The model can call a registered e tool and use its result."
   (e-live-e2e--with-harness (harness session-id :layers (list (e-live-e2e--tool-layer)))
     (let* ((nonce (e-live-e2e--nonce))
-           (result (e-board-e2e-prompt-batch
+           (result (e-chat-sql-e2e-prompt-batch
                     harness session-id
                     (format
                      "Call e2e_echo exactly once with text %S. Then reply with only that returned text."
@@ -5291,7 +5291,7 @@ replay, where those same values are strings."
                          (e-harness-create
                           :backend (e-backend-fake-create :items nil)
                           :sessions factory-store)))))
-              ((symbol-function 'e-board-e2e-create-session)
+              ((symbol-function 'e-chat-sql-e2e-create-session)
                (lambda (harness &rest _arguments)
                  (e-harness-create-session harness :id "test-session")
                  "test-session")))
@@ -5387,7 +5387,7 @@ replay, where those same values are strings."
                (lambda (&rest _)
                  (e-harness-create
                   :backend (e-backend-fake-create :items nil))))
-              ((symbol-function 'e-board-e2e-create-session)
+              ((symbol-function 'e-chat-sql-e2e-create-session)
                (lambda (&rest _) "test-session"))
               ((symbol-function 'e-harness-activity-subscribe)
                (lambda (&rest _) 'test-subscription))
@@ -5403,7 +5403,7 @@ replay, where those same values are strings."
                (lambda (&rest arguments)
                  (setq received arguments)
                  'runner-stubbed))
-              ((symbol-function 'e-board-e2e-prompt-batch)
+              ((symbol-function 'e-chat-sql-e2e-prompt-batch)
                (lambda (&rest _)
                  (setq request-attempted t)
                  (error "provider request should not run")))
@@ -5437,7 +5437,7 @@ replay, where those same values are strings."
                   :backend (e-backend-fake-create :items nil))))
               ((symbol-function 'e-session-persistent-store-create)
                (lambda (&rest _) (e-session-store-create)))
-              ((symbol-function 'e-board-e2e-create-session)
+              ((symbol-function 'e-chat-sql-e2e-create-session)
                (lambda (&rest _) "test-session"))
               ((symbol-function 'e-harness-activity-subscribe)
                (lambda (&rest _) 'test-subscription))
@@ -5453,7 +5453,7 @@ replay, where those same values are strings."
                (lambda (&rest arguments)
                  (setq received arguments)
                  'runner-stubbed))
-              ((symbol-function 'e-board-e2e-prompt-batch)
+              ((symbol-function 'e-chat-sql-e2e-prompt-batch)
                (lambda (&rest _)
                  (setq request-attempted t)
                  (error "provider request should not run")))
@@ -5474,7 +5474,7 @@ replay, where those same values are strings."
   "Live provider start and finish events are emitted and persisted."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-board-e2e-prompt-batch
+      (e-chat-sql-e2e-prompt-batch
        harness session-id
        (format "Reply with exactly this lifecycle token: %s" nonce))
       (let ((started (e-live-e2e--activity-of-type
@@ -5489,7 +5489,7 @@ replay, where those same values are strings."
 (ert-deftest e-live-e2e-test-token-usage-is-recorded-when-reported ()
   "Live provider token usage reaches durable activity when reported."
   (e-live-e2e--with-harness (harness session-id)
-    (e-board-e2e-prompt-batch
+    (e-chat-sql-e2e-prompt-batch
      harness session-id
      "Reply with exactly: TOKEN-USAGE-CHECK")
     (let ((usage-events (e-live-e2e--activity-of-type
@@ -5504,7 +5504,7 @@ replay, where those same values are strings."
   (e-live-e2e--with-harness (harness session-id :persistent t)
     (let* ((store-dir (e-session-store-directory (e-harness-sessions harness)))
            (nonce (e-live-e2e--nonce)))
-      (e-board-e2e-prompt-batch
+      (e-chat-sql-e2e-prompt-batch
        harness session-id
        (format "Reply with exactly this persistence token: %s" nonce))
       (let* ((reloaded-store (e-session-persistent-store-create store-dir))
@@ -5521,10 +5521,10 @@ replay, where those same values are strings."
   "Manual compaction uses the live backend and records a durable compaction."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-board-e2e-prompt-batch
+      (e-chat-sql-e2e-prompt-batch
        harness session-id
        (format "Remember this compaction token: %s. Reply OK." nonce))
-      (e-board-e2e-prompt-batch
+      (e-chat-sql-e2e-prompt-batch
        harness session-id
        "Reply with one short sentence confirming you still have the token.")
       (let ((record (e-harness-compact-session-batch
@@ -5540,7 +5540,7 @@ replay, where those same values are strings."
 (ert-deftest e-live-e2e-test-provider-anchor-candidate-recorded-when-supported ()
   "Continuation-capable providers record provider anchor candidates."
   (e-live-e2e--with-harness (harness session-id)
-    (e-board-e2e-prompt-batch
+    (e-chat-sql-e2e-prompt-batch
      harness session-id
      "Reply with exactly: ANCHOR-CHECK")
     ;; Continuation support is backend-specific; assert anchors when the
@@ -5595,7 +5595,7 @@ replay, where those same values are strings."
                        (push request request-handles)
                        request))))
           (let ((first-result
-                 (e-board-e2e-prompt-batch
+                 (e-chat-sql-e2e-prompt-batch
                   harness session-id
                   (concat
                    "Reply with exactly: FIRST-TURN-READY. "
@@ -5623,7 +5623,7 @@ replay, where those same values are strings."
               (e-harness-sessions harness) session-id)))
           (setq current-state new-marker)
           (let ((second-result
-                 (e-board-e2e-prompt-batch
+                 (e-chat-sql-e2e-prompt-batch
                   harness session-id
                   (concat
                    "Reply with exactly the current observation marker from "
@@ -6331,7 +6331,7 @@ continuation and socket assertions used by the compatibility selector."
     (let (request-bodies request-handles)
       (e-live-e2e--with-responses-request-capture
           profile request-bodies request-handles
-        (e-board-e2e-prompt-batch
+        (e-chat-sql-e2e-prompt-batch
          harness session-id
          (concat
           "Reason carefully about why every finite directed acyclic graph has "
@@ -6363,7 +6363,7 @@ continuation and socket assertions used by the compatibility selector."
         (when-let ((websocket-session
                     (plist-get (car (last request-bodies)) :session)))
           (e-openai-websocket-session-close websocket-session))
-        (e-board-e2e-prompt-batch
+        (e-chat-sql-e2e-prompt-batch
          harness session-id
          "Reply with exactly: FULL-REPLAY-ACCEPTED"))
       (let* ((first-entry (car (last request-bodies)))
@@ -6714,7 +6714,7 @@ WebSocket and socket-replacement assertions."
   "An active live turn can be cancelled through the harness."
   (e-live-e2e--with-harness (harness session-id :layers (list (e-live-e2e--tool-layer)))
     (let ((turn-id
-           (e-board-e2e-prompt-async
+           (e-chat-sql-e2e-prompt-async
             harness session-id
             "Call e2e_slow now. Do not answer until the tool result is available.")))
       (let ((deadline (+ (float-time) 30))
@@ -6744,7 +6744,7 @@ WebSocket and socket-replacement assertions."
      (e-harness-sessions harness) session-id
      '(:model "e-live-e2e-nonexistent-model"))
     (should-error
-     (e-board-e2e-prompt-batch
+     (e-chat-sql-e2e-prompt-batch
       harness session-id
       "This request should fail because the model is invalid."))
     (should (e-live-e2e--activity-of-type
@@ -6753,7 +6753,7 @@ WebSocket and socket-replacement assertions."
      (e-harness-sessions harness) session-id nil)
     (let* ((nonce (e-live-e2e--nonce))
            (result
-            (e-board-e2e-prompt-batch
+            (e-chat-sql-e2e-prompt-batch
              harness session-id
              (format "Reply with exactly this recovery token: %s" nonce))))
       (should (e-live-e2e--contains-p

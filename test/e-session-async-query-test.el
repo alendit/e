@@ -45,7 +45,11 @@
                             :session-id "cursor")))
            (context-path (e-session-async-context-path store "session"))
            (visible (e-session-async-visible-message-page store "session" 3))
-           (works (list query metadata association page context-path visible)))
+           (failures (e-session-async-recent-failures store :limit 2))
+           (inspection
+            (e-session-async-turn-inspection store "session" "turn-1"))
+           (works (list query metadata association page context-path visible
+                        failures inspection)))
       (should (= (hash-table-count (e-session-store-sessions store)) 0))
       (should (= (length calls) (length works)))
       (dolist (work works)
@@ -63,6 +67,13 @@
       (should (equal (plist-get (plist-get (nth 4 calls) :request) :op)
                      'session-context-path))
       (should (= (plist-get (plist-get (nth 5 calls) :request) :limit) 3))
+      (should (equal (plist-get (plist-get (nth 6 calls) :request) :op)
+                     'session-recent-failures))
+      (should (= (plist-get (plist-get (nth 6 calls) :request) :limit) 2))
+      (should (equal (plist-get (plist-get (nth 7 calls) :request) :op)
+                     'session-turn-inspection))
+      (should (equal (plist-get (plist-get (nth 7 calls) :request) :turn-id)
+                     "turn-1"))
       (dolist (call calls)
         (funcall
          (plist-get call :on-settle)
@@ -96,7 +107,7 @@
       (should (equal (plist-get (e-work-status work) :result)
                      (list :value (vector (list :value "before"))))))))
 
-(ert-deftest e-session-async-query-test-page-snapshot-does-not-overlay-inflight-association ()
+(ert-deftest e-session-async-query-test-page-snapshot-does-not-overlay-inflight-create ()
   "A page follows its database snapshot, not Emacs admission timing."
   (e-session-async-query-test--with-held-reads (calls)
     (let* ((store (e-session-store-create))
@@ -104,29 +115,19 @@
            (create
             (e-session-aggregate-command-prepare
              'create "daily" '(:metadata (:name "Daily"))))
-           (association
-            (e-session-aggregate-command-prepare
-             'board-state "daily"
-             '(:principal "chat:daily" :board-id "board:daily")))
            (create-operation
             (e-session-async--operation-create
              :state state :session-id "daily" :command create))
-           (association-operation
-            (e-session-async--operation-create
-             :state state :session-id "daily" :command association))
            (_create-work
-            (e-session-async--start-work "daily" create-operation))
-           (_association-work
-            (e-session-async--start-work "daily" association-operation)))
+            (e-session-async--start-work "daily" create-operation)))
       (unwind-protect
           (progn
             (e-session-async--add-pending create-operation)
-            (e-session-async--add-pending association-operation)
             (let ((page-work
                    (e-session-async-query-page
                     store :limit 8 :root-p t :board-id "board:daily")))
-              ;; SQLite answered before either transaction.  The two admitted
-              ;; Emacs intents are not evidence that either row is committed.
+              ;; SQLite answered before the transaction.  The admitted Emacs
+              ;; intent is not evidence that its row is committed.
               (funcall
                (plist-get (car calls) :on-settle)
                '(:rows nil :next nil :limit 8
