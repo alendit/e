@@ -214,6 +214,18 @@ extension test trees, and the fixture remains independently byte-compilable by
 installing those roots at compile time.  Both boundaries have direct regression
 tests; no =no-byte-compile= exception was introduced.
 
+A 2026-09-11 terminal Daily run exposed a second false-green gate: pending
+capability actions returned only an opaque =started= receipt, and the graphical
+fixture accepted a canned assistant success message without requiring
+=daily-run/:apply=, =:finalize=, or a file mutation.  DP8 replaces the receipt
+with a generic awaitable =work:= reference, attaches Board fan-in's already-read
+bounded terminal projection directly to the continuation, and makes the public
+graphical fixture execute apply, finalize, and await through real provider tool
+round trips.  The complete graphical Daily suite passes 3/3 and verifies every
+generated section and durable completion marker exactly once in a disposable
+Org file.  The investigation is recorded in
+[[file:../bugs/async-action-result-strands-daily-reconciliation/investigation.org][async action result strands Daily reconciliation]].
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |

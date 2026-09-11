@@ -21,6 +21,7 @@
 (require 'e-resource-patterns)
 (require 'e-resource-query)
 (require 'e-resources)
+(require 'e-work)
 
 (define-error 'e-action-resources-invalid-uri
   "Action description resource URI is invalid")
@@ -114,6 +115,20 @@
 	              ""
 	            " [invalid]")))
 
+(defun e-action-resources--execution-contract (spec)
+  "Return descriptor-derived result guidance for action SPEC."
+  (if (not (and (e-action-p spec)
+                (e-work-spec-p (e-action-work spec))))
+      "Execution: invalid descriptor; no result contract is available."
+    (if (eq (e-work-spec-interactive-policy (e-action-work spec)) 'cheap)
+        "Execution: cheap; this descriptor is expected to settle inline and return its value."
+      (concat
+       "Execution: asynchronous-capable; if it is still pending, e-actions-call "
+       "returns a work: reference. Pass that reference to the top-level await "
+       "tool to observe settlement. Results are inline only within await's fixed "
+       "budget; oversized values are tombstoned and require the action's documented "
+       "bounded query or resource surface. Do not wait or poll inside run_elisp."))))
+
 (defun e-action-resources--format-action-contract
     (capability action-key spec)
   "Return read-only contract text for CAPABILITY ACTION-KEY SPEC."
@@ -144,6 +159,8 @@
       ""
       "Call form:"
       (format "(e-actions-call '%s %s ARGUMENTS)" capability-id action-key)
+      ""
+      (e-action-resources--execution-contract spec)
       ""
       "This resource is read-only. It describes the action contract; it does not execute the action.")
      "\n")))
@@ -179,7 +196,7 @@
        "# Active action descriptions"
        ""
        "These resources describe active capability actions. They do not execute actions."
-       "Use e-actions-call from Elisp to execute an action."
+       "Use e-actions-call from Elisp to execute an action. Immediate actions return their value; pending actions return a work: reference for the top-level await tool."
        ""
        "Resources:")
       (if capabilities

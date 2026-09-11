@@ -129,6 +129,12 @@ Use =e-tools-call= and =e-tools-call!= for active model-facing tools. Use
 for code running under =run_elisp=, and they keep the tool/action boundary
 explicit without adding a separate action tool.
 
+An action that settles immediately returns its value. A pending action returns
+a =work:= reference registered in the generic process-local work registry.
+Return from =run_elisp= and pass that reference to the top-level =await= tool;
+the settlement report includes the result only while it fits the await tool's
+inline budget. Do not block or poll inside evaluated Elisp.
+
 * Boundary Table
 
 | Surface | Caller | Visible to model by default | Context injection | Typical owner |

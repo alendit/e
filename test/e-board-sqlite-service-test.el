@@ -560,6 +560,77 @@
             (should (e-chat-service-binding-continuation-owner-p binding)))
         (when binding (e-chat-service--retire-binding binding))))))
 
+(ert-deftest e-chat-service-sqlite-continuation-queues-detached-terminal-view ()
+  "One bounded run query supplies continuation evidence without recursive prompt."
+  (e-board-sqlite-service-test--with-fixture
+      (store _service _board-id session-id _participant-id)
+    (let* ((harness (e-harness-create :sessions store))
+           (prompt "Apply and finalize this Daily exactly once.")
+           (manifest
+            `(:version 1 :type manifest :idempotency-key "manifest:daily"
+              :payload (:run-id "daily-run"
+                        :tasks [(:task-key "report" :required t
+                                 :accepted-attempt 0)]
+                        :deadline (:kind none)
+                        :continuation (:session-id ,session-id
+                                       :prompt ,prompt
+                                       :publication-key "continue:daily"))))
+           (report
+            '(:version 1 :type terminal-report :idempotency-key "report:daily"
+              :payload (:run-id "daily-run" :task-key "report" :attempt 0
+                        :status done :summary "ready"
+                        :outputs ((:kind daily :content "one")))))
+           (record
+            (lambda (fact)
+              (append (list :kind 'fact)
+                      (e-board-orchestration-fact-record-fields fact))))
+           (page
+            (list :records
+                  (list (list :record (funcall record manifest))
+                        (list :record (funcall record report)))
+                  :truncated nil))
+           (query-spec
+            (e-work-spec-create
+             :id "continuation-query" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner (lambda (_arguments _context) page)))
+           (admission-spec
+            (e-work-spec-create
+             :id "continuation-admission" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner (lambda (_arguments _context) '(:admitted t))))
+           binding queued-input (query-count 0) (publication-count 0))
+      (unwind-protect
+          (progn
+            (setq binding
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start harness session-id)))
+            (cl-letf (((symbol-function
+                        'e-board-sqlite-service-orchestration-runs-start)
+                       (lambda (&rest _)
+                         (cl-incf query-count)
+                         (e-work-start query-spec nil)))
+                      ((symbol-function 'e-chat-service-queue-session)
+                       (lambda (_harness _session-id input &rest _)
+                         (setq queued-input input)
+                         (e-work-start admission-spec nil)))
+                      ((symbol-function
+                        'e-chat-service--publish-sqlite-continuation-claim)
+                       (lambda (&rest _) (cl-incf publication-count))))
+              (e-chat-service--reconcile-sqlite-continuation binding))
+            (should (= query-count 1))
+            (should (= publication-count 1))
+            (should (string-match-p (regexp-quote prompt) queued-input))
+            (should (string-match-p ":terminal-status done" queued-input))
+            (should (string-match-p ":summary \"ready\"" queued-input))
+            (should-not (string-match-p ":manifest" queued-input))
+            (let ((start 0) (occurrences 0))
+              (while (string-match (regexp-quote prompt) queued-input start)
+                (setq occurrences (1+ occurrences)
+                      start (match-end 0)))
+              (should (= occurrences 1))))
+        (when binding (e-chat-service--retire-binding binding))))))
+
 (ert-deftest e-chat-service-sqlite-subscription-crosses-held-snapshot-once ()
   "A commit crossing the initial DB window is neither lost nor duplicated."
   (let* ((stall-directory (make-temp-file "e-chat-sql-view-stall-" t))

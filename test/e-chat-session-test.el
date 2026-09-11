@@ -356,40 +356,41 @@
                       (e-backend-request-create
                        :metadata '(:provider delayed-action-summary))))))
          )
-    (e-chat-session-test--with-sqlite-harness (harness store backend)
-      (e-harness-activate-capability harness (e-chat-session-capability-create))
-      (e-chat-session-test--create-session harness "session-1")
-      (dolist (message '((:role user :content "old")
-                         (:role assistant :content "old answer")
-                         (:role user :content "new")))
-        (e-chat-session-test--await
-         (e-chat-service-append-seed-message
-          harness "session-1" message)))
-      (let ((result
-             (e-actions-call
-              'chat-session
-              :compact
-              '(:keep_recent_tokens 1)
-              (list :harness harness
-                    :session-id "session-1"
-                    :turn-id "turn-compact"))))
-        (should (eq (plist-get result :status) 'started)))
-      (should
-       (e-chat-session-test--wait-until
-        (lambda ()
-          (plist-get
-           (e-chat-session-test--await
-            (e-session-async-context-path store "session-1"))
-           :compaction))))
-      (should
-       (equal
-        (plist-get
-         (plist-get
+    (let ((e-work--detached-handles (make-hash-table :test 'equal)))
+      (e-chat-session-test--with-sqlite-harness (harness store backend)
+        (e-harness-activate-capability harness (e-chat-session-capability-create))
+        (e-chat-session-test--create-session harness "session-1")
+        (dolist (message '((:role user :content "old")
+                           (:role assistant :content "old answer")
+                           (:role user :content "new")))
           (e-chat-session-test--await
-           (e-session-async-context-path store "session-1"))
-          :compaction)
-         :summary)
-        "Action summary.")))))
+           (e-chat-service-append-seed-message
+            harness "session-1" message)))
+        (let ((result
+               (e-actions-call
+                'chat-session
+                :compact
+                '(:keep_recent_tokens 1)
+                (list :harness harness
+                      :session-id "session-1"
+                      :turn-id "turn-compact"))))
+          (should (string-match-p "\\`work:" result)))
+        (should
+         (e-chat-session-test--wait-until
+          (lambda ()
+            (plist-get
+             (e-chat-session-test--await
+              (e-session-async-context-path store "session-1"))
+             :compaction))))
+        (should
+         (equal
+          (plist-get
+           (plist-get
+            (e-chat-session-test--await
+             (e-session-async-context-path store "session-1"))
+            :compaction)
+           :summary)
+          "Action summary."))))))
 
 (ert-deftest e-chat-session-test-options-and-context ()
   "Chat-session options and context use detached SQLite operations."

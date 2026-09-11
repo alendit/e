@@ -4,7 +4,9 @@
 
 * Status
 
-=Done=.  The 2026-09-11 cross-repository consumer cutover completes the
+=Done=.  DP8 closes the 2026-09-11 async action-result defect and restores the
+public Daily acceptance path with a provider-driven apply/finalize test that
+requires a real Org mutation.  The earlier cross-repository consumer cutover completed the
 2026-09-10 clean cut, which supersedes the previously accepted
 exception for an explicit in-memory Board engine.  SQLite is the only Board
 implementation.  DP7 removed the aggregate, registry, runtime, polymorphic
@@ -1644,3 +1646,111 @@ running Emacs and canonical user database were not contacted.
     owner-local; unexpected consumer or zero-test errors surface visibly.
 14. Focused SQL tests prove commit-triggered reconciliation and coalesced rerun;
     graphical and current-config tests prove the public and configured paths.
+
+* Async action result and Daily reconciliation correction (2026-09-11)
+
+This correction remains within accepted contracts =F92A2-C08= and
+=F92A2-C16=.  The public Daily run exposed a contract hole after all selected
+gatherers had committed terminal reports: its continuation called the
+asynchronous =subagents/:run-status= action, received only an opaque =started=
+receipt, and repeatedly searched for a result API.  It never reached
+=daily-run/:apply= or =daily-run/:finalize=.
+
+** Behavioral trace
+
+- Goal ID :: =F92A2-ASYNC-ACTION-RESULT=.
+- Behavioral goal :: Once every selected Daily gatherer is terminal, the sole
+  continuation consumes the detached SQLite result already obtained by fan-in,
+  applies the generated sections once, finalizes the same run, and exposes its
+  real progress.  Any other pending capability action that needs its eventual
+  value returns a generic reference that the model can await without blocking
+  Emacs.
+- Direct scenario :: A public graphical Daily run commits seven terminal
+  reports.  Continuation delivery includes their bounded accepted projection,
+  performs no second run-status query, calls =:apply= and =:finalize= in order,
+  and changes the disposable Org file exactly once.  A separate asynchronous
+  action returns a resolvable =work:= reference whose top-level await yields its
+  terminal value.
+- Product authority :: User direction in the 2026-09-11 live Daily incident.
+- Owning contract :: =F92A2-C08= and =F92A2-C16=.
+- Behavioral status :: Failing before correction: terminal gathering and
+  continuation admission pass, but reconciliation never applies the Daily.
+
+** Delivery package
+
+=F92A2-DP8= is one package because the observed failure crosses one stable
+boundary: a detached asynchronous value must reach its actual consumer.
+
+- Board orchestration owns a bounded continuation view of terminal task state,
+  accepted reports, outputs, conflicts, and errors.  It excludes the persisted
+  continuation prompt and other unused manifest data.
+- Chat service appends that view to the continuation input it already queues.
+  The value remains request-scoped and is never installed as a Board mirror.
+- Action dispatch registers only a pending action's existing work handle in the
+  generic detached-work registry and returns its =work:= reference.  The generic
+  =await= tool remains the sole event-driven join surface; no action-specific
+  registry, polling API, synchronous wait, or model-facing action tool is added.
+- Daily consumes the attached projection and must not call =run-status= from
+  the reconciliation turn.
+- The graphical gate executes the actual reconciliation action sequence and
+  requires file mutation and finalization, replacing the former assistant-text
+  proxy assertion.
+
+The work deliberately does not mutate or repair the running Daily.  Repository
+validation uses private Emacs processes and disposable databases; applying the
+new behavior to a running core session still requires a restart.
+
+** Acceptance evidence
+
+- The provider-driven graphical restart scenario passes 1/1.  Its four real
+  provider round trips consume the attached projection, call =:apply=, call
+  =:finalize=, await the returned =work:= reference, and only then emit the
+  terminal assistant reply.  Every generated section and both durable Daily
+  markers occur exactly once in the disposable Org file.
+- The complete Grimoire graphical Daily suite passes 3/3, including public
+  owner identity, delayed SQLite isolation, and restart reconciliation.
+- Grimoire's focused Daily suite passes 53/53.  The focused action, Board,
+  chat, and capability suites pass 74/74, including the two non-Daily async
+  action consumers found by the repository-wide audit.
+- The current configured Grimoire layer passes 4/4 in a private source-loaded
+  Emacs with a disposable runtime and database.
+- The full =e= suite completed 2,518 tests in the sandbox.  Its seven unexpected
+  results were four sandbox-denied MCP loopback tests, two sandbox-denied
+  OpenAI loopback tests, and one order-sensitive timer cleanup test; the exact
+  seven tests all pass in clean permitted reruns (5/5 and 35/35 for their
+  containing focused sets).
+- Production and instruction scans contain no caller that consumes the former
+  opaque =(:status started ...)= action result, no =e-actions-call!=, and no
+  instruction to poll asynchronous action work from =run_elisp=.  The audit
+  includes Grimoire source-capture and graphify guidance; its focused source
+  suite passes 35/35.
+
+** Architecture self-check
+
+1. Stopping here is useful: terminal Daily reports can now reach reconciliation
+   and the public test proves the file changed, not merely that prose appeared.
+2. The change advances the SQLite-authoritative direction: Board fan-in reads
+   once and hands a detached, consumer-shaped projection to its continuation.
+3. The stable decision is explicit async settlement.  Projection contents stay
+   narrow and can change locally with the Daily consumer contract.
+4. Board orchestration owns projection shape, chat service owns continuation
+   delivery, action dispatch owns generic result references, and Daily owns Org
+   application and finalization.
+5. Coupling decreases because Daily no longer queries Board state a second time
+   or depends on an action-specific result registry.
+6. Stable domain policy does not depend on SQLite transport or UI details.
+7. Durable reads and writes remain in application services and adapters; the
+   presentation shell only renders their detached results.
+8. The only added process state is an existing live work handle registered for
+   explicit settlement; no durable Board or session mirror is introduced.
+9. Startup behavior and retained state remain independent of durable history.
+10. The result contract is one generic =work:= reference plus bounded =await=,
+    shared by every asynchronous capability action.
+11. No compatibility requirement preserves the opaque =started= result.
+12. The stale result assumptions and polling instructions found by the audit
+    were removed in the same slice.
+13. Action failures surface through =await=; Daily apply/finalize failure cannot
+    be converted into a successful graphical assertion.
+14. Focused unit tests prove the generic contract, while the graphical test
+    proves provider consumption, durable side effects, ordering, and exactly-once
+    presentation end to end.

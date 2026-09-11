@@ -479,6 +479,41 @@ evidence."
                 :continuation-claims (copy-tree claims)
                 :terminal-status terminal-status))))))
 
+(defun e-board-orchestration-continuation-view (projection)
+  "Return detached terminal evidence needed by PROJECTION's continuation.
+
+The view deliberately excludes the manifest and continuation prompt.  It is a
+bounded, request-scoped value derived from the already-queried Board facts, not
+a durable Board replica or an invitation to query the run a second time."
+  (unless (and (listp projection)
+               (stringp (plist-get projection :run-id)))
+    (signal 'e-board-orchestration-error
+            (list "Continuation view requires a reduced run projection")))
+  (list
+   :run-id (plist-get projection :run-id)
+   :terminal-status (plist-get projection :terminal-status)
+   :tasks
+   (mapcar
+    (lambda (task)
+      (let ((report (plist-get task :accepted-report)))
+        (list
+         :task-key (plist-get task :task-key)
+         :required (plist-get task :required)
+         :accepted-attempt (plist-get task :accepted-attempt)
+         :state (plist-get task :state)
+         :accepted-report
+         (when report
+           (list :task-key (plist-get report :task-key)
+                 :attempt (plist-get report :attempt)
+                 :status (plist-get report :status)
+                 :summary (plist-get report :summary)
+                 :outputs (copy-tree (plist-get report :outputs))
+                 :error (copy-tree (plist-get report :error))
+                 :participant-session-id
+                 (plist-get report :participant-session-id))))))
+    (plist-get projection :tasks))
+   :conflicts (copy-tree (plist-get projection :conflicts))))
+
 (provide 'e-board-orchestration)
 
 ;;; e-board-orchestration.el ends here

@@ -511,6 +511,16 @@ coordination."
               (e-board-orchestration-reduce (gethash run-id groups)))
             (nreverse order))))
 
+(defun e-chat-service--continuation-input (prompt projection)
+  "Append PROJECTION's detached terminal view to continuation PROMPT."
+  (format
+   (concat "%s\n\n"
+           "Terminal Board projection (already queried; consume this bounded "
+           "value directly and do not query or poll run status):\n\n"
+           "```elisp\n%S\n```")
+   prompt
+   (e-board-orchestration-continuation-view projection)))
+
 (defun e-chat-service--reconcile-sqlite-continuation (binding)
   "Reconcile terminal continuations through coordination-only BINDING."
   (let* ((runtime (e-chat-service--binding-runtime binding))
@@ -558,7 +568,9 @@ coordination."
                               (e-chat-service-queue-session
                                (e-chat-service-binding-harness binding)
                                (e-chat-service-binding-session-id binding)
-                               (plist-get continuation :prompt)
+                               (e-chat-service--continuation-input
+                                (plist-get continuation :prompt)
+                                projection)
                                :metadata (list :board-run-id run-id
                                                :board-continuation-key key)
                                :source-input-key

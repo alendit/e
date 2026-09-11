@@ -125,6 +125,8 @@
     (should (string-match-p "e-tools-call! \"search\"" instructions))
     (should (string-match-p "e-tools-call! \"read\"" instructions))
     (should (string-match-p "e-actions-call 'chat-session :rename" instructions))
+    (should (string-match-p "pending action returns a work: reference" instructions))
+    (should (string-match-p "top-level await tool" instructions))
     (should (string-match-p "Use nested tool calls only for cheap composition"
                             instructions))
     (should (string-match-p "Long or async-backed tools must run as top-level tools"

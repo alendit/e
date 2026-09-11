@@ -1,0 +1,9 @@
+#+title: Async Action Result Strands Daily Reconciliation
+#+date: 2026-09-11
+
+* Report
+
+After every Grimoire Daily gatherer visibly reported completion, the public
+Daily note remained unchanged.  The foreground chat displayed =done= and the
+shared Board displayed terminal child reports, but no reconciled section was
+applied to the Org file.

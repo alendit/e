@@ -268,12 +268,7 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                                          :capability-id capability-id
                                          :action action-key
                                          :action-call-id call-id
-                                         :context context))
-                   (started-result
-                    (list :status 'started
-                          :action-call-id call-id
-                          :capability capability-id
-                          :action action-key)))
+                                         :context context)))
               (e-actions--validate-arguments action-spec arguments)
               ;; Rejected arguments never cross the durable activity boundary.
               ;; Only a schema-valid payload is eligible for started/finished
@@ -327,7 +322,13 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                              (signal (car err) (cdr err))))
                           ('cancelled
                            (signal 'e-work-cancelled (list request)))
-                          (_ started-result))))
+                          (_
+                           ;; Pending action work crosses the shell/model
+                           ;; boundary by reference.  The generic detached
+                           ;; registry is process-local coordination only; the
+                           ;; action's eventual result remains owned by WORK.
+                           (e-work-detach-register request)
+                           (format "work:%s" (e-work-handle-id request))))))
                   (list :capability capability-object
                         :capability-id capability-id
                         :action action-key
@@ -348,7 +349,10 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
 (defun e-actions-call (capability action &optional arguments options)
   "Call active CAPABILITY ACTION with ARGUMENTS.
 When OPTIONS omits `:harness' and `:session-id', dispatch uses the current
-`e-tools-current-context'.  Return the raw action result."
+`e-tools-current-context'.  Return the raw result when the action settles
+immediately.  A still-pending action returns a generic `work:' reference whose
+settlement and bounded inline result are observed through the top-level
+`await' tool."
   (plist-get
    (e-actions-dispatch capability action arguments options)
    :result))

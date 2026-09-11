@@ -8,7 +8,7 @@
 
 ## Runtime Vocabulary
 
-- A capability action is a shell-facing semantic operation contributed by an active capability. Actions are not model-facing tools. Agents call them from `run_elisp` with `(e-actions-call 'capability :action ARGUMENTS)`.
+- A capability action is a shell-facing semantic operation contributed by an active capability. Actions are not model-facing tools. Agents call them from `run_elisp` with `(e-actions-call 'capability :action ARGUMENTS)`. An action that settles immediately returns its result; a pending action returns a `work:` reference which must be passed to the top-level `await` tool to observe settlement and receive a bounded inline result. Never wait or poll inside `run_elisp`.
 - Use `e-tools-call` / `e-tools-call!` for model-facing tools and `e-actions-call` for capability actions. Both APIs resolve through the current harness/session context; pass `:harness` and `:session-id` explicitly only when no tool context is active.
 - See `docs/references/runtime_concepts.org` for the durable definitions of harness, session, turn, capability, layer, tool, resource method, context provider, hook, action, shell, and backend adapter.
 

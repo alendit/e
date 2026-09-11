@@ -16,6 +16,8 @@
 (require 'e-actions)
 (require 'e-backend)
 (require 'e-action-resources)
+(require 'e-async-control)
+(require 'e-await-tool)
 (require 'e-chat-session)
 (require 'e-harness)
 (require 'e-resources)
@@ -37,6 +39,7 @@
 (ert-deftest e-actions-test-work-action-preserves-immediate-result ()
   "Work-backed actions return a handle while preserving cheap result shape."
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (e-work--detached-handles (make-hash-table :test 'equal))
          (capability
           (e-capability-create
            :id 'work-action
@@ -59,7 +62,8 @@
                      '(:value "done")
                      (list :harness harness :session-id "session-1"))))
       (should (e-work-handle-p (plist-get dispatch :request)))
-      (should (equal (plist-get dispatch :result) "done")))))
+      (should (equal (plist-get dispatch :result) "done"))
+      (should (zerop (hash-table-count e-work--detached-handles))))))
 
 (ert-deftest e-actions-test-rejects-raw-function-action-spec ()
   "Action dispatch no longer wraps raw function actions as compatibility."
@@ -151,9 +155,11 @@
     (should (equal (e-harness-session-title harness "session-1")
                    "Context renamed"))))
 
-(ert-deftest e-actions-test-async-action-starts-before-callback ()
-  "Async action dispatch returns a started result before callback settlement."
+(ert-deftest e-actions-test-async-action-returns-awaitable-work-reference ()
+  "A pending action returns a generic reference whose await yields its result."
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (e-work--detached-handles (make-hash-table :test 'equal))
+         (e-waitable--resolvers (make-hash-table :test 'equal))
          finish
          (capability
           (e-capability-create
@@ -177,20 +183,37 @@
                       :deferred)))))))
     (e-harness-activate-capability harness capability)
     (e-harness-create-session harness :id "session-1")
+    (e-async-control-register-work-resolver)
     (let ((result
            (e-actions-call
             'async-capability
             :run
             '(:value "later")
             (list :harness harness :session-id "session-1" :turn-id "turn-1"))))
-      (should (eq (plist-get result :status) 'started))
+      (should (string-match-p "\\`work:" result))
+      (should (e-work-handle-p
+               (plist-get (e-waitable-resolve result) :handle)))
       (should (functionp finish))
       (should-not
        (cl-find 'action-finished
                 (e-session-local-activity-events
                  (e-harness-sessions harness) "session-1")
-                :key (lambda (event) (plist-get event :event-type)))))
-    (funcall finish)
+                :key (lambda (event) (plist-get event :event-type))))
+      (let ((registry (e-tools-registry-create))
+            awaited)
+        (e-await-tool-register registry)
+        (e-tools-start
+         registry
+         (list :id "await-action" :name "await"
+               :arguments (list :refs (vector result)))
+         :on-done (lambda (value) (setq awaited value)))
+        (should-not awaited)
+        (funcall finish)
+        (let* ((content (plist-get awaited :content))
+               (entry (car (plist-get content :results))))
+          (should (plist-get content :settled))
+          (should (eq (plist-get entry :state) 'finished))
+          (should (equal (plist-get entry :result) '(:echo "later"))))))
     (let ((finished
            (cl-find 'action-finished
                     (e-session-local-activity-events
@@ -219,6 +242,15 @@
       (should (string-match-p
                "(e-actions-call 'chat-session :rename ARGUMENTS)"
                (e-resources-read resources "e-action://chat-session/rename" nil)))
+      (should (string-match-p
+               "Execution: cheap"
+               (e-resources-read resources "e-action://chat-session/rename" nil)))
+      (should (string-match-p
+               "Execution: asynchronous-capable"
+               (e-resources-read resources "e-action://chat-session/compact" nil)))
+      (should (string-match-p
+               "returns a work: reference"
+               (e-resources-read resources "e-action://chat-session/compact" nil)))
       (let ((listed (e-resources-glob resources "e-action://" "chat-session/ren*" nil t)))
         (should (equal (mapcar (lambda (record) (plist-get record :uri))
                                (append (plist-get listed :resources) nil))

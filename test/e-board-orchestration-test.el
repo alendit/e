@@ -207,3 +207,34 @@
       (should (eq (plist-get projection :terminal-status) 'done))
       (should (eq (plist-get (plist-get projection :continuation) :state) 'published))
       (should (= (length (plist-get projection :reports)) 1))))
+
+(ert-deftest e-board-orchestration-test-continuation-view-is-consumer-shaped ()
+  "Continuation input carries terminal evidence without recursive manifest data."
+  (let* ((manifest
+          (e-board-orchestration-test--fact
+           'manifest "manifest-1"
+           '(:run-id "run-1"
+             :tasks ((:task-key "daily" :required t :accepted-attempt 0))
+             :continuation (:session-id "coordinator"
+                            :prompt "DO NOT EMBED THIS PROMPT"
+                            :publication-key "publication-1"))))
+         (report
+          (e-board-orchestration-test--fact
+           'terminal-report "report-1"
+           '(:run-id "run-1" :task-key "daily" :attempt 0 :status done
+             :summary "applied" :outputs ((:path "daily.org"))
+             :participant-session-id "worker-1")))
+         (view
+          (e-board-orchestration-continuation-view
+           (e-board-orchestration-reduce (list manifest report))))
+         (task (car (plist-get view :tasks)))
+         (accepted (plist-get task :accepted-report))
+         (serialized (prin1-to-string view)))
+    (should (equal (plist-get view :run-id) "run-1"))
+    (should (eq (plist-get view :terminal-status) 'done))
+    (should (eq (plist-get task :state) 'done))
+    (should (equal (plist-get accepted :summary) "applied"))
+    (should (equal (plist-get accepted :outputs) '((:path "daily.org"))))
+    (should-not (plist-member view :manifest))
+    (should-not (plist-member view :continuation))
+    (should-not (string-match-p "DO NOT EMBED THIS PROMPT" serialized))))

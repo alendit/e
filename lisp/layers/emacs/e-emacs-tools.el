@@ -524,7 +524,7 @@ the cap for that call.  Returns nil when evaluation should run uncapped."
    'e-emacs-tools-run-elisp-timeout
    (list
     (format
-     "run_elisp evaluation aborted after %s seconds; move long-running work to (e-actions-call 'elisp-job :run-batch ...), which runs a separate process you can poll and cancel, or pass a larger :timeout for a one-off"
+     "run_elisp evaluation aborted after %s seconds; move long-running work to (e-actions-call 'elisp-job :run-batch ...), whose elisp-job: reference can be awaited or cancelled without blocking Emacs, or pass a larger :timeout for a one-off"
      timeout))))
 
 (defconst e-emacs-tools-run-elisp-blocking-functions
@@ -534,7 +534,8 @@ the cap for that call.  Returns nil when evaluation should run uncapped."
     process-file url-retrieve-synchronously
     e-harness-wait-batch e-work-await-batch)
   "Function symbols that block the single UI thread when called from run_elisp.
-Waiting on these freezes Emacs; agents must poll across turns instead.  This is
+Waiting on these freezes Emacs; agents must return from evaluated Elisp and use
+the top-level await tool for an async reference instead.  This is
 a cheap, syntactic guard against the common mistakes, not a full sandbox: it
 catches a literal top-level or nested call in the submitted forms, and does not
 see blocking done indirectly through `apply', `funcall', or a helper.")
@@ -568,7 +569,7 @@ blocking symbol only used as a datum does not trip the guard."
    'e-emacs-tools-run-elisp-blocking
    (list
     (format
-     "run_elisp code calls `%s', which blocks the single UI Emacs thread and freezes the interface. Do not wait inside run_elisp: to observe async work (a subagent, a task-queue task, an elisp-job) poll its status across separate run_elisp calls and let the turn end between checks, or move blocking/long work to (e-actions-call 'elisp-job :run-batch ...). If a blocking call is genuinely required, run it as a top-level tool, not inside run_elisp."
+     "run_elisp code calls `%s', which blocks the single UI Emacs thread and freezes the interface. Do not wait inside run_elisp: return the async work reference, then pass it to the top-level await tool, or move blocking/long work to (e-actions-call 'elisp-job :run-batch ...). If a blocking call is genuinely required, run it as a top-level tool, not inside run_elisp."
      symbol))))
 
 (defun e-emacs-tools--byte-prefix (text max-bytes)
@@ -769,9 +770,10 @@ live runtime objects while the submitted code runs."
     "Do not wait inside run_elisp: a literal call to a blocking primitive "
     "(sleep-for, sit-for, accept-process-output, read-event, a synchronous "
     "process/URL call, e-harness-wait-batch, e-work-await-batch) is rejected. "
-    "To observe async work -- a subagent, a task-queue task, an elisp-job -- "
-    "poll its status across separate run_elisp calls and let the turn end "
-    "between checks, rather than sleeping for it. "
+    "When e-actions-call returns a work: reference, return from run_elisp and "
+    "pass that reference to the top-level await tool. For domain references "
+    "such as subagent:, task:, or elisp-job:, also use the top-level await "
+    "tool rather than polling or sleeping. "
     "Evaluation is time-capped; pass :timeout seconds to raise or lower the cap "
     "for one call. Move expensive validation or byte-compilation to "
     "(e-actions-call 'elisp-job :run-batch ...), which runs in a separate "
@@ -805,7 +807,7 @@ live runtime objects while the submitted code runs."
             result)
        ;; Cheap syntactic guard: reject a literal call to a common blocking
        ;; wait primitive before evaluating.  Waiting inside run_elisp freezes
-       ;; the single UI thread; agents must poll async work across turns.  This
+       ;; the single UI thread; agents must use top-level await for async work.  This
        ;; catches the frequent mistakes only, not blocking hidden behind apply
        ;; or a helper -- the timeout below remains the backstop for those.
        (when blocking

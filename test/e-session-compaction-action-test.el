@@ -57,6 +57,7 @@
                       (e-backend-request-create
                        :metadata '(:provider delayed-action-summary))))))
          (harness (e-harness-create :backend backend))
+         (e-work--detached-handles (make-hash-table :test 'equal))
          result)
     (e-harness-create-session harness :id "session-1")
     (e-session-compaction-action-test--seed-session harness "session-1")
@@ -71,7 +72,7 @@
            (list :harness harness
                  :session-id "session-1"
                  :turn-id "turn-1")))
-    (should (eq (plist-get result :status) 'started))
+    (should (string-match-p "\\`work:" result))
     (should-not (e-session-local-compactions
                  (e-harness-sessions harness) "session-1"))
     (should

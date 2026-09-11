@@ -1,0 +1,107 @@
+#+title: Investigation: Async Action Result Strands Daily Reconciliation
+#+date: 2026-09-11
+
+* Reproduction evidence
+
+Read-only inspection of the running Emacs and canonical SQLite database showed
+that run =daily:2026-09-11:20260911T110606091299000= had seven accepted terminal
+reports.  SQLite then published the sole continuation input to owner session
+=20260911T110605-737e8d1be74e=.
+
+The continuation began and called =subagents/:run-status=.  That action is
+backed by an asynchronous SQLite query.  =e-actions-call= returned only
+=(:status started :action-call-id ...)= even though its public documentation
+said it returned the raw action result.  The completed projection later
+appeared only in an =action-finished= activity record, where telemetry bounded
+it to 4,096 bytes.  The model could neither retrieve the complete result nor
+obtain an awaitable reference.  It repeatedly searched for an action-result
+API and reached at least 39 provider requests without calling
+=daily-run/:apply= or =daily-run/:finalize=.
+
+No live buffer, Daily file, Emacs process, or canonical database was mutated
+during this investigation.
+
+* Cause
+
+Two contracts were inconsistent:
+
+1. The Board fan-in already held the detached terminal SQLite projection, but
+   the continuation prompt discarded it and instructed the model to query the
+   same projection again.
+2. Pending capability actions had no generic result-consumption contract.
+   =e-actions-call= returned a nonterminal receipt, while the model guidance
+   described action calls as ordinary result-returning Elisp operations.
+
+The graphical Daily test did not catch this because its fake continuation
+returned assistant text directly.  It proved continuation admission and
+rendering, not projection consumption, =:apply=, =:finalize=, or a changed Org
+file.
+
+* Corrective design
+
+- Board orchestration owns a bounded continuation view containing the terminal
+  run status, accepted task reports, outputs, conflicts, and errors but not the
+  manifest's continuation prompt.
+- Chat continuation delivery appends that already-queried detached view to the
+  queued input.  Daily reads artifacts from that view and performs no second
+  Board query or polling loop.
+- A pending =e-actions-call= registers its existing =e-work= handle with the
+  generic detached-work registry and returns a =work:= reference consumable by
+  the top-level =await= tool.  Immediate actions continue returning their raw
+  result.
+- The public graphical Daily gate must run reconciliation through =:apply= and
+  =:finalize= and assert the target Org file changed exactly once.
+
+* Audit scope
+
+Audit every production =e-actions-call= instruction and every asynchronous
+action descriptor.  Result-consuming async callers must either use the generic
+work reference or receive the required detached value directly from their
+application service.  Fire-and-forget actions may ignore the reference.
+
+* Resolution
+
+The repair is architectural rather than a Daily-only special case:
+
+1. Pending capability actions now return a generic =work:= reference.  The
+   existing top-level =await= tool resolves it without blocking Emacs and
+   exposes the terminal value or error within its bounded result budget.
+2. Board fan-in derives one bounded continuation view from the terminal query
+   it already performed.  Chat service attaches that detached value to the
+   continuation input, so Daily does not issue a duplicate run-status query.
+3. Grimoire Daily consumes the attached view, applies the complete section map,
+   finalizes the same run, and awaits finalization before reporting success.
+4. The graphical test backend now reacts to actual provider history and drives
+   the production =run_elisp= and =await= protocol.  The test fails unless the
+   disposable Org file contains every generated section and both finalization
+   markers exactly once.
+
+The repository-wide caller audit found the same obsolete return-shape
+assumption in chat-session compaction and session compaction tests.  Both now
+assert the generic =work:= contract.  Shared capability, resource, subagent,
+Elisp-job, and =run_elisp= instructions now direct pending results to top-level
+=await= and forbid in-eval polling.  No production caller consumes the removed
+=(:status started ...)= shape.
+
+A follow-up scan of the configured Grimoire consumer found the same obsolete
+assumption in source-capture and graphify guidance: it described an asynchronous
+capture as directly returning its Org link and instructed graphify to poll task
+queries.  Those action descriptions, capability instructions, and skills now
+await the single returned =work:= receipt at an explicit boundary.  The source
+suite has a regression assertion that rejects the old polling text.
+
+* Validation
+
+- Provider-driven graphical restart reconciliation: 1/1 passed.
+- Complete Grimoire graphical Daily suite: 3/3 passed.
+- Grimoire focused Daily suite: 53/53 passed.
+- Grimoire focused source suite: 35/35 passed.
+- Focused =e= action/Board/chat/capability suites: 74/74 passed.
+- Current configured Grimoire source-load suite: 4/4 passed.
+- The full =e= suite ran 2,518 tests.  Seven sandbox/order-sensitive failures
+  all passed in their clean permitted focused reruns.
+- =check-parens= and =git diff --check= passed for both repositories.
+
+All validation used private Emacs processes and disposable databases.  The
+running Emacs and canonical database remained unchanged.  Core runtime changes
+require an Emacs restart before the repaired action-result contract is active.

@@ -61,6 +61,11 @@ Shell code or evaluated Elisp can call active actions through =e-actions-call=:
 Agents should use =run_elisp= for action calls; =e-actions-call= is the
 ergonomic Elisp interface for that tool.
 
+An action that settles immediately returns its value directly.  A pending
+action returns a =work:= reference; pass that reference to the top-level
+=await= tool to observe settlement and receive a bounded inline result without
+blocking or polling inside =run_elisp=.
+
 Examples:
 
 - =chat-session=

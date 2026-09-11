@@ -50,7 +50,7 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
    '("Use Elisp job actions when external Elisp may do expensive work and must not run on the live UI Emacs path."
      "Start work from run_elisp with:"
      "(e-actions-call 'elisp-job :run-batch '(:code \"...\" :load_path [\"lisp\"] :timeout 10))"
-     "Then poll or fetch:"
+     "The returned record includes an elisp-job: reference for the top-level await tool. For an explicit bounded inspection (not a polling loop), query or fetch:"
      "(e-actions-call 'elisp-job :status '(:job_id \"JOB\"))"
      "(e-actions-call 'elisp-job :result '(:job_id \"JOB\"))"
      "Cancel running work with:"
