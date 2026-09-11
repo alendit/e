@@ -488,6 +488,249 @@
                          (list '(:kind org-link :uri "tmp://r.org" :label "review"))))
           (should (eq (plist-get final :status) 'done)))))))
 
+(ert-deftest e-subagent-runner-test-report-admission-rejects-then-accepts-exact-report ()
+  "Report admission rejects visibly without consuming the child's retry."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (e-subagent-actions-default-registry registry)
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil))
+           (calls nil)
+           (accepted
+            '(:summary "accepted summary"
+              :outputs [(:kind "artifact" :uri "tmp://accepted.org")]))
+           (admission
+            (lambda (assignment report)
+              (push (list assignment report) calls)
+              (unless (equal report accepted)
+                (user-error "report artifact is missing"))
+              report)))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((record
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1"
+               :type :reviewer :prompt "go"
+               :run-id "run-1" :task-key "review" :attempt 2
+               :report-admission admission
+               :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id))
+             (child-session-id (plist-get record :session-id))
+             (child-harness
+              (e-subagent-registry-child-harness registry subagent-id))
+             (settle (plist-get (car captured) :on-settle)))
+        (should-error
+         (e-actions-call
+          'subagents :report
+          '(:summary "bad" :outputs [])
+          (list :harness child-harness :session-id child-session-id
+                :turn-id "child-turn"))
+         :type 'user-error)
+        (should-not (e-subagent-registry-reported-p registry subagent-id))
+        (should (eq (e-subagent-registry-status registry subagent-id) 'running))
+        (should-not (plist-member (e-subagent-registry-get registry subagent-id)
+                                  :report-admission))
+        (should
+         (equal
+          (e-actions-call
+           'subagents :report accepted
+           (list :harness child-harness :session-id child-session-id
+                 :turn-id "child-turn"))
+          (e-subagent-registry-get registry subagent-id)))
+        (e-subagent-report registry child-session-id [] "late replacement")
+        (let* ((call (car calls))
+               (assignment (car call)))
+          (should (= (length calls) 2))
+          (should (equal assignment
+                         (list :run-id "run-1" :task-key "review" :attempt 2
+                               :subagent-id subagent-id
+                               :session-id child-session-id
+                               :parent-session-id "parent-1")))
+          (should-not (plist-member assignment :report-admission))
+          (should (equal (cadr call) accepted)))
+        (let ((final (funcall settle 'done :summary "ignored prose")))
+          (should (eq (plist-get final :status) 'done))
+          (should (equal (plist-get final :result-summary)
+                         (plist-get accepted :summary)))
+          (should (equal (plist-get final :outputs)
+                         (plist-get accepted :outputs))))))))
+
+(ert-deftest e-subagent-runner-test-report-admission-is-private-while-pending-and-live ()
+  "The callback stays only in pending/live internal coordination records."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (held (e-subagent-runner-test--deferred-work "held-admission"))
+           (admission (lambda (_assignment report) report)))
+      (e-harness-test-create-session parent :id "parent-1")
+      (cl-letf (((symbol-function 'e-chat-service-create-participant-start)
+                 (lambda (&rest _arguments) held))
+                ((symbol-function 'e-subagent--inherit-prompt-cache-policy)
+                 #'ignore))
+        (let* ((pending
+                (e-subagent-runner-test--spawn-pending
+                 registry parent "parent-1" :type :reviewer :prompt "go"
+                 :report-admission admission
+                 :runner (lambda (&rest _arguments) (list :cancel #'ignore))))
+               (subagent-id (plist-get pending :subagent-id))
+               (internal
+                (gethash subagent-id
+                         (e-subagent-registry-pending-admissions registry))))
+          (should (eq (plist-get internal :report-admission) admission))
+          (should-not (plist-member pending :report-admission))
+          (should-not
+           (plist-member
+            (e-subagent-registry-pending-admission registry subagent-id)
+            :report-admission))
+          (e-work-finish held '(:status admitted))
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (gethash subagent-id (e-subagent-registry-records registry)))
+            5.0))
+          (should
+           (eq (plist-get
+                (gethash subagent-id (e-subagent-registry-records registry))
+                :report-admission)
+               admission))
+          (should-not
+           (plist-member (e-subagent-registry-get registry subagent-id)
+                         :report-admission)))))))
+
+(ert-deftest e-subagent-runner-test-forgotten-admission-does-not-leak-callback ()
+  "Retiring pending coordination returns no report-admission function."
+  (let* ((registry (e-subagent-registry-create))
+         (admission (lambda (_assignment report) report))
+         (subagent-id
+          (e-subagent-registry-reserve-admission
+           registry :session-id "child" :parent-session-id "parent"
+           :report-admission admission))
+         (forgotten
+          (e-subagent-registry-forget-admission registry subagent-id)))
+    (should-not (plist-member forgotten :report-admission))
+    (should-not
+     (e-subagent-registry-pending-admission registry subagent-id))))
+
+(ert-deftest e-subagent-runner-test-admission-required-child-cannot-finish-with-prose ()
+  "A gated child that never reports settles as one explicit failed assignment."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil))
+           terminal-calls)
+      (e-harness-test-create-session parent :id "parent-1")
+      (cl-letf (((symbol-function
+                  'e-board-orchestration-actions-publish-terminal)
+                 (lambda (_target assignment status &rest arguments)
+                   (push (list assignment status arguments) terminal-calls))))
+        (let* ((record
+                (e-subagent-runner-test--spawn
+                 registry parent "parent-1"
+                 :type :reviewer :prompt "go"
+                 :run-id "run-1" :task-key "review" :attempt 0
+                 :report-admission (lambda (_assignment report) report)
+                 :runner (e-subagent-runner-test--capturing-runner captured)))
+               (subagent-id (plist-get record :subagent-id))
+               (handle (e-subagent-registry-work-handle registry subagent-id))
+               (settle (plist-get (car captured) :on-settle))
+               (terminal (funcall settle 'done :summary "final prose only")))
+          (should (eq (plist-get terminal :status) 'failed))
+          (should (string-match-p "accepted report"
+                                  (plist-get terminal :error)))
+          (should (eq (plist-get (e-work-status handle) :state) 'failed))
+          (should (= (length terminal-calls) 1))
+          (should (eq (cadar terminal-calls) 'failed))
+          (should-not (gethash subagent-id
+                               (e-subagent-registry-records registry)))
+          ;; A competing terminal callback cannot publish or settle twice.
+          (should-not (funcall settle 'done :summary "late"))
+          (should (= (length terminal-calls) 1)))))))
+
+(ert-deftest e-subagent-runner-test-report-admission-failure-is-owner-local ()
+  "A gated failure does not prevent an ungated sibling from succeeding."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (failed-captured (list nil))
+           (sibling-captured (list nil)))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((failed
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1" :type :reviewer :prompt "fail"
+               :report-admission (lambda (_assignment _report)
+                                   (user-error "invalid artifact"))
+               :runner
+               (e-subagent-runner-test--capturing-runner failed-captured)))
+             (sibling
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1" :type :reviewer :prompt "succeed"
+               :runner
+               (e-subagent-runner-test--capturing-runner sibling-captured))))
+        (should-error
+         (e-subagent-report registry (plist-get failed :session-id) [] "bad")
+         :type 'user-error)
+        (should
+         (eq (plist-get
+              (funcall (plist-get (car failed-captured) :on-settle) 'done)
+              :status)
+             'failed))
+        (should
+         (eq (plist-get
+              (funcall (plist-get (car sibling-captured) :on-settle)
+                       'done :summary "ok")
+              :status)
+             'done))))))
+
+(ert-deftest e-subagent-runner-test-report-admission-preserves-failure-and-cancellation ()
+  "A gate changes only false success, not genuine failure or cancellation."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (failed-captured (list nil))
+           (cancelled-captured (list nil))
+           (admission (lambda (_assignment report) report)))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((failed
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1" :type :reviewer :prompt "fail"
+               :report-admission admission
+               :runner
+               (e-subagent-runner-test--capturing-runner failed-captured)))
+             (cancelled
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1" :type :reviewer :prompt "cancel"
+               :report-admission admission
+               :runner
+               (e-subagent-runner-test--capturing-runner cancelled-captured)))
+             (failed-handle
+              (e-subagent-registry-work-handle
+               registry (plist-get failed :subagent-id)))
+             (cancelled-handle
+              (e-subagent-registry-work-handle
+               registry (plist-get cancelled :subagent-id))))
+        (let ((failure
+               (funcall (plist-get (car failed-captured) :on-settle)
+                        'failed :error "provider failed"))
+              (cancellation
+               (funcall (plist-get (car cancelled-captured) :on-settle)
+                        'cancelled)))
+          (should (eq (plist-get failure :status) 'failed))
+          (should (equal (plist-get failure :error) "provider failed"))
+          (should (eq (plist-get cancellation :status) 'cancelled))
+          (should (eq (plist-get (e-work-status failed-handle) :state) 'failed))
+          (should (eq (plist-get (e-work-status cancelled-handle) :state)
+                      'cancelled))
+          (should-not
+           (gethash (plist-get failed :subagent-id)
+                    (e-subagent-registry-records registry)))
+          (should-not
+           (gethash (plist-get cancelled :subagent-id)
+                    (e-subagent-registry-records registry))))))))
+
 (ert-deftest e-subagent-runner-test-interrupt-and-shutdown ()
   "Interrupt calls the cancel function and marks the record cancelled."
   (e-subagent-runner-test--with-instances

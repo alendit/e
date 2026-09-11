@@ -48,7 +48,7 @@ List buffers hook onto this to track live subagent status.")
 
 (cl-defun e-subagent-registry-reserve-admission
     (registry &key work-handle type role session-id parent-session-id label
-              schedule run-id task-key attempt)
+              schedule run-id task-key attempt report-admission)
   "Reserve one pending child admission in REGISTRY and return its id.
 The bounded record is process-local coordination only.  It is queryable for
 exact assignment de-duplication, but is not included in the registered child
@@ -65,6 +65,7 @@ list and publishes no Board lifecycle facts."
                        :run-id run-id
                        :task-key task-key
                        :attempt attempt
+                       :report-admission report-admission
                        :work-handle work-handle
                        :created-at (float-time))))
     (puthash subagent-id record
@@ -72,11 +73,11 @@ list and publishes no Board lifecycle facts."
     subagent-id))
 
 (defun e-subagent-registry-forget-admission (registry subagent-id)
-  "Forget SUBAGENT-ID's pending admission record and return it."
+  "Forget SUBAGENT-ID's pending admission and return its normalized snapshot."
   (let ((record (gethash subagent-id
                          (e-subagent-registry-pending-admissions registry))))
     (remhash subagent-id (e-subagent-registry-pending-admissions registry))
-    record))
+    (and record (e-subagent-registry-normalize record))))
 
 (defun e-subagent-registry--record (registry subagent-id)
   "Return the mutable internal record SUBAGENT-ID from REGISTRY, or signal."
@@ -110,7 +111,7 @@ list and publishes no Board lifecycle facts."
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
               child-harness run-id task-key attempt
-              subagent-id work-handle)
+              subagent-id work-handle report-admission)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
 progresses.  CHILD-HARNESS is the live harness running the child, stored
@@ -122,7 +123,13 @@ internally so steer/read reach the child session on its own harness."
       (unless (and reservation
                    (eq work-handle (plist-get reservation :work-handle)))
         (signal 'e-subagent-registry-error
-                (list "Subagent admission reservation changed" subagent-id)))))
+                (list "Subagent admission reservation changed" subagent-id)))
+      (let ((reserved-admission (plist-get reservation :report-admission)))
+        (when (and report-admission
+                   (not (eq report-admission reserved-admission)))
+          (signal 'e-subagent-registry-error
+                  (list "Subagent report admission changed" subagent-id)))
+        (setq report-admission reserved-admission))))
   (let* ((subagent-id (or subagent-id
                           (e-subagent-registry--next-id registry)))
          (record (list :subagent-id subagent-id
@@ -137,6 +144,7 @@ internally so steer/read reach the child session on its own harness."
                        :run-id run-id
                        :task-key task-key
                        :attempt attempt
+                       :report-admission report-admission
                        :work-handle work-handle
                        :result-summary nil
                        :outputs nil
@@ -261,6 +269,13 @@ they have no committed child registration or published lifecycle fact."
 (defun e-subagent-registry-reported-p (registry subagent-id)
   "Return non-nil when SUBAGENT-ID has a child-reported structured result."
   (plist-get (e-subagent-registry--record registry subagent-id) :reported))
+
+(defun e-subagent-registry--report-admission (registry subagent-id)
+  "Return SUBAGENT-ID's process-local report-admission function, or nil.
+This is private live-registry coordination; normalized records and
+pending/public query results omit the callback."
+  (plist-get (e-subagent-registry--record registry subagent-id)
+             :report-admission))
 
 (defun e-subagent-registry-status (registry subagent-id)
   "Return the status symbol for SUBAGENT-ID in REGISTRY."

@@ -327,6 +327,48 @@ finished result carries the compact summary and outputs."
                                       "Subagent turn failed"))))
       ('cancelled (e-work-cancel handle)))))
 
+(defconst e-subagent--missing-admitted-report-error
+  "Subagent completed without an accepted report"
+  "Bounded terminal error for a gated child that reports only final prose.")
+
+(defun e-subagent--report-assignment (record)
+  "Return RECORD's detached child assignment for report admission."
+  (list :run-id (plist-get record :run-id)
+        :task-key (plist-get record :task-key)
+        :attempt (plist-get record :attempt)
+        :subagent-id (plist-get record :subagent-id)
+        :session-id (plist-get record :session-id)
+        :parent-session-id (plist-get record :parent-session-id)))
+
+(defun e-subagent--effective-settlement (registry subagent-id status args)
+  "Return effective (STATUS . ARGS) for SUBAGENT-ID's runner settlement.
+A gated child cannot translate final prose into success.  An accepted report
+also supplies the exact result observed by its work handle, independently of
+later final prose."
+  (let ((record (gethash subagent-id
+                         (e-subagent-registry-records registry))))
+    (cond
+     ((and record
+           (eq status 'done)
+           (plist-get record :report-admission)
+           (not (plist-get record :reported)))
+      (cons 'failed
+            (list :error e-subagent--missing-admitted-report-error)))
+     ((and record (eq status 'done) (plist-get record :reported))
+      (cons status
+            (list :summary (plist-get record :result-summary)
+                  :outputs (plist-get record :outputs))))
+     (t (cons status args)))))
+
+(defun e-subagent--settle-runner
+    (registry target subagent-id work-handle status args)
+  "Settle runner STATUS and ARGS through the report-admission boundary."
+  (pcase-let* ((`(,status . ,args)
+                (e-subagent--effective-settlement
+                 registry subagent-id status args)))
+    (e-subagent--settle-work-handle work-handle status args)
+    (apply #'e-subagent--settle registry target subagent-id status args)))
+
 (defun e-subagent--durable-assignment (record)
   "Return RECORD's persisted orchestration assignment, or nil."
   (when-let ((run-id (plist-get record :run-id)))
@@ -352,10 +394,13 @@ A child-reported structured result is authoritative: once reported, later
 chatter never overwrites the recorded summary or outputs.  Publish the durable
 terminal facts, then remove all live execution coordination.  A competing late
 terminal callback is a no-op."
-  (when-let* ((record (gethash subagent-id
-                               (e-subagent-registry-records registry))))
-    (when (memq (plist-get record :status) '(queued running blocked))
-      (let* ((reported (plist-get record :reported))
+  (pcase-let* ((`(,status . ,args)
+                (e-subagent--effective-settlement
+                 registry subagent-id status args)))
+    (when-let* ((record (gethash subagent-id
+                                 (e-subagent-registry-records registry))))
+      (when (memq (plist-get record :status) '(queued running blocked))
+        (let* ((reported (plist-get record :reported))
            (finished-at (float-time))
            (fields (list :status status
                          :finished-at finished-at
@@ -376,7 +421,7 @@ terminal callback is a no-op."
                 (e-subagent--publish-lifecycle target terminal)
                 (e-subagent--publish-terminal-report target terminal status)
                 terminal)
-            (e-subagent-registry-remove registry subagent-id)))))))
+              (e-subagent-registry-remove registry subagent-id))))))))
 
 (defun e-subagent--drive-turn
     (registry publication-target subagent-id
@@ -421,26 +466,27 @@ immediately before invoking RUNNER.  Return RUNNER's handle plist.  Shared by
                    (funcall runner
                             child-harness session-id prompt seed-messages
                             (lambda (status &rest args)
-                              (e-subagent--settle-work-handle work-handle status args)
-                              (apply #'e-subagent--settle
-                                     registry publication-target
-                                     subagent-id status args))
+                              (e-subagent--settle-runner
+                               registry publication-target subagent-id
+                               work-handle status args))
                             (lambda (event)
                               (e-subagent--record-progress
                                registry subagent-id work-handle event)))
                  (funcall runner
                           child-harness session-id prompt seed-messages
                           (lambda (status &rest args)
-                            (e-subagent--record-progress
-                             registry subagent-id work-handle
-                             (pcase status
-                               ('done 'turn-finished)
-                               ('failed 'turn-failed)
-                               ('cancelled 'turn-cancelled)))
-                            (e-subagent--settle-work-handle work-handle status args)
-                            (apply #'e-subagent--settle
-                                   registry publication-target
-                                   subagent-id status args))))))
+                            (when (gethash
+                                   subagent-id
+                                   (e-subagent-registry-records registry))
+                              (e-subagent--record-progress
+                               registry subagent-id work-handle
+                               (pcase status
+                                 ('done 'turn-finished)
+                                 ('failed 'turn-failed)
+                                 ('cancelled 'turn-cancelled))))
+                            (e-subagent--settle-runner
+                             registry publication-target subagent-id
+                             work-handle status args))))))
           (when (and (listp handle) (functionp (plist-get handle :cancel)))
             (e-subagent-registry-update registry subagent-id
                                         :cancel (plist-get handle :cancel)))
@@ -455,7 +501,7 @@ immediately before invoking RUNNER.  Return RUNNER's handle plist.  Shared by
 (cl-defun e-subagent-spawn
     (registry parent-harness parent-session-id
               &key source-turn-id type prompt seed-messages label schedule runner
-              run-id task-key attempt on-running on-failure)
+              run-id task-key attempt report-admission on-running on-failure)
   "Spawn a subagent of TYPE under a parent lineage and return its record.
 REGISTRY tracks the child.  PARENT-HARNESS and PARENT-SESSION-ID identify the
 spawning session, whose lineage the child inherits so they share one tmp root.
@@ -463,7 +509,9 @@ SOURCE-TURN-ID is the parent turn that initiated the child.  PROMPT is the
 child's task.  RUN-ID, TASK-KEY, and ATTEMPT optionally bind the child to one
 durable orchestration assignment.  SEED-MESSAGES are optional explicit context
 messages.  LABEL is a human-scannable stub.  SCHEDULE is `direct' (default) or
-`queue'.  RUNNER overrides the default direct-turn runner for tests; it is
+`queue'.  REPORT-ADMISSION is an optional process-local function called with a
+detached assignment and proposed report before the report becomes authoritative.
+RUNNER overrides the default direct-turn runner for tests; it is
 called as (CHILD-HARNESS CHILD-SESSION-ID PROMPT SEED-MESSAGES ON-SETTLE) and
 returns a handle plist carrying `:cancel'.  Before durable admission settles,
 return a bounded pending result and retain one bounded admission-coordination
@@ -506,7 +554,8 @@ its own terminal assignment without blocking spawn."
            :session-id child-session-id
            :parent-session-id parent-session-id
            :label label :schedule schedule
-           :run-id run-id :task-key task-key :attempt attempt))
+           :run-id run-id :task-key task-key :attempt attempt
+           :report-admission report-admission))
          (pending
           (e-subagent--pending-result
            subagent-id child-session-id work-handle))
@@ -543,7 +592,8 @@ its own terminal assignment without blocking spawn."
                            :parent-session-id parent-session-id
                            :label label :schedule schedule
                            :child-harness child-harness
-                           :run-id run-id :task-key task-key :attempt attempt))
+                           :run-id run-id :task-key task-key :attempt attempt
+                           :report-admission report-admission))
                     (e-subagent--publish-lifecycle producer-target admitted-result)
                     (e-subagent--inherit-prompt-cache-policy
                      parent-harness parent-session-id
@@ -675,11 +725,27 @@ cannot overwrite it.  Return the normalized record, or nil when SESSION-ID is
 not a tracked child."
   (when-let* ((record (e-subagent-registry-find-by-session registry session-id))
               (subagent-id (plist-get record :subagent-id)))
-    (e-subagent-registry-update
-     registry subagent-id
-     :reported t
-     :outputs outputs
-     :result-summary summary)))
+    (if (e-subagent-registry-reported-p registry subagent-id)
+        record
+      (let* ((proposed (list :summary summary :outputs outputs))
+             (admission
+              (e-subagent-registry--report-admission registry subagent-id))
+             (accepted
+              (if admission
+                  (funcall admission
+                           (e-subagent--report-assignment record)
+                           proposed)
+                proposed)))
+        (unless (and (listp accepted)
+                     (plist-member accepted :summary)
+                     (plist-member accepted :outputs))
+          (signal 'e-subagent-registry-error
+                  (list "Report admission returned an invalid report")))
+        (e-subagent-registry-update
+         registry subagent-id
+         :reported t
+         :outputs (plist-get accepted :outputs)
+         :result-summary (plist-get accepted :summary))))))
 
 (defun e-subagent--record-intervention
     (registry publication-target subagent-id action reason)
