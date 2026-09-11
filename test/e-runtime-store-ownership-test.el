@@ -18,6 +18,10 @@
                     (file-name-directory (or load-file-name buffer-file-name)))
   "Directory from which disposable claimants load the private claim module.")
 
+(defconst e-runtime-store-ownership-test--file
+  (expand-file-name (or load-file-name buffer-file-name))
+  "Absolute path of this test source for disposable child processes.")
+
 (defun e-runtime-store-ownership-test--write (file value)
   "Write exact Lisp VALUE to disposable FILE."
   (let ((coding-system-for-write 'utf-8-unix))
@@ -28,6 +32,55 @@
   (with-temp-buffer
     (insert-file-contents file)
     (read (current-buffer))))
+
+(defun e-runtime-store-ownership-test--direct-sibling-attacker ()
+  "Try to borrow the owner's claim using only filesystem-visible identity."
+  (condition-case nil
+      (let* ((directory (getenv "E_BORROW_DIRECTORY"))
+             (database-file (expand-file-name "store.sqlite3" directory))
+             (metadata
+              (e-runtime-store-ownership--read-metadata database-file))
+             (lock (e-runtime-store-ownership--parse-lock database-file))
+             (actual-parent-pid
+              (e-runtime-store-ownership--current-parent-pid))
+             (forged-claim
+              (e-runtime-store-ownership-claim--create
+               :database-file database-file
+               :metadata-file
+               (e-runtime-store-ownership--metadata-file database-file)
+               :runtime-id (plist-get metadata :runtime-id)
+               :role 'offline :pid (plist-get metadata :pid)
+               :process-start (plist-get metadata :process-start)
+               :metadata metadata)))
+        (unless (and metadata lock
+                     (= (or actual-parent-pid -1)
+                        (or (plist-get metadata :pid) -2)))
+          (error "Sibling could not inspect the shared ownership identity"))
+        ;; This is the narrow library boundary under test.  The sibling can
+        ;; reconstruct every disk-visible field, but it cannot receive the
+        ;; owner's private control-pipe authorization for the selected worker.
+        (let ((store
+               (e-runtime-store-open-under-offline-claim
+                directory forged-claim :runtime-id "forged-sibling")))
+          (e-runtime-store-ownership-test--wait-ready store)
+          (ignore-errors (e-runtime-store-close store)))
+        (kill-emacs 0))
+    (e-runtime-store-owner-identity-conflict (kill-emacs 93))
+    (error (kill-emacs 94))))
+
+(defun e-runtime-store-ownership-test--unauthorized-direct-worker ()
+  "Run a direct worker sibling and expose whether it reaches `sqlite-open'."
+  (let ((real-sqlite-open (symbol-function 'sqlite-open))
+        (marker (getenv "E_BORROW_SQLITE_OPEN_MARKER")))
+    (condition-case nil
+        (cl-letf (((symbol-function 'sqlite-open)
+                   (lambda (&rest arguments)
+                     (write-region "opened" nil marker nil 'silent)
+                     (apply real-sqlite-open arguments))))
+          (e-runtime-store-worker-main)
+          (kill-emacs 0))
+      (e-runtime-store-owner-identity-conflict (kill-emacs 93))
+      (error (kill-emacs 94)))))
 
 (defun e-runtime-store-ownership-test--wait-for (predicate)
   "Return non-nil when PREDICATE succeeds within a short deterministic wait."
@@ -414,6 +467,217 @@
                                    sqlite-close release)))))
       (delete-directory directory t))))
 
+(ert-deftest e-runtime-store-s92-offline-parent-lends-one-exact-claim ()
+  "A borrowed ordinary worker neither duplicates nor releases its parent claim."
+  (let* ((directory (make-temp-file "e-runtime-store-borrowed-parent-" t))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         (initial (e-runtime-store-open directory))
+         claim borrowed)
+    (unwind-protect
+        (progn
+          (e-runtime-store-ownership-test--wait-ready initial)
+          (e-runtime-store-close initial)
+          (setq initial nil
+                claim (e-runtime-store-ownership-acquire
+                       database-file "offline-repair-test" 'offline)
+                borrowed
+                (e-runtime-store-open-under-offline-claim
+                 directory claim :runtime-id "borrowed-worker-test"))
+          (e-runtime-store-ownership-test--wait-ready borrowed)
+          (should-error
+           (e-runtime-store-ownership-acquire
+            database-file "unrelated-owner" 'ordinary)
+           :type 'e-runtime-store-owner-active)
+          (e-runtime-store-close borrowed)
+          (setq borrowed nil)
+          (should (eq (file-locked-p database-file) t))
+          (should (equal (e-runtime-store-ownership--read-metadata database-file)
+                         (e-runtime-store-ownership-claim--metadata claim))))
+      (when initial (ignore-errors (e-runtime-store-close initial)))
+      (when borrowed (ignore-errors (e-runtime-store-close borrowed)))
+      (when claim (e-runtime-store-ownership-release claim))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-store-s92-borrow-authorization-is-consumed-once ()
+  "One private worker authorization cannot permit a second borrowed open."
+  (let ((e-runtime-store-worker--borrow-authorization 'authorization))
+    (cl-letf (((symbol-function
+                'e-runtime-store-ownership--verify-borrow-authorization)
+               (lambda (_database authorization)
+                 (should (eq authorization 'authorization))
+                 t)))
+      (should
+       (e-runtime-store-worker--consume-borrow-authorization "/tmp/store"))
+      (should-error
+       (e-runtime-store-worker--consume-borrow-authorization "/tmp/store")
+       :type 'e-runtime-store-owner-identity-conflict))))
+
+(ert-deftest e-runtime-store-s92-public-open-rejects-borrow-injection ()
+  "The ordinary public open contract has no borrowed-ownership injection."
+  (let ((directory (make-temp-file "e-runtime-store-public-borrow-" t)))
+    (unwind-protect
+        (should-error
+         (e-runtime-store-open directory :borrowed-ownership 'forged))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-store-s92-borrow-authorization-has-no-disk-credential ()
+  "Offline borrowing exposes no replayable descriptor or token-file API."
+  (dolist (symbol '(e-runtime-store-ownership--write-borrow-token
+                    e-runtime-store-ownership--issue-borrowed-child
+                    e-runtime-store-ownership--revoke-borrowed-child
+                    e-runtime-store-ownership--read-borrow-token
+                    e-runtime-store-ownership--verify-borrowed-parent
+                    e-runtime-store--borrowed-ownership))
+    (should-not (fboundp symbol))))
+
+(ert-deftest e-runtime-store-s92-direct-sibling-cannot-borrow-selected-worker-claim ()
+  "A direct sibling sees disk identity but not the selected worker's handshake."
+  (let* ((directory (make-temp-file "e-runtime-store-borrowed-sibling-" t))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         (initial (e-runtime-store-open directory))
+         claim borrowed)
+    (unwind-protect
+        (progn
+          (e-runtime-store-ownership-test--wait-ready initial)
+          (e-runtime-store-close initial)
+          (setq initial nil
+                claim (e-runtime-store-ownership-acquire
+                       database-file "offline-repair-test" 'offline)
+                borrowed
+                (e-runtime-store-open-under-offline-claim
+                 directory claim :runtime-id "selected-borrowed-worker"))
+          (e-runtime-store-ownership-test--wait-ready borrowed)
+          (should-not
+           (seq-find
+            (lambda (file) (string-match-p "\\.borrow-" file))
+            (directory-files directory)))
+          (let ((process-environment (copy-sequence process-environment)))
+            (setenv "E_BORROW_DIRECTORY" directory)
+            ;; `process-file' makes this Emacs a true direct child of the same
+            ;; claim-owning parent as the selected runtime worker.
+            (should
+             (= 93
+                (process-file
+                 (expand-file-name invocation-name invocation-directory)
+                 nil nil nil "-Q" "--batch" "-L"
+                 e-runtime-store-ownership-test--core-directory
+                 "--eval" "(setq load-prefer-newer t)"
+                 "-l" e-runtime-store-ownership-test--file
+                 "--funcall"
+                 "e-runtime-store-ownership-test--direct-sibling-attacker")))))
+      (when initial (ignore-errors (e-runtime-store-close initial)))
+      (when borrowed (ignore-errors (e-runtime-store-close borrowed)))
+      (when claim (e-runtime-store-ownership-release claim))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-store-s92-direct-worker-needs-private-pipe-authorization ()
+  "A direct worker sibling cannot open from the borrowed marker alone."
+  (let* ((directory (make-temp-file "e-runtime-store-borrowed-worker-" t))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         (input-file (expand-file-name "unauthorized-open.input" directory))
+         (sqlite-open-marker
+          (expand-file-name "unauthorized-sqlite-opened" directory))
+         (initial (e-runtime-store-open directory))
+         claim borrowed)
+    (unwind-protect
+        (progn
+          (e-runtime-store-ownership-test--wait-ready initial)
+          (e-runtime-store-close initial)
+          (setq initial nil
+                claim (e-runtime-store-ownership-acquire
+                       database-file "offline-repair-test" 'offline)
+                borrowed
+                (e-runtime-store-open-under-offline-claim
+                 directory claim :runtime-id "selected-borrowed-worker"))
+          (e-runtime-store-ownership-test--wait-ready borrowed)
+          (let ((open-request
+                 (list :id "unauthorized-open" :kind 'open
+                       :directory directory :runtime-id "direct-sibling"
+                       :access-mode 'read-write
+                       :parent-identity (e-runtime-store--parent-identity)
+                       :borrowed-authorized t)))
+            (write-region (e-runtime-store--pack open-request)
+                          nil input-file nil 'silent))
+          (let ((process-environment (copy-sequence process-environment))
+                (output (generate-new-buffer
+                         " *e-runtime-store-unauthorized-worker*")))
+            (unwind-protect
+                (progn
+                  (setenv "E_BORROW_SQLITE_OPEN_MARKER" sqlite-open-marker)
+                  ;; This is a second direct child of the claim owner, just
+                  ;; like the selected worker, but its private input contains
+                  ;; only an open.  Protocol errors are returned normally.
+                  (should
+                   (= 0
+                      (process-file
+                       (expand-file-name invocation-name invocation-directory)
+                       input-file output nil "-Q" "--batch" "-L"
+                       e-runtime-store-ownership-test--core-directory
+                       "--eval" "(setq load-prefer-newer t)"
+                       "-l" e-runtime-store-ownership-test--file
+                       "--funcall"
+                       "e-runtime-store-ownership-test--unauthorized-direct-worker")))
+                  (with-current-buffer output
+                    (goto-char (point-min))
+                    (let ((response
+                           (e-runtime-store--unpack
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position)))))
+                      (should-not (plist-get response :ok))
+                      (should
+                       (eq (plist-get response :error-symbol)
+                           'e-runtime-store-owner-identity-conflict)))))
+              (kill-buffer output)))
+          (should-not (file-exists-p sqlite-open-marker)))
+      (when initial (ignore-errors (e-runtime-store-close initial)))
+      (when borrowed (ignore-errors (e-runtime-store-close borrowed)))
+      (when claim (e-runtime-store-ownership-release claim))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-store-s92-current-lock-missing-metadata-fails-closed ()
+  "A same-process current-boot lock remains live without adjacent metadata."
+  (let* ((directory (make-temp-file "e-runtime-store-missing-owner-" t))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         claim)
+    (unwind-protect
+        (progn
+          (with-temp-file database-file)
+          (setq claim
+                (e-runtime-store-ownership-acquire
+                 database-file "current-owner" 'offline))
+          (delete-file (e-runtime-store-ownership--metadata-file database-file))
+          (should-error
+           (e-runtime-store-ownership-acquire
+            database-file "replacement" 'ordinary)))
+      (when claim
+        (e-runtime-store-ownership--write-metadata
+         database-file (e-runtime-store-ownership-claim--metadata claim))
+        (e-runtime-store-ownership-release claim))
+      (delete-directory directory t))))
+
+(ert-deftest e-runtime-store-s92-current-lock-corrupt-metadata-fails-closed ()
+  "A same-process current-boot lock remains live with corrupt metadata."
+  (let* ((directory (make-temp-file "e-runtime-store-corrupt-owner-" t))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         claim)
+    (unwind-protect
+        (progn
+          (with-temp-file database-file)
+          (setq claim
+                (e-runtime-store-ownership-acquire
+                 database-file "current-owner" 'offline))
+          (with-temp-file
+              (e-runtime-store-ownership--metadata-file database-file)
+            (insert "not-a-plist"))
+          (should-error
+           (e-runtime-store-ownership-acquire
+            database-file "replacement" 'ordinary)))
+      (when claim
+        (e-runtime-store-ownership--write-metadata
+         database-file (e-runtime-store-ownership-claim--metadata claim))
+        (e-runtime-store-ownership-release claim))
+      (delete-directory directory t))))
+
 (ert-deftest e-runtime-store-s92-offline-closes-before-shared-release ()
   "The offline upgrade claims before its first SQLite open and releases last."
   (let* ((directory (make-temp-file "e-runtime-store-offline-order-" t))
@@ -432,7 +696,7 @@
                    "UPDATE store_meta SET value='4' WHERE key='schema_version'")
                   (sqlite-execute
                    database
-                   "DELETE FROM schema_migrations WHERE version=5")
+                   "DELETE FROM schema_migrations WHERE version>=5")
                   (sqlite-execute database "DROP TABLE runtime_store_receipts")
                   (sqlite-execute database "DROP TABLE runtime_store_state"))
               (sqlite-close database)))

@@ -63,6 +63,8 @@
 (defvar e-runtime-store-worker--runtime-id nil)
 (defvar e-runtime-store-worker--ownership nil)
 (defvar e-runtime-store-worker--access-mode 'read-write)
+(defvar e-runtime-store-worker--borrow-authorization nil
+  "One private parent-pipe authorization awaiting one borrowed open.")
 
 (defun e-runtime-store-worker--test-fault (point &optional request)
   "Terminate at private test POINT when the one-shot worker seam requests it.
@@ -174,7 +176,7 @@ bounded result payload for idempotent replay."
                       (and e-runtime-store-worker--ownership
                            (e-runtime-store-ownership-claim--metadata-file
                             e-runtime-store-worker--ownership))))
-    (when (file-exists-p file)
+    (when (and file (file-exists-p file))
       (set-file-modes file #o600))))
 
 (defun e-runtime-store-worker--close ()
@@ -182,7 +184,8 @@ bounded result payload for idempotent replay."
   (unwind-protect
       (when e-runtime-store-worker--database
         (sqlite-close e-runtime-store-worker--database))
-    (setq e-runtime-store-worker--database nil)
+    (setq e-runtime-store-worker--database nil
+          e-runtime-store-worker--borrow-authorization nil)
     (when e-runtime-store-worker--ownership
       (unwind-protect
           (e-runtime-store-ownership-release e-runtime-store-worker--ownership)
@@ -454,8 +457,52 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
        (ignore-errors (sqlite-execute e-runtime-store-worker--database "ROLLBACK"))
        (signal (car err) (cdr err))))))
 
+(defun e-runtime-store-worker--install-borrow-authorization (request)
+  "Install REQUEST's private one-use borrowed-open authorization.
+
+The worker main loop calls this only for the control frame arriving on its
+private standard-input pipe.  It deliberately produces no protocol response:
+the following ordered open frame is the sole observable acknowledgement."
+  (let ((keys nil)
+        (cursor request))
+    (while (consp cursor)
+      (push (pop cursor) keys)
+      (pop cursor))
+    (unless (and (null cursor)
+                 (equal (sort keys
+                              (lambda (left right)
+                                (string< (symbol-name left)
+                                         (symbol-name right))))
+                        '(:authorization :kind))
+                 (eq (plist-get request :kind) 'borrow-authorize)
+                 (null e-runtime-store-worker--database)
+                 (null e-runtime-store-worker--borrow-authorization))
+      (signal 'e-runtime-store-owner-identity-conflict
+              (list "Borrow authorization control is invalid or repeated")))
+    (let* ((authorization (plist-get request :authorization))
+           (database-file (plist-get authorization :database-file)))
+      (unless (stringp database-file)
+        (signal 'e-runtime-store-owner-identity-conflict
+                (list "Borrow authorization has no database identity")))
+      (e-runtime-store-ownership--verify-borrow-authorization
+       database-file authorization)
+      (setq e-runtime-store-worker--borrow-authorization authorization))))
+
+(defun e-runtime-store-worker--consume-borrow-authorization (database-file)
+  "Consume and verify this worker's authorization for DATABASE-FILE once."
+  (let ((authorization e-runtime-store-worker--borrow-authorization))
+    ;; Clear before verification so neither success nor a caught failure can
+    ;; replay the private control in this process.
+    (setq e-runtime-store-worker--borrow-authorization nil)
+    (unless authorization
+      (signal 'e-runtime-store-owner-identity-conflict
+              (list "Borrowed open has no private parent authorization")))
+    (e-runtime-store-ownership--verify-borrow-authorization
+     database-file authorization)))
+
 (defun e-runtime-store-worker--open
-    (directory runtime-id &optional parent-identity access-mode)
+    (directory runtime-id &optional parent-identity access-mode
+               borrowed-authorized)
   "Open DIRECTORY for RUNTIME-ID under scheduler PARENT-IDENTITY."
   (unless (sqlite-available-p)
     (signal 'e-runtime-store-worker-error (list "SQLite is unavailable")))
@@ -471,11 +518,17 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
   (when (eq access-mode 'read-write)
     (make-directory directory t)
     (set-file-modes directory #o700)
-    ;; The writer owns runtime lifecycle.  Its read-only sibling is subordinate
-    ;; to the same parent and never competes for this exclusive claim.
-    (setq e-runtime-store-worker--ownership
-          (e-runtime-store-ownership-acquire
-           e-runtime-store-worker--database-file runtime-id 'ordinary)))
+    (if borrowed-authorized
+        ;; An explicit offline parent already owns the one process-lifetime
+        ;; lock.  Consume the private control-pipe authorization before SQLite
+        ;; opens; this child never releases the borrowed claim.
+        (e-runtime-store-worker--consume-borrow-authorization
+         e-runtime-store-worker--database-file)
+      ;; The writer owns runtime lifecycle.  Its read-only sibling is subordinate
+      ;; to the same parent and never competes for this exclusive claim.
+      (setq e-runtime-store-worker--ownership
+            (e-runtime-store-ownership-acquire
+             e-runtime-store-worker--database-file runtime-id 'ordinary))))
   (let ((opened nil))
     (unwind-protect
         (let ((new-store-p
@@ -1182,7 +1235,8 @@ multi-statement consumer-shaped adapters return one database-issued boundary."
     ('open (e-runtime-store-worker--open
             (plist-get request :directory) (plist-get request :runtime-id)
             (plist-get request :parent-identity)
-            (plist-get request :access-mode)))
+            (plist-get request :access-mode)
+            (plist-get request :borrowed-authorized)))
     ('close (if (eq e-runtime-store-worker--access-mode 'read-only)
                 (list :runtime-id e-runtime-store-worker--runtime-id
                       :retired t :read-only t)
@@ -1254,11 +1308,13 @@ look retry-safe to the parent."
           ;; Every delimiter terminates one request.  A blank frame is corrupt,
           ;; not an idle keepalive: let the normal decode-error response reach
           ;; the parent, which then freezes with its active request as cause.
-          (let* ((request (condition-case err
-                              (e-runtime-store-worker--unpack line)
-                            (error (list :decode-error err))))
-                 (response (e-runtime-store-worker--response request)))
-            (e-runtime-store-worker--emit-response request response)))
+          (let ((request (condition-case err
+                             (e-runtime-store-worker--unpack line)
+                           (error (list :decode-error err)))))
+            (if (eq (plist-get request :kind) 'borrow-authorize)
+                (e-runtime-store-worker--install-borrow-authorization request)
+              (e-runtime-store-worker--emit-response
+               request (e-runtime-store-worker--response request)))))
       (e-runtime-store-worker--close))))
 
 (provide 'e-runtime-store-worker)

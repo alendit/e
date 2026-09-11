@@ -65,6 +65,22 @@ platform that cannot expose PID 1 attributes."
     ;; stable, process-independent comparison token.
     (secure-hash 'sha256 marker)))
 
+(defvar e-runtime-store-ownership--current-lock-boot nil
+  "Emacs lock-file boot discriminator for the current host boot.")
+
+(defun e-runtime-store-ownership--current-lock-boot ()
+  "Return Emacs' numeric lock discriminator for the current host boot."
+  (or e-runtime-store-ownership--current-lock-boot
+      (let ((probe (make-temp-file "e-runtime-store-lock-boot-")))
+        (unwind-protect
+            (progn
+              (lock-file probe)
+              (setq e-runtime-store-ownership--current-lock-boot
+                    (plist-get (e-runtime-store-ownership--parse-lock probe)
+                               :boot)))
+          (ignore-errors (unlock-file probe))
+          (ignore-errors (delete-file probe))))))
+
 (cl-defstruct (e-runtime-store-ownership-claim
                (:constructor e-runtime-store-ownership-claim--create)
                (:predicate e-runtime-store-ownership-claim-p)
@@ -101,6 +117,18 @@ platform that cannot expose PID 1 attributes."
 (defun e-runtime-store-ownership--process-start (attributes)
   "Return the process start identity recorded in ATTRIBUTES."
   (alist-get 'start attributes))
+
+(defun e-runtime-store-ownership--current-parent-pid ()
+  "Return this Emacs process's positive OS parent PID, or nil.
+
+GNU Emacs exposes the `ppid' process attribute on supported macOS and Linux.
+Borrowed ownership fails closed when that kernel identity is unavailable."
+  (when-let* ((attributes
+               (e-runtime-store-ownership--process-attributes (emacs-pid)))
+              (parent-pid (alist-get 'ppid attributes))
+              ((integerp parent-pid))
+              ((> parent-pid 0)))
+    parent-pid))
 
 (defun e-runtime-store-ownership--process-arguments (attributes)
   "Return a bounded command representation from process ATTRIBUTES."
@@ -300,6 +328,18 @@ The adjacent metadata is written only after Emacs' file lock succeeds."
          (metadata (e-runtime-store-ownership--metadata runtime-id role))
          (lock-held nil)
          claim)
+    ;; Emacs' primitive treats a second lock by the same process as reentrant.
+    ;; Runtime ownership does not: allowing it would let one local caller
+    ;; overwrite the metadata for a still-live claim and later unlock it.
+    (when (eq (file-locked-p database-file) t)
+      (let ((lock (e-runtime-store-ownership--parse-lock database-file)))
+        ;; A recycled PID or prior-boot lock remains stale and must follow the
+        ;; established lock-file recovery path below.
+        (when (and (e-runtime-store-ownership--local-lock-p lock)
+                   (= (or (plist-get lock :pid) -1) (emacs-pid))
+                   (equal (plist-get lock :boot)
+                          (e-runtime-store-ownership--current-lock-boot)))
+          (e-runtime-store-ownership--signal-contention database-file))))
     (e-runtime-store-ownership--acquire-lock database-file)
     (setq lock-held t)
     (unwind-protect
@@ -324,6 +364,110 @@ The adjacent metadata is written only after Emacs' file lock succeeds."
           claim)
       (when lock-held
         (unlock-file database-file)))))
+
+(defun e-runtime-store-ownership--borrow-parent-identity (claim)
+  "Return the verified parent identity for offline ownership CLAIM."
+  (unless (and (e-runtime-store-ownership-claim-p claim)
+               (eq (e-runtime-store-ownership-claim--role claim) 'offline))
+    (signal 'wrong-type-argument
+            (list 'e-runtime-store-offline-ownership-claim-p claim)))
+  (let* ((database-file
+          (e-runtime-store-ownership-claim--database-file claim))
+         (metadata (e-runtime-store-ownership-claim--metadata claim)))
+    (unless (and (eq (file-locked-p database-file) t)
+                 (= (or (plist-get metadata :pid) -1) (emacs-pid))
+                 (equal metadata
+                        (e-runtime-store-ownership--read-metadata database-file))
+                 (equal (plist-get metadata :process-start)
+                        (e-runtime-store-ownership--current-process-start)))
+      (signal 'e-runtime-store-owner-identity-conflict
+              (list "Offline ownership claim is no longer held by this process"
+                    :database-file database-file)))
+    (list :boot (e-runtime-store-ownership--host-boot-id)
+          :database-file database-file
+          :parent-pid (plist-get metadata :pid)
+          :parent-process-start (plist-get metadata :process-start)
+          :parent-runtime-id (plist-get metadata :runtime-id)
+          :role 'offline)))
+
+(defun e-runtime-store-ownership--make-borrow-authorization (claim child-pid)
+  "Return private pipe authorization for exact CHILD-PID beneath CLAIM.
+
+The caller must send this value only through the selected worker's private
+standard-input pipe.  It is never an argv, environment, filesystem, or open
+request value."
+  (unless (and (integerp child-pid) (> child-pid 0))
+    (signal 'wrong-type-argument (list 'positive-integer-p child-pid)))
+  (let* ((parent (e-runtime-store-ownership--borrow-parent-identity claim))
+         (nonce
+          (secure-hash
+           'sha256
+           (format "%S:%S:%S:%S" parent child-pid
+                   (float-time) (random most-positive-fixnum))))
+         (authorization
+          (append parent (list :child-pid child-pid :nonce nonce))))
+    authorization))
+
+(defun e-runtime-store-ownership--verify-borrow-authorization
+    (database-file authorization)
+  "Verify private pipe AUTHORIZATION for DATABASE-FILE's live parent claim.
+
+The selected child calls this before SQLite opens.  The parent retains and
+later releases the one authoritative lock; the child never releases borrowed
+ownership."
+  (let* ((keys nil)
+         (cursor authorization))
+    (while (consp cursor)
+      (push (pop cursor) keys)
+      (pop cursor))
+    (unless (and (null cursor)
+                 (equal (sort keys
+                              (lambda (left right)
+                                (string< (symbol-name left)
+                                         (symbol-name right))))
+                        '(:boot :child-pid :database-file :nonce :parent-pid
+                          :parent-process-start :parent-runtime-id :role)))
+      (signal 'e-runtime-store-owner-identity-conflict
+              (list "Borrow authorization has invalid shape")))
+    (let* ((database-file (expand-file-name database-file))
+           (child-pid (plist-get authorization :child-pid))
+           (lock (e-runtime-store-ownership--parse-lock database-file))
+           (metadata (e-runtime-store-ownership--read-metadata database-file))
+           (pid (plist-get authorization :parent-pid))
+           (actual-parent-pid
+            (e-runtime-store-ownership--current-parent-pid))
+           (attributes (e-runtime-store-ownership--process-attributes pid)))
+      (unless
+          (and (eq (plist-get authorization :role) 'offline)
+               (equal (plist-get authorization :database-file) database-file)
+               (integerp child-pid)
+               (= child-pid (emacs-pid))
+               (integerp actual-parent-pid)
+               (= actual-parent-pid pid)
+               (stringp (plist-get authorization :nonce))
+               (string-match-p "\\`[[:xdigit:]]\\{64\\}\\'"
+                               (plist-get authorization :nonce))
+               (equal (plist-get authorization :boot)
+                      (e-runtime-store-ownership--host-boot-id))
+               (e-runtime-store-ownership--local-lock-p lock)
+               (= (or (plist-get lock :pid) -1) pid)
+               attributes
+               (equal (e-runtime-store-ownership--process-start attributes)
+                      (plist-get authorization :parent-process-start))
+               (equal metadata
+                      (list :runtime-id
+                            (plist-get authorization :parent-runtime-id)
+                            :pid pid
+                            :process-start
+                            (plist-get authorization :parent-process-start)
+                            :role 'offline)))
+        (signal 'e-runtime-store-owner-identity-conflict
+                (list "Borrowed ownership does not match the live offline parent"
+                      :database-file database-file
+                      :lock (e-runtime-store-ownership--metadata-summary lock)
+                      :metadata
+                      (e-runtime-store-ownership--metadata-summary metadata))))
+      t)))
 
 (defun e-runtime-store-ownership-release (claim)
   "Release CLAIM after its SQLite connection has closed.

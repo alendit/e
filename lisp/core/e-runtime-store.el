@@ -120,6 +120,7 @@ request/token budget so a full cold queue can still become ready.")
                (:predicate e-runtime-store-p)
                (:conc-name e-runtime-store--))
   directory database-file runtime-id access-mode parent-store read-client
+  borrowed-claim
   process opened-process stderr-buffer input-fragment
   (sequence 0) pending client-queue active-request
   starting-request last-error unavailable-cause startup-status unavailable closed
@@ -211,11 +212,29 @@ limit is mechanically derived from the canonical limit."
 
 (defun e-runtime-store--open-control-frame (store request)
   "Return the complete bounded open frame value for STORE and REQUEST."
-  (list :id (e-runtime-store-request--id request)
-        :kind 'open :directory (e-runtime-store--directory store)
-        :runtime-id (e-runtime-store--runtime-id store)
-        :access-mode (e-runtime-store--access-mode store)
-        :parent-identity (e-runtime-store--parent-identity)))
+  (append
+   (list :id (e-runtime-store-request--id request)
+         :kind 'open :directory (e-runtime-store--directory store)
+         :runtime-id (e-runtime-store--runtime-id store)
+         :access-mode (e-runtime-store--access-mode store)
+         :parent-identity (e-runtime-store--parent-identity))
+   (when (e-runtime-store--borrowed-claim store)
+     (list :borrowed-authorized t))))
+
+(defun e-runtime-store--send-borrow-authorization (store)
+  "Authorize STORE's selected worker through its private input pipe.
+
+The authorization is neither retained in STORE nor exposed through argv,
+environment, files, or the later open request.  Pipe ordering guarantees the
+worker receives this one-use control before the open frame."
+  (let* ((process (e-runtime-store--process store))
+         (authorization
+          (e-runtime-store-ownership--make-borrow-authorization
+           (e-runtime-store--borrowed-claim store) (process-id process)))
+         (frame
+          (e-runtime-store--pack
+           (list :kind 'borrow-authorize :authorization authorization))))
+    (process-send-string process frame)))
 
 (defun e-runtime-store--prepare-open-control (store)
   "Create and preflight STORE's one fixed-size internal open control.
@@ -1155,7 +1174,9 @@ whether the mutation already committed.  Reads are safe to retry directly."
              :sentinel (lambda (_process _event)
                          (unless (e-runtime-store--live-p store)
                            (e-runtime-store--worker-exited store)))))
-      (set-process-query-on-exit-flag (e-runtime-store--process store) nil)))
+      (set-process-query-on-exit-flag (e-runtime-store--process store) nil)
+      (when (e-runtime-store--borrowed-claim store)
+        (e-runtime-store--send-borrow-authorization store))))
   (e-runtime-store--process store))
 
 (defun e-runtime-store--ensure-worker-open (store)
@@ -1596,6 +1617,10 @@ increments its generation so stale callbacks are inert."
           (progn
             (unless (eq (e-runtime-store--opened-process store)
                         (e-runtime-store--process store))
+              (when (e-runtime-store--borrowed-claim store)
+                ;; Borrow authorization travels only over the replacement
+                ;; child's private pipe and therefore precedes open preflight.
+                (e-runtime-store--start-process store))
               ;; Reject an oversized cold-open envelope before spawning a
               ;; worker for this queued client request.
               (e-runtime-store--prepare-open-control store))
@@ -1897,9 +1922,10 @@ opens, dispatches, expires, recovers, cancels, or settles transport work."
           (setf (e-runtime-store--read-client store) created)
           created))))
 
-(cl-defun e-runtime-store-open
-    (directory &key runtime-id reservation (access-mode 'read-write) parent-store)
-  "Create STORE and begin its asynchronous cold-open phase.
+(cl-defun e-runtime-store--open-internal
+    (directory &key runtime-id reservation (access-mode 'read-write) parent-store
+               borrowed-claim)
+  "Create STORE, optionally beneath private BORROWED-CLAIM, and begin opening.
 
 This returns before the worker's open acknowledgement.  Submission never
 waits for or advances that phase; an entirely cold test/store can equivalently
@@ -1914,6 +1940,7 @@ be constructed with the private constructor used by scheduler tests."
                  :database-file database-file
                  :access-mode access-mode
                  :parent-store parent-store
+                 :borrowed-claim borrowed-claim
                  :runtime-id (or runtime-id
                                  (format "%x-%x-%x" (emacs-pid)
                                          (truncate (* 1000000 (float-time)))
@@ -1930,10 +1957,17 @@ be constructed with the private constructor used by scheduler tests."
                     :database-file database-file)))
     (condition-case err
         (progn
-          ;; Open preflight is deliberately before process creation: a bad
-          ;; expanded identity frame has no transport side effect to fence.
-          (e-runtime-store--prepare-open-control store)
-          (e-runtime-store--start-process store)
+          (if borrowed-claim
+              ;; The one-use authorization must enter the selected child's
+              ;; private pipe, so this explicit offline boundary starts before
+              ;; open-frame preflight.
+              (progn
+                (e-runtime-store--start-process store)
+                (e-runtime-store--prepare-open-control store))
+            ;; Ordinary open preflight remains before process creation: a bad
+            ;; expanded identity frame has no transport side effect to fence.
+            (e-runtime-store--prepare-open-control store)
+            (e-runtime-store--start-process store))
           (e-runtime-store--ensure-worker-open store)
           (e-runtime-store--schedule store)
           store)
@@ -1963,6 +1997,38 @@ be constructed with the private constructor used by scheduler tests."
              (e-runtime-store--scheduler-timer store) nil
              (e-runtime-store--notification-timer store) nil)
        (signal (car err) (cdr err))))))
+
+(cl-defun e-runtime-store-open
+    (directory &key runtime-id reservation (access-mode 'read-write) parent-store)
+  "Create STORE and begin its asynchronous cold-open phase.
+
+This public entry point cannot inject or borrow runtime-store ownership."
+  (e-runtime-store--open-internal
+   directory :runtime-id runtime-id :reservation reservation
+   :access-mode access-mode :parent-store parent-store))
+
+(cl-defun e-runtime-store-open-under-offline-claim
+    (directory claim &key runtime-id reservation)
+  "Open an ordinary worker beneath exact offline ownership CLAIM.
+
+CLAIM remains owned by the caller and must outlive the returned store.  This
+entry point exists only for explicit offline operators which must use ordinary
+application services without an ownership gap; interactive runtimes use
+`e-runtime-store-open'."
+  (let* ((directory (file-name-as-directory (expand-file-name directory)))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         (claim-file
+          (and (e-runtime-store-ownership-claim-p claim)
+               (e-runtime-store-ownership-claim--database-file claim))))
+    (unless (and claim-file
+                 (equal (expand-file-name claim-file) database-file))
+      (signal 'e-runtime-store-owner-identity-conflict
+              (list "Offline ownership claim targets a different store"
+                    :database-file database-file)))
+    (e-runtime-store--open-internal
+     directory :runtime-id runtime-id :reservation reservation
+     :access-mode 'read-write
+     :borrowed-claim claim)))
 
 (defun e-runtime-store-close (store)
   "Compatibility observer for STORE's private asynchronous close request."
