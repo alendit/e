@@ -59,7 +59,7 @@ new generic =e= runtime vocabulary.
 | F92A3-C01 | Every model-facing tool executes from its typed arguments without a required =stated_purpose= field; no compatibility parser or reserved purpose field remains. | =e-tools= invocation boundary | No durable or process-local purpose state; existing tool identity, arguments, caller, and result remain bounded audit facts. | F92A3-DP1 | S-ACTION | Deterministic repository | Accepted at =f5435885= |
 | F92A3-C02 | An immediate capability action returns its value; pending work returns one generic =work:= reference consumable by top-level =await=. | =e-actions= and detached-work registry | Process-local only until settlement/expiry; no action-specific result registry or polling API. | F92A3-DP1 | S-ACTION | Deterministic repository | Accepted at =5d620101=; revalidated here |
 | F92A3-C03 | A terminal Board continuation receives the bounded detached terminal projection already queried by fan-in and performs no duplicate status query. | Board orchestration plus chat delivery | Request-scoped detached value bounded by the orchestration query; never installed as a Board mirror. | F92A3-DP2 | S-CONTINUATION | Deterministic repository | Accepted at =5d620101=; revalidated here |
-| F92A3-C04 | A Daily gatherer is accepted as successful only after its declared fragment and durable outputs satisfy the frozen artifact contract; an optional failure becomes a visible gap. | Grimoire Daily report admission | Validation occurs before terminal success publication; SQLite retains the accepted report/error and artifact identities. | F92A3-DP2 | S-REPORT | Deterministic repository | Pending |
+| F92A3-C04 | A Daily gatherer is accepted as successful only after its declared fragment and durable outputs satisfy the frozen artifact contract; an optional failure becomes a visible gap. | Grimoire Daily report admission | Validation occurs before terminal success publication; SQLite retains the accepted report/error and artifact identities. | F92A3-DP2 | S-REPORT | Deterministic repository | Accepted at =1d660540= and Grimoire =7af410c= |
 | F92A3-C05 | SQLite is authoritative for Daily run phase, applied generated-section revision, publication commit, finalization time, and failure/gap state. | Grimoire Daily application service over SQL Board/domain facts | Durable across restart; Org properties and Git history are evidence/materializations, not lifecycle authority. | F92A3-DP3 | S-LIFECYCLE | Deterministic repository | Pending |
 | F92A3-C06 | Apply materializes exactly one complete generated-section map while preserving user-owned sections byte-for-byte; interruption resumes from the persisted applied value without model reconstruction. | Grimoire Daily application service | The exact accepted section value or durable reference and revision survive until finalized; presentation retains no durable copy. | F92A3-DP3 | S-MATERIALIZE | Deterministic repository | Pending |
 | F92A3-C07 | Finalize returns success only when current materialization, SQLite lifecycle facts, and publication commit agree; retry is idempotent and repairs an exact owned-metadata loss or reports a concrete divergence. | Grimoire Daily finalization service | Durable transaction facts plus bounded file/commit comparison; no generic whole-file recovery write. | F92A3-DP3 | S-FINALIZE | Deterministic repository | Pending |
@@ -262,6 +262,8 @@ acceptance; file size alone does not require extraction.
 
 ** F92A3-DP2: Terminal evidence admission and delivery
 
+- Status :: Accepted at =1d660540= and Grimoire =7af410c= after independent
+  implementation review reached fixed point.
 - Establishes :: =F92A3-C03= and =F92A3-C04=.
 - Useful outcome :: every Daily continuation begins with complete accepted
   evidence, while a producer cannot claim success for a missing promised
@@ -272,9 +274,10 @@ acceptance; file size alone does not require extraction.
 - Prerequisites :: DP1's reliable action boundary.
 - State/recovery :: accepted success/error remains one SQLite Board fact;
   validation creates no catalog, mirror, or process-global cache.
-- Evidence :: owner tests for bounded continuation shape and report admission;
-  missing, unreadable, empty-valid, optional-error, required-error, and sibling
-  success partitions; no-run-status source scan.
+- Evidence :: 38/38 focused =e= subagent-runner tests; 58/58 focused Grimoire
+  Daily tests; missing, unreadable, symlink, empty-valid, optional-error,
+  required-error, retry, prose-only completion, and sibling-success partitions;
+  no-run-status and callback-leak source scans; clean independent re-review.
 - Deferred :: applying and publishing the section map remains DP3.
 - Split reason :: terminal evidence is independently trustworthy even before
   publication is redesigned.
