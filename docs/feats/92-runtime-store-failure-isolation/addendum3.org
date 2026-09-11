@@ -130,20 +130,26 @@ Process-report subtype and association are durable query facts, not values for
 an application-side scan to rediscover after reading an arbitrary journal
 page.  Schema v7 adds the derived relation
 =session_process_report_index(session_id, position, association_ordinal,
-report_type, marker_id, provider_request_id)=.  Its primary key is
+report_type, marker_id, provider_request_id, triage_status)=.  Its primary key is
 =(session_id, position, association_ordinal)= and its foreign key is
 =(session_id, position) REFERENCES session_records(session_id, position) ON
 DELETE CASCADE=.  Ordinal zero is the one required base row and has a SQL
 =NULL= marker id.  Marker, triage, and extraction records additionally receive
 one association row for each normalized distinct marker id, ordered
-lexicographically from ordinal one.  The maximum association count is 64;
-duplicates collapse before the bound is checked.  Request-shape base rows carry
-their exact provider request id.  Other report types carry neither association
-nor request identity.
+lexicographically from ordinal one.  Triage association rows carry the
+normalized triage status needed by status-filtered marker queries.  The maximum
+association count is 64.  The action schema first rejects a raw list over 64
+items with =maxItems: 64=; the accepted list is then normalized and deduplicated
+before any read or projection derivation.  Request-shape base rows carry their
+exact provider request id.
+Other report types carry neither association, request identity, nor status.
 
 The projection has partial indexes on
 =(session_id, report_type, position DESC)= for base rows,
-=(session_id, marker_id, report_type, position DESC)= for association rows, and
+=(session_id, marker_id, report_type, position DESC)= for association rows,
+=(session_id, marker_id, position DESC, triage_status)= with the exact partial
+predicate =association_ordinal > 0 AND report_type = 'triage' AND
+triage_status IS NOT NULL= for effective-status lookup, and
 =(session_id, provider_request_id, report_type, position DESC)= for base rows
 with a request identity.  Consumer operations are: a newest marker page that
 returns each selected marker with its latest triage in one query; an exact
@@ -154,6 +160,31 @@ applied in SQL before =LIMIT=; none of these operations obtains a generic page
 and filters it in Emacs.  Page results carry an explicit cursor/truncation
 value.  Query results join to =session_records=, whose encoded record remains
 the sole canonical payload; the projection never becomes an Emacs mirror.
+The marker-page status predicate means the status on that marker's newest
+triage row; a marker with no triage is =open=.  This effective status is tested
+inside SQL before the outer marker page applies =LIMIT=.
+
+Opening an existing v7 store verifies the complete projection table shape,
+foreign key, exact index columns/order/partial predicates, and v7 migration
+identity/checksum before any schema initializer runs.  A missing or malformed
+projection or lineage row is rejected for explicit offline repair; ordinary
+startup never recreates it empty with =CREATE IF NOT EXISTS=.  Initializers run
+only for a genuinely new store or inside the explicit upgrader.
+
+A fresh v7 lineage contains version 7 identity =new-current-schema= and the
+SHA-256 of =feature92-schema-v7-process-report-projection=; it requires no
+predecessor.  An upgraded v7 lineage contains version 7 identity
+=feature92-v6-to-v7-process-report-projection= with the same checksum and a
+recognized version 6 predecessor.  A fresh-v6 predecessor is
+=new-current-schema= with the SHA-256 of =feature92-schema-v6=.  A migrated-v6
+predecessor is =feature92-v5-to-v6-explicit-upgrade= with that checksum and
+requires one recognized version 5 provenance row with the SHA-256 of
+=feature92-schema-v5=.  A direct-v5 source is normalized inside the install
+transaction to version 5 identity =feature92-direct-v5-source=; a v4 source
+retains version 5 identity =feature92-v4-to-v5-explicit-upgrade=.  The original
+v4 or v5 image remains independently verifiable in the one backup.
+Verification rejects an absent version 5 predecessor for a migrated-v6 row and
+every other identity/checksum/predecessor combination.
 
 The session append transaction derives and inserts these rows beside the
 canonical journal record.  An explicit offline upgrade first creates and fully
