@@ -120,6 +120,55 @@ Classes are `audit', `replay', `presentation-log', and `transient-progress'.")
     compaction-finished compaction-failed)
   "Durable activity event types that should flush the session index.")
 
+(defconst e-harness-activity-current-turn-event-limit 64
+  "Maximum bounded activity events retained for one executing turn.")
+
+(defun e-harness-activity--current-turn-events-table (harness)
+  "Return HARNESS's process-local active-turn event table."
+  (or (e-harness-activity-state-current-turn-events
+       (e-harness-activity-state harness))
+      (setf (e-harness-activity-state-current-turn-events
+             (e-harness-activity-state harness))
+            (make-hash-table :test 'equal))))
+
+(defun e-harness-activity--current-turn-key (session-id turn-id)
+  "Return process-local activity key for SESSION-ID and TURN-ID."
+  (cons session-id turn-id))
+
+(defun e-harness-activity-current-turn-events (harness session-id turn-id)
+  "Return a detached chronological bounded event window for the live turn.
+
+This is executing-turn coordination, not a durable activity mirror.  The
+window exists only while HARNESS still owns SESSION-ID TURN-ID as active and
+is discarded at the terminal event."
+  (let ((entry (gethash session-id (e-harness-active-turns harness))))
+    (when (and entry (equal (plist-get entry :id) turn-id))
+      (copy-tree
+       (reverse
+        (gethash (e-harness-activity--current-turn-key session-id turn-id)
+                 (e-harness-activity--current-turn-events-table harness)))
+       t))))
+
+(defun e-harness-activity--retain-current-turn-event
+    (harness session-id turn-id event)
+  "Retain bounded detached EVENT while SESSION-ID TURN-ID is executing."
+  (let ((entry (gethash session-id (e-harness-active-turns harness))))
+    (when (and entry (equal (plist-get entry :id) turn-id))
+      (let* ((table (e-harness-activity--current-turn-events-table harness))
+             (key (e-harness-activity--current-turn-key session-id turn-id))
+             (events (cons (copy-tree event t) (gethash key table))))
+        (when (> (length events) e-harness-activity-current-turn-event-limit)
+          (setcdr (nthcdr (1- e-harness-activity-current-turn-event-limit)
+                          events)
+                  nil))
+        (puthash key events table)))))
+
+(defun e-harness-activity--clear-current-turn-events
+    (harness session-id turn-id)
+  "Discard process-local activity for terminal SESSION-ID TURN-ID."
+  (remhash (e-harness-activity--current-turn-key session-id turn-id)
+           (e-harness-activity--current-turn-events-table harness)))
+
 (defvar e-harness-activity-trusted-tool-details-uri nil
   "Dynamically scoped details URI produced by the tool lifecycle.
 The value is available only while a completed tool event is projected.  It is
@@ -635,7 +684,22 @@ available."
                          :activity-entry-id (plist-get activity-entry :id)
                          :board-activity-sequence
                          (plist-get activity-entry :board-activity-sequence))))
+    (e-harness-activity--retain-current-turn-event
+     harness session-id turn-id
+     ;; Retain only the activity owner's bounded durable projection.  The
+     ;; public event may contain richer presentation material that does not
+     ;; belong in a current-turn coordination window.
+     (list :id (plist-get event :id)
+           :event-type type :session-id session-id :turn-id turn-id
+           :payload (e-harness-activity-payload type payload)
+           :created-at (plist-get event :created-at)
+           :activity-entry-id (plist-get event :activity-entry-id)
+           :board-activity-sequence
+           (plist-get event :board-activity-sequence)))
     (e-harness-activity--emit harness event)
+    (when (memq type '(turn-finished turn-failed turn-cancelled))
+      (e-harness-activity--clear-current-turn-events
+       harness session-id turn-id))
     ;; The request-local event is the publication result.  Async persistence
     ;; may not have a journal identity yet, and callers must not reread the
     ;; session aggregate merely to manufacture one.

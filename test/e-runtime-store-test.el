@@ -425,8 +425,8 @@
       (delete-directory directory t)
       (delete-directory stall-directory t))))
 
-(ert-deftest e-runtime-store-s2-drops-redundant-session-position-index ()
-  "The session primary key is the only index on its identical column pair."
+(ert-deftest e-runtime-store-s2-existing-v7-open-does-not-rewrite-indexes ()
+  "Ordinary current-schema open verifies without running cleanup DDL."
   (let ((directory (make-temp-file "e-runtime-store-index-test-" t))
         store)
     (cl-labels
@@ -458,7 +458,7 @@
             (should (redundant-index-p))
             (setq store (e-runtime-store-open directory))
             (e-runtime-store-test--wait-ready store)
-            (should-not (redundant-index-p)))
+            (should (redundant-index-p)))
         (when store
           (ignore-errors (e-runtime-store-close store))
           (e-runtime-store-test--cancel-store-timers store))
@@ -473,7 +473,7 @@
                  (push sql selects)
                  (list (list "ok")))))
       (let ((status (e-runtime-store-worker--read '(:op status))))
-        (should (= (plist-get status :schema-version) 6))
+        (should (= (plist-get status :schema-version) 7))
         (should-not (plist-member status :quick-check))
         (should-not selects))
       (let ((integrity
@@ -3182,7 +3182,7 @@ tests can present a raw frame that production would refuse to create."
            store open
            '(:id "upgrade:open" :ok nil
              :error-symbol e-runtime-store-schema-too-old
-             :error-data (:actual 5 :required 6
+             :error-data (:actual 5 :required 7
                           :operation e-runtime-store-offline-upgrade)))
           (should (e-runtime-store--unavailable store))
           (should (eq (car (e-runtime-store--unavailable-cause store))

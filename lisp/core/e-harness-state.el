@@ -28,7 +28,7 @@
 (cl-defstruct (e-harness-activity-state
                (:constructor e-harness-state--create-activity-state))
   "State owned by durable activity projection and event subscribers."
-  subscribers reasoning-streams)
+  subscribers reasoning-streams current-turn-events)
 
 (cl-defstruct (e-harness-turn-state
                (:constructor e-harness-state--create-turn-state))
@@ -98,7 +98,8 @@ change."
            :intrinsic-capabilities intrinsic-capabilities))
          (activity-state
           (e-harness-state--create-activity-state
-           :reasoning-streams (make-hash-table :test 'equal)))
+           :reasoning-streams (make-hash-table :test 'equal)
+           :current-turn-events (make-hash-table :test 'equal)))
          (turn-state
           (e-harness-state--create-turn-state
            :active-turns active-turns

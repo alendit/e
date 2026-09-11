@@ -20,6 +20,7 @@
 (require 'e-runtime-store-codec)
 (require 'e-session-query)
 (require 'e-session-query-command)
+(require 'e-session-process-report-projection)
 (require 'e-session-storage-limits)
 
 (unless (get 'e-runtime-store-worker-error 'error-conditions)
@@ -371,8 +372,138 @@ meaning remains owned by the session domain's query derivation."
             :journal-position (e-runtime-store-session-worker--column row 21))))
       (e-runtime-store-session-worker--validate-state state))))
 
-(defun e-runtime-store-session-worker-initialize (database)
-  "Create the v6 session relations and indexes on DATABASE.
+(defun e-runtime-store-session-worker-initialize-process-report-projection (database)
+  "Create the schema-v7 process-report projection on DATABASE."
+  (dolist
+      (statement
+       '("CREATE TABLE IF NOT EXISTS session_process_report_index (session_id TEXT NOT NULL, position INTEGER NOT NULL, association_ordinal INTEGER NOT NULL, report_type TEXT NOT NULL, marker_id TEXT, provider_request_id TEXT, triage_status TEXT, PRIMARY KEY(session_id, position, association_ordinal), FOREIGN KEY(session_id, position) REFERENCES session_records(session_id, position) ON DELETE CASCADE)"
+         "CREATE INDEX IF NOT EXISTS session_process_report_base_page ON session_process_report_index(session_id, report_type, position DESC) WHERE association_ordinal=0"
+         "CREATE INDEX IF NOT EXISTS session_process_report_marker_page ON session_process_report_index(session_id, marker_id, report_type, position DESC) WHERE association_ordinal>0"
+         "CREATE INDEX IF NOT EXISTS session_process_report_triage_status ON session_process_report_index(session_id, marker_id, position DESC, triage_status) WHERE association_ordinal > 0 AND report_type = 'triage' AND triage_status IS NOT NULL"
+         "CREATE INDEX IF NOT EXISTS session_process_report_request_page ON session_process_report_index(session_id, provider_request_id, report_type, position DESC) WHERE association_ordinal=0 AND provider_request_id IS NOT NULL"))
+    (sqlite-execute database statement)))
+
+(defun e-runtime-store-session-worker--normalized-sql (value)
+  "Return VALUE normalized for exact generated-schema comparisons."
+  (and (stringp value)
+       (replace-regexp-in-string "[[:space:]]+" "" (downcase value))))
+
+(defun e-runtime-store-session-worker--process-report-index-shape
+    (database name)
+  "Return declared key column/order pairs for projection index NAME."
+  (mapcar
+   (lambda (row)
+     (list (e-runtime-store-session-worker--column row 2)
+           (e-runtime-store-session-worker--column row 3)))
+   (seq-filter
+    (lambda (row)
+      (= (e-runtime-store-session-worker--column row 5) 1))
+    (sqlite-select database (format "PRAGMA index_xinfo(%s)" name)))))
+
+(defun e-runtime-store-session-worker-verify-process-report-projection-schema
+    (database)
+  "Verify DATABASE's exact schema-v7 process-report projection shape."
+  (let* ((table-info
+          (sqlite-select database
+                         "PRAGMA table_info(session_process_report_index)"))
+         (columns
+          (mapcar
+           (lambda (row)
+             (list (e-runtime-store-session-worker--column row 1)
+                   (e-runtime-store-session-worker--column row 2)
+                   (e-runtime-store-session-worker--column row 3)
+                   (e-runtime-store-session-worker--column row 4)
+                   (e-runtime-store-session-worker--column row 5)))
+           table-info))
+         (foreign-key
+          (sort
+           (mapcar
+            (lambda (row)
+              (list (e-runtime-store-session-worker--column row 0)
+                    (e-runtime-store-session-worker--column row 1)
+                    (e-runtime-store-session-worker--column row 2)
+                    (e-runtime-store-session-worker--column row 3)
+                    (e-runtime-store-session-worker--column row 4)
+                    (e-runtime-store-session-worker--column row 5)
+                    (e-runtime-store-session-worker--column row 6)
+                    (e-runtime-store-session-worker--column row 7)))
+            (sqlite-select
+             database
+             "PRAGMA foreign_key_list(session_process_report_index)"))
+           (lambda (left right)
+             (or (< (nth 0 left) (nth 0 right))
+                 (and (= (nth 0 left) (nth 0 right))
+                      (< (nth 1 left) (nth 1 right)))))))
+         (index-list
+          (sqlite-select database
+                         "PRAGMA index_list(session_process_report_index)"))
+         (expectations
+          '(("session_process_report_base_page"
+             (("session_id" 0) ("report_type" 0) ("position" 1))
+             "association_ordinal=0")
+            ("session_process_report_marker_page"
+             (("session_id" 0) ("marker_id" 0) ("report_type" 0)
+              ("position" 1))
+             "association_ordinal>0")
+            ("session_process_report_triage_status"
+             (("session_id" 0) ("marker_id" 0) ("position" 1)
+              ("triage_status" 0))
+             "association_ordinal > 0 AND report_type = 'triage' AND triage_status IS NOT NULL")
+            ("session_process_report_request_page"
+             (("session_id" 0) ("provider_request_id" 0)
+              ("report_type" 0) ("position" 1))
+             "association_ordinal=0 AND provider_request_id IS NOT NULL"))))
+    (unless
+        (equal columns
+               '(("session_id" "TEXT" 1 nil 1)
+                 ("position" "INTEGER" 1 nil 2)
+                 ("association_ordinal" "INTEGER" 1 nil 3)
+                 ("report_type" "TEXT" 1 nil 0)
+                 ("marker_id" "TEXT" 0 nil 0)
+                 ("provider_request_id" "TEXT" 0 nil 0)
+                 ("triage_status" "TEXT" 0 nil 0)))
+      (e-runtime-store-session-worker--error
+       "Schema v7 process-report table shape is invalid"))
+    (unless
+        (equal foreign-key
+               '((0 0 "session_records" "session_id" "session_id"
+                    "NO ACTION" "CASCADE" "NONE")
+                 (0 1 "session_records" "position" "position"
+                    "NO ACTION" "CASCADE" "NONE")))
+      (e-runtime-store-session-worker--error
+       "Schema v7 process-report foreign key is invalid"))
+    (dolist (expectation expectations)
+      (let* ((name (car expectation))
+             (listed
+              (seq-find
+               (lambda (row)
+                 (equal (e-runtime-store-session-worker--column row 1) name))
+               index-list))
+             (sql-row
+              (car (sqlite-select
+                    database
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?"
+                    (vector name))))
+             (sql (and sql-row
+                       (e-runtime-store-session-worker--column sql-row 0)))
+             (where (and sql (string-match "[[:space:]]WHERE[[:space:]]+\\(.+\\)\\'" sql)
+                         (match-string 1 sql))))
+        (unless (and listed
+                     (= (e-runtime-store-session-worker--column listed 4) 1)
+                     (equal
+                      (e-runtime-store-session-worker--process-report-index-shape
+                       database name)
+                      (cadr expectation))
+                     (equal
+                      (e-runtime-store-session-worker--normalized-sql where)
+                      (e-runtime-store-session-worker--normalized-sql
+                       (caddr expectation))))
+          (e-runtime-store-session-worker--error
+           "Schema v7 process-report index shape is invalid" :index name))))
+    t))
+
+(defun e-runtime-store-session-worker-initialize-v6 (database)
+  "Create the schema-v6 session relations and indexes on DATABASE.
 
 This function is called from the generic worker's one schema transaction
 boundary.  It intentionally creates neither the retired catalog projection
@@ -396,19 +527,33 @@ nor resume checkpoints."
            ;; safe to remove while opening an already-current store and keeps
            ;; the v6 schema from carrying duplicate position coverage.
            "DROP INDEX IF EXISTS session_records_position"))
-      (sqlite-execute database statement)))
+      (sqlite-execute database statement))))
 
-  ;; Stores created by an earlier v6 build may lack this later column.  Extend
-  ;; that authoritative row in place; never rebuild a catalog or replay
-  ;; sessions merely to add a nullable current fact.
-  (unless (seq-some
-           (lambda (row)
-             (equal (e-runtime-store-session-worker--column row 1)
-                    "current_context_generation_id"))
-           (sqlite-select database "PRAGMA table_info(session_query_state)"))
-    (sqlite-execute
-     database
-     "ALTER TABLE session_query_state ADD COLUMN current_context_generation_id TEXT")))
+(defun e-runtime-store-session-worker-initialize (database)
+  "Create the schema-v7 session relations and indexes on DATABASE."
+  (e-runtime-store-session-worker-initialize-v6 database)
+  (e-runtime-store-session-worker-initialize-process-report-projection database))
+
+(defun e-runtime-store-session-worker--process-report-index-insert
+    (database session-id position record)
+  "Insert RECORD's derived process-report rows at POSITION."
+  (condition-case err
+      (dolist (row (e-session-process-report-projection-rows record))
+        (sqlite-execute
+         database
+         "INSERT INTO session_process_report_index(session_id,position,association_ordinal,report_type,marker_id,provider_request_id,triage_status) VALUES(?,?,?,?,?,?,?)"
+         (vector session-id position
+                 (plist-get row :association-ordinal)
+                 (plist-get row :report-type)
+                 (plist-get row :marker-id)
+                 (plist-get row :provider-request-id)
+                 (plist-get row :triage-status))))
+    (e-session-process-report-projection-error
+     (e-runtime-store-session-worker--error
+      "Process-report query projection is invalid"
+      :session-id session-id :position position
+      :field (plist-get (cddr err) :field)
+      :limit (plist-get (cddr err) :limit)))))
 
 (defun e-runtime-store-session-worker--record-insert
     (database session-id position record)
@@ -432,11 +577,14 @@ nor resume checkpoints."
        "Session record identity does not match append owner"
        session-id record-session-id))
     (condition-case err
-        (sqlite-execute
-         database
-         "INSERT INTO session_records(session_id,position,payload,record_type,record_id,record_identity,parent_id,timestamp) VALUES(?,?,?,?,?,?,?,?)"
-         (vector session-id position (base64-encode-string payload t)
-                 record-type record-id record-identity parent-id timestamp))
+        (progn
+          (sqlite-execute
+           database
+           "INSERT INTO session_records(session_id,position,payload,record_type,record_id,record_identity,parent_id,timestamp) VALUES(?,?,?,?,?,?,?,?)"
+           (vector session-id position (base64-encode-string payload t)
+                   record-type record-id record-identity parent-id timestamp))
+          (e-runtime-store-session-worker--process-report-index-insert
+           database session-id position record))
       (sqlite-error
        ;; Keep physical uniqueness failures inside the worker's typed error
        ;; vocabulary; the generic transaction then rolls back every prior
@@ -937,18 +1085,44 @@ that position before its row is written."
                   (base64-decode-string payload)))))
 
 (defun e-runtime-store-session-worker--record-page (database body)
-  "Read one bounded forward record page with typed predicates."
+  "Read one bounded ordered record page with typed predicates."
   (let* ((session-id (e-runtime-store-session-worker--session-id
                       (plist-get body :session-id)))
-         (after (or (plist-get body :after) 0))
+         (order (or (plist-get body :order) 'oldest))
+         (after (plist-get body :after))
+         (before (plist-get body :before))
          (limit (e-runtime-store-session-worker--limit
                  (plist-get body :limit)
                  e-runtime-store-session-worker-record-page-row-limit))
-         (where (list "session_id=?" "position>?"))
-         (params (list session-id after)))
-    (unless (and (integerp after) (>= after 0))
+         (where (list "session_id=?"))
+         (params (list session-id)))
+    (unless (memq order '(oldest newest))
       (e-runtime-store-session-worker--error
-       "Session record cursor is invalid" after))
+       "Session record order is invalid" order))
+    (when (and after before)
+      (e-runtime-store-session-worker--error
+       "Session record page has conflicting cursors" after before))
+    (pcase order
+      ('oldest
+       (when before
+         (e-runtime-store-session-worker--error
+          "Oldest-first session page cannot use a before cursor" before))
+       (setq after (or after 0))
+       (unless (and (integerp after) (>= after 0))
+         (e-runtime-store-session-worker--error
+          "Session record cursor is invalid" after))
+       (setq where (append where (list "position>?"))
+             params (append params (list after))))
+      ('newest
+       (when after
+         (e-runtime-store-session-worker--error
+          "Newest-first session page cannot use an after cursor" after))
+       (when before
+         (unless (and (integerp before) (> before 0))
+           (e-runtime-store-session-worker--error
+            "Session record cursor is invalid" before))
+         (setq where (append where (list "position<?"))
+               params (append params (list before))))))
     (dolist (field '(record-type record-id record-identity parent-id))
       (when (plist-member body (intern (concat ":" (symbol-name field))))
         (let* ((key (intern (concat ":" (symbol-name field))))
@@ -968,9 +1142,38 @@ that position before its row is written."
               (setq where (append where (list (concat column " IS NULL"))))
             (setq where (append where (list (concat column "=?")))
                   params (append params (list value)))))))
+    (dolist (spec '((:record-ids . "record_id")
+                    (:parent-ids . "parent_id")))
+      (when (plist-member body (car spec))
+        (let* ((raw (plist-get body (car spec)))
+               (values (cond ((vectorp raw) (append raw nil))
+                             ((proper-list-p raw) raw)
+                             (t nil))))
+          (unless (and values
+                       (<= (length values) 64)
+                       (= (length values)
+                          (length (delete-dups (copy-sequence values))))
+                       (cl-every
+                        (lambda (value)
+                          (and (stringp value)
+                               (> (string-bytes value) 0)
+                               (<= (string-bytes value)
+                                   e-session-query-state-string-byte-limit)))
+                        values))
+            (e-runtime-store-session-worker--error
+             "Session record identity set is invalid" (car spec)))
+          (setq where
+                (append
+                 where
+                 (list
+                  (format "%s IN (%s)" (cdr spec)
+                          (mapconcat (lambda (_value) "?") values ","))))
+                params (append params values)))))
     (let* ((sql (concat "SELECT position,record_type,record_id,record_identity,parent_id,timestamp,LENGTH(payload),payload FROM session_records WHERE "
                         (mapconcat #'identity where " AND ")
-                        " ORDER BY position ASC LIMIT ?"))
+                        " ORDER BY position "
+                        (if (eq order 'newest) "DESC" "ASC")
+                        " LIMIT ?"))
            (rows (sqlite-select
                   database sql
                   (vconcat params (vector (1+ limit)))))
@@ -1002,6 +1205,271 @@ that position before its row is written."
               :byte-limit e-runtime-store-session-worker-page-byte-limit
           :high-water (e-runtime-store-session-worker--position
                            database session-id))))))
+
+(defun e-runtime-store-session-worker--process-report (row expected-type)
+  "Decode canonical process report ROW and require EXPECTED-TYPE."
+  (let* ((record (e-runtime-store-session-worker--decode-record-row row))
+         (value (plist-get record :value))
+         (report (plist-get value :report)))
+    (unless (and (equal (plist-get value :type) "process-report")
+                 (listp report)
+                 (equal (plist-get report :report-type) expected-type))
+      (e-runtime-store-session-worker--error
+       "Process-report index disagrees with canonical journal"
+       :position (plist-get record :position) :report-type expected-type))
+    (copy-tree report t)))
+
+(defun e-runtime-store-session-worker--process-report-cursor (value)
+  "Validate newest-first process-report position cursor VALUE."
+  (when value
+    (unless (and (integerp value) (> value 0))
+      (e-runtime-store-session-worker--error
+       "Process-report page cursor is invalid" value)))
+  value)
+
+(defun e-runtime-store-session-worker--process-report-marker-page
+    (database body)
+  "Return a bounded newest marker page with each latest triage in one query."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (limit (e-runtime-store-session-worker--limit
+                 (plist-get body :limit)
+                 e-runtime-store-session-worker-record-page-row-limit))
+         (before (e-runtime-store-session-worker--process-report-cursor
+                  (plist-get body :before)))
+         (raw-status (plist-get body :status))
+         (status
+          (and raw-status
+               (downcase
+                (e-runtime-store-session-worker--required-scalar
+                 raw-status :status))))
+         (rows
+          (sqlite-select
+           database
+           (concat
+            "WITH marker_status AS ("
+            " SELECT p.position,p.marker_id,"
+            " (SELECT ti.position FROM session_process_report_index ti"
+            " WHERE ti.session_id=p.session_id AND ti.association_ordinal>0"
+            " AND ti.report_type='triage' AND ti.marker_id=p.marker_id"
+            " ORDER BY ti.position DESC LIMIT 1) AS triage_position"
+            " FROM session_process_report_index p"
+            " WHERE p.session_id=? AND p.association_ordinal>0"
+            " AND p.report_type='marker'"
+            (if before " AND p.position<?" "")
+            "), marker_page AS ("
+            " SELECT ms.position,ms.marker_id,ms.triage_position"
+            " FROM marker_status ms LEFT JOIN session_process_report_index ti"
+            " ON ti.session_id=? AND ti.position=ms.triage_position"
+            " AND ti.association_ordinal>0 AND ti.report_type='triage'"
+            " AND ti.marker_id=ms.marker_id"
+            " WHERE (? IS NULL OR COALESCE(ti.triage_status,'open')=?)"
+            " ORDER BY ms.position DESC LIMIT ?"
+            ") SELECT m.position,m.record_type,m.record_id,m.record_identity,"
+            "m.parent_id,m.timestamp,LENGTH(m.payload),m.payload,"
+            "t.position,t.record_type,t.record_id,t.record_identity,"
+            "t.parent_id,t.timestamp,LENGTH(t.payload),t.payload "
+            "FROM marker_page p JOIN session_records m"
+            " ON m.session_id=? AND m.position=p.position "
+            "LEFT JOIN session_records t ON t.session_id=m.session_id"
+            " AND t.position=p.triage_position"
+            " ORDER BY p.position DESC")
+           (if before
+               (vector session-id before session-id status status
+                       (1+ limit) session-id)
+             (vector session-id session-id status status
+                     (1+ limit) session-id))))
+         (truncated (> (length rows) limit))
+         (selected (if truncated (cl-subseq rows 0 limit) rows))
+         markers (bytes 0) last-position)
+    (catch 'page-full
+      (dolist (row selected)
+        (let* ((marker
+                (e-runtime-store-session-worker--process-report
+                 (cl-subseq row 0 8) "marker"))
+               (triage
+                (when (e-runtime-store-session-worker--column row 8)
+                  (e-runtime-store-session-worker--process-report
+                   (cl-subseq row 8 16) "triage")))
+               (item (list :marker marker :latest-triage triage))
+               (item-bytes
+                (e-runtime-store-codec-measure-bounded
+                 item e-runtime-store-session-worker-page-byte-limit)))
+          (when (and markers
+                     (> (+ bytes item-bytes)
+                        e-runtime-store-session-worker-page-byte-limit))
+            (setq truncated t)
+            (throw 'page-full nil))
+          (when (> item-bytes e-runtime-store-session-worker-page-byte-limit)
+            (e-runtime-store-session-worker--error
+             "Process-report marker exceeds page byte bound" item-bytes))
+          (setq bytes (+ bytes item-bytes)
+                last-position
+                (e-runtime-store-session-worker--column row 0))
+          (push item markers))))
+    (setq markers (nreverse markers))
+    (list :markers markers :truncated truncated
+          :next (and truncated last-position)
+          :limit limit :byte-count bytes
+          :byte-limit e-runtime-store-session-worker-page-byte-limit)))
+
+(defun e-runtime-store-session-worker--process-report-marker
+    (database body)
+  "Return the exact canonical marker selected by BODY."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (marker-id (e-runtime-store-session-worker--required-scalar
+                     (plist-get body :marker-id) :marker-id))
+         (row
+          (car
+           (sqlite-select
+            database
+            (concat
+             "SELECT r.position,r.record_type,r.record_id,r.record_identity,"
+             "r.parent_id,r.timestamp,LENGTH(r.payload),r.payload "
+             "FROM session_process_report_index p JOIN session_records r"
+             " ON r.session_id=p.session_id AND r.position=p.position"
+             " WHERE p.session_id=? AND p.association_ordinal>0"
+             " AND p.report_type='marker' AND p.marker_id=?"
+             " ORDER BY p.position ASC LIMIT 1")
+            (vector session-id marker-id)))))
+    (let ((marker
+           (and row
+                (e-runtime-store-session-worker--process-report row "marker"))))
+      (when marker
+        (e-runtime-store-codec-measure-bounded
+         marker e-runtime-store-session-worker-page-byte-limit))
+      (list :marker marker))))
+
+(defun e-runtime-store-session-worker--process-report-association-page
+    (database body report-type result-key)
+  "Return bounded REPORT-TYPE rows associated with BODY's marker."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (marker-id (e-runtime-store-session-worker--required-scalar
+                     (plist-get body :marker-id) :marker-id))
+         (limit (e-runtime-store-session-worker--limit
+                 (plist-get body :limit)
+                 e-runtime-store-session-worker-record-page-row-limit))
+         (before (e-runtime-store-session-worker--process-report-cursor
+                  (plist-get body :before)))
+         (rows
+          (sqlite-select
+           database
+           (concat
+            "SELECT r.position,r.record_type,r.record_id,r.record_identity,"
+            "r.parent_id,r.timestamp,LENGTH(r.payload),r.payload "
+            "FROM session_process_report_index p JOIN session_records r"
+            " ON r.session_id=p.session_id AND r.position=p.position"
+            " WHERE p.session_id=? AND p.association_ordinal>0"
+            " AND p.report_type=? AND p.marker_id=?"
+            (if before " AND p.position<?" "")
+            " ORDER BY p.position DESC LIMIT ?")
+           (if before
+               (vector session-id report-type marker-id before (1+ limit))
+             (vector session-id report-type marker-id (1+ limit)))))
+         (truncated (> (length rows) limit))
+         (selected (if truncated (cl-subseq rows 0 limit) rows))
+         reports (bytes 0) last-position)
+    (catch 'page-full
+      (dolist (row selected)
+        (let* ((report
+                (e-runtime-store-session-worker--process-report row report-type))
+               (report-bytes
+                (e-runtime-store-codec-measure-bounded
+                 report e-runtime-store-session-worker-page-byte-limit)))
+          (when (and reports
+                     (> (+ bytes report-bytes)
+                        e-runtime-store-session-worker-page-byte-limit))
+            (setq truncated t)
+            (throw 'page-full nil))
+          (when (> report-bytes e-runtime-store-session-worker-page-byte-limit)
+            (e-runtime-store-session-worker--error
+             "Process-report association exceeds page byte bound" report-bytes))
+          (setq bytes (+ bytes report-bytes)
+                last-position
+                (e-runtime-store-session-worker--column row 0))
+          (push report reports))))
+    (setq reports (nreverse reports))
+    (list result-key reports :truncated truncated
+          :next (and truncated last-position)
+          :limit limit :byte-count bytes
+          :byte-limit e-runtime-store-session-worker-page-byte-limit)))
+
+(defun e-runtime-store-session-worker--process-report-request-shapes
+    (database body)
+  "Return the latest exact request-shape for each bounded request id in BODY."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (raw (plist-get body :provider-request-ids))
+         (ids (cond ((vectorp raw) (append raw nil))
+                    ((proper-list-p raw) raw)
+                    (t nil))))
+    (unless (and ids (<= (length ids) 64)
+                 (= (length ids) (length (delete-dups (copy-sequence ids))))
+                 (cl-every
+                  (lambda (id)
+                    (and (stringp id) (> (string-bytes id) 0)
+                         (<= (string-bytes id)
+                             e-session-query-state-string-byte-limit)))
+                  ids))
+      (e-runtime-store-session-worker--error
+       "Process-report request identity set is invalid"))
+    (let* ((marks (mapconcat (lambda (_id) "?") ids ","))
+           (rows
+            (sqlite-select
+             database
+             (concat
+              "SELECT r.position,r.record_type,r.record_id,r.record_identity,"
+              "r.parent_id,r.timestamp,LENGTH(r.payload),r.payload "
+              "FROM session_process_report_index p JOIN session_records r"
+              " ON r.session_id=p.session_id AND r.position=p.position"
+              " WHERE p.session_id=? AND p.association_ordinal=0"
+              " AND p.report_type='request-shape'"
+              " AND p.provider_request_id IN (" marks ")"
+              " AND p.position=(SELECT MAX(p2.position)"
+              " FROM session_process_report_index p2"
+              " WHERE p2.session_id=p.session_id AND p2.association_ordinal=0"
+              " AND p2.report_type='request-shape'"
+              " AND p2.provider_request_id=p.provider_request_id)"
+              " ORDER BY p.position ASC LIMIT 65")
+             (vconcat (list session-id) ids)))
+           reports (bytes 0))
+      (when (> (length rows) 64)
+        (e-runtime-store-session-worker--error
+         "Process-report request result exceeds its bound"))
+      (dolist (row rows)
+        (let* ((report
+                (e-runtime-store-session-worker--process-report
+                 row "request-shape"))
+               (report-bytes
+                (e-runtime-store-codec-measure-bounded
+                 report e-runtime-store-session-worker-page-byte-limit)))
+          (when (> (+ bytes report-bytes)
+                   e-runtime-store-session-worker-page-byte-limit)
+            (e-runtime-store-session-worker--error
+             "Process-report request result exceeds byte bound"
+             e-runtime-store-session-worker-page-byte-limit))
+          (setq bytes (+ bytes report-bytes))
+          (push report reports)))
+      (list :request-shapes (nreverse reports)
+            :truncated nil :next nil :limit 64 :byte-count bytes
+            :byte-limit e-runtime-store-session-worker-page-byte-limit))))
+
+(defun e-runtime-store-session-worker--process-report-marker-count
+    (database body)
+  "Return exact durable marker count for BODY's session."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (row (car (sqlite-select
+                    database
+                    (concat
+                     "SELECT COUNT(*) FROM session_process_report_index"
+                     " WHERE session_id=? AND association_ordinal=0"
+                     " AND report_type='marker'")
+                    (vector session-id)))))
+    (list :marker-count
+          (e-runtime-store-session-worker--column row 0))))
 
 (defun e-runtime-store-session-worker--activity-event (record)
   "Return RECORD's detached semantic activity event, or nil.
@@ -1442,6 +1910,23 @@ unselected branch rows and unrelated journal families are never returned."
        (e-runtime-store-session-worker--id-page database body))
       ((or 'session-record-page 'session-history-page)
        (e-runtime-store-session-worker--record-page database body))
+      ('session-process-report-marker-page
+       (e-runtime-store-session-worker--process-report-marker-page
+        database body))
+      ('session-process-report-marker
+       (e-runtime-store-session-worker--process-report-marker database body))
+      ('session-process-report-triage-page
+       (e-runtime-store-session-worker--process-report-association-page
+        database body "triage" :triage))
+      ('session-process-report-extraction-page
+       (e-runtime-store-session-worker--process-report-association-page
+        database body "extraction" :extractions))
+      ('session-process-report-request-shapes
+       (e-runtime-store-session-worker--process-report-request-shapes
+        database body))
+      ('session-process-report-marker-count
+       (e-runtime-store-session-worker--process-report-marker-count
+        database body))
       ('session-recent-failures
        (e-runtime-store-session-worker--recent-failures database body))
       ('session-turn-inspection

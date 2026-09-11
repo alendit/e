@@ -50,7 +50,11 @@
 (require 'e-task-storage-sqlite-worker)
 (require 'e-voice-storage-sqlite-worker)
 
-(defconst e-runtime-store-worker-schema-version 6)
+(defconst e-runtime-store-worker-schema-version 7)
+(defconst e-runtime-store-worker--v5-schema-checksum "feature92-schema-v5")
+(defconst e-runtime-store-worker--v6-schema-checksum "feature92-schema-v6")
+(defconst e-runtime-store-worker--v7-schema-checksum
+  "feature92-schema-v7-process-report-projection")
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
 
@@ -208,13 +212,16 @@ schema; this helper does not inspect or change `store_meta'."
          "CREATE TABLE IF NOT EXISTS runtime_store_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), runtime_id TEXT NOT NULL, parent_boot TEXT NOT NULL, parent_pid INTEGER NOT NULL, parent_process_start TEXT NOT NULL, acknowledged_prefix INTEGER NOT NULL DEFAULT 0, retired INTEGER NOT NULL DEFAULT 0, retirement_request_id TEXT, retirement_fingerprint TEXT, retirement_result TEXT)"))
     (sqlite-execute database statement)))
 
-(defun e-runtime-store-worker--initialize-domain-schema (database)
+(defun e-runtime-store-worker--initialize-domain-schema
+    (database &optional schema-version)
   "Create all current domain relations on DATABASE.
 
 Each domain worker owns its own physical mapping; this function only keeps
 the generic worker's current composition order in one reusable seam for the
 normal worker and the stopped-store upgrader."
-  (e-runtime-store-session-worker-initialize database)
+  (if (and schema-version (< schema-version 7))
+      (e-runtime-store-session-worker-initialize-v6 database)
+    (e-runtime-store-session-worker-initialize database))
   (e-board-sqlite-worker-initialize database)
   (e-task-storage-sqlite-worker-initialize database)
   (e-cron-storage-sqlite-worker-initialize database)
@@ -222,57 +229,73 @@ normal worker and the stopped-store upgrader."
   (e-goodnite-storage-sqlite-worker-initialize database)
   (e-raw-results-storage-sqlite-worker-initialize database))
 
-(defun e-runtime-store-worker--schema (new-store-p)
-  "Create the current schema when NEW-STORE-P, otherwise verify it."
-  ;; Inspect an existing store before creating current-version relations.  P4
-  ;; owns explicit offline upgrades; ordinary startup must not mutate an older
-  ;; P1 database and then report that it is unsupported.
-  (unless (or new-store-p
-              (car (sqlite-select
-                    e-runtime-store-worker--database
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_meta'")))
-    (signal 'e-runtime-store-schema-too-old
-            (list :actual 'legacy-or-unversioned
-                  :required e-runtime-store-worker-schema-version
-                  :operation 'e-runtime-migration-run)))
-  (sqlite-execute
-   e-runtime-store-worker--database
-   "CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-  (let ((row (car (sqlite-select
-                   e-runtime-store-worker--database
-                   "SELECT value FROM store_meta WHERE key='schema_version'"))))
-    (when row
-      (let ((version
-             (string-to-number (e-runtime-store-worker--column row 0))))
-        (cond
-         ((< version e-runtime-store-worker-schema-version)
-          (signal 'e-runtime-store-schema-too-old
-                  (list :actual version
+(defun e-runtime-store-worker--invalid-current-schema (reason &rest data)
+  "Reject the current schema for explicit offline repair due to REASON."
+  (signal 'e-runtime-store-schema-too-old
+          (append (list :actual 'malformed-v7
                         :required e-runtime-store-worker-schema-version
-                        :operation 'e-runtime-store-offline-upgrade)))
-         ((> version e-runtime-store-worker-schema-version)
-          (signal 'e-runtime-store-schema-too-new
-                  (list :actual version
-                        :supported e-runtime-store-worker-schema-version)))))))
-  (e-runtime-store-worker--initialize-common-schema
-   e-runtime-store-worker--database)
-  (e-runtime-store-worker--initialize-domain-schema
-   e-runtime-store-worker--database)
-  (let ((row (car (sqlite-select e-runtime-store-worker--database
-                                 "SELECT value FROM store_meta WHERE key='schema_version'"))))
-    (unless row
-      (sqlite-execute e-runtime-store-worker--database
-                      "INSERT INTO store_meta(key,value) VALUES('schema_version',?)"
-                      (vector (number-to-string
-                               e-runtime-store-worker-schema-version)))
-      (sqlite-execute
-       e-runtime-store-worker--database
-       "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
-       (vector e-runtime-store-worker-schema-version "new-current-schema"
-               (secure-hash 'sha256 "feature92-schema-v6") (float-time))))))
+                        :operation 'e-runtime-store-offline-upgrade
+                        :reason reason)
+                  data)))
 
-(defun e-runtime-store-worker--verify-schema-read-only ()
-  "Verify that the read-only connection targets the current schema."
+(defun e-runtime-store-worker--migration-row (version)
+  "Return VERSION's migration identity/checksum pair, or nil."
+  (let ((row
+         (car (sqlite-select
+               e-runtime-store-worker--database
+               "SELECT identity,checksum FROM schema_migrations WHERE version=?"
+               (vector version)))))
+    (and row
+         (list (e-runtime-store-worker--column row 0)
+               (e-runtime-store-worker--column row 1)))))
+
+(defun e-runtime-store-worker--verify-v7-lineage ()
+  "Verify the exact recognized migration lineage for current schema v7."
+  (condition-case err
+      (let* ((v5 (e-runtime-store-worker--migration-row 5))
+             (v6 (e-runtime-store-worker--migration-row 6))
+             (v7 (e-runtime-store-worker--migration-row 7))
+             (v5-checksum
+              (secure-hash 'sha256 e-runtime-store-worker--v5-schema-checksum))
+             (v6-checksum
+              (secure-hash 'sha256 e-runtime-store-worker--v6-schema-checksum))
+             (v7-checksum
+              (secure-hash 'sha256 e-runtime-store-worker--v7-schema-checksum)))
+        (cond
+         ((equal v7 (list "new-current-schema" v7-checksum))
+          (when (or v5 v6)
+            (e-runtime-store-worker--invalid-current-schema
+             'unexpected-fresh-v7-predecessor)))
+         ((equal v7
+                 (list "feature92-v6-to-v7-process-report-projection"
+                       v7-checksum))
+          (cond
+           ((equal v6 (list "new-current-schema" v6-checksum))
+            (when v5
+              (e-runtime-store-worker--invalid-current-schema
+               'unexpected-fresh-v6-predecessor)))
+           ((equal v6
+                   (list "feature92-v5-to-v6-explicit-upgrade" v6-checksum))
+            (unless (or
+                     (equal v5 (list "feature92-direct-v5-source" v5-checksum))
+                     (equal v5
+                            (list "feature92-v4-to-v5-explicit-upgrade"
+                                  v5-checksum)))
+              (e-runtime-store-worker--invalid-current-schema
+               'invalid-v5-predecessor)))
+           (t
+            (e-runtime-store-worker--invalid-current-schema
+             'invalid-v6-predecessor))))
+         (t
+          (e-runtime-store-worker--invalid-current-schema
+           'invalid-v7-lineage))))
+    (sqlite-error
+     (e-runtime-store-worker--invalid-current-schema
+      'missing-migration-relation :cause (car (cdr err)))))
+  t)
+
+(defun e-runtime-store-worker--verify-current-schema ()
+  "Verify existing current storage without executing schema initializers."
   (unless (car (sqlite-select
                 e-runtime-store-worker--database
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_meta'"))
@@ -301,7 +324,42 @@ normal worker and the stopped-store upgrader."
       (signal 'e-runtime-store-schema-too-new
               (list :actual version
                     :supported e-runtime-store-worker-schema-version)))))
+  (e-runtime-store-worker--verify-v7-lineage)
+  (condition-case err
+      (e-runtime-store-session-worker-verify-process-report-projection-schema
+       e-runtime-store-worker--database)
+    (e-runtime-store-worker-error
+     (e-runtime-store-worker--invalid-current-schema
+      'invalid-process-report-projection
+      :detail (car (cdr err)) :index (plist-get (cddr err) :index))))
   t)
+
+(defun e-runtime-store-worker--schema (new-store-p)
+  "Initialize a genuinely new store; verify existing stores read-only."
+  (if (not new-store-p)
+      (e-runtime-store-worker--verify-current-schema)
+    (sqlite-execute
+     e-runtime-store-worker--database
+     "CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    (e-runtime-store-worker--initialize-common-schema
+     e-runtime-store-worker--database)
+    (e-runtime-store-worker--initialize-domain-schema
+     e-runtime-store-worker--database)
+    (sqlite-execute e-runtime-store-worker--database
+                    "INSERT INTO store_meta(key,value) VALUES('schema_version',?)"
+                    (vector (number-to-string
+                             e-runtime-store-worker-schema-version)))
+    (sqlite-execute
+     e-runtime-store-worker--database
+     "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
+     (vector e-runtime-store-worker-schema-version "new-current-schema"
+             (secure-hash 'sha256 e-runtime-store-worker--v7-schema-checksum)
+             (float-time))))
+  t)
+
+(defun e-runtime-store-worker--verify-schema-read-only ()
+  "Verify that the read-only connection targets the current schema."
+  (e-runtime-store-worker--verify-current-schema))
 
 (defun e-runtime-store-worker--default-parent-identity ()
   "Return a bounded identity for direct worker-owner calls.
@@ -429,13 +487,18 @@ receipt reclamation share one SQLite transaction so no receipt is orphaned."
                 (sqlite-open e-runtime-store-worker--database-file
                              (eq access-mode 'read-only)))
           (sqlite-execute e-runtime-store-worker--database "PRAGMA foreign_keys=ON")
+          ;; An existing store crosses a verification-only boundary before
+          ;; WAL mode or any schema/domain initializer can mutate it.
+          (unless new-store-p
+            (e-runtime-store-worker--verify-current-schema))
           (when (eq access-mode 'read-write)
             (sqlite-select e-runtime-store-worker--database "PRAGMA journal_mode=WAL")
             (sqlite-execute e-runtime-store-worker--database "PRAGMA synchronous=NORMAL"))
           (sqlite-execute e-runtime-store-worker--database "PRAGMA busy_timeout=2500")
           (if (eq access-mode 'read-only)
-              (e-runtime-store-worker--verify-schema-read-only)
-            (e-runtime-store-worker--schema new-store-p)
+              t
+            (when new-store-p
+              (e-runtime-store-worker--schema t))
             (e-runtime-store-worker--install-runtime-state
              runtime-id
              (e-runtime-store-worker--parent-identity
@@ -980,6 +1043,12 @@ acknowledgement prefix."
          'session-recent-failures 'session-turn-inspection
          'session-visible-message-page 'session-visible-messages
          'session-context-path
+         'session-process-report-marker-page
+         'session-process-report-marker
+         'session-process-report-triage-page
+         'session-process-report-extraction-page
+         'session-process-report-request-shapes
+         'session-process-report-marker-count
          'session-header)
      (e-runtime-store-session-worker-read
       e-runtime-store-worker--database body))

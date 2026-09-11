@@ -19,7 +19,9 @@
 (require 'e-session-catalog)
 (require 'e-resources)
 (require 'e-session-resources)
+(require 'e-session-async)
 (require 'e-tools)
+(require 'e-work)
 
 (defmacro e-session-resources-test--with-empty-config (&rest body)
   "Run BODY with no configured non-e session engines."
@@ -36,6 +38,25 @@
 (defun e-session-resources-test--resources (harness)
   "Return resource registry for HARNESS."
   (e-harness-resources harness "session-1" "turn-1"))
+
+(defun e-session-resources-test--await-work (work)
+  "Return WORK's value at an explicit test-only await boundary."
+  (if (e-work-handle-p work)
+      (e-work-with-batch-await
+        (e-work-await-batch work :timeout 3))
+    work))
+
+(defun e-session-resources-test--resource-work
+    (resources operation uri &rest operation-arguments)
+  "Run resource OPERATION for URI through its cooperative work contract."
+  (let* ((method (e-resources-method-for-uri resources operation uri))
+         (handle
+          (e-work-start
+           (e-resource-method-work method)
+           (list :uri (e-resources-parse-uri uri)
+                 :operation-arguments operation-arguments
+                 :resource-operation operation))))
+    (e-session-resources-test--await-work handle)))
 
 (ert-deftest e-session-resources-test-glob-discovers-engine-sessions-and-projections ()
   "session:// glob follows the engine, sessions, projection workflow."
@@ -141,6 +162,42 @@
         (should (string-match-p "marker-1" reports))
         (should (string-match-p "A useful method worked" reports))
         (should-not (string-match-p "A useful method worked" messages))))))
+
+(ert-deftest e-session-resources-test-async-process-report-read-is-detached-and-bounded ()
+  "Persistent process-report resources use their bounded query work method."
+  (let* ((directory (make-temp-file "e-session-resources-async-" t))
+         (store (e-session-sqlite-store-create directory :asynchronous t))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :sessions store
+           :intrinsic-capabilities
+           (list (e-session-resources-capability-create)))))
+    (unwind-protect
+        (progn
+          (e-session-resources-test--await-work
+           (e-harness-create-session harness :id "session-1"))
+          (e-session-resources-test--await-work
+           (e-session-append-process-report
+            store "session-1"
+            '(:report-type "marker" :marker-id "marker-async"
+              :signal "success" :note "SQLite owns this report.")))
+          (cl-letf (((symbol-function 'e-session-local-process-reports)
+                     (lambda (&rest _)
+                       (error "resource read reached a report mirror")))
+                    ((symbol-function 'e-session-aggregate-process-reports)
+                     (lambda (&rest _)
+                       (error "resource read reconstructed an aggregate"))))
+            (let ((content
+                   (e-session-resources-test--resource-work
+                    (e-session-resources-test--resources harness)
+                    e-operation-read
+                    "session://e/sessions/session-1/process-reports"
+                    nil)))
+              (should (string-match-p "marker-async" content))
+              (should (string-match-p "SQLite owns this report" content)))))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (delete-directory directory t))))
 
 (ert-deftest e-session-resources-test-read-stringifies-structured-message-content ()
   "session:// messages projection renders structured tool-call content."

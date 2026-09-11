@@ -1,4 +1,4 @@
-;;; e-runtime-store-session-worker-test.el --- v6 session worker contracts -*- lexical-binding: t; -*-
+;;; e-runtime-store-session-worker-test.el --- v7 session worker contracts -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
@@ -33,7 +33,7 @@
 
 (cl-defmacro e-runtime-store-session-worker-test--with-runtime
     ((runtime directory) &rest body)
-  "Run BODY with a disposable v6 runtime STORE."
+  "Run BODY with a disposable v7 runtime STORE."
   (declare (indent 1) (debug ((symbolp symbolp) body)))
   `(let* ((,directory (make-temp-file "e-runtime-store-session-worker-" t))
           (,runtime (e-runtime-store-open ,directory)))
@@ -207,19 +207,21 @@
                    :generation 1)))
                1))))
 
-(ert-deftest e-runtime-store-session-worker-v6-schema-is-relational-and-narrow ()
-  "Fresh v6 storage has query/history relations but no opaque projections."
+(ert-deftest e-runtime-store-session-worker-v7-schema-is-relational-and-narrow ()
+  "Fresh v7 storage has query/history relations but no opaque mirrors."
   (e-runtime-store-session-worker-test--with-runtime (runtime directory)
     (let ((database (sqlite-open (expand-file-name "store.sqlite3" directory))))
       (unwind-protect
           (progn
             (should (= (plist-get (e-runtime-store-metrics runtime)
                                   :schema-version)
-                       6))
+                       7))
             (should (car (sqlite-select database
                                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_query_state'")))
             (should (car (sqlite-select database
                                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_records'")))
+            (should (car (sqlite-select database
+                                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_process_report_index'")))
             (should-not (car (sqlite-select database
                                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_projection'")))
             (should-not (car (sqlite-select database
@@ -341,7 +343,7 @@
           (should (equal (plist-get association-again :principal) "alice")))))))
 
 (ert-deftest e-runtime-store-session-worker-record-page-has-typed-predicates-and-bound ()
-  "Forward history pages honor identity predicates and their row cap."
+  "Ordered history pages honor identity predicates and their row cap."
   (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
     (let ((state (e-runtime-store-session-worker-test--state "records")))
       (dotimes (index 3)
@@ -367,11 +369,237 @@
         (should (= (length (plist-get page :records)) 2))
         (should (equal (plist-get (car (plist-get page :records)) :record-id)
                        "record-1")))
+      (let* ((newest
+              (e-runtime-store-call
+               runtime 'read
+               '(:op session-record-page :session-id "records"
+                 :order newest :record-ids ["record-1" "record-2"] :limit 1)))
+             (older
+              (e-runtime-store-call
+               runtime 'read
+               (list :op 'session-record-page :session-id "records"
+                     :order 'newest :before (plist-get newest :next)
+                     :record-ids ["record-1" "record-2"] :limit 1))))
+        (should (equal (mapcar (lambda (row) (plist-get row :record-id))
+                               (plist-get newest :records))
+                       '("record-2")))
+        (should (equal (mapcar (lambda (row) (plist-get row :record-id))
+                               (plist-get older :records))
+                       '("record-1"))))
       (should-error
        (e-runtime-store-call runtime 'read
                              '(:op session-record-page :session-id "records"
                                :limit 257))
        :type 'e-runtime-store-worker-error))))
+
+(ert-deftest e-runtime-store-session-worker-process-report-projection-queries-before-limit ()
+  "All process-report consumers select semantic rows before their bounds."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let ((state (e-runtime-store-session-worker-test--state "reports"))
+          (position 1))
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "reports"
+             :record '(:type "session" :session-id "reports" :id "root"
+                       :timestamp "2026-09-06T00:00:00Z")
+             :query-delta state))
+      (cl-labels
+          ((append-report
+            (report)
+            (setq position (1+ position)
+                  state (copy-tree state))
+            (plist-put state :journal-position position)
+            (plist-put state :updated-at
+                       (format "2026-09-06T00:%02d:%02dZ"
+                               (/ position 60) (% position 60)))
+            (e-runtime-store-call
+             runtime 'write
+             (list :op 'session-append :session-id "reports"
+                   :record
+                   (list :type "process-report" :session-id "reports"
+                         :id (or (plist-get report :id)
+                                 (format "report-%d" position))
+                         :delta-id (format "delta-%d" position)
+                         :timestamp (plist-get state :updated-at)
+                         :report report)
+                   :query-delta state))))
+        (append-report
+         '(:report-type "marker" :id "marker-a" :marker-id "marker-a"
+           :evidence-id "evidence-a" :created-at "2026-09-06T00:00:01Z"))
+        ;; Historical v6 triage identity/parent shape: only semantic marker-id
+        ;; establishes the association projected by v7.
+        (append-report
+         '(:report-type "triage" :id "legacy-triage"
+           :parent-id "transcript-head" :marker-id "marker-a"
+           :status "routed" :outcome "actionable"
+           :created-at "2026-09-06T00:00:02Z"))
+        (append-report
+         '(:report-type "extraction" :id "extract"
+           :marker-ids ["marker-b" "marker-a" "marker-a"]
+           :created-at "2026-09-06T00:00:03Z"))
+        (append-report
+         '(:report-type "request-shape" :id "shape-old"
+           :provider-request-id "request-a" :shape (:actual-shape (:bytes 1))))
+        ;; More than one physical page of newer open markers must not hide the
+        ;; older closed marker from a status-filtered list.  Status selection
+        ;; belongs in SQL before LIMIT, not in the Emacs consumer.
+        (dotimes (index 300)
+          (append-report
+           (list :report-type "marker"
+                 :id (format "open-marker-%d" index)
+                 :marker-id (format "open-marker-%d" index)
+                 :evidence-id (format "open-evidence-%d" index)
+                 :created-at (plist-get state :updated-at))))
+        (append-report
+         '(:report-type "request-shape" :id "shape-new"
+           :provider-request-id "request-a" :shape (:actual-shape (:bytes 2))))
+        (let* ((markers
+                (e-runtime-store-call
+                 runtime 'read
+                 '(:op session-process-report-marker-page :session-id "reports"
+                   :limit 1)))
+               (marker
+                (e-runtime-store-call
+                 runtime 'read
+                 '(:op session-process-report-marker :session-id "reports"
+                   :marker-id "marker-a")))
+               (triage
+                (e-runtime-store-call
+                 runtime 'read
+                 '(:op session-process-report-triage-page
+                   :session-id "reports" :marker-id "marker-a" :limit 1)))
+               (extraction
+                (e-runtime-store-call
+                 runtime 'read
+                 '(:op session-process-report-extraction-page
+                   :session-id "reports" :marker-id "marker-a" :limit 1)))
+               (shapes
+                (e-runtime-store-call
+                 runtime 'read
+                 '(:op session-process-report-request-shapes
+                   :session-id "reports" :provider-request-ids ["request-a"])))
+               (count
+                (e-runtime-store-call
+                 runtime 'read
+                 '(:op session-process-report-marker-count
+                   :session-id "reports"))))
+          (should (equal (plist-get
+                          (plist-get (car (plist-get markers :markers)) :marker)
+                          :marker-id)
+                         "open-marker-299"))
+          (should-not (plist-get (car (plist-get markers :markers))
+                                 :latest-triage))
+          (should (equal (plist-get (plist-get marker :marker) :id)
+                         "marker-a"))
+          (should (equal (plist-get (car (plist-get triage :triage)) :id)
+                         "legacy-triage"))
+          (should (equal (plist-get
+                          (car (plist-get extraction :extractions)) :id)
+                         "extract"))
+          (should (equal (plist-get
+                          (car (plist-get shapes :request-shapes)) :id)
+                         "shape-new"))
+          (should (= (plist-get count :marker-count) 301))
+          (let ((closed
+                 (e-runtime-store-call
+                  runtime 'read
+                  '(:op session-process-report-marker-page
+                    :session-id "reports" :status "routed" :limit 1))))
+            (should (= (length (plist-get closed :markers)) 1))
+            (should
+             (equal
+              (plist-get
+               (plist-get (car (plist-get closed :markers)) :marker)
+               :marker-id)
+              "marker-a"))
+            (should
+             (equal
+              (plist-get
+               (plist-get (car (plist-get closed :markers)) :latest-triage)
+               :id)
+              "legacy-triage"))))))))
+
+(ert-deftest e-runtime-store-session-worker-process-report-projection-is-atomic ()
+  "An invalid derived projection rolls back its canonical journal row."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let ((state (e-runtime-store-session-worker-test--state "atomic-report")))
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "atomic-report"
+             :record '(:type "session" :session-id "atomic-report" :id "root"
+                       :timestamp "2026-09-06T00:00:00Z")
+             :query-delta state))
+      (setq state (copy-tree state))
+      (plist-put state :journal-position 2)
+      (should-error
+       (e-runtime-store-call
+        runtime 'write
+        (list :op 'session-append :session-id "atomic-report"
+              :record
+              (list :type "process-report" :session-id "atomic-report"
+                    :id "too-many" :delta-id "too-many"
+                    :timestamp "2026-09-06T00:00:01Z"
+                    :report
+                    (list :report-type "extraction"
+                          :marker-ids
+                          (vconcat (mapcar (lambda (index)
+                                            (format "marker-%d" index))
+                                          (number-sequence 0 64)))))
+              :query-delta state)))
+      (should (= (plist-get
+                  (e-runtime-store-call
+                   runtime 'read
+                   '(:op session-header :session-id "atomic-report"))
+                  :record-count)
+                 1)))))
+
+(ert-deftest e-runtime-store-session-worker-process-report-pages-have-byte-cursors ()
+  "Semantic report pages stop at the detached byte bound with a usable cursor."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let ((state (e-runtime-store-session-worker-test--state "report-bytes")))
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "report-bytes"
+             :record '(:type "session" :session-id "report-bytes" :id "root"
+                       :timestamp "2026-09-06T00:00:00Z")
+             :query-delta state))
+      (dotimes (index 2)
+        (setq state (copy-tree state))
+        (plist-put state :journal-position (+ index 2))
+        (plist-put state :updated-at
+                   (format "2026-09-06T00:00:0%dZ" (1+ index)))
+        (e-runtime-store-call
+         runtime 'write
+         (list :op 'session-append :session-id "report-bytes"
+               :record
+               (list :type "process-report" :session-id "report-bytes"
+                     :id (format "marker-%d" index)
+                     :delta-id (format "marker-delta-%d" index)
+                     :timestamp (plist-get state :updated-at)
+                     :report
+                     (list :report-type "marker"
+                           :id (format "marker-%d" index)
+                           :marker-id (format "marker-%d" index)
+                           :note (make-string (* 600 1024) (+ ?a index))))
+               :query-delta state)))
+      (let* ((newest
+              (e-runtime-store-call
+               runtime 'read
+               '(:op session-process-report-marker-page
+                 :session-id "report-bytes" :limit 2)))
+             (older
+              (e-runtime-store-call
+               runtime 'read
+               (list :op 'session-process-report-marker-page
+                     :session-id "report-bytes" :limit 2
+                     :before (plist-get newest :next)))))
+        (should (= (length (plist-get newest :markers)) 1))
+        (should (plist-get newest :truncated))
+        (should (integerp (plist-get newest :next)))
+        (should (<= (plist-get newest :byte-count)
+                    (plist-get newest :byte-limit)))
+        (should (= (length (plist-get older :markers)) 1))
+        (should-not (plist-get older :truncated))))))
 
 (ert-deftest e-runtime-store-session-worker-context-path-is-selected-and-compacted ()
   "Provider context follows one parent path and returns only its compacted suffix."

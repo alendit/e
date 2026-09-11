@@ -19,10 +19,13 @@
 (require 'e-actions)
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-harness-activity)
 (require 'e-layers)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-telemetry)
 (require 'e-tools)
+(require 'e-work)
 
 (defgroup e-process-reporting nil
   "Durable process observations for e."
@@ -48,6 +51,11 @@
   '("open" "routed" "closed" "rejected")
   "Accepted first-slice triage statuses.")
 
+(defconst e-process-reporting-record-limit 256
+  "Maximum process-report records consumed by one reporting action.")
+(defconst e-process-reporting-marker-association-limit 64
+  "Maximum raw marker identities accepted by one extraction action.")
+
 (defun e-process-reporting--timestamp ()
   "Return an ISO-8601 UTC timestamp."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
@@ -64,18 +72,186 @@
   (or (plist-get context :session-id)
       (user-error "Process reporting requires an active session")))
 
-(defun e-process-reporting--reports (context)
-  "Return process reports owned by CONTEXT's active session."
-  (e-session-local-process-reports
-   (e-process-reporting--session-store context)
-   (e-process-reporting--session-id context)))
+(defun e-process-reporting--terminal-work-p (work)
+  "Return non-nil when WORK has reached a terminal state."
+  (memq (plist-get (e-work-status work) :state)
+        '(finished failed cancelled)))
+
+(defun e-process-reporting--forward-result (parent value &optional transform)
+  "Settle PARENT from VALUE, applying TRANSFORM without blocking.
+
+VALUE and TRANSFORM's result may each be an `e-work' handle.  The currently
+owned child is the only process-local coordination retained by PARENT."
+  (let (child)
+    (setf (e-work-handle-cancel-function parent)
+          (lambda (_handle)
+            (when (and (e-work-handle-p child)
+                       (not (e-process-reporting--terminal-work-p child)))
+              (e-work-cancel child))
+            t))
+    (cl-labels
+        ((advance
+          (current mapper)
+          (unless (e-process-reporting--terminal-work-p parent)
+            (if (e-work-handle-p current)
+                (progn
+                  (setq child current)
+                  (e-work-on-settle
+                   current
+                   (lambda (settled)
+                     (unless (e-process-reporting--terminal-work-p parent)
+                       (pcase (plist-get (e-work-status settled) :state)
+                         ('finished
+                          (advance (plist-get (e-work-status settled) :result)
+                                   mapper))
+                         ('failed
+                          (e-work-fail
+                           parent (plist-get (e-work-status settled) :error)))
+                         ('cancelled (e-work-cancel parent)))))))
+              (condition-case err
+                  (let ((next (if mapper (funcall mapper current) current)))
+                    (if (e-work-handle-p next)
+                        (advance next nil)
+                      (e-work-finish parent next)))
+                ((error quit) (e-work-fail parent err)))))))
+      (advance value transform)))
+  parent)
+
+(defun e-process-reporting--composition-work (id context source transform)
+  "Start cooperative reporting work ID from SOURCE and TRANSFORM.
+
+SOURCE is invoked only after the work starts.  Neither SOURCE nor TRANSFORM
+may synchronously join child work; returned child handles are bridged by
+terminal callbacks."
+  (let* ((spec
+          (e-work-spec-create
+           :id id :description "Run one bounded process-reporting operation."
+           :execution 'cooperative :interactive-policy 'async
+           :owner 'process-reporting
+           :runner
+           (lambda (parent _arguments _work-context)
+             (condition-case err
+                 (e-process-reporting--forward-result
+                  parent (funcall source) transform)
+               ((error quit) (e-work-fail parent err)))
+             :deferred)))
+         (work (e-work-prepare
+                spec nil :context
+                (list :domain-ref (e-process-reporting--session-id context)
+                      :work-kind 'process-reporting))))
+    (e-work-start-prepared work :arguments nil)
+    work))
+
+(cl-defun e-process-reporting--ephemeral-reports
+    (store session-id &key (order 'newest) (limit e-process-reporting-record-limit)
+           record-id record-ids parent-id)
+  "Return a consumer-shaped bounded report list for explicit local STORE."
+  (let* ((ids (and record-ids
+                   (if (vectorp record-ids) (append record-ids nil) record-ids)))
+         (reports
+          (seq-filter
+           (lambda (report)
+             (and (or (null record-id)
+                      (equal (plist-get report :id) record-id))
+                  (or (null ids)
+                      (member (plist-get report :id) ids))
+                  (or (null parent-id)
+                      (equal (plist-get report :parent-id) parent-id))))
+           (copy-tree
+            (e-session-aggregate-process-reports store session-id) t))))
+    (seq-take (if (eq order 'newest) (reverse reports) reports) limit)))
+
+(cl-defun e-process-reporting--with-ephemeral-reports
+    (id context transform &key (order 'newest)
+        (limit e-process-reporting-record-limit) record-id record-ids parent-id)
+  "Run TRANSFORM on explicit ephemeral reports as work ID.
+
+Ordinary SQLite callers use the semantic projection queries below; this
+aggregate-backed helper is intentionally limited to the in-memory store."
+  (when (e-session-async-enabled-p
+         (e-process-reporting--session-store context))
+    (error "Ephemeral process-report query reached async SQLite"))
+  (e-process-reporting--composition-work
+   id context
+   (lambda ()
+     (e-process-reporting--ephemeral-reports
+      (e-process-reporting--session-store context)
+      (e-process-reporting--session-id context)
+      :order order :limit limit
+      :record-id record-id :record-ids record-ids :parent-id parent-id))
+   (lambda (reports)
+     ;; Domain reducers consume chronological subsets.  The physical
+     ;; newest-first page is reversed only after the query has bounded it.
+     (funcall transform
+              (if (eq order 'newest) (reverse reports) reports)))))
+
+(defun e-process-reporting--with-canonical-marker
+    (id context marker-id transform)
+  "Run TRANSFORM on the exact canonical MARKER-ID record as work ID.
+
+SQLite selects the semantic marker association before its exact bound."
+  (let* ((store (e-process-reporting--session-store context))
+         (session-id (e-process-reporting--session-id context)))
+    (if (e-session-async-enabled-p store)
+        (e-process-reporting--composition-work
+         id context
+         (lambda ()
+           (e-session-async-process-report-marker
+            store session-id marker-id))
+         (lambda (result)
+           (funcall transform (plist-get result :marker))))
+      (e-process-reporting--with-ephemeral-reports
+       id context
+       (lambda (reports)
+         (funcall transform (e-process-reporting--marker reports marker-id)))
+       :order 'oldest :limit 1 :record-id marker-id))))
+
+(defun e-process-reporting--with-latest-triage
+    (id context marker-id transform)
+  "Run TRANSFORM on MARKER-ID's exact newest related triage as work ID."
+  (let* ((store (e-process-reporting--session-store context))
+         (session-id (e-process-reporting--session-id context)))
+    (if (e-session-async-enabled-p store)
+        (e-process-reporting--composition-work
+         id context
+         (lambda ()
+           (e-session-async-process-report-triage-page
+            store session-id marker-id :limit 1))
+         (lambda (result)
+           (funcall transform (car (plist-get result :triage)))))
+      (e-process-reporting--with-ephemeral-reports
+       id context
+       (lambda (reports)
+         (funcall transform
+                  (car (e-process-reporting--triage-records reports marker-id))))
+       :order 'newest :limit 1 :parent-id marker-id))))
+
+(defun e-process-reporting--verify-markers (context marker-ids continuation)
+  "Verify bounded MARKER-IDS and invoke CONTINUATION cooperatively."
+  (let ((ids (copy-sequence marker-ids)))
+    (cl-labels
+        ((step
+          (remaining)
+          (if (null remaining)
+              (funcall continuation)
+            (e-process-reporting--with-canonical-marker
+             "process-reporting.verify-marker" context (car remaining)
+             (lambda (marker)
+               (unless marker
+                 (user-error "Unknown process marker: %s" (car remaining)))
+               (step (cdr remaining)))))))
+      (step ids))))
 
 (defun e-process-reporting--append (context report)
-  "Append process REPORT to CONTEXT's active session."
-  (e-session-append-process-report
-   (e-process-reporting--session-store context)
-   (e-process-reporting--session-id context)
-   report))
+  "Append process REPORT and settle from its persistence acknowledgement."
+  (e-process-reporting--composition-work
+   "process-reporting.append" context
+   (lambda ()
+     (e-session-append-process-report
+      (e-process-reporting--session-store context)
+      (e-process-reporting--session-id context)
+      report))
+   #'e-process-reporting--public-record))
 
 (defun e-process-reporting--records-of-type (reports report-type)
   "Return REPORTS whose report type equals REPORT-TYPE."
@@ -136,9 +312,13 @@
     note))
 
 (defun e-process-reporting--activity-events (harness session-id)
-  "Return activity events for HARNESS SESSION-ID."
+  "Return bounded current-turn activity for HARNESS SESSION-ID."
   (when (and (e-harness-p harness) (stringp session-id))
-    (e-session-local-activity-events (e-harness-sessions harness) session-id)))
+    (when-let* ((entry (gethash session-id
+                                (e-harness-active-turns harness)))
+                (turn-id (plist-get entry :id)))
+      (e-harness-activity-current-turn-events
+       harness session-id turn-id))))
 
 (defun e-process-reporting--own-event-p (event)
   "Return non-nil when EVENT belongs to process marker capture itself."
@@ -288,18 +468,6 @@
                (equal (plist-get tool-call :name) "process_marker"))
       tool-call)))
 
-(defun e-process-reporting--checkpoint-entry-id (harness session-id tool-call-id)
-  "Return transcript head immediately before TOOL-CALL-ID."
-  (when tool-call-id
-    (let ((message
-           (seq-find
-            (lambda (item)
-              (and (eq (plist-get item :role) 'tool-call)
-                   (equal (plist-get (plist-get item :content) :id)
-                          tool-call-id)))
-            (e-harness-messages harness session-id))))
-      (plist-get message :parent-id))))
-
 (defun e-process-reporting--current-request-id (harness session-id turn-id)
   "Return provider request id only while it is active in TURN-ID."
   (let ((states (make-hash-table :test 'equal))
@@ -330,18 +498,8 @@
   "Return latest triage record for MARKER-ID in REPORTS."
   (car (last (e-process-reporting--triage-records reports marker-id))))
 
-(defun e-process-reporting--terminal-evidence-marker (reports evidence-id)
-  "Return marker for terminal EVIDENCE-ID, if one exists."
-  (seq-find
-   (lambda (marker)
-     (when (equal (plist-get marker :evidence-id) evidence-id)
-       (let ((triage (e-process-reporting--latest-triage
-                      reports (plist-get marker :marker-id))))
-         (member (plist-get triage :status) '("routed" "closed" "rejected")))))
-   (e-process-reporting--records-of-type reports "marker")))
-
 (defun e-process-reporting-mark (arguments context)
-  "Append a session-owned process marker described by ARGUMENTS and CONTEXT."
+  "Return work appending a session-owned marker from ARGUMENTS and CONTEXT."
   (let* ((signal (e-process-reporting--member-argument
                   arguments :signal e-process-reporting-signals))
          (note (e-telemetry-redact-string
@@ -355,94 +513,148 @@
                          harness session-id turn-id))
          (trigger (car trigger-chain))
          (evidence-id (e-process-reporting--evidence-id
-                       signal note session-id turn-id trigger)))
-    (let ((reports (e-process-reporting--reports context)))
-      (if-let ((terminal (e-process-reporting--terminal-evidence-marker
-                          reports evidence-id)))
-          (list :marker-id (plist-get terminal :marker-id)
-                :evidence-id evidence-id
-                :suppressed t)
-        (let* ((marker-id (e-session-generate-ulid))
-               (project-root
-                (e-harness-project-root harness session-id turn-id))
-               (record
-                (list :report-type "marker"
-                      :id marker-id
-                      :marker-id marker-id
-                      :evidence-id evidence-id
-                      :created-at (e-process-reporting--timestamp)
-                      :signal signal
-                      :note note
-                      :session-id session-id
-                      :turn-id turn-id
-                      :project-root project-root
-                      :session-uri
-                      (format "session://e/sessions/%s/" session-id)
-                      :messages-uri
-                      (format "session://e/sessions/%s/messages" session-id)
-                      :activity-uri
-                      (format "session://e/sessions/%s/activity" session-id)
-                      :process-reports-uri
-                      (format "session://e/sessions/%s/process-reports"
-                              session-id)
-                      :checkpoint-entry-id
-                      (e-process-reporting--checkpoint-entry-id
-                       harness session-id tool-call-id)
-                      :provider-request-id
-                      (e-process-reporting--current-request-id
-                       harness session-id turn-id)
-                      :tool-call-id tool-call-id
-                      :action-call-id (plist-get context :action-call-id)
-                      :trigger trigger
-                      :trigger-chain (vconcat trigger-chain))))
-          (e-process-reporting--public-record
-           (e-process-reporting--append context record)))))))
+                       signal note session-id turn-id trigger))
+         ;; Evidence identity is already session-scoped and content-keyed.
+         ;; Reusing it as the public marker id gives SQLite's existing
+         ;; `record_id' index an exact dedupe predicate independent of total
+         ;; process-report history size.
+         (marker-id evidence-id))
+    (cl-labels
+        ((append-new-marker
+          ()
+          (let ((project-root
+                 (e-harness-project-root harness session-id turn-id)))
+            (e-process-reporting--append
+             context
+             (list :report-type "marker"
+                   :id marker-id :marker-id marker-id :evidence-id evidence-id
+                   :created-at (e-process-reporting--timestamp)
+                   :signal signal :note note :session-id session-id
+                   :turn-id turn-id :project-root project-root
+                   :session-uri (format "session://e/sessions/%s/" session-id)
+                   :messages-uri
+                   (format "session://e/sessions/%s/messages" session-id)
+                   :activity-uri
+                   (format "session://e/sessions/%s/activity" session-id)
+                   :process-reports-uri
+                   (format "session://e/sessions/%s/process-reports" session-id)
+                   :provider-request-id
+                   (e-process-reporting--current-request-id
+                    harness session-id turn-id)
+                   :tool-call-id tool-call-id
+                   :action-call-id (plist-get context :action-call-id)
+                   :trigger trigger :trigger-chain (vconcat trigger-chain))))))
+      (e-process-reporting--with-canonical-marker
+       "process-reporting.mark.marker" context marker-id
+       (lambda (marker)
+         (if (null marker)
+             (append-new-marker)
+           (e-process-reporting--with-latest-triage
+            "process-reporting.mark.triage" context marker-id
+            (lambda (triage)
+              (if (member (plist-get triage :status)
+                          '("routed" "closed" "rejected"))
+                  (list :marker-id marker-id :evidence-id evidence-id
+                        :suppressed t)
+                (append-new-marker))))))))))
 
 (defun e-process-reporting-list (context &optional arguments)
-  "Return current-session marker summaries, newest-first."
-  (let* ((reports (e-process-reporting--reports context))
-         (status (plist-get arguments :status))
-         (markers
-          (reverse
-           (e-process-reporting--records-of-type reports "marker")))
-         result)
-    (dolist (marker markers (nreverse result))
-      (let* ((triage (e-process-reporting--latest-triage
-                      reports (plist-get marker :marker-id)))
-             (current-status (or (plist-get triage :status) "open")))
-        (when (or (null status) (equal status current-status))
-          (push (list :marker-id (plist-get marker :marker-id)
-                      :evidence-id (plist-get marker :evidence-id)
-                      :created-at (plist-get marker :created-at)
-                      :signal (plist-get marker :signal)
-                      :note (plist-get marker :note)
-                      :session-id (plist-get marker :session-id)
-                      :status current-status
-                      :outcome (plist-get triage :outcome)
-                      :target-reference (plist-get triage :target-reference))
-                result))))))
+  "Return work producing current-session marker summaries, newest-first."
+  (let* ((store (e-process-reporting--session-store context))
+         (session-id (e-process-reporting--session-id context))
+         (status (plist-get arguments :status)))
+    (cl-labels
+        ((summaries
+          (pairs)
+          (let (result)
+            (dolist (pair pairs (nreverse result))
+              (let* ((marker (plist-get pair :marker))
+                     (triage (plist-get pair :latest-triage))
+                     (current-status (or (plist-get triage :status) "open")))
+                (when (or (null status) (equal status current-status))
+                  (push (list :marker-id (plist-get marker :marker-id)
+                              :evidence-id (plist-get marker :evidence-id)
+                              :created-at (plist-get marker :created-at)
+                              :signal (plist-get marker :signal)
+                              :note (plist-get marker :note)
+                              :session-id (plist-get marker :session-id)
+                              :status current-status
+                              :outcome (plist-get triage :outcome)
+                              :target-reference
+                              (plist-get triage :target-reference))
+                        result)))))))
+      (if (e-session-async-enabled-p store)
+          (e-process-reporting--composition-work
+           "process-reporting.list" context
+           (lambda ()
+             (e-session-async-process-report-marker-page
+              store session-id :status status
+              :limit e-process-reporting-record-limit))
+           (lambda (page) (summaries (plist-get page :markers))))
+        (e-process-reporting--with-ephemeral-reports
+         "process-reporting.list" context
+         (lambda (reports)
+           (summaries
+            (mapcar
+             (lambda (marker)
+               (list :marker marker
+                     :latest-triage
+                     (e-process-reporting--latest-triage
+                      reports (plist-get marker :marker-id))))
+             (reverse
+              (e-process-reporting--records-of-type reports "marker")))))
+         :limit e-process-reporting-record-limit)))))
+
+(defun e-process-reporting--read-result (marker triage extractions)
+  "Return public read result from MARKER, TRIAGE, and EXTRACTIONS."
+  (list :marker (e-process-reporting--public-record marker)
+        :triage (mapcar #'e-process-reporting--public-record triage)
+        :extractions
+        (mapcar #'e-process-reporting--public-record extractions)))
 
 (defun e-process-reporting-read (context marker-id)
-  "Return current-session marker MARKER-ID and its appended records."
-  (let* ((reports (e-process-reporting--reports context))
-         (marker (e-process-reporting--marker reports marker-id)))
-    (unless marker
-      (user-error "Unknown process marker: %s" marker-id))
-    (list :marker (e-process-reporting--public-record marker)
-          :triage (mapcar #'e-process-reporting--public-record
-                          (e-process-reporting--triage-records
-                           reports marker-id))
-          :extractions
-          (mapcar
-           #'e-process-reporting--public-record
-           (seq-filter
-            (lambda (record)
-              (and (equal (plist-get record :report-type) "extraction")
-                   (member marker-id (plist-get record :marker-ids))))
-            reports)))))
+  "Return work reading marker MARKER-ID and its bounded related records."
+  (let* ((store (e-process-reporting--session-store context))
+         (session-id (e-process-reporting--session-id context)))
+    (e-process-reporting--with-canonical-marker
+     "process-reporting.read.marker" context marker-id
+     (lambda (marker)
+       (unless marker
+         (user-error "Unknown process marker: %s" marker-id))
+       (if (e-session-async-enabled-p store)
+           (e-process-reporting--composition-work
+            "process-reporting.read.triage" context
+            (lambda ()
+              (e-session-async-process-report-triage-page
+               store session-id marker-id
+               :limit e-process-reporting-record-limit))
+            (lambda (triage-page)
+              (e-process-reporting--composition-work
+               "process-reporting.read.extractions" context
+               (lambda ()
+                 (e-session-async-process-report-extraction-page
+                  store session-id marker-id
+                  :limit e-process-reporting-record-limit))
+               (lambda (extraction-page)
+                 (e-process-reporting--read-result
+                  marker
+                  (reverse (plist-get triage-page :triage))
+                  (reverse
+                   (plist-get extraction-page :extractions)))))))
+         (e-process-reporting--with-ephemeral-reports
+          "process-reporting.read.related" context
+          (lambda (reports)
+            (e-process-reporting--read-result
+             marker
+             (e-process-reporting--triage-records reports marker-id)
+             (seq-filter
+              (lambda (record)
+                (and (equal (plist-get record :report-type) "extraction")
+                     (member marker-id (plist-get record :marker-ids))))
+              reports)))))))))
 
 (defun e-process-reporting-triage (arguments context)
-  "Append a current-session triage decision from ARGUMENTS."
+  "Return work appending a current-session triage decision from ARGUMENTS."
   (let ((marker-id (e-process-reporting--string-argument
                     arguments :marker-id t))
         (outcome (e-process-reporting--member-argument
@@ -455,31 +667,37 @@
            arguments :decision-note t)))
         (target (e-process-reporting--string-argument
                  arguments :target-reference)))
-    (unless (e-process-reporting--marker
-             (e-process-reporting--reports context) marker-id)
-      (user-error "Unknown process marker: %s" marker-id))
-    (e-process-reporting--public-record
-     (e-process-reporting--append
-      context
-      (append
-       (list :report-type "triage"
-             :marker-id marker-id
-             :created-at (e-process-reporting--timestamp)
-             :outcome outcome
-             :status status
-             :decision-note decision-note)
-       (when target
-         (list :target-reference
-               (e-telemetry-redact-string target))))))))
+    (e-process-reporting--with-canonical-marker
+     "process-reporting.triage.marker" context marker-id
+     (lambda (marker)
+       (unless marker
+         (user-error "Unknown process marker: %s" marker-id))
+       (e-process-reporting--append
+        context
+        (append
+         (list :report-type "triage"
+               :id (e-session-generate-ulid)
+               :parent-id marker-id
+               :marker-id marker-id
+               :created-at (e-process-reporting--timestamp)
+               :outcome outcome
+               :status status
+               :decision-note decision-note)
+         (when target
+           (list :target-reference
+                 (e-telemetry-redact-string target)))))))))
 
-(defun e-process-reporting--string-vector (arguments key &optional required)
-  "Return KEY from ARGUMENTS as a vector of strings."
+(defun e-process-reporting--string-vector
+    (arguments key &optional required max-items)
+  "Return KEY from ARGUMENTS as a vector of strings bounded by MAX-ITEMS."
   (let* ((value (plist-get arguments key))
          (items (cond ((vectorp value) (append value nil))
                       ((listp value) value)
                       (t nil))))
     (when (and required (null items))
       (user-error "%s requires at least one value" key))
+    (when (and max-items (> (length items) max-items))
+      (user-error "%s accepts at most %d values" key max-items))
     (unless (cl-every #'stringp items)
       (user-error "%s must contain only strings" key))
     (vconcat (mapcar #'e-telemetry-redact-string items))))
@@ -497,10 +715,15 @@
     result))
 
 (defun e-process-reporting-record-extraction (arguments context)
-  "Append offline extraction cost attribution from ARGUMENTS and CONTEXT."
+  "Return work appending extraction attribution from ARGUMENTS and CONTEXT."
   (let* ((marker-ids
-          (append (e-process-reporting--string-vector
-                   arguments :marker-ids t) nil))
+          (sort
+           (delete-dups
+            (append (e-process-reporting--string-vector
+                     arguments :marker-ids t
+                     e-process-reporting-marker-association-limit)
+                    nil))
+           #'string<))
          (method
           (e-telemetry-redact-string
            (e-process-reporting--string-argument
@@ -512,22 +735,20 @@
            arguments :provider-request-ids))
          (usage (e-process-reporting--token-usage
                  (plist-get arguments :token-usage))))
-    (let ((reports (e-process-reporting--reports context)))
-      (dolist (marker-id marker-ids)
-        (unless (e-process-reporting--marker reports marker-id)
-          (user-error "Unknown process marker: %s" marker-id))))
-    (e-process-reporting--public-record
-     (e-process-reporting--append
-      context
-      (list :report-type "extraction"
-            :created-at (e-process-reporting--timestamp)
-            :marker-ids marker-ids
-            :session-evidence session-evidence
-            :provider-request-ids request-ids
-            :token-usage usage
-            :estimation-method method
-            :session-id (plist-get context :session-id)
-            :turn-id (plist-get context :turn-id))))))
+    (e-process-reporting--verify-markers
+     context marker-ids
+     (lambda ()
+       (e-process-reporting--append
+        context
+        (list :report-type "extraction"
+              :created-at (e-process-reporting--timestamp)
+              :marker-ids marker-ids
+              :session-evidence session-evidence
+              :provider-request-ids request-ids
+              :token-usage usage
+              :estimation-method method
+              :session-id (plist-get context :session-id)
+              :turn-id (plist-get context :turn-id)))))))
 
 (defun e-process-reporting--request-usage (events request-id)
   "Return provider token usage in EVENTS joined to REQUEST-ID."
@@ -692,7 +913,7 @@ needed."
 
 (defun e-process-reporting-record-request-shape
     (context request-id request-ordinal shape)
-  "Record explicit request SHAPE for REQUEST-ID in action CONTEXT.
+  "Return work recording request SHAPE for REQUEST-ID in action CONTEXT.
 REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
   (unless (and (stringp request-id) (not (string-empty-p request-id)))
     (signal 'wrong-type-argument (list 'non-empty-string-p request-id)))
@@ -704,16 +925,16 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
                  (plist-get projected :without-active-shape)
                  (plist-get projected :paired-shape))
       (user-error "Incomplete process-reporting request shape"))
-    (e-process-reporting--public-record
-     (e-process-reporting--append
-      context
-      (list :report-type "request-shape"
-            :created-at (e-process-reporting--timestamp)
-            :provider-request-id request-id
-            :provider-request-ordinal request-ordinal
-            :shape projected
-            :session-id (plist-get context :session-id)
-            :turn-id (plist-get context :turn-id))))))
+    (e-process-reporting--append
+     context
+     (list :report-type "request-shape"
+           :id request-id
+           :created-at (e-process-reporting--timestamp)
+           :provider-request-id request-id
+           :provider-request-ordinal request-ordinal
+           :shape projected
+           :session-id (plist-get context :session-id)
+           :turn-id (plist-get context :turn-id)))))
 
 (defun e-process-reporting-measure-and-record-request-shape
     (context request-id request-ordinal messages options segments)
@@ -782,27 +1003,14 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
           :serialization (plist-get shape :serialization)
           :tokenizer-revision (plist-get shape :tokenizer-revision))))
 
-(defun e-process-reporting-cost-report (context)
-  "Return paired request-shape accounting for CONTEXT session markers."
-  (let* ((harness (plist-get context :harness))
-         (session-id (plist-get context :session-id))
-         (events (e-process-reporting--activity-events harness session-id))
-         (requests
-          (seq-filter
-           (lambda (event)
-             (eq (plist-get event :event-type) 'provider-request-started))
-           events))
-         (shape-records
-          (e-process-reporting--records-of-type
-           (e-process-reporting--reports context) "request-shape"))
-         (entries
+(defun e-process-reporting--cost-result
+    (session-id requests events shape-records marker-count)
+  "Return detached cost result for SESSION-ID from bounded query inputs."
+  (let* ((entries
           (mapcar (lambda (event)
                     (e-process-reporting--request-cost-entry
                      event events shape-records))
                   requests))
-         (markers
-          (e-process-reporting--records-of-type
-           (e-process-reporting--reports context) "marker"))
          (delta-bytes
           (let ((measured
                  (delq nil
@@ -825,7 +1033,7 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
            ((= measured-count 0) "not-recorded")
            ((= measured-count (length requests)) "recorded")
            (t "partial"))
-          :marker-count (length markers)
+          :marker-count marker-count
           :marker-follow-up-request-count
           (cl-count-if (lambda (entry)
                          (plist-get entry :marker-follow-up))
@@ -837,6 +1045,50 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
           :behavioral-estimate nil
           :note
           "Counterfactual byte deltas exist only for requests measured explicitly by process reporting; ordinary provider requests do not perform or retain this expensive measurement. Values do not claim provider-token or behavioral overhead.")))
+
+(defun e-process-reporting-cost-report (context)
+  "Return work producing paired request accounting for CONTEXT markers."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (events (e-process-reporting--activity-events harness session-id))
+         (requests
+          (seq-filter
+           (lambda (event)
+             (eq (plist-get event :event-type) 'provider-request-started))
+           events))
+         (request-ids
+          (delq nil
+                (mapcar
+                 (lambda (event)
+                   (plist-get (plist-get event :payload) :provider-request-id))
+                 requests))))
+    (let ((store (e-process-reporting--session-store context)))
+      (if (e-session-async-enabled-p store)
+          (e-process-reporting--composition-work
+           "process-reporting.cost-report.shapes" context
+           (lambda ()
+             (if request-ids
+                 (e-session-async-process-report-request-shapes
+                  store session-id request-ids)
+               (list :request-shapes nil)))
+           (lambda (shape-page)
+             (e-process-reporting--composition-work
+              "process-reporting.cost-report.marker-count" context
+              (lambda ()
+                (e-session-async-process-report-marker-count store session-id))
+              (lambda (count)
+                (e-process-reporting--cost-result
+                 session-id requests events
+                 (plist-get shape-page :request-shapes)
+                 (plist-get count :marker-count))))))
+        (e-process-reporting--with-ephemeral-reports
+         "process-reporting.cost-report" context
+         (lambda (reports)
+           (e-process-reporting--cost-result
+            session-id requests events
+            (e-process-reporting--records-of-type reports "request-shape")
+            (length (e-process-reporting--records-of-type reports "marker"))))
+         :record-ids (and request-ids (vconcat request-ids)))))))
 
 (defconst e-process-reporting--marker-parameters
   `(:type "object"
@@ -866,13 +1118,45 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
   "Triage action schema.")
 
 (defun e-process-reporting--action (id parameters runner)
-  "Return cheap process reporting action ID with PARAMETERS and RUNNER."
-  (e-action-cheap-create
-   :id id
-   :owner 'process-reporting
+  "Return cooperative process reporting action ID with PARAMETERS and RUNNER."
+  (e-action-create
    :parameters parameters
    :requires-session t
-   :runner runner))
+   :work
+   (e-work-spec-create
+    :id id :parameters parameters
+    :description "Run one bounded process-reporting action."
+    :execution 'cooperative :interactive-policy 'async
+    :owner 'process-reporting
+    :runner
+    (lambda (parent arguments context)
+      (condition-case err
+          (e-process-reporting--forward-result
+           parent (funcall runner arguments context))
+        ((error quit) (e-work-fail parent err)))
+      :deferred))))
+
+(defun e-process-reporting--marker-tool-work ()
+  "Return model-facing marker work bridged to the action's true settlement."
+  (e-work-spec-create
+   :id "tool.process-marker"
+   :description "Persist one process marker and return its committed record."
+   :execution 'cooperative :interactive-policy 'async
+   :owner 'process-reporting
+   :runner
+   (lambda (parent arguments _context)
+     (condition-case err
+         (let ((action-work
+                (plist-get
+                 (e-actions-dispatch 'process-reporting :mark arguments)
+                 :request)))
+           ;; `e-actions-call' deliberately returns a generic shell-facing
+           ;; work reference.  A model tool is itself Work, so it owns and
+           ;; bridges the exact action handle instead of reporting that
+           ;; reference as successful tool content.
+           (e-process-reporting--forward-result parent action-work))
+       ((error quit) (e-work-fail parent err)))
+     :deferred)))
 
 (defun e-process-reporting-register-tool (registry &rest _context)
   "Register the tiny process marker tool in REGISTRY."
@@ -882,12 +1166,7 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
    :description "Save one coarse, reusable process observation."
    :parameters e-process-reporting--marker-parameters
    :blocking-class 'cheap
-   :work
-   (e-tools-cheap-work
-    "tool.process-marker"
-    (lambda (arguments)
-      (e-actions-call 'process-reporting :mark arguments)
-      "ok"))))
+   :work (e-process-reporting--marker-tool-work)))
 
 (defun e-process-reporting-capability-create ()
   "Create the session-owned process reporting capability."
@@ -927,7 +1206,7 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
      "process_marker_extraction"
      '(:type "object"
        :properties
-       (:marker-ids (:type "array" :items (:type "string"))
+       (:marker-ids (:type "array" :maxItems 64 :items (:type "string"))
         :session-evidence (:type "array" :items (:type "string"))
         :provider-request-ids (:type "array" :items (:type "string"))
         :token-usage (:type "object")

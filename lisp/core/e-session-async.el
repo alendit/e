@@ -286,24 +286,75 @@ after the mutation's explicit commit acknowledgement."
                :limit (or limit 32))))
 
 (cl-defun e-session-async-record-page
-    (store session-id &key after limit record-type record-id record-identity
-           parent-id)
+    (store session-id &key after before limit order record-type record-id
+           record-ids record-identity parent-id parent-ids)
   "Return immediately with one detached bounded journal page for SESSION-ID.
 
 This is the history/inspection boundary.  AFTER is the stable journal-position
-cursor returned as `:next' by the previous page.  The optional identity fields
-are typed SQLite predicates, not filters over an Emacs-owned transcript."
+cursor returned as `:next' by an oldest-first page; BEFORE is the corresponding
+cursor for a newest-first page.  ORDER is `oldest' or `newest'.  Optional scalar
+and bounded-set identity fields are typed SQLite predicates, not filters over
+an Emacs-owned transcript."
   (let ((body (list :op 'session-record-page
                     :session-id session-id
-                    :after (or after 0)
+                    :order (or order 'oldest)
                     :limit (or limit 100))))
+    (when after (setq body (append body (list :after after))))
+    (when before (setq body (append body (list :before before))))
     (dolist (entry `((:record-type . ,record-type)
                      (:record-id . ,record-id)
+                     (:record-ids . ,record-ids)
                      (:record-identity . ,record-identity)
-                     (:parent-id . ,parent-id)))
+                     (:parent-id . ,parent-id)
+                     (:parent-ids . ,parent-ids)))
       (when (cdr entry)
         (setq body (append body (list (car entry) (cdr entry))))))
     (e-session-async--start-read store body)))
+
+(cl-defun e-session-async-process-report-marker-page
+    (store session-id &key before status (limit 64))
+  "Return newest bounded markers with each latest triage from SQLite."
+  (let ((body (list :op 'session-process-report-marker-page
+                    :session-id session-id :limit limit)))
+    (when before (setq body (append body (list :before before))))
+    (when status (setq body (append body (list :status status))))
+    (e-session-async--start-read store body)))
+
+(defun e-session-async-process-report-marker (store session-id marker-id)
+  "Return exact canonical MARKER-ID work for SESSION-ID."
+  (e-session-async--start-read
+   store (list :op 'session-process-report-marker :session-id session-id
+               :marker-id marker-id)))
+
+(cl-defun e-session-async-process-report-triage-page
+    (store session-id marker-id &key before (limit 64))
+  "Return newest bounded triage rows associated with MARKER-ID."
+  (let ((body (list :op 'session-process-report-triage-page
+                    :session-id session-id :marker-id marker-id :limit limit)))
+    (when before (setq body (append body (list :before before))))
+    (e-session-async--start-read store body)))
+
+(cl-defun e-session-async-process-report-extraction-page
+    (store session-id marker-id &key before (limit 64))
+  "Return newest bounded extraction rows associated with MARKER-ID."
+  (let ((body (list :op 'session-process-report-extraction-page
+                    :session-id session-id :marker-id marker-id :limit limit)))
+    (when before (setq body (append body (list :before before))))
+    (e-session-async--start-read store body)))
+
+(defun e-session-async-process-report-request-shapes
+    (store session-id provider-request-ids)
+  "Return latest exact request shapes for bounded PROVIDER-REQUEST-IDS."
+  (e-session-async--start-read
+   store (list :op 'session-process-report-request-shapes
+               :session-id session-id
+               :provider-request-ids (vconcat provider-request-ids))))
+
+(defun e-session-async-process-report-marker-count (store session-id)
+  "Return exact durable marker count work for SESSION-ID."
+  (e-session-async--start-read
+   store (list :op 'session-process-report-marker-count
+               :session-id session-id)))
 
 (cl-defun e-session-async-recent-failures (store &key (limit 10))
   "Return immediately with one bounded newest-first failed-turn query."

@@ -1,4 +1,4 @@
-;;; e-runtime-store-offline-test.el --- v5 to v6 offline upgrade tests -*- lexical-binding: t; -*-
+;;; e-runtime-store-offline-test.el --- explicit schema upgrades -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
@@ -10,6 +10,8 @@
 (require 'e-runtime-store-codec)
 (require 'e-runtime-store-offline)
 (require 'e-runtime-store)
+(require 'e-runtime-store-worker)
+(require 'e-runtime-store-session-worker)
 (require 'e-session-query)
 
 (defun e-runtime-store-offline-test--payload (value)
@@ -19,6 +21,34 @@
 (defun e-runtime-store-offline-test--column (row index)
   "Return INDEX from SQLite ROW."
   (if (vectorp row) (aref row index) (nth index row)))
+
+(defun e-runtime-store-offline-test--file-hash (file)
+  "Return SHA-256 of FILE bytes."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (secure-hash 'sha256 (current-buffer))))
+
+(defun e-runtime-store-offline-test--make-v7 ()
+  "Create and close one disposable current v7 runtime store."
+  (let* ((directory (make-temp-file "e-runtime-offline-v7-" t))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         (runtime (e-runtime-store-open directory)))
+    (unwind-protect
+        (e-runtime-store-call runtime 'read '(:op store-metrics))
+      (e-runtime-store-close runtime))
+    (list directory database-file)))
+
+(defun e-runtime-store-offline-test--migration-tuples (database)
+  "Return DATABASE migration rows as detached version/identity/checksum lists."
+  (mapcar
+   (lambda (row)
+     (list (e-runtime-store-offline-test--column row 0)
+           (e-runtime-store-offline-test--column row 1)
+           (e-runtime-store-offline-test--column row 2)))
+   (sqlite-select
+    database
+    "SELECT version,identity,checksum FROM schema_migrations ORDER BY version")))
 
 (defun e-runtime-store-offline-test--root (session-id)
   "Return a minimal canonical root for SESSION-ID."
@@ -182,6 +212,54 @@ runtime directory or uses the v6 initializer to manufacture a v5 database."
           (list directory database-file))
       (when database (sqlite-close database)))))
 
+(defun e-runtime-store-offline-test--make-v6 (records)
+  "Create a disposable physical v6 database containing canonical RECORDS."
+  (let* ((directory (make-temp-file "e-runtime-offline-v6-" t))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         (database (sqlite-open database-file))
+         (session-id (plist-get (car records) :session-id)))
+    (unwind-protect
+        (progn
+          (sqlite-execute database "PRAGMA foreign_keys=ON")
+          (sqlite-execute
+           database
+           "CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+          (e-runtime-store-worker--initialize-common-schema database)
+          (e-runtime-store-worker--initialize-domain-schema database 6)
+          (sqlite-execute
+           database
+           "INSERT INTO store_meta(key,value) VALUES('schema_version','6')")
+          (sqlite-execute
+           database
+           "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(6,'new-current-schema',?,0)"
+           (vector (secure-hash 'sha256 "feature92-schema-v6")))
+          (let ((position 0))
+            (dolist (record records)
+              (setq position (1+ position))
+              (let ((columns
+                     (e-runtime-store-session-worker--record-columns record)))
+                (sqlite-execute
+                 database
+                 "INSERT INTO session_records(session_id,position,payload,record_type,record_id,record_identity,parent_id,timestamp) VALUES(?,?,?,?,?,?,?,?)"
+                 (vector
+                  session-id position
+                  (e-runtime-store-offline-test--payload record)
+                  (nth 0 columns) (nth 1 columns) (nth 2 columns)
+                  (nth 3 columns) (nth 4 columns))))))
+          (let ((state (e-session-query-derive records)))
+            (when state
+              (plist-put state :journal-position (length records))
+              (sqlite-execute
+               database
+               (concat
+                "INSERT INTO session_query_state(session_id,name,summary,metadata,created_at,updated_at,last_message_at,latest_assistant_marker,message_count,current_branch,turn_options,current_head_id,root_event_id,current_context_generation_id,board_id,principal,association_role,routing_policy,root_p,board_output_sequence,board_activity_sequence,journal_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+               (e-runtime-store-session-worker--state-values state))))
+          (sqlite-close database)
+          (setq database nil)
+          (set-file-modes database-file #o600)
+          (list directory database-file))
+      (when database (sqlite-close database)))))
+
 (defun e-runtime-store-offline-test--make-v4
     (records &optional catalog checkpoint)
   "Create a disposable v4 database with the retained session relations.
@@ -271,14 +349,14 @@ compatibility stage before the v6 session cutover."
     (unwind-protect
         (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 5))
-          (should (= (plist-get result :to) 6))
+          (should (= (plist-get result :to) 7))
           (should-not (e-runtime-store-offline-test--table-p
                        database-file "session_checkpoints")))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
 
 (ert-deftest e-runtime-store-offline-v4-sequential-compatibility-upgrade ()
-  "A real v4 source crosses the retained v5 envelope before v6 install."
+  "A real v4 source crosses each retained boundary before v7 install."
   (let* ((session-id "v4-session")
          (records (list (e-runtime-store-offline-test--root session-id)
                         (e-runtime-store-offline-test--message session-id)))
@@ -292,9 +370,9 @@ compatibility stage before the v6 session cutover."
     (unwind-protect
         (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 4))
-          (should (= (plist-get result :to) 6))
+          (should (= (plist-get result :to) 7))
           (should (= (e-runtime-store-offline-test--version backup) 4))
-          (should (= (e-runtime-store-offline-test--version database-file) 6))
+          (should (= (e-runtime-store-offline-test--version database-file) 7))
           (let ((database (sqlite-open database-file)))
             (unwind-protect
                 (progn
@@ -311,9 +389,10 @@ compatibility stage before the v6 session cutover."
                                      (e-runtime-store-offline-test--column row 0))
                                    (sqlite-select
                                     database
-                                    "SELECT identity FROM schema_migrations WHERE version IN (5,6) ORDER BY version"))
+                                    "SELECT identity FROM schema_migrations WHERE version IN (5,6,7) ORDER BY version"))
                            '("feature92-v4-to-v5-explicit-upgrade"
-                             "feature92-v5-to-v6-explicit-upgrade"))))
+                             "feature92-v5-to-v6-explicit-upgrade"
+                             "feature92-v6-to-v7-process-report-projection"))))
               (sqlite-close database))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
@@ -398,8 +477,8 @@ compatibility stage before the v6 session cutover."
       (when (file-directory-p directory)
         (delete-directory directory t)))))
 
-(ert-deftest e-runtime-store-offline-v5-upgrade-installs-derived-v6-schema ()
-  "A stopped v5 journal installs exact bounded v6 query state."
+(ert-deftest e-runtime-store-offline-v5-upgrade-installs-derived-v7-schema ()
+  "A stopped v5 journal installs exact bounded v7 query state."
   (let* ((session-id "offline-session")
          (records (list (e-runtime-store-offline-test--root session-id)
                         (e-runtime-store-offline-test--message session-id)))
@@ -420,11 +499,11 @@ compatibility stage before the v6 session cutover."
     (unwind-protect
         (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 5))
-          (should (= (plist-get result :to) 6))
+          (should (= (plist-get result :to) 7))
           (should (= (plist-get result :sessions) 1))
           (should (= (plist-get result :records) 2))
           (should (equal (plist-get result :integrity) "ok"))
-          (should (= (e-runtime-store-offline-test--version database-file) 6))
+          (should (= (e-runtime-store-offline-test--version database-file) 7))
           (should (= (e-runtime-store-offline-test--version backup) 5))
           (should (= (logand (file-modes backup) #o777) #o600))
           (should-not (e-runtime-store-offline-test--table-p
@@ -468,15 +547,19 @@ compatibility stage before the v6 session cutover."
                                   (vector session-id)))
                             0)
                            1))
-          (should (equal
-                           (e-runtime-store-offline-test--column
-                            (car (sqlite-select
-                                  database
-                                  "SELECT identity FROM schema_migrations WHERE version=6"))
-                           0)
-                           "feature92-v5-to-v6-explicit-upgrade")))
+                  (should
+                   (equal
+                    (e-runtime-store-offline-test--migration-tuples database)
+                    (list
+                     (list 5 "feature92-direct-v5-source"
+                           (secure-hash 'sha256 "feature92-schema-v5"))
+                     (list 6 "feature92-v5-to-v6-explicit-upgrade"
+                           (secure-hash 'sha256 "feature92-schema-v6"))
+                     (list 7 "feature92-v6-to-v7-process-report-projection"
+                           (secure-hash 'sha256
+                                        "feature92-schema-v7-process-report-projection"))))))
               (sqlite-close database))))
-          ;; The production worker may reopen the installed v6 image.  This
+          ;; The production worker may reopen the installed v7 image.  This
           ;; is deliberately a fresh owner, after the operator subprocess has
           ;; released its offline claim.
           (let ((store (e-runtime-store-open directory)))
@@ -487,7 +570,7 @@ compatibility stage before the v6 session cutover."
                     (e-runtime-store-await store request 5.0))
                   (should (= (plist-get (e-runtime-store-metrics store)
                                         :schema-version)
-                             6)))
+                             7)))
               (ignore-errors (e-runtime-store-close store))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
@@ -765,7 +848,7 @@ compatibility stage before the v6 session cutover."
                   (sqlite-close database))))
             (let ((result
                    (e-runtime-store-offline-upgrade directory backup)))
-              (should (= (plist-get result :to) 6))
+              (should (= (plist-get result :to) 7))
               (let ((database (sqlite-open database-file)))
                 (unwind-protect
                     (progn
@@ -879,6 +962,544 @@ compatibility stage before the v6 session cutover."
                           0)
                          payload))
               (sqlite-close database))))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-v6-to-v7-projects-mixed-history ()
+  "The v6 upgrade projects semantic report facts before query bounds."
+  (let* ((session-id "v6-process-reports")
+         (root (e-runtime-store-offline-test--root session-id))
+         (reports
+          (list
+           (list :type "process-report" :session-id session-id :id "marker-a"
+                 :delta-id "marker-delta" :parent-id "root"
+                 :timestamp "2026-09-06T00:00:01Z"
+                 :report '(:report-type "marker" :id "marker-a"
+                           :marker-id "marker-a" :evidence-id "evidence-a"))
+           (list :type "process-report" :session-id session-id
+                 :id "legacy-triage" :delta-id "triage-delta"
+                 :parent-id "transcript-head" :timestamp "2026-09-06T00:00:02Z"
+                 :report '(:report-type "triage" :id "legacy-triage"
+                           :parent-id "transcript-head" :marker-id "marker-a"
+                           :status "closed" :outcome "actionable"))
+           (list :type "process-report" :session-id session-id :id "extraction"
+                 :delta-id "extraction-delta" :parent-id "root"
+                 :timestamp "2026-09-06T00:00:03Z"
+                 :report '(:report-type "extraction" :id "extraction"
+                           :marker-ids ["marker-a" "marker-a"]))))
+         (unrelated
+          (mapcar
+           (lambda (index)
+             (list :type "process-report" :session-id session-id
+                   :id (format "other-%d" index)
+                   :delta-id (format "other-delta-%d" index) :parent-id "root"
+                   :timestamp "2026-09-06T00:00:04Z"
+                   :report (list :report-type "other"
+                                 :id (format "other-%d" index))))
+           (number-sequence 0 299)))
+         (shapes
+          (list
+           (list :type "process-report" :session-id session-id :id "shape-old"
+                 :delta-id "shape-old-delta" :parent-id "root"
+                 :timestamp "2026-09-06T00:00:05Z"
+                 :report '(:report-type "request-shape" :id "shape-old"
+                           :provider-request-id "request-a"))
+           (list :type "process-report" :session-id session-id :id "shape-new"
+                 :delta-id "shape-new-delta" :parent-id "root"
+                 :timestamp "2026-09-06T00:00:06Z"
+                 :report '(:report-type "request-shape" :id "shape-new"
+                           :provider-request-id "request-a"))))
+         (records (append (list root) reports unrelated shapes))
+         (fixture (e-runtime-store-offline-test--make-v6 records))
+         (directory (car fixture))
+         (database-file (cadr fixture))
+         (backup (expand-file-name "operator/pre-v6.sqlite3" directory)))
+    (unwind-protect
+        (let ((result (e-runtime-store-offline-upgrade directory backup)))
+          (should (= (plist-get result :from) 6))
+          (should (= (plist-get result :to) 7))
+          (should (= (plist-get result :projection-base-rows) 305))
+          (should (= (plist-get result :projection-association-rows) 3))
+          (let ((runtime (e-runtime-store-open directory)))
+            (unwind-protect
+                (progn
+                  (should
+                   (equal
+                    (plist-get
+                     (plist-get
+                      (e-runtime-store-call
+                       runtime 'read
+                       (list :op 'session-process-report-marker
+                             :session-id session-id :marker-id "marker-a"))
+                      :marker)
+                     :id)
+                    "marker-a"))
+                  (should
+                   (equal
+                    (plist-get
+                     (car
+                      (plist-get
+                       (e-runtime-store-call
+                        runtime 'read
+                        (list :op 'session-process-report-triage-page
+                              :session-id session-id :marker-id "marker-a"
+                              :limit 1))
+                       :triage))
+                     :id)
+                    "legacy-triage"))
+                  (should
+                   (equal
+                    (plist-get
+                     (plist-get
+                      (car
+                       (plist-get
+                        (e-runtime-store-call
+                         runtime 'read
+                         (list :op 'session-process-report-marker-page
+                               :session-id session-id :status "closed"
+                               :limit 1))
+                        :markers))
+                      :marker)
+                     :id)
+                    "marker-a"))
+                  (should
+                   (equal
+                    (plist-get
+                     (car
+                      (plist-get
+                       (e-runtime-store-call
+                        runtime 'read
+                        (list :op 'session-process-report-extraction-page
+                              :session-id session-id :marker-id "marker-a"
+                              :limit 1))
+                       :extractions))
+                     :id)
+                    "extraction"))
+                  (should
+                   (equal
+                    (plist-get
+                     (car
+                      (plist-get
+                       (e-runtime-store-call
+                        runtime 'read
+                        (list :op 'session-process-report-request-shapes
+                              :session-id session-id
+                              :provider-request-ids ["request-a"]))
+                       :request-shapes))
+                     :id)
+                    "shape-new"))
+                  (should
+                   (= (plist-get
+                       (e-runtime-store-call
+                        runtime 'read
+                        (list :op 'session-process-report-marker-count
+                              :session-id session-id))
+                       :marker-count)
+                      1)))
+              (e-runtime-store-close runtime)))
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (progn
+                  (should
+                   (equal
+                    (mapcar (lambda (row)
+                              (e-runtime-store-offline-test--column row 1))
+                            (sqlite-select
+                             database
+                             "PRAGMA table_info(session_process_report_index)"))
+                    '("session_id" "position" "association_ordinal"
+                      "report_type" "marker_id" "provider_request_id"
+                      "triage_status")))
+                  (should (= (e-runtime-store-offline-test--column
+                              (car (sqlite-select
+                                    database
+                                    "SELECT COUNT(*) FROM pragma_foreign_key_list('session_process_report_index')"))
+                              0)
+                             2)))
+              (sqlite-close database))))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-historical-fresh-v5-lineage-normalizes ()
+  "The exact historical fresh-v5 identity upgrades to normalized provenance."
+  (let* ((session-id "historical-v5")
+         (fixture
+          (e-runtime-store-offline-test--make-v5
+           (list (e-runtime-store-offline-test--root session-id))))
+         (directory (car fixture))
+         (database-file (cadr fixture))
+         (backup (expand-file-name "operator/pre-v5.sqlite3" directory)))
+    (unwind-protect
+        (progn
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (progn
+                  (sqlite-execute
+                   database
+                   "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, identity TEXT NOT NULL, checksum TEXT NOT NULL, applied_at REAL NOT NULL)")
+                  (sqlite-execute
+                   database
+                   "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(5,'new-current-schema',?,0)"
+                   (vector (secure-hash 'sha256 "feature92-schema-v5"))))
+              (sqlite-close database)))
+          (let ((result (e-runtime-store-offline-upgrade directory backup)))
+            (should (= (plist-get result :from) 5))
+            (should (= (plist-get result :to) 7)))
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (should
+                 (equal
+                  (e-runtime-store-offline-test--column
+                   (car
+                    (sqlite-select
+                     database
+                     "SELECT identity FROM schema_migrations WHERE version=5"))
+                   0)
+                  "feature92-direct-v5-source"))
+              (sqlite-close database)))
+          (let ((runtime (e-runtime-store-open directory)))
+            (unwind-protect
+                (should (= (plist-get
+                            (e-runtime-store-call
+                             runtime 'read '(:op store-metrics))
+                            :schema-version)
+                           7))
+              (e-runtime-store-close runtime))))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-historical-v6-predecessor-normalizes ()
+  "A migrated v6 with exact historical v5 provenance normalizes and reopens."
+  (let* ((session-id "historical-v6")
+         (fixture
+          (e-runtime-store-offline-test--make-v6
+           (list (e-runtime-store-offline-test--root session-id))))
+         (directory (car fixture))
+         (database-file (cadr fixture))
+         (backup (expand-file-name "operator/pre-v6.sqlite3" directory)))
+    (unwind-protect
+        (progn
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (progn
+                  (sqlite-execute
+                   database
+                   "UPDATE schema_migrations SET identity='feature92-v5-to-v6-explicit-upgrade' WHERE version=6")
+                  (sqlite-execute
+                   database
+                   "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(5,'new-current-schema',?,0)"
+                   (vector (secure-hash 'sha256 "feature92-schema-v5"))))
+              (sqlite-close database)))
+          (let ((result (e-runtime-store-offline-upgrade directory backup)))
+            (should (= (plist-get result :from) 6))
+            (should (= (plist-get result :to) 7)))
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (should
+                 (equal
+                  (e-runtime-store-offline-test--column
+                   (car
+                    (sqlite-select
+                     database
+                     "SELECT identity FROM schema_migrations WHERE version=5"))
+                   0)
+                  "feature92-direct-v5-source"))
+              (sqlite-close database)))
+          (let ((runtime (e-runtime-store-open directory)))
+            (unwind-protect
+                (should (= (plist-get
+                            (e-runtime-store-call
+                             runtime 'read '(:op store-metrics))
+                            :schema-version)
+                           7))
+              (e-runtime-store-close runtime))))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-v7-is-verified-read-only-noop ()
+  "A verified v7 store creates no backup and changes no migration rows."
+  (let* ((directory (make-temp-file "e-runtime-offline-v7-" t))
+         (runtime (e-runtime-store-open directory))
+         (backup (expand-file-name "operator/unused.sqlite3" directory)))
+    (unwind-protect
+        (progn
+          (e-runtime-store-call runtime 'read '(:op store-metrics))
+          (e-runtime-store-close runtime)
+          (setq runtime nil)
+          (let* ((database-file (expand-file-name "store.sqlite3" directory))
+                 (before (let ((database (sqlite-open database-file)))
+                           (unwind-protect
+                               (sqlite-select
+                                database
+                                "SELECT version,identity,checksum FROM schema_migrations ORDER BY version")
+                             (sqlite-close database))))
+                 (hash-before
+                  (e-runtime-store-offline-test--file-hash database-file))
+                 (result (e-runtime-store-offline-upgrade directory backup))
+                 (after (let ((database (sqlite-open database-file)))
+                          (unwind-protect
+                              (sqlite-select
+                               database
+                               "SELECT version,identity,checksum FROM schema_migrations ORDER BY version")
+                            (sqlite-close database)))))
+            (should (plist-get result :noop))
+            (should-not (plist-get result :backup))
+            (should-not (file-exists-p backup))
+            (should (equal before after))
+            (should
+             (equal
+              before
+              (list
+               (list 7 "new-current-schema"
+                     (secure-hash
+                      'sha256
+                      "feature92-schema-v7-process-report-projection")))))
+            (should (equal hash-before
+                           (e-runtime-store-offline-test--file-hash
+                            database-file)))))
+      (when runtime (e-runtime-store-close runtime))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-v7-malformed-shape-is-not-repaired ()
+  "Ordinary startup rejects malformed current shape without running DDL repair."
+  (dolist (case '(missing-table malformed-index split-foreign-keys))
+    (let* ((fixture (e-runtime-store-offline-test--make-v7))
+           (directory (car fixture))
+           (database-file (cadr fixture))
+           (runtime nil)
+           expected-index-sql
+           expected-foreign-keys)
+      (unwind-protect
+          (progn
+            (let ((database (sqlite-open database-file)))
+              (unwind-protect
+                  (pcase case
+                    ('missing-table
+                     (sqlite-execute
+                      database "DROP TABLE session_process_report_index"))
+                    ('malformed-index
+                     (sqlite-execute
+                      database "DROP INDEX session_process_report_marker_page")
+                     (sqlite-execute
+                      database
+                      (concat
+                       "CREATE INDEX session_process_report_marker_page "
+                       "ON session_process_report_index(session_id,position ASC) "
+                       "WHERE association_ordinal=0"))
+                     (setq expected-index-sql
+                           (e-runtime-store-offline-test--column
+                            (car
+                             (sqlite-select
+                              database
+                             "SELECT sql FROM sqlite_master WHERE name='session_process_report_marker_page'"))
+                            0)))
+                    ('split-foreign-keys
+                     (sqlite-execute
+                      database "DROP TABLE session_process_report_index")
+                     (sqlite-execute
+                      database
+                      (concat
+                       "CREATE TABLE session_process_report_index ("
+                       "session_id TEXT NOT NULL, position INTEGER NOT NULL, "
+                       "association_ordinal INTEGER NOT NULL, "
+                       "report_type TEXT NOT NULL, marker_id TEXT, "
+                       "provider_request_id TEXT, triage_status TEXT, "
+                       "PRIMARY KEY(session_id,position,association_ordinal), "
+                       "FOREIGN KEY(session_id) REFERENCES session_records(session_id) ON DELETE CASCADE, "
+                       "FOREIGN KEY(position) REFERENCES session_records(position) ON DELETE CASCADE)"))
+                     (e-runtime-store-session-worker-initialize-process-report-projection
+                      database)
+                     (setq expected-foreign-keys
+                           (sqlite-select
+                            database
+                            "PRAGMA foreign_key_list(session_process_report_index)"))))
+                (sqlite-close database)))
+            (setq runtime (e-runtime-store-open directory))
+            (should-error
+             (e-runtime-store-call runtime 'read '(:op store-metrics))
+             :type 'e-runtime-store-schema-too-old)
+            (ignore-errors (e-runtime-store-close runtime))
+            (setq runtime nil)
+            (let ((database (sqlite-open database-file)))
+              (unwind-protect
+                  (pcase case
+                    ('missing-table
+                     (should-not
+                      (car
+                       (sqlite-select
+                        database
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_process_report_index'"))))
+                    ('malformed-index
+                     (should
+                      (equal
+                       (e-runtime-store-offline-test--column
+                        (car
+                         (sqlite-select
+                          database
+                          "SELECT sql FROM sqlite_master WHERE name='session_process_report_marker_page'"))
+                        0)
+                       expected-index-sql)))
+                    ('split-foreign-keys
+                     (let ((actual
+                            (sqlite-select
+                             database
+                             "PRAGMA foreign_key_list(session_process_report_index)")))
+                       (should (equal actual expected-foreign-keys))
+                       (should
+                        (= (length
+                            (delete-dups
+                             (mapcar
+                              (lambda (row)
+                                (e-runtime-store-offline-test--column row 0))
+                              actual)))
+                           2)))))
+                (sqlite-close database))))
+        (when runtime (ignore-errors (e-runtime-store-close runtime)))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
+
+(ert-deftest e-runtime-store-offline-v7-invalid-lineage-is-read-only-failure ()
+  "Missing or altered v7 provenance rejects without backup or database writes."
+  (dolist (mutation
+           '("DELETE FROM schema_migrations WHERE version=7"
+             "UPDATE schema_migrations SET checksum='bad' WHERE version=7"
+             "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(6,'new-current-schema','bad',0)"))
+    (let* ((fixture (e-runtime-store-offline-test--make-v7))
+           (directory (car fixture))
+           (database-file (cadr fixture))
+           (backup (expand-file-name "operator/unused.sqlite3" directory)))
+      (unwind-protect
+          (progn
+            (let ((database (sqlite-open database-file)))
+              (unwind-protect
+                  (sqlite-execute database mutation)
+                (sqlite-close database)))
+            (let ((before
+                   (e-runtime-store-offline-test--file-hash database-file)))
+              (should-error
+               (e-runtime-store-offline-upgrade directory backup))
+              (should-not (file-exists-p backup))
+              (should
+               (equal before
+                      (e-runtime-store-offline-test--file-hash
+                       database-file)))))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
+
+(ert-deftest e-runtime-store-offline-migrated-v6-requires-v5-provenance ()
+  "A migrated v6 source without recognized v5 provenance fails pre-backup."
+  (dolist (v5-row
+           '(nil
+             (5 "feature92-direct-v5-source" "bad")
+             (5 "unknown-v5-source" "bad")))
+    (let* ((fixture
+            (e-runtime-store-offline-test--make-v6
+             (list (e-runtime-store-offline-test--root "lineage-v6"))))
+           (directory (car fixture))
+           (database-file (cadr fixture))
+           (backup (expand-file-name "operator/unused.sqlite3" directory)))
+      (unwind-protect
+          (progn
+            (let ((database (sqlite-open database-file)))
+              (unwind-protect
+                  (progn
+                    (sqlite-execute
+                     database
+                     "UPDATE schema_migrations SET identity='feature92-v5-to-v6-explicit-upgrade' WHERE version=6")
+                    (when v5-row
+                      (sqlite-execute
+                       database
+                       "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,0)"
+                       (vconcat v5-row))))
+                (sqlite-close database)))
+            (should-error
+             (e-runtime-store-offline-upgrade directory backup))
+            (should-not (file-exists-p backup)))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
+
+(ert-deftest e-runtime-store-offline-v7-stage-faults-preserve-source ()
+  "Every injected precommit stage rolls back and postcommit restores backup."
+  (dolist (spec '((4 "after-v5")
+                  (5 "after-v6")
+                  (6 "after-v7-schema")
+                  (6 "after-v7-populate")
+                  (6 "after-v7-parity")
+                  (6 "after-schema-transaction")))
+    (let* ((version (car spec))
+           (mode (cadr spec))
+           (session-id (format "fault-%d-%s" version mode))
+           (records (list (e-runtime-store-offline-test--root session-id)))
+           (fixture (pcase version
+                      (4 (e-runtime-store-offline-test--make-v4 records))
+                      (5 (e-runtime-store-offline-test--make-v5 records))
+                      (6 (e-runtime-store-offline-test--make-v6 records))))
+           (directory (car fixture))
+           (database-file (cadr fixture))
+           (backup (expand-file-name "operator/source.sqlite3" directory))
+           (process-environment
+            (cons (concat "E_RUNTIME_STORE_TEST_MIGRATION_FAULT=" mode)
+                  process-environment)))
+      (unwind-protect
+          (progn
+            (should-error
+             (e-runtime-store-offline-upgrade directory backup))
+            (should (= (e-runtime-store-offline-test--version database-file)
+                       version))
+            (should (= (e-runtime-store-offline-test--version backup) version)))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
+
+(ert-deftest e-runtime-store-offline-ordinary-startup-rejects-v6 ()
+  "Ordinary startup rejects v6 before creating the v7 projection."
+  (let* ((session-id "reject-v6")
+         (fixture
+          (e-runtime-store-offline-test--make-v6
+           (list (e-runtime-store-offline-test--root session-id))))
+         (directory (car fixture))
+         (database-file (cadr fixture))
+         (runtime nil))
+    (unwind-protect
+        (progn
+          (setq runtime (e-runtime-store-open directory))
+          (should-error
+           (e-runtime-store-call runtime 'read '(:op store-metrics))
+           :type 'e-runtime-store-schema-too-old)
+          (should-not
+           (e-runtime-store-offline-test--table-p
+            database-file "session_process_report_index")))
+      (when runtime (ignore-errors (e-runtime-store-close runtime)))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-malformed-projection-diagnostic-is-bounded ()
+  "Malformed v6 projection input fails before backup without payload disclosure."
+  (let* ((session-id "malformed-v6")
+         (secret "PAYLOAD-MUST-NOT-APPEAR")
+         (root (e-runtime-store-offline-test--root session-id))
+         (bad
+          (list :type "process-report" :session-id session-id :id "bad"
+                :delta-id "bad-delta" :parent-id "root"
+                :timestamp "2026-09-06T00:00:01Z"
+                :report
+                (list :report-type "extraction" :secret secret
+                      :marker-ids
+                      (vconcat
+                       (mapcar (lambda (index) (format "marker-%d" index))
+                               (number-sequence 0 64))))))
+         (fixture (e-runtime-store-offline-test--make-v6 (list root bad)))
+         (directory (car fixture))
+         (backup (expand-file-name "operator/source.sqlite3" directory)))
+    (unwind-protect
+        (let* ((error (should-error
+                       (e-runtime-store-offline-upgrade directory backup)))
+               (message (error-message-string error)))
+          (should (string-match-p (regexp-quote session-id) message))
+          (should (string-match-p "marker-ids" message))
+          (should (string-match-p "64" message))
+          (should-not (string-match-p secret message))
+          (should-not (file-exists-p backup)))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
 

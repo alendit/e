@@ -17,6 +17,7 @@
 (require 'e-runtime-store-codec)
 (require 'e-runtime-store-worker)
 (require 'e-runtime-store-session-worker)
+(require 'e-session-process-report-projection)
 (require 'e-session-query)
 (require 'e-runtime-store-ownership)
 
@@ -26,12 +27,21 @@
   "Maximum session identities visited by one bounded migration page.")
 (defconst e-runtime-store-offline-worker--legacy-record-page-size 128
   "Maximum v5 journal rows read by one bounded migration page.")
-(defconst e-runtime-store-offline-worker--migration-identity
+(defconst e-runtime-store-offline-worker--v5-migration-checksum
+  "feature92-schema-v5"
+  "Logical checksum for recognized v5 provenance rows.")
+(defconst e-runtime-store-offline-worker--v6-migration-identity
   "feature92-v5-to-v6-explicit-upgrade"
   "Durable identity installed for the explicit v5-to-v6 migration.")
-(defconst e-runtime-store-offline-worker--migration-checksum
+(defconst e-runtime-store-offline-worker--v6-migration-checksum
   "feature92-schema-v6"
   "Logical checksum for the v5-to-v6 schema boundary.")
+(defconst e-runtime-store-offline-worker--v7-migration-identity
+  "feature92-v6-to-v7-process-report-projection"
+  "Durable identity installed for the explicit v6-to-v7 migration.")
+(defconst e-runtime-store-offline-worker--v7-migration-checksum
+  "feature92-schema-v7-process-report-projection"
+  "Logical checksum for the v7 process-report projection boundary.")
 
 (defun e-runtime-store-offline-worker--error (message &rest data)
   "Signal a bounded offline error with MESSAGE and DATA."
@@ -265,7 +275,18 @@ is retained by this walker."
     (cond
      ((member mode '("1" "before" "before-schema-transaction")) 'before)
      ((member mode '("after" "after-schema-transaction")) 'after)
+     ((member mode '("after-v5" "v5")) 'after-v5)
+     ((member mode '("after-v6" "v6")) 'after-v6)
+     ((member mode '("after-v7-schema" "v7-schema")) 'after-v7-schema)
+     ((member mode '("after-v7-populate" "v7-populate")) 'after-v7-populate)
+     ((member mode '("after-v7-parity" "v7-parity")) 'after-v7-parity)
      (t nil))))
+
+(defun e-runtime-store-offline-worker--fault (point)
+  "Signal the explicit test fault at POINT."
+  (when (eq (e-runtime-store-offline-worker--fault-mode) point)
+    (e-runtime-store-offline-worker--error
+     "Forced migration failure" :stage point)))
 
 (defun e-runtime-store-offline-worker--apply-v5-record (state record)
   "Apply canonical v5 RECORD to query STATE for offline migration.
@@ -466,7 +487,306 @@ session-domain replay; neither retired projection is consulted here."
                    "session_records_position"))
     (sqlite-execute database (format "DROP INDEX IF EXISTS %s" index)))
   (e-runtime-store-worker--initialize-common-schema database)
-  (e-runtime-store-worker--initialize-domain-schema database))
+  (e-runtime-store-worker--initialize-domain-schema database 6))
+
+(defun e-runtime-store-offline-worker--ensure-migration-row
+    (database version identity checksum)
+  "Validate or insert VERSION migration IDENTITY with logical CHECKSUM."
+  (let* ((digest (secure-hash 'sha256 checksum))
+         (row (car (sqlite-select
+                    database
+                    "SELECT identity,checksum FROM schema_migrations WHERE version=?"
+                    (vector version)))))
+    (when (and row
+               (or (not (equal (e-runtime-store-offline-worker--column row 0)
+                               identity))
+                   (not (equal (e-runtime-store-offline-worker--column row 1)
+                               digest))))
+      (e-runtime-store-offline-worker--error
+       "Existing migration identity is malformed" :version version))
+    (unless row
+      (sqlite-execute
+       database
+       "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
+       (vector version identity digest (float-time))))))
+
+(defun e-runtime-store-offline-worker--migration-row (database version)
+  "Return DATABASE migration VERSION's identity/checksum pair, or nil."
+  (let ((row (car (sqlite-select
+                   database
+                   "SELECT identity,checksum FROM schema_migrations WHERE version=?"
+                   (vector version)))))
+    (and row
+         (list (e-runtime-store-offline-worker--column row 0)
+               (e-runtime-store-offline-worker--column row 1)))))
+
+(defun e-runtime-store-offline-worker--recognized-v5-row-p (row)
+  "Return non-nil when ROW is normalized v5 source provenance."
+  (and
+   (member (car row)
+           '("feature92-direct-v5-source"
+             "feature92-v4-to-v5-explicit-upgrade"))
+   (equal (cadr row)
+          (secure-hash
+           'sha256 e-runtime-store-offline-worker--v5-migration-checksum))))
+
+(defun e-runtime-store-offline-worker--historical-fresh-v5-row-p (row)
+  "Return non-nil when ROW is the exact historical fresh-v5 identity."
+  (equal
+   row
+   (list "new-current-schema"
+         (secure-hash
+          'sha256 e-runtime-store-offline-worker--v5-migration-checksum))))
+
+(defun e-runtime-store-offline-worker--ensure-v5-provenance (database)
+  "Install or normalize direct-v5 provenance inside the upgrade transaction."
+  (let ((row (e-runtime-store-offline-worker--migration-row database 5)))
+    (cond
+     ((null row)
+      (e-runtime-store-offline-worker--ensure-migration-row
+       database 5 "feature92-direct-v5-source"
+       e-runtime-store-offline-worker--v5-migration-checksum))
+     ((e-runtime-store-offline-worker--historical-fresh-v5-row-p row)
+      (sqlite-execute
+       database
+       "UPDATE schema_migrations SET identity='feature92-direct-v5-source' WHERE version=5"))
+     ((e-runtime-store-offline-worker--recognized-v5-row-p row) t)
+     (t
+      (e-runtime-store-offline-worker--error
+       "Source v5 migration provenance is invalid")))))
+
+(defun e-runtime-store-offline-worker--verify-v6-lineage (database)
+  "Verify DATABASE has one recognized v6 predecessor lineage."
+  (let* ((v5 (e-runtime-store-offline-worker--migration-row database 5))
+         (v6 (e-runtime-store-offline-worker--migration-row database 6))
+         (v6-checksum
+          (secure-hash
+           'sha256 e-runtime-store-offline-worker--v6-migration-checksum)))
+    (cond
+     ((equal v6 (list "new-current-schema" v6-checksum))
+      (when v5
+        (e-runtime-store-offline-worker--error
+         "Fresh v6 source has unexpected v5 provenance")))
+     ((equal v6
+             (list e-runtime-store-offline-worker--v6-migration-identity
+                   v6-checksum))
+      (unless (or
+               (e-runtime-store-offline-worker--recognized-v5-row-p v5)
+               (e-runtime-store-offline-worker--historical-fresh-v5-row-p v5))
+        (e-runtime-store-offline-worker--error
+         "Migrated v6 source has invalid v5 provenance")))
+     (t
+      (e-runtime-store-offline-worker--error
+       "Source v6 migration lineage is invalid"))))
+  t)
+
+(defun e-runtime-store-offline-worker--verify-v7-lineage (database)
+  "Verify DATABASE's complete v7 lineage using the runtime contract."
+  (let ((e-runtime-store-worker--database database))
+    (condition-case err
+        (e-runtime-store-worker--verify-v7-lineage)
+      (e-runtime-store-schema-too-old
+       (e-runtime-store-offline-worker--error
+        "Schema v7 migration lineage is invalid"
+        :reason (plist-get (cdr err) :reason))))))
+
+(defun e-runtime-store-offline-worker--install-v7 (database)
+  "Install only the schema-v7 additions on DATABASE."
+  ;; This column existed in the final v6 definition, but older v6 stores may
+  ;; lack it.  Only the explicit stopped-store operator may repair that
+  ;; physical boundary; ordinary startup checks the version before DDL.
+  (unless (seq-some
+           (lambda (row)
+             (equal (e-runtime-store-offline-worker--column row 1)
+                    "current_context_generation_id"))
+           (sqlite-select database "PRAGMA table_info(session_query_state)"))
+    (sqlite-execute
+     database
+     "ALTER TABLE session_query_state ADD COLUMN current_context_generation_id TEXT"))
+  ;; The projection is derived in full below.  Recreate it so an interrupted
+  ;; operator attempt or a deliberately downgraded fixture cannot retain a
+  ;; foreign key that SQLite rewrote when the v5 journal was renamed.
+  (sqlite-execute database "DROP TABLE IF EXISTS session_process_report_index")
+  (e-runtime-store-session-worker-initialize-process-report-projection database))
+
+(defun e-runtime-store-offline-worker--projection-error
+    (error session-id position report)
+  "Raise bounded migration ERROR for REPORT at SESSION-ID POSITION."
+  (e-runtime-store-offline-worker--error
+   "Process-report projection migration failed"
+   :session-id session-id :position position
+   :report-type
+   (let ((type (and (listp report) (plist-get report :report-type))))
+     (cond ((stringp type) type) ((symbolp type) (symbol-name type)) (t nil)))
+   :field (plist-get (cddr error) :field)
+   :limit (plist-get (cddr error) :limit)))
+
+(defun e-runtime-store-offline-worker--projection-rows
+    (record session-id position)
+  "Derive bounded projection rows from RECORD for diagnostics ownership."
+  (condition-case err
+      (e-session-process-report-projection-rows record)
+    (e-session-process-report-projection-error
+     (e-runtime-store-offline-worker--projection-error
+      err session-id position (plist-get record :report)))))
+
+(defun e-runtime-store-offline-worker--insert-projection
+    (database session-id position record)
+  "Insert RECORD's projection for SESSION-ID POSITION."
+  (dolist (row (e-runtime-store-offline-worker--projection-rows
+                record session-id position))
+    (sqlite-execute
+     database
+     "INSERT INTO session_process_report_index(session_id,position,association_ordinal,report_type,marker_id,provider_request_id,triage_status) VALUES(?,?,?,?,?,?,?)"
+     (vector session-id position
+             (plist-get row :association-ordinal)
+             (plist-get row :report-type)
+             (plist-get row :marker-id)
+             (plist-get row :provider-request-id)
+             (plist-get row :triage-status)))))
+
+(defun e-runtime-store-offline-worker--populate-v7 (database)
+  "Populate the v7 projection in bounded journal pages."
+  (let ((base-count 0) (association-count 0) (record-count 0))
+    (e-runtime-store-offline-worker--visit-sessions
+     database "session_records"
+     (lambda (session-id)
+       (e-runtime-store-offline-worker--visit-session
+        database "session_records" session-id
+        (lambda (state position _payload record)
+          (let ((rows (e-runtime-store-offline-worker--projection-rows
+                       record session-id position)))
+            (when rows
+              (setq base-count (1+ base-count)
+                    association-count
+                    (+ association-count (1- (length rows))))
+              (dolist (row rows)
+                (sqlite-execute
+                 database
+                 "INSERT INTO session_process_report_index(session_id,position,association_ordinal,report_type,marker_id,provider_request_id,triage_status) VALUES(?,?,?,?,?,?,?)"
+                 (vector session-id position
+                         (plist-get row :association-ordinal)
+                         (plist-get row :report-type)
+                         (plist-get row :marker-id)
+                         (plist-get row :provider-request-id)
+                         (plist-get row :triage-status)))))
+            (setq record-count (1+ record-count))
+            state)))))
+    (list :records record-count :base-rows base-count
+          :association-rows association-count)))
+
+(defun e-runtime-store-offline-worker--preflight-v7 (database)
+  "Validate every canonical record needed by v7 without writing."
+  (let ((records 0) (base-rows 0) (association-rows 0))
+    (e-runtime-store-offline-worker--visit-sessions
+     database "session_records"
+     (lambda (session-id)
+       (e-runtime-store-offline-worker--visit-session
+        database "session_records" session-id
+        (lambda (state position _payload record)
+          (let ((rows (e-runtime-store-offline-worker--projection-rows
+                       record session-id position)))
+            (when rows
+              (setq base-rows (1+ base-rows)
+                    association-rows (+ association-rows (1- (length rows)))))
+            (setq records (1+ records))
+            state)))))
+    (list :records records :base-rows base-rows
+          :association-rows association-rows)))
+
+(defun e-runtime-store-offline-worker--verify-v7-projection (database)
+  "Verify exact v7 projection parity from bounded canonical reads."
+  (let ((expected-base 0) (expected-associations 0) (canonical-records 0))
+    (e-runtime-store-offline-worker--visit-sessions
+     database "session_records"
+     (lambda (session-id)
+       (e-runtime-store-offline-worker--visit-session
+        database "session_records" session-id
+        (lambda (state position _payload record)
+          (let* ((expected
+                  (e-runtime-store-offline-worker--projection-rows
+                   record session-id position))
+                 (actual
+                  (mapcar
+                   (lambda (row)
+                     (list :association-ordinal
+                           (e-runtime-store-offline-worker--column row 0)
+                           :report-type
+                           (e-runtime-store-offline-worker--column row 1)
+                           :marker-id
+                           (e-runtime-store-offline-worker--column row 2)
+                           :provider-request-id
+                           (e-runtime-store-offline-worker--column row 3)
+                           :triage-status
+                           (e-runtime-store-offline-worker--column row 4)))
+                   (sqlite-select
+                    database
+                    (concat
+                     "SELECT association_ordinal,report_type,marker_id,"
+                     "provider_request_id,triage_status"
+                     " FROM session_process_report_index"
+                     " WHERE session_id=? AND position=?"
+                     " ORDER BY association_ordinal")
+                    (vector session-id position)))))
+            (unless (equal expected actual)
+              (e-runtime-store-offline-worker--error
+               "Process-report projection parity failed"
+               :session-id session-id :position position
+               :report-type
+               (and expected (plist-get (car expected) :report-type))))
+            (when expected
+              (setq expected-base (1+ expected-base)
+                    expected-associations
+                    (+ expected-associations (1- (length expected)))))
+            (setq canonical-records (1+ canonical-records))
+            state)))))
+    (let* ((counts
+            (car (sqlite-select
+                  database
+                  (concat
+                   "SELECT SUM(CASE WHEN association_ordinal=0 THEN 1 ELSE 0 END),"
+                   "SUM(CASE WHEN association_ordinal>0 THEN 1 ELSE 0 END),"
+                   "COUNT(*) FROM session_process_report_index"))))
+           (base (or (e-runtime-store-offline-worker--column counts 0) 0))
+           (associations
+            (or (e-runtime-store-offline-worker--column counts 1) 0))
+           (total (e-runtime-store-offline-worker--column counts 2))
+           (orphans
+            (e-runtime-store-offline-worker--column
+             (car (sqlite-select
+                   database
+                   (concat
+                    "SELECT COUNT(*) FROM session_process_report_index p"
+                    " LEFT JOIN session_records r ON r.session_id=p.session_id"
+                    " AND r.position=p.position WHERE r.session_id IS NULL")))
+             0)))
+      (unless (and (= base expected-base)
+                   (= associations expected-associations)
+                   (= total (+ expected-base expected-associations))
+                   (= orphans 0))
+        (e-runtime-store-offline-worker--error
+         "Process-report projection aggregate parity failed"
+         :base base :expected-base expected-base
+         :associations associations
+         :expected-associations expected-associations :orphans orphans))
+      (list :records canonical-records :base-rows base
+            :association-rows associations :orphans orphans))))
+
+(defun e-runtime-store-offline-worker--verify-v7-schema (database)
+  "Verify the exact v7 relation, indexes, and projection parity."
+  (unless (e-runtime-store-offline-worker--table-exists-p
+           database "session_process_report_index")
+    (e-runtime-store-offline-worker--error
+     "Schema v7 process-report projection is missing"))
+  (condition-case err
+      (e-runtime-store-session-worker-verify-process-report-projection-schema
+       database)
+    (e-runtime-store-worker-error
+     (e-runtime-store-offline-worker--error
+      "Schema v7 process-report shape is invalid"
+      :reason (car (cdr err))
+      :index (plist-get (cddr err) :index))))
+  (e-runtime-store-offline-worker--verify-v7-projection database))
 
 (defun e-runtime-store-offline-worker--remove-sqlite-sidecars (database-file)
   "Remove SQLite WAL sidecars for DATABASE-FILE after its connection closes."
@@ -504,7 +824,7 @@ the original v4 image if the later v6 install fails."
     (sqlite-execute database
                     "UPDATE store_meta SET value='5' WHERE key='schema_version'")))
 
-(defun e-runtime-store-offline-worker--restore-v5
+(defun e-runtime-store-offline-worker--restore-source
     (database-file backup-file &optional expected-version)
   "Restore DATABASE-FILE from verified BACKUP-FILE and recheck its version.
 
@@ -527,57 +847,62 @@ fault restores the exact pre-upgrade schema boundary."
       (sqlite-close restored))))
 
 (defun e-runtime-store-offline-worker--upgrade (database-file backup-file)
-  "Upgrade a stopped v4 or v5 DATABASE-FILE to v6 after verified BACKUP-FILE.
+  "Upgrade stopped schema v4, v5, or v6 DATABASE-FILE explicitly to v7.
 
-Only this explicit operator operation may cross the v4/v5/v6 schema boundary;
-ordinary startup remains reject-only.  A v4 source receives the retained
-generic v5 envelope inside the same atomic install before the v6 session
-relations are derived.  All derivation is bounded, one session at a time, and
-uses the canonical journal rather than retired projections."
+The complete supported chain uses one verified backup and one install
+transaction.  A verified v7 source is a read-only no-op and creates no backup."
   (unless (file-readable-p database-file)
-    (e-runtime-store-offline-worker--error
-     "Store must exist" database-file))
-  (when (file-exists-p backup-file)
-    (signal 'file-already-exists (list backup-file)))
-  (make-directory (file-name-directory backup-file) t)
-  (set-file-modes (file-name-directory backup-file) #o700)
-  ;; Claim before the first SQLite open.  The ordinary worker and this explicit
-  ;; offline operation deliberately share the same process-lifetime authority.
+    (e-runtime-store-offline-worker--error "Store must exist" database-file))
   (let ((claim
          (e-runtime-store-ownership-acquire
-          database-file (format "offline:%d" (emacs-pid)) 'offline)))
-      (let ((database nil)
-          (committed nil)
-          (version nil)
-          (copied nil))
-      (unwind-protect
-          (condition-case err
-              (progn
-                (setq database (sqlite-open database-file)
-                      version (e-runtime-store-offline-worker--version database))
-                (let ((current e-runtime-store-worker-schema-version))
-                  (cond
-                   ((> version current)
-                    (signal 'e-runtime-store-schema-too-new
-                            (list :actual version :supported current)))
-                   ((= version current)
-                    (e-runtime-store-offline-worker--error
-                     "Store already uses the current schema" current))
-                   ((not (memq version '(4 5)))
-                    (e-runtime-store-offline-worker--error
-                     "No supported direct upgrade path" version current)))
+          database-file (format "offline:%d" (emacs-pid)) 'offline))
+        (database nil)
+        (committed nil)
+        (version nil)
+        (copied nil)
+        (projection nil))
+    (unwind-protect
+        (condition-case err
+            (progn
+              (setq database (sqlite-open database-file)
+                    version (e-runtime-store-offline-worker--version database))
+              (sqlite-execute database "PRAGMA foreign_keys=ON")
+              (let ((current e-runtime-store-worker-schema-version))
+                (cond
+                 ((> version current)
+                  (signal 'e-runtime-store-schema-too-new
+                          (list :actual version :supported current)))
+                 ((= version current)
+                  (e-runtime-store-offline-worker--check database)
+                  (e-runtime-store-offline-worker--verify-v7-lineage database)
+                  (setq projection
+                        (e-runtime-store-offline-worker--verify-v7-schema
+                         database))
+                  (list :from version :to current :noop t :backup nil
+                        :records (plist-get projection :records)
+                        :projection-base-rows
+                        (plist-get projection :base-rows)
+                        :projection-association-rows
+                        (plist-get projection :association-rows)
+                        :integrity "ok"))
+                 ((not (memq version '(4 5 6)))
+                  (e-runtime-store-offline-worker--error
+                   "No supported direct upgrade path" version current))
+                 (t
                   (unless (e-runtime-store-offline-worker--table-exists-p
                            database "session_records")
                     (e-runtime-store-offline-worker--error
-                     "v5 store has no canonical session journal"))
+                     "Source store has no canonical session journal"))
                   (e-runtime-store-offline-worker--check database)
-                  ;; Validate every canonical journal before allocating a
-                  ;; multi-gigabyte backup.  This pass is read-only; a failure
-                  ;; cannot leave schema state to restore.
-                  (e-runtime-store-offline-worker--preflight-v5 database)
-                  ;; VACUUM INTO is the sole backup mechanism.  It is done
-                  ;; before any schema write and the copy is independently
-                  ;; opened, fully checked, and version-verified.
+                  (when (= version 6)
+                    (e-runtime-store-offline-worker--verify-v6-lineage database))
+                  (if (< version 6)
+                      (e-runtime-store-offline-worker--preflight-v5 database)
+                    (e-runtime-store-offline-worker--preflight-v7 database))
+                  (when (file-exists-p backup-file)
+                    (signal 'file-already-exists (list backup-file)))
+                  (make-directory (file-name-directory backup-file) t)
+                  (set-file-modes (file-name-directory backup-file) #o700)
                   (sqlite-execute database "VACUUM INTO ?" (vector backup-file))
                   (set-file-modes backup-file #o600)
                   (let ((backup (sqlite-open backup-file)))
@@ -588,81 +913,103 @@ uses the canonical journal rather than retired projections."
                                      version)
                             (e-runtime-store-offline-worker--error
                              "Backup schema verification failed"
-                             :actual (e-runtime-store-offline-worker--version
-                                      backup))))
+                             :actual
+                             (e-runtime-store-offline-worker--version backup))))
                       (sqlite-close backup)))
-                  (when (eq (e-runtime-store-offline-worker--fault-mode) 'before)
-                    (e-runtime-store-offline-worker--error
-                     "Forced migration failure before schema transaction"))
+                  (e-runtime-store-offline-worker--fault 'before)
                   (sqlite-execute database "BEGIN IMMEDIATE")
                   (condition-case transaction-error
                       (progn
                         (when (= version 4)
                           (e-runtime-store-offline-worker--install-v5-envelope
+                           database)
+                          (e-runtime-store-offline-worker--fault 'after-v5))
+                        (when (< version 6)
+                          (e-runtime-store-offline-worker--install-v6 database)
+                          (when (= version 5)
+                            (e-runtime-store-offline-worker--ensure-v5-provenance
+                             database))
+                          (setq copied
+                                (e-runtime-store-offline-worker--copy-v5-sessions
+                                 database))
+                          (e-runtime-store-offline-worker--parity-check
+                           database "session_records_v5" "session_records")
+                          (sqlite-execute
+                           database "DROP TABLE IF EXISTS session_records_v5")
+                          (sqlite-execute
+                           database "DROP TABLE IF EXISTS catalog_projection")
+                          (sqlite-execute
+                           database "DROP TABLE IF EXISTS session_checkpoints")
+                          (e-runtime-store-offline-worker--ensure-migration-row
+                           database 6
+                           e-runtime-store-offline-worker--v6-migration-identity
+                           e-runtime-store-offline-worker--v6-migration-checksum))
+                        (when
+                            (and
+                             (= version 6)
+                             (equal
+                              (car
+                               (e-runtime-store-offline-worker--migration-row
+                                database 6))
+                              e-runtime-store-offline-worker--v6-migration-identity))
+                          (e-runtime-store-offline-worker--ensure-v5-provenance
                            database))
-                        (e-runtime-store-offline-worker--install-v6 database)
-                        (setq copied
-                              (e-runtime-store-offline-worker--copy-v5-sessions
+                        (e-runtime-store-offline-worker--fault 'after-v6)
+                        (e-runtime-store-offline-worker--install-v7 database)
+                        (e-runtime-store-offline-worker--fault 'after-v7-schema)
+                        (setq projection
+                              (e-runtime-store-offline-worker--populate-v7
                                database))
-                        (e-runtime-store-offline-worker--parity-check
-                         database "session_records_v5" "session_records")
-                        ;; Retired projections are witnesses only.  Remove
-                        ;; them after canonical replay and parity, still in
-                        ;; the same atomic transaction.
-                        (sqlite-execute database
-                                        "DROP TABLE IF EXISTS session_records_v5")
-                        (sqlite-execute database
-                                        "DROP TABLE IF EXISTS catalog_projection")
-                        (sqlite-execute database
-                                        "DROP TABLE IF EXISTS session_checkpoints")
+                        (e-runtime-store-offline-worker--fault
+                         'after-v7-populate)
+                        (setq projection
+                              (e-runtime-store-offline-worker--verify-v7-schema
+                               database))
+                        (e-runtime-store-offline-worker--fault 'after-v7-parity)
+                        (e-runtime-store-offline-worker--ensure-migration-row
+                         database 7
+                         e-runtime-store-offline-worker--v7-migration-identity
+                         e-runtime-store-offline-worker--v7-migration-checksum)
+                        (e-runtime-store-offline-worker--verify-v7-lineage
+                         database)
                         (sqlite-execute
                          database
-                         "INSERT OR REPLACE INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
-                         (vector current e-runtime-store-offline-worker--migration-identity
-                                 (secure-hash
-                                  'sha256
-                                  e-runtime-store-offline-worker--migration-checksum)
-                                 (float-time)))
-                        (sqlite-execute
-                         database
-                         "UPDATE store_meta SET value=? WHERE key='schema_version'"
-                         (vector (number-to-string current)))
+                         "UPDATE store_meta SET value='7' WHERE key='schema_version'")
                         (sqlite-execute database "COMMIT")
                         (setq committed t))
                     (error
                      (ignore-errors (sqlite-execute database "ROLLBACK"))
-                     (signal (car transaction-error)
-                             (cdr transaction-error))))
-                  (when (eq (e-runtime-store-offline-worker--fault-mode) 'after)
-                    (e-runtime-store-offline-worker--error
-                     "Forced migration failure after schema transaction"))
+                     (signal (car transaction-error) (cdr transaction-error))))
+                  (e-runtime-store-offline-worker--fault 'after)
                   (e-runtime-store-offline-worker--check database)
+                  (e-runtime-store-offline-worker--verify-v7-lineage database)
+                  (setq projection
+                        (e-runtime-store-offline-worker--verify-v7-schema
+                         database))
                   (set-file-modes database-file #o600)
                   (list :from version :to current :backup backup-file
                         :backup-bytes
                         (file-attribute-size (file-attributes backup-file))
                         :sessions (plist-get copied :sessions)
-                        :records (plist-get copied :records)
+                        :records (or (plist-get copied :records)
+                                     (plist-get projection :records))
                         :payload-bytes (plist-get copied :payload-bytes)
-                        :integrity "ok")))
-            (error
-             ;; A post-COMMIT fault is deliberately stronger than an ordinary
-             ;; transaction rollback: close the v6 handle and restore the
-             ;; verified v5 image, then recheck the restored store before
-             ;; returning the injected failure to the operator.
-             (when database
-               (ignore-errors (sqlite-close database))
-               (setq database nil))
-             (when committed
-               (e-runtime-store-offline-worker--restore-v5
-                database-file backup-file version)
-               (setq committed nil))
-             (signal (car err) (cdr err))))
-        (when database
-          (sqlite-close database))
-        ;; Both the ordinary and offline paths close SQLite before releasing
-        ;; their shared process-lifetime ownership claim.
-        (e-runtime-store-ownership-release claim)))))
+                        :projection-base-rows
+                        (plist-get projection :base-rows)
+                        :projection-association-rows
+                        (plist-get projection :association-rows)
+                        :integrity "ok")))))
+          (error
+           (when database
+             (ignore-errors (sqlite-close database))
+             (setq database nil))
+           (when committed
+             (e-runtime-store-offline-worker--restore-source
+              database-file backup-file version)
+             (setq committed nil))
+           (signal (car err) (cdr err))))
+      (when database (sqlite-close database))
+      (e-runtime-store-ownership-release claim))))
 
 (defun e-runtime-store-offline-worker-main ()
   "Execute one narrow operation from `command-line-args-left'."

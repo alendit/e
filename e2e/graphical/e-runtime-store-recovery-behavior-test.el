@@ -569,7 +569,7 @@ aggregate or mirror."
                  (diagnostic (plist-get status :last-error)))
             (should (eq (car diagnostic) 'e-runtime-store-schema-too-old))
             (should (= (plist-get (cdr diagnostic) :actual) 5))
-            (should (= (plist-get (cdr diagnostic) :required) 6))
+            (should (= (plist-get (cdr diagnostic) :required) 7))
             (should (equal (plist-get (cdr diagnostic) :operation)
                            'e-runtime-store-offline-upgrade)))
           (should-not (e-runtime-store--client-queue transport)))

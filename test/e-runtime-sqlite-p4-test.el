@@ -705,7 +705,7 @@
         (when (file-directory-p directory) (delete-directory directory t))))))
 
 (ert-deftest e-runtime-sqlite-p4-s9-explicit-upgrade-backs-up-before-install ()
-  "Ordinary startup rejects v4; explicit upgrade verifies a v6 backup."
+  "Ordinary startup rejects v4; explicit upgrade verifies a v7 install."
   (let* ((directory (make-temp-file "e-runtime-p4-upgrade-" t))
          (session-id "upgrade-preserved")
          (records
@@ -738,7 +738,8 @@
           (let ((db (sqlite-open database)))
             (sqlite-execute
              db "UPDATE store_meta SET value='4' WHERE key='schema_version'")
-            (sqlite-execute db "DELETE FROM schema_migrations WHERE version=5")
+            (sqlite-execute db "DELETE FROM schema_migrations WHERE version>4")
+            (sqlite-execute db "DROP TABLE session_process_report_index")
             (sqlite-execute db "DROP TABLE runtime_store_receipts")
             (sqlite-execute db "DROP TABLE runtime_store_state")
             (sqlite-close db))
@@ -755,7 +756,7 @@
               (sqlite-close db)))
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
             (should (= (plist-get result :from) 4))
-            (should (= (plist-get result :to) 6))
+            (should (= (plist-get result :to) 7))
             (should (equal (plist-get result :integrity) "ok"))
             (should (= (e-runtime-sqlite-p4-test--mode backup) #o600)))
           (setq store
@@ -763,7 +764,7 @@
                  (e-runtime-store-open directory)))
           (should (= (plist-get (e-runtime-store-metrics store)
                                 :schema-version)
-                     6))
+                     7))
           (should (equal
                    (plist-get
                     (car (plist-get
@@ -838,7 +839,7 @@
         (progn
           (should (plist-get (e-runtime-store-integrity store t) :ok))
           (let ((metrics (e-runtime-store-metrics store)))
-            (should (= (plist-get metrics :schema-version) 6))
+            (should (= (plist-get metrics :schema-version) 7))
             (should (> (plist-get metrics :database-bytes) 0)))
           (should (plist-get (e-runtime-store-backup store backup) :verified))
           (should (= (e-runtime-sqlite-p4-test--mode backup) #o600))

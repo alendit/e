@@ -351,13 +351,26 @@ session id as their second argument."
       (insert (format "- session events: %s\n" (length (e-session-local-session-events store session-id))))
       (insert (format "- compactions: %s\n" (length (e-session-local-compactions store session-id))))
       (insert (format "- provider anchors: %s\n" (length (e-session-local-provider-anchors store session-id))))
-      (insert (format "- process reports: %s\n" (length (e-session-local-process-reports store session-id))))
       (insert "\nReadable subresources:\n")
       (dolist (projection projections)
         (insert (format "- %s\n"
                         (e-session-resources--projection-uri
                          engine-id session-id projection))))
       (buffer-string))))
+
+(defun e-session-resources--ephemeral-process-reports (engine session-id)
+  "Return a bounded detached process-report page for explicit local ENGINE."
+  (e-session-resources--require-synchronous-engine engine)
+  ;; Explicit in-memory composition has no SQL query adapter.  Its aggregate
+  ;; is process-local by definition, so copy only the bounded projection the
+  ;; resource renderer consumes.  Ordinary SQLite is rejected by the guard
+  ;; above and always uses `e-session-async-record-page'.
+  (seq-take
+   (copy-tree
+    (e-session-aggregate-process-reports
+     (e-session-resources--e-store engine) session-id)
+    t)
+   e-session-resources-default-limit))
 
 (defun e-session-resources--render-e-messages (engine session-id)
   "Render built-in e messages for SESSION-ID."
@@ -404,8 +417,8 @@ session id as their second argument."
                           (e-session-resources--e-store engine) session-id)))
     ("process-reports" (e-session-resources--render-entry-list
                         (format "Session %s process reports" session-id)
-                        (e-session-local-process-reports
-                         (e-session-resources--e-store engine) session-id)))
+                        (e-session-resources--ephemeral-process-reports
+                         engine session-id)))
     (_
      (signal 'e-session-resources-unsupported-projection
              (list (format "Unsupported session projection: %s"

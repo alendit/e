@@ -10,8 +10,8 @@
    (equal
     (e-chat--runtime-store-upgrade-required-message
      '(e-runtime-store-schema-too-old
-       :actual 5 :required 6 :operation e-runtime-store-offline-upgrade))
-    "runtime store upgrade required (schema 5 -> 6); quit Emacs, run scripts/e-runtime-upgrade, then restart")))
+       :actual 5 :required 7 :operation e-runtime-store-offline-upgrade))
+    "runtime store upgrade required (schema 5 -> 7); quit Emacs, run scripts/e-runtime-upgrade, then restart")))
 
 (ert-deftest e-chat-test-schema-upgrade-message-recognizes-nested-cause ()
   "A transport wrapper does not hide the underlying schema refusal."
@@ -22,8 +22,8 @@
        "Runtime store worker is unavailable"
        :cause (e-runtime-store-schema-too-old
                "Runtime store schema requires explicit upgrade"
-               :actual 5 :required 6)))
-    "runtime store upgrade required (schema 5 -> 6); quit Emacs, run scripts/e-runtime-upgrade, then restart")))
+               :actual 5 :required 7)))
+    "runtime store upgrade required (schema 5 -> 7); quit Emacs, run scripts/e-runtime-upgrade, then restart")))
 
 
 (ert-deftest e-chat-test-open-captures-current-workspace ()
