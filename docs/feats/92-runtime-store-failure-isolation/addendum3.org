@@ -64,7 +64,7 @@ new generic =e= runtime vocabulary.
 | F92A3-C06 | Apply materializes exactly one complete generated-section map while preserving user-owned sections byte-for-byte; interruption resumes from the persisted applied value without model reconstruction. | Grimoire Daily application service | The exact accepted section value or durable reference and revision survive until finalized; presentation retains no durable copy. | F92A3-DP3 | S-MATERIALIZE | Deterministic repository | Accepted at Grimoire =1cdc35b= |
 | F92A3-C07 | Finalize returns success only when current materialization, SQLite lifecycle facts, and publication commit agree; retry is idempotent and repairs an exact owned-metadata loss or reports a concrete divergence. | Grimoire Daily finalization service | Durable transaction facts plus bounded file/commit comparison; no generic whole-file recovery write. | F92A3-DP3 | S-FINALIZE | Deterministic repository | Accepted at Grimoire =1cdc35b= |
 | F92A3-C08 | Expected tool/action failures surface once at the owning boundary; identical invalid attempts do not create an unbounded provider loop, and process reporting uses only bounded query/current context. | Harness loop and process-reporting capability over the SQLite session adapter | Turn-local repetition guard; reporting facts remain canonical session records, with a relational v7 query projection maintained in the same transaction and rebuilt only by the explicit offline upgrade. | F92A3-DP1 | S-FAILURE | Deterministic repository | Accepted at =70d2bef9= |
-| F92A3-C09 | The public graphical Daily path proves delayed open, heartbeats, composer input, terminal projection consumption, artifact validation, one apply/finalize, truthful rendering, failure isolation, and restart completion through production tools. | Graphical E2E composition | Disposable Emacs, SQLite, files, and Git repository only. | F92A3-DP4 | S-PUBLIC | Deterministic repository | Pending |
+| F92A3-C09 | The public graphical Daily path proves delayed open, heartbeats, composer input, terminal projection consumption, artifact validation, one apply/finalize, truthful rendering, failure isolation, and restart completion through production tools. | Graphical E2E composition | Disposable Emacs, SQLite, files, and Git repository only. | F92A3-DP4 | S-PUBLIC | Deterministic repository | Accepted at Grimoire =64dbf0e= and =e= =abcccd8b= |
 | F92A3-C10 | The inspected 2026-09-11 Daily is repaired only after an exact precondition proves the worktree differs from its completed publication by the two owned metadata lines, followed by independent file/Git/SQLite read-back. | Explicit operator repair | One bounded canonical repair after repository behavior is accepted; no running Emacs mutation. | F92A3-DP4 | S-CANONICAL-REPAIR | Operator evidence | Pending |
 
 * Ownership and modularization
@@ -312,6 +312,9 @@ acceptance; file size alone does not require extraction.
 
 ** F92A3-DP4: Public proof and exact canonical repair
 
+- Status :: Public proof accepted at Grimoire =64dbf0e= and =e= =abcccd8b=
+  after independent review reached fixed point; the exact canonical repair is
+  pending an exited user Emacs.
 - Establishes :: =F92A3-C09= and =F92A3-C10=.
 - Useful outcome :: the production graphical composition proves the complete
   behavior, and the one known canonical artifact is brought back to the
@@ -326,6 +329,17 @@ acceptance; file size alone does not require extraction.
 - Evidence :: provider-driven graphical Daily selector and complete graphical
   suite; configured Grimoire source-load suite; complete =e= suite; exact
   canonical read-back.
+- Accepted public evidence :: Two successive invocations of the production
+  graphical runner used separate isolated graphical Emacs processes.  Phase
+  one held real worker open/read/write while composer input and three
+  independent heartbeats advanced, admitted all seven producer reports through
+  their artifact contracts, consumed one bounded terminal projection, applied
+  and finalized once, and proved an unrelated owner could persist and read
+  after the injected owner failure.  Phase two reopened the archived Daily in
+  a fresh process from only the scalar handoff identity and observed the same
+  finalized SQLite state with no duplicate child, continuation, provider, or
+  final row.  Both selectors passed 1/1 on 2026-09-12; captures are outside the
+  repository under =/private/tmp/e-f92-daily-final-shots/=.
 - Deferred :: no live reload, no mutation of the canonical SQLite database, and
   no unrelated Grimoire worktree cleanup.
 - Split reason :: expensive public proof and the separately authorized
