@@ -4,11 +4,10 @@
 
 * Status
 
-=In-progress=.  The user accepted this corrective direction after read-only inspection
-of Daily run =daily:2026-09-11:20260911T110606091299000= and its owner session.
-Implementation must not claim acceptance until the provider-driven graphical
-Daily scenario below passes against disposable state and an independent review
-finds no P0--P3 defect.
+=Done=.  The provider-driven graphical Daily scenario passed against disposable
+state, independent implementation review found no P0--P3 defect, and the exact
+canonical run =daily:2026-09-11:20260911T110606091299000= was migrated, repaired,
+read back, and proved idempotent while the user's Emacs was exited.
 
 This addendum supersedes Addendum 2's completion claims only where the live
 counterexample disproved them: mandatory model-authored tool purposes, terminal
@@ -40,9 +39,9 @@ owner-local failure isolation, and the absence of durable Emacs replicas.
 - Product authority :: User direction on 2026-09-11 after inspecting the failed
   canonical Daily run.
 - Owning contract :: =F92A3-C01= through =F92A3-C10=.
-- Behavioral status :: Failing.  The inspected run eventually committed a
-  complete snapshot, but a later direct file write removed the visible
-  completion metadata while repeated finalize calls still returned success.
+- Behavioral status :: Passing.  The public graphical scenario proves the
+  corrected lifecycle end to end, and the inspected canonical run now has one
+  agreeing SQLite lifecycle, materialized file, and publication commit.
 
 * Glossary state
 
@@ -65,7 +64,7 @@ new generic =e= runtime vocabulary.
 | F92A3-C07 | Finalize returns success only when current materialization, SQLite lifecycle facts, and publication commit agree; retry is idempotent and repairs an exact owned-metadata loss or reports a concrete divergence. | Grimoire Daily finalization service | Durable transaction facts plus bounded file/commit comparison; no generic whole-file recovery write. | F92A3-DP3 | S-FINALIZE | Deterministic repository | Accepted at Grimoire =1cdc35b= |
 | F92A3-C08 | Expected tool/action failures surface once at the owning boundary; identical invalid attempts do not create an unbounded provider loop, and process reporting uses only bounded query/current context. | Harness loop and process-reporting capability over the SQLite session adapter | Turn-local repetition guard; reporting facts remain canonical session records, with a relational v7 query projection maintained in the same transaction and rebuilt only by the explicit offline upgrade. | F92A3-DP1 | S-FAILURE | Deterministic repository | Accepted at =70d2bef9= |
 | F92A3-C09 | The public graphical Daily path proves delayed open, heartbeats, composer input, terminal projection consumption, artifact validation, one apply/finalize, truthful rendering, failure isolation, and restart completion through production tools. | Graphical E2E composition | Disposable Emacs, SQLite, files, and Git repository only. | F92A3-DP4 | S-PUBLIC | Deterministic repository | Accepted at Grimoire =64dbf0e= and =e= =abcccd8b= |
-| F92A3-C10 | The inspected 2026-09-11 Daily is repaired only after an exact precondition proves the worktree differs from its completed publication by the two owned metadata lines, followed by independent file/Git/SQLite read-back. | Explicit operator repair | One bounded canonical repair after repository behavior is accepted; no running Emacs mutation. | F92A3-DP4 | S-CANONICAL-REPAIR | Operator evidence | Pending |
+| F92A3-C10 | The inspected 2026-09-11 Daily is repaired only after an exact precondition proves the worktree differs from its completed publication by the two owned metadata lines, followed by independent file/Git/SQLite read-back. | Explicit operator repair | One bounded canonical repair after repository behavior is accepted; no running Emacs mutation. | F92A3-DP4 | S-CANONICAL-REPAIR | Operator evidence | Accepted at Grimoire =59b2770=; repeated apply returned =unchanged= |
 
 * Ownership and modularization
 
@@ -302,8 +301,8 @@ acceptance; file size alone does not require extraction.
   duplicate call, exact user-section preservation, exact metadata loss,
   divergent-generated-content, stale visiting-buffer, failed Git-evidence,
   restart, and no-aggregate tests.  The focused publication/run/commit suite
-  passes 63/63 in the canonical Grimoire checkout, and all 139 non-graphical
-  Grimoire layer tests pass with zero unexpected results.
+  passed 63/63 when this slice was accepted.  At final acceptance all 156
+  non-graphical Grimoire layer tests pass with zero unexpected results.
 - Deferred :: no generalized workflow engine, cross-file transaction protocol,
   or generic resource locking.
 - Combine reason :: lifecycle state, materialization, commit, and recovery form
@@ -313,8 +312,8 @@ acceptance; file size alone does not require extraction.
 ** F92A3-DP4: Public proof and exact canonical repair
 
 - Status :: Public proof accepted at Grimoire =64dbf0e= and =e= =abcccd8b=
-  after independent review reached fixed point; the exact canonical repair is
-  pending an exited user Emacs.
+  after independent review reached fixed point.  The exact canonical repair is
+  accepted at Grimoire =59b2770= after the user exited Emacs.
 - Establishes :: =F92A3-C09= and =F92A3-C10=.
 - Useful outcome :: the production graphical composition proves the complete
   behavior, and the one known canonical artifact is brought back to the
@@ -340,8 +339,24 @@ acceptance; file size alone does not require extraction.
   finalized SQLite state with no duplicate child, continuation, provider, or
   final row.  Both selectors passed 1/1 on 2026-09-12; captures are outside the
   repository under =/private/tmp/e-f92-daily-final-shots/=.
-- Deferred :: no live reload, no mutation of the canonical SQLite database, and
-  no unrelated Grimoire worktree cleanup.
+- Accepted canonical evidence :: The offline upgrader moved the canonical store
+  from schema v6 to v7 after writing
+  =backups/store-pre-v7-upgrade-20260912.sqlite3= (2,964,529,152 bytes), migrated
+  607,244 records, built 1,475 process-report base rows and 1,475 association
+  rows, and returned =integrity "ok"=.  The exact repair precondition admitted
+  only the two missing owned metadata lines.  Apply restored them, read back
+  lifecycle phase =finalized=, revision
+  =16fdd5025f7879a1a07e72126e04fe94d97f8e34a04bbc68761d04780c254e62=,
+  evidence commit =59b277088aa66c07e1a118d4a93f10894bcfab6c=, snapshot status
+  =complete=, and no gaps.  A second identical apply returned =status unchanged=
+  at the same commit and revision.  The recoverable repair family is under
+  =repairs/daily-2026-09-11-f92a3-20260912/=.  A read-only check initially found
+  that SQLite may create an empty WAL sidecar; Grimoire =9c2f696= corrected the
+  operator comparison to ignore only an empty WAL while hashing every nonempty
+  WAL, with independent fixed-point review and real-worker regression coverage.
+- Deferred :: no live reload and no unrelated Grimoire worktree cleanup.  The
+  authorized canonical mutation was limited to the v7 upgrade and exact Daily
+  repair above.
 - Split reason :: expensive public proof and the separately authorized
   canonical mutation occur only after mechanism acceptance.
 
@@ -404,9 +419,15 @@ runtime must never use them as authority afterward.
 
 * Acceptance
 
-The package is complete only when all contract rows are accepted, every package
-has passed focused evidence, the public provider-driven graphical scenario is
-passing, the exact source and loaded-symbol removal scans are clean, independent
-review reaches implementation fixed point, semantic commits exist for each
-accepted slice, and the canonical Daily repair has its exact read-back.  Running
-Emacs and the canonical SQLite database remain untouched during development.
+All contract rows are accepted.  Every package passed focused evidence, the
+public provider-driven graphical scenario passed, the exact source and
+loaded-symbol removal scans are clean, independent review reached implementation
+fixed point, semantic commits exist for each accepted slice, and the canonical
+Daily repair has exact read-back plus a same-identity unchanged retry.  No live
+Emacs was running during the explicitly authorized canonical upgrade and repair.
+Final repository verification on 2026-09-12 includes the complete 2,555-test
+=e= suite, byte compilation, the 10-test SQL-only/nonblocking structure suite,
+and all 156 non-graphical Grimoire layer tests, each with zero unexpected
+results.  Direct read-only SQL reports schema v7, migration identity
+=feature92-v6-to-v7-process-report-projection=, and 1,475 base plus 1,475
+association projection rows.
